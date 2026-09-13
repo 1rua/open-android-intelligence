@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-06: 浮动助理与屏幕圈选交互">
+  <description>
+    验证用户在主界面唤起浮动助理面板，体验浮动悬浮球与卡片形态切换，展开浮动对话层，并能安全关闭或最小化浮动助理，保持底层应用几何连续性。
+  </description>
+  <actions>
+    <action>Click the "浮动助理" action icon in top bar</action>
+    <action>Verify that the floating conversation panel appears over the current screen</action>
+    <action>Verify that the floating assistant input area is visible</action>
+    <action>Click the floating assistant close button</action>
+    <action>Verify that the floating conversation panel is dismissed</action>
+    <action>Verify that the user returns to the primary workbench screen</action>
+  </actions>
+</journey>

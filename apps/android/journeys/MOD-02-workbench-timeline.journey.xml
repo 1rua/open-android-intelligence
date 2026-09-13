@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-02: 对话主工作台与时间线交互">
+  <description>
+    验证主工作台对话时间线界面加载正常，能够正确展示历史消息或初始就绪提示，支持消息气泡滚动与触控交互，且主工作台各功能入口布局对齐规范。
+  </description>
+  <actions>
+    <action>Verify that the workbench top bar is visible</action>
+    <action>Verify that the message timeline container is visible</action>
+    <action>Verify that the message input bar "输入消息或 / 命令..." is visible at the bottom</action>
+    <action>Swipe down on the message timeline to view earlier messages</action>
+    <action>Swipe up on the message timeline to return to latest messages</action>
+    <action>Verify that the "添加附件" button is visible and enabled</action>
+    <action>Verify that the "发送" button is visible</action>
+  </actions>
+</journey>

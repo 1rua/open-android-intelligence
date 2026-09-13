@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-01: 网关连接与身份认证正常流程">
+  <description>
+    验证用户首次或重新配置进入应用时，通过网关登录表单输入合法的网关 HTTPS 地址、用户名与访问凭据，完成 TLS 握手与凭证协商，成功登录并跳转至主工作台。
+  </description>
+  <actions>
+    <action>Verify that the "连接你的 Agent Gateway" title is visible on screen</action>
+    <action>Verify that the "网关地址" input field is visible on screen</action>
+    <action>Click the "网关地址" input field</action>
+    <action>Type "https://gateway.example.local:8443" into the "网关地址" field</action>
+    <action>Click the "用户名 / 账号" input field</action>
+    <action>Type "test_admin" into the "用户名 / 账号" field</action>
+    <action>Click the "访问凭据 / 密码" input field</action>
+    <action>Type "GatewaySecretPass2026!" into the "访问凭据 / 密码" field</action>
+    <action>Click the "连接至网关" button</action>
+    <action>Verify that the login screen transitions and the main workbench top bar is visible</action>
+    <action>Verify that the gateway address "https://gateway.example.local:8443" is displayed in the workbench top bar</action>
+  </actions>
+</journey>

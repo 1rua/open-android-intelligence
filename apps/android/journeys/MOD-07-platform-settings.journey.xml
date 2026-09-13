@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-07: 平台设置与安全控制">
+  <description>
+    验证用户打开平台设置界面，调节主题偏好（浅色、深色、跟随系统）、切换动态取色开关与减弱动态效果开关；校验开发者信任模式状态切换和插件紧急熔断交互流程。
+  </description>
+  <actions>
+    <action>Click the "设置" action icon in top bar</action>
+    <action>Verify that the "设置与平台管理" screen or bottom sheet is displayed</action>
+    <action>Verify that the theme selection chips "浅色", "深色", "跟随系统" are visible</action>
+    <action>Click the "深色" theme chip</action>
+    <action>Verify that the "深色" chip is selected</action>
+    <action>Click the "减弱动态效果" switch</action>
+    <action>Swipe down on the settings view to locate security controls</action>
+    <action>Verify that "开发者信任模式" or "紧急熔断所有插件" button is visible</action>
+    <action>Click the "返回" icon or close button</action>
+    <action>Verify that the workbench is displayed with the updated settings applied</action>
+  </actions>
+</journey>

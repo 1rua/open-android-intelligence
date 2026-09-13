@@ -1,16 +1,25 @@
 package com.openandroidintelligence.conversation.workbench
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.LoadableRegion
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.state.Loadable
@@ -19,14 +28,25 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-/** 对话是主任务；全部内容来自同一 controller，HTML 只提供视觉层次。 */
+/**
+ * 对话工作台界面：严格遵守产品主导航边界（账号/Gateway、对话、附件）。
+ * 工作台的主体是对话任务本身，坚决不引入二级 Tab 切换、虚假运行看板或无意义硬件指标。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WorkbenchScreen(
-    controller: WorkbenchController, gatewayLabel: String, onOpenSettings: () -> Unit,
-    onPickCamera: () -> Unit, onPickGallery: () -> Unit, onPickDocument: () -> Unit,
-    onVoiceInput: () -> Unit, modifier: Modifier = Modifier,
+    controller: WorkbenchController,
+    gatewayLabel: String,
+    onOpenSettings: () -> Unit,
+    onPickCamera: () -> Unit,
+    onPickGallery: () -> Unit,
+    onPickDocument: () -> Unit,
+    onVoiceInput: () -> Unit,
+    modifier: Modifier = Modifier,
     onOpenAssistant: (() -> Unit)? = null,
+    isDarkTheme: Boolean = true,
+    onToggleTheme: (() -> Unit)? = null,
+    onLogout: (() -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -48,22 +68,44 @@ fun WorkbenchScreen(
             .distinctUntilChanged().collect { (scrolling, below) -> if (scrolling) followLatest = !below }
     }
     LaunchedEffect(state.activeThreadId, entries.lastOrNull()?.key, entries.lastOrNull()?.text, followLatest) {
-        // 真实 delta 直接增长；只在用户保持跟随时定位尾部，不逐 token 播放动画。
         if (followLatest && entries.isNotEmpty()) listState.scrollToItem(entries.lastIndex, Int.MAX_VALUE)
     }
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         val expanded = maxWidth >= Dimensions.ExpandedWindow
+
         val drawerContent: @Composable () -> Unit = {
-            ThreadDrawer(gatewayLabel, state.threads, state.activeThreadId,
-                onOpenThread = { controller.openThread(it); scope.launch { drawer.close() } },
-                onCreateThread = { controller.createThread(); scope.launch { drawer.close() } },
+            ThreadDrawer(
+                gatewayLabel = gatewayLabel,
+                threads = state.threads,
+                activeThreadId = state.activeThreadId,
+                onOpenThread = {
+                    controller.openThread(it)
+                    scope.launch { drawer.close() }
+                },
+                onCreateThread = {
+                    controller.createThread()
+                    scope.launch { drawer.close() }
+                },
                 onRefresh = controller::refreshThreads,
-                onOpenSettings = { scope.launch { drawer.close() }; onOpenSettings() },
-                onCloseDrawer = { scope.launch { drawer.close() } }, showClose = !expanded,
-                onOpenAttachments = { scope.launch { drawer.close() }; showAttachmentLibrary = true })
+                onOpenSettings = {
+                    scope.launch { drawer.close() }
+                    onOpenSettings()
+                },
+                onCloseDrawer = { scope.launch { drawer.close() } },
+                showClose = !expanded,
+                onOpenAttachments = {
+                    scope.launch { drawer.close() }
+                    showAttachmentLibrary = true
+                },
+                onLogout = {
+                    scope.launch { drawer.close() }
+                    onLogout?.invoke()
+                },
+            )
         }
-        val conversation: @Composable () -> Unit = {
+
+        val mainContent: @Composable () -> Unit = {
             Scaffold(
                 snackbarHost = { SnackbarHost(snackbar) },
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -71,78 +113,174 @@ fun WorkbenchScreen(
                 topBar = {
                     TopAppBar(
                         title = {
-                            Column {
-                                Text(state.activeThreadTitle.ifBlank { "对话" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(gatewayLabel, style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Box(modifier = Modifier.size(36.dp)) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(36.dp),
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.SmartToy,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.size(20.dp),
+                                            )
+                                        }
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .align(Alignment.BottomEnd)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF4ADE80))
+                                            .border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape),
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = state.activeThreadTitle.ifBlank { "AI 助手" },
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 15.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = "${gatewayLabel.removePrefix("https://")} · 已连接",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                         },
                         navigationIcon = {
-                            if (!expanded) IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Default.Menu, "打开会话列表") }
+                            if (!expanded) {
+                                IconButton(onClick = { scope.launch { drawer.open() } }) {
+                                    Icon(Icons.Default.Menu, contentDescription = "打开会话抽屉")
+                                }
+                            }
                         },
                         actions = {
                             onOpenAssistant?.let { open ->
-                                IconButton(onClick = open) { Icon(Icons.Default.PictureInPictureAlt, "浮动对话") }
+                                IconButton(onClick = open) {
+                                    Icon(Icons.Default.PictureInPictureAlt, contentDescription = "浮动助理")
+                                }
                             }
-                            IconButton(onClick = { showAttachmentLibrary = true }) { Icon(Icons.Default.AttachFile, "附件库") }
-                            IconButton(onClick = controller::createThread) { Icon(Icons.Default.Add, "新建对话") }
-                            IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, "设置与平台管理") }
+                            IconButton(onClick = { showAttachmentLibrary = true }) {
+                                Icon(Icons.Default.AttachFile, contentDescription = "附件库")
+                            }
+                            IconButton(onClick = controller::createThread) {
+                                Icon(Icons.Default.Add, contentDescription = "新建对话")
+                            }
+                            IconButton(onClick = onOpenSettings) {
+                                Icon(Icons.Default.Settings, contentDescription = "设置")
+                            }
                         },
                         windowInsets = WindowInsets(0, 0, 0, 0),
                     )
                 },
             ) { padding ->
-                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
-                    Column(Modifier.widthIn(max = Dimensions.ReadingWidth).fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .widthIn(max = Dimensions.ReadingWidth)
+                            .fillMaxSize(),
+                    ) {
+                        // 会话消息区域
                         Box(Modifier.weight(1f)) {
                             if (state.timeline == Loadable.Empty || (state.activeThreadId == null && state.timeline == Loadable.Idle)) {
                                 ConversationWelcome(onCreate = if (state.activeThreadId == null) controller::createThread else null)
                             } else {
-                                LoadableRegion(state.timeline, "写下第一条消息，开始这段对话", controller::retryTimeline,
-                                    modifier = Modifier.fillMaxSize(), ready = { rows ->
-                                        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(),
+                                LoadableRegion(
+                                    state.timeline,
+                                    "写下第一条消息，开始这段对话",
+                                    controller::retryTimeline,
+                                    modifier = Modifier.fillMaxSize(),
+                                    ready = { rows ->
+                                        LazyColumn(
+                                            state = listState,
+                                            modifier = Modifier.fillMaxSize(),
                                             contentPadding = PaddingValues(Dimensions.SpaceMedium),
-                                            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceLarge)) {
-                                            items(rows, key = { it.key }) { entry -> MessageTimeline(listOf(entry)) }
+                                            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceLarge),
+                                        ) {
+                                            items(rows, key = { it.key }) { entry ->
+                                                MessageTimeline(listOf(entry))
+                                            }
                                         }
-                                    })
+                                    },
+                                )
                             }
                             if (!followLatest && entries.isNotEmpty()) {
-                                FilledTonalButton(onClick = { followLatest = true },
-                                    modifier = Modifier.align(Alignment.BottomCenter).padding(Dimensions.SpaceSmall)) {
+                                FilledTonalButton(
+                                    onClick = { followLatest = true },
+                                    modifier = Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .padding(Dimensions.SpaceSmall),
+                                ) {
                                     Icon(Icons.Default.ArrowDownward, null)
-                                    Spacer(Modifier.width(Dimensions.SpaceSmall)); Text("回到最新")
+                                    Spacer(Modifier.width(Dimensions.SpaceSmall))
+                                    Text("回到最新")
                                 }
                             }
                         }
+
                         CommandMenu(state.catalog, state.draft, controller::selectCommand, controller::loadCatalog)
                         PendingBatchStrip(state.pendingBatch)
-                        ComposerBar(state.draft, controller::editDraft, state.generation,
+                        ComposerBar(
+                            draft = state.draft,
+                            onDraftChange = controller::editDraft,
+                            generation = state.generation,
                             canSend = state.activeThreadId != null && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
-                            onSend = controller::sendDraft, onStop = controller::stopGeneration,
-                            onPickCamera = onPickCamera, onPickGallery = onPickGallery, onPickDocument = onPickDocument,
-                            onVoiceInput = onVoiceInput, attachments = state.attachments,
-                            onRemoveAttachment = controller::removeAttachment, onRetryAttachment = controller::retryAttachment,
-                            modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall))
+                            onSend = controller::sendDraft,
+                            onStop = controller::stopGeneration,
+                            onPickCamera = onPickCamera,
+                            onPickGallery = onPickGallery,
+                            onPickDocument = onPickDocument,
+                            onVoiceInput = onVoiceInput,
+                            attachments = state.attachments,
+                            onRemoveAttachment = controller::removeAttachment,
+                            onRetryAttachment = controller::retryAttachment,
+                            modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
+                        )
                     }
                 }
             }
         }
+
         if (expanded) {
             Row(Modifier.fillMaxSize()) {
                 Box(Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()) { drawerContent() }
                 VerticalDivider()
-                Box(Modifier.weight(1f)) { conversation() }
+                Box(Modifier.weight(1f)) { mainContent() }
             }
         } else {
-            ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = true,
-                drawerContent = { ModalDrawerSheet(Modifier.width(Dimensions.DrawerWidth)) { drawerContent() } }) { conversation() }
+            ModalNavigationDrawer(
+                drawerState = drawer,
+                gesturesEnabled = true,
+                drawerContent = { ModalDrawerSheet(Modifier.width(Dimensions.DrawerWidth)) { drawerContent() } },
+            ) {
+                mainContent()
+            }
         }
+
         if (showAttachmentLibrary) {
-            androidx.activity.compose.BackHandler { showAttachmentLibrary = false }
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.surface,
+            ModalBottomSheet(
+                onDismissRequest = { showAttachmentLibrary = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = MaterialTheme.colorScheme.surface,
             ) {
                 AttachmentLibraryScreen(
                     attachments = state.attachments,
@@ -161,15 +299,32 @@ fun WorkbenchScreen(
 @Composable
 private fun ConversationWelcome(onCreate: (() -> Unit)?) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(Modifier.widthIn(max = Dimensions.FormWidth).padding(Dimensions.SpaceXLarge),
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium)) {
+        Column(
+            Modifier
+                .widthIn(max = Dimensions.FormWidth)
+                .padding(Dimensions.SpaceXLarge),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+        ) {
             SignalStitch(modifier = Modifier.height(Dimensions.BrandMark))
             Text("从一个想法开始", style = MaterialTheme.typography.headlineMedium)
-            Text("与自己的 Agent 对话，分享你选中的图片和文件。", style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (onCreate != null) Button(onClick = onCreate) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(Dimensions.SpaceSmall)); Text("新建对话") }
-            else Text("输入 / 可查看此 Gateway 提供的命令。", style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "与自己的 Agent 对话，分享你选中的图片和文件。",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (onCreate != null) {
+                Button(onClick = onCreate) {
+                    Icon(Icons.Default.Add, null)
+                    Spacer(Modifier.width(Dimensions.SpaceSmall))
+                    Text("新建对话")
+                }
+            } else {
+                Text(
+                    "输入 / 可查看此 Gateway 提供的命令。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

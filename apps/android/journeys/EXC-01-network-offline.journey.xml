@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="EXC-01: 断网无连接异常场景">
+  <description>
+    验证在网络断开或网关不可达时发起连接请求，应用能够捕获连接错误，给出明确的可读性失败提示（如网络未连接或域名解析失败），并提供重试入口，禁止发生白屏、未捕获异常或进程卡死。
+  </description>
+  <actions>
+    <action>Verify that the "网关地址" input field is visible on screen</action>
+    <action>Click the "网关地址" input field</action>
+    <action>Type "https://192.0.2.1:8443" into the "网关地址" field</action>
+    <action>Click the "用户名 / 账号" input field</action>
+    <action>Type "offline_user" into the "用户名 / 账号" field</action>
+    <action>Click the "访问凭据 / 密码" input field</action>
+    <action>Type "DummyPassword123" into the "访问凭据 / 密码" field</action>
+    <action>Click the "连接至网关" button</action>
+    <action>Verify that a readable error message indicating connection failure is displayed</action>
+    <action>Verify that the "重试" button is visible and clickable</action>
+    <action>Click the "重试" button to confirm state recovery</action>
+    <action>Verify that the login form remains editable and the app has not crashed</action>
+  </actions>
+</journey>

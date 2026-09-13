@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="EXC-06: 数据为空与空状态展示场景">
+  <description>
+    验证在无历史会话、无附件暂存、无审计日志等零数据场景下，应用各界面均如实展示符合规范的空状态组件（带清晰引导提示），不渲染假数据，不出现布局崩溃或死循环。
+  </description>
+  <actions>
+    <action>Verify that the message timeline shows the ready or empty conversation state</action>
+    <action>Click the navigation menu icon "打开会话抽屉" in top bar</action>
+    <action>Verify that when conversation history is empty the drawer provides a clear "新建对话" prompt</action>
+    <action>Close the conversation drawer</action>
+    <action>Click the "设置" action icon in top bar</action>
+    <action>Swipe down to the audit log section</action>
+    <action>Verify that empty audit log displays an honest zero-event empty state without mock data</action>
+    <action>Click the "返回" icon to return to workbench</action>
+  </actions>
+</journey>

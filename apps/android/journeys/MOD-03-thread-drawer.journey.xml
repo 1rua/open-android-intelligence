@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-03: 会话与线程抽屉管理">
+  <description>
+    验证用户能够通过左上角抽屉按钮滑出或展开侧边抽屉面板，查看当前网关关联的会话列表，点击新建对话生成新线程，或在不同历史会话间无缝切换。
+  </description>
+  <actions>
+    <action>Click the navigation menu icon "打开会话抽屉" in top bar</action>
+    <action>Verify that the conversation drawer sheet is expanded and visible</action>
+    <action>Verify that the "新建对话" button is visible in the drawer</action>
+    <action>Click the "新建对话" button</action>
+    <action>Verify that the drawer closes automatically or returns to workbench</action>
+    <action>Verify that the message timeline is reset to a clean state for the new conversation</action>
+    <action>Click the navigation menu icon "打开会话抽屉" in top bar again</action>
+    <action>Verify that the drawer contains at least one active conversation thread</action>
+    <action>Swipe left or tap outside the drawer sheet to dismiss it</action>
+    <action>Verify that the workbench is visible again</action>
+  </actions>
+</journey>

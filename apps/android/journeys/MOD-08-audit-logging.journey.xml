@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-08: 平台审计日志与能力采集">
+  <description>
+    验证用户在平台管理中进入审计日志模块，查看本地不可篡改操作流水（登录、会话创建、插件执行、断开连接等事实），核查系统事件记录真实完整且不含假数据。
+  </description>
+  <actions>
+    <action>Click the "设置" action icon in top bar</action>
+    <action>Verify that the "设置与平台管理" screen is displayed</action>
+    <action>Swipe down to the audit log section</action>
+    <action>Verify that the "审计记录" card or header is displayed</action>
+    <action>Verify that the audit event list container is present</action>
+    <action>Click the "返回" icon to return to workbench</action>
+    <action>Verify that the workbench is displayed</action>
+  </actions>
+</journey>

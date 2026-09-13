@@ -16,6 +16,7 @@ AGENTS.md
 .env_check.txt
 .marscode/deviceInfo.json
 fronted-preview/
+artifacts/test-runs
 
 # Android
 apps/android/local.properties

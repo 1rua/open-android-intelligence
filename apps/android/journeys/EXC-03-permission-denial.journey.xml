@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="EXC-03: 权限拒绝降级场景">
+  <description>
+    验证用户在附件选择过程中拒绝相机或存储权限时，应用能够优雅拦截 SecurityException，通过 Toast 或内嵌横幅提示权限缺失，并保持当前工作台上下文完好，不闪退、不丢失草稿。
+  </description>
+  <actions>
+    <action>Verify that the workbench composer input is visible</action>
+    <action>Click the "添加附件" button</action>
+    <action>Verify that the attachment bottom sheet is displayed</action>
+    <action>Click the "拍照" option</action>
+    <action>Verify that if camera permission is rejected the app returns safely to workbench</action>
+    <action>Verify that the composer input remains interactive</action>
+    <action>Verify that no unhandled crash occurred</action>
+  </actions>
+</journey>

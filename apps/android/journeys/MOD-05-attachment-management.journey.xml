@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-05: 多模态附件上传与管理">
+  <description>
+    验证通过编辑栏的附件加号按钮打开系统选择菜单（拍照、相册选择、SAF文档选择），在编辑栏上方面板呈现附件暂存卡片、上传进度与核验状态，并支持用户移除已选附件。
+  </description>
+  <actions>
+    <action>Click the "添加附件" button next to the composer input</action>
+    <action>Verify that the attachment selection bottom sheet appears</action>
+    <action>Verify that "拍照" option is visible</action>
+    <action>Verify that "相册选择" option is visible</action>
+    <action>Verify that "文档选择" option is visible</action>
+    <action>Tap outside the attachment selection sheet to dismiss</action>
+    <action>Verify that the attachment selection sheet is dismissed</action>
+    <action>Verify that the composer bar remains in a responsive state</action>
+  </actions>
+</journey>

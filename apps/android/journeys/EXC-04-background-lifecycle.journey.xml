@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="EXC-04: 后台切换与生命周期恢复场景">
+  <description>
+    验证用户在输入框键入长篇草稿文本中途，将应用切换到后台（模拟用户接打电话或切换应用），随后重新返回前台时，草稿文本与当前会话状态完好无损地被恢复。
+  </description>
+  <actions>
+    <action>Click the message input field "输入消息或 / 命令..."</action>
+    <action>Type "Draft preserving test: checking lifecycle survival under process pause." into the input field</action>
+    <action>Verify that the input field contains "Draft preserving test: checking lifecycle survival under process pause."</action>
+    <action>Simulate Home key or background task switch</action>
+    <action>Simulate returning to the open-android-intelligence app from background</action>
+    <action>Verify that the message input field still retains the draft text</action>
+    <action>Verify that the workbench is in the active connected state</action>
+  </actions>
+</journey>

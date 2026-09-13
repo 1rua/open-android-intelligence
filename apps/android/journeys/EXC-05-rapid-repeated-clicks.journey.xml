@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="EXC-05: 快速重复点击与防抖测试">
+  <description>
+    验证在网关连接提交、消息发送、新建对话等高频关键交互按钮上，进行快速连续敲击测试，防抖机制生效，确保只触发一次有效网络调用，杜绝重复创建或数据污染。
+  </description>
+  <actions>
+    <action>Click the message input field "输入消息或 / 命令..."</action>
+    <action>Type "Single atomic dispatch under rapid clicks test" into the input field</action>
+    <action>Quickly click the "发送" button 5 times in rapid succession</action>
+    <action>Verify that the message input field is cleared after the first dispatch</action>
+    <action>Verify that only one message instance was submitted to the timeline</action>
+    <action>Verify that no duplicated message bubbles are rendered</action>
+  </actions>
+</journey>

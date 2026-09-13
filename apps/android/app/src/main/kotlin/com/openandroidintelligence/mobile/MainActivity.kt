@@ -25,6 +25,11 @@ import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
+import com.openandroidintelligence.core.model.AssistantHandoffDecision
+import com.openandroidintelligence.core.model.AssistantHandoffDenialReason
+import com.openandroidintelligence.core.model.AssistantHandoffGate
+import com.openandroidintelligence.core.model.AssistantHandoffRequest
+import com.openandroidintelligence.core.model.DefaultAssistantHandoffGate
 import com.openandroidintelligence.mobile.util.ContentResolverExtensions
 import java.io.ByteArrayOutputStream
 
@@ -38,6 +43,15 @@ import java.io.ByteArrayOutputStream
  * 4. 接入原生相机快照、系统图片选择器与 SAF 文档选择器，走真实三步附件上传链路。
  */
 class MainActivity : ComponentActivity() {
+
+    private val handoffGate: AssistantHandoffGate = DefaultAssistantHandoffGate()
+    private var lastHandoffDecision: AssistantHandoffDecision =
+        AssistantHandoffDecision.Denied(AssistantHandoffDenialReason.DEFAULT_DENY)
+
+    fun evaluateAssistantHandoff(request: AssistantHandoffRequest): AssistantHandoffDecision =
+        handoffGate.evaluate(request).also { lastHandoffDecision = it }
+
+    fun currentAssistantHandoffDecision(): AssistantHandoffDecision = lastHandoffDecision
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

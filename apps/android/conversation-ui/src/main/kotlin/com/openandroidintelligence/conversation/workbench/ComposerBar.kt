@@ -3,140 +3,391 @@ package com.openandroidintelligence.conversation.workbench
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
-import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import com.openandroidintelligence.conversation.model.*
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.model.AttachmentDraft
+import com.openandroidintelligence.conversation.model.AttachmentState
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.motion.MotionSpecs
-import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
-/** 始终挂载的编辑器：业务事实由 controller 提供，底部菜单只发出用户选择动作。 */
+/**
+ * 共享消息输入底栏：
+ * 1. 附件加号按钮打开系统选择菜单（拍照、相册选择、文档选择）；
+ * 2. 附件暂存草稿胶囊横条；
+ * 3. 动态伸缩输入框（支持多行展开与回弹物理动效）；
+ * 4. 语音输入入口与发送/停止按钮平滑交叉淡化切换；
+ * 5. 状态机严格受控，无虚假快捷项。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ComposerBar(
-    draft: String, onDraftChange: (String) -> Unit,
-    generation: GenerationState, canSend: Boolean,
-    onSend: () -> Unit, onStop: () -> Unit,
-    onPickCamera: () -> Unit, onPickGallery: () -> Unit, onPickDocument: () -> Unit,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    generation: GenerationState,
+    canSend: Boolean,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    onPickCamera: () -> Unit,
+    onPickGallery: () -> Unit,
+    onPickDocument: () -> Unit,
     onVoiceInput: () -> Unit,
     attachments: List<AttachmentDraft> = emptyList(),
-    onRemoveAttachment: (String) -> Unit = {}, onRetryAttachment: (String) -> Unit = {},
+    onRemoveAttachment: (String) -> Unit = {},
+    onRetryAttachment: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     applyImePadding: Boolean = true,
+    onQuickChip: ((String) -> Unit)? = null,
 ) {
-    var focused by remember { mutableStateOf(false) }
-    var showAttachments by remember { mutableStateOf(false) }
     val reduced = LocalMotionPolicy.current.reduceMotion
-    val radius by animateDpAsState(
-        if (focused || attachments.isNotEmpty()) Dimensions.SpaceMedium else Dimensions.SpaceXLarge,
-        MotionSpecs.spatial(reduced), label = "composer-radius",
-    )
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
     val waitingCancel = generation == GenerationState.CANCEL_REQUESTED
     val unknown = generation == GenerationState.OUTCOME_UNKNOWN
 
-    Column(modifier = modifier.fillMaxWidth().then(if (applyImePadding) Modifier.imePadding() else Modifier)) {
+    var focused by remember { mutableStateOf(false) }
+    var showAttachmentsSheet by remember { mutableStateOf(false) }
+
+    val imeModifier = if (applyImePadding) Modifier.imePadding() else Modifier
+
+    Column(modifier = modifier.fillMaxWidth().then(imeModifier)) {
+        // ===== 1. Attachments Preview Strip =====
         AnimatedVisibility(
             visible = attachments.isNotEmpty(),
-            enter = fadeIn(MotionSpecs.fade(reduced)), exit = fadeOut(MotionSpecs.fade(reduced)),
+            enter = fadeIn(MotionSpecs.fade(reduced)),
+            exit = fadeOut(MotionSpecs.fade(reduced)),
         ) {
-            AttachmentDraftStrip(attachments, onRemoveAttachment, onRetryAttachment,
-                Modifier.padding(bottom = Dimensions.SpaceSmall))
+            AttachmentDraftStrip(
+                attachments = attachments,
+                onRemove = onRemoveAttachment,
+                onRetry = onRetryAttachment,
+                modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
+            )
         }
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            shape = RoundedCornerShape(radius),
-            modifier = Modifier.fillMaxWidth().animateContentSize(MotionSpecs.spatial(reduced)),
+
+        // ===== 2. Main Composer Row =====
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(Modifier.padding(Dimensions.SpaceSmall)) {
+            // [ + ] 添加附件按钮
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .clickable { showAttachmentsSheet = true },
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "添加附件",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+
+            // [ 胶囊输入框 ]
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier
+                    .weight(1f)
+                    .animateContentSize(MotionSpecs.spatial(reduced)),
+            ) {
                 TextField(
-                    value = draft, onValueChange = onDraftChange,
-                    placeholder = { Text("写下你的想法，或输入 / 查找命令") },
-                    modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused },
-                    minLines = 1, maxLines = 5,
-                    shape = MaterialTheme.shapes.large,
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    placeholder = {
+                        Text(
+                            "输入消息或 / 命令...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { focused = it.isFocused },
+                    minLines = 1,
+                    maxLines = 4,
+                    shape = RoundedCornerShape(20.dp),
                     colors = TextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                        focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                        unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
                     ),
                 )
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { showAttachments = true }) {
-                        Icon(Icons.Default.Add, "添加附件")
-                    }
-                    IconButton(onClick = onVoiceInput) { Icon(Icons.Default.MicNone, "系统语音输入") }
-                    Spacer(Modifier.weight(1f))
-                    FilledIconButton(
-                        onClick = if (running) onStop else onSend,
-                        enabled = running || (canSend && !waitingCancel && !unknown),
-                        modifier = Modifier.size(Dimensions.MinimumTouchTarget),
-                    ) {
-                        Crossfade(targetState = running || waitingCancel, animationSpec = MotionSpecs.fade(reduced), label = "send-stop") { stop ->
-                            Icon(if (stop) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
-                                if (waitingCancel) "等待取消确认" else if (stop) "停止生成" else "发送消息")
-                        }
-                    }
+            }
+
+            // [ 🎤 ] 语音输入按钮
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onVoiceInput),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    )
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "语音输入",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+
+            // [ 发送 / 停止 按钮 ]
+            FilledIconButton(
+                onClick = if (running) onStop else onSend,
+                enabled = running || (canSend && !waitingCancel && !unknown),
+                shape = CircleShape,
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+                ),
+                modifier = Modifier.size(42.dp),
+            ) {
+                Crossfade(
+                    targetState = running || waitingCancel,
+                    animationSpec = MotionSpecs.fade(reduced),
+                    label = "send-stop",
+                ) { stop ->
+                    Icon(
+                        imageVector = if (stop) Icons.Default.Stop else Icons.Default.ArrowUpward,
+                        contentDescription = if (waitingCancel) "等待取消确认" else if (stop) "停止生成" else "发送",
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
             }
         }
+
         generationLabel(generation)?.let { label ->
-            Text(label, style = MaterialTheme.typography.labelMedium,
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
                 color = if (unknown || generation == GenerationState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(Dimensions.SpaceSmall).semantics { liveRegion = LiveRegionMode.Polite })
+                modifier = Modifier
+                    .padding(horizontal = Dimensions.SpaceSmall, vertical = 2.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            )
         }
     }
-    if (showAttachments) {
-        ModalBottomSheet(onDismissRequest = { showAttachments = false }) {
-            Column(Modifier.navigationBarsPadding().padding(bottom = Dimensions.SpaceLarge)) {
-                Text("添加到当前对话", style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(horizontal = Dimensions.SpaceLarge, vertical = Dimensions.SpaceSmall))
-                AttachmentChoice(Icons.Default.PhotoCamera, "拍摄照片", "使用系统相机") { showAttachments = false; onPickCamera() }
-                AttachmentChoice(Icons.Default.PhotoLibrary, "选择图片", "只读取你选中的图片") { showAttachments = false; onPickGallery() }
-                AttachmentChoice(Icons.Default.AttachFile, "选择文件", "通过系统文件选择器添加") { showAttachments = false; onPickDocument() }
+
+    // ===== 3. 多模态附件选择底部弹窗 =====
+    if (showAttachmentsSheet) {
+        ModalBottomSheet(onDismissRequest = { showAttachmentsSheet = false }) {
+            Column(
+                Modifier
+                    .navigationBarsPadding()
+                    .padding(bottom = Dimensions.SpaceLarge),
+            ) {
+                Text(
+                    "添加到当前对话",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = Dimensions.SpaceLarge, vertical = Dimensions.SpaceSmall),
+                )
+                AttachmentChoice(
+                    icon = Icons.Default.PhotoCamera,
+                    title = "拍照",
+                    description = "使用系统相机拍摄照片",
+                ) {
+                    showAttachmentsSheet = false
+                    onPickCamera()
+                }
+                AttachmentChoice(
+                    icon = Icons.Default.PhotoLibrary,
+                    title = "相册选择",
+                    description = "从相册选择已有图片",
+                ) {
+                    showAttachmentsSheet = false
+                    onPickGallery()
+                }
+                AttachmentChoice(
+                    icon = Icons.Default.AttachFile,
+                    title = "文档选择",
+                    description = "通过系统文件选择器添加文档",
+                ) {
+                    showAttachmentsSheet = false
+                    onPickDocument()
+                }
             }
         }
     }
 }
 
 @Composable
-private fun AttachmentChoice(icon: ImageVector, title: String, description: String, onClick: () -> Unit) {
-    Surface(onClick = onClick, color = MaterialTheme.colorScheme.surfaceContainerLow) {
-        ListItem(headlineContent = { Text(title) }, supportingContent = { Text(description) },
-            leadingContent = { Icon(icon, null) }, colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow))
+private fun AttachmentChoice(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Dimensions.SpaceLarge, vertical = Dimensions.SpaceMedium),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(Dimensions.Icon),
+            )
+            Spacer(Modifier.width(Dimensions.SpaceMedium))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 
-fun generationLabel(state: GenerationState): String? = when (state) {
-    GenerationState.IDLE, GenerationState.COMPLETED -> null
-    GenerationState.QUEUED -> "消息已接收，等待回复"
-    GenerationState.RUNNING -> "正在接收回复"
-    GenerationState.CANCEL_REQUESTED -> "正在请求停止，等待 Gateway 确认"
-    GenerationState.CANCELLED -> "本次生成已停止"
-    GenerationState.FAILED -> "本次生成失败，请检查连接后重试"
-    GenerationState.UNSUPPORTED -> "当前 Gateway 不支持停止生成"
-    GenerationState.OUTCOME_UNKNOWN -> "生成结果尚未确认，请先刷新会话核实，避免重复发送"
+@Composable
+private fun AttachmentDraftStrip(
+    attachments: List<AttachmentDraft>,
+    onRemove: (String) -> Unit,
+    onRetry: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LazyRow(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+    ) {
+        items(attachments, key = { it.id.value }) { draft ->
+            AttachmentDraftChip(draft, onRemove = { onRemove(draft.id.value) }, onRetry = { onRetry(draft.id.value) })
+        }
+    }
+}
+
+@Composable
+fun AttachmentDraftChip(
+    draft: AttachmentDraft,
+    onRemove: () -> Unit,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val state = draft.state
+    val failed = state == AttachmentState.RETRYABLE_FAILURE || state == AttachmentState.TERMINAL_FAILURE
+    val verifying = state == AttachmentState.VERIFYING
+    val uploading = state == AttachmentState.UPLOADING
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (failed) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = when {
+                    draft.mediaType.startsWith("image/") -> Icons.Default.Image
+                    else -> Icons.AutoMirrored.Filled.InsertDriveFile
+                },
+                contentDescription = null,
+                tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+
+            Column(modifier = Modifier.widthIn(max = 140.dp)) {
+                Text(
+                    text = draft.filename,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = attachmentStateLabel(state),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp,
+                )
+            }
+
+            if (uploading || verifying) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+
+            if (failed) {
+                IconButton(onClick = onRetry, modifier = Modifier.size(20.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "重试上传",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
+
+            IconButton(onClick = onRemove, modifier = Modifier.size(20.dp)) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "移除附件",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
+    }
 }
 
 fun attachmentStateLabel(state: AttachmentState): String = when (state) {
@@ -151,40 +402,15 @@ fun attachmentStateLabel(state: AttachmentState): String = when (state) {
     AttachmentState.CANCELLED -> "已取消上传"
 }
 
-@Composable
-fun AttachmentDraftStrip(attachments: List<AttachmentDraft>, onRemove: (String) -> Unit,
-    onRetry: (String) -> Unit, modifier: Modifier = Modifier) {
-    LazyRow(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-        items(attachments, key = { it.id.value }) { item ->
-            AttachmentDraftChip(item, { onRemove(item.id.value) }, { onRetry(item.id.value) }, Modifier.widthIn(max = Dimensions.DrawerWidth))
-        }
-    }
-}
-
-@Composable
-fun AttachmentDraftChip(draft: AttachmentDraft, onRemove: () -> Unit, onRetry: () -> Unit, modifier: Modifier = Modifier) {
-    val busy = draft.state in setOf(AttachmentState.LOCAL_PREPARING, AttachmentState.CREATE_PENDING, AttachmentState.UPLOADING, AttachmentState.VERIFYING)
-    val failed = draft.state == AttachmentState.RETRYABLE_FAILURE || draft.state == AttachmentState.TERMINAL_FAILURE
-    Surface(color = if (failed) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = if (failed) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface,
-        shape = MaterialTheme.shapes.medium, modifier = modifier) {
-        Row(Modifier.padding(start = Dimensions.SpaceMedium), verticalAlignment = Alignment.CenterVertically) {
-            if (busy) CircularProgressIndicator(Modifier.size(Dimensions.Progress), strokeWidth = Dimensions.StrokeStitch)
-            else Icon(when {
-                failed -> Icons.Default.ErrorOutline
-                draft.state == AttachmentState.VERIFIED -> Icons.Default.CheckCircleOutline
-                draft.state == AttachmentState.OUTCOME_UNKNOWN -> Icons.AutoMirrored.Filled.HelpOutline
-                else -> Icons.Default.Description
-            }, null)
-            Column(Modifier.weight(1f).padding(Dimensions.SpaceSmall)) {
-                Text(draft.filename, style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(attachmentStateLabel(draft.state), style = MaterialTheme.typography.bodySmall)
-                Text(formatAttachmentSize(draft.sizeBytes), style = MaterialTheme.typography.labelSmall)
-            }
-            if (draft.state == AttachmentState.RETRYABLE_FAILURE) IconButton(onClick = onRetry) { Icon(Icons.Default.Refresh, "重试上传 ${draft.filename}") }
-            IconButton(onClick = onRemove) { Icon(Icons.Default.Close, "移除附件 ${draft.filename}") }
-        }
-    }
+fun generationLabel(state: GenerationState): String? = when (state) {
+    GenerationState.IDLE, GenerationState.COMPLETED -> null
+    GenerationState.QUEUED -> "消息已接收，等待回复"
+    GenerationState.RUNNING -> "正在接收回复"
+    GenerationState.CANCEL_REQUESTED -> "正在请求停止，等待 Gateway 确认"
+    GenerationState.CANCELLED -> "本次生成已停止"
+    GenerationState.FAILED -> "本次生成失败，请检查连接后重试"
+    GenerationState.UNSUPPORTED -> "当前 Gateway 不支持停止生成"
+    GenerationState.OUTCOME_UNKNOWN -> "生成结果尚未确认，请先刷新会话核实，避免重复发送"
 }
 
 fun formatAttachmentSize(bytes: Long): String = when {
@@ -194,21 +420,32 @@ fun formatAttachmentSize(bytes: Long): String = when {
 }
 
 @Composable
-fun PendingBatchStrip(members: List<TimelineEntry>, modifier: Modifier = Modifier) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
-    AnimatedVisibility(members.isNotEmpty(), enter = fadeIn(MotionSpecs.fade(reduced)), exit = fadeOut(MotionSpecs.fade(reduced))) {
-        Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium,
-            modifier = modifier.fillMaxWidth().padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceTiny)) {
-            Text("${members.size} 条消息待发送 · 等待合并或 Gateway 确认", style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(Dimensions.SpaceCompact))
+fun PendingBatchStrip(
+    members: List<com.openandroidintelligence.conversation.state.TimelineEntry>,
+    modifier: Modifier = Modifier,
+) {
+    if (members.isEmpty()) return
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            members.forEach { member ->
+                Text(
+                    text = "● " + member.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Text(
+                text = "同一批次 · ${members.size} 条 · 等待合并",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
 
-@Composable
-fun GatewayStatusLine(title: String, status: String, modifier: Modifier = Modifier) {
-    Column(modifier.fillMaxWidth().padding(Dimensions.SpaceMedium)) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}

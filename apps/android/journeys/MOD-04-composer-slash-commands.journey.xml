@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-04: 消息编辑与快捷指令触发">
+  <description>
+    验证用户在底部编辑栏输入常规文字与输入斜杠“/”触发快捷指令弹层，测试指令自动补全、原子发送以及输入框状态重置与流式响应触发。
+  </description>
+  <actions>
+    <action>Click the message input field "输入消息或 / 命令..."</action>
+    <action>Type "Hello Agent, this is an automated test message." into the input field</action>
+    <action>Verify that the "发送" button is enabled</action>
+    <action>Click the "发送" button</action>
+    <action>Verify that the message input field is cleared</action>
+    <action>Verify that the user message appears in the message timeline</action>
+    <action>Click the message input field again</action>
+    <action>Type "/help" into the input field</action>
+    <action>Verify that the slash command menu is displayed with available commands</action>
+    <action>Click the "发送" button to execute command</action>
+    <action>Verify that the command request is dispatched</action>
+  </actions>
+</journey>

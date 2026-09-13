@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="EXC-08: 接口超时与服务端故障响应场景">
+  <description>
+    验证网关服务出现 500 内部错误、504 网关超时或 SSE 长连接异常断开时，应用能解析错误协议包，将失败原因清晰展示在状态卡片中，并提供重连机制，确保端侧状态可控。
+  </description>
+  <actions>
+    <action>Verify that the "网关地址" input field is visible on screen</action>
+    <action>Click the "网关地址" input field</action>
+    <action>Type "https://server-error-500.example.local:8443" into the "网关地址" field</action>
+    <action>Click the "用户名 / 账号" input field</action>
+    <action>Type "test_user" into the "用户名 / 账号" field</action>
+    <action>Click the "访问凭据 / 密码" input field</action>
+    <action>Type "test_pass" into the "访问凭据 / 密码" field</action>
+    <action>Click the "连接至网关" button</action>
+    <action>Verify that the failure state banner displays the protocol error message</action>
+    <action>Verify that the "重试" button is available</action>
+    <action>Click the "重试" button</action>
+    <action>Verify that the error state is cleared and reconnect is attempted</action>
+  </actions>
+</journey>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="EXC-02: 弱网高延迟与加载响应场景">
+  <description>
+    验证在网络延迟过高或丢包抖动严重时，界面能够展示不定加载状态指示器（CircularProgressIndicator），保持 UI 线程流畅不触发系统 ANR 弹窗，且允许用户在请求挂起期间取消或等待。
+  </description>
+  <actions>
+    <action>Verify that the "网关地址" input field is visible on screen</action>
+    <action>Click the "网关地址" input field</action>
+    <action>Type "https://slow-gateway.example.local:8443" into the "网关地址" field</action>
+    <action>Click the "用户名 / 账号" input field</action>
+    <action>Type "latency_test" into the "用户名 / 账号" field</action>
+    <action>Click the "访问凭据 / 密码" input field</action>
+    <action>Type "LatencyPassword123" into the "访问凭据 / 密码" field</action>
+    <action>Click the "连接至网关" button</action>
+    <action>Verify that a loading progress indicator or busy state is shown</action>
+    <action>Verify that the app remains responsive without freezing or crashing</action>
+  </actions>
+</journey>

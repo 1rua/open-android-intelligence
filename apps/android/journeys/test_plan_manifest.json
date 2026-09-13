@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "planId": "open-android-intelligence-e2e-manifest-v1",
+  "title": "Open Android Intelligence 完整测试与调度执行清单 (TestPlanManifest)",
+  "version": "1.0.0",
+  "generatedAt": "2026-09-13T22:10:00+08:00",
+  "targetApp": {
+    "applicationId": "com.openandroidintelligence.mobile",
+    "buildVariant": "fullDebug",
+    "apkRelativePath": "apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk",
+    "mainActivity": "com.openandroidintelligence.mobile.MainActivity",
+    "minSdk": 34,
+    "targetSdk": 35,
+    "distributionFlavor": "full"
+  },
+  "environment": {
+    "androidCliVersion": "1.0.16261425",
+    "sdkRootRelative": ".toolchains/android-sdk",
+    "requiredSdkComponents": [
+      "cmdline-tools;latest",
+      "platform-tools",
+      "platforms;android-35",
+      "build-tools;35.0.0",
+      "emulator"
+    ],
+    "kvmHardwareAcceleration": true,
+    "recommendedDeviceProfile": "medium_phone",
+    "recommendedAvdName": "OpenAndroid_Pixel8_API35",
+    "requiredShellEncoding": "C.UTF-8"
+  },
+  "modules": [
+    {
+      "id": "MOD-01",
+      "name": "网关连接与身份认证",
+      "journeyFile": "MOD-01-gateway-login.journey.xml",
+      "entryPoint": "MainActivity 初始启动层 (ConnectionPhase.Idle)",
+      "criticalPaths": [
+        "输入合法的网关 HTTPS 地址与端口",
+        "输入用户名与访问凭据",
+        "点击连接按钮发起 TLS 握手与会话协商",
+        "成功接收凭据并跃迁至主工作台"
+      ],
+      "acceptanceCriteria": [
+        "有效凭据下 100% 协商成功跳转",
+        "凭据持久化至安全加密存储",
+        "主工作台顶部正确显示当前连接的网关地址"
+      ],
+      "testData": {
+        "gatewayUrl": "https://gateway.example.local:8443",
+        "username": "test_admin",
+        "password": "GatewaySecretPass2026!"
+      }
+    },
+    {
+      "id": "MOD-02",
+      "name": "对话主工作台与时间线交互",
+      "journeyFile": "MOD-02-workbench-timeline.journey.xml",
+      "entryPoint": "WorkbenchScreen (ConnectionPhase.Connected)",
+      "criticalPaths": [
+        "消息时间线加载与历史渲染",
+        "上下滑动浏览长消息与会话列表",
+        "气泡焦点与高亮反馈",
+        "回到最新消息快捷动作"
+      ],
+      "acceptanceCriteria": [
+        "时间线渲染帧率平稳，无卡顿",
+        "消息文本遵循 Material 3 排版与动态取色",
+        "空会话时诚实呈现就绪状态，杜绝伪造假指标"
+      ],
+      "testData": {
+        "sampleMessageCount": 5
+      }
+    },
+    {
+      "id": "MOD-03",
+      "name": "会话与线程抽屉管理",
+      "journeyFile": "MOD-03-thread-drawer.journey.xml",
+      "entryPoint": "WorkbenchScreen 顶部导航抽屉按钮",
+      "criticalPaths": [
+        "侧边滑出手势或点击展开抽屉",
+        "浏览现有会话列表及更新时间",
+        "点击新建对话创建空白会话线程",
+        "选中特定会话并切换当前上下文"
+      ],
+      "acceptanceCriteria": [
+        "抽屉开合动效符合 M3 标准缓动 (0.2, 0, 0, 1)",
+        "会话切换时旧草稿与新上下文无串扰",
+        "新建对话后工作台状态彻底重置就绪"
+      ],
+      "testData": {}
+    },
+    {
+      "id": "MOD-04",
+      "name": "消息编辑与快捷指令触发",
+      "journeyFile": "MOD-04-composer-slash-commands.journey.xml",
+      "entryPoint": "ComposerBar 输入栏",
+      "criticalPaths": [
+        "文本输入框聚焦与软键盘交互",
+        "键入斜杠 / 唤起快捷指令建议菜单",
+        "筛选并点击选取 /help, /clear, /status",
+        "点击发送触发原子投递并清空输入框"
+      ],
+      "acceptanceCriteria": [
+        "指令菜单展开/收起平滑，无循环重绘",
+        "发送按钮状态在有输入时即时激活",
+        "消息发送保持原子性，不丢字，不出错"
+      ],
+      "testData": {
+        "sampleInput": "Hello Agent, this is an automated test message.",
+        "commandInput": "/help"
+      }
+    },
+    {
+      "id": "MOD-05",
+      "name": "多模态附件上传与管理",
+      "journeyFile": "MOD-05-attachment-management.journey.xml",
+      "entryPoint": "ComposerBar 附件加号按钮",
+      "criticalPaths": [
+        "点击附件按钮弹出选择面板 (拍照/相册/文档)",
+        "选择文件后在编辑栏上方暂存卡片区渲染",
+        "显示文件元数据与不定进度指示器",
+        "支持一键移除待发送附件"
+      ],
+      "acceptanceCriteria": [
+        "走真实 SAF 与 ContentResolver 契约，杜绝假进度百分比",
+        "附件删除后暂存列表与高度平滑过渡更新",
+        "附件状态真实反应三步上传链路"
+      ],
+      "testData": {}
+    },
+    {
+      "id": "MOD-06",
+      "name": "浮动助理与屏幕圈选交互",
+      "journeyFile": "MOD-06-assistant-surface-selection.journey.xml",
+      "entryPoint": "WorkbenchScreen 顶部助理操作入口",
+      "criticalPaths": [
+        "展开浮动对话层 FloatingConversationPanel",
+        "体验浮动面板内的对话与附件操作",
+        "最小化或关闭浮动面板",
+        "检查底层工作台的几何连续性与生命周期保留"
+      ],
+      "acceptanceCriteria": [
+        "浮动面板状态可打断、可逆，且内容保持挂载",
+        "不越权假造系统录屏或无感截屏权限",
+        "关闭浮动层后主窗口焦点与状态无损"
+      ],
+      "testData": {}
+    },
+    {
+      "id": "MOD-07",
+      "name": "平台设置与安全控制",
+      "journeyFile": "MOD-07-platform-settings.journey.xml",
+      "entryPoint": "MainActivity 顶部平台设置按钮",
+      "criticalPaths": [
+        "展开设置与平台管理界面",
+        "切换主题模式 (浅色/深色/跟随系统)",
+        "切换减弱动态效果开关",
+        "开发者信任模式二次确认弹窗",
+        "触发插件紧急熔断机制"
+      ],
+      "acceptanceCriteria": [
+        "主题切换即时生效，跟随 Monet 动态配色",
+        "减弱动态开启后动画立即切至直出/淡入淡出",
+        "紧急熔断触发后已运行插件全部被终止并标红"
+      ],
+      "testData": {}
+    },
+    {
+      "id": "MOD-08",
+      "name": "平台审计日志与能力采集",
+      "journeyFile": "MOD-08-audit-logging.journey.xml",
+      "entryPoint": "PlatformSettingsScreen 审计记录卡片",
+      "criticalPaths": [
+        "进入审计流水列表展示区",
+        "查看本地安全记录 (网关操作/权限调用/熔断事实)",
+        "核验事件条目结构与时间戳单调性",
+        "验证能力采集器状态正常"
+      ],
+      "acceptanceCriteria": [
+        "审计事件本地不可篡改持久化存储",
+        "每条事件清晰记录 actor, action, timestamp",
+        "列表滚动无闪烁，空列表时诚实展现空状态"
+      ],
+      "testData": {}
+    }
+  ],
+  "abnormalScenarios": [
+    {
+      "id": "EXC-01",
+      "name": "断网无连接异常场景",
+      "journeyFile": "EXC-01-network-offline.journey.xml",
+      "category": "Network",
+      "triggerCondition": "模拟网络断开、飞行模式或指定不可达网关 IP",
+      "expectedBehavior": "捕获网络连接不可达，展示可读失败提示与重试按钮，严禁闪退或无限等待",
+      "testData": {
+        "unreachableUrl": "https://192.0.2.1:8443"
+      }
+    },
+    {
+      "id": "EXC-02",
+      "name": "弱网高延迟场景",
+      "journeyFile": "EXC-02-weak-network-latency.journey.xml",
+      "category": "Network",
+      "triggerCondition": "模拟高延迟网络连接 (RTT > 5000ms) 或丢包率 20%",
+      "expectedBehavior": "展示不定加载指示器，保持主线程响应，禁止触发系统 ANR 弹框",
+      "testData": {
+        "slowUrl": "https://slow-gateway.example.local:8443"
+      }
+    },
+    {
+      "id": "EXC-03",
+      "name": "权限拒绝异常场景",
+      "journeyFile": "EXC-03-permission-denial.journey.xml",
+      "category": "Permission",
+      "triggerCondition": "用户在系统权限弹窗中选择拒绝授权 (相机/存储)",
+      "expectedBehavior": "应用优雅降级回退，提示权限未授予，不抛出未捕获 SecurityException",
+      "testData": {}
+    },
+    {
+      "id": "EXC-04",
+      "name": "后台切换与生命周期恢复场景",
+      "journeyFile": "EXC-04-background-lifecycle.journey.xml",
+      "category": "Lifecycle",
+      "triggerCondition": "编辑草稿中途按 Home 键切至后台，再恢复至前台",
+      "expectedBehavior": "输入框草稿文本与当前会话状态完好保留，不出现白屏重建",
+      "testData": {
+        "draftText": "Draft preserving test: checking lifecycle survival under process pause."
+      }
+    },
+    {
+      "id": "EXC-05",
+      "name": "快速重复点击与防抖测试",
+      "journeyFile": "EXC-05-rapid-repeated-clicks.journey.xml",
+      "category": "Stress",
+      "triggerCondition": "在 100ms 间隔内连续点击发送按钮 5 次",
+      "expectedBehavior": "防抖机制生效，仅发出单次有效请求，时间线不出现重复消息",
+      "testData": {
+        "repeatCount": 5
+      }
+    },
+    {
+      "id": "EXC-06",
+      "name": "数据为空与空状态展示场景",
+      "journeyFile": "EXC-06-empty-data-state.journey.xml",
+      "category": "Data",
+      "triggerCondition": "全新安装或清除数据后，各数据源返回空集合",
+      "expectedBehavior": "展示语义明确的空状态占位与操作引导，杜绝白屏与未空指针崩溃",
+      "testData": {}
+    },
+    {
+      "id": "EXC-07",
+      "name": "非法输入与边界值场景",
+      "journeyFile": "EXC-07-illegal-input-boundary.journey.xml",
+      "category": "Boundary",
+      "triggerCondition": "输入非 HTTPS 协议、畸形域名、特殊注入字符或留空必填字段",
+      "expectedBehavior": "客户端本地即时高亮校验拦截，禁止发起非法请求",
+      "testData": {
+        "invalidUrl1": "http://insecure.plain.http:8080",
+        "invalidUrl2": "not-a-valid-url"
+      }
+    },
+    {
+      "id": "EXC-08",
+      "name": "接口超时与服务端故障响应场景",
+      "journeyFile": "EXC-08-api-timeout-error.journey.xml",
+      "category": "Server",
+      "triggerCondition": "模拟网关返回 500/502/504 或 SSE 数据流中途意外断开",
+      "expectedBehavior": "解析协议错误码并在状态卡片呈现明确原因，提供重试按键",
+      "testData": {
+        "serverErrorUrl": "https://server-error-500.example.local:8443"
+      }
+    }
+  ],
+  "executionOrder": [
+    "MOD-01",
+    "MOD-02",
+    "MOD-03",
+    "MOD-04",
+    "MOD-05",
+    "MOD-06",
+    "MOD-07",
+    "MOD-08",
+    "EXC-01",
+    "EXC-02",
+    "EXC-03",
+    "EXC-04",
+    "EXC-05",
+    "EXC-06",
+    "EXC-07",
+    "EXC-08"
+  ],
+  "reporting": {
+    "outputDirectory": "apps/android/journeys/reports",
+    "artifacts": {
+      "screenshots": "screenshots/{case_id}_{step_index}.png",
+      "logcat": "logs/{case_id}_logcat.txt",
+      "crashDumps": "logs/{case_id}_tombstone.txt",
+      "summaryJson": "summary.json",
+      "markdownReport": "TEST_EXECUTION_REPORT.md"
+    }
+  }
+}

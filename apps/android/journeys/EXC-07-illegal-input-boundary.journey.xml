@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="EXC-07: 非法输入与边界值场景">
+  <description>
+    验证用户在网关地址栏输入非 HTTPS 协议、畸形域名、特殊注入字符，或者输入空账号、空密码时，输入校验立即触发拦截，给出明确的错误高亮和辅助说明，禁止发起非法网络请求。
+  </description>
+  <actions>
+    <action>Verify that the "网关地址" input field is visible on screen</action>
+    <action>Click the "网关地址" input field</action>
+    <action>Type "http://insecure.plain.http:8080" into the "网关地址" field</action>
+    <action>Verify that the field displays validation error stating HTTPS is required</action>
+    <action>Click the "网关地址" input field</action>
+    <action>Type "not-a-valid-url" into the "网关地址" field</action>
+    <action>Verify that the "连接至网关" button is disabled or blocks submission</action>
+    <action>Click the "网关地址" input field</action>
+    <action>Type "https://valid.gateway.local" into the "网关地址" field</action>
+    <action>Verify that leaving username or password empty prevents login</action>
+  </actions>
+</journey>
