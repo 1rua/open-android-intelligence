@@ -96,6 +96,13 @@ class PasswordVerifierDouble:
         )
 
 
+def core_schema_hash() -> str:
+    """The real contract digest, so negotiation tests exercise the shipped check."""
+    from open_android_intelligence_gateway.core import ContractRegistry
+
+    return ContractRegistry().core_schema_hash
+
+
 def make_verified_request(value: Mapping) -> VerifiedGatewayRequest:
     context = value["context"]
     if not isinstance(context, VerifiedRequestContext):

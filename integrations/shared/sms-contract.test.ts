@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createHermesAdapter, HERMES_PLUGIN_MANIFEST } from "../hermes/adapter.js";
+// The Hermes adapter of this name is the legacy TypeScript fixture; the product
+// Hermes plugin is the native Python package and does not implement these
+// shared provider operations.
+import { createHermesAdapter, HERMES_PLUGIN_MANIFEST } from "../../legacy/integrations/hermes-v1/adapter.js";
 import { createOpenClawAdapter, OPENCLAW_PLUGIN_MANIFEST } from "../openclaw/adapter.js";
 import {
   FROZEN_SMS_TOOLS,

@@ -63,16 +63,26 @@ def test_admin_panel_and_local_cli_share_confirmed_write_semantics(tmp_path):
     assert program.children[0].description_text == "Manage Open Android Intelligence Gateway accounts"
     assert "--confirm-local" in create.options
     assert "--confirm-local" in delete.options
+    assert "--password <password>" in create.options
 
-    without_confirmation = panel.create_account({"accountId": "account-a"})
+    without_confirmation = panel.create_account({"accountId": "account-a", "password": "pw"})
     assert without_confirmation["error"]["code"] == "LOCAL_CONFIRMATION_REQUIRED"
-    assert create.action_handler("account-a", {})["error"]["code"] == "LOCAL_CONFIRMATION_REQUIRED"
+    assert create.action_handler("account-a", {"password": "pw"})["error"]["code"] == "LOCAL_CONFIRMATION_REQUIRED"
 
-    ui_create = panel.create_account({"accountId": "account-a", "localConfirmation": True})
-    cli_create = create.action_handler("account-a", {"confirmLocal": True})
+    without_password = panel.create_account({"accountId": "account-a", "localConfirmation": True})
+    assert without_password["error"]["code"] == "PASSWORD_REQUIRED"
+
+    ui_create = panel.create_account({"accountId": "account-a", "password": "pw", "localConfirmation": True})
+    cli_create = create.action_handler("account-a", {"confirmLocal": True, "password": "pw"})
+    assert ui_create["ok"] is True
     assert cli_create == ui_create
     assert status.action_handler() == panel.status()
     assert run_admin_command(["account", "status"], service=service) == panel.status()
+
+    # Deletion is a real resource-level operation on both surfaces, and it is
+    # gated by the same read-only and local-confirmation rules as creation.
+    assert delete.action_handler("account-a", {"confirmLocal": True})["ok"] is True
+    assert panel.delete_account({"accountId": "account-a", "localConfirmation": True})["error"]["code"] == "ACCOUNT_NOT_FOUND"
 
 
 def test_incompatible_hermes_host_keeps_panel_and_cli_read_only(tmp_path):

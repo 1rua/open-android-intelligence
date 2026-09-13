@@ -15,11 +15,13 @@ from .admin import (
     normalize_host_api,
 )
 from .adapter import (
+    AccountPasswordVerifier,
     GatewayRequestVerifier,
     LocalCredentialVerifier,
     OpenAndroidPlatformAdapter,
     create_gateway_request_verifier,
 )
+from .account_paths import GATEWAY_DIRECTORY_NAME
 from .core import GatewayCore, create_gateway_core
 from .http import EXPOSURE_MODES, GatewayExposure, create_gateway_exposure
 
@@ -142,26 +144,36 @@ class GatewayServices:
 
 
 def _storage_root(ctx: Any) -> Path | None:
+    """The host data directory composed with the Gateway directory name.
+
+    Returning None lets the core fall back to its own explicit default
+    (configuration, then the Hermes home) rather than to a shell-relative path.
+    """
     value = _attr(ctx, "plugin_data_dir", "pluginDataDir", default=None)
     if value is None:
         return None
-    return Path(value).resolve() / "open-android-intelligence-gateway" / "accounts"
+    return Path(value).resolve() / GATEWAY_DIRECTORY_NAME / "accounts"
 
 
 def compose_gateway_services(ctx: Any) -> GatewayServices:
     host_api = normalize_host_api(_attr(ctx, "host_api", "hostApi", default=None))
     host_version = _attr(ctx, "host_version", "hostVersion", default=None)
     core = _attr(ctx, "gateway_core", "gatewayCore", default=None)
+    verifier = _attr(ctx, "credential_verifier", "credentialVerifier", default=None)
     if core is None:
-        verifier = _attr(ctx, "credential_verifier", "credentialVerifier", default=None)
-        if verifier is None:
-            verifier = LocalCredentialVerifier()
         core = create_gateway_core(
             storage_root=_storage_root(ctx),
             secret_store=_attr(ctx, "secret_store", "secretStore", default=None),
             contract_root=_attr(ctx, "contract_root", "contractRoot", default=None),
             credential_verifier=verifier,
         )
+    if verifier is None:
+        # Password login is checked against the digest the local admin surface
+        # recorded for that account. A host that keeps credentials elsewhere
+        # supplies its own verifier; without one, an account that was never
+        # given a password simply cannot be logged into.
+        verifier = AccountPasswordVerifier(core)
+        core.credential_verifier = verifier
     admin = create_admin_service(core=core, host_version=host_version, host_api=host_api)
     config = _attr(ctx, "plugin_config", "pluginConfig", default={}) or {}
     mode = config.get("exposureMode", "host-route") if isinstance(config, Mapping) else "host-route"
@@ -201,10 +213,15 @@ def register(ctx: Any) -> None:
                     return OpenAndroidPlatformAdapter(config, services)
 
                 def _check_deps() -> bool:
-                    return True
+                    # This answers for the plugin's own wiring, not for the host's
+                    # mood: the platform needs its core and its exposure routes.
+                    return services.core is not None and services.exposure is not None
 
                 def _is_connected(config: Any) -> bool:
-                    return True
+                    # Outside the verified host API range every authenticated
+                    # request is answered with HOST_INCOMPATIBLE, so the platform
+                    # is not usable and must not report itself as connected.
+                    return _check_deps() and not services.admin.read_only
 
                 def _setup_fn() -> None:
                     print("\n  ─── 📱 Open Android Intelligence Gateway 配置向导 ───")
@@ -251,6 +268,19 @@ def register(ctx: Any) -> None:
             register_route({"path": route.path, "auth": route.auth, "match": route.match, "handler": route.handler})
     register_cli_cmd = _attr(ctx, "register_cli_command", "registerCliCommand", default=None)
     if callable(register_cli_cmd):
+        def _account_directories() -> list[str]:
+            root = Path(services.core.storage_root)
+            if not root.is_dir():
+                return []
+            return sorted(directory.name for directory in root.iterdir() if directory.is_dir())
+
+        def _report(result: Mapping[str, Any]) -> None:
+            if result.get("ok"):
+                print(f"✅ {result.get('operation')} 完成")
+                return
+            error = result.get("error") or {}
+            print(f"❌ {result.get('operation')} 失败：{error.get('code')}")
+
         def _setup_cli_parser(parser: Any) -> None:
             subs = parser.add_subparsers(dest="open_android_intelligence_subcommand", required=False)
 
@@ -260,54 +290,65 @@ def register(ctx: Any) -> None:
             p_create = acct_subs.add_parser("create", help="Create a new Gateway account")
             p_create.add_argument("--username", "-u", default=None, help="Username or Account ID")
             p_create.add_argument("account_id", nargs="?", default=None, help="Account ID")
-            p_create.add_argument("--password", "-p", default=None, help="Account password")
-            p_create.add_argument("--confirm-local", action="store_true", default=True, help="Confirm write on local host")
+            p_create.add_argument(
+                "--password", "-p", required=True,
+                help="Account password; only its scrypt digest is stored",
+            )
+            p_create.add_argument(
+                "--confirm-local", action="store_true", default=False,
+                help="Confirm this write on the local host; required for every account write",
+            )
 
             acct_subs.add_parser("status", help="Show Gateway status")
             acct_subs.add_parser("list", help="List Gateway accounts")
 
-            p_del = acct_subs.add_parser("delete", help="Delete a Gateway account")
+            p_del = acct_subs.add_parser("delete", help="Delete a Gateway account and all of its data")
             p_del.add_argument("account_id", help="Account ID to delete")
-            p_del.add_argument("--confirm-local", action="store_true", default=True, help="Confirm write on local host")
+            p_del.add_argument(
+                "--confirm-local", action="store_true", default=False,
+                help="Confirm this write on the local host; required for every account write",
+            )
 
             subs.add_parser("status", help="Show Gateway status")
 
         def _dispatch_cli(args: Any) -> None:
             sub = getattr(args, "open_android_intelligence_subcommand", None)
             acct_act = getattr(args, "account_action", None)
-
-            storage_root = services.core.storage_root
-            if storage_root is None:
-                try:
-                    from hermes_constants import get_hermes_home
-                    storage_root = get_hermes_home() / "open-android-intelligence-gateway" / "accounts"
-                except Exception:
-                    storage_root = Path.home() / ".hermes" / "open-android-intelligence-gateway" / "accounts"
+            confirmed = bool(getattr(args, "confirm_local", False))
 
             if sub == "account" and acct_act == "create":
                 account_id = getattr(args, "username", None) or getattr(args, "account_id", None)
                 if not account_id:
-                    print("❌ 错误：请提供账号名称或 ID，例如：hermes open-android-intelligence account create --username <用户名>")
+                    print("❌ 错误：请提供账号名称或 ID，例如："
+                          "hermes open-android-intelligence account create --username <用户名> "
+                          "--password <密码> --confirm-local")
                     return
-                try:
-                    acct = services.core.open_gateway_account(account_id)
-                    acct.close()
-                    print(f"✅ 成功创建 Open Android Intelligence Gateway 账号：{account_id}")
+                # Every account write goes through the one management service, so
+                # the read-only gate and the local confirmation are enforced in
+                # exactly one place for both the CLI and the host panel.
+                result = services.admin.execute({
+                    "command": "account.create",
+                    "input": {
+                        "accountId": str(account_id),
+                        "password": str(getattr(args, "password", "") or ""),
+                        "localConfirmation": confirmed,
+                    },
+                })
+                _report(result)
+                if result.get("ok"):
                     print(f"  • 账号标识 (Account ID): {account_id}")
-                    print(f"  • 数据存储目录: {storage_root}/{account_id}")
+                    print(f"  • 数据存储根目录: {services.core.storage_root}")
                     print("\n📱 手机端连接指南：")
                     print("  1. 打开 Android 手机端 Open Android Intelligence App。")
-                    print(f"  2. 连接到此 Gateway 并使用账号 '{account_id}' 登录。")
-                except Exception as exc:
-                    print(f"❌ 创建账号失败: {exc}")
+                    print(f"  2. 连接到此 Gateway 并使用账号 '{account_id}' 与刚设置的密码登录。")
                 return
 
             if sub == "account" and acct_act == "list":
-                if storage_root and Path(storage_root).is_dir():
-                    accounts = [d.name for d in Path(storage_root).iterdir() if d.is_dir()]
+                accounts = _account_directories()
+                if accounts:
                     print(f"📱 当前已配置的 Gateway 账号 ({len(accounts)}):")
-                    for acct in accounts:
-                        print(f"  • {acct}")
+                    for account in accounts:
+                        print(f"  • {account}")
                 else:
                     print("📱 当前尚未配置任何 Gateway 账号。")
                 return
@@ -317,24 +358,21 @@ def register(ctx: Any) -> None:
                 if not account_id:
                     print("❌ 错误：请指定要删除的账号 ID")
                     return
-                target = Path(storage_root) / account_id if storage_root else None
-                if target and target.is_dir():
-                    import shutil
-                    shutil.rmtree(target)
-                    print(f"✅ 账号 '{account_id}' 及其本地数据已删除。")
-                else:
-                    print(f"❌ 账号 '{account_id}' 不存在。")
+                _report(services.admin.execute({
+                    "command": "account.delete",
+                    "accountId": str(account_id),
+                    "localConfirmation": confirmed,
+                }))
                 return
 
             status_res = services.admin.status()
             print("📱 Open Android Intelligence Gateway 运行状态:")
             print("  • 协议版本: Gateway Protocol v2 (2.0)")
-            print(f"  • 数据存储根目录: {storage_root}")
-            if storage_root and Path(storage_root).is_dir():
-                accounts = [d.name for d in Path(storage_root).iterdir() if d.is_dir()]
-                print(f"  • 已配置账号 ({len(accounts)}): {', '.join(accounts) if accounts else '无'}")
-            else:
-                print("  • 已配置账号: 无")
+            print(f"  • 数据存储根目录: {services.core.storage_root}")
+            if status_res.get("readOnly"):
+                print("  • 宿主兼容性: 未验证（管理入口只读，外部端点返回 HOST_INCOMPATIBLE）")
+            accounts = _account_directories()
+            print(f"  • 已配置账号 ({len(accounts)}): {', '.join(accounts) if accounts else '无'}")
 
         register_cli_cmd(
             name="open-android-intelligence",

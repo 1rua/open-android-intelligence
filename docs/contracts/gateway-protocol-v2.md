@@ -91,10 +91,11 @@ V2 是新协议，不兼容 Bridge Protocol v1。所有端点必须使用 HTTPS�
   },
   "features": {
     "auth": ["password", "account-invitation", "refresh", "device-key"],
-    "messages": ["chat-v1", "message-batches-v1"],
-    "attachments": ["staged-sha256-v1", "screen-selection-v1"],
+    "messages": ["chat-v1"],
+    "attachments": ["staged-sha256-v1"],
     "events": ["sse-cursor-v1"],
-    "deviceRequests": ["risk-queue-v1"]
+    "deviceRequests": ["risk-queue-v1"],
+    "conversationUi": ["agent-command-catalog-v1", "message-batches-v1"]
   },
   "schemaHashes": {
     "core": "sha256:..."
@@ -108,11 +109,12 @@ V2 是新协议，不兼容 Bridge Protocol v1。所有端点必须使用 HTTPS�
 {
   "protocol": { "major": 2, "minor": 0 },
   "features": {
-    "auth": ["password", "account-invitation", "refresh", "device-key"],
-    "messages": "message-batches-v1",
-    "attachments": "screen-selection-v1",
+    "auth": ["password", "refresh"],
+    "messages": "chat-v1",
+    "attachments": "staged-sha256-v1",
     "events": "sse-cursor-v1",
-    "deviceRequests": "risk-queue-v1"
+    "deviceRequests": "risk-queue-v1",
+    "conversationUi": ["agent-command-catalog-v1"]
   },
   "limits": {
     "maxSingleAttachmentBytes": 26214400,
@@ -130,6 +132,20 @@ V2 是新协议，不兼容 Bridge Protocol v1。所有端点必须使用 HTTPS�
 ```
 
 协议主版本不同、核心 Schema 不兼容、未知安全字段或未知高风险能力时返回 `PROTOCOL_INCOMPATIBLE`。次版本差异只启用双方声明的交集。协商结果由 `negotiationId` 绑定后续认证会话，客户端不能在单次请求中自行扩大功能。
+
+`messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力（命令目录、批消息、换行、生成取消、会话镜像、附件状态）放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
+
+`schemaHashes.core` 是具名 Schema 文档集合的摘要，算法固定为：
+
+```text
+core   = "sha256:" + hex(SHA-256(UTF-8(domain + "\n" + 每行 "<文件名>\tsha256:<该文件字节的 SHA-256 十六进制>" + "\n")))
+domain = "open-android-intelligence/v2/core-schema-hash"
+文件集合按文件名字典序固定为：
+  attachment.schema.json, conversation.schema.json, device-request.schema.json,
+  envelope.schema.json, event.schema.json, negotiate.schema.json, session.schema.json
+```
+
+客户端与 Gateway 各自从本地契约资产计算该值；不相等即为 `PROTOCOL_INCOMPATIBLE`。任何一方都不得使用占位值，也不得省略该字段。
 
 ### 4.1 动态 Schema catalog 与可信分派
 

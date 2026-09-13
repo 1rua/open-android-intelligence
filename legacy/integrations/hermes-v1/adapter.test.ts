@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createHermesAdapter, HERMES_PLUGIN_MANIFEST } from "./adapter.js";
-import { fixtureBinding, fixtureContext, fixtureZeroRetentionEvidence } from "../shared/adapter.js";
+import {
+  fixtureBinding,
+  fixtureContext,
+  fixtureZeroRetentionEvidence,
+} from "../../../integrations/shared/adapter.js";
 
 describe("Hermes adapter", () => {
   it("uses one authoritative chat/tool/event profile and preserves binding", async () => {

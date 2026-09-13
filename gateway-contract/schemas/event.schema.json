@@ -5,7 +5,7 @@
     "event": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["correlationId", "occurredAt", "type", "payload"],
+      "required": ["correlationId", "occurredAt", "payload"],
       "properties": {
         "correlationId": {
           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
@@ -14,15 +14,17 @@
           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/utcMillis"
         },
         "type": {
+          "$comment": "Event type is carried by the validated SSE event line (contract §9); this mirror is optional and lists the V2 event types.",
           "type": "string",
           "enum": [
-            "conversation.message.accepted",
-            "conversation.generation.cancelled",
-            "conversation.command.result",
-            "conversation.title.updated",
-            "conversation.timeline.upsert",
-            "conversation.timeline.tombstoned",
-            "conversation.snapshot.invalidated"
+            "conversation.message.delta",
+            "conversation.message.completed",
+            "device.requested",
+            "device.request.cancel.requested",
+            "pairing.grant.changed",
+            "session.revoked",
+            "attachment.acknowledged",
+            "gateway.notice"
           ]
         },
         "payload": {

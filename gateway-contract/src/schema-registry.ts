@@ -67,9 +67,14 @@ const definitions: Record<GatewaySchemaName, readonly [SchemaDocument, string]> 
   "session.refresh": [sessionDocument as SchemaDocument, "refresh"],
   "session.device": [sessionDocument as SchemaDocument, "device"],
   "conversation.create": [conversationDocument as SchemaDocument, "create"],
-  "conversation.commandCatalog": [commandCatalogDocument as SchemaDocument, "catalog"],
+  // The catalog and mirror-sync request shapes live in conversation.schema.json.
+  // command-catalog.schema.json and conversation-snapshot.schema.json describe the
+  // discovery response and the snapshot response, which are not GatewaySchemaName
+  // targets here; mapping them by name made this registry reject the very vectors
+  // the contract fixtures declare valid.
+  "conversation.commandCatalog": [conversationDocument as SchemaDocument, "commandCatalog"],
   "conversation.generationCancel": [conversationDocument as SchemaDocument, "generationCancel"],
-  "conversation.mirrorSync": [conversationSnapshotDocument as SchemaDocument, "mirrorSync"],
+  "conversation.mirrorSync": [conversationDocument as SchemaDocument, "mirrorSync"],
   "message.create": [conversationDocument as SchemaDocument, "messageCreate"],
   "attachment.create": [attachmentDocument as SchemaDocument, "create"],
   "attachment.status": [attachmentDocument as SchemaDocument, "status"],

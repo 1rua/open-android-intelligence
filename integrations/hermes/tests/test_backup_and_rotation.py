@@ -14,6 +14,7 @@ from open_android_intelligence_gateway.identity_rotation import IdentityRotation
 from test_support import (
     IdentityProofVerifierDouble,
     PasswordVerifierDouble,
+    core_schema_hash,
     make_secret_store,
     trust_core,
 )
@@ -232,7 +233,7 @@ def test_identity_rotation_updates_the_tls_fingerprint_atomically(tmp_path):
                 "attachments": ["staged-sha256-v1"], "events": ["sse-cursor-v1"],
                 "deviceRequests": ["risk-queue-v1"],
             },
-            "schemaHashes": {"core": "sha256:" + "a" * 64},
+            "schemaHashes": {"core": core_schema_hash()},
         },
         rotated,
     )

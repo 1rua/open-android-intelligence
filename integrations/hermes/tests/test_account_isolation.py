@@ -15,6 +15,7 @@ from open_android_intelligence_gateway.core import (
     GatewayError,
     GatewayResponse,
     ContractRegistry,
+    SHARED_VECTOR_FILE_NAMES,
     VerifiedGatewayRequest,
     VerifiedRequestContext,
     create_gateway_core,
@@ -22,7 +23,7 @@ from open_android_intelligence_gateway.core import (
 from open_android_intelligence_gateway.audit import AuditStore
 from open_android_intelligence_gateway.http import DEFAULT_MAX_BODY_BYTES
 from open_android_intelligence_gateway.plugin import register
-from test_support import make_secret_store, trust_core
+from test_support import core_schema_hash, make_secret_store, trust_core
 
 
 _real_create_gateway_core = create_gateway_core
@@ -167,23 +168,23 @@ def test_consumes_the_shared_schema_and_vector_registry(tmp_path):
 
     results = core.run_shared_vectors()
     vector_root = Path(__file__).resolve().parents[3] / "gateway-contract" / "vectors"
-    vector_files = {
-        "request-signatures.json", "protocol-negotiation.json", "auth-sessions.json",
-        "attachments.json", "sse-events.json", "device-requests.json", "conversation-ui.json",
-    }
+    contract_files = set(SHARED_VECTOR_FILE_NAMES)
     discovered = {
         path.name for path in vector_root.glob("*.json")
         if not path.name.endswith(".schema.json") and path.name != "dispatched-schema-fixtures.json"
     }
     cases = [
-        case for name in vector_files
+        case for name in SHARED_VECTOR_FILE_NAMES
         for case in json.loads((vector_root / name).read_text(encoding="utf-8"))["cases"]
     ]
 
-    assert discovered == vector_files
-    assert len(cases) == 28
-    assert len({case["id"] for case in cases}) == 28
-    assert len(results) == 28
+    # Contract section 16 enumerates exactly six shared vector documents and a
+    # closed `schemaName` set; the conversation-UI document is a local suite.
+    assert contract_files <= discovered
+    assert discovered - contract_files == {"conversation-ui.json"}
+    assert len(cases) == 24
+    assert len({case["id"] for case in cases}) == 24
+    assert len(results) == 24
     assert {result["status"] for result in results} == {"pass"}
     assert {result["implementation"] for result in results} == {"hermes-python"}
 
@@ -717,7 +718,7 @@ def test_gateway_core_negotiates_the_shared_protocol_schema_and_feature_intersec
                 "attachments": ["staged-sha256-v1"], "events": ["sse-cursor-v1"],
                 "deviceRequests": ["risk-queue-v1"],
             },
-            "schemaHashes": {"core": "sha256:" + "a" * 64},
+            "schemaHashes": {"core": core_schema_hash()},
         },
     })
 
@@ -863,7 +864,8 @@ def test_dispatched_registry_only_accepts_the_fixed_binding_set(tmp_path):
     ) is False
 
 
-def _negotiate_body(core, schema_hash="sha256:" + "a" * 64):
+def _negotiate_body(core, schema_hash=None):
+    schema_hash = schema_hash or core_schema_hash()
     return {
         "negotiationId": "neg_pre_auth",
         "protocol": {"major": 2, "minor": 0},

@@ -13,11 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Set
 
-from .admin import HostApiCompatibility, is_host_api_compatible
 from .core import (
     VerifiedGatewayRequest,
     VerifiedRequestContext,
     canonicalize_target,
+    iso_millis,
     request_signature_preimage,
 )
 
@@ -114,16 +114,19 @@ except ImportError:
 logger = logging.getLogger("hermes.platforms.open_android")
 
 DEFAULT_PORT = 8045
-DEFAULT_HOST = "0.0.0.0"
+# Loopback by default: contract section 3 requires a verified TLS terminator in
+# front of password login, so a bare listener must not be reachable off-host.
+DEFAULT_HOST = "127.0.0.1"
 
 
 class LocalCredentialVerifier:
-    """Default single-tenant credential verifier for local development/sandbox.
+    """Sandbox credential verifier that must be supplied explicitly.
 
-    Accepts any non-empty password as long as the username matches the account.
-    It deliberately has no power to bring an account into existence: the HTTP
-    boundary refuses unknown accounts before this is ever called, so a
-    username nobody registered on this host is an authentication failure.
+    Accepts any non-empty password as long as the username matches the account,
+    which is only appropriate for a local sandbox driven without provisioning a
+    password. It is never selected by default: composed Hermes deployments use
+    :class:`AccountPasswordVerifier`, which reads the digest recorded by the
+    local admin surface. It has no power to bring an account into existence.
     """
 
     def verify(self, account_id: str, username: str, password: str, installation: Mapping[str, Any]) -> bool:
@@ -132,6 +135,39 @@ class LocalCredentialVerifier:
         if not isinstance(installation, Mapping) or not installation.get("installationId"):
             return False
         return str(username).strip() == str(account_id).strip()
+
+
+class AccountPasswordVerifier:
+    """Verifies the password the local admin surface recorded for the account.
+
+    Fails closed on every other case: unknown account, account with no recorded
+    password, empty password, or a username that does not address the account.
+    An account nobody gave a password to cannot be logged into at all.
+    """
+
+    def __init__(self, core: Any):
+        self._core = core
+
+    def verify(self, account_id: str, username: str, password: str, installation: Mapping[str, Any]) -> bool:
+        if not isinstance(account_id, str) or not account_id:
+            return False
+        if not isinstance(username, str) or username.strip() != account_id:
+            return False
+        if not isinstance(password, str) or not password:
+            return False
+        if not isinstance(installation, Mapping) or not installation.get("installationId"):
+            return False
+        exists = getattr(self._core, "account_exists", None)
+        if callable(exists) and not exists(account_id):
+            return False
+        try:
+            account = self._core.open_gateway_account(account_id)
+        except Exception:
+            return False
+        try:
+            return bool(account.credentials.verify_password(password))
+        finally:
+            account.close()
 
 
 # The authenticated header set of contract §6.1. A header that the protocol
@@ -194,15 +230,13 @@ def _b64url_decode(value: str) -> bytes:
 
 
 def _epoch_millis(value: str) -> int:
-    """Contract timestamps are fixed-format UTC with exactly three digits."""
-    try:
-        return int(datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp() * 1000)
-    except ValueError:
-        try:
-            return int(datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
-                       .replace(tzinfo=timezone.utc).timestamp() * 1000)
-        except ValueError:
-            return int(datetime.now(timezone.utc).timestamp() * 1000)
+    """Contract timestamps are fixed-format UTC with exactly three digits.
+
+    A value that is not in that form is a caller bug: substituting the current
+    time would silently move an event on the phone's timeline.
+    """
+    parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
 
 
 def _ed25519_verify(public_key: str, message: bytes, signature: str) -> bool:
@@ -360,6 +394,32 @@ class GatewayRequestVerifier:
             account.close()
 
 
+EVENT_STREAM_PATH = "/open-android-intelligence/v2/events"
+# Heartbeats are SSE comments: they carry no event id, so a client cannot mistake
+# one for a resumable event.
+SSE_HEARTBEAT = b": ping\n\n"
+SSE_HEARTBEAT_SECONDS = 15.0
+SSE_QUEUE_SIZE = 100
+
+
+def _sse_frame(event: Mapping[str, Any]) -> bytes:
+    """One SSE frame in the shape contract section 9 defines.
+
+    The `event:` line carries the event type, so `data:` holds only the
+    correlation id, the timestamp and the payload the phone decodes.
+    """
+    data = {
+        "correlationId": event.get("correlationId"),
+        "occurredAt": event.get("occurredAt"),
+        "payload": event.get("payload") or {},
+    }
+    return (
+        f"id: {event.get('eventId')}\n"
+        f"event: {event.get('eventType')}\n"
+        f"data: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+    ).encode("utf-8")
+
+
 def _raw_body(input: Mapping[str, Any]) -> bytes:
     body = input.get("body")
     if body is None:
@@ -404,12 +464,17 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             self._port = DEFAULT_PORT
 
         self._host = str(extra.get("host") or os.getenv("OPEN_ANDROID_GATEWAY_HOST") or DEFAULT_HOST)
-        self._account_id = str(extra.get("account_id") or os.getenv("OPEN_ANDROID_ACCOUNT_ID") or "djbd").strip()
+        # No account is guessed: the host names the account it delivers for, and
+        # outbound delivery fails loudly instead of writing into an assumed one.
+        configured_account = extra.get("account_id") or os.getenv("OPEN_ANDROID_ACCOUNT_ID")
+        self._account_id = str(configured_account).strip() if configured_account else None
 
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
-        self._active_sse_queues: Set[asyncio.Queue] = set()
+        # One subscriber set per account: an event is only ever handed to the
+        # stream of the account that produced it.
+        self._active_sse_queues: Dict[str, Set[asyncio.Queue]] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the Gateway Protocol v2 HTTP & SSE server."""
@@ -426,17 +491,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             max_bytes = 10485760
             if self.services and hasattr(self.services, "exposure") and self.services.exposure.routes:
                 max_bytes = getattr(self.services.exposure.routes[0]._services, "max_body_bytes", max_bytes)
-                for r in self.services.exposure.routes:
-                    srv = getattr(r, "_services", None)
-                    if srv is not None and not is_host_api_compatible(srv.host_version, srv.host_api):
-                        compat = HostApiCompatibility("0.1.0", "99.0.0", "0000000000000000000000000000000000000000")
-                        try:
-                            object.__setattr__(srv, "host_version", "1.0.0")
-                            object.__setattr__(srv, "host_api", compat)
-                        except Exception:
-                            setattr(srv, "host_version", "1.0.0")
-                            setattr(srv, "host_api", compat)
 
+            # A host outside the verified API range is never patched into looking
+            # compatible: the routes answer HOST_INCOMPATIBLE and the management
+            # surface stays read-only until a real range is configured.
             self._app = web.Application(client_max_size=max_bytes)
 
             # Health probe
@@ -483,9 +541,13 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send message from Hermes AI agent back to the mobile client."""
+        if not self._account_id:
+            # Without a configured account there is nothing to deliver into: a
+            # guessed account would write an agent reply into someone else's data.
+            return SendResult(success=False, error="ACCOUNT_NOT_CONFIGURED", retryable=False)
         try:
             account = self.services.core.open_gateway_account(self._account_id)
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = iso_millis()
             message_id = f"msg_{uuid.uuid4().hex[:12]}"
             turn_id = f"turn_{uuid.uuid4().hex[:12]}"
 
@@ -510,20 +572,16 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         accumulated_text: str,
         occurred_at: Optional[str] = None,
     ) -> None:
-        """Push one partial assistant message over SSE.
+        """Publish one partial assistant message.
 
         The phone treats a timeline event as an upsert, not an append, so the
-        frame carries everything generated so far rather than only the newest
+        payload carries everything generated so far rather than only the newest
         fragment. Hosts driving a token stream call this per chunk and then
         finish with [complete_message].
         """
-        await self._broadcast_sse(self._message_frame(
-            event_type="conversation.message.delta",
-            chat_id=chat_id,
-            message_id=message_id,
-            text=accumulated_text,
-            occurred_at=occurred_at,
-        ))
+        await self._publish_event(
+            "conversation.message.delta", chat_id, message_id, accumulated_text, occurred_at,
+        )
 
     async def complete_message(
         self,
@@ -532,45 +590,60 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         content: str,
         occurred_at: Optional[str] = None,
     ) -> None:
-        """Broadcast the final assistant message for one turn."""
-        await self._broadcast_sse(self._message_frame(
-            event_type="conversation.message.completed",
-            chat_id=chat_id,
-            message_id=message_id,
-            text=content,
-            occurred_at=occurred_at,
-        ))
+        """Publish the final assistant message for one turn."""
+        await self._publish_event(
+            "conversation.message.completed", chat_id, message_id, content, occurred_at,
+        )
 
-    def _message_frame(
+    async def _publish_event(
         self,
         event_type: str,
         chat_id: str,
         message_id: str,
         text: str,
         occurred_at: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """One SSE frame in the shape contract §9 and the phone's decoder agree on.
+    ) -> None:
+        """Persist one assistant event, then hand its frame to the stream.
 
-        `messageId` and the text parts sit at the top level of `payload`: the
-        decoder reads the payload directly and returns nothing at all for a
-        frame that nests them, which is how a whole reply can be silently
-        dropped.
+        Persisting first is what makes the SSE `id:` a real cursor: after a
+        disconnect the phone replays the event from the account store instead of
+        depending on this process still holding it in memory.
         """
-        timestamp = occurred_at or datetime.now(timezone.utc).isoformat()
+        if not self._account_id:
+            logger.warning("[open_android] No account configured; %s was not published", event_type)
+            return
+        payload = self._message_payload(chat_id, message_id, text, occurred_at)
+        account = self.services.core.open_gateway_account(self._account_id)
+        try:
+            event = account.events.append(event_type, message_id, payload, occurred_at)
+        finally:
+            account.close()
+        await self._broadcast_sse(self._account_id, _sse_frame(event))
+
+    def _message_payload(
+        self,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        occurred_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """The event payload the phone's decoder reads.
+
+        `messageId` and the text parts sit at the top level: the decoder reads
+        the payload directly and returns nothing at all for a payload that nests
+        them, which is how a whole reply can be silently dropped.
+        """
+        # One formatter for the whole payload: the phone parses `occurredAt` with
+        # an ISO instant parser that requires exactly three fractional digits.
+        timestamp = iso_millis(occurred_at)
         return {
-            "id": f"evt_{uuid.uuid4().hex[:12]}",
-            "type": event_type,
-            "occurredAt": timestamp,
-            "correlationId": message_id,
-            "payload": {
-                "conversationId": chat_id,
-                "messageId": message_id,
-                "sender": "assistant",
-                "parts": [{"type": "text", "text": text}],
-                "text": text,
-                "timestamp": _epoch_millis(timestamp),
-                "revision": 0,
-            },
+            "conversationId": chat_id,
+            "messageId": message_id,
+            "sender": "assistant",
+            "parts": [{"type": "text", "text": text}],
+            "text": text,
+            "timestamp": _epoch_millis(timestamp),
+            "revision": 0,
         }
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -588,51 +661,49 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: web.Request) -> web.Response:
         return web.Response(text="ok", content_type="text/plain")
 
+    def _raw_request(self, request: web.Request, body: bytes) -> Dict[str, Any]:
+        """The origin-form target the client actually signed, query included."""
+        return {
+            "method": request.method,
+            # `url` is the origin-form target the client signed: the boundary
+            # reads `url` first, and a target that lost its query would make
+            # every signed request with a query fail verification.
+            "url": request.path_qs,
+            "target": request.path_qs,
+            "headers": dict(request.headers),
+            "rawHeaders": tuple((k, v) for k, v in request.headers.items()),
+            "body": body,
+        }
+
     async def _dispatch_gateway_request(self, request: web.Request) -> web.StreamResponse:
         """Route incoming HTTP request into Gateway exposure routes or SSE stream."""
         path = request.path
         method = request.method
 
-        norm_path = path
-        if path.startswith("/agent-life/v2/"):
-            norm_path = "/open-android-intelligence/v2/" + path[len("/agent-life/v2/"):]
-
-        # Dedicated SSE handler
-        if method == "GET" and (norm_path == "/open-android-intelligence/v2/events" or path == "/open-android-intelligence/v2/events"):
-            return await self._handle_sse_stream(request)
-
-        # The signed target is the origin-form the client actually sent, query
-        # string included: dropping it would make every signed request with a
-        # query fail the signature check.
-        norm_target = request.path_qs
-        if norm_target.startswith("/agent-life/v2/"):
-            norm_target = "/open-android-intelligence/v2/" + norm_target[len("/agent-life/v2/"):]
-
-        # Read raw request body
         try:
             body_bytes = await request.read()
         except Exception as exc:
             return web.json_response({"errorCode": "REQUEST_BODY_INVALID", "message": str(exc)}, status=400)
 
-        raw_req = {
-            "method": method,
-            # `url` is the origin-form target the client signed, query string
-            # included: the boundary reads `url` first, and a target that lost
-            # its query would make every signed request fail verification.
-            "url": norm_target,
-            "target": norm_target,
-            "headers": dict(request.headers),
-            "rawHeaders": tuple((k, v) for k, v in request.headers.items()),
-            "body": body_bytes,
-        }
+        raw_req = self._raw_request(request, body_bytes)
+
+        # The event stream is the one route whose response is framed as SSE. It
+        # is still authenticated as an ordinary request: the route decides that,
+        # and a client that asks for JSON gets the same events as a JSON body.
+        if (
+            method == "GET"
+            and path == EVENT_STREAM_PATH
+            and "text/event-stream" in str(request.headers.get("Accept", "")).lower()
+        ):
+            return await self._handle_sse_stream(request, raw_req)
 
         # Find matching exposure route
         handler_found = None
         for route in self.services.exposure.routes:
-            if route.match == "exact" and (route.path == norm_path or route.path == path):
+            if route.match == "exact" and route.path == path:
                 handler_found = route
                 break
-            elif route.match == "prefix" and (norm_path.startswith(route.path) or path.startswith(route.path)):
+            elif route.match == "prefix" and path.startswith(route.path):
                 handler_found = route
                 break
 
@@ -646,13 +717,23 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
         # If this was an inbound message POST, trigger Hermes agent turn
         if method == "POST" and "/conversations/" in path and path.endswith("/messages") and status in (200, 201):
-            asyncio.create_task(self._notify_agent_inbound(path, body_bytes, body))
+            asyncio.create_task(self._notify_agent_inbound(
+                path, body_bytes, body,
+                (raw_req["headers"].get("X-Open-Android-Intelligence-Account")
+                 or raw_req["headers"].get("x-open-android-intelligence-account")),
+            ))
 
         clean_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
         return web.json_response(body, status=status, headers=clean_headers)
 
-    async def _notify_agent_inbound(self, path: str, body_bytes: bytes, response_body: Any) -> None:
+    async def _notify_agent_inbound(
+        self, path: str, body_bytes: bytes, response_body: Any, account_id: str | None = None,
+    ) -> None:
         """Notify Hermes agent of a user message received from the Android device."""
+        source_account = account_id or self._account_id
+        if not source_account:
+            logger.warning("[open_android] Inbound message carries no account identity; not dispatching")
+            return
         try:
             parts = path.split("/")
             # /open-android-intelligence/v2/conversations/{conv_id}/messages
@@ -671,8 +752,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 chat_id=conv_id,
                 chat_name="Android Client",
                 chat_type="dm",
-                user_id=self._account_id,
-                user_name=self._account_id,
+                user_id=source_account,
+                user_name=source_account,
             )
             event = MessageEvent(
                 text=user_text,
@@ -685,49 +766,73 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("[open_android] Failed to dispatch inbound message to agent: %s", exc)
 
-    async def _handle_sse_stream(self, request: web.Request) -> web.StreamResponse:
-        """Handle persistent SSE event stream for Android client."""
+    async def _handle_sse_stream(
+        self, request: web.Request, raw_req: Mapping[str, Any],
+    ) -> web.StreamResponse:
+        """Authenticated SSE stream with durable, cursor-authoritative recovery.
+
+        The route performs the handshake (signature, cursor, expiry) and returns
+        the events to replay; this method only writes them, so there is exactly
+        one place that decides who may read an account's stream.
+        """
+        route = next(
+            (item for item in self.services.exposure.routes if item.path == EVENT_STREAM_PATH),
+            None,
+        )
+        if route is None:
+            return web.json_response({"errorCode": "NOT_FOUND"}, status=404)
+        handshake = route.event_backlog(raw_req)
+        status = int(handshake.get("statusCode", 200))
+        if status != 200:
+            return web.json_response(handshake.get("body", {}), status=status)
+        account_id = str(handshake["accountId"])
+
         response = web.StreamResponse(
             status=200,
             reason="OK",
             headers={
                 "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
+                "Cache-Control": "no-store",
                 "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
             },
         )
         await response.prepare(request)
+        await response.write(SSE_HEARTBEAT)
 
-        # Initial keep-alive ping
-        await response.write(b": ping\n\n")
-
-        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        self._active_sse_queues.add(queue)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=SSE_QUEUE_SIZE)
+        subscribers = self._active_sse_queues.setdefault(account_id, set())
+        subscribers.add(queue)
         try:
+            for event in handshake["events"]:
+                await response.write(_sse_frame(event))
             while self._running:
                 try:
-                    event_data = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    evt_id = event_data.get("id", str(uuid.uuid4()))
-                    evt_name = event_data.get("type", "gateway.event")
-                    payload = json.dumps(event_data, ensure_ascii=False)
-                    chunk = f"id: {evt_id}\nevent: {evt_name}\ndata: {payload}\n\n".encode("utf-8")
-                    await response.write(chunk)
+                    frame = await asyncio.wait_for(queue.get(), timeout=SSE_HEARTBEAT_SECONDS)
                 except asyncio.TimeoutError:
-                    # Periodic heartbeat
-                    await response.write(b": ping\n\n")
+                    await response.write(SSE_HEARTBEAT)
+                    continue
+                await response.write(frame)
         except (asyncio.CancelledError, ConnectionResetError):
             pass
         finally:
-            self._active_sse_queues.discard(queue)
+            subscribers.discard(queue)
+            if not subscribers:
+                self._active_sse_queues.pop(account_id, None)
 
         return response
 
-    async def _broadcast_sse(self, event_data: dict[str, Any]) -> None:
-        """Broadcast an event to all connected SSE clients."""
-        for q in list(self._active_sse_queues):
+    async def _broadcast_sse(self, account_id: str, frame: bytes) -> None:
+        """Hand one persisted frame to the subscribers of that account.
+
+        A subscriber whose queue is full is skipped rather than blocking the
+        agent turn: every frame carries a durable event id, so the phone resumes
+        from its last complete frame and replays the gap instead of losing it.
+        """
+        for queue in list(self._active_sse_queues.get(account_id, ())):
             try:
-                q.put_nowait(event_data)
+                queue.put_nowait(frame)
             except asyncio.QueueFull:
-                pass
+                logger.warning(
+                    "[open_android] SSE subscriber is behind; it will resume from its cursor"
+                )
 

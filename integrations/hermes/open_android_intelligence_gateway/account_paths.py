@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 
 WIRE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
+
+# Directory name under the host data directory. The plugin composes the
+# host-provided data dir with the same name, so both entry points land in the
+# same place.
+GATEWAY_DIRECTORY_NAME = "open-android-intelligence-gateway"
+# Explicit override for hosts that keep Gateway data outside the Hermes home.
+DEFAULT_ROOT_ENVIRONMENT_VARIABLE = "OPEN_ANDROID_INTELLIGENCE_GATEWAY_ROOT"
 
 
 @dataclass(frozen=True)
@@ -59,7 +67,23 @@ def ensure_account_directories(paths: AccountPaths) -> None:
 
 
 def default_hermes_gateway_root() -> Path:
-    return (Path.cwd() / ".open-android-intelligence-hermes" / "accounts").resolve()
+    """Where accounts live when the host names no data directory.
+
+    Resolution is explicit: the configured root, then the Hermes home, then the
+    user's home. The current working directory is deliberately not consulted —
+    a data root that follows the shell would silently create a second, empty
+    Gateway next to whatever directory happened to be current.
+    """
+    configured = os.environ.get(DEFAULT_ROOT_ENVIRONMENT_VARIABLE)
+    if configured:
+        return (Path(configured).expanduser() / "accounts").resolve()
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore
+    except Exception:
+        get_hermes_home = None  # type: ignore[assignment]
+    if callable(get_hermes_home):
+        return (Path(get_hermes_home()) / GATEWAY_DIRECTORY_NAME / "accounts").resolve()
+    return (Path.home() / ".hermes" / GATEWAY_DIRECTORY_NAME / "accounts").resolve()
 
 
 accountPaths = account_paths

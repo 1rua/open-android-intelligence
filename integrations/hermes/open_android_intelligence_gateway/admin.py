@@ -134,14 +134,44 @@ class AdminService:
         account_id = _input(input, "account_id", "accountId")
         if not isinstance(account_id, str) or WIRE_ID_PATTERN.fullmatch(account_id) is None:
             return _failure(operation, False, "SCHEMA_INVALID")
+        # A password is what makes the account usable: contract section 5.2 has
+        # the phone present it once, and only its digest is stored here.
+        password = _input(input, "password", "password")
+        if not isinstance(password, str) or not password:
+            return _failure(operation, False, "PASSWORD_REQUIRED")
         try:
             account = self.core.open_gateway_account(account_id)
-            account.close()
+            try:
+                account.credentials.set_password(password)
+            finally:
+                account.close()
             return _success(operation, False, {"accountId": account_id})
+        except GatewayError as exc:
+            return _failure(operation, False, exc.code)
+        except ValueError:
+            return _failure(operation, False, "SCHEMA_INVALID")
+        except Exception:
+            return _failure(operation, False, "INTERNAL_ERROR")
+
+    def delete_account(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
+        """Resource-level deletion of one logical Gateway (contract section 13)."""
+        operation = "account.delete"
+        if self.read_only:
+            return _failure(operation, True, "HOST_INCOMPATIBLE")
+        if _input(input, "local_confirmation", "localConfirmation", False) is not True:
+            return _failure(operation, False, "LOCAL_CONFIRMATION_REQUIRED")
+        account_id = _input(input, "account_id", "accountId")
+        if not isinstance(account_id, str) or WIRE_ID_PATTERN.fullmatch(account_id) is None:
+            return _failure(operation, False, "SCHEMA_INVALID")
+        try:
+            removed = self.core.delete_gateway_account(account_id)
         except GatewayError as exc:
             return _failure(operation, False, exc.code)
         except Exception:
             return _failure(operation, False, "INTERNAL_ERROR")
+        if not removed:
+            return _failure(operation, False, "ACCOUNT_NOT_FOUND")
+        return _success(operation, False, {"accountId": account_id, "deleted": True})
 
     def status(self) -> dict[str, Any]:
         return _success("admin.status", self.read_only, {
@@ -158,6 +188,8 @@ class AdminService:
             return self.status()
         if name == "account.create":
             return self.create_account(_input(command, "input", "input", {}))
+        if name == "account.delete":
+            return self.delete_account(command)
         if self.read_only:
             return _failure(str(name), True, "HOST_INCOMPATIBLE")
         if _input(command, "local_confirmation", "localConfirmation", False) is not True:
@@ -201,6 +233,11 @@ class AdminPanel:
 
     createAccount = create_account
 
+    def delete_account(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
+        return self.service.delete_account(input)
+
+    deleteAccount = delete_account
+
     def status(self) -> dict[str, Any]:
         return self.service.status()
 
@@ -224,21 +261,48 @@ def _invalid_arguments(service: AdminService) -> dict[str, Any]:
     return _failure("admin.cli", service.read_only, "ADMIN_ARGUMENTS_INVALID")
 
 
+def _parse_flags(tokens: list[str]) -> dict[str, Any] | None:
+    """Parses the closed flag set of the account commands; None means invalid."""
+    parsed: dict[str, Any] = {"confirmed": False, "password": None}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--confirm-local":
+            parsed["confirmed"] = True
+            index += 1
+            continue
+        if token == "--password" and index + 1 < len(tokens):
+            parsed["password"] = tokens[index + 1]
+            index += 2
+            continue
+        return None
+    return parsed
+
+
 def _parse_command(args: list[str], service: AdminService) -> Mapping[str, Any] | dict[str, Any]:
-    if args[:2] == ["account", "create"] and len(args) in {3, 4}:
-        if len(args) == 4 and args[3] != "--confirm-local":
+    if args[:2] == ["account", "create"] and len(args) >= 3:
+        flags = _parse_flags(list(args[3:]))
+        if flags is None:
             return _invalid_arguments(service)
-        return {"command": "account.create", "input": {"accountId": args[2], **({"localConfirmation": True} if len(args) == 4 else {})}}
-    if args[:1] == ["create-account"] and len(args) in {2, 3}:
-        if len(args) == 3 and args[2] != "--confirm-local":
+        return {"command": "account.create", "input": {
+            "accountId": args[2], "password": flags["password"],
+            "localConfirmation": flags["confirmed"],
+        }}
+    if args[:1] == ["create-account"] and len(args) >= 2:
+        flags = _parse_flags(list(args[2:]))
+        if flags is None:
             return _invalid_arguments(service)
-        return {"command": "account.create", "input": {"accountId": args[1], **({"localConfirmation": True} if len(args) == 3 else {})}}
+        return {"command": "account.create", "input": {
+            "accountId": args[1], "password": flags["password"],
+            "localConfirmation": flags["confirmed"],
+        }}
     if args in (["status"], ["account", "status"]):
         return {"command": "admin.status"}
-    if args[:2] == ["account", "delete"] and len(args) in {3, 4}:
-        if len(args) == 4 and args[3] != "--confirm-local":
+    if args[:2] == ["account", "delete"] and len(args) >= 3:
+        flags = _parse_flags(list(args[3:]))
+        if flags is None:
             return _invalid_arguments(service)
-        return {"command": "account.delete", "accountId": args[2], **({"localConfirmation": True} if len(args) == 4 else {})}
+        return {"command": "account.delete", "accountId": args[2], "localConfirmation": flags["confirmed"]}
     return _invalid_arguments(service)
 
 
@@ -256,12 +320,18 @@ def create_admin_cli_registrar(service: AdminService) -> Callable[..., Any]:
         account = root.command("account").description("Manage Open Android Intelligence Gateway accounts")
         account.command("create <accountId>").description("Create a Gateway account").option(
             "--confirm-local", "Confirm this write on the local host"
+        ).option(
+            "--password <password>", "Account password; only its scrypt digest is stored"
         ).action(lambda account_id, options=None: service.execute({
             "command": "account.create",
-            "input": {"accountId": str(account_id), "localConfirmation": bool(isinstance(options, Mapping) and options.get("confirmLocal") is True)},
+            "input": {
+                "accountId": str(account_id),
+                "password": options.get("password") if isinstance(options, Mapping) else None,
+                "localConfirmation": bool(isinstance(options, Mapping) and options.get("confirmLocal") is True),
+            },
         }))
         account.command("status").description("Show Gateway account status").action(lambda: service.status())
-        account.command("delete <accountId>").description("Delete a Gateway account").option(
+        account.command("delete <accountId>").description("Delete a Gateway account and all of its data").option(
             "--confirm-local", "Confirm this write on the local host"
         ).action(lambda account_id, options=None: service.execute({
             "command": "account.delete", "accountId": str(account_id),

@@ -94,14 +94,33 @@ def _failure(request: Any, code: str, details: Mapping[str, Any] | None = None) 
     }
 
 
+# Wire error code to HTTP status. Codes absent from this map are caller errors
+# and answer 400, which is the contract's default for malformed input.
+_ERROR_STATUS = {
+    "HOST_INCOMPATIBLE": 503,
+    "AUTHENTICATION_REQUIRED": 401,
+    "AUTHENTICATION_FAILED": 401,
+    "REFRESH_REUSED": 401,
+    "SESSION_EXPIRED": 401,
+    "SESSION_REVOKED": 401,
+    "SIGNATURE_INVALID": 401,
+    "NON_CANONICAL_TARGET": 401,
+    "REQUEST_REPLAYED": 401,
+    "CLOCK_SKEWED": 401,
+    "ACCOUNT_NOT_FOUND": 404,
+    "PROTOCOL_INCOMPATIBLE": 406,
+    "IDEMPOTENCY_CONFLICT": 409,
+    "CURSOR_CONFLICT": 409,
+    "CURSOR_EXPIRED": 410,
+    "REQUEST_BODY_TOO_LARGE": 413,
+    "RATE_LIMITED": 429,
+}
+
+
 def _status(body: Mapping[str, Any]) -> int:
     code = _get(_get(body, "error", default={}), "code")
-    if code == "HOST_INCOMPATIBLE":
-        return 503
-    if code == "AUTHENTICATION_REQUIRED":
-        return 401
-    if code == "REQUEST_BODY_TOO_LARGE":
-        return 413
+    if code in _ERROR_STATUS:
+        return _ERROR_STATUS[str(code)]
     return 400 if "error" in body else 200
 
 
@@ -139,23 +158,14 @@ class GatewayHttpRoute:
             context = _get(request, "context")
             method = _get(request, "method")
             target = _get(request, "target", default=self.path)
-            if isinstance(target, str) and target.startswith("/agent-life/v2/"):
-                target = "/open-android-intelligence/v2/" + target[len("/agent-life/v2/"):]
             if context is None and method == "POST" and target == "/open-android-intelligence/v2/negotiate":
-                req_body = _get(request, "body")
-                if isinstance(req_body, dict):
-                    if "schemaHashes" not in req_body:
-                        req_body["schemaHashes"] = {"core": "sha256:" + "a" * 64}
-                    features = req_body.get("features")
-                    if isinstance(features, dict):
-                        if isinstance(features.get("messages"), list):
-                            features["messages"] = [m for m in features["messages"] if m == "chat-v1"] or ["chat-v1"]
-                        if isinstance(features.get("attachments"), list):
-                            features["attachments"] = [a for a in features["attachments"] if a == "staged-sha256-v1"] or ["staged-sha256-v1"]
+                # The negotiation body is validated exactly as the client sent it:
+                # a request that omits or falsifies its schema hash is refused by
+                # the contract check instead of being repaired at the boundary.
                 verified = {
                     "method": method,
                     "target": target,
-                    "body": req_body,
+                    "body": _get(request, "body"),
                     "requestId": _get(request, "requestId", "request_id", default="open-android-intelligence-negotiate"),
                     "correlationId": _get(request, "correlationId", "correlation_id", default="open-android-intelligence-negotiate"),
                 }
@@ -242,6 +252,52 @@ class GatewayHttpRoute:
             status = 401
         return {"statusCode": status, "headers": dict(_RESPONSE_HEADERS), "body": body}
 
+    def event_backlog(self, request: Any) -> dict[str, Any]:
+        """Contract section 9 SSE handshake: verify the request, then read events.
+
+        Authentication and cursor validity are decided here and only here, so a
+        streaming transport never has to make a security decision of its own.
+        A failure return carries the same envelope any other route would send;
+        a success return names the verified account and the events to replay.
+        """
+        empty: dict[str, Any] = {}
+        if not is_host_api_compatible(self._services.host_version, self._services.host_api):
+            return {
+                "statusCode": 503, "headers": dict(_RESPONSE_HEADERS),
+                "body": _failure(empty, "HOST_INCOMPATIBLE"),
+            }
+        method = _get(request, "method")
+        target = _get(request, "url", "target")
+        verifier = self._services.verify_request
+        if method != "GET" or not isinstance(target, str) or not target.startswith("/") or verifier is None:
+            return {
+                "statusCode": 401, "headers": dict(_RESPONSE_HEADERS),
+                "body": _failure(empty, "AUTHENTICATION_REQUIRED"),
+            }
+        try:
+            verified = verifier({
+                "request": request, "req": request, "method": method, "target": target,
+                "headers": dict(_get(request, "headers", default={}) or {}),
+                "rawHeaders": tuple(_get(request, "rawHeaders", "raw_headers", default=()) or ()),
+                "body": _raw_body(request),
+            })
+        except Exception:
+            verified = None
+        if not isinstance(verified, VerifiedGatewayRequest):
+            return {
+                "statusCode": 401, "headers": dict(_RESPONSE_HEADERS),
+                "body": _failure(empty, "AUTHENTICATION_REQUIRED"),
+            }
+        body = self._services.core.handle(verified)
+        status = _status(body)
+        if status != 200:
+            return {"statusCode": status, "headers": dict(_RESPONSE_HEADERS), "body": body}
+        events = _get(_get(body, "data", default={}), "events", default=[]) or []
+        return {
+            "statusCode": 200, "headers": dict(_RESPONSE_HEADERS), "body": body,
+            "accountId": str(verified.context.accountId), "events": list(events),
+        }
+
     def handler(self, request: Any, response: Any) -> bool:
         result = self._handle_raw(request)
         _set_response(response, result["statusCode"], result["headers"], result["body"])
@@ -253,8 +309,6 @@ class GatewayHttpRoute:
             return {"statusCode": 503, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "HOST_INCOMPATIBLE")}
         method = _get(request, "method")
         target = _get(request, "url", "target")
-        if isinstance(target, str) and target.startswith("/agent-life/v2/"):
-            target = "/open-android-intelligence/v2/" + target[len("/agent-life/v2/"):]
         if method not in {"GET", "POST", "PUT", "DELETE"} or not isinstance(target, str) or not target.startswith("/"):
             return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "AUTHENTICATION_REQUIRED")}
         body = _raw_body(request)
@@ -267,15 +321,6 @@ class GatewayHttpRoute:
                 decoded = _strict_json(body)
             except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
                 return {"statusCode": 400, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "SCHEMA_INVALID")}
-            if isinstance(decoded, dict):
-                if "schemaHashes" not in decoded:
-                    decoded["schemaHashes"] = {"core": "sha256:" + "a" * 64}
-                features = decoded.get("features")
-                if isinstance(features, dict):
-                    if isinstance(features.get("messages"), list):
-                        features["messages"] = [m for m in features["messages"] if m == "chat-v1"] or ["chat-v1"]
-                    if isinstance(features.get("attachments"), list):
-                        features["attachments"] = [a for a in features["attachments"] if a == "staged-sha256-v1"] or ["staged-sha256-v1"]
             response_body = self._services.core.handle({
                 "method": method,
                 "target": target,

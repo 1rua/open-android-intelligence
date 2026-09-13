@@ -28,9 +28,31 @@ from .account_paths import (
     ensure_account_directories,
 )
 from .audit import AuditStore
+from .credentials import hash_password, verify_password
 
 
-SHARED_CORE_SCHEMA_HASH = "sha256:" + "a" * 64
+# Contract section 4 core schema digest: a domain-separated, name-sorted listing
+# of each named schema document's raw byte digest. Hashing the checked-in bytes
+# keeps the value reproducible in every language that can read the files, which
+# is what lets the phone and the Gateway compare the same number.
+CORE_SCHEMA_HASH_DOMAIN = "open-android-intelligence/v2/core-schema-hash"
+CORE_SCHEMA_FILE_NAMES = (
+    "attachment.schema.json",
+    "conversation.schema.json",
+    "device-request.schema.json",
+    "envelope.schema.json",
+    "event.schema.json",
+    "negotiate.schema.json",
+    "session.schema.json",
+)
+
+# The exact six shared vector documents of contract section 16. The enumeration
+# is closed: its `schemaName` set does not include the conversation-UI schemas,
+# so `conversation-ui.json` stays a local suite and is not a conformance input.
+SHARED_VECTOR_FILE_NAMES = (
+    "request-signatures.json", "protocol-negotiation.json", "auth-sessions.json",
+    "attachments.json", "sse-events.json", "device-requests.json",
+)
 
 
 class GatewayError(Exception):
@@ -435,7 +457,13 @@ class ContractRegistry:
 
     @property
     def core_schema_hash(self) -> str:
-        return SHARED_CORE_SCHEMA_HASH
+        lines = [CORE_SCHEMA_HASH_DOMAIN]
+        schema_dir = self.root / "schemas"
+        for name in CORE_SCHEMA_FILE_NAMES:
+            digest = hashlib.sha256((schema_dir / name).read_bytes()).hexdigest()
+            lines.append(f"{name}\tsha256:{digest}")
+        payload = "\n".join(lines) + "\n"
+        return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def __init__(self, contract_root: str | Path | None = None):
         self.root = _contract_root(contract_root)
@@ -910,6 +938,10 @@ class AccountStore:
             CREATE TABLE IF NOT EXISTS plugin_registry (
               plugin_id TEXT PRIMARY KEY NOT NULL, manifest_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS account_credentials (
+              credential_id TEXT PRIMARY KEY NOT NULL,
+              password_hash TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS negotiations (
               negotiation_id TEXT PRIMARY KEY NOT NULL, response_json TEXT NOT NULL,
               created_at TEXT NOT NULL, expires_at TEXT NOT NULL
@@ -1067,6 +1099,48 @@ class AccountStore:
                 marker["createdAt"], marker["expiresAt"],
             ),
         )
+
+
+class CredentialStore:
+    """The account password digest, stored beside the account it protects.
+
+    Only a digest is kept: the Gateway can never read a password back, and an
+    account without a recorded digest cannot be logged into at all.
+    """
+
+    PASSWORD_CREDENTIAL_ID = "password"
+
+    def __init__(self, store: AccountStore):
+        self.store = store
+
+    def set_password(self, password: str, now: datetime | str | None = None) -> None:
+        digest = hash_password(password)
+        self.store.database.execute(
+            "INSERT INTO account_credentials(credential_id, password_hash, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(credential_id) DO UPDATE SET "
+            "password_hash = excluded.password_hash, updated_at = excluded.updated_at",
+            (self.PASSWORD_CREDENTIAL_ID, digest, iso_millis(now)),
+        )
+
+    def has_password(self) -> bool:
+        row = self.store.database.execute(
+            "SELECT 1 FROM account_credentials WHERE credential_id = ?",
+            (self.PASSWORD_CREDENTIAL_ID,),
+        ).fetchone()
+        return row is not None
+
+    def verify_password(self, password: str) -> bool:
+        row = self.store.database.execute(
+            "SELECT password_hash FROM account_credentials WHERE credential_id = ?",
+            (self.PASSWORD_CREDENTIAL_ID,),
+        ).fetchone()
+        if row is None:
+            return False
+        return verify_password(password, str(row[0]))
+
+    setPassword = set_password
+    hasPassword = has_password
+    verifyPassword = verify_password
 
 
 class EventStore:
@@ -1856,6 +1930,7 @@ class GatewayAccount:
         )
         self.device_requests = DeviceRequestStore(account_id, store, self.audit, self.events, contracts)
         self.conversations = ConversationPort(account_id, store, self.attachments, self.audit, self.attachment_policy)
+        self.credentials = CredentialStore(store)
         self.sessions = SessionService(account_id, store, self.audit, credential_verifier)
         self.deviceRequests = self.device_requests
         self.masterKeyRef = self.master_key_ref
@@ -2294,6 +2369,23 @@ class GatewayCore:
             self.credential_verifier,
         )
 
+    def delete_gateway_account(self, account_id: str) -> bool:
+        """Removes every artifact of one logical Gateway (contract section 13).
+
+        The account directory *is* the logical Gateway: database, staged and
+        confirmed attachment bytes, credentials and the account audit trail.
+        Deletion is a resource-level transaction, so it never pretends to be
+        per-attachment reducer events. The path comes from `account_paths`,
+        the only place allowed to turn an opaque ID into a filesystem location.
+        """
+        paths = account_paths(self.storage_root, account_id)
+        if not paths.root.is_dir():
+            return False
+        shutil.rmtree(paths.root)
+        return True
+
+    deleteGatewayAccount = delete_gateway_account
+
     def _negotiate(self, account: GatewayAccount, context: Mapping[str, Any], body: Any, now: datetime) -> Mapping[str, Any]:
         response = self._build_negotiation_response(body, account)
         if not self.contracts.validate("negotiate.response", response):
@@ -2310,8 +2402,16 @@ class GatewayCore:
         if body["schemaHashes"]["core"] != self.contracts.core_schema_hash:
             raise GatewayError("PROTOCOL_INCOMPATIBLE")
         requested = body["features"]
-        supported_auth = {"password", "account-invitation", "refresh", "device-key"}
+        # Only what this Gateway implements is ever advertised: an
+        # account-invitation or device-key flow this host cannot serve would be a
+        # capability claim the phone would then rely on.
+        supported_auth = {"password", "refresh"}
         auth = [item for item in requested["auth"] if item in supported_auth]
+        supported_conversation_ui = {"agent-command-catalog-v1"}
+        conversation_ui = [
+            item for item in requested.get("conversationUi", [])
+            if item in supported_conversation_ui
+        ]
         required = {
             "messages": "chat-v1", "attachments": "staged-sha256-v1",
             "events": "sse-cursor-v1", "deviceRequests": "risk-queue-v1",
@@ -2329,9 +2429,12 @@ class GatewayCore:
             }
             deployment_id = metadata.get("deployment_id", "deploy_hermes")
             tls_identity = metadata.get("tls_spki_sha256", "sha256:" + "0" * 64)
+        features: dict[str, Any] = {"auth": auth, **required}
+        if conversation_ui:
+            features["conversationUi"] = conversation_ui
         return {
             "protocol": {"major": 2, "minor": 0},
-            "features": {"auth": auth, **required},
+            "features": features,
             "limits": {
                 "maxSingleAttachmentBytes": self.attachment_policy.max_single_attachment_bytes,
                 "maxMessageAttachmentBytes": self.attachment_policy.max_message_attachment_bytes,
@@ -2694,10 +2797,7 @@ class GatewayCore:
 
     def run_shared_vectors(self, contract_root: str | Path | None = None) -> list[dict[str, Any]]:
         registry = ContractRegistry(contract_root or self.contract_root)
-        vector_files = (
-            "request-signatures.json", "protocol-negotiation.json", "auth-sessions.json",
-            "attachments.json", "sse-events.json", "device-requests.json", "conversation-ui.json",
-        )
+        vector_files = SHARED_VECTOR_FILE_NAMES
         results: list[dict[str, Any]] = []
         for file_name in vector_files:
             document = json.loads((registry.root / "vectors" / file_name).read_text(encoding="utf-8"))

@@ -79,6 +79,25 @@ def test_scrub_recursively_denies_sensitive_field_name_variants() -> None:
     _assert_no_sensitive_values(scrubbed)
 
 
+def test_scrub_keeps_context_metadata_and_denies_compound_body_names() -> None:
+    scrubbed = scrub({
+        "contextId": "context-1",
+        "context": {"requestId": "request-1"},
+        "messageText": "message-text-sentinel",
+        "textBody": "text-body-sentinel",
+        "bodyBytes": "body-bytes-sentinel",
+        "attachmentId": "attachment-1",
+        "messageId": "message-1",
+    })
+
+    assert scrubbed == {
+        "contextId": "context-1",
+        "context": {"requestId": "request-1"},
+        "attachmentId": "attachment-1",
+        "messageId": "message-1",
+    }
+
+
 def test_scrub_denies_sensitive_fields_inside_json_serializable_tuples() -> None:
     scrubbed = scrub({
         "safe": ("kept", {"signature": "signature-sentinel", "ok": True}),

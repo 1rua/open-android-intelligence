@@ -1,4 +1,6 @@
 {
+  "_status": "legacy-fixture",
+  "_note": "Manifest of the legacy TypeScript Hermes adapter in this directory. The production Hermes plugin is the native Python package in integrations/hermes/open_android_intelligence_gateway, whose manifest is HERMES_PLUGIN_MANIFEST in plugin.py (gateway-protocol-v2). This file is not a product manifest and is kept only as legacy fixture evidence.",
   "backend": "hermes",
   "upstream": { "release": "latest-stable", "tag": "hermes-fixture-v1", "commit": "fixture" },
   "protocolVersion": "mobile-bridge-v1",

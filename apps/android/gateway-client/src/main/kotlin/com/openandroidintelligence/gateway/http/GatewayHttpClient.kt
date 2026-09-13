@@ -64,25 +64,8 @@ class GatewayHttpClient(
 
     suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
         val validatedHeaders = RawHeaders.validate(request.headers)
-
-        val input = SignedRequestInput(
-            method = request.method,
-            target = request.target,
-            accountId = profile.accountId,
-            deviceId = profile.deviceId,
-            sessionId = profile.sessionId,
-            requestId = newRequestId(),
-            timestamp = RequestSigner.formatTimestamp(
-                java.time.Instant.ofEpochMilli(java.time.Instant.now().toEpochMilli()),
-            ),
-            nonce = newNonce(),
-            body = request.body,
-        )
-        val signature = signer(RequestSigner.preimage(input))
-        val signatureBase64Url = java.util.Base64.getUrlEncoder().withoutPadding()
-            .encodeToString(signature)
-
-        val headers = validatedHeaders + authenticationHeaders(input, signatureBase64Url, request.method)
+        val input = signedInput(request.method, request.target, request.body)
+        val headers = validatedHeaders + authenticationHeaders(input, signatureOf(input), request.method)
 
         return withContext(Dispatchers.IO) {
             val response = transport.execute(
@@ -100,30 +83,60 @@ class GatewayHttpClient(
      * skipping the remainder.
      */
     fun events(): Flow<GatewayEvent> = flow {
-        val cursor = cursorStore.load(profile.accountId)
+        val storedCursor = cursorStore.load(profile.accountId)
+        // A cursor that is not a wire ID would produce a target the Gateway
+        // refuses as non-canonical; starting over replays retained events, which
+        // the phone treats as idempotent upserts.
+        val cursor = storedCursor?.takeIf { CURSOR_ALPHABET.matches(it) }
         val target = if (cursor == null) {
-            "/open-android-intelligence/v2/events"
+            EVENTS_TARGET
         } else {
-            "/open-android-intelligence/v2/events?cursor=$cursor"
+            "$EVENTS_TARGET?cursor=$cursor"
         }
 
         val parser = SseParser { event ->
             event.id?.let { cursorStore.save(profile.accountId, it) }
         }
 
-        transport.eventStream(
-            WireRequest(
-                method = "GET",
-                target = target,
-                headers = listOf(
-                    RawHeader("Accept", "text/event-stream"),
-                    RawHeader("Cache-Control", "no-store"),
-                ),
+        // The stream is an authenticated request like any other: the signature
+        // covers the canonical target including the cursor query, so nothing on
+        // the path can move the phone's resume point.
+        val headers = RawHeaders.validate(
+            listOf(
+                RawHeader("Accept", "text/event-stream"),
+                RawHeader("Cache-Control", "no-store"),
             ),
+        )
+        val input = signedInput("GET", target, ByteArray(0))
+        val streamHeaders = headers + authenticationHeaders(input, signatureOf(input), "GET")
+
+        transport.eventStream(
+            WireRequest(input.method, input.target, streamHeaders, ByteArray(0)),
         ).collect { chunk ->
             for (event in parser.feedBytes(chunk)) emit(event)
         }
     }.flowOn(Dispatchers.IO)
+
+    private fun signedInput(method: String, target: String, body: ByteArray): SignedRequestInput =
+        SignedRequestInput(
+            method = method,
+            target = target,
+            accountId = profile.accountId,
+            deviceId = profile.deviceId,
+            sessionId = profile.sessionId,
+            requestId = newRequestId(),
+            // Millisecond precision: the wire format is fixed at three fractional
+            // digits and the Gateway refuses anything else.
+            timestamp = RequestSigner.formatTimestamp(
+                java.time.Instant.ofEpochMilli(java.time.Instant.now().toEpochMilli()),
+            ),
+            nonce = newNonce(),
+            body = body,
+        )
+
+    private fun signatureOf(input: SignedRequestInput): String =
+        java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(signer(RequestSigner.preimage(input)))
 
     private fun authenticationHeaders(
         input: SignedRequestInput,
@@ -155,6 +168,10 @@ class GatewayHttpClient(
 
     private companion object {
         const val PROTOCOL_HEADER = "2.0"
+        const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
         val MUTATING_METHODS = setOf("POST", "PUT", "DELETE")
+
+        /** The closed wire ID alphabet from contract §2, used for opaque cursors. */
+        val CURSOR_ALPHABET = Regex("[A-Za-z0-9._~-]{1,128}")
     }
 }

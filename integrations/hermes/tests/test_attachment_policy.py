@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from open_android_intelligence_gateway.core import GatewayError, create_gateway_core
 from open_android_intelligence_gateway.http import create_gateway_exposure
-from test_support import make_secret_store, make_verified_request, trust_core
+from test_support import core_schema_hash, make_secret_store, make_verified_request, trust_core
 
 
 _real_create_gateway_core = create_gateway_core
@@ -37,7 +37,7 @@ NEGOTIATION_BODY = {
         "events": ["sse-cursor-v1"],
         "deviceRequests": ["risk-queue-v1"],
     },
-    "schemaHashes": {"core": "sha256:" + "a" * 64},
+    "schemaHashes": {"core": core_schema_hash()},
 }
 
 

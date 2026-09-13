@@ -5,6 +5,7 @@ import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
+import com.openandroidintelligence.gateway.schema.SchemaContractHash
 
 /** What one connection actually negotiated. */
 data class NegotiatedLimits(
@@ -26,6 +27,8 @@ data class NegotiationResult(
     val events: String?,
     val deviceRequests: String?,
     val limits: NegotiatedLimits,
+    /** Conversation-surface features this connection actually agreed on. */
+    val conversationUi: List<String> = emptyList(),
 )
 
 /**
@@ -53,12 +56,21 @@ class NegotiationClient(
                 "platformApi" to platformApi,
             ),
             "features" to mapOf(
-                "auth" to listOf("password", "account-invitation", "refresh", "device-key"),
-                "messages" to listOf("chat-v1", "message-batches-v1"),
-                "attachments" to listOf("staged-sha256-v1", "screen-selection-v1"),
+                // Only what this client actually implements: requesting a
+                // capability the app cannot serve would make the agreement a
+                // claim rather than a fact. Contract section 4 keeps the base
+                // session capabilities in `messages`/`attachments` and the
+                // conversation-surface ladder in `conversationUi`.
+                "auth" to AUTH_FEATURES,
+                "messages" to listOf("chat-v1"),
+                "attachments" to listOf("staged-sha256-v1"),
                 "events" to listOf("sse-cursor-v1"),
                 "deviceRequests" to listOf("risk-queue-v1"),
+                "conversationUi" to CONVERSATION_UI_FEATURES,
             ),
+            // The Gateway compares this against the Schema documents it ships.
+            // A placeholder or a missing value is a refused negotiation.
+            "schemaHashes" to mapOf("core" to SchemaContractHash.CORE),
         )
         val response = execute(
             SignedGatewayRequest(
@@ -104,11 +116,26 @@ class NegotiationClient(
                 attachmentTtlSeconds = JsonFields.long(limits, "attachmentTtlSeconds"),
                 eventRetentionSeconds = JsonFields.long(limits, "eventRetentionSeconds"),
             ),
+            conversationUi = JsonFields.strings(features, "conversationUi"),
         )
     }
 
     private companion object {
         const val PROTOCOL_MAJOR = 2
         const val PROTOCOL_MINOR = 0
+
+        /** Authentication flows this client implements today. */
+        val AUTH_FEATURES = listOf("password", "refresh")
+
+        /**
+         * Conversation-surface features this client implements today:
+         * the command catalog, message batches and generation cancel endpoints
+         * are all served by [com.openandroidintelligence.gateway.http.GatewayHttpClient].
+         */
+        val CONVERSATION_UI_FEATURES = listOf(
+            "agent-command-catalog-v1",
+            "message-batches-v1",
+            "generation-cancel-v1",
+        )
     }
 }

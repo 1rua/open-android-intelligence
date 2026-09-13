@@ -8,7 +8,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from open_android_intelligence_gateway.admin import HostApiCompatibility
 from open_android_intelligence_gateway.http import EXPOSURE_MODES, create_gateway_exposure
 from open_android_intelligence_gateway.core import create_gateway_core
-from test_support import PasswordVerifierDouble, make_secret_store, make_verified_request, trust_core
+from test_support import (
+    PasswordVerifierDouble,
+    core_schema_hash,
+    make_secret_store,
+    make_verified_request,
+    trust_core,
+)
 
 
 _real_create_gateway_core = create_gateway_core
@@ -195,7 +201,7 @@ def test_negotiate_raw_route_has_independent_pre_auth_input_without_verifier(tmp
             "auth": ["password"], "messages": ["chat-v1"], "attachments": ["staged-sha256-v1"],
             "events": ["sse-cursor-v1"], "deviceRequests": ["risk-queue-v1"],
         },
-        "schemaHashes": {"core": "sha256:" + "a" * 64},
+        "schemaHashes": {"core": core_schema_hash()},
     }
 
     exposure = create_gateway_exposure(
@@ -248,7 +254,7 @@ def _negotiate_for_session(routes, negotiation_id, installation_id):
                 "events": ["sse-cursor-v1"],
                 "deviceRequests": ["risk-queue-v1"],
             },
-            "schemaHashes": {"core": "sha256:" + "a" * 64},
+            "schemaHashes": {"core": core_schema_hash()},
         },
     })
     assert response["statusCode"] == 200

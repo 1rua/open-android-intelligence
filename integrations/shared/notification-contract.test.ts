@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createHermesAdapter } from "../hermes/adapter.js";
+// The Hermes adapter of this name is the legacy TypeScript fixture; the product
+// Hermes plugin is the native Python package and does not implement these
+// shared provider operations.
+import { createHermesAdapter } from "../../legacy/integrations/hermes-v1/adapter.js";
 import { createOpenClawAdapter } from "../openclaw/adapter.js";
 import { fixtureBinding, fixtureContext, fixtureZeroRetentionEvidence } from "./fixtures.js";
 

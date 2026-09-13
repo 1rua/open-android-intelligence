@@ -19,8 +19,6 @@ _DENIED_FIELD_MARKERS = frozenset(
         "credential",
         "secret",
         "token",
-        "body",
-        "text",
         "content",
         "privatekey",
         "accesskey",
@@ -38,19 +36,33 @@ _DENIED_FIELD_NAMES = frozenset(
         "payload",
         "data",
         "details",
+        "body",
+        "text",
     }
 )
+# Names that also deny a compound field such as "messageText" or "text_body".
+# They are matched per camelCase/snake_case segment rather than as a bare
+# substring, because a substring match would also deny "context" — ordinary
+# audit metadata — while an exact match alone would let "messageText" through.
+_DENIED_SEGMENT_NAMES = frozenset({"text", "body"})
+_FIELD_NAME_TOKENS = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[0-9]+")
 
 
 def _normalized_field_name(value: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).casefold())
 
 
+def _field_name_segments(value: Any) -> set[str]:
+    return {token.casefold() for token in _FIELD_NAME_TOKENS.findall(str(value))}
+
+
 def _is_denied_field(value: Any) -> bool:
     normalized = _normalized_field_name(value)
-    return normalized in _DENIED_FIELD_NAMES or any(
-        marker in normalized for marker in _DENIED_FIELD_MARKERS
-    )
+    if normalized in _DENIED_FIELD_NAMES:
+        return True
+    if _field_name_segments(value) & _DENIED_SEGMENT_NAMES:
+        return True
+    return any(marker in normalized for marker in _DENIED_FIELD_MARKERS)
 
 
 def _now(value: datetime | str | None = None) -> datetime:

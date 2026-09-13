@@ -43,7 +43,7 @@ fi
 "$NODE_LAUNCHER" npx --no-install vitest --root "$ROOT_DIR" run \
   integrations \
   bridge-contract/test \
-  bridge-runtime/test \
+  legacy/bridge-runtime/test \
   artifact-contract/test \
   mvp-contract/test/mvp-contract.test.ts \
   mvp-contract/test/dependency-lock.test.ts
@@ -53,11 +53,11 @@ python3 -m unittest discover -s "$ROOT_DIR/apps/android/tools" -p 'test_*.py'
 "$NODE_LAUNCHER" npx --no-install tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext \
   --moduleResolution NodeNext --strict --skipLibCheck \
   "$ROOT_DIR"/bridge-contract/src/*.ts \
-  "$ROOT_DIR"/bridge-runtime/src/*.ts \
+  "$ROOT_DIR"/legacy/bridge-runtime/src/*.ts \
   "$ROOT_DIR"/artifact-contract/src/*.ts \
   "$ROOT_DIR"/mvp-contract/src/wire-codec.ts \
   "$ROOT_DIR"/integrations/shared/adapter.ts \
-  "$ROOT_DIR"/integrations/hermes/adapter.ts \
+  "$ROOT_DIR"/legacy/integrations/hermes-v1/adapter.ts \
   "$ROOT_DIR"/integrations/openclaw/adapter.ts \
   --types node --typeRoots "$ROOT_DIR/node_modules/@types"
 

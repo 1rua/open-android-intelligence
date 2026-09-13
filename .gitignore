@@ -15,6 +15,7 @@ AGENTS.md
 **/__pycache__/
 .env_check.txt
 .marscode/deviceInfo.json
+fronted-preview/
 
 # Android
 apps/android/local.properties
@@ -48,6 +49,7 @@ Thumbs.db
 # Logs
 *.log
 /logs/
+/docs/test-evidence
 
 # Temp
 *.tmp
@@ -57,11 +59,11 @@ Thumbs.db
 *.bak
 /.toolchains
 /node_modules
-/bridge-runtime/dist/
-/bridge-runtime/ingress/open-android-intelligence-tsnet
-/bridge-runtime/node_modules
+/legacy/bridge-runtime/dist/
+/legacy/bridge-runtime/ingress/open-android-intelligence-tsnet
+/legacy/bridge-runtime/node_modules
 
-/bridge-runtime/deploy/secrets/
+/legacy/bridge-runtime/deploy/secrets/
 docs/mvp/evidence/p0t/2026-08-19T15-10-02Z-p0t-real-device-all
 apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar
 apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar
@@ -76,6 +78,12 @@ apps/android/tailnet-core/libs/tsnet-android-1.98.10.sbom.json
 plugins/target/
 plugins/dist/
 
+# Python 构建产物（Hermes 插件打包）
+integrations/hermes/dist/
+*.egg-info/
+.pytest_cache/
+
 # 本地测试账号与凭据
 .open-android-intelligence-hermes/
+.agent-life-hermes/
 
