@@ -3,7 +3,7 @@ package com.openandroidintelligence.conversation.theme
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
-/** 松烟·硅石品牌基础色；界面一律通过 MaterialTheme 的语义角色取色。 */
+/** 品牌基础色；界面一律通过 MaterialTheme 的语义角色取色。 */
 object AppColors {
     val LightCanvas = Color(0xFFF1F4F1)
     val LightSurface = Color(0xFFE3ECE7)

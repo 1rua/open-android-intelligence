@@ -741,7 +741,7 @@ private fun AppearanceTabContent(environment: PlatformSettingsEnvironment) {
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "品牌默认使用松烟·硅石配色；系统动态取色和减少动态均为可持久化的本机偏好。",
+                text = "品牌默认使用专属配色；系统动态取色和减少动态均为可持久化的本机偏好。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -772,7 +772,7 @@ private fun AppearanceTabContent(environment: PlatformSettingsEnvironment) {
 
             GrantSwitchRow(
                 title = "系统动态取色",
-                subtitle = "从壁纸提取色调（Android 12+）。关闭时使用松烟·硅石品牌色。",
+                subtitle = "从壁纸提取色调（Android 12+）。关闭时使用默认品牌色。",
                 checked = settings.dynamicColor,
                 enabled = true,
                 onCheckedChange = environment.appearance::setDynamicColor,

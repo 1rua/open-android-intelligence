@@ -320,7 +320,7 @@ private fun AppearanceCard(
 ) {
     SettingsCard(title = "外观与动效") {
         Text(
-            text = "品牌默认使用松烟·硅石配色；系统动态取色和减少动态都是可持久化的本机偏好。",
+            text = "品牌默认使用专属配色；系统动态取色和减少动态都是可持久化的本机偏好。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

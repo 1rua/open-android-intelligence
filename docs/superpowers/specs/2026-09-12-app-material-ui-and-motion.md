@@ -20,7 +20,7 @@
 
 ## 唯一视觉系统
 
-采用“松烟·硅石”：轻浅苔绿背景、深墨绿夜间背景、茶金装饰信号点。品牌方案默认启用，跟随系统深浅模式。已有动态取色参数保留为显式可选项，使用 Android 官方 `dynamicLightColorScheme` / `dynamicDarkColorScheme`；不自行计算壁纸颜色。当前默认动态取色与旧琥珀深色不再覆盖品牌默认值。
+视觉系统采用轻浅苔绿背景、深墨绿夜间背景、茶金装饰信号点。品牌方案默认启用，跟随系统深浅模式。已有动态取色参数保留为显式可选项，使用 Android 官方 `dynamicLightColorScheme` / `dynamicDarkColorScheme`；不自行计算壁纸颜色。当前默认动态取色与旧琥珀深色不再覆盖品牌默认值。
 
 所有页面使用 `MaterialTheme.colorScheme`、`typography`、`shapes`，原始色值只保存在主题文件。surface 容器层次替代厚阴影、玻璃模糊；错误和连接状态同时有文字，颜色不单独表达权限。
 
