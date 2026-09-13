@@ -21,6 +21,8 @@ data class TimelineMessage(
     val parts: List<MessagePart>,
     val timestamp: Long,
     val state: String = "CONFIRMED",
+    /** The conversation carried by an SSE event, when the Gateway provides it. */
+    val conversationId: ConversationId? = null,
 )
 
 data class MessageBatch(
@@ -76,12 +78,14 @@ sealed interface VerifiedConversationEvent {
         override val occurredAt: Long,
         val messageId: String,
         val correlationId: String,
+        val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
 
     data class GenerationCancelled(
         override val eventId: String,
         override val occurredAt: Long,
         val generationId: String,
+        val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
 
     data class CommandResult(
@@ -110,12 +114,14 @@ sealed interface VerifiedConversationEvent {
         override val occurredAt: Long,
         val messageId: String,
         val revision: Long,
+        val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
 
     data class SnapshotInvalidated(
         override val eventId: String,
         override val occurredAt: Long,
         val snapshotRevision: Long,
+        val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
 }
 
@@ -133,9 +139,30 @@ interface ConversationRepository {
     suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation
     suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage
     suspend fun submitBatch(batch: MessageBatch): BatchAcceptance
+    /** Scoped overload used by delayed batches so a thread switch cannot retarget a send. */
+    suspend fun submitBatch(conversationId: String, batch: MessageBatch): BatchAcceptance =
+        submitBatch(batch.copy(clientConversationId = conversationId))
     suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance
+    /** Scoped overload used by in-flight sends; legacy implementations may delegate. */
+    suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance =
+        submitMessage(message)
     fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent>
     suspend fun cancelGeneration(generationId: String, requestId: String): CancelGenerationResult
+    /** Scoped cancellation overload; the default keeps old test adapters source-compatible. */
+    suspend fun cancelGeneration(
+        conversationId: String,
+        generationId: String,
+        requestId: String,
+    ): CancelGenerationResult = cancelGeneration(generationId, requestId)
+}
+
+/**
+ * Optional recovery port for a request whose HTTP result is unknown.
+ * Implementations must query the Gateway by the original client message ID
+ * before a retry; callers must never infer that a lost response means failure.
+ */
+interface MessageOutcomeQuery {
+    suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage?
 }
 
 interface AgentCommandCatalogRepository {

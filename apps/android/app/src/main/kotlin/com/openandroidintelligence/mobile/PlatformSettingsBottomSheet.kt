@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,6 +27,7 @@ enum class SettingsTab {
     SECURITY,
     PLUGINS,
     TRANSPORT,
+    APPEARANCE,
 }
 
 /**
@@ -113,6 +115,7 @@ fun PlatformSettingsBottomSheet(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -140,6 +143,12 @@ fun PlatformSettingsBottomSheet(
                     selected = currentTab == SettingsTab.TRANSPORT,
                     onClick = { currentTab = SettingsTab.TRANSPORT },
                 )
+                SettingsTabChip(
+                    title = "外观动效",
+                    icon = Icons.Default.Palette,
+                    selected = currentTab == SettingsTab.APPEARANCE,
+                    onClick = { currentTab = SettingsTab.APPEARANCE },
+                )
             }
 
             // ===== 3. 内容滚动区 =====
@@ -157,8 +166,9 @@ fun PlatformSettingsBottomSheet(
                         onDismiss = onDismissRequest,
                     )
                     SettingsTab.SECURITY -> SecurityTabContent(environment = environment)
-                    SettingsTab.PLUGINS -> PluginsTabContent()
+                    SettingsTab.PLUGINS -> PluginsTabContent(environment)
                     SettingsTab.TRANSPORT -> TransportTabContent(phase = phase)
+                    SettingsTab.APPEARANCE -> AppearanceTabContent(environment = environment)
                 }
             }
         }
@@ -212,6 +222,7 @@ private fun GatewayTabContent(
 ) {
     val connected = phase as? ConnectionPhase.Connected
     val grantState by environment.pairingGrants.state.collectAsState()
+    var showUnpairDialog by remember { mutableStateOf(false) }
 
     // 卡片 1: 活动 Gateway 账号资料
     Surface(
@@ -311,7 +322,7 @@ private fun GatewayTabContent(
             Column {
                 Text("配对会话标识 (Pairing Key)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
-                    text = connected?.pairingSummary ?: "pk_sec_ed25519_local",
+                    text = connected?.pairingSummary ?: "未返回配对摘要",
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -390,18 +401,39 @@ private fun GatewayTabContent(
         }
 
         Button(
-            onClick = {
-                runtime.logout(revokeRefresh = true)
-                onDismiss()
-            },
+            onClick = { showUnpairDialog = true },
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.error,
                 contentColor = MaterialTheme.colorScheme.onError,
             ),
             modifier = Modifier.weight(1f),
         ) {
-            Text("解除配对并擦除")
+            Text("解除配对")
         }
+    }
+
+    if (showUnpairDialog) {
+        AlertDialog(
+            onDismissRequest = { showUnpairDialog = false },
+            title = { Text("确认解除配对") },
+            text = {
+                Text(
+                    "这会撤销当前设备的 Gateway 配对凭据和本机授权。当前版本未接入对话镜像擦除端口，已保存的镜像不会被此按钮假装清理。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        runtime.logout(revokeRefresh = true)
+                        showUnpairDialog = false
+                        onDismiss()
+                    },
+                ) { Text("确认解除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnpairDialog = false }) { Text("取消") }
+            },
+        )
     }
 }
 
@@ -552,9 +584,11 @@ private fun SecurityTabContent(
             Text("内核安全原语监控 (Kernel Primitives)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text("由平台内核固定定义并执行硬上限，插件无法擅自篡改。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            PrimitiveItem(name = "附件读取配额", detail = "单文件 ≤ 25MB · 仅限用户显式选择", status = "正常")
-            PrimitiveItem(name = "受控网络代理 (Mediated Network)", detail = "仅允许清单声明的 HTTPS 端点", status = "已启用")
-            PrimitiveItem(name = "插件私有存储加密空间", detail = "按插件身份与账号双重隔离", status = "AES-256-GCM")
+            Text(
+                "本页不展示未由内核端口提供的配额、代理或存储运行状态。需要查看具体插件时，请使用内核实际提供的状态接口。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 
@@ -641,36 +675,11 @@ private fun SecurityTabContent(
     }
 }
 
-@Composable
-private fun PrimitiveItem(name: String, detail: String, status: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Text(detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Surface(
-            shape = RoundedCornerShape(6.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        ) {
-            Text(
-                text = status,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-            )
-        }
-    }
-}
-
 /**
  * Tab 3: 设备插件
  */
 @Composable
-private fun PluginsTabContent() {
+private fun PluginsTabContent(environment: PlatformSettingsEnvironment) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -678,9 +687,9 @@ private fun PluginsTabContent() {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("已安装设备插件 (Device Plugins)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("设备插件 (Device Plugins)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                "当前运行时尚未安装任何设备插件。插件需由作者自持密钥签名并声明资源预算，平台内核严格限制其调用权限；安装不等于启用，启用也不代表已向 Gateway 授予数据能力。",
+                "当前组合根没有可观察的插件目录端口，因此不猜测已安装或启用状态。插件需由作者签名并经平台内核验证、隔离和授权。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -704,9 +713,77 @@ private fun TransportTabContent(phase: ConnectionPhase) {
             Text(
                 "• 默认传输: 直连 HTTPS + 证书指纹核验 (SPKI Pinned)\n" +
                 "• 事件流通道: Server-Sent Events (SSE) 断点自动重连\n" +
-                "• 扩展链路: Tailscale 原生 Companion 插件 (当前未激活)",
+                "• Tailscale Companion：当前未提供运行时状态端口",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Tab 5: 外观动效
+ */
+@Composable
+private fun AppearanceTabContent(environment: PlatformSettingsEnvironment) {
+    val settings by environment.appearance.settings.collectAsState()
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = "外观与动效偏好",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "品牌默认使用松烟·硅石配色；系统动态取色和减少动态均为可持久化的本机偏好。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+
+            Text("主题模式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ThemePreference.values().forEach { option ->
+                    FilterChip(
+                        selected = settings.theme == option,
+                        onClick = { environment.appearance.setTheme(option) },
+                        label = {
+                            Text(
+                                when (option) {
+                                    ThemePreference.SYSTEM -> "跟随系统"
+                                    ThemePreference.LIGHT -> "浅色"
+                                    ThemePreference.DARK -> "深色"
+                                },
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            GrantSwitchRow(
+                title = "系统动态取色",
+                subtitle = "从壁纸提取色调（Android 12+）。关闭时使用松烟·硅石品牌色。",
+                checked = settings.dynamicColor,
+                enabled = true,
+                onCheckedChange = environment.appearance::setDynamicColor,
+            )
+
+            GrantSwitchRow(
+                title = "减少动态",
+                subtitle = "使用平滑淡化替换位移与缩放动效。",
+                checked = settings.reduceMotion,
+                enabled = true,
+                onCheckedChange = environment.appearance::setReduceMotion,
             )
         }
     }

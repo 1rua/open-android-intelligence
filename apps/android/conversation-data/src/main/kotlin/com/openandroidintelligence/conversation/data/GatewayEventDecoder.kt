@@ -33,6 +33,7 @@ object GatewayEventDecoder {
                 messageId = JsonFields.string(payload, "messageId").orEmpty(),
                 correlationId = JsonFields.string(payload, "correlationId")
                     ?: JsonFields.string(body, "correlationId").orEmpty(),
+                conversationId = conversationIdOf(payload),
             )
 
             "conversation.message.delta" -> timelineUpsert(eventId, occurredAt, payload, "STREAMING")
@@ -43,6 +44,7 @@ object GatewayEventDecoder {
                 eventId = eventId,
                 occurredAt = occurredAt,
                 generationId = JsonFields.string(payload, "generationId").orEmpty(),
+                conversationId = conversationIdOf(payload),
             )
 
             "conversation.command.result" -> VerifiedConversationEvent.CommandResult(
@@ -76,6 +78,7 @@ object GatewayEventDecoder {
                     occurredAt = occurredAt,
                     messageId = messageId,
                     revision = JsonFields.long(payload, "revision") ?: 0L,
+                    conversationId = conversationIdOf(payload),
                 )
             }
 
@@ -83,6 +86,7 @@ object GatewayEventDecoder {
                 eventId = eventId,
                 occurredAt = occurredAt,
                 snapshotRevision = JsonFields.long(payload, "snapshotRevision") ?: 0L,
+                conversationId = conversationIdOf(payload),
             )
 
             else -> null
@@ -115,15 +119,26 @@ object GatewayEventDecoder {
             eventId = eventId,
             occurredAt = occurredAt,
             revision = JsonFields.long(payload, "revision") ?: 0L,
-            message = com.openandroidintelligence.conversation.ports.TimelineMessage(
-                id = messageId,
-                sender = JsonFields.string(payload, "sender") ?: "assistant",
-                parts = readParts(payload),
-                timestamp = JsonFields.long(payload, "timestamp") ?: occurredAt,
-                state = state,
-            ),
-        )
+                message = com.openandroidintelligence.conversation.ports.TimelineMessage(
+                    id = messageId,
+                    sender = JsonFields.string(payload, "sender") ?: "assistant",
+                    parts = readParts(payload),
+                    timestamp = JsonFields.long(payload, "timestamp") ?: occurredAt,
+                    state = state,
+                    conversationId = conversationIdOf(payload),
+                ),
+            )
     }
+
+    /**
+     * Conversation ids are optional on the legacy event payloads, but when a
+     * Gateway sends one it is the only safe way for a shared account stream to
+     * keep an event from another thread out of the active timeline.
+     */
+    private fun conversationIdOf(payload: JsonValue.JObject?): ConversationId? =
+        JsonFields.string(payload, "conversationId")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { value -> runCatching { ConversationId(value) }.getOrNull() }
 
     private fun readParts(payload: JsonValue.JObject?): List<com.openandroidintelligence.conversation.model.MessagePart> {
         val items = JsonFields.array(JsonFields.field(payload, "parts"))?.items

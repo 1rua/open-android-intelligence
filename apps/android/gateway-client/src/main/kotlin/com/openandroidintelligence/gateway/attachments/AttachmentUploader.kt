@@ -4,6 +4,8 @@ import java.security.MessageDigest
 
 data class AttachmentLimits(val maxBytes: Long)
 
+enum class AttachmentUploadPhase { CREATE_PENDING, UPLOADING, VERIFYING }
+
 data class SelectedAttachment(
     val filename: String,
     val mediaType: String,
@@ -65,7 +67,7 @@ class AttachmentUploader(
     private val limits: AttachmentLimits = AttachmentLimits(maxBytes = DEFAULT_MAX_BYTES),
 ) {
 
-    suspend fun upload(attachment: SelectedAttachment): String {
+    suspend fun upload(attachment: SelectedAttachment, onPhase: ((AttachmentUploadPhase) -> Unit)? = null): String {
         if (attachment.content.size.toLong() > limits.maxBytes) {
             throw IllegalArgumentException("ATTACHMENT_TOO_LARGE:${attachment.content.size}")
         }
@@ -84,6 +86,7 @@ class AttachmentUploader(
             }
         }
 
+        onPhase?.invoke(AttachmentUploadPhase.CREATE_PENDING)
         val attachmentId = transport.create(
             AttachmentCreateRequest(
                 clientAttachmentId = "att_${sha256.take(32)}",
@@ -95,6 +98,7 @@ class AttachmentUploader(
             ),
         )
 
+        onPhase?.invoke(AttachmentUploadPhase.UPLOADING)
         transport.uploadContent(
             attachmentId,
             attachment.content,
@@ -104,8 +108,11 @@ class AttachmentUploader(
             ),
         )
 
+        onPhase?.invoke(AttachmentUploadPhase.VERIFYING)
         try {
             transport.commit(attachmentId)
+        } catch (cause: kotlinx.coroutines.CancellationException) {
+            throw cause
         } catch (cause: Exception) {
             throw IllegalStateException("COMMIT_FAILED:$attachmentId: ${cause.message}", cause)
         }

@@ -1,44 +1,39 @@
 package com.openandroidintelligence.ui.design
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.runtime.Immutable
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 @Immutable
-data class MotionPolicy(
-    val reduceMotion: Boolean = false,
-    val durationScale: Float = 1.0f,
-)
+data class MotionPolicy(val reduceMotion: Boolean = false, val durationScale: Float = 1f)
 
-object MotionSpecs {
-    // Apple 规范弹簧：默认无过冲 critically damped (damping 1.0, response 0.34s)
-    val StandardSpring = spring<Float>(
-        dampingRatio = Spring.DampingRatioNoBouncy,
-        stiffness = Spring.StiffnessMediumLow,
-    )
+val LocalMotionPolicy = staticCompositionLocalOf { MotionPolicy() }
 
-    // 拖拽释放/动量弹簧 (damping 0.82, response 0.32s)
-    val MomentumSpring = spring<Float>(
-        dampingRatio = 0.82f,
-        stiffness = Spring.StiffnessMedium,
-    )
-
-    // Reduced Motion 降级淡入淡出时长
-    const val ReducedMotionCrossfadeDuration = 150
-}
-
-interface MotionPreferenceSource {
-    val policy: StateFlow<MotionPolicy>
-}
-
-class DefaultMotionPreferenceSource : MotionPreferenceSource {
-    private val _policy = MutableStateFlow(MotionPolicy())
-    override val policy: StateFlow<MotionPolicy> = _policy.asStateFlow()
-
-    fun updateReduceMotion(enabled: Boolean) {
-        _policy.value = _policy.value.copy(reduceMotion = enabled)
+/** 不写系统设置；观察真实动画缩放，Compose 自身负责时间缩放，避免重复计算。 */
+@Composable
+fun rememberSystemMotionPolicy(userReduced: Boolean): MotionPolicy {
+    val resolver = LocalContext.current.contentResolver
+    fun readScale() = Settings.Global.getFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+    var scale by remember(resolver) { mutableFloatStateOf(readScale()) }
+    DisposableEffect(resolver) {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { scale = readScale() }
+        }
+        resolver.registerContentObserver(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), false, observer)
+        onDispose { resolver.unregisterContentObserver(observer) }
     }
+    return MotionPolicy(userReduced || scale == 0f, scale)
+}
+
+interface MotionPreferenceSource { val policy: StateFlow<MotionPolicy> }
+class DefaultMotionPreferenceSource : MotionPreferenceSource {
+    private val current = MutableStateFlow(MotionPolicy())
+    override val policy: StateFlow<MotionPolicy> = current.asStateFlow()
+    fun updateReduceMotion(enabled: Boolean) { current.value = current.value.copy(reduceMotion = enabled) }
 }

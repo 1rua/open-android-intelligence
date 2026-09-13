@@ -25,6 +25,11 @@ import kotlinx.coroutines.SupervisorJob
  */
 class OpenAndroidIntelligenceApplication : Application() {
 
+    /** User controlled shell appearance, kept outside all Gateway secrets. */
+    val appearancePreferences: AppearancePreferences by lazy {
+        AppearancePreferences(this)
+    }
+
     lateinit var kernel: PluginKernel
         private set
 
@@ -55,6 +60,7 @@ class OpenAndroidIntelligenceApplication : Application() {
         allowDeveloperTrustMode = BuildConfig.ALLOW_DEVELOPER_TRUST_MODE,
         kernel = kernel,
         pairingGrants = pairingGrants,
+        appearance = appearancePreferences,
     )
 
     override fun onCreate() {

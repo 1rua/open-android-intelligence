@@ -23,7 +23,11 @@ import com.openandroidintelligence.gateway.http.SpkiPinning
 import com.openandroidintelligence.gateway.negotiation.NegotiatedLimits
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,10 +72,21 @@ class GatewayRuntime(
     private val _controller = MutableStateFlow<WorkbenchController?>(null)
     val controller: StateFlow<WorkbenchController?> = _controller.asStateFlow()
 
+    private val _operationNotice = MutableStateFlow<String?>(null)
+    val operationNotice: StateFlow<String?> = _operationNotice.asStateFlow()
+    fun dismissOperationNotice() { _operationNotice.value = null }
+
+    private var connectionJob: Job? = null
+    private var sessionJob: Job? = null
+
     private val activeThread = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
     /** The login form's authoritative action; the UI only reflects the phase. */
     fun login(gatewayUrl: String, username: String, password: CharArray) {
+        if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) {
+            password.fill('\u0000')
+            return
+        }
         val normalized = gatewayUrl.trim().removeSuffix("/")
         if (!isHttpsGatewayUrl(normalized)) {
             password.fill('\u0000')
@@ -79,8 +94,9 @@ class GatewayRuntime(
             return
         }
         val profileId = profileIdFor(normalized, username)
-        scope.launch {
-            _phase.value = ConnectionPhase.Negotiating
+        _phase.value = ConnectionPhase.Negotiating
+        connectionJob = scope.launch {
+            try {
             val negotiation = runCatching { authClientFor(normalized).negotiate("neg_" + newToken()) }
             val negotiated = negotiation.getOrElse { cause ->
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
@@ -104,7 +120,6 @@ class GatewayRuntime(
                     devicePublicKeyBase64Url = publicKey,
                 )
             }
-            password.fill(' ')
             credentials.fold(
                 onSuccess = { session ->
                     val refreshCred = session.refreshCredential
@@ -112,12 +127,19 @@ class GatewayRuntime(
                         runCatching {
                             keystoreCredentials.saveRefresh(profileId, refreshCred)
                             saveLastProfile(normalized, username, profileId, session)
-                        }
+                        }.onFailure { _operationNotice.value = "自动登录凭据未能保存，下次启动需要重新登录。" }
                     }
                     establish(normalized, username, profileId, session, negotiated.limits, tlsPin)
                 },
                 onFailure = { cause -> _phase.value = ConnectionPhase.Failed(errorCode(cause)) },
             )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                _phase.value = ConnectionPhase.Failed(errorCode(cause))
+            } finally {
+                password.fill('\u0000')
+            }
         }
     }
 
@@ -129,28 +151,30 @@ class GatewayRuntime(
     }
 
     fun logout(revokeRefresh: Boolean) {
+        if (connectionJob?.isActive == true) return
         val current = _phase.value as? ConnectionPhase.Connected ?: return
         val profileId = profileIdFor(current.gatewayUrl, current.username)
-        val accountId = lastAccountId ?: current.username
-        val deviceId = lastDeviceId ?: "pre-auth"
-        val sessionId = lastSessionId
-        scope.launch {
+        val accountId = lastAccountId ?: return
+        val deviceId = lastDeviceId ?: return
+        val sessionId = lastSessionId ?: return
+        val accessToken = accessTokenHolder ?: return
+        connectionJob = scope.launch {
             runCatching {
                 authClientFor(current.gatewayUrl, setOf(current.tlsSpkiSha256)).logout(
-                    accessToken = accessTokenHolder ?: "",
+                    accessToken = accessToken,
                     accountId = accountId,
                     deviceId = deviceId,
-                    sessionId = sessionId ?: "",
+                    sessionId = sessionId,
                     revokeRefresh = revokeRefresh,
                 )
             }.onFailure { cause ->
-                _phase.value = ConnectionPhase.Failed(errorCode(cause))
+                _operationNotice.value = "登出未获 Gateway 确认，请检查连接后重试。"
                 return@launch
             }
             runCatching {
                 keystoreCredentials.clearRefresh(profileId)
                 clearLastProfile()
-            }
+            }.onFailure { _operationNotice.value = "Gateway 已登出，但本机凭据清理失败，请检查设备存储。" }
             if (revokeRefresh) {
                 pairingGrants.clearCurrent()
             }
@@ -160,6 +184,7 @@ class GatewayRuntime(
 
     /** Attempts silent session recovery on cold start if valid credentials exist. */
     fun restoreSessionIfAvailable() {
+        if (connectionJob?.isActive == true || _phase.value !is ConnectionPhase.Disconnected) return
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val lastUrl = prefs.getString(KEY_LAST_GATEWAY, null) ?: return
         val lastUser = prefs.getString(KEY_LAST_USER, null) ?: return
@@ -179,16 +204,17 @@ class GatewayRuntime(
         val refreshBytes = runCatching { keystoreCredentials.loadRefresh(lastProfileId) }.getOrNull() ?: return
         if (refreshBytes.isEmpty()) return
 
-        scope.launch {
-            _phase.value = ConnectionPhase.Negotiating
+        _phase.value = ConnectionPhase.Negotiating
+        connectionJob = scope.launch {
+            try {
             val auth = authClientFor(lastUrl)
-            val negotiated = runCatching { auth.negotiate("neg_" + newToken()) }.getOrElse {
-                _phase.value = ConnectionPhase.Disconnected
+            val negotiated = runCatching { auth.negotiate("neg_" + newToken()) }.getOrElse { cause ->
+                _phase.value = ConnectionPhase.Failed(errorCode(cause))
                 return@launch
             }
             val tlsPin = negotiated.tlsSpkiSha256?.takeIf(SpkiPinning::isProtocolPin)
                 ?: run {
-                    _phase.value = ConnectionPhase.Disconnected
+                    _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
                     return@launch
                 }
 
@@ -210,7 +236,7 @@ class GatewayRuntime(
                     keystoreCredentials.clearRefresh(lastProfileId)
                     clearLastProfile()
                 }
-                _phase.value = ConnectionPhase.Disconnected
+                _phase.value = ConnectionPhase.Failed(errorCode(cause))
                 return@launch
             }
 
@@ -218,9 +244,17 @@ class GatewayRuntime(
             if (newRefresh.isNotEmpty()) {
                 runCatching {
                     keystoreCredentials.saveRefresh(lastProfileId, newRefresh)
-                }
+                    saveLastProfile(lastUrl, lastUser, lastProfileId, session)
+                }.onFailure { _operationNotice.value = "轮换后的自动登录凭据未能保存，下次启动可能需要重新登录。" }
             }
             establish(lastUrl, lastUser, lastProfileId, session, negotiated.limits, tlsPin)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                _phase.value = ConnectionPhase.Failed(errorCode(cause))
+            } finally {
+                refreshBytes.fill(0)
+            }
         }
     }
 
@@ -274,12 +308,16 @@ class GatewayRuntime(
         lastDeviceId = session.deviceId
         lastSessionId = session.sessionId
 
+        sessionJob?.cancel()
+        val ownedJob = SupervisorJob(scope.coroutineContext[Job])
+        sessionJob = ownedJob
+        val sessionScope = CoroutineScope(ownedJob + Dispatchers.Main.immediate)
         val attachmentTransport = HttpAttachmentTransport(http)
         val uploader = AttachmentUploader(attachmentTransport)
         val gate = com.openandroidintelligence.conversation.attachment.AttachmentSubmissionGate(
-            onSubmit = { /* submission of attachment-only messages routes through the controller */ },
+            onSubmit = { error("ATTACHMENT_SUBMISSION_REQUIRES_CONVERSATION_CONTROLLER") },
         )
-        val attachmentCoordinator = GatewayAttachmentDraftCoordinator(uploader, gate, scope)
+        val attachmentCoordinator = GatewayAttachmentDraftCoordinator(uploader, gate, sessionScope)
 
         val conversationScope = ConversationScope(
             profileId = profileId,
@@ -289,7 +327,7 @@ class GatewayRuntime(
         )
 
         _controller.value = WorkbenchController(
-            scope = scope,
+            scope = sessionScope,
             repository = repository,
             catalogRepository = catalogRepository,
             scopeFactory = { conversationScope },
@@ -306,6 +344,8 @@ class GatewayRuntime(
     }
 
     private fun teardown() {
+        sessionJob?.cancel()
+        sessionJob = null
         _controller.value = null
         accessTokenHolder = null
         activeThread.set(null)
@@ -327,7 +367,7 @@ class GatewayRuntime(
             ),
         ),
         installationId = installationId(),
-        appVersion = "2.0.0",
+        appVersion = BuildConfig.VERSION_NAME.ifBlank { "unversioned" },
         platformApi = Build.VERSION.SDK_INT,
     )
 
@@ -346,11 +386,13 @@ class GatewayRuntime(
     private var lastDeviceId: String? = null
     private var lastSessionId: String? = null
 
+    @Synchronized
     private fun installationId(): String {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getString(KEY_INSTALL, null) ?: "install_" + newToken().also {
-            prefs.edit().putString(KEY_INSTALL, it).apply()
-        }
+        prefs.getString(KEY_INSTALL, null)?.let { return it }
+        val created = "install_" + newToken()
+        check(prefs.edit().putString(KEY_INSTALL, created).commit()) { "INSTALLATION_ID_PERSISTENCE_FAILED" }
+        return created
     }
 
     private fun saveLastProfile(gatewayUrl: String, username: String, profileId: String, session: SessionCredentials) {

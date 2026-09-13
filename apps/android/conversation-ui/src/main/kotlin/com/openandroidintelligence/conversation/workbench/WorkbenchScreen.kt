@@ -1,560 +1,175 @@
 package com.openandroidintelligence.conversation.workbench
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.LoadableRegion
-import com.openandroidintelligence.conversation.model.GenerationState
-import com.openandroidintelligence.conversation.ports.AgentCommand
+import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.conversation.theme.Dimensions
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-enum class WorkbenchTab {
-    CHAT,
-    WORKFLOW
-}
-
-/**
- * 主对话与工作台界面，严格还原 HTML 动效预览（截图 1）：
- * 1. 顶部圆角顶栏：左侧胶囊汉堡菜单 ☰、中间 [对话 | 工作流] 分段指示器、右侧圆角新增按钮 +；
- * 2. 对话空状态：高保真相机拍摄入口卡片、真实命令目录快捷卡片、网关实时在线状态卡片；
- * 3. 对话进行态：MessageTimeline 呈现真实历史与流式回复，左侧信号缝线指示；
- * 4. 工作流模式：展示真实后端 Gateway 导出的 Agent 命令与工作流列表；
- * 5. 完全遵守 Material Design 3 动态取色规范，无固定死颜色，适配平板居中。
- */
+/** 对话是主任务；全部内容来自同一 controller，HTML 只提供视觉层次。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WorkbenchScreen(
-    controller: WorkbenchController,
-    gatewayLabel: String,
-    onOpenSettings: () -> Unit,
-    onPickCamera: () -> Unit,
-    onPickGallery: () -> Unit,
-    onPickDocument: () -> Unit,
-    onVoiceInput: () -> Unit,
-    modifier: Modifier = Modifier,
+    controller: WorkbenchController, gatewayLabel: String, onOpenSettings: () -> Unit,
+    onPickCamera: () -> Unit, onPickGallery: () -> Unit, onPickDocument: () -> Unit,
+    onVoiceInput: () -> Unit, modifier: Modifier = Modifier,
+    onOpenAssistant: (() -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
-
-    var activeTab by remember { mutableStateOf(WorkbenchTab.CHAT) }
+    var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
+    val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
+    var showAttachmentLibrary by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.notice) {
-        state.notice?.let { snackbar.showSnackbar(it) }
-    }
-
-    // 自动跟随流式回复尾部
-    LaunchedEffect((state.timeline as? Loadable.Ready)?.value?.size) {
-        val visible = listState.layoutInfo.visibleItemsInfo
-        if (visible.isNotEmpty() && visible.last().index >= listState.layoutInfo.totalItemsCount - 2) {
-            listState.animateScrollToItem(listState.layoutInfo.totalItemsCount - 1)
+        state.notice?.let { notice ->
+            controller.dismissNotice()
+            snackbar.showSnackbar(notice)
         }
     }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
+            .distinctUntilChanged().collect { (scrolling, below) -> if (scrolling) followLatest = !below }
+    }
+    LaunchedEffect(state.activeThreadId, entries.lastOrNull()?.key, entries.lastOrNull()?.text, followLatest) {
+        // 真实 delta 直接增长；只在用户保持跟随时定位尾部，不逐 token 播放动画。
+        if (followLatest && entries.isNotEmpty()) listState.scrollToItem(entries.lastIndex, Int.MAX_VALUE)
+    }
 
-    ModalNavigationDrawer(
-        drawerState = drawer,
-        drawerContent = {
-            ModalDrawerSheet(
-                modifier = Modifier.fillMaxWidth(0.82f),
-                drawerContainerColor = MaterialTheme.colorScheme.surface,
-            ) {
-                ThreadDrawer(
-                    gatewayLabel = gatewayLabel,
-                    threads = state.threads,
-                    activeThreadId = state.activeThreadId,
-                    onOpenThread = { threadId ->
-                        controller.openThread(threadId)
-                        scope.launch { drawer.close() }
-                    },
-                    onCreateThread = {
-                        controller.createThread()
-                        scope.launch { drawer.close() }
-                    },
-                    onRefresh = { controller.refreshThreads() },
-                    onOpenSettings = {
-                        onOpenSettings()
-                        scope.launch { drawer.close() }
-                    },
-                    onCloseDrawer = {
-                        scope.launch { drawer.close() }
-                    },
-                )
-            }
-        },
-        modifier = modifier.fillMaxSize(),
-    ) {
-        Scaffold(
-            snackbarHost = { SnackbarHost(snackbar) { data -> Snackbar(data) } },
-            containerColor = MaterialTheme.colorScheme.background,
-            contentWindowInsets = WindowInsets.safeDrawing,
-        ) { padding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.TopCenter,
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = 760.dp), // 大屏与平板宽度限制，保持舒适阅读行长
-                ) {
-                    // ===== 1. 顶部 Header 栏（截图 1） =====
-                    WorkbenchTopHeader(
-                        activeTab = activeTab,
-                        onTabChange = { activeTab = it },
-                        onOpenDrawer = { scope.launch { drawer.open() } },
-                        onCreateThread = { controller.createThread() },
-                    )
-
-                    // ===== 2. 主内容区（对话 或 工作流） =====
-                    Box(modifier = Modifier.weight(1f)) {
-                        when (activeTab) {
-                            WorkbenchTab.CHAT -> {
-                                ChatTabContent(
-                                    controller = controller,
-                                    timelineState = state.timeline,
-                                    catalogState = state.catalog,
-                                    gatewayLabel = gatewayLabel,
-                                    listState = listState,
-                                    onPickCamera = onPickCamera,
-                                )
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val expanded = maxWidth >= Dimensions.ExpandedWindow
+        val drawerContent: @Composable () -> Unit = {
+            ThreadDrawer(gatewayLabel, state.threads, state.activeThreadId,
+                onOpenThread = { controller.openThread(it); scope.launch { drawer.close() } },
+                onCreateThread = { controller.createThread(); scope.launch { drawer.close() } },
+                onRefresh = controller::refreshThreads,
+                onOpenSettings = { scope.launch { drawer.close() }; onOpenSettings() },
+                onCloseDrawer = { scope.launch { drawer.close() } }, showClose = !expanded,
+                onOpenAttachments = { scope.launch { drawer.close() }; showAttachmentLibrary = true })
+        }
+        val conversation: @Composable () -> Unit = {
+            Scaffold(
+                snackbarHost = { SnackbarHost(snackbar) },
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                topBar = {
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text(state.activeThreadTitle.ifBlank { "对话" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(gatewayLabel, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
-                            WorkbenchTab.WORKFLOW -> {
-                                WorkflowTabContent(
-                                    catalogState = state.catalog,
-                                    onRefresh = { controller.loadCatalog() },
-                                    onSelectCommand = { cmd ->
-                                        controller.selectCommand(cmd)
-                                        activeTab = WorkbenchTab.CHAT
-                                    },
-                                )
+                        },
+                        navigationIcon = {
+                            if (!expanded) IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Default.Menu, "打开会话列表") }
+                        },
+                        actions = {
+                            onOpenAssistant?.let { open ->
+                                IconButton(onClick = open) { Icon(Icons.Default.PictureInPictureAlt, "浮动对话") }
                             }
-                        }
-                    }
-
-                    // ===== 3. 斜杠命令浮层（当输入以 / 开头时呈现） =====
-                    CommandMenu(
-                        catalogState = state.catalog,
-                        query = state.draft,
-                        onSelect = { controller.selectCommand(it) },
-                        onRetry = { controller.loadCatalog() },
+                            IconButton(onClick = { showAttachmentLibrary = true }) { Icon(Icons.Default.AttachFile, "附件库") }
+                            IconButton(onClick = controller::createThread) { Icon(Icons.Default.Add, "新建对话") }
+                            IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, "设置与平台管理") }
+                        },
+                        windowInsets = WindowInsets(0, 0, 0, 0),
                     )
-
-                    // ===== 4. 防抖合并批次状态条 =====
-                    PendingBatchStrip(members = state.pendingBatch)
-
-                    // ===== 5. 底部悬浮输入卡片 =====
-                    ComposerBar(
-                        draft = state.draft,
-                        onDraftChange = { controller.editDraft(it) },
-                        generation = state.generation,
-                        canSend = state.draft.isNotBlank() || (state.attachments.isNotEmpty() && state.attachments.all { it.state == com.openandroidintelligence.conversation.model.AttachmentState.VERIFIED }),
-                        onSend = { controller.sendDraft() },
-                        onStop = { controller.stopGeneration() },
-                        onPickCamera = onPickCamera,
-                        onPickGallery = onPickGallery,
-                        onPickDocument = onPickDocument,
-                        onVoiceInput = onVoiceInput,
-                        attachments = state.attachments,
-                        onRemoveAttachment = { controller.removeAttachment(it) },
-                        onRetryAttachment = { controller.retryAttachment(it) },
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * 顶部导航条：汉堡菜单 + [对话 | 工作流] 胶囊切换器 + 新建对话
- */
-@Composable
-private fun WorkbenchTopHeader(
-    activeTab: WorkbenchTab,
-    onTabChange: (WorkbenchTab) -> Unit,
-    onOpenDrawer: () -> Unit,
-    onCreateThread: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        // 左侧汉堡菜单按钮（圆角胶囊）
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier.size(42.dp),
-        ) {
-            IconButton(onClick = onOpenDrawer) {
-                Icon(
-                    imageVector = Icons.Default.Menu,
-                    contentDescription = "打开会话抽屉",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
-
-        // 中间分段选择器（Segmented Switch）
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier.height(42.dp),
-        ) {
-            Row(
-                modifier = Modifier.padding(3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                SegmentedItem(
-                    title = "对话",
-                    selected = activeTab == WorkbenchTab.CHAT,
-                    onClick = { onTabChange(WorkbenchTab.CHAT) },
-                )
-                SegmentedItem(
-                    title = "工作流",
-                    selected = activeTab == WorkbenchTab.WORKFLOW,
-                    onClick = { onTabChange(WorkbenchTab.WORKFLOW) },
-                )
-            }
-        }
-
-        // 右侧新建对话按钮（圆角胶囊）
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier.size(42.dp),
-        ) {
-            IconButton(onClick = onCreateThread) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "新建对话",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SegmentedItem(
-    title: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Surface(
-        shape = CircleShape,
-        color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier
-            .clip(CircleShape)
-            .clickable(onClick = onClick)
-            .animateContentSize(spring()),
-    ) {
-        Box(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-/**
- * 对话主视图：有消息时展示 MessageTimeline，空对话时呈现高保真引导卡片
- */
-@Composable
-private fun ChatTabContent(
-    controller: WorkbenchController,
-    timelineState: Loadable<List<com.openandroidintelligence.conversation.state.TimelineEntry>>,
-    catalogState: Loadable<com.openandroidintelligence.conversation.ports.AgentCommandCatalog>,
-    gatewayLabel: String,
-    listState: androidx.compose.foundation.lazy.LazyListState,
-    onPickCamera: () -> Unit,
-) {
-    LoadableRegion(
-        state = timelineState,
-        emptyHint = "发送第一条消息开始这段对话",
-        onRetry = { controller.refreshThreads() },
-        modifier = Modifier.fillMaxSize(),
-        ready = { entries ->
-            if (entries.isEmpty()) {
-                EmptyConversationSuggestions(
-                    catalogState = catalogState,
-                    gatewayLabel = gatewayLabel,
-                    onPickCamera = onPickCamera,
-                    onSelectCommand = { controller.selectCommand(it) },
-                )
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    items(entries, key = { it.key }) { entry ->
-                        MessageTimeline(entries = listOf(entry))
-                    }
-                }
-            }
-        },
-    )
-}
-
-/**
- * 空对话状态下的真实引导卡片（对齐截图 1）：
- * 1. 📷 启动相机拍照快捷卡片；
- * 2. 真实命令目录候选卡片（若可用）；
- * 3. Agent Gateway 实时在线状态卡片。
- */
-@Composable
-private fun EmptyConversationSuggestions(
-    catalogState: Loadable<com.openandroidintelligence.conversation.ports.AgentCommandCatalog>,
-    gatewayLabel: String,
-    onPickCamera: () -> Unit,
-    onSelectCommand: (String) -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        // 卡片 1: 相机拍照快捷入口
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .clickable(onClick = onPickCamera),
-        ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CameraAlt,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp),
-                )
-                Spacer(modifier = Modifier.width(14.dp))
-                Text(
-                    text = "📷 启动半屏相机拍照动效 (高保真取景器与快门闪光)",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-
-        // 卡片 2: 真实命令快捷入口（由 Gateway 目录驱动）
-        when (catalogState) {
-            is Loadable.Ready -> {
-                val firstCommand = catalogState.value.commands.firstOrNull()
-                if (firstCommand != null) {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .clickable { onSelectCommand(firstCommand.command) },
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Terminal,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(22.dp),
-                            )
-                            Spacer(modifier = Modifier.width(14.dp))
-                            Text(
-                                text = "${firstCommand.command} — ${firstCommand.description.ifBlank { "执行网关指令" }}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                }
-            }
-            is Loadable.Loading -> {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text("正在拉取 Gateway 可用指令目录...", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-            else -> {}
-        }
-
-        // 卡片 3: Agent Gateway 实时在线状态卡片
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary),
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Agent Gateway 实时在线",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-
-                Text(
-                    text = gatewayLabel.ifBlank { "在线就绪" },
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-    }
-}
-
-/**
- * 工作流模式视图：展示当前 Gateway 真实导出的 Agent 指令与自动化能力
- */
-@Composable
-private fun WorkflowTabContent(
-    catalogState: Loadable<com.openandroidintelligence.conversation.ports.AgentCommandCatalog>,
-    onRefresh: () -> Unit,
-    onSelectCommand: (String) -> Unit,
-) {
-    LoadableRegion(
-        state = catalogState,
-        emptyHint = "当前网关尚未配置任何工作流或命令",
-        onRetry = onRefresh,
-        modifier = Modifier.fillMaxSize(),
-        ready = { catalog ->
-            LazyColumn(
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                item {
-                    Text(
-                        text = "网关可用工作流与命令清单",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-                }
-                items(catalog.commands) { cmd ->
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable { onSelectCommand(cmd.command) },
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Code,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Spacer(modifier = Modifier.width(14.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = cmd.command,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                                if (cmd.description.isNotBlank()) {
-                                    Text(
-                                        text = cmd.description,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                },
+            ) { padding ->
+                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
+                    Column(Modifier.widthIn(max = Dimensions.ReadingWidth).fillMaxSize()) {
+                        Box(Modifier.weight(1f)) {
+                            if (state.timeline == Loadable.Empty || (state.activeThreadId == null && state.timeline == Loadable.Idle)) {
+                                ConversationWelcome(onCreate = if (state.activeThreadId == null) controller::createThread else null)
+                            } else {
+                                LoadableRegion(state.timeline, "写下第一条消息，开始这段对话", controller::retryTimeline,
+                                    modifier = Modifier.fillMaxSize(), ready = { rows ->
+                                        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(),
+                                            contentPadding = PaddingValues(Dimensions.SpaceMedium),
+                                            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceLarge)) {
+                                            items(rows, key = { it.key }) { entry -> MessageTimeline(listOf(entry)) }
+                                        }
+                                    })
+                            }
+                            if (!followLatest && entries.isNotEmpty()) {
+                                FilledTonalButton(onClick = { followLatest = true },
+                                    modifier = Modifier.align(Alignment.BottomCenter).padding(Dimensions.SpaceSmall)) {
+                                    Icon(Icons.Default.ArrowDownward, null)
+                                    Spacer(Modifier.width(Dimensions.SpaceSmall)); Text("回到最新")
                                 }
                             }
-                            FilledTonalButton(
-                                onClick = { onSelectCommand(cmd.command) },
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            ) {
-                                Text("填入", style = MaterialTheme.typography.labelSmall)
-                            }
                         }
+                        CommandMenu(state.catalog, state.draft, controller::selectCommand, controller::loadCatalog)
+                        PendingBatchStrip(state.pendingBatch)
+                        ComposerBar(state.draft, controller::editDraft, state.generation,
+                            canSend = state.activeThreadId != null && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
+                            onSend = controller::sendDraft, onStop = controller::stopGeneration,
+                            onPickCamera = onPickCamera, onPickGallery = onPickGallery, onPickDocument = onPickDocument,
+                            onVoiceInput = onVoiceInput, attachments = state.attachments,
+                            onRemoveAttachment = controller::removeAttachment, onRetryAttachment = controller::retryAttachment,
+                            modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall))
                     }
                 }
             }
-        },
-    )
+        }
+        if (expanded) {
+            Row(Modifier.fillMaxSize()) {
+                Box(Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()) { drawerContent() }
+                VerticalDivider()
+                Box(Modifier.weight(1f)) { conversation() }
+            }
+        } else {
+            ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = true,
+                drawerContent = { ModalDrawerSheet(Modifier.width(Dimensions.DrawerWidth)) { drawerContent() } }) { conversation() }
+        }
+        if (showAttachmentLibrary) {
+            androidx.activity.compose.BackHandler { showAttachmentLibrary = false }
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                AttachmentLibraryScreen(
+                    attachments = state.attachments,
+                    onPickGallery = onPickGallery,
+                    onPickDocument = onPickDocument,
+                    onPickCamera = onPickCamera,
+                    onRemoveAttachment = controller::removeAttachment,
+                    onRetryAttachment = controller::retryAttachment,
+                    onClose = { showAttachmentLibrary = false },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationWelcome(onCreate: (() -> Unit)?) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(Modifier.widthIn(max = Dimensions.FormWidth).padding(Dimensions.SpaceXLarge),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium)) {
+            SignalStitch(modifier = Modifier.height(Dimensions.BrandMark))
+            Text("从一个想法开始", style = MaterialTheme.typography.headlineMedium)
+            Text("与自己的 Agent 对话，分享你选中的图片和文件。", style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (onCreate != null) Button(onClick = onCreate) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(Dimensions.SpaceSmall)); Text("新建对话") }
+            else Text("输入 / 可查看此 Gateway 提供的命令。", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }

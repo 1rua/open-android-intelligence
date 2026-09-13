@@ -47,10 +47,21 @@ class MainActivity : ComponentActivity() {
         val runtime = app.gatewayRuntime
 
         setContent {
-            OpenAndroidIntelligenceTheme {
+            val appearanceSettings by app.appearancePreferences.settings.collectAsState()
+            val isDark = when (appearanceSettings.theme) {
+                ThemePreference.LIGHT -> false
+                ThemePreference.DARK -> true
+                ThemePreference.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
+            }
+            OpenAndroidIntelligenceTheme(
+                darkTheme = isDark,
+                dynamicColor = appearanceSettings.dynamicColor,
+                reduceMotion = appearanceSettings.reduceMotion,
+            ) {
                 val phase by runtime.phase.collectAsState()
                 val controller by runtime.controller.collectAsState()
                 var showSettingsSheet by remember { mutableStateOf(false) }
+                var showAssistant by remember { mutableStateOf(false) }
 
                 val voiceInputLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult(),
@@ -131,6 +142,7 @@ class MainActivity : ComponentActivity() {
                                     controller = activeController,
                                     gatewayLabel = currentPhase.gatewayUrl,
                                     onOpenSettings = { showSettingsSheet = true },
+                                    onOpenAssistant = { showAssistant = true },
                                     onPickCamera = { takePictureLauncher.launch(null) },
                                     onPickGallery = {
                                         pickMediaLauncher.launch(
@@ -171,6 +183,37 @@ class MainActivity : ComponentActivity() {
                                         }
                                     },
                                 )
+                                if (showAssistant) {
+                                    com.openandroidintelligence.conversation.workbench.FloatingConversationPanel(
+                                        controller = activeController,
+                                        onClose = { showAssistant = false },
+                                        onPickCamera = { takePictureLauncher.launch(null) },
+                                        onPickGallery = {
+                                            pickMediaLauncher.launch(
+                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                            )
+                                        },
+                                        onPickDocument = {
+                                            openDocumentLauncher.launch(arrayOf("*/*"))
+                                        },
+                                        onVoiceInput = {
+                                            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                                putExtra(RecognizerIntent.EXTRA_LANGUAGE, java.util.Locale.getDefault().toLanguageTag())
+                                                putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出要发送的内容")
+                                            }
+                                            if (intent.resolveActivity(packageManager) != null) {
+                                                try {
+                                                    voiceInputLauncher.launch(intent)
+                                                } catch (_: ActivityNotFoundException) {
+                                                    Toast.makeText(this@MainActivity, "系统语音输入不可用", Toast.LENGTH_SHORT).show()
+                                                }
+                                            } else {
+                                                Toast.makeText(this@MainActivity, "系统语音输入不可用", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                    )
+                                }
                             } else {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     CircularProgressIndicator(strokeWidth = 2.dp)

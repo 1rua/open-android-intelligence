@@ -3,6 +3,7 @@ package com.openandroidintelligence.conversation.theme
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
+/** 松烟·硅石品牌基础色；界面一律通过 MaterialTheme 的语义角色取色。 */
 object AppColors {
     val LightCanvas = Color(0xFFF1F4F1)
     val LightSurface = Color(0xFFE3ECE7)
@@ -10,49 +11,39 @@ object AppColors {
     val LightPrimary = Color(0xFF2F645C)
     val LightAccent = Color(0xFFB8874A)
     val LightText = Color(0xFF1C2724)
-    val LightMuted = Color(0xFF63706B)
-    val LightError = Color(0xFFA95E50)
-
-    // Dark Palette (MD3 Amber Dynamic Token Architecture from HTML Motion Preview)
-    val DarkCanvas = Color(0xFF0F0D09)
-    val DarkSurface = Color(0xFF16130D)
-    val DarkSurfaceContainerLow = Color(0xFF1F1B14)
-    val DarkSurfaceContainer = Color(0xFF231F18)
-    val DarkSurfaceContainerHigh = Color(0xFF2E2922)
-    val DarkSurfaceContainerHighest = Color(0xFF39342C)
-    val DarkSurfaceHigh = DarkSurfaceContainerHigh
-    val DarkPrimary = Color(0xFFFFBA2B)
-    val DarkOnPrimary = Color(0xFF432C00)
-    val DarkPrimaryContainer = Color(0xFF604000)
-    val DarkOnPrimaryContainer = Color(0xFFFFDE9F)
-    val DarkSecondary = Color(0xFFDBC39E)
-    val DarkTertiary = Color(0xFFB4CE9D)
-    val DarkAccent = Color(0xFFFFBA2B)
-    val DarkText = Color(0xFFE9E1D8)
-    val DarkMuted = Color(0xFF998F80)
-    val DarkOutline = Color(0xFF4D4539)
-    val DarkOutlineVariant = Color(0xFF342D23)
-    val DarkError = Color(0xFFFFB4AB)
-    val DarkOnError = Color(0xFF690005)
-
-    // Status colors
-    val StatusOnline = Color(0xFF4ADE80)
-    val StatusWarning = Color(0xFFFBBF24)
-
-    val LightBackground = LightCanvas
-    val LightSurfaceVariant = LightSurfaceHigh
-    val LightOnSurface = LightText
-    val LightOutline = LightMuted
-
-    val DarkBackground = DarkCanvas
-    val DarkSurfaceVariant = DarkSurfaceContainerHigh
-    val DarkOnSurface = DarkText
-    val DarkOutlineDefault = DarkOutline
+    val LightMuted = Color(0xFF4D5D57)
+    val LightError = Color(0xFF994E43)
+    val DarkCanvas = Color(0xFF101613)
+    val DarkSurface = Color(0xFF19231F)
+    val DarkSurfaceHigh = Color(0xFF26332E)
+    val DarkPrimary = Color(0xFF88BAAE)
+    val DarkAccent = Color(0xFFD3A86F)
+    val DarkText = Color(0xFFE8EFEB)
+    val DarkMuted = Color(0xFFAFBDB6)
+    val DarkError = Color(0xFFE1998C)
 }
 
+/** 4dp 细分、8dp 主网格。窗口断点使用 Material 紧凑/中等/扩展定义。 */
 object Dimensions {
+    val SpaceTiny = 4.dp
+    val SpaceSmall = 8.dp
+    val SpaceCompact = 12.dp
+    val SpaceMedium = 16.dp
+    val SpaceLarge = 24.dp
+    val SpaceXLarge = 32.dp
     val MinimumTouchTarget = 48.dp
     val DockedBall = 56.dp
+    val BrandMark = 64.dp
+    val Icon = 24.dp
+    val SmallIcon = 20.dp
+    val Progress = 24.dp
     val StrokeHairline = 1.dp
-    val StrokeStitch = 2.5.dp
+    val StrokeStitch = 2.dp
+    val FormWidth = 480.dp
+    val ReadingWidth = 840.dp
+    val MessageWidth = 640.dp
+    val DrawerWidth = 320.dp
+    val CommandMenuHeight = 240.dp
+    val MediumWindow = 600.dp
+    val ExpandedWindow = 840.dp
 }

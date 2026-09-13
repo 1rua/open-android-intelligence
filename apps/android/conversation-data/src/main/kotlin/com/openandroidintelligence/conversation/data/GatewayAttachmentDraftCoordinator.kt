@@ -11,6 +11,7 @@ import com.openandroidintelligence.conversation.ports.CancelSubmissionResult
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.ports.PendingSubmissionIntent
 import com.openandroidintelligence.gateway.attachments.AttachmentUploader
+import com.openandroidintelligence.gateway.attachments.AttachmentUploadPhase
 import com.openandroidintelligence.gateway.attachments.SelectedAttachment
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -58,8 +59,6 @@ class GatewayAttachmentDraftCoordinator(
 
         jobs[draftId] = scope.launch {
             runCatching {
-                update(draftId, AttachmentState.CREATE_PENDING)
-                update(draftId, AttachmentState.UPLOADING)
                 val remoteId = uploader.upload(
                     SelectedAttachment(
                         filename = selection.filename,
@@ -67,16 +66,24 @@ class GatewayAttachmentDraftCoordinator(
                         content = selection.bytes,
                         declaredSha256 = sha256,
                     ),
+                    onPhase = { phase -> update(draftId, phase.toDraftState()) },
                 )
                 remoteIds[draftId] = remoteId
-                update(draftId, AttachmentState.VERIFYING)
                 update(draftId, AttachmentState.VERIFIED)
             }.onFailure { cause ->
+                val unknown = (cause is IllegalStateException &&
+                    cause.message?.contains("COMMIT_FAILED") == true) ||
+                    cause.message?.contains("COMMIT_FAILED") == true
                 val terminal = cause is IllegalArgumentException ||
                     cause.message?.contains("DIGEST_MISMATCH") == true
+                val targetState = when {
+                    unknown -> AttachmentState.OUTCOME_UNKNOWN
+                    terminal -> AttachmentState.TERMINAL_FAILURE
+                    else -> AttachmentState.RETRYABLE_FAILURE
+                }
                 update(
                     draftId,
-                    if (terminal) AttachmentState.TERMINAL_FAILURE else AttachmentState.RETRYABLE_FAILURE,
+                    targetState,
                     cause.message,
                 )
             }
@@ -116,19 +123,28 @@ class GatewayAttachmentDraftCoordinator(
         jobs[draftId]?.cancel()
         jobs[draftId] = scope.launch {
             runCatching {
-                update(draftId, AttachmentState.UPLOADING)
                 val remoteId = uploader.upload(
                     SelectedAttachment(
                         filename = selection.filename,
                         mediaType = selection.mediaType,
                         content = selection.bytes,
                     ),
+                    onPhase = { phase -> update(draftId, phase.toDraftState()) },
                 )
                 remoteIds[draftId] = remoteId
-                update(draftId, AttachmentState.VERIFYING)
                 update(draftId, AttachmentState.VERIFIED)
             }.onFailure { cause ->
-                update(draftId, AttachmentState.RETRYABLE_FAILURE, cause.message)
+                val unknown = (cause is IllegalStateException &&
+                    cause.message?.contains("COMMIT_FAILED") == true) ||
+                    cause.message?.contains("COMMIT_FAILED") == true
+                val terminal = cause is IllegalArgumentException ||
+                    cause.message?.contains("DIGEST_MISMATCH") == true
+                val targetState = when {
+                    unknown -> AttachmentState.OUTCOME_UNKNOWN
+                    terminal -> AttachmentState.TERMINAL_FAILURE
+                    else -> AttachmentState.RETRYABLE_FAILURE
+                }
+                update(draftId, targetState, cause.message)
             }
         }
     }
@@ -155,6 +171,12 @@ class GatewayAttachmentDraftCoordinator(
             state = state,
             progress = if (state == AttachmentState.VERIFIED) 1f else 0f,
         )
+    }
+
+    private fun AttachmentUploadPhase.toDraftState(): AttachmentState = when (this) {
+        AttachmentUploadPhase.CREATE_PENDING -> AttachmentState.CREATE_PENDING
+        AttachmentUploadPhase.UPLOADING -> AttachmentState.UPLOADING
+        AttachmentUploadPhase.VERIFYING -> AttachmentState.VERIFYING
     }
 
     private fun newDraftId(): String {

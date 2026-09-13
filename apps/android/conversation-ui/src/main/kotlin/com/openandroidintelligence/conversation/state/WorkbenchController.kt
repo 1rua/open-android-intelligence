@@ -93,6 +93,10 @@ class WorkbenchController(
         loadCatalog()
     }
 
+    fun retryTimeline() {
+        activeThreadId?.let(::reloadTimeline) ?: refreshThreads()
+    }
+
     fun refreshThreads() {
         update { it.copy(threads = Loadable.Loading) }
         scope.launch {
