@@ -223,41 +223,6 @@ def compose_gateway_services(ctx: Any) -> GatewayServices:
     return GatewayServices(core, admin, exposure)
 
 
-def _resolve_configured_port() -> str:
-    import os
-    return str(os.getenv("OPEN_ANDROID_GATEWAY_PORT", "8045")).strip() or "8045"
-
-
-def _persist_gateway_port(port: str) -> bool:
-    import os
-    os.environ["OPEN_ANDROID_GATEWAY_PORT"] = str(port)
-    try:
-        from hermes_cli.config import save_env_value
-        save_env_value("OPEN_ANDROID_GATEWAY_PORT", str(port))
-        return True
-    except Exception:
-        pass
-    try:
-        env_file = Path.home() / ".hermes" / ".env"
-        if env_file.parent.exists():
-            lines = []
-            found = False
-            if env_file.exists():
-                for line in env_file.read_text(encoding="utf-8").splitlines():
-                    if line.startswith("OPEN_ANDROID_GATEWAY_PORT="):
-                        lines.append(f"OPEN_ANDROID_GATEWAY_PORT={port}")
-                        found = True
-                    else:
-                        lines.append(line)
-            if not found:
-                lines.append(f"OPEN_ANDROID_GATEWAY_PORT={port}")
-            env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            return True
-    except Exception:
-        pass
-    return False
-
-
 def interactive_setup(
     admin: AdminService,
     input_fn: Callable[[str], str] = input,
@@ -288,29 +253,10 @@ def interactive_setup(
         return True
 
     try:
-        # 1. 查看与修改监听端口
-        current_port = _resolve_configured_port()
-        while True:
-            raw_port = input_fn(f"  网关监听端口 [直接回车保持当前 {current_port}]: ").strip()
-            if not raw_port:
-                break
-            try:
-                port_num = int(raw_port)
-                if not (1 <= port_num <= 65535):
-                    print("  ❌ 端口号必须在 1 到 65535 之间，请重新输入。")
-                    continue
-                _persist_gateway_port(str(port_num))
-                current_port = str(port_num)
-                print(f"  ✅ 网关监听端口已设置为 {current_port}")
-                break
-            except ValueError:
-                print("  ❌ 端口号必须是纯数字，请重新输入。")
-
         choice = input_fn("  是否现在为连接手机创建一个网关账号？[Y/n]: ").strip()
         if choice.lower() in ("n", "no"):
             print("  已跳过账号创建。后续可随时通过命令创建：")
             print("    hermes open-android-intelligence account create --username <用户名> --password <密码> --confirm-local\n")
-            print(f"  • 网关监听端口: {current_port}")
             return True
 
         account_id = ""
@@ -351,14 +297,16 @@ def interactive_setup(
         })
 
         if result.get("ok"):
+            import os
+            port = os.getenv("OPEN_ANDROID_GATEWAY_PORT", "8045")
             storage_root = getattr(admin.core, "storage_root", "默认目录")
             print(f"\n  ✅ 账号 '{account_id}' 创建成功！")
             print(f"  • 数据存储沙箱: {storage_root}")
             print(f"  • 网关协议: Gateway Protocol v2 (已就绪)")
-            print(f"  • 监听端口: {current_port}")
+            print(f"  • 监听端口: {port} (可在 ~/.hermes/.env 中通过 OPEN_ANDROID_GATEWAY_PORT 修改)")
             print("\n  📱 手机端连接指南：")
             print("    1. 打开 Android 手机端 Open Android Intelligence App；")
-            print(f"    2. 在登录页面输入 Gateway 地址 (例如 http://<本机IP>:{current_port}) 与账号 '{account_id}' 及刚刚设定的密码即可完成配对。\n")
+            print(f"    2. 在登录页面输入 Gateway 地址 (例如 http://<本机IP>:{port}) 与账号 '{account_id}' 及刚刚设定的密码即可完成配对。\n")
             return True
         else:
             err = result.get("error", {})
