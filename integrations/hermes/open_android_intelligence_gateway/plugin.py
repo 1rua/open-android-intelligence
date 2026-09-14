@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Protocol
 from typing import Any, Callable, Mapping, Protocol
 
 from .admin import (
     HERMES_HOST_API,
+    VERIFIED_HERMES_HOST_API,
     AdminService,
     bind_admin_service,
     create_admin_cli_registrar,
@@ -23,7 +23,6 @@ from .adapter import (
     OpenAndroidPlatformAdapter,
     create_gateway_request_verifier,
 )
-from .account_paths import GATEWAY_DIRECTORY_NAME
 from .account_paths import GATEWAY_DIRECTORY_NAME, WIRE_ID_PATTERN
 from .core import GatewayCore, create_gateway_core
 from .http import EXPOSURE_MODES, GatewayExposure, create_gateway_exposure
@@ -159,8 +158,35 @@ def _storage_root(ctx: Any) -> Path | None:
 
 
 def compose_gateway_services(ctx: Any) -> GatewayServices:
-    host_api = normalize_host_api(_attr(ctx, "host_api", "hostApi", default=None))
+    config = _attr(ctx, "plugin_config", "pluginConfig", default={}) or {}
+    raw_api = _attr(ctx, "host_api", "hostApi", default=None)
+    if raw_api is None and isinstance(config, Mapping):
+        raw_api = config.get("hostApi", config.get("host_api"))
+
     host_version = _attr(ctx, "host_version", "hostVersion", default=None)
+    if host_version is None and isinstance(config, Mapping):
+        host_version = config.get("hostVersion", config.get("host_version"))
+
+    # Autodetect real Hermes Agent runtime when running inside Hermes
+    if host_version is None:
+        try:
+            import hermes_cli
+            host_version = getattr(hermes_cli, "__version__", None)
+        except Exception:
+            pass
+
+    # If running inside a live Hermes Agent host without an explicit host_api override,
+    # resolve to the verified host API baseline for Hermes Agent v0.20.0+
+    if raw_api is None:
+        ctx_type_name = type(ctx).__name__
+        is_hermes_context = (
+            ctx_type_name == "PluginContext"
+            or ("hermes_cli" in sys.modules and ctx_type_name != "FakeHermesContext")
+        )
+        if is_hermes_context and host_version is not None:
+            raw_api = VERIFIED_HERMES_HOST_API
+
+    host_api = normalize_host_api(raw_api)
     core = _attr(ctx, "gateway_core", "gatewayCore", default=None)
     verifier = _attr(ctx, "credential_verifier", "credentialVerifier", default=None)
     if core is None:
@@ -319,28 +345,11 @@ def register(ctx: Any) -> None:
                     return _check_deps() and not services.admin.read_only
 
                 def _setup_fn() -> None:
-                    print("\n  ─── 📱 Open Android Intelligence Gateway 配置向导 ───")
-                    print("  Open Android Intelligence Gateway Protocol v2 平台已在 Hermes 中就绪。")
-                    print("  可通过 Hermes 本地 CLI 创建与管理手机端连接账号：")
-                    print("    1. 创建新账号:  hermes open-android-intelligence account create --username <用户名> --password <密码>")
-                    print("    2. 查看运行状态: hermes open-android-intelligence status")
-                    print("  随后在 Android 手机端的 Open Android Intelligence App 中输入 Gateway 地址与账号凭据即可完成配对。\n")
                     interactive_setup(services.admin)
 
                 register_plat(
                     name="open_android",
                     label="Open Android Intelligence (Gateway v2)",
-                    adapter_factory=_build_adapter,
-                    check_fn=_check_deps,
-                    is_connected=_is_connected,
-                    validate_config=_is_connected,
-                    setup_fn=_setup_fn,
-                    install_hint="",
-                    emoji="📱",
-                )
-                register_plat(
-                    name="open_android_intelligence",
-                    label="Open Android Intelligence Gateway",
                     adapter_factory=_build_adapter,
                     check_fn=_check_deps,
                     is_connected=_is_connected,
@@ -499,6 +508,5 @@ HERMES_PLUGIN = {
 __all__ = [
     "AdminSurface", "GatewayPlatform", "GatewayRequestVerifier", "GatewayServices",
     "HermesPluginContext", "HERMES_PLUGIN", "HERMES_PLUGIN_MANIFEST",
-    "compose_gateway_services", "create_gateway_request_verifier", "register",
     "compose_gateway_services", "create_gateway_request_verifier", "interactive_setup", "register",
 ]

@@ -88,3 +88,32 @@ def test_registered_no_argument_cli_reuses_the_panel_admin_service(tmp_path):
 
     panel = context.admin_surfaces[0].panel
     assert run_admin_command(["status"]) == panel.status()
+
+
+def test_registration_resolves_verified_hermes_host_api(tmp_path):
+    class PluginContext:
+        def __init__(self, plugin_data_dir, host_version="0.20.0"):
+            self.plugin_data_dir = plugin_data_dir
+            self.secret_store = None
+            self.credential_verifier = PasswordVerifierDouble()
+            self.host_version = host_version
+            self.platforms = []
+            self.admin_surfaces = []
+            self.http_routes = []
+            self.cli_registrations = []
+
+        def register_platform(self, platform):
+            self.platforms.append(platform)
+
+        def register_admin(self, admin):
+            self.admin_surfaces.append(admin)
+
+        def register_http_route(self, route):
+            self.http_routes.append(route)
+
+        def register_cli(self, registrar, options):
+            self.cli_registrations.append((registrar, options))
+
+    ctx = PluginContext(tmp_path)
+    register(ctx)
+    assert ctx.admin_surfaces[0].read_only is False

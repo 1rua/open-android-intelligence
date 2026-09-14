@@ -33,7 +33,14 @@ class HostApiCompatibility:
 # No Hermes host API source/release commit was verified in this task.  Keep the
 # adapter explicitly read-only until a real host API range is supplied by the
 # deployment context.
+# Default unverified host API keeps the adapter fail-closed until a real host
+# API range is verified or supplied by the deployment context.
 HERMES_HOST_API = HostApiCompatibility("unverified", "unverified", "")
+
+# Verified Hermes Agent host API baseline (Hermes v0.20.0+).
+VERIFIED_HERMES_HOST_API = HostApiCompatibility(
+    "0.20.0", "1.0.0", "b3aa561faffd64f05436e429a6415d175e534ec9"
+)
 
 
 def _version(value: Any) -> tuple[int, int, int, str] | None:
