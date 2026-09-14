@@ -2,13 +2,18 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+        usesCleartextTraffic 允许用户显式输入的 http:// 明文 Gateway（ADR 0047）。
+        HTTPS 仍是默认链路：已固定 TLS 身份的连接不会被允许降级到明文，
+        明文连接会持续显示未加密警告，界面不会把它标成已核验的身份。
+    -->
     <application
         android:name=".OpenAndroidIntelligenceApplication"
         android:allowBackup="false"
         android:label="Open Android Intelligence"
         android:supportsRtl="true"
         android:theme="@style/Theme.OpenAndroidIntelligence"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

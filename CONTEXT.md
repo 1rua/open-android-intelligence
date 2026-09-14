@@ -298,6 +298,10 @@ _Avoid_: 忽略证书错误、Tailscale 免验证、首次静默信任
 仅用于本地或明确测试地址、真正忽略 TLS 身份错误的受限连接；它持续显示警告，并禁止密码、附件、后台同步、设备插件和敏感数据。
 _Avoid_: 私有证书信任、生产 HTTPS、临时忽略错误
 
+**明文网关连接（Plaintext Gateway Connection）**:
+用户显式输入 `http://` 地址所建立的未加密连接；它没有可核验的 Gateway 身份，因此必须持续显示未加密警告，声明了 TLS 指纹的账号不得降级使用，界面也不得把它表述为已固定或已核验的身份。
+_Avoid_: 私有证书信任、不安全开发连接、等同 HTTPS
+
 **Gateway 事件流（Gateway Event Stream）**:
 Gateway 通过 HTTPS 持续发送流式回复和设备事件的有序通道；Android 使用事件游标从断点恢复，而不是假定连接永久在线。
 _Avoid_: 永久在线、WebSocket 权威通道、无界重放

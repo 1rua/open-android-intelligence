@@ -37,7 +37,7 @@ enum class SettingsTab {
  * 3. 网关账号：真实活动资料、刷新凭据、配对能力清单（短信/屏幕/剪贴板权限开关）、退出登录/解除配对；
  * 4. 内核安全：开发者信任模式开关（带安全确认弹窗）、内核安全原语、真实安全审计记录、一键紧急停用；
  * 5. 设备插件：真实查询 PluginKernel 已激活插件，无插件时真实呈现空状态说明；
- * 6. 传输链路：直接 HTTPS + SSE 默认链路与 Tailscale Companion 状态；
+ * 6. 传输链路：直接 HTTPS + SSE 默认链路、明文 HTTP 降级连接的持续警告与 Tailscale Companion 状态；
  * 7. 完全符合 Material Design 3 规范与系统动态取色。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -304,14 +304,15 @@ private fun GatewayTabContent(
                         Text(
                             text = when {
                                 connected == null -> "未连接"
-                                connected.tlsSpkiSha256.isNotBlank() -> "TLS 已固定"
+                                !connected.transportSecurity.isEncrypted -> "未加密（HTTP）"
+                                connected.tlsSpkiSha256 != null -> "TLS 已固定"
                                 else -> "系统 CA 信任"
                             },
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (connected == null) {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            } else {
-                                MaterialTheme.colorScheme.primary
+                            color = when {
+                                connected == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                connected.transportSecurity.isEncrypted -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.error
                             },
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                         )
@@ -717,6 +718,14 @@ private fun TransportTabContent(phase: ConnectionPhase) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (phase is ConnectionPhase.Connected && !phase.transportSecurity.isEncrypted) {
+                Text(
+                    text = "⚠ 当前连接未加密：地址为明文 HTTP，没有可核验的 Gateway 身份。" +
+                        "账号口令、消息与附件内容对网络中的旁观者可读；已固定 TLS 身份的连接不会被允许这样降级。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
     }
 }

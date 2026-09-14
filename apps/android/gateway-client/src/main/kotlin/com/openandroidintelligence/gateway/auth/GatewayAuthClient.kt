@@ -1,7 +1,7 @@
 package com.openandroidintelligence.gateway.auth
 
 import com.openandroidintelligence.gateway.http.GatewayResponse
-import com.openandroidintelligence.gateway.http.HttpsGatewayTransport
+import com.openandroidintelligence.gateway.http.GatewayTransport
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.http.WireRequest
@@ -25,16 +25,18 @@ data class SessionCredentials(
 )
 
 /**
- * Password login, refresh rotation and session termination over real HTTPS.
+ * Password login, refresh rotation and session termination over the real
+ * Gateway transport (HTTPS, or plaintext HTTP for a gateway the user reached
+ * deliberately — see [com.openandroidintelligence.gateway.http.TransportSecurity]).
  *
  * These endpoints run before a signed session exists, so they ride the plain
- * [HttpsGatewayTransport]: negotiate and login carry no signature, and logout
+ * [GatewayTransport]: negotiate and login carry no signature, and logout
  * presents the bearer token the login already returned. The password exists
  * only inside [loginWithPassword] and is scrubbed before returning, mirroring
  * [GatewaySessionManager]'s rules.
  */
 class GatewayAuthClient(
-    private val transport: HttpsGatewayTransport,
+    private val transport: GatewayTransport,
     private val installationId: String,
     private val appVersion: String,
     private val platformApi: Int,

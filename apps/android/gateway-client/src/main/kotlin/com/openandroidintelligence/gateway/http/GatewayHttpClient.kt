@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
-import java.net.URL
 
 data class GatewayProfile(
     val accountId: String,
@@ -21,11 +20,14 @@ data class GatewayProfile(
     val accessToken: String = "",
 ) {
     init {
-        val isHttps = runCatching {
-            val url = URL(gatewayBaseUrl)
-            url.protocol == "https" && url.host.isNotBlank()
-        }.getOrDefault(false)
-        require(isHttps) { "gateway base url must be https" }
+        val endpoint = GatewayEndpoint.parse(gatewayBaseUrl)
+        require(endpoint != null) { "gateway base url must be http or https with a host" }
+        // A pin is a claim about a TLS certificate. Refusing it on a plaintext
+        // address here keeps the invariant at the type boundary instead of
+        // leaving it to whichever transport happens to open the socket.
+        require(endpoint.isTls || pinnedSpkiSha256.isEmpty()) {
+            "gateway pins require an https base url"
+        }
     }
 }
 

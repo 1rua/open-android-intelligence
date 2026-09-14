@@ -11,7 +11,7 @@ version: 2.0.0
 
 本契约定义 Android 宿主与一个账号所属逻辑 Gateway 之间的应用层协议。它不定义 Hermes/OpenClaw 内部 API、插件 WASM ABI 或 Companion IPC。
 
-V2 是新协议，不兼容 Bridge Protocol v1。所有端点必须使用 HTTPS；SSE 是唯一 V1 流式事件通道，不提供等价 WebSocket 通道。
+V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme 无关，但传输必须满足：HTTPS 是默认且唯一身份可核验的链路，客户端在协商返回 `tlsSpkiSha256` 时必须固定该身份；只有当用户显式输入 `http://` 地址时才允许明文连接，此时没有可核验的 Gateway 身份，客户端必须持续显示未加密警告，且声明了 TLS 指纹的账号不得降级到明文（见 ADR 0047）。SSE 是唯一 V1 流式事件通道，不提供等价 WebSocket 通道。
 
 ## 2. 基础约定
 

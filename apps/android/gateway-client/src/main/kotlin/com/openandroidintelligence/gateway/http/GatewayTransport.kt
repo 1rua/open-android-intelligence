@@ -8,24 +8,28 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-import javax.net.ssl.HttpsURLConnection
 
 /**
- * The app's real Gateway transport: direct HTTPS plus SSE.
+ * The app's real Gateway transport: HTTPS or plaintext HTTP, plus SSE.
  *
  * This is the only place that turns a [WireRequest] into bytes on a socket. It
  * owns three rules that must not leak upwards:
  *
- * - every connection is https-only and opened through [HttpsConnectionFactory];
+ * - every connection is opened through [GatewayConnectionFactory] and classified
+ *   by [GatewayConnectionSecurity] before any request body or response byte is
+ *   trusted, so a pinned profile cannot be downgraded to a plaintext one;
  * - pins are verified against the certificates the connection actually
  *   negotiated, before any response byte is trusted;
  * - the SSE stream emits raw byte chunks and never frames them, so cursor
  *   advancement stays the job of the parser that sees complete frames.
  */
-class HttpsGatewayTransport(
+class GatewayTransport(
     private val profile: GatewayProfile,
-    private val factory: HttpsConnectionFactory = HttpsConnectionFactory(),
+    private val factory: GatewayConnectionFactory = GatewayConnectionFactory(),
 ) : GatewayByteTransport {
+
+    private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
+        ?: error("GATEWAY_ENDPOINT_INVALID: ${profile.gatewayBaseUrl}")
 
     override suspend fun execute(request: WireRequest): WireResponse {
         val connection = open(request)
@@ -33,10 +37,10 @@ class HttpsGatewayTransport(
             if (request.body.isNotEmpty()) {
                 connection.doOutput = true
             }
-            // Complete the TLS handshake and pin verification before any
-            // sensitive request body is written to the socket.
+            // Establish the connection and its identity before any sensitive
+            // request body is written to the socket.
             connection.connect()
-            verifyPins(connection)
+            GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
             if (request.body.isNotEmpty()) {
                 connection.outputStream.use { stream -> stream.write(request.body) }
             }
@@ -52,7 +56,7 @@ class HttpsGatewayTransport(
         val connection = open(request)
         try {
             connection.connect()
-            verifyPins(connection)
+            GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
             val status = connection.responseCode
             if (status !in 200..299) {
                 throw IOException("EVENT_STREAM_FAILED:$status")
@@ -75,8 +79,7 @@ class HttpsGatewayTransport(
     }.flowOn(Dispatchers.IO)
 
     private fun open(request: WireRequest): HttpURLConnection {
-        val url = URL(profile.gatewayBaseUrl.trimEnd('/') + request.target)
-        val connection = factory.open(url)
+        val connection = factory.open(URL(endpoint.baseUrl.trimEnd('/') + request.target))
         connection.requestMethod = request.method
         connection.doInput = true
         connection.setRequestProperty("Accept", "application/json")
@@ -85,12 +88,6 @@ class HttpsGatewayTransport(
             connection.setRequestProperty(header.name, header.value)
         }
         return connection
-    }
-
-    private fun verifyPins(connection: HttpURLConnection) {
-        val https = connection as? HttpsURLConnection
-            ?: throw IOException("HTTPS_REQUIRED")
-        SpkiPinning.verify(https, profile.pinnedSpkiSha256)
     }
 
     private fun readHeaders(connection: HttpURLConnection): List<RawHeader> {

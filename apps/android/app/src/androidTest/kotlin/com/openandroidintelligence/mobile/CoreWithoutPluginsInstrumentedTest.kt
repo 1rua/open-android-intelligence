@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile
 
 import android.content.ComponentName
+import android.content.pm.ApplicationInfo
 import java.io.File
 import java.time.Instant
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -17,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -38,18 +40,62 @@ class CoreWithoutPluginsInstrumentedTest {
     }
 
     @Test
-    fun plainHttpIsRejectedBeforeAnyNetworkAttempt() {
+    fun unsupportedSchemeIsRejectedBeforeAnyNetworkAttempt() {
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         val application = appContext.applicationContext as OpenAndroidIntelligenceApplication
         val runtime = application.gatewayRuntime
 
-        runtime.login("http://gateway.example.com", "alice", "secret".toCharArray())
+        runtime.login("ftp://gateway.example.com", "alice", "secret".toCharArray())
 
         assertEquals(
             ConnectionPhase.Failed("AUTH_INVALID:url-scheme-required"),
             runtime.phase.value,
         )
         runtime.resetFailure()
+    }
+
+    @Test
+    fun plainHttpPassesThePairingGateAndFailsOnTheConnectionInstead() {
+        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val application = appContext.applicationContext as OpenAndroidIntelligenceApplication
+        val runtime = application.gatewayRuntime
+
+        // 明文地址在配对阶段被接受（ADR 0047）：失败必须来自真实连接尝试，
+        // 而不是被 scheme 校验提前拒绝。
+        runtime.login("http://127.0.0.1:1", "alice", "secret".toCharArray())
+        assertEquals(ConnectionPhase.Negotiating, runtime.phase.value)
+
+        // 这次尝试必须结束：把未完成的会话状态留给下一个用例会让后者读到
+        // Negotiating，那是测试互相污染，而不是被测代码的行为。
+        val failure = awaitFailure(runtime)
+        assertNotNull("明文配对必须真的发起连接尝试，并以失败结束", failure)
+        assertFalse(
+            "明文地址不得在 scheme 校验处被拒绝",
+            failure!!.code == "AUTH_INVALID:url-scheme-required",
+        )
+        runtime.resetFailure()
+    }
+
+    private fun awaitFailure(runtime: GatewayRuntime): ConnectionPhase.Failed? {
+        val deadline = System.currentTimeMillis() + AWAIT_MILLIS
+        while (System.currentTimeMillis() < deadline) {
+            (runtime.phase.value as? ConnectionPhase.Failed)?.let { return it }
+            Thread.sleep(POLL_MILLIS)
+        }
+        return null
+    }
+
+    @Test
+    fun theInstalledAppPermitsThePlaintextGatewayConfiguration() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val info = context.packageManager.getApplicationInfo(context.packageName, 0)
+
+        // 明文配对（ADR 0047）在 Android 平台上依赖该开关；关闭它会让 http:// 网关
+        // 在平台层被直接拒绝，而不是由 App 自己决定。
+        assertTrue(
+            "usesCleartextTraffic 必须为 true，否则 http:// 网关在平台层不可用",
+            info.flags and ApplicationInfo.FLAG_USES_CLEARTEXT_TRAFFIC != 0,
+        )
     }
 
     @Test
@@ -134,5 +180,11 @@ class CoreWithoutPluginsInstrumentedTest {
         } finally {
             file.delete()
         }
+    }
+
+    private companion object {
+        const val AWAIT_MILLIS = 10_000L
+
+        const val POLL_MILLIS = 50L
     }
 }

@@ -36,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.DeveloperTrustMode
 import com.openandroidintelligence.kernel.ObservableAuditSink
@@ -128,10 +129,17 @@ fun PlatformSettingsScreen(
                                 fontFamily = FontFamily.Monospace,
                             )
                             Text(
-                                text = "TLS 身份：${phase.tlsSpkiSha256}",
+                                text = when (phase.transportSecurity) {
+                                    TransportSecurity.PLAINTEXT -> "传输安全：未加密（HTTP），Gateway 身份未校验"
+                                    else -> "TLS 身份：${phase.tlsSpkiSha256}"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (phase.transportSecurity.isEncrypted) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                },
                             )
                         }
                         ConnectionPhase.Disconnected -> Text("未连接 Gateway", style = MaterialTheme.typography.bodyMedium)

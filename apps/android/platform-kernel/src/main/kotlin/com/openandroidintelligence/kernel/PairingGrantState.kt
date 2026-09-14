@@ -24,9 +24,9 @@ data class PairingGrantBinding(
     init {
         val validGateway = runCatching {
             val url = URL(gatewayId)
-            url.protocol == "https" && url.host.isNotBlank()
+            (url.protocol == "https" || url.protocol == "http") && url.host.isNotBlank()
         }.getOrDefault(false)
-        require(validGateway) { "pairing grant gateway must be https" }
+        require(validGateway) { "pairing grant gateway must be http or https" }
         require(accountId.isNotBlank()) { "pairing grant account must not be blank" }
         require(installationId.isNotBlank()) { "pairing grant installation must not be blank" }
     }

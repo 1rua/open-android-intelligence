@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.gateway.http.GatewayEndpoint
+import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /**
@@ -56,8 +58,12 @@ fun GatewayLoginScreen(
     var passwordVisible by remember { mutableStateOf(false) }
 
     val normalizedUrl = url.trim()
-    val urlIsValid = normalizedUrl.isNotEmpty() && isValidHttpsUrl(normalizedUrl)
+    // The address decides whether this pairing can be verified at all, so the
+    // form classifies it exactly the way the runtime will.
+    val endpoint = remember(normalizedUrl) { GatewayEndpoint.parse(normalizedUrl) }
+    val urlIsValid = endpoint != null
     val showUrlError = normalizedUrl != "https://" && normalizedUrl.isNotEmpty() && !urlIsValid
+    val plaintextAddress = endpoint?.isTls == false
     val isBusy = phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
@@ -189,9 +195,14 @@ fun GatewayLoginScreen(
                         placeholder = "https://gateway.example.local:8443",
                         inputBg = inputBg,
                         isError = showUrlError,
-                        supportingText = if (showUrlError) "请输入包含主机名的 HTTPS 地址" else null,
+                        supportingText = if (showUrlError) "请输入包含主机名的网关地址（http:// 或 https://）" else null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                     )
+
+                    // 明文地址允许使用，但绝不静默：只要地址栏是该地址，警告就一直显示。
+                    if (plaintextAddress) {
+                        PlaintextConnectionNotice()
+                    }
 
                     FormInputField(
                         label = "用户名 / 账号",
@@ -435,13 +446,21 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
         }
 
         is ConnectionPhase.Connected -> Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(color = MaterialTheme.colorScheme.primary)
+            StatusDot(
+                color = if (phase.transportSecurity.isEncrypted) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "已连接 ${phase.username}",
                 style = MaterialTheme.typography.bodySmall,
                 fontSize = 12.sp,
             )
+            Spacer(modifier = Modifier.width(6.dp))
+            TransportSecurityChip(phase.transportSecurity)
             phase.limits?.maxSingleAttachmentBytes?.let { max ->
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
@@ -484,7 +503,61 @@ private fun StatusDot(color: Color) {
     )
 }
 
-private fun isValidHttpsUrl(value: String): Boolean = runCatching {
-    val uri = java.net.URI(value)
-    uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()
-}.getOrDefault(false)
+/** 明文配对前的持续警告：连接本身可用，但传输内容对网络中的旁观者可读。 */
+@Composable
+private fun PlaintextConnectionNotice() {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(15.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "未加密连接（HTTP）：账号口令、消息与附件内容在传输途中可被读取或篡改，" +
+                    "且无法核验 Gateway 身份。请仅在你信任的本机或局域网内使用，正式部署请改用 https://。",
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 11.sp,
+            )
+        }
+    }
+}
+
+/** 如实标注当前连接的安全等级，绝不明文伪装成已固定的 TLS 身份。 */
+@Composable
+private fun TransportSecurityChip(security: TransportSecurity) {
+    val plaintext = !security.isEncrypted
+    Surface(
+        color = if (plaintext) {
+            MaterialTheme.colorScheme.errorContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        },
+        contentColor = if (plaintext) {
+            MaterialTheme.colorScheme.onErrorContainer
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        shape = RoundedCornerShape(6.dp),
+    ) {
+        Text(
+            text = when (security) {
+                TransportSecurity.PLAINTEXT -> "未加密（HTTP）"
+                TransportSecurity.TLS_PINNED -> "TLS 已固定"
+                TransportSecurity.TLS_SYSTEM_TRUST -> "系统 CA 信任"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+}

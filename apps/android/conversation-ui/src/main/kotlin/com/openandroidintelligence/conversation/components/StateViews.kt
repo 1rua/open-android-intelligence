@@ -41,6 +41,8 @@ fun readableFailure(code: String): String {
     val value = code.uppercase()
     return when {
         value.contains("CURSOR_EXPIRED") -> "会话进度已过期，请刷新以重新同步内容。"
+        value.contains("URL-SCHEME") -> "网关地址不受支持，请使用 http:// 或 https:// 开头的地址。"
+        value.contains("MISSING-TLS-IDENTITY") -> "Gateway 未提供可核验的 TLS 身份，已按安全要求拒绝连接。"
         value.contains("OUTCOME_UNKNOWN") -> "操作结果尚未确认。请刷新核实，避免重复提交。"
         value.contains("IDEMPOTENCY") || value.contains("409") -> "这次请求与已有操作冲突，请刷新会话核实结果。"
         value.contains("UNAUTHORIZED") || value.contains("401") || value.contains("CREDENTIAL") || value.contains("SESSION_EXPIRED") -> "登录凭据已失效，请前往账号与 Gateway 重新登录。"

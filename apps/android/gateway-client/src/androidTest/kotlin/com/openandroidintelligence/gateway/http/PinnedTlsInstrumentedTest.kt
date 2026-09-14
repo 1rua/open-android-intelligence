@@ -9,6 +9,7 @@ import org.junit.runner.RunWith
 import java.net.URL
 import java.security.KeyStore
 import java.security.cert.X509Certificate
+import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.TrustManagerFactory
 
 /**
@@ -21,35 +22,30 @@ import javax.net.ssl.TrustManagerFactory
  *
  * Everything here runs offline against certificates the device already trusts,
  * so the results do not depend on network reachability.
+ *
+ * A plaintext address is a supported, explicitly warned configuration
+ * (ADR 0047); what must never happen is a *pinned* identity quietly losing its
+ * certificate check, which is what the downgrade tests below hold.
  */
 @RunWith(AndroidJUnit4::class)
 class PinnedTlsInstrumentedTest {
 
     @Test
-    fun gatewayProfileRejectsPlainHttp() {
-        assertThrows(IllegalArgumentException::class.java) {
-            GatewayProfile(
-                accountId = "account-test",
-                deviceId = "device-test",
-                sessionId = "session-test",
-                gatewayBaseUrl = "http://gateway.example.com",
-            )
-        }
-    }
+    fun plaintextHttpIsOpenedWithoutTlsOnDevice() {
+        val connection = GatewayConnectionFactory()
+            .open(URL("http://gateway.example.com/open-android-intelligence/v2"))
 
-    @Test
-    fun httpsOnlyFactoryRejectsPlainHttp() {
-        val factory = HttpsConnectionFactory()
-        val failure = runCatching { factory.open(URL("http://gateway.example.com/open-android-intelligence/v2")) }
-            .exceptionOrNull()
-
-        assertTrue("a plain http URL must never be opened", failure != null)
-        assertTrue(failure!!.message!!.contains("https-only"))
+        assertTrue("a plaintext address must stay plaintext", connection !is HttpsURLConnection)
+        assertEquals(
+            "redirects must not be followed automatically; the signature covers one target",
+            false,
+            connection.instanceFollowRedirects,
+        )
     }
 
     @Test
     fun connectTimeoutsAreBoundedAndRedirectsAreNotFollowed() {
-        val connection = HttpsConnectionFactory().open(URL("https://gateway.example.com/open-android-intelligence/v2"))
+        val connection = GatewayConnectionFactory().open(URL("https://gateway.example.com/open-android-intelligence/v2"))
 
         assertTrue(connection.connectTimeout > 0)
         assertTrue(connection.readTimeout > 0)

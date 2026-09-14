@@ -54,7 +54,7 @@ class CanonicalTargetTest {
 
     @Test
     fun nonSupportedSchemeIsRejectedByTheFactory() {
-        val factory = HttpsConnectionFactory()
+        val factory = GatewayConnectionFactory()
         val failure = runCatching { factory.open(java.net.URL("ftp://gateway.example.com/open-android-intelligence/v2")) }
             .exceptionOrNull()
         assertTrue(failure != null)

@@ -16,10 +16,12 @@ import com.openandroidintelligence.gateway.auth.SessionCredentials
 import com.openandroidintelligence.gateway.commands.CommandCatalogClient
 import com.openandroidintelligence.gateway.conversations.ConversationClient
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
+import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayProfile
-import com.openandroidintelligence.gateway.http.HttpsGatewayTransport
+import com.openandroidintelligence.gateway.http.GatewayTransport
 import com.openandroidintelligence.gateway.http.SpkiPinning
+import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.gateway.negotiation.NegotiatedLimits
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
@@ -42,6 +44,11 @@ import java.util.Base64
  *
  * Nothing here fabricates a session. A failed login keeps the phase at Failed
  * with the Gateway's error code, and the login screen stays the honest state.
+ *
+ * The address the user typed decides the transport security: an `https://`
+ * Gateway must return a TLS identity that the phone pins, while a plaintext
+ * `http://` Gateway is accepted as an explicitly reported degraded connection
+ * (ADR 0047) and never reported as a verified identity.
  */
 sealed interface ConnectionPhase {
     data object Disconnected : ConnectionPhase
@@ -55,7 +62,9 @@ sealed interface ConnectionPhase {
         val username: String,
         val limits: NegotiatedLimits?,
         val pairingSummary: String?,
-        val tlsSpkiSha256: String,
+        /** The pinned TLS identity, or null on a plaintext connection. */
+        val tlsSpkiSha256: String?,
+        val transportSecurity: TransportSecurity,
     ) : ConnectionPhase
 
     data class Failed(val code: String) : ConnectionPhase
@@ -87,12 +96,13 @@ class GatewayRuntime(
             password.fill('\u0000')
             return
         }
-        val normalized = gatewayUrl.trim().removeSuffix("/")
-        if (!isHttpsGatewayUrl(normalized)) {
+        val endpoint = GatewayEndpoint.parse(gatewayUrl)
+        if (endpoint == null) {
             password.fill('\u0000')
             _phase.value = ConnectionPhase.Failed("AUTH_INVALID:url-scheme-required")
             return
         }
+        val normalized = endpoint.baseUrl
         val profileId = profileIdFor(normalized, username)
         _phase.value = ConnectionPhase.Negotiating
         connectionJob = scope.launch {
@@ -102,17 +112,17 @@ class GatewayRuntime(
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
                 return@launch
             }
-            val tlsPin = negotiated.tlsSpkiSha256?.takeIf(SpkiPinning::isProtocolPin)
-                ?: run {
-                    _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
-                    password.fill('\u0000')
-                    return@launch
-                }
+            val tlsPin = negotiatedPin(endpoint, negotiated.tlsSpkiSha256)
+            if (endpoint.isTls && tlsPin == null) {
+                _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
+                password.fill('\u0000')
+                return@launch
+            }
 
             _phase.value = ConnectionPhase.Authenticating
             val credentials = runCatching {
                 val publicKey = deviceKeys.publicKeyBase64Url(profileId)
-                authClientFor(normalized, setOf(tlsPin)).loginWithPassword(
+                authClientFor(normalized, setOfNotNull(tlsPin)).loginWithPassword(
                     negotiationId = negotiated.negotiationId,
                     username = username,
                     password = password,
@@ -129,7 +139,7 @@ class GatewayRuntime(
                             saveLastProfile(normalized, username, profileId, session)
                         }.onFailure { _operationNotice.value = "自动登录凭据未能保存，下次启动需要重新登录。" }
                     }
-                    establish(normalized, username, profileId, session, negotiated.limits, tlsPin)
+                    establish(endpoint, username, profileId, session, negotiated.limits, tlsPin)
                 },
                 onFailure = { cause -> _phase.value = ConnectionPhase.Failed(errorCode(cause)) },
             )
@@ -160,7 +170,7 @@ class GatewayRuntime(
         val accessToken = accessTokenHolder ?: return
         connectionJob = scope.launch {
             runCatching {
-                authClientFor(current.gatewayUrl, setOf(current.tlsSpkiSha256)).logout(
+                authClientFor(current.gatewayUrl, setOfNotNull(current.tlsSpkiSha256)).logout(
                     accessToken = accessToken,
                     accountId = accountId,
                     deviceId = deviceId,
@@ -196,7 +206,8 @@ class GatewayRuntime(
         lastDeviceId = storedDeviceId
         lastSessionId = storedSessionId
 
-        if (!isHttpsGatewayUrl(lastUrl)) {
+        val endpoint = GatewayEndpoint.parse(lastUrl)
+        if (endpoint == null) {
             _phase.value = ConnectionPhase.Failed("AUTH_INVALID:url-scheme-required")
             return
         }
@@ -207,20 +218,20 @@ class GatewayRuntime(
         _phase.value = ConnectionPhase.Negotiating
         connectionJob = scope.launch {
             try {
-            val auth = authClientFor(lastUrl)
+            val auth = authClientFor(endpoint.baseUrl)
             val negotiated = runCatching { auth.negotiate("neg_" + newToken()) }.getOrElse { cause ->
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
                 return@launch
             }
-            val tlsPin = negotiated.tlsSpkiSha256?.takeIf(SpkiPinning::isProtocolPin)
-                ?: run {
-                    _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
-                    return@launch
-                }
+            val tlsPin = negotiatedPin(endpoint, negotiated.tlsSpkiSha256)
+            if (endpoint.isTls && tlsPin == null) {
+                _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
+                return@launch
+            }
 
             _phase.value = ConnectionPhase.Authenticating
             val session = runCatching {
-                authClientFor(lastUrl, setOf(tlsPin)).refresh(
+                authClientFor(endpoint.baseUrl, setOfNotNull(tlsPin)).refresh(
                     accountId = storedAccountId,
                     deviceId = storedDeviceId,
                     negotiationId = negotiated.negotiationId,
@@ -244,10 +255,10 @@ class GatewayRuntime(
             if (newRefresh.isNotEmpty()) {
                 runCatching {
                     keystoreCredentials.saveRefresh(lastProfileId, newRefresh)
-                    saveLastProfile(lastUrl, lastUser, lastProfileId, session)
+                    saveLastProfile(endpoint.baseUrl, lastUser, lastProfileId, session)
                 }.onFailure { _operationNotice.value = "轮换后的自动登录凭据未能保存，下次启动可能需要重新登录。" }
             }
-            establish(lastUrl, lastUser, lastProfileId, session, negotiated.limits, tlsPin)
+            establish(endpoint, lastUser, lastProfileId, session, negotiated.limits, tlsPin)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (cause: Exception) {
@@ -271,29 +282,30 @@ class GatewayRuntime(
     }
 
     private fun establish(
-        gatewayUrl: String,
+        endpoint: GatewayEndpoint,
         username: String,
         profileId: String,
         session: SessionCredentials,
         limits: NegotiatedLimits?,
-        tlsSpkiSha256: String,
+        tlsSpkiSha256: String?,
     ) {
+        val pins = setOfNotNull(tlsSpkiSha256)
         val profile = GatewayProfile(
             accountId = session.accountId,
             deviceId = session.deviceId,
             sessionId = session.sessionId,
-            gatewayBaseUrl = gatewayUrl,
-            pinnedSpkiSha256 = setOf(tlsSpkiSha256),
+            gatewayBaseUrl = endpoint.baseUrl,
+            pinnedSpkiSha256 = pins,
             accessToken = session.accessToken,
         )
         pairingGrants.bind(
             PairingGrantBinding(
-                gatewayId = gatewayUrl,
+                gatewayId = endpoint.baseUrl,
                 accountId = session.accountId,
                 installationId = installationId(),
             ),
         )
-        val transport = HttpsGatewayTransport(profile)
+        val transport = GatewayTransport(profile)
         val http = GatewayHttpClient(
             profile = profile,
             transport = transport,
@@ -321,7 +333,7 @@ class GatewayRuntime(
 
         val conversationScope = ConversationScope(
             profileId = profileId,
-            gatewayId = gatewayUrl,
+            gatewayId = endpoint.baseUrl,
             accountId = session.accountId,
             installId = installationId(),
         )
@@ -335,11 +347,12 @@ class GatewayRuntime(
             onActiveThreadChanged = { threadId -> activeThread.set(threadId) },
         )
         _phase.value = ConnectionPhase.Connected(
-            gatewayUrl = gatewayUrl,
+            gatewayUrl = endpoint.baseUrl,
             username = username,
             limits = limits,
             pairingSummary = session.pairingSummary,
             tlsSpkiSha256 = tlsSpkiSha256,
+            transportSecurity = endpoint.securityFor(pins),
         )
     }
 
@@ -357,7 +370,7 @@ class GatewayRuntime(
         gatewayUrl: String,
         pinnedSpkiSha256: Set<String> = emptySet(),
     ): GatewayAuthClient = GatewayAuthClient(
-        transport = HttpsGatewayTransport(
+        transport = GatewayTransport(
             GatewayProfile(
                 accountId = "pre-auth",
                 deviceId = "pre-auth",
@@ -435,10 +448,17 @@ class GatewayRuntime(
     private fun errorCode(cause: Throwable): String =
         cause.message?.takeIf { it.isNotBlank() } ?: cause::class.java.simpleName
 
-    private fun isHttpsGatewayUrl(value: String): Boolean = runCatching {
-        val url = java.net.URL(value)
-        url.protocol == "https" && url.host.isNotBlank()
-    }.getOrDefault(false)
+    /**
+     * The TLS identity this connection may pin.
+     *
+     * Only HTTPS can prove one: a plaintext address pins nothing, and a digest
+     * returned over plaintext is unverifiable, so it is dropped rather than
+     * trusted. `null` together with an HTTPS endpoint means the Gateway did not
+     * return a usable identity, which the caller fails instead of silently
+     * downgrading the account to unverified system trust.
+     */
+    private fun negotiatedPin(endpoint: GatewayEndpoint, negotiated: String?): String? =
+        if (endpoint.isTls) negotiated?.takeIf(SpkiPinning::isProtocolPin) else null
 
     private companion object {
         const val PREFS_NAME = "open_android_intelligence_runtime"
