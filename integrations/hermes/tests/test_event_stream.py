@@ -93,6 +93,12 @@ def test_handshake_returns_the_verified_account_and_its_backlog(tmp_path):
     notice = _append_notice(core, "2026-09-13T00:00:00.000Z")
     seen = []
     route = _route(core, lambda request: seen.append(request) or _verified(EVENT_STREAM_PATH))
+    route = _route(
+        core,
+        lambda request: seen.append(request) or _verified(
+            EVENT_STREAM_PATH, now="2026-09-13T00:00:00.000Z"
+        ),
+    )
 
     response = route.event_backlog(_raw(EVENT_STREAM_PATH))
 

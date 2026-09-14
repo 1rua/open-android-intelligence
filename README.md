@@ -177,6 +177,24 @@ cd apps/android
 ./gradlew --no-daemon check
 ```
 
+### Hermes 网关安装与配置（Agent 端）
+
+需要 Python 3.12+：
+
+```bash
+# 1. 一条命令安装插件
+pip install -e integrations/hermes
+
+# 2. 运行向导完成平台启用与账号初始化（交互式一步完成）
+hermes gateway setup
+# 在菜单中选择 [X] 📱 Open Android Intelligence (Gateway v2)
+
+# 3. 或使用 Hermes 原生命令行管理
+hermes open-android-intelligence account list
+hermes open-android-intelligence account create -u <用户名> -p <密码> --confirm-local
+hermes open-android-intelligence status
+```
+
 ## 当前状态
 
 | 门禁 | 状态 |

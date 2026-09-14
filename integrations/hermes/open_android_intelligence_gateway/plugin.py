@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from .admin import (
     HERMES_HOST_API,
@@ -22,6 +24,7 @@ from .adapter import (
     create_gateway_request_verifier,
 )
 from .account_paths import GATEWAY_DIRECTORY_NAME
+from .account_paths import GATEWAY_DIRECTORY_NAME, WIRE_ID_PATTERN
 from .core import GatewayCore, create_gateway_core
 from .http import EXPOSURE_MODES, GatewayExposure, create_gateway_exposure
 
@@ -194,6 +197,98 @@ def compose_gateway_services(ctx: Any) -> GatewayServices:
     return GatewayServices(core, admin, exposure)
 
 
+def interactive_setup(
+    admin: AdminService,
+    input_fn: Callable[[str], str] = input,
+    getpass_fn: Callable[[str], str] | None = None,
+    is_tty: bool | None = None,
+) -> bool:
+    """Interactive account onboarding for `hermes gateway setup`.
+
+    Prompts the user to initialize a Gateway account and storage sandbox on the
+    local host without leaving the Hermes wizard. Falls back to printing CLI
+    instructions if standard input is not a TTY or if user cancels.
+    """
+    if getpass_fn is None:
+        import getpass
+        getpass_fn = getpass.getpass
+
+    print("\n  ─── 📱 Open Android Intelligence Gateway 配置向导 ───")
+    if admin.read_only:
+        print("  ⚠️  当前 Hermes 宿主处于只读兼容模式，无法在此主机上创建新账号。")
+        print("  请先确保宿主环境满足 API 版本兼容要求后再试。\n")
+        return False
+
+    is_interactive = is_tty if is_tty is not None else sys.stdin.isatty()
+    if not is_interactive:
+        print("  当前运行在非交互式终端中，跳过交互输入。")
+        print("  可通过 Hermes 本地 CLI 创建与管理手机端连接账号：")
+        print("    hermes open-android-intelligence account create --username <用户名> --password <密码> --confirm-local\n")
+        return True
+
+    try:
+        choice = input_fn("  是否现在为连接手机创建一个网关账号？[Y/n]: ").strip()
+        if choice.lower() in ("n", "no"):
+            print("  已跳过账号创建。后续可随时通过命令创建：")
+            print("    hermes open-android-intelligence account create --username <用户名> --password <密码> --confirm-local\n")
+            return True
+
+        account_id = ""
+        while not account_id:
+            raw_id = input_fn("  请输入账号名称 (例如 phone1 / admin): ").strip()
+            if not raw_id:
+                print("  ❌ 账号名称不能为空，请重新输入。")
+                continue
+            if WIRE_ID_PATTERN.fullmatch(raw_id) is None:
+                print("  ❌ 账号名称格式不合法（允许 1-128 位的字母、数字、点、下划线、波浪线或减号），请重新输入。")
+                continue
+            account_id = raw_id
+
+        password = ""
+        while not password:
+            pwd = getpass_fn("  请输入连接密码: ")
+            if not pwd:
+                print("  ❌ 密码不能为空，请重新输入。")
+                continue
+            pwd_confirm = getpass_fn("  请再次输入密码以确认: ")
+            if pwd != pwd_confirm:
+                print("  ❌ 两次输入的密码不一致，请重新输入。")
+                continue
+            password = pwd
+
+        confirm = input_fn(f"  确认在本地创建账号 '{account_id}' 的数据沙箱？[Y/n]: ").strip()
+        if confirm.lower() in ("n", "no"):
+            print("  已取消创建。")
+            return False
+
+        result = admin.execute({
+            "command": "account.create",
+            "input": {
+                "accountId": account_id,
+                "password": password,
+                "localConfirmation": True,
+            },
+        })
+
+        if result.get("ok"):
+            storage_root = getattr(admin.core, "storage_root", "默认目录")
+            print(f"\n  ✅ 账号 '{account_id}' 创建成功！")
+            print(f"  • 数据存储沙箱: {storage_root}")
+            print(f"  • 网关协议: Gateway Protocol v2 (已就绪)")
+            print("\n  📱 手机端连接指南：")
+            print("    1. 打开 Android 手机端 Open Android Intelligence App；")
+            print(f"    2. 在登录页面输入 Gateway 地址与账号 '{account_id}' 及刚刚设定的密码即可完成配对。\n")
+            return True
+        else:
+            err = result.get("error", {})
+            print(f"\n  ❌ 创建失败: {err.get('code', 'UNKNOWN_ERROR')}\n")
+            return False
+
+    except (EOFError, KeyboardInterrupt):
+        print("\n  已取消交互向导。")
+        return False
+
+
 def register(ctx: Any) -> None:
     services = compose_gateway_services(ctx)
     bind_admin_service(services.admin)
@@ -230,6 +325,7 @@ def register(ctx: Any) -> None:
                     print("    1. 创建新账号:  hermes open-android-intelligence account create --username <用户名> --password <密码>")
                     print("    2. 查看运行状态: hermes open-android-intelligence status")
                     print("  随后在 Android 手机端的 Open Android Intelligence App 中输入 Gateway 地址与账号凭据即可完成配对。\n")
+                    interactive_setup(services.admin)
 
                 register_plat(
                     name="open_android",
@@ -404,4 +500,5 @@ __all__ = [
     "AdminSurface", "GatewayPlatform", "GatewayRequestVerifier", "GatewayServices",
     "HermesPluginContext", "HERMES_PLUGIN", "HERMES_PLUGIN_MANIFEST",
     "compose_gateway_services", "create_gateway_request_verifier", "register",
+    "compose_gateway_services", "create_gateway_request_verifier", "interactive_setup", "register",
 ]

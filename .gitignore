@@ -81,6 +81,8 @@ plugins/dist/
 
 # Python 构建产物（Hermes 插件打包）
 integrations/hermes/dist/
+integrations/hermes/build/
+**/build/
 *.egg-info/
 .pytest_cache/
 
