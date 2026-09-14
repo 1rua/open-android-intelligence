@@ -59,6 +59,39 @@ hermes open-android-intelligence status
 hermes open-android-intelligence account delete <用户名> --confirm-local
 ```
 
+## 修改监听端口与主机地址
+
+网关默认监听在 `0.0.0.0:8045`。您可以通过以下两种方式修改监听端口：
+
+### 方式 1：修改环境变量（推荐）
+
+编辑 `~/.hermes/.env` 文件，添加或修改：
+
+```bash
+OPEN_ANDROID_GATEWAY_PORT=8085
+# 可选：修改监听地址（默认 0.0.0.0）
+OPEN_ANDROID_GATEWAY_HOST=0.0.0.0
+```
+
+修改后重启网关服务即可生效：
+```bash
+hermes gateway restart
+```
+
+### 方式 2：在 config.yaml 中配置
+
+编辑 `~/.hermes/config.yaml`，在平台配置中添加：
+
+```yaml
+gateway:
+  platforms:
+    open_android:
+      enabled: true
+      extra:
+        port: 8085
+        host: "0.0.0.0"
+```
+
 ## 自动化测试
 
 使用 pytest 运行单元与集成测试：

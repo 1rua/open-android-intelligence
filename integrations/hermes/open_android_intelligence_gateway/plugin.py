@@ -297,13 +297,16 @@ def interactive_setup(
         })
 
         if result.get("ok"):
+            import os
+            port = os.getenv("OPEN_ANDROID_GATEWAY_PORT", "8045")
             storage_root = getattr(admin.core, "storage_root", "默认目录")
             print(f"\n  ✅ 账号 '{account_id}' 创建成功！")
             print(f"  • 数据存储沙箱: {storage_root}")
             print(f"  • 网关协议: Gateway Protocol v2 (已就绪)")
+            print(f"  • 监听端口: {port} (可在 ~/.hermes/.env 中通过 OPEN_ANDROID_GATEWAY_PORT 修改)")
             print("\n  📱 手机端连接指南：")
             print("    1. 打开 Android 手机端 Open Android Intelligence App；")
-            print(f"    2. 在登录页面输入 Gateway 地址与账号 '{account_id}' 及刚刚设定的密码即可完成配对。\n")
+            print(f"    2. 在登录页面输入 Gateway 地址 (例如 http://<本机IP>:{port}) 与账号 '{account_id}' 及刚刚设定的密码即可完成配对。\n")
             return True
         else:
             err = result.get("error", {})
@@ -350,6 +353,17 @@ def register(ctx: Any) -> None:
                 register_plat(
                     name="open_android",
                     label="Open Android Intelligence (Gateway v2)",
+                    adapter_factory=_build_adapter,
+                    check_fn=_check_deps,
+                    is_connected=_is_connected,
+                    validate_config=_is_connected,
+                    setup_fn=_setup_fn,
+                    install_hint="",
+                    emoji="📱",
+                )
+                register_plat(
+                    name="open_android_intelligence",
+                    label="Open Android Intelligence Gateway",
                     adapter_factory=_build_adapter,
                     check_fn=_check_deps,
                     is_connected=_is_connected,
