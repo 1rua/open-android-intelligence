@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="E2E-01: Agent 网关插件安装、账号配对与双向消息收发全流程闭环">
+  <description>
+    端到端验证由 Android CLI 驱动的完整流程：从网关连接表单输入、TLS 握手协商、账号凭据认证配对，跃迁至主工作台时间线，完成上行消息编辑发送、状态防抖以及下行流式响应呈现全闭环。
+  </description>
+  <actions>
+    <action>Verify that the "连接你的 Agent Gateway" title is visible on screen</action>
+    <action>Click the "网关地址" input field</action>
+    <action>Type "https://10.0.2.2:8045" into the "网关地址" field</action>
+    <action>Click the "用户名 / 账号" input field</action>
+    <action>Type "e2e_tester" into the "用户名 / 账号" field</action>
+    <action>Click the "访问凭据 / 密码" input field</action>
+    <action>Type "GatewaySecretPass2026!" into the "访问凭据 / 密码" field</action>
+    <action>Click the "连接至网关" button</action>
+    <action>Verify that the login screen transitions and the main workbench top bar is visible</action>
+    <action>Click the message input field "输入消息或 / 命令..."</action>
+    <action>Type "Hello Agent, E2E full lifecycle test message." into the input field</action>
+    <action>Click the "发送" button</action>
+    <action>Verify that the message input field is cleared</action>
+    <action>Verify that the user message appears in the message timeline</action>
+  </actions>
+</journey>
+

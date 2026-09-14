@@ -19,7 +19,6 @@ def test_interactive_setup_success(tmp_path):
     admin = create_admin_service(core=core, host_version="2.0.0", host_api=_compatible_host_api())
 
     inputs = iter([
-        "",             # Keep current port
         "y",            # Create account?
         "phone1",       # Username
         "y",            # Local confirmation?
@@ -50,7 +49,7 @@ def test_interactive_setup_decline_creates_no_account(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     admin = create_admin_service(core=core, host_version="2.0.0", host_api=_compatible_host_api())
 
-    inputs = iter(["", "n"])  # Keep port, decline account
+    inputs = iter(["n"])  # Decline account
 
     success = interactive_setup(
         admin=admin,
@@ -100,7 +99,6 @@ def test_interactive_setup_retries_invalid_username_and_password_mismatch(tmp_pa
     admin = create_admin_service(core=core, host_version="2.0.0", host_api=_compatible_host_api())
 
     inputs = iter([
-        "",                # Keep port
         "y",               # Create account?
         "",                # Empty username (retry)
         "bad name with spaces!", # Invalid format (retry)
@@ -136,7 +134,6 @@ def test_interactive_setup_cancel_at_confirmation(tmp_path):
     admin = create_admin_service(core=core, host_version="2.0.0", host_api=_compatible_host_api())
 
     inputs = iter([
-        "",           # Keep port
         "y",          # Create account?
         "cancel_me",  # Valid username
         "n",          # Deny local confirmation
@@ -157,49 +154,31 @@ def test_interactive_setup_cancel_at_confirmation(tmp_path):
     assert not core.has_gateway_account("cancel_me")
 
 
-def test_interactive_setup_updates_port(tmp_path, monkeypatch):
+def test_interactive_setup_shows_port_from_env(tmp_path, monkeypatch, capsys):
     import os
-    monkeypatch.setenv("OPEN_ANDROID_GATEWAY_PORT", "8045")
+    monkeypatch.setenv("OPEN_ANDROID_GATEWAY_PORT", "9090")
     core = create_gateway_core(storage_root=tmp_path)
     admin = create_admin_service(core=core, host_version="2.0.0", host_api=_compatible_host_api())
 
     inputs = iter([
-        "9090",       # New port
-        "n",          # Decline account creation
+        "y",
+        "port_user",
+        "y",
+    ])
+    passwords = iter([
+        "secret12345",
+        "secret12345",
     ])
 
     success = interactive_setup(
         admin=admin,
         input_fn=lambda prompt="": next(inputs),
-        getpass_fn=lambda prompt="": "",
+        getpass_fn=lambda prompt="": next(passwords),
         is_tty=True,
     )
 
     assert success is True
-    assert os.getenv("OPEN_ANDROID_GATEWAY_PORT") == "9090"
+    captured = capsys.readouterr()
+    assert "9090" in captured.out
 
-
-def test_interactive_setup_invalid_port_retry(tmp_path, monkeypatch):
-    import os
-    monkeypatch.setenv("OPEN_ANDROID_GATEWAY_PORT", "8045")
-    core = create_gateway_core(storage_root=tmp_path)
-    admin = create_admin_service(core=core, host_version="2.0.0", host_api=_compatible_host_api())
-
-    inputs = iter([
-        "not_a_number",  # Invalid format
-        "999999",        # Out of range (>65535)
-        "0",             # Out of range (<1)
-        "8888",          # Valid port
-        "n",             # Decline account creation
-    ])
-
-    success = interactive_setup(
-        admin=admin,
-        input_fn=lambda prompt="": next(inputs),
-        getpass_fn=lambda prompt="": "",
-        is_tty=True,
-    )
-
-    assert success is True
-    assert os.getenv("OPEN_ANDROID_GATEWAY_PORT") == "8888"
 

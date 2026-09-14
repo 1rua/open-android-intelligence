@@ -182,6 +182,29 @@
         "列表滚动无闪烁，空列表时诚实展现空状态"
       ],
       "testData": {}
+    },
+    {
+      "id": "E2E-01",
+      "name": "Agent 网关全流程闭环",
+      "journeyFile": "E2E-01-gateway-full-lifecycle.journey.xml",
+      "entryPoint": "MainActivity 初始启动层至主工作台",
+      "criticalPaths": [
+        "网关地址、账号、密码表单输入",
+        "TLS 握手与凭证协商配对",
+        "跃迁主工作台时间线",
+        "消息编辑与原子发送",
+        "时间线渲染与状态复原"
+      ],
+      "acceptanceCriteria": [
+        "配对握手与时间线跳转成功",
+        "消息发送后输入框重置并在时间线展示",
+        "全流程无崩溃与异常"
+      ],
+      "testData": {
+        "gatewayUrl": "https://10.0.2.2:8045",
+        "username": "e2e_tester",
+        "password": "GatewaySecretPass2026!"
+      }
     }
   ],
   "abnormalScenarios": [

@@ -49,7 +49,21 @@ def main():
             print("错误: 请提供要创建的用户名，例如: ./hermes-account.py create djbd")
             sys.exit(1)
         account_id = sys.argv[2]
-        result = run_admin_command(["account", "create", account_id, "--confirm-local"], admin)
+        remaining = sys.argv[3:]
+        password = None
+        if "--password" in remaining:
+            idx = remaining.index("--password")
+            if idx + 1 < len(remaining):
+                password = remaining[idx + 1]
+        if not password:
+            for arg in remaining:
+                if not arg.startswith("--"):
+                    password = arg
+                    break
+        if not password:
+            password = os.environ.get("OPEN_ANDROID_PASSWORD", "GatewaySecretPass2026!")
+
+        result = run_admin_command(["account", "create", account_id, "--password", password, "--confirm-local"], admin)
     elif cmd in ("delete", "remove", "rm"):
         if len(sys.argv) < 3:
             print("错误: 请提供要删除的用户名，例如: ./hermes-account.py delete djbd")
