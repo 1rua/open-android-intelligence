@@ -31,7 +31,7 @@ import javax.crypto.spec.GCMParameterSpec
 class Ed25519DeviceKeyStore(private val storageDir: File) {
 
     fun publicKeyBase64Url(profileId: String): String =
-        Base64.getUrlEncoder().withoutPadding().encodeToString(keyPair(profileId).public.encoded)
+        ed25519WirePublicKey(keyPair(profileId).public)
 
     fun sign(profileId: String, preimage: ByteArray): ByteArray {
         val signature = Signature.getInstance("Ed25519")

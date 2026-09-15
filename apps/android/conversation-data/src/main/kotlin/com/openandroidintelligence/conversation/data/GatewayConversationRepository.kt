@@ -45,7 +45,7 @@ class GatewayConversationRepository(
         scope: ConversationScope,
         page: PageRequest,
     ): ConversationPage {
-        val threads = client.readThreads(cursor = page.cursor, limit = page.limit)
+        val threads = client.readThreads()
         return ConversationPage(
             conversations = threads.map { thread ->
                 ConversationSummary(
@@ -125,34 +125,19 @@ class GatewayConversationRepository(
         )
     }
 
-    override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
-        val conversationId = activeConversationId()
-            ?: throw IllegalStateException("SUBMIT_MESSAGE_FAILED:no-conversation")
-        val response = client.sendMessageBatch(
+    override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance = submitMessage(
+        activeConversationId() ?: throw IllegalStateException("SUBMIT_MESSAGE_FAILED:no-conversation"),
+        message,
+    )
+
+    override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
+        val response = client.sendMessage(
             conversationId = conversationId,
-            batch = com.openandroidintelligence.gateway.conversations.OutgoingMessageBatch(
-                clientConversationId = conversationId,
-                correlationId = message.clientMessageId.value,
-                messages = listOf(
-                    com.openandroidintelligence.gateway.conversations.OutgoingMessage(
-                        role = "user",
-                        parts = buildList {
-                            if (message.text.isNotEmpty()) {
-                                add(com.openandroidintelligence.gateway.conversations.MessagePart.Text(message.text))
-                            }
-                            message.attachmentIds.forEach { id ->
-                                add(com.openandroidintelligence.gateway.conversations.MessagePart.AttachmentRef(id))
-                            }
-                        },
-                        timestamp = System.currentTimeMillis(),
-                    ),
-                ),
-            ),
+            clientMessageId = message.clientMessageId.value,
+            text = message.text,
+            attachmentIds = message.attachmentIds,
         )
-        return MessageAcceptance(
-            messageId = response.conversationId,
-            correlationId = message.clientMessageId.value,
-        )
+        return MessageAcceptance(response.messageId, message.clientMessageId.value)
     }
 
     /**

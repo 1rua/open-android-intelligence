@@ -4,6 +4,7 @@ import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayResponse
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
+import com.openandroidintelligence.gateway.http.requireData
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -38,22 +39,8 @@ sealed class MessagePart {
     ) : MessagePart()
 }
 
-data class OutgoingMessage(
-    val role: String,
-    val parts: List<MessagePart>,
-    val timestamp: Long? = null,
-)
-
-data class OutgoingMessageBatch(
-    val clientConversationId: String,
-    val correlationId: String,
-    val messages: List<OutgoingMessage>,
-)
-
-data class SendMessageBatchResponse(
-    val conversationId: String,
-    val status: String,
-)
+/** The authoritative acceptance of one chat-v1 message. */
+data class MessageAcceptance(val messageId: String, val conversationId: String)
 
 data class ConversationThread(
     val conversationId: String,
@@ -145,8 +132,9 @@ class ConversationClient(private val http: GatewayHttpClient) {
         if (response.status != 200) {
             throw IllegalStateException("CONVERSATIONS_FAILED:${response.status}")
         }
-        val body = parsed(response) ?: throw IllegalStateException("CONVERSATIONS_FAILED:malformed")
-        return JsonFields.objects(body, "threads").mapNotNull { thread ->
+        val body = response.requireData("CONVERSATIONS_FAILED")
+        check(JsonFields.array(JsonFields.field(body, "conversations")) != null) { "CONVERSATIONS_FAILED:missing-list" }
+        return JsonFields.objects(body, "conversations").mapNotNull { thread ->
             val id = JsonFields.string(thread, "conversationId") ?: return@mapNotNull null
             ConversationThread(
                 conversationId = id,
@@ -170,7 +158,8 @@ class ConversationClient(private val http: GatewayHttpClient) {
         if (response.status !in 200..299) {
             throw IllegalStateException("CONVERSATION_CREATE_FAILED:${response.status}")
         }
-        val body = parsed(response) ?: throw IllegalStateException("CONVERSATION_CREATE_FAILED:malformed")
+        val body = JsonFields.obj(JsonFields.field(response.requireData("CONVERSATION_CREATE_FAILED"), "conversation"))
+            ?: throw IllegalStateException("CONVERSATION_CREATE_FAILED:missing-conversation")
         return ConversationDetail(
             conversationId = JsonFields.string(body, "conversationId")
                 ?: throw IllegalStateException("CONVERSATION_CREATE_FAILED:missing-id"),
@@ -189,7 +178,8 @@ class ConversationClient(private val http: GatewayHttpClient) {
         if (response.status != 200) {
             throw IllegalStateException("CONVERSATION_READ_FAILED:${response.status}")
         }
-        val body = parsed(response) ?: throw IllegalStateException("CONVERSATION_READ_FAILED:malformed")
+        val body = JsonFields.obj(JsonFields.field(response.requireData("CONVERSATION_READ_FAILED"), "conversation"))
+            ?: throw IllegalStateException("CONVERSATION_READ_FAILED:missing-conversation")
         return ConversationDetail(
             conversationId = JsonFields.string(body, "conversationId") ?: conversationId,
             title = JsonFields.string(body, "title"),
@@ -267,70 +257,32 @@ class ConversationClient(private val http: GatewayHttpClient) {
         )
     }
 
-    suspend fun sendMessageBatch(
+    /** Gateway Protocol v2 §7: one text plus ordered verified attachment references. */
+    suspend fun sendMessage(
         conversationId: String,
-        batch: OutgoingMessageBatch,
-    ): SendMessageBatchResponse {
-        val payloadMap = mapOf(
-            "clientConversationId" to batch.clientConversationId,
-            "correlationId" to batch.correlationId,
-            "messages" to batch.messages.map { msg ->
-                val msgMap = mutableMapOf<String, Any?>(
-                    "role" to msg.role,
-                    "parts" to msg.parts.map { part ->
-                        when (part) {
-                            is MessagePart.Text -> mapOf("type" to "text", "text" to part.text)
-                            is MessagePart.AttachmentRef -> {
-                                val attMap = mutableMapOf<String, Any?>(
-                                    "type" to "attachment_ref",
-                                    "attachmentId" to part.attachmentId,
-                                )
-                                part.visualContext?.let { vc ->
-                                    val vcMap = mutableMapOf<String, Any?>(
-                                        "bounds" to mapOf(
-                                            "left" to vc.bounds.left,
-                                            "top" to vc.bounds.top,
-                                            "right" to vc.bounds.right,
-                                            "bottom" to vc.bounds.bottom,
-                                        ),
-                                        "displayMetrics" to mapOf(
-                                            "widthPixels" to vc.displayMetrics.widthPixels,
-                                            "heightPixels" to vc.displayMetrics.heightPixels,
-                                            "densityDpi" to vc.displayMetrics.densityDpi,
-                                        ),
-                                    )
-                                    vc.uiHierarchySummary?.let { summary ->
-                                        vcMap["uiHierarchySummary"] = summary
-                                    }
-                                    attMap["visualContext"] = vcMap
-                                }
-                                attMap
-                            }
-                        }
-                    },
-                )
-                msg.timestamp?.let { msgMap["timestamp"] = it }
-                msgMap
-            },
+        clientMessageId: String,
+        text: String,
+        attachmentIds: List<String> = emptyList(),
+    ): MessageAcceptance {
+        val payload = mapOf(
+            "clientMessageId" to clientMessageId,
+            "text" to text,
+            "attachments" to attachmentIds.map { mapOf("attachmentId" to it) },
         )
-
-        val bodyJson = Json.canonical(Json.of(payloadMap))
         val response = execute(
             method = "POST",
             target = "/open-android-intelligence/v2/conversations/$conversationId/messages",
-            body = bodyJson.toByteArray(Charsets.UTF_8),
+            body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
         )
-
-        if (response.status !in 200..299) {
-            throw IllegalStateException("SEND_MESSAGE_BATCH_FAILED:${response.status}")
-        }
-
-        val resBody = parsed(response)
-            ?: return SendMessageBatchResponse(conversationId, "received")
-
-        val resConvId = JsonFields.string(resBody, "conversationId") ?: conversationId
-        val resStatus = JsonFields.string(resBody, "status") ?: "received"
-        return SendMessageBatchResponse(resConvId, resStatus)
+        val data = response.requireData("SEND_MESSAGE_FAILED")
+        val message = JsonFields.obj(JsonFields.field(data, "message"))
+        check(JsonFields.string(message, "status") == "accepted" &&
+            JsonFields.string(message, "conversationId") == conversationId) { "SEND_MESSAGE_FAILED:invalid-acceptance" }
+        return MessageAcceptance(
+            messageId = JsonFields.string(message, "messageId")
+                ?: throw IllegalStateException("SEND_MESSAGE_FAILED:missing-message-id"),
+            conversationId = conversationId,
+        )
     }
 
     /** One ordered aggregate input for the Agent; members keep their own identity. */
@@ -422,9 +374,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
     )
 
     private fun parsed(response: GatewayResponse): JsonValue.JObject? =
-        runCatching { Json.parse(String(response.body, Charsets.UTF_8)) }
-            .getOrNull()
-            ?.let { JsonFields.obj(it) }
+        response.requireData("CONVERSATION_RESPONSE_FAILED")
 
     private fun readParts(message: JsonValue.JObject): List<MessagePart> {
         val parts = JsonFields.array(JsonFields.field(message, "parts"))?.items

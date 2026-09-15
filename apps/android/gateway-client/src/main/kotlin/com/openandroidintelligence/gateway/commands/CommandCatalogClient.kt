@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.commands
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
+import com.openandroidintelligence.gateway.http.requireData
 import com.openandroidintelligence.gateway.schema.JsonFields
 
 data class CommandCatalogEntry(
@@ -45,10 +46,7 @@ class CommandCatalogClient(private val http: GatewayHttpClient) {
         if (response.status != 200) {
             throw IllegalStateException("COMMAND_CATALOG_FAILED:${response.status}")
         }
-        val body = JsonFields.obj(
-            runCatching { com.openandroidintelligence.gateway.schema.Json.parse(String(response.body, Charsets.UTF_8)) }
-                .getOrNull(),
-        ) ?: throw IllegalStateException("COMMAND_CATALOG_FAILED:malformed")
+        val body = response.requireData("COMMAND_CATALOG_FAILED")
 
         return CommandCatalog(
             format = JsonFields.string(body, "format") ?: CommandCatalog.FORMAT_V1,

@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.state.Loadable
+import com.openandroidintelligence.conversation.theme.Dimensions
 
 /**
  * 侧边抽屉面板：严格遵循主 App 信息架构（设计规格 §5.1）：
@@ -227,7 +228,7 @@ fun ThreadDrawer(
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp),
+                        .heightIn(min = Dimensions.MinimumTouchTarget),
                 )
 
                 Row(

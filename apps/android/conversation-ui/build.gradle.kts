@@ -10,6 +10,14 @@ android {
         compose = true
     }
     defaultConfig { testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    testOptions.unitTests.apply {
+        isIncludeAndroidResources = true
+        all {
+            val testHome = rootProject.layout.projectDirectory.dir(".gradle/robolectric-home").asFile
+            it.systemProperty("user.home", testHome.absolutePath)
+            it.doFirst { testHome.mkdirs() }
+        }
+    }
 }
 
 dependencies {
@@ -30,4 +38,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("org.jetbrains.kotlin:kotlin-test:2.0.21")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

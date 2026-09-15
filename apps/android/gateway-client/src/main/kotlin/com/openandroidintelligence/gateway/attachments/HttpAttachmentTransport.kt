@@ -3,7 +3,9 @@ package com.openandroidintelligence.gateway.attachments
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
+import com.openandroidintelligence.gateway.http.requireData
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 
 /**
@@ -52,10 +54,9 @@ class HttpAttachmentTransport(
                 body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
             ),
         )
-        if (response.status !in 200..299) {
-            throw IllegalStateException("ATTACHMENT_CREATE_FAILED:${response.status}")
-        }
-        return stringField(response, "attachmentId")
+        val data = response.requireData("ATTACHMENT_CREATE_FAILED")
+        val attachment = JsonFields.obj(JsonFields.field(data, "attachment"))
+        return JsonFields.string(attachment, "attachmentId")?.takeIf { WIRE_ID.matches(it) }
             ?: throw IllegalStateException("ATTACHMENT_CREATE_FAILED:malformed")
     }
 
@@ -72,9 +73,7 @@ class HttpAttachmentTransport(
                 body = content,
             ),
         )
-        if (response.status !in 200..299) {
-            throw IllegalStateException("ATTACHMENT_UPLOAD_FAILED:${response.status}")
-        }
+        response.requireData("ATTACHMENT_UPLOAD_FAILED")
     }
 
     override suspend fun commit(attachmentId: String) {
@@ -86,20 +85,16 @@ class HttpAttachmentTransport(
                 body = Json.canonical(Json.of(emptyMap<String, Any?>())).toByteArray(Charsets.UTF_8),
             ),
         )
-        if (response.status !in 200..299) {
-            throw IllegalStateException("ATTACHMENT_COMMIT_FAILED:${response.status}")
+        val data = response.requireData("ATTACHMENT_COMMIT_FAILED")
+        val attachment = JsonFields.obj(JsonFields.field(data, "attachment"))
+        if (JsonFields.string(attachment, "attachmentId") != attachmentId ||
+            JsonFields.string(attachment, "state") != "verified") {
+            throw IllegalStateException("ATTACHMENT_COMMIT_FAILED:not-verified")
         }
     }
 
-    private fun stringField(response: com.openandroidintelligence.gateway.http.GatewayResponse, name: String): String? {
-        val body = Json.parse(String(response.body, Charsets.UTF_8)) as? JsonValue.JObject
-            ?: return null
-        return (body.fields.firstOrNull { it.first == name }?.second as? JsonValue.JString)
-            ?.value
-            ?.takeIf { it.isNotBlank() }
-    }
-
     private companion object {
+        val WIRE_ID = Regex("[A-Za-z0-9._~-]{1,128}")
         val JSON_HEADERS = listOf(
             RawHeader("Content-Type", "application/json"),
             RawHeader("Accept", "application/json"),

@@ -3,8 +3,6 @@ package com.openandroidintelligence.mobile
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
-import android.content.ActivityNotFoundException
-import android.content.Intent
 import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -85,9 +83,21 @@ class MainActivity : ComponentActivity() {
                             ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
                             ?.firstOrNull { it.isNotBlank() }
                         if (spokenText != null) {
-                            controller?.editDraft(spokenText)
+                            controller?.let { active ->
+                                val current = active.state.value.draft
+                                active.editDraft(if (current.isBlank()) spokenText else "$current $spokenText")
+                            }
                         }
                     }
+                }
+
+                val startVoiceInput: () -> Unit = {
+                    launchVoiceInput(
+                        launch = { voiceInputLauncher.launch(it) },
+                        onUnavailable = {
+                            Toast.makeText(this@MainActivity, "未安装可用的系统语音识别服务，请使用键盘语音输入", Toast.LENGTH_LONG).show()
+                        },
+                    )
                 }
 
                 // 启动时自动尝试恢复已存储凭据
@@ -166,36 +176,7 @@ class MainActivity : ComponentActivity() {
                                     onPickDocument = {
                                         openDocumentLauncher.launch(arrayOf("*/*"))
                                     },
-                                    onVoiceInput = {
-                                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                            putExtra(
-                                                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                                                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
-                                            )
-                                            putExtra(
-                                                RecognizerIntent.EXTRA_LANGUAGE,
-                                                java.util.Locale.getDefault().toLanguageTag(),
-                                            )
-                                            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出要发送的内容")
-                                        }
-                                        if (intent.resolveActivity(packageManager) == null) {
-                                            Toast.makeText(
-                                                this@MainActivity,
-                                                "系统语音输入不可用",
-                                                Toast.LENGTH_SHORT,
-                                            ).show()
-                                        } else {
-                                            try {
-                                                voiceInputLauncher.launch(intent)
-                                            } catch (_: ActivityNotFoundException) {
-                                                Toast.makeText(
-                                                    this@MainActivity,
-                                                    "系统语音输入不可用",
-                                                    Toast.LENGTH_SHORT,
-                                                ).show()
-                                            }
-                                        }
-                                    },
+                                    onVoiceInput = startVoiceInput,
                                 )
                                 if (showAssistant) {
                                     com.openandroidintelligence.conversation.workbench.FloatingConversationPanel(
@@ -210,22 +191,7 @@ class MainActivity : ComponentActivity() {
                                         onPickDocument = {
                                             openDocumentLauncher.launch(arrayOf("*/*"))
                                         },
-                                        onVoiceInput = {
-                                            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                                putExtra(RecognizerIntent.EXTRA_LANGUAGE, java.util.Locale.getDefault().toLanguageTag())
-                                                putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出要发送的内容")
-                                            }
-                                            if (intent.resolveActivity(packageManager) != null) {
-                                                try {
-                                                    voiceInputLauncher.launch(intent)
-                                                } catch (_: ActivityNotFoundException) {
-                                                    Toast.makeText(this@MainActivity, "系统语音输入不可用", Toast.LENGTH_SHORT).show()
-                                                }
-                                            } else {
-                                                Toast.makeText(this@MainActivity, "系统语音输入不可用", Toast.LENGTH_SHORT).show()
-                                            }
-                                        },
+                                        onVoiceInput = startVoiceInput,
                                     )
                                 }
                             } else {

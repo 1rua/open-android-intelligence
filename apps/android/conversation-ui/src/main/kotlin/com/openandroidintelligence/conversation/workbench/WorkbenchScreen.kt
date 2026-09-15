@@ -243,7 +243,7 @@ fun WorkbenchScreen(
                             draft = state.draft,
                             onDraftChange = controller::editDraft,
                             generation = state.generation,
-                            canSend = state.activeThreadId != null && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
+                            canSend = state.canSend,
                             onSend = controller::sendDraft,
                             onStop = controller::stopGeneration,
                             onPickCamera = onPickCamera,

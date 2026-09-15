@@ -40,6 +40,7 @@ fun <T> LoadableRegion(state: Loadable<T>, emptyHint: String, onRetry: () -> Uni
 fun readableFailure(code: String): String {
     val value = code.uppercase()
     return when {
+        value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
         value.contains("CURSOR_EXPIRED") -> "会话进度已过期，请刷新以重新同步内容。"
         value.contains("URL-SCHEME") -> "网关地址不受支持，请使用 http:// 或 https:// 开头的地址。"
         value.contains("MISSING-TLS-IDENTITY") -> "Gateway 未提供可核验的 TLS 身份，已按安全要求拒绝连接。"

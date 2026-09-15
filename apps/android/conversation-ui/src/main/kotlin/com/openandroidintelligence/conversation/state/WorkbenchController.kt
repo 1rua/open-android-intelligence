@@ -3,6 +3,12 @@ package com.openandroidintelligence.conversation.state
 import com.openandroidintelligence.conversation.batch.DebounceBatcher
 import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.ClientMessageId
+import com.openandroidintelligence.conversation.model.ComposerState
+import com.openandroidintelligence.conversation.model.AttachmentState
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.catch
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
@@ -46,11 +52,15 @@ data class WorkbenchUiState(
     val activeThreadTitle: String = "",
     val generation: GenerationState = GenerationState.IDLE,
     val draft: String = "",
+    val composer: ComposerState = ComposerState.EDITING,
     val attachments: List<com.openandroidintelligence.conversation.model.AttachmentDraft> = emptyList(),
     /** Batch members collected by the debounce window, newest last. */
     val pendingBatch: List<TimelineEntry> = emptyList(),
     val notice: String? = null,
-)
+) {
+    val canSend: Boolean get() = (draft.isNotBlank() || attachments.isNotEmpty()) &&
+        composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
+}
 
 /**
  * The workbench state holder: the single owner of what the conversation
@@ -67,6 +77,7 @@ class WorkbenchController(
     private val scopeFactory: () -> ConversationScope,
     private val attachmentCoordinator: com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator? = null,
     debouncePolicy: DebouncePolicy = DebouncePolicy(),
+    private val supportsMessageBatches: Boolean = false,
     /** Reports the active thread so cancellation and events scope to the right conversation. */
     private val onActiveThreadChanged: (String?) -> Unit = {},
 ) {
@@ -81,6 +92,16 @@ class WorkbenchController(
 
     private var eventJob: Job? = null
     private var activeThreadId: String? = null
+    private var creationJob: Deferred<Result<String>>? = null
+    private var draftRevision = 0L
+    private data class DraftSubmission(
+        val text: String,
+        val attachmentIds: List<String>,
+        val revision: Long,
+        val conversationId: String?,
+    )
+    private var pendingSubmission: DraftSubmission? = null
+    private val batchTargets = mutableMapOf<String, String>()
 
     private val batcher = DebounceBatcher(
         scope = scope,
@@ -106,7 +127,7 @@ class WorkbenchController(
                 .map { page -> page.conversations }
             update { it.copy(threads = result) }
             // Open the most recent thread automatically on a first successful load.
-            if (result is Loadable.Ready && activeThreadId == null) {
+            if (result is Loadable.Ready && activeThreadId == null && creationJob?.isActive != true) {
                 result.value.maxByOrNull { summary -> summary.updatedAt }?.let { openThread(it.id.value) }
             }
         }
@@ -124,6 +145,7 @@ class WorkbenchController(
 
     fun openThread(threadId: String) {
         if (activeThreadId == threadId) return
+        cancelPendingSubmission()
         activeThreadId = threadId
         onActiveThreadChanged(threadId)
         mirrored.clear()
@@ -161,35 +183,52 @@ class WorkbenchController(
     }
 
     fun createThread() {
-        val clientConversationId = "cconv_" + UUID.randomUUID().toString().replace("-", "")
+        if (creationJob?.isActive == true) return
+        cancelPendingSubmission()
+        val creation = createThreadAsync()
         scope.launch {
-            Result.runCatching {
-                repository.createConversation(scopeFactory(), clientConversationId)
-            }.fold(
-                onSuccess = { conversation ->
-                    activeThreadId = conversation.id.value
-                    onActiveThreadChanged(conversation.id.value)
-                    mirrored.clear()
-                    eventJob?.cancel()
-                    update {
-                        it.copy(
-                            activeThreadId = conversation.id.value,
-                            activeThreadTitle = conversation.title,
-                            timeline = Loadable.Empty,
-                            pendingBatch = emptyList(),
-                            notice = null,
-                        )
-                    }
-                    observeThreadEvents()
-                    refreshThreads()
-                },
-                onFailure = { cause -> update { it.copy(notice = "CONVERSATION_CREATE_FAILED:${errorCodeOf(cause)}") } },
-            )
+            creation.await().onFailure { cause ->
+                update { it.copy(notice = "CONVERSATION_CREATE_FAILED:${errorCodeOf(cause)}") }
+            }
         }
     }
 
+    private fun createThreadAsync(): Deferred<Result<String>> {
+        creationJob?.takeIf { it.isActive }?.let { return it }
+        return scope.async {
+            try {
+                val clientId = "cconv_" + UUID.randomUUID().toString().replace("-", "")
+                val conversation = repository.createConversation(scopeFactory(), clientId)
+                activeThreadId = conversation.id.value
+                onActiveThreadChanged(conversation.id.value)
+                mirrored.clear()
+                eventJob?.cancel()
+                update {
+                    it.copy(activeThreadId = conversation.id.value, activeThreadTitle = conversation.title,
+                        timeline = Loadable.Empty, pendingBatch = emptyList(), notice = null)
+                }
+                observeThreadEvents()
+                refreshThreads()
+                Result.success(conversation.id.value)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                Result.failure(cause)
+            }
+        }.also { creationJob = it }
+    }
+
     fun editDraft(text: String) {
+        cancelPendingSubmission()
+        draftRevision++
         update { it.copy(draft = text) }
+    }
+
+    fun cancelPendingSubmission() {
+        pendingSubmission = null
+        if (_state.value.composer == ComposerState.WAITING_ATTACHMENTS) {
+            update { it.copy(composer = ComposerState.EDITING, notice = null) }
+        }
     }
 
     /**
@@ -200,6 +239,8 @@ class WorkbenchController(
             update { it.copy(notice = "ATTACHMENT_UNAVAILABLE:NO_COORDINATOR") }
             return
         }
+        cancelPendingSubmission()
+        draftRevision++
         scope.launch {
             val draft = coordinator.prepare(selection)
             val draftId = draft.id.value
@@ -214,13 +255,14 @@ class WorkbenchController(
                         state.copy(
                             attachments = state.attachments.map { current ->
                                 if (current.id.value == draftId) {
-                                    current.copy(state = draftState.state)
+                                    current.copy(state = draftState.state, errorMessage = draftState.errorMessage)
                                 } else {
                                     current
                                 }
                             },
                         )
                     }
+                    submitWhenAttachmentsVerified()
                 }
             }
         }
@@ -230,6 +272,8 @@ class WorkbenchController(
      * Removes an attachment draft and cancels its upload job.
      */
     fun removeAttachment(draftId: String) {
+        cancelPendingSubmission()
+        draftRevision++
         attachmentJobs.remove(draftId)?.cancel()
         attachmentSelections.remove(draftId)
         update { state ->
@@ -254,75 +298,65 @@ class WorkbenchController(
      * one ordered aggregate input while every member keeps its identity.
      */
     fun sendDraft() {
-        val text = _state.value.draft.trim()
-        val currentAttachments = _state.value.attachments
-
-        // Check if there are unverified attachments still uploading
-        val pendingUploads = currentAttachments.filter { it.state != com.openandroidintelligence.conversation.model.AttachmentState.VERIFIED }
-        if (pendingUploads.isNotEmpty()) {
-            update { it.copy(notice = "WAITING_ATTACHMENTS:附件正在上传中，请稍候") }
-            return
-        }
-
-        if (text.isEmpty() && currentAttachments.isEmpty()) return
-
-        val verifiedAttachmentIds = currentAttachments.mapNotNull { draft ->
-            attachmentCoordinator?.remoteAttachmentId(draft.id.value) ?: draft.id.value
-        }
-
-        update { it.copy(draft = "", attachments = emptyList()) }
-        currentAttachments.forEach { removeAttachment(it.id.value) }
-
-        if (text.startsWith("/") || verifiedAttachmentIds.isNotEmpty()) {
-            sendImmediate(text, verifiedAttachmentIds)
-        } else {
-            val entry = TimelineEntry(
-                key = "local_" + UUID.randomUUID().toString(),
-                sender = "user",
-                text = text,
-                isUser = true,
-                timestamp = System.currentTimeMillis(),
-                pendingAcceptance = true,
-                batchGroupId = "batch_now",
-            )
-            update { it.copy(pendingBatch = it.pendingBatch + entry) }
-            batcher.offer(
-                scopeFactory(),
-                OutgoingMessage(
-                    clientMessageId = ClientMessageId(entry.key.removePrefix("local_")),
-                    text = text,
-                    attachmentIds = verifiedAttachmentIds,
-                ),
-            )
-        }
+        val current = _state.value
+        if (!current.canSend) return
+        pendingSubmission = DraftSubmission(current.draft, current.attachments.map { it.id.value }, draftRevision, activeThreadId)
+        update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null) }
+        submitWhenAttachmentsVerified()
     }
 
-    private fun sendImmediate(text: String, attachmentIds: List<String> = emptyList()) {
-        val entry = TimelineEntry(
-            key = "local_" + UUID.randomUUID().toString(),
-            sender = "user",
-            text = if (text.isBlank() && attachmentIds.isNotEmpty()) "[附件已发送]" else text,
-            isUser = true,
-            timestamp = System.currentTimeMillis(),
-            pendingAcceptance = true,
-            batchGroupId = null,
-        )
-        update { it.copy(timeline = appendLocal(entry), pendingBatch = it.pendingBatch + entry) }
+    /** A click freezes the draft; upload progress can release that same submission only once. */
+    private fun submitWhenAttachmentsVerified() {
+        val submission = pendingSubmission ?: return
+        val drafts = _state.value.attachments.associateBy { it.id.value }
+        if (submission.attachmentIds.any { drafts[it]?.state != AttachmentState.VERIFIED }) return
+        val remoteIds = submission.attachmentIds.map { id ->
+            attachmentCoordinator?.remoteAttachmentId(id) ?: run {
+                pendingSubmission = null
+                update { it.copy(composer = ComposerState.FAILED, notice = "ATTACHMENT_NOT_VERIFIED:请重新选择附件") }
+                return
+            }
+        }
+        pendingSubmission = null
+        update { it.copy(composer = ComposerState.SUBMITTING) }
         scope.launch {
-            Result.runCatching {
-                repository.submitMessage(
-                    OutgoingMessage(
-                        clientMessageId = ClientMessageId(entry.key.removePrefix("local_")),
-                        text = text,
-                        attachmentIds = attachmentIds,
-                    ),
+            try {
+                val target = submission.conversationId ?: activeThreadId ?: createThreadAsync().await().getOrThrow()
+                // Only clear the snapshot that was sent; typing during creation keeps the newer draft.
+                if (draftRevision == submission.revision) update { it.copy(draft = "") }
+                submission.attachmentIds.forEach(::removeAttachment)
+                val entry = TimelineEntry(
+                    key = "local_" + UUID.randomUUID().toString(), sender = "user",
+                    text = submission.text.ifBlank { "[附件]" }, isUser = true,
+                    timestamp = System.currentTimeMillis(), pendingAcceptance = true,
+                    batchGroupId = null,
                 )
-            }.fold(
-                onSuccess = { update { s -> s.copy(notice = null) } },
-                onFailure = { cause ->
-                    update { s -> s.copy(notice = "SEND_FAILED:${errorCodeOf(cause)}") }
-                },
-            )
+                val message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
+                update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(entry), pendingBatch = it.pendingBatch + entry) }
+                if (supportsMessageBatches && !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()) {
+                    batchTargets[message.clientMessageId.value] = target
+                    batcher.offer(scopeFactory(), message)
+                } else {
+                    val acceptance = repository.submitMessage(target, message)
+                    if (activeThreadId == target) {
+                        mirrored[acceptance.messageId] = TimelineMessage(
+                            id = acceptance.messageId, sender = "user",
+                            parts = buildList {
+                                if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
+                                submission.attachmentIds.forEach { add(com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                                    com.openandroidintelligence.conversation.model.AttachmentDraftId(it))) }
+                            },
+                            timestamp = entry.timestamp,
+                        )
+                        update { it.copy(timeline = Loadable.Ready(renderTimeline()),
+                            pendingBatch = it.pendingBatch.filterNot { row -> row.key == entry.key }, notice = null) }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                update { it.copy(composer = ComposerState.FAILED, notice = "SEND_FAILED:${errorCodeOf(cause)}") }
+            }
         }
     }
 
@@ -331,13 +365,12 @@ class WorkbenchController(
         val batchId = "batch_" + UUID.randomUUID().toString()
         val flushedKeys = messages.map { "local_" + it.clientMessageId.value }.toSet()
         Result.runCatching {
-            repository.submitBatch(
-                com.openandroidintelligence.conversation.ports.MessageBatch(
-                    batchId = batchId,
-                    messages = messages,
-                    clientConversationId = activeThreadId,
-                ),
-            )
+            messages.groupBy { batchTargets.remove(it.clientMessageId.value) ?: error("BATCH_TARGET_MISSING") }
+                .forEach { (target, members) ->
+                    repository.submitBatch(target, com.openandroidintelligence.conversation.ports.MessageBatch(
+                        batchId = batchId + "_" + target, messages = members, clientConversationId = target,
+                    ))
+                }
         }.fold(
             onSuccess = { acceptance ->
                 update { state ->
@@ -403,7 +436,10 @@ class WorkbenchController(
     private fun observeThreadEvents() {
         eventJob?.cancel()
         eventJob = scope.launch {
-            repository.observeEvents(scopeFactory()).collect { event ->
+            repository.observeEvents(scopeFactory()).catch { cause ->
+                if (cause is CancellationException) throw cause
+                update { it.copy(notice = "EVENTS_FAILED:${errorCodeOf(cause)}") }
+            }.collect { event ->
                 when (event) {
                     is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                         update { state ->

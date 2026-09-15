@@ -50,6 +50,7 @@ Thumbs.db
 # Logs
 *.log
 /logs/
+/tmp/
 /docs/test-evidence
 
 # Temp

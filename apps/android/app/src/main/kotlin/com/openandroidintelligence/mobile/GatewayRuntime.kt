@@ -139,7 +139,7 @@ class GatewayRuntime(
                             saveLastProfile(normalized, username, profileId, session)
                         }.onFailure { _operationNotice.value = "自动登录凭据未能保存，下次启动需要重新登录。" }
                     }
-                    establish(endpoint, username, profileId, session, negotiated.limits, tlsPin)
+                    establish(endpoint, username, profileId, session, negotiated.limits, tlsPin, negotiated.conversationUi)
                 },
                 onFailure = { cause -> _phase.value = ConnectionPhase.Failed(errorCode(cause)) },
             )
@@ -202,6 +202,12 @@ class GatewayRuntime(
         val storedAccountId = prefs.getString(KEY_LAST_ACCOUNT, null) ?: return
         val storedDeviceId = prefs.getString(KEY_LAST_DEVICE, null) ?: return
         val storedSessionId = prefs.getString(KEY_LAST_SESSION, null)
+        // Older builds registered the 44-byte SPKI container instead of the 32-byte wire key.
+        // Refresh cannot replace that server-side device key; password login registers it again.
+        if (prefs.getInt(KEY_DEVICE_KEY_ENCODING, 0) != DEVICE_KEY_ENCODING_VERSION) {
+            _phase.value = ConnectionPhase.Failed("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED")
+            return
+        }
         lastAccountId = storedAccountId
         lastDeviceId = storedDeviceId
         lastSessionId = storedSessionId
@@ -258,7 +264,7 @@ class GatewayRuntime(
                     saveLastProfile(endpoint.baseUrl, lastUser, lastProfileId, session)
                 }.onFailure { _operationNotice.value = "轮换后的自动登录凭据未能保存，下次启动可能需要重新登录。" }
             }
-            establish(endpoint, lastUser, lastProfileId, session, negotiated.limits, tlsPin)
+            establish(endpoint, lastUser, lastProfileId, session, negotiated.limits, tlsPin, negotiated.conversationUi)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (cause: Exception) {
@@ -288,6 +294,7 @@ class GatewayRuntime(
         session: SessionCredentials,
         limits: NegotiatedLimits?,
         tlsSpkiSha256: String?,
+        conversationUi: List<String>,
     ) {
         val pins = setOfNotNull(tlsSpkiSha256)
         val profile = GatewayProfile(
@@ -344,6 +351,7 @@ class GatewayRuntime(
             catalogRepository = catalogRepository,
             scopeFactory = { conversationScope },
             attachmentCoordinator = attachmentCoordinator,
+            supportsMessageBatches = "message-batches-v1" in conversationUi,
             onActiveThreadChanged = { threadId -> activeThread.set(threadId) },
         )
         _phase.value = ConnectionPhase.Connected(
@@ -417,6 +425,7 @@ class GatewayRuntime(
             .putString(KEY_LAST_ACCOUNT, session.accountId)
             .putString(KEY_LAST_DEVICE, session.deviceId)
             .putString(KEY_LAST_SESSION, session.sessionId)
+            .putInt(KEY_DEVICE_KEY_ENCODING, DEVICE_KEY_ENCODING_VERSION)
             .apply()
         lastAccountId = session.accountId
         lastDeviceId = session.deviceId
@@ -432,6 +441,7 @@ class GatewayRuntime(
             .remove(KEY_LAST_ACCOUNT)
             .remove(KEY_LAST_DEVICE)
             .remove(KEY_LAST_SESSION)
+            .remove(KEY_DEVICE_KEY_ENCODING)
             .apply()
         lastAccountId = null
         lastDeviceId = null
@@ -469,5 +479,7 @@ class GatewayRuntime(
         const val KEY_LAST_ACCOUNT = "last_account_id"
         const val KEY_LAST_DEVICE = "last_device_id"
         const val KEY_LAST_SESSION = "last_session_id"
+        const val KEY_DEVICE_KEY_ENCODING = "device_key_encoding_version"
+        const val DEVICE_KEY_ENCODING_VERSION = 1
     }
 }

@@ -23,7 +23,7 @@ class ConversationClientTest {
         var responseToReturn = WireResponse(
             status = 200,
             headers = listOf(RawHeader("content-type", "application/json")),
-            body = """{"conversationId":"conv_123","status":"received"}""".toByteArray(Charsets.UTF_8),
+            body = """{"protocol":"2.0","data":{"message":{"messageId":"msg_123","conversationId":"conv_123","status":"accepted"}}}""".toByteArray(Charsets.UTF_8),
         )
 
         override suspend fun execute(request: WireRequest): WireResponse {
@@ -42,34 +42,14 @@ class ConversationClientTest {
     }
 
     @Test
-    fun testSendMessageBatchSuccess() = runBlocking {
+    fun sendsChatV1TextAndAttachmentReferences() = runBlocking {
         val transport = RecordingTransport()
         val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")
         val http = GatewayHttpClient(profile, transport, { ByteArray(64) }, MemoryCursorStore())
         val client = ConversationClient(http)
 
-        val batch = OutgoingMessageBatch(
-            clientConversationId = "cconv_01",
-            correlationId = "corr_01",
-            messages = listOf(
-                OutgoingMessage(
-                    role = "user",
-                    parts = listOf(
-                        MessagePart.Text("Hello assistant"),
-                        MessagePart.AttachmentRef(
-                            attachmentId = "att_01",
-                            visualContext = VisualContext(
-                                bounds = NormalizedRect(0.1, 0.1, 0.9, 0.9),
-                                displayMetrics = DisplayMetrics(1080, 2400, 480),
-                                uiHierarchySummary = "TextView: Hello",
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        )
-
-        val response = client.sendMessageBatch("conv_123", batch)
+        val response = client.sendMessage("conv_123", "cmsg_01", "Hello assistant", listOf("att_01"))
+        assertEquals("msg_123", response.messageId)
         assertEquals("conv_123", response.conversationId)
         val recorded = transport.lastRequest
         assertNotNull(recorded)
@@ -77,7 +57,7 @@ class ConversationClientTest {
         assertEquals("/open-android-intelligence/v2/conversations/conv_123/messages", recorded?.target)
         val bodyStr = String(recorded!!.body, Charsets.UTF_8)
         assertTrue(bodyStr.contains("Hello assistant"))
-        assertTrue(bodyStr.contains("visualContext"))
-        assertTrue(bodyStr.contains("uiHierarchySummary"))
+        assertTrue(bodyStr.contains("clientMessageId"))
+        assertTrue(bodyStr.contains("att_01"))
     }
 }

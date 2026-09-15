@@ -170,6 +170,7 @@ class GatewayAttachmentDraftCoordinator(
             draftId = AttachmentDraftId(draftId),
             state = state,
             progress = if (state == AttachmentState.VERIFIED) 1f else 0f,
+            errorMessage = error,
         )
     }
 

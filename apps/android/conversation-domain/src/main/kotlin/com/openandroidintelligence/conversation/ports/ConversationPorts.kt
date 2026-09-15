@@ -59,7 +59,12 @@ data class PendingSubmissionIntent(
 )
 
 data class LocalAttachmentSelection(val filename: String, val mediaType: String, val bytes: ByteArray)
-data class AttachmentDraftState(val draftId: AttachmentDraftId, val state: AttachmentState, val progress: Float = 0f)
+data class AttachmentDraftState(
+    val draftId: AttachmentDraftId,
+    val state: AttachmentState,
+    val progress: Float = 0f,
+    val errorMessage: String? = null,
+)
 
 data class AgentCommand(
     val command: String,
