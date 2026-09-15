@@ -1121,6 +1121,7 @@ class CredentialStore:
             "password_hash = excluded.password_hash, updated_at = excluded.updated_at",
             (self.PASSWORD_CREDENTIAL_ID, digest, iso_millis(now)),
         )
+        self.store.database.commit()
 
     def has_password(self) -> bool:
         row = self.store.database.execute(
