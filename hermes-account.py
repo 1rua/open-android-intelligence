@@ -19,6 +19,7 @@ from open_android_intelligence_gateway.admin import (
     create_admin_service,
     HostApiCompatibility,
 )
+from open_android_intelligence_gateway.account_paths import default_hermes_gateway_root
 
 def main():
     if len(sys.argv) < 2:
@@ -32,11 +33,8 @@ def main():
 
     cmd = sys.argv[1]
 
-    # 默认存储目录（可按需通过 HERMES_STORAGE_ROOT 环境变量指定）
-    storage_root = os.environ.get(
-        "HERMES_STORAGE_ROOT",
-        str(Path.home() / ".hermes" / "open_android_intelligence_storage")
-    )
+    # 默认存储目录：与 Hermes 插件运行时的 default_hermes_gateway_root() 保持严格对齐
+    storage_root = os.environ.get("HERMES_STORAGE_ROOT") or str(default_hermes_gateway_root())
 
     admin = create_admin_service(
         storage_root=storage_root,
