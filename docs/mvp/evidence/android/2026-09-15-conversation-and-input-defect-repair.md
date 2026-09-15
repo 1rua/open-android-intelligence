@@ -47,7 +47,15 @@
 
 同时改进 App 的失败反馈：发送失败不再只显示原始错误码，而是映射为可操作的中文说明；新增回归测试覆盖。
 
-**仍未部署**：创建密钥文件、写入 `~/.hermes/.env` 与重启共享 `hermes-gateway.service` 需要用户授权（该服务同时承载微信等其它平台）。
+## 4.1 自动配置与部署（2026-09-15 23:02）
+
+用户要求"安装插件后自动配置好，只需在 Agent 端装插件并用 `hermes gateway setup` 配好账号密码即可配对"。据此把"提供密钥来源"绑定到安装插件本身：插件加载时若宿主没有秘密存储，就在 `~/.open-android-intelligence/gateway-master-key` 自动生成 32 字节随机密钥（0600，目录仅在本次创建时收紧到 0700）；`hermes-account.py` 也改为使用同一来源，避免命令行创建的账号缺少主密钥。路径可用 `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE` 覆盖，`init-key` 与自动路径都绝不覆盖已有密钥。决策记录在 ADR 0048，`CONTEXT.md` 与 Hermes 集成 README 同步更新。
+
+部署（已获用户确认）：23:02:08 重启 `hermes-gateway.service`，`ActiveEnterTimestamp=23:02:08`，`MainPID=735616`，服务 `active`；日志显示 `Gateway Protocol v2 server listening on 0.0.0.0:11451` 且 `open_android connected`。密钥文件与本次重启同一秒出现（`-rw------- 32 字节`，目录 `700`），这本身就是运行进程已加载新代码并成功解析出真实密钥来源的直接证据。
+
+账号 `master_key_ref` 仍为空，属预期：空引用会在该账号下一次被打开时（即手机下一次请求）就地升级为 `local-key-v1:...`，已用真实数据副本证明可行且不会报 `MASTER_KEY_REFERENCE_MISMATCH`。
+
+CLI 子进程级回归测试已加入：在临时 HOME 下执行 `./hermes-account.py create phone1 --password ...`，断言账号 `master_key_ref` 以 `local-key-v1:` 开头且密钥文件为 0600。
 
 ## 5. 设备端待人工验收
 

@@ -20,10 +20,13 @@ from open_android_intelligence_gateway.admin import (
     HostApiCompatibility,
 )
 from open_android_intelligence_gateway.account_paths import default_hermes_gateway_root
+from open_android_intelligence_gateway.core import create_gateway_core
 from open_android_intelligence_gateway.local_keys import (
     MASTER_KEY_FILE_ENV,
     MASTER_KEY_FILE_ENV_ALIAS,
+    MasterKeyUnavailable,
     create_master_key_file,
+    resolve_local_master_key_store,
 )
 
 def main():
@@ -62,8 +65,18 @@ def main():
     # 默认存储目录：与 Hermes 插件运行时的 default_hermes_gateway_root() 保持严格对齐
     storage_root = os.environ.get("HERMES_STORAGE_ROOT") or str(default_hermes_gateway_root())
 
+    # 命令行必须与插件使用同一个主密钥来源，否则这里创建的账号会缺少主密钥，
+    # 表现为"登录成功但所有业务请求 400"。
+    try:
+        secret_store = resolve_local_master_key_store()
+    except MasterKeyUnavailable as exc:
+        print(f"❌ 主密钥不可用: {exc}")
+        print("   可执行 ./hermes-account.py init-key 生成受限密钥文件后重试。")
+        sys.exit(1)
+
+    core = create_gateway_core(storage_root=storage_root, secret_store=secret_store)
     admin = create_admin_service(
-        storage_root=storage_root,
+        core=core,
         host_version="2.0.0",
         host_api=HostApiCompatibility("1.0.0", "3.0.0", "0" * 40),
     )

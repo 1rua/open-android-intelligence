@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import sqlite3
+import subprocess
 import stat
 import sys
 from pathlib import Path
@@ -222,3 +224,32 @@ def test_gateway_starts_once_the_operator_provides_a_key_file(tmp_path):
         return started
 
     assert asyncio.run(scenario()) is True
+
+
+def test_account_created_through_the_cli_already_carries_a_master_key(tmp_path):
+    """The documented flow: install the plugin, create the account, pair the phone."""
+    repo = Path(__file__).resolve().parents[3]
+    home = tmp_path / "home"
+    storage = tmp_path / "storage"
+    home.mkdir()
+    completed = subprocess.run(
+        [sys.executable, str(repo / "hermes-account.py"), "create", "phone1",
+         "--password", "TestPass123"],
+        cwd=repo,
+        env={**os.environ, "HOME": str(home), "HERMES_STORAGE_ROOT": str(storage)},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "phone1" in completed.stdout
+
+    databases = list(storage.rglob("gateway.sqlite"))
+    assert len(databases) == 1
+    with sqlite3.connect(f"file:{databases[0]}?mode=ro", uri=True) as connection:
+        value = connection.execute(
+            "SELECT value FROM account_metadata WHERE key = 'master_key_ref'"
+        ).fetchone()[0]
+    assert value.startswith("local-key-v1:")
+
+    key_file = home / ".open-android-intelligence" / "gateway-master-key"
+    assert key_file.exists()
+    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
