@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -33,6 +34,50 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # 路径常量定义（一律基于相对路径基准，保持环境可移植）
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def is_port_listening(port: int, host: str = "127.0.0.1", timeout: float = 0.3) -> bool:
+    """检查指定 IP 与端口是否处于活跃监听状态"""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (OSError, ConnectionRefusedError, socket.timeout):
+        return False
+
+
+def detect_gateway_port(
+    explicit_port: Optional[int] = None,
+    candidate_ports: Optional[List[int]] = None,
+    host: str = "127.0.0.1",
+) -> Tuple[int, bool]:
+    """
+    动态检测当前运行的 Hermes Gateway 端口。
+    优先级：
+    1. 显式指定的 explicit_port
+    2. 环境变量 OPEN_ANDROID_GATEWAY_PORT（若处于监听状态）
+    3. 候选端口探针：11451 (Hermes 常用端口), 8045 (Gateway v2 默认端口)
+    4. 若均未在监听（如离线模拟演练模式），优先回退至环境变量或 8045
+    返回: (port, is_active)
+    """
+    if explicit_port and explicit_port > 0:
+        return explicit_port, is_port_listening(explicit_port, host)
+
+    env_port_str = os.environ.get("OPEN_ANDROID_GATEWAY_PORT")
+    env_port = int(env_port_str) if (env_port_str and env_port_str.isdigit()) else None
+
+    if env_port and is_port_listening(env_port, host):
+        return env_port, True
+
+    candidates = list(candidate_ports or [11451, 8045])
+    if env_port and env_port not in candidates:
+        candidates = [env_port] + candidates
+
+    for p in candidates:
+        if is_port_listening(p, host):
+            return p, True
+
+    default_port = env_port or 8045
+    return default_port, False
 HERMES_INTEGRATION = PROJECT_ROOT / "integrations" / "hermes"
 if str(HERMES_INTEGRATION) not in sys.path:
     sys.path.insert(0, str(HERMES_INTEGRATION))
@@ -416,10 +461,14 @@ class E2EOrchestrator:
         batch_id: Optional[str] = None,
         dry_run: bool = False,
         storage_root: Path = DEFAULT_STORAGE_ROOT,
+        port: Optional[int] = None,
+        gateway_url: Optional[str] = None,
     ):
         self.batch_id = batch_id or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.dry_run = dry_run
         self.storage_root = storage_root
+        self.port = port
+        self.gateway_url = gateway_url
         self.runner = CommandRunner()
         # 严格隔离存储目录环境变量
         self.runner.env["HERMES_STORAGE_ROOT"] = str(self.storage_root)
@@ -552,11 +601,39 @@ class E2EOrchestrator:
         metrics["sandboxPath"] = sandbox_path_str
 
         # 3. 密码防篡改验证 (RFC 7914 scrypt 散列验证)
+        # 3. 密码防篡改验证与配对握手校验器实际无缝联动 (RFC 7914 scrypt 散列 + 本地 SQLite + AccountPasswordVerifier)
         from open_android_intelligence_gateway.credentials import hash_password, verify_password
+        from open_android_intelligence_gateway.core import create_gateway_core
+        from open_android_intelligence_gateway.adapter import AccountPasswordVerifier
+
         test_pw = password
         digest = hash_password(test_pw)
         pw_verify_ok = verify_password(test_pw, digest) and not verify_password(test_pw + "_wrong", digest)
         metrics["passwordDigestVerification"] = pw_verify_ok
+        pw_algo_ok = verify_password(test_pw, digest) and not verify_password(test_pw + "_wrong", digest)
+
+        account_pw_ok = False
+        verifier_handshake_ok = False
+        try:
+            core = create_gateway_core(self.storage_root)
+            account = core.open_gateway_account(username)
+            try:
+                account_pw_ok = account.credentials.verify_password(password) and not account.credentials.verify_password(password + "_wrong")
+            finally:
+                account.close()
+
+            verifier = AccountPasswordVerifier(core)
+            verifier_handshake_ok = (
+                verifier.verify(username, username, password, {"installationId": f"inst_e2e_{self.batch_id}"})
+                and not verifier.verify(username, username, password + "_wrong", {"installationId": f"inst_e2e_{self.batch_id}"})
+            )
+        except Exception as e:
+            self.log(AgentRole.DIAGNOSTIC, f"校验账号 SQLite 存储凭据与配对握手联动时发生异常: {e}")
+
+        pw_verify_ok = pw_algo_ok and account_pw_ok and verifier_handshake_ok
+        metrics["passwordDigestVerification"] = pw_algo_ok
+        metrics["accountStoragePasswordVerified"] = account_pw_ok
+        metrics["pairingHandshakeVerifierSeamless"] = verifier_handshake_ok
 
         # 4. 验证管理员权限与状态
         status_cmd = "python3 hermes-account.py status"
@@ -603,18 +680,38 @@ class E2EOrchestrator:
     # --------------------------------------------------------------------------
     def run_stage_3(
         self,
-        gateway_url: str = "http://127.0.0.1:8045",
+        gateway_url: Optional[str] = None,
         username: str = "e2e_tester",
         password: str = "GatewaySecretPass2026!",
+        port: Optional[int] = None,
     ) -> StageResult:
         stage = E2EStage.STAGE_3_PAIRING_HANDSHAKE
-        self.log(AgentRole.RUNNER, f"▶ 开始执行【阶段 3：手机 App 启动与配对握手】(目标: {gateway_url})")
+        target_port = port or self.port
+        active_port, is_active = detect_gateway_port(explicit_port=target_port, candidate_ports=[11451, 8045])
+
+        if gateway_url:
+            resolved_url = gateway_url
+            m = re.search(r":(\d+)(?:/|$)", gateway_url)
+            if m:
+                active_port = int(m.group(1))
+        elif self.gateway_url:
+            resolved_url = self.gateway_url
+            m = re.search(r":(\d+)(?:/|$)", self.gateway_url)
+            if m:
+                active_port = int(m.group(1))
+        else:
+            resolved_url = f"http://127.0.0.1:{active_port}"
+
+        self.log(AgentRole.RUNNER, f"▶ 开始执行【阶段 3：手机 App 启动与配对握手】(目标: {resolved_url}, 端口: {active_port}, 监听状态: {is_active})")
         start_t = time.time()
         cmds = []
-        metrics = {}
+        metrics = {
+            "gatewayPort": active_port,
+            "portListening": is_active,
+        }
 
         if self.dry_run:
-            self.log(AgentRole.RUNNER, "[DryRun] 模拟启动 App 与 Android CLI 控件树匹配")
+            self.log(AgentRole.RUNNER, f"[DryRun] 模拟启动 App 与 Android CLI 控件树匹配 (目标端口: {active_port})")
             time.sleep(1.0)
             metrics["handshakeLatencyMs"] = 420.0
             metrics["layoutElementsMatched"] = 5
@@ -626,10 +723,12 @@ class E2EOrchestrator:
                 passed = False
                 metrics["error"] = "NO_DEVICE_CONNECTED"
             else:
-                # 1. 确保 ADB 端口反向代理映射
-                rev_cmd = "adb reverse tcp:8045 tcp:8045"
-                self.runner.run(rev_cmd)
-                cmds.append(rev_cmd)
+                # 1. 动态针对活跃端口与候选端口执行 ADB 反向代理映射
+                ports_to_reverse = list(dict.fromkeys([active_port, 11451, 8045]))
+                for p in ports_to_reverse:
+                    rev_cmd = f"adb reverse tcp:{p} tcp:{p}"
+                    self.runner.run(rev_cmd)
+                    cmds.append(rev_cmd)
 
                 # 2. 清理并冷启动 Android 主 Activity
                 self.runner.run("adb shell pm clear com.openandroidintelligence.mobile")
@@ -652,7 +751,7 @@ class E2EOrchestrator:
                     c_user = self.android_cli.get_node_center(edit_texts[1])
                     c_pwd = self.android_cli.get_node_center(edit_texts[2])
                     if c_url:
-                        self.android_cli.clear_and_input(c_url[0], c_url[1], gateway_url)
+                        self.android_cli.clear_and_input(c_url[0], c_url[1], resolved_url)
                     if c_user:
                         self.android_cli.clear_and_input(c_user[0], c_user[1], username)
                     if c_pwd:
@@ -666,7 +765,7 @@ class E2EOrchestrator:
                     if gw_nodes:
                         c = self.android_cli.get_node_center(gw_nodes[0])
                         if c:
-                            self.android_cli.clear_and_input(c[0], c[1] + 115, gateway_url)
+                            self.android_cli.clear_and_input(c[0], c[1] + 115, resolved_url)
                     if user_nodes:
                         c = self.android_cli.get_node_center(user_nodes[0])
                         if c:
@@ -726,7 +825,7 @@ class E2EOrchestrator:
             name="手机 App 启动与配对握手",
             status=TestStatus.PASSED if passed else TestStatus.FAILED,
             duration_seconds=round(duration, 2),
-            details={"gatewayUrl": gateway_url, "username": username},
+            details={"gatewayUrl": resolved_url, "port": active_port, "username": username},
             commands_executed=cmds,
             metrics=metrics,
             ticket=ticket,
@@ -1020,13 +1119,19 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="模拟测试流程（用于离线或无 Android 设备环境）")
     parser.add_argument("--run-all", action="store_true", help="执行完整全流程测试")
     parser.add_argument("--stage", choices=["1", "2", "3", "4"], help="单独执行某个阶段")
+    parser.add_argument("--port", type=int, default=None, help="指定 Hermes 网关监听端口 (如 11451 或 8045)")
+    parser.add_argument("--gateway-url", type=str, default=None, help="指定网关完整 URL (如 http://127.0.0.1:11451)")
     parser.add_argument("--worktree-demo", action="store_true", help="演练多 Agent 多 Worktree 并行修复与拓扑合并流程")
 
     args = parser.parse_args()
 
     # 如果既未显式传入 --run-all 且未单独指定 --stage，则默认 dry-run 保护
     is_dry = args.dry_run or (not args.run_all and not args.stage)
-    orchestrator = E2EOrchestrator(dry_run=is_dry)
+    orchestrator = E2EOrchestrator(
+        dry_run=is_dry,
+        port=args.port,
+        gateway_url=args.gateway_url,
+    )
 
     if args.worktree_demo:
         orchestrator.log(AgentRole.RUNNER, "=== 启动多 Agent 多 Worktree 并行修复与拓扑合并演练 ===")
@@ -1040,7 +1145,7 @@ def main():
         elif args.stage == "2":
             orchestrator.run_stage_2()
         elif args.stage == "3":
-            orchestrator.run_stage_3()
+            orchestrator.run_stage_3(gateway_url=args.gateway_url, port=args.port)
         elif args.stage == "4":
             orchestrator.run_stage_4()
         orchestrator.generate_final_report()
@@ -1048,7 +1153,7 @@ def main():
 
     orchestrator.run_stage_1()
     orchestrator.run_stage_2()
-    orchestrator.run_stage_3()
+    orchestrator.run_stage_3(gateway_url=args.gateway_url, port=args.port)
     orchestrator.run_stage_4()
     orchestrator.generate_final_report()
 

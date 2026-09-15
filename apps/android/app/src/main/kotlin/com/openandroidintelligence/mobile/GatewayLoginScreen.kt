@@ -52,17 +52,17 @@ fun GatewayLoginScreen(
     isDarkTheme: Boolean = true,
     onToggleTheme: (() -> Unit)? = null,
 ) {
-    var url by rememberSaveable { mutableStateOf("https://") }
+    var url by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
 
-    val normalizedUrl = url.trim()
+    val normalizedUrl = remember(url) { sanitizeGatewayUrl(url) }
     // The address decides whether this pairing can be verified at all, so the
     // form classifies it exactly the way the runtime will.
     val endpoint = remember(normalizedUrl) { GatewayEndpoint.parse(normalizedUrl) }
     val urlIsValid = endpoint != null
-    val showUrlError = normalizedUrl != "https://" && normalizedUrl.isNotEmpty() && !urlIsValid
+    val showUrlError = url.isNotBlank() && !urlIsValid
     val plaintextAddress = endpoint?.isTls == false
     val isBusy = phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
@@ -191,11 +191,22 @@ fun GatewayLoginScreen(
                     FormInputField(
                         label = "网关地址",
                         value = url,
-                        onValueChange = { url = it },
-                        placeholder = "https://gateway.example.local:8443",
+                        onValueChange = { input ->
+                            var cleaned = input
+                            while (cleaned.startsWith("https://http://", ignoreCase = true) ||
+                                cleaned.startsWith("http://http://", ignoreCase = true) ||
+                                cleaned.startsWith("https://https://", ignoreCase = true) ||
+                                cleaned.startsWith("http://https://", ignoreCase = true)
+                            ) {
+                                cleaned = cleaned.substring(cleaned.indexOf("://") + 3)
+                            }
+                            url = cleaned
+                        },
+                        onClear = { url = "" },
+                        placeholder = "https://gateway.example.local:8443 或 http://10.0.2.2:8045",
                         inputBg = inputBg,
                         isError = showUrlError,
-                        supportingText = if (showUrlError) "请输入包含主机名的网关地址（http:// 或 https://）" else null,
+                        supportingText = if (showUrlError) "请输入包含主机名的有效网关地址（例如 http://10.0.2.2:8045 或 https://gateway.example.com）" else null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                     )
 
@@ -208,6 +219,7 @@ fun GatewayLoginScreen(
                         label = "用户名 / 账号",
                         value = username,
                         onValueChange = { username = it },
+                        onClear = { username = "" },
                         placeholder = "输入账号",
                         inputBg = inputBg,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
@@ -350,6 +362,7 @@ private fun FormInputField(
     isPassword: Boolean = false,
     passwordVisible: Boolean = false,
     onTogglePassword: (() -> Unit)? = null,
+    onClear: (() -> Unit)? = null,
     isError: Boolean = false,
     supportingText: String? = null,
     singleLine: Boolean = true,
@@ -397,6 +410,17 @@ private fun FormInputField(
                         Icon(
                             imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                             contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            } else if (onClear != null && value.isNotEmpty()) {
+                {
+                    IconButton(onClick = onClear) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "清除内容",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp),
                         )
@@ -560,4 +584,41 @@ private fun TransportSecurityChip(security: TransportSecurity) {
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
         )
     }
+}
+
+/**
+ * 清理与规范化用户或自动化工具输入的网关地址。
+ * 1. 消除由于重复输入或粘贴导致的多重协议前缀（例如 "https://http://10.0.2.2:8045" 规范化为 "http://10.0.2.2:8045"）；
+ * 2. 对 Android 模拟器宿主地址 (10.0.2.2)、本地环回地址 (127.0.0.1 / localhost) 及常见私有局域网 IP，
+ *    在未显式输入协议头时自动补全 http://，避免在非加密开发端口上误触发 TLS Pinning 导致握手失败；
+ * 3. 去除首尾空白字符与末尾斜杠。
+ */
+fun sanitizeGatewayUrl(raw: String): String {
+    var trimmed = raw.trim()
+    while (trimmed.startsWith("https://http://", ignoreCase = true) ||
+        trimmed.startsWith("http://http://", ignoreCase = true) ||
+        trimmed.startsWith("https://https://", ignoreCase = true) ||
+        trimmed.startsWith("http://https://", ignoreCase = true)
+    ) {
+        trimmed = trimmed.substring(trimmed.indexOf("://") + 3)
+    }
+
+    if (trimmed.isNotEmpty() && !trimmed.contains("://")) {
+        val lower = trimmed.lowercase()
+        if (lower.startsWith("10.0.2.2") ||
+            lower.startsWith("127.0.0.1") ||
+            lower.startsWith("localhost") ||
+            lower.startsWith("192.168.") ||
+            lower.startsWith("10.") ||
+            lower.startsWith("172.16.") ||
+            lower.startsWith("172.17.") ||
+            lower.startsWith("172.18.") ||
+            lower.startsWith("172.19.") ||
+            lower.startsWith("172.2") ||
+            lower.startsWith("172.3")
+        ) {
+            trimmed = "http://$trimmed"
+        }
+    }
+    return trimmed.removeSuffix("/")
 }

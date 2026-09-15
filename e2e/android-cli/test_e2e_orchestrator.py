@@ -33,6 +33,8 @@ from run_e2e_orchestrator import (
     StageResult,
     TestStatus,
     WorktreePriority,
+    detect_gateway_port,
+    is_port_listening,
     module_to_priority,
 )
 
@@ -73,6 +75,33 @@ class TestE2EOrchestrator(unittest.TestCase):
         self.assertEqual(res.details.get("account"), "unit_test_user")
         self.assertTrue(res.metrics.get("passwordDigestVerification"))
         self.assertTrue(res.metrics.get("sandboxPermission0700"))
+        self.assertTrue(res.metrics.get("accountStoragePasswordVerified"))
+        self.assertTrue(res.metrics.get("pairingHandshakeVerifierSeamless"))
+
+    def test_detect_gateway_port_logic(self):
+        # 1. 显式指定端口
+        p, active = detect_gateway_port(explicit_port=9999)
+        self.assertEqual(p, 9999)
+
+        # 2. 模拟某端口监听
+        with patch("run_e2e_orchestrator.is_port_listening") as mock_listen:
+            # 模拟 11451 处于监听状态
+            mock_listen.side_effect = lambda port, host="127.0.0.1", timeout=0.3: port == 11451
+            p, active = detect_gateway_port(candidate_ports=[11451, 8045])
+            self.assertEqual(p, 11451)
+            self.assertTrue(active)
+
+            # 模拟 8045 处于监听状态
+            mock_listen.side_effect = lambda port, host="127.0.0.1", timeout=0.3: port == 8045
+            p, active = detect_gateway_port(candidate_ports=[11451, 8045])
+            self.assertEqual(p, 8045)
+            self.assertTrue(active)
+
+            # 模拟均未在监听，回退到默认 8045
+            mock_listen.side_effect = lambda port, host="127.0.0.1", timeout=0.3: False
+            p, active = detect_gateway_port(candidate_ports=[11451, 8045])
+            self.assertEqual(p, 8045)
+            self.assertFalse(active)
 
     def test_stage_3_pairing_handshake_dry_run(self):
         res = self.orchestrator.run_stage_3(
@@ -83,6 +112,18 @@ class TestE2EOrchestrator(unittest.TestCase):
         self.assertEqual(res.status, TestStatus.PASSED)
         self.assertIn("handshakeLatencyMs", res.metrics)
         self.assertTrue(res.metrics.get("workbenchReached"))
+        self.assertEqual(res.metrics.get("gatewayPort"), 8045)
+
+    def test_stage_3_pairing_handshake_dynamic_port_11451(self):
+        res = self.orchestrator.run_stage_3(
+            port=11451,
+            username="unit_test_user",
+        )
+        self.assertEqual(res.stage, E2EStage.STAGE_3_PAIRING_HANDSHAKE)
+        self.assertEqual(res.status, TestStatus.PASSED)
+        self.assertEqual(res.metrics.get("gatewayPort"), 11451)
+        self.assertEqual(res.details.get("port"), 11451)
+        self.assertIn("http://127.0.0.1:11451", res.details.get("gatewayUrl"))
 
     def test_stage_4_bidirectional_msg_dry_run(self):
         res = self.orchestrator.run_stage_4(message_text="Test Message 123")

@@ -26,7 +26,13 @@
     "kvmHardwareAcceleration": true,
     "recommendedDeviceProfile": "medium_phone",
     "recommendedAvdName": "OpenAndroid_Pixel8_API35",
-    "requiredShellEncoding": "C.UTF-8"
+    "requiredShellEncoding": "C.UTF-8",
+    "gateway": {
+      "defaultPort": 8045,
+      "candidatePorts": [11451, 8045],
+      "reverseAdb": true,
+      "envPortVariable": "OPEN_ANDROID_GATEWAY_PORT"
+    }
   },
   "modules": [
     {
