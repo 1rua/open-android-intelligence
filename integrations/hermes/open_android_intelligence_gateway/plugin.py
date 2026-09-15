@@ -26,6 +26,7 @@ from .adapter import (
 from .account_paths import GATEWAY_DIRECTORY_NAME, WIRE_ID_PATTERN
 from .core import GatewayCore, create_gateway_core
 from .http import EXPOSURE_MODES, GatewayExposure, create_gateway_exposure
+from .local_keys import resolve_local_master_key_store
 
 
 HERMES_PLUGIN_MANIFEST = {
@@ -190,9 +191,16 @@ def compose_gateway_services(ctx: Any) -> GatewayServices:
     core = _attr(ctx, "gateway_core", "gatewayCore", default=None)
     verifier = _attr(ctx, "credential_verifier", "credentialVerifier", default=None)
     if core is None:
+        # ADR 0023: prefer the host Secret Store and fall back to the operator's
+        # restricted key file. Hermes exposes no Secret Store, so without this
+        # fallback every account would silently run without a master key and
+        # answer every authenticated request with MASTER_KEY_UNAVAILABLE.
+        secret_store = _attr(ctx, "secret_store", "secretStore", default=None)
+        if secret_store is None:
+            secret_store = resolve_local_master_key_store()
         core = create_gateway_core(
             storage_root=_storage_root(ctx),
-            secret_store=_attr(ctx, "secret_store", "secretStore", default=None),
+            secret_store=secret_store,
             contract_root=_attr(ctx, "contract_root", "contractRoot", default=None),
             credential_verifier=verifier,
         )

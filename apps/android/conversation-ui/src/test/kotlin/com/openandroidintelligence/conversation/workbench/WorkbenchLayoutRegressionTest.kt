@@ -16,6 +16,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import com.openandroidintelligence.conversation.model.CatalogVersion
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.ports.*
+import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import kotlinx.coroutines.*
@@ -69,6 +70,12 @@ class WorkbenchLayoutRegressionTest {
             "搜索框不能低于 Material 文本字段最小高度：字段高 ${field.height}px，最小值 ${materialMinimum}px",
             field.height >= materialMinimum,
         )
+    }
+
+    @Test fun failedSendExplainsItselfInsteadOfShowingABareErrorCode() {
+        val readable = noticeText("SEND_FAILED:MASTER_KEY_UNAVAILABLE")
+        assertTrue("失败提示必须给出可操作说明：$readable", readable.contains("主密钥") && !readable.contains("MASTER_KEY_UNAVAILABLE"))
+        assertEquals("已创建新对话", noticeText("已创建新对话"))
     }
 
     private fun SemanticsNodeInteraction.textLayoutHeight(): Int {

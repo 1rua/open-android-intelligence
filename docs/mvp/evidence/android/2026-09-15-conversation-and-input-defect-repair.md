@@ -31,7 +31,25 @@
 - Hermes 真实互通：`HermesHttpInteropTest` 起本地 Python 夹具（真实 Core、schemas、HTTP 路由、密码凭据、Ed25519 验签），走真实 HTTP 与真实签名完成
   `negotiate → password login → commands → create conversation → list conversations → attachment create/upload/commit → GET attachment → send message`，全部 200，无错误码。
 
-## 4. 设备端待人工验收
+## 4. 第二轮：真机复测暴露的网关侧缺陷（2026-09-15 晚）
+
+用户在真机复测后反馈"点击发送后无反应、附件仍然失败"。核对本机运行中的 `hermes-gateway.service`（即手机连接的 192.168.100.114:11451）后确认：
+
+- 运行中的网关通过符号链接 `~/.hermes/plugins/agent-life-gateway/open_android_intelligence_gateway -> 仓库` 直接加载仓库代码，服务端即当前源码，不是旧安装副本。
+- 手机端在 22:03:17 完成了协商与密码登录（均 200），并在 `device_keys` 注册了长度为 43 的原始公钥，证明第一轮的设备公钥修复已生效。
+- 但同一时刻 `GET /conversations`、`GET /commands`、`POST /conversations`、`POST /attachments` **全部返回 400**。
+- 用账号数据副本复现，Core 返回的确切错误码是 `MASTER_KEY_UNAVAILABLE`：`account_metadata.master_key_ref` 为空字符串，`account.store.aead` 为 `None`。该账号的 `attachments`、`conversations`、`messages` 三张表记录数均为 0，说明这台网关的已认证业务接口从未成功过。
+- 根因：ADR 0023 要求"宿主机优先提供 Secret Store，没有时由部署者提供权限受限的专用密钥文件，密钥缺失时网关拒绝启动"。Hermes 的 `PluginContext` 并不提供 `secret_store`，而实现只是静默降级为空主密钥，于是把"未配置密钥"变成了"登录成功但每个业务请求 400"。
+
+修复：新增 `local_keys.py` 提供 ADR 0023 允许的受限密钥文件来源（AES-256-GCM，按账号 HKDF 派生，拒绝符号链接、非本人所有、组/其他可读、缺失或长度不合法），`plugin.py` 在宿主没有 Secret Store 时回退到该文件，`adapter.connect()` 在主密钥不可用时拒绝启动并打印可操作原因，`hermes-account.py init-key` 负责生成 0600 密钥文件。
+
+验证：`test_local_master_key.py` 10 项通过（含缺失/权限过宽/符号链接被拒、账号间密钥隔离、篡改与 AAD 不匹配被拒、无密钥时平台拒绝启动、有密钥时平台正常启动、完整附件三步 + 发消息闭环且暂存字节为 `aead-v1:` 密文）。Hermes 全套 128 项通过。用**真实账号数据副本**验证：设置密钥文件后，原本返回 `MASTER_KEY_UNAVAILABLE` 的请求变为 `error=None`，`master_key_ref` 由空字符串平滑升级为 `local-key-v1:...`。
+
+同时改进 App 的失败反馈：发送失败不再只显示原始错误码，而是映射为可操作的中文说明；新增回归测试覆盖。
+
+**仍未部署**：创建密钥文件、写入 `~/.hermes/.env` 与重启共享 `hermes-gateway.service` 需要用户授权（该服务同时承载微信等其它平台）。
+
+## 5. 设备端待人工验收
 
 本机无可用真机，用户将自行安装验收。产物：
 

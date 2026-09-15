@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Set
 
+from .local_keys import master_key_unavailable_reason
 from .core import (
     VerifiedGatewayRequest,
     VerifiedRequestContext,
@@ -478,6 +479,14 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the Gateway Protocol v2 HTTP & SSE server."""
+        # ADR 0023: a missing or unsafe master key source refuses startup. Serving
+        # anyway would answer every authenticated request with 400 while login
+        # still succeeded, which is indistinguishable from a broken phone build.
+        reason = master_key_unavailable_reason(getattr(self.services, "core", None))
+        if reason is not None:
+            logger.error("[open_android] %s", reason)
+            self._set_fatal_error("MASTER_KEY_UNAVAILABLE", reason, retryable=False)
+            return False
         if not AIOHTTP_AVAILABLE:
             logger.error("[open_android] aiohttp is not installed; cannot start HTTP gateway")
             self._set_fatal_error(

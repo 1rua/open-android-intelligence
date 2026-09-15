@@ -20,6 +20,11 @@ from open_android_intelligence_gateway.admin import (
     HostApiCompatibility,
 )
 from open_android_intelligence_gateway.account_paths import default_hermes_gateway_root
+from open_android_intelligence_gateway.local_keys import (
+    MASTER_KEY_FILE_ENV,
+    MASTER_KEY_FILE_ENV_ALIAS,
+    create_master_key_file,
+)
 
 def main():
     if len(sys.argv) < 2:
@@ -27,11 +32,32 @@ def main():
         print("  ./hermes-account.py create <用户名>      # 注册新账号")
         print("  ./hermes-account.py delete <用户名>      # 删除账号")
         print("  ./hermes-account.py status              # 查看网关管理状态")
+        print("  ./hermes-account.py init-key [路径]     # 生成 0600 受限主密钥文件（ADR 0023）")
         print("\n示例:")
         print("  ./hermes-account.py create djbd")
         sys.exit(1)
 
     cmd = sys.argv[1]
+
+    if cmd in ("init-key", "init_key", "key"):
+        # ADR 0023：宿主没有 Secret Store 时必须由部署者提供受限密钥文件。
+        # 该文件不能与数据库、备份或普通配置放在一起，所以默认写在项目外部。
+        default_path = Path.home() / ".open-android-intelligence" / "gateway-master-key"
+        target = Path(sys.argv[2]).expanduser() if len(sys.argv) > 2 else default_path
+        try:
+            created = create_master_key_file(target)
+        except FileExistsError:
+            print(f"❌ 密钥文件已存在，未覆盖: {target}")
+            sys.exit(1)
+        except OSError as exc:
+            print(f"❌ 无法创建密钥文件 {target}: {exc}")
+            sys.exit(1)
+        print(f"✅ 已生成受限主密钥文件: {created}")
+        print("请在 ~/.hermes/.env 中配置：")
+        print(f"  {MASTER_KEY_FILE_ENV}={created}")
+        print(f"（兼容别名也接受：{MASTER_KEY_FILE_ENV_ALIAS}）")
+        print("配置后重启网关；缺少主密钥时网关会拒绝启动。")
+        return
 
     # 默认存储目录：与 Hermes 插件运行时的 default_hermes_gateway_root() 保持严格对齐
     storage_root = os.environ.get("HERMES_STORAGE_ROOT") or str(default_hermes_gateway_root())

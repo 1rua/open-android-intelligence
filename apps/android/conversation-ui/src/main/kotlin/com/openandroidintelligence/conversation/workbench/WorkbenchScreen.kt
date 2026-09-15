@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.LoadableRegion
+import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
@@ -60,7 +61,8 @@ fun WorkbenchScreen(
     LaunchedEffect(state.notice) {
         state.notice?.let { notice ->
             controller.dismissNotice()
-            snackbar.showSnackbar(notice)
+            // A failed send must explain itself: an error code alone reads as "no reaction".
+            snackbar.showSnackbar(noticeText(notice))
         }
     }
     LaunchedEffect(listState) {

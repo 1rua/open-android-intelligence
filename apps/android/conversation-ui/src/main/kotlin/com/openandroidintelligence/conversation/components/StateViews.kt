@@ -41,6 +41,8 @@ fun readableFailure(code: String): String {
     val value = code.uppercase()
     return when {
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
+        value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请联系网关部署者执行 ./hermes-account.py init-key 并重启网关。"
+        value.contains("REQUEST_BODY_INVALID") -> "网关拒绝了这次请求的内容，请更新 App 或检查网关版本。"
         value.contains("CURSOR_EXPIRED") -> "会话进度已过期，请刷新以重新同步内容。"
         value.contains("URL-SCHEME") -> "网关地址不受支持，请使用 http:// 或 https:// 开头的地址。"
         value.contains("MISSING-TLS-IDENTITY") -> "Gateway 未提供可核验的 TLS 身份，已按安全要求拒绝连接。"
@@ -55,6 +57,16 @@ fun readableFailure(code: String): String {
         value.contains("CONNECT") || value.contains("NETWORK") || value.contains("IOEXCEPTION") || value.contains("UNKNOWNHOST") -> "暂时无法连接 Gateway，请检查网络和服务地址后重试。"
         else -> "暂时无法取得内容。请检查连接后重试；若持续失败，请检查 Gateway 服务。"
     }
+}
+
+/**
+ * Turns an internal failure code into something the user can act on, while
+ * leaving already human-readable notices untouched.
+ */
+fun noticeText(notice: String): String {
+    val code = notice.substringAfter(':', notice)
+    val looksLikeCode = notice.contains(':') && Regex("[A-Z0-9_]{3,}").containsMatchIn(code)
+    return if (looksLikeCode) readableFailure(code) else notice
 }
 
 @Composable
