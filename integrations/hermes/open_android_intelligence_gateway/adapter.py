@@ -114,9 +114,9 @@ except ImportError:
 logger = logging.getLogger("hermes.platforms.open_android")
 
 DEFAULT_PORT = 8045
-# Loopback by default: contract section 3 requires a verified TLS terminator in
-# front of password login, so a bare listener must not be reachable off-host.
-DEFAULT_HOST = "127.0.0.1"
+# Bound to 0.0.0.0 by default to allow LAN and public network access from mobile devices.
+# Can be explicitly overridden via OPEN_ANDROID_GATEWAY_HOST environment variable or extra.host.
+DEFAULT_HOST = "0.0.0.0"
 
 
 class LocalCredentialVerifier:
