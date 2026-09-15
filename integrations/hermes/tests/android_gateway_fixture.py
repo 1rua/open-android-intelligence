@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +19,7 @@ from open_android_intelligence_gateway.adapter import AccountPasswordVerifier, c
 from open_android_intelligence_gateway.admin import HostApiCompatibility, create_admin_service
 from open_android_intelligence_gateway.core import create_gateway_core
 from open_android_intelligence_gateway.http import create_gateway_exposure
+from open_android_intelligence_gateway.local_keys import LocalMasterKeyStore
 from test_support import make_secret_store
 
 
@@ -26,7 +28,11 @@ def main():
     parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args()
     storage = Path(mkdtemp(prefix="oai-android-interop-"))
-    core = create_gateway_core(storage, secret_store=make_secret_store())
+    # Exercise the deployed key source when the operator configures one; the
+    # in-process test double stays for the plain unit runs.
+    key_file = os.environ.get("OAI_GATEWAY_MASTER_KEY_FILE")
+    secret_store = LocalMasterKeyStore(key_file) if key_file else make_secret_store()
+    core = create_gateway_core(storage, secret_store=secret_store)
     core.credential_verifier = AccountPasswordVerifier(core)
     compatibility = HostApiCompatibility("1.0.0", "1.0.0", "0123456789abcdef0123456789abcdef01234567")
     admin = create_admin_service(core=core, host_version="1.0.0", host_api=compatibility)
