@@ -41,6 +41,30 @@ hermes gateway setup
 
 无需执行任何外部 Python 脚本即可一步完成账号初始化。
 
+### 主密钥（自动配置，无需手工步骤）
+
+加载插件时会自动准备 Gateway 主密钥：宿主提供秘密存储时优先使用它，否则在
+`~/.open-android-intelligence/gateway-master-key` 生成 32 字节随机密钥，权限固定
+`0600`，位置在 Hermes 数据目录之外，不会随数据库、备份或诊断一起导出。每个账号
+再用 HKDF-SHA256 从该文件派生独立密钥，账号之间不共享密钥材料。
+
+因此完整的部署流程只有两步：**在 Agent 端安装插件**，然后运行
+`hermes gateway setup` 创建账号密码；手机端填入网关地址、账号与密码即可配对使用。
+
+部署者仍可覆盖或手工管理该来源：
+
+```bash
+# 指定其它受权限保护的路径（兼容别名 OPEN_ANDROID_GATEWAY_MASTER_KEY_FILE）
+echo 'OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/secure/path/gateway-master-key' >> ~/.hermes/.env
+
+# 或显式生成（绝不覆盖已有密钥）
+./hermes-account.py init-key /secure/path/gateway-master-key
+```
+
+密钥文件缺失、是符号链接、不属于当前用户、组或其他用户可读、内容长度不合法，或
+目录不可写导致无法生成时，网关**拒绝启动**并在日志中打印可操作原因（ADR 0023、
+ADR 0048）。
+
 ## 原生命令行管理
 
 安装后，Hermes 自动挂载 `open-android-intelligence` 原生子命令：

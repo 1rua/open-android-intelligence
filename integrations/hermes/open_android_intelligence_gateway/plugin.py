@@ -197,7 +197,14 @@ def compose_gateway_services(ctx: Any) -> GatewayServices:
         # answer every authenticated request with MASTER_KEY_UNAVAILABLE.
         secret_store = _attr(ctx, "secret_store", "secretStore", default=None)
         if secret_store is None:
-            secret_store = resolve_local_master_key_store()
+            # Installing the plugin is the operator's act of providing the key
+            # source (ADR 0023), so it is provisioned here. A failure must not
+            # take the whole host down: the platform start reports it instead.
+            try:
+                secret_store = resolve_local_master_key_store()
+            except Exception as exc:  # noqa: BLE001 - operator-facing reason
+                print(f"[open_android] 主密钥自动配置失败：{exc}")
+                secret_store = None
         core = create_gateway_core(
             storage_root=_storage_root(ctx),
             secret_store=secret_store,
@@ -312,6 +319,11 @@ def interactive_setup(
             print(f"  • 数据存储沙箱: {storage_root}")
             print(f"  • 网关协议: Gateway Protocol v2 (已就绪)")
             print(f"  • 监听端口: {port} (可在 ~/.hermes/.env 中通过 OPEN_ANDROID_GATEWAY_PORT 修改)")
+            key_path = getattr(getattr(admin.core, "secret_store", None), "path", None)
+            if key_path is None:
+                print("  • 主密钥: 由宿主 Secret Store 提供")
+            else:
+                print(f"  • 主密钥文件: {key_path} (权限 0600，安装插件时已自动生成)")
             print("\n  📱 手机端连接指南：")
             print("    1. 打开 Android 手机端 Open Android Intelligence App；")
             print(f"    2. 在登录页面输入 Gateway 地址 (例如 http://<本机IP>:{port}) 与账号 '{account_id}' 及刚刚设定的密码即可完成配对。\n")

@@ -36,17 +36,28 @@ class MasterKeyUnavailable(RuntimeError):
     """The configured key source is missing, unsafe, or unusable."""
 
 
-def create_master_key_file(path: str | Path) -> Path:
-    """Provisions the restricted key file the operator is expected to supply.
+DEFAULT_KEY_DIRECTORY_NAME = ".open-android-intelligence"
+DEFAULT_KEY_FILE_NAME = "gateway-master-key"
 
-    Kept explicit and one-shot: the Gateway never creates its own key source, it
-    only refuses to start without one. Refuses to overwrite an existing file so
-    a mistyped command cannot destroy a key that still protects live data.
-    """
-    target = Path(path).expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    handle = os.open(target, flags, 0o600)
+
+def default_master_key_path() -> Path:
+    """Deliberately outside the Hermes home: the key never travels with the database."""
+    return Path.home() / DEFAULT_KEY_DIRECTORY_NAME / DEFAULT_KEY_FILE_NAME
+
+
+def _write_new_key(target: Path) -> Path:
+    directory = target.parent
+    created_directory = not directory.exists()
+    directory.mkdir(parents=True, exist_ok=True)
+    if created_directory:
+        # Tighten only the directory this call created: an operator-supplied
+        # existing directory may hold unrelated files, and the key's own 0600
+        # mode is what actually protects the material.
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
+    handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         os.write(handle, os.urandom(KEY_BYTES))
         os.fsync(handle)
@@ -54,6 +65,28 @@ def create_master_key_file(path: str | Path) -> Path:
         os.close(handle)
     os.chmod(target, 0o600)
     return target
+
+
+def create_master_key_file(path: str | Path) -> Path:
+    """Explicit one-shot provisioning used by ``hermes-account.py init-key``.
+
+    Refuses to overwrite an existing file so a mistyped command cannot destroy a
+    key that still protects live data.
+    """
+    return _write_new_key(Path(path).expanduser())
+
+
+def ensure_master_key_file(path: str | Path) -> Path:
+    """The automatic path an installer or first start takes.
+
+    Installing the plugin is the operator's act of providing the key source, so
+    the Gateway provisions it here instead of asking for a manual step. An
+    existing file is never rewritten; unsafe files still fail closed later.
+    """
+    target = Path(path).expanduser()
+    if target.exists() or target.is_symlink():
+        return target
+    return _write_new_key(target)
 
 
 def master_key_file(environ: Mapping[str, str] | None = None) -> Path | None:
@@ -147,9 +180,23 @@ class LocalMasterKeyStore:
         return LocalAeadProvider(reference, self._derive(name))
 
 
-def resolve_local_master_key_store(environ: Mapping[str, str] | None = None) -> LocalMasterKeyStore | None:
-    path = master_key_file(environ)
-    return LocalMasterKeyStore(path) if path is not None else None
+def resolve_local_master_key_store(environ: Mapping[str, str] | None = None) -> LocalMasterKeyStore:
+    """The key source used when the host exposes no Secret Store.
+
+    Provisioning is automatic so a freshly installed plugin is usable after
+    ``hermes gateway setup`` alone; it still refuses to start on a file the
+    operator placed with unsafe ownership or permissions.
+    """
+    path = master_key_file(environ) or default_master_key_path()
+    try:
+        ensured = ensure_master_key_file(path)
+    except OSError as exc:
+        raise MasterKeyUnavailable(
+            f"无法自动创建主密钥文件 {path}: {exc}。请把 "
+            f"{MASTER_KEY_FILE_ENV} 指向一个可写的专用路径，或执行 "
+            "./hermes-account.py init-key 手动生成。"
+        ) from exc
+    return LocalMasterKeyStore(ensured)
 
 
 def master_key_unavailable_reason(core: Any) -> str | None:
@@ -157,9 +204,10 @@ def master_key_unavailable_reason(core: Any) -> str | None:
     store = getattr(core, "secret_store", None)
     if store is None:
         return (
-            "主密钥来源缺失：宿主未提供 Secret Store，且未配置 "
-            f"{MASTER_KEY_FILE_ENV}。请先执行 ./hermes-account.py init-key 生成受限密钥文件"
-            "（0600），再重启网关。缺少主密钥时网关拒绝启动，避免所有已认证请求以 400 失败。"
+            "主密钥来源不可用：宿主未提供 Secret Store，且受限密钥文件无法自动创建。"
+            f"请检查 {default_master_key_path()} 所在目录是否可写，或通过 "
+            f"{MASTER_KEY_FILE_ENV} 指定一个可写的专用路径。缺少主密钥时网关拒绝启动，"
+            "避免所有已认证请求以 400 失败。"
         )
     validate = getattr(store, "validate", None)
     if callable(validate):

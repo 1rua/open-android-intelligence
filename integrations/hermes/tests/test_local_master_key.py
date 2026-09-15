@@ -106,12 +106,30 @@ def test_each_account_derives_a_distinct_key_and_round_trips(tmp_path):
         first.decrypt(sealed[:-1] + bytes([sealed[-1] ^ 1]), b"staged-attachment")
 
 
-def test_env_var_selects_the_key_file_and_absence_keeps_fail_closed(tmp_path):
-    path = _key_file(tmp_path)
-    assert resolve_local_master_key_store({}) is None
+def test_installing_the_plugin_provisions_the_key_without_a_manual_step(tmp_path):
+    """The operator installs the plugin and runs hermes gateway setup; nothing else."""
+    path = tmp_path / "auto" / "gateway-master-key"
+    assert not path.exists()
     resolved = resolve_local_master_key_store({MASTER_KEY_FILE_ENV: str(path)})
-    assert resolved is not None
+    assert path.exists() and resolved.path == path
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     resolved.validate()
+    # A second start reuses the same key instead of rotating it under live data.
+    again = resolve_local_master_key_store({MASTER_KEY_FILE_ENV: str(path)})
+    assert again.get_or_create_aead("acct").reference == resolved.get_or_create_aead("acct").reference
+
+
+def test_an_unwritable_key_path_is_reported_instead_of_crashing(tmp_path):
+    directory = tmp_path / "blocked"
+    directory.mkdir()
+    os.chmod(directory, 0o500)
+    try:
+        with pytest.raises(MasterKeyUnavailable) as error:
+            resolve_local_master_key_store({MASTER_KEY_FILE_ENV: str(directory / "key")})
+        assert "init-key" in str(error.value)
+    finally:
+        os.chmod(directory, 0o700)
 
 
 def test_local_key_source_unblocks_authenticated_requests(tmp_path):
