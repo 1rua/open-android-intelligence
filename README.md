@@ -1,229 +1,241 @@
-# open-android-intelligence
+<div align="center">
 
-open-android-intelligence 让你的 Android 手机安全连接到自托管 AI Agent，让 Agent 在授权范围内读取通知、对话交流、执行操作。通过 app 内嵌的 Tailscale userspace 节点建立加密连接，不占用系统 VPN 通道。
+<img src="assets/readme/hero-banner.svg" alt="Open Android Intelligence Banner" width="100%" />
 
-## 核心功能
+<p align="center">
+  <strong>让 Android 手机安全连接到自托管 AI Agent · 手机是本机数据与设备操作的最终裁决者</strong>
+</p>
 
-### 安全连接
+<p align="center">
+  <a href="#-项目目的"><img src="https://img.shields.io/badge/架构-模块化插件架构%20v2-10b981?style=flat-square" alt="Architecture" /></a>
+  <a href="#-快速上手与使用方法"><img src="https://img.shields.io/badge/协议-Gateway%20Protocol%20v2-38bdf8?style=flat-square" alt="Protocol" /></a>
+  <a href="#-当前实现与验证状态"><img src="https://img.shields.io/badge/跨宿主一致性-24%2F24%20PASS-34d399?style=flat-square" alt="Conformance" /></a>
+  <a href="#-安全模型与设计底线"><img src="https://img.shields.io/badge/安全模型-Fail--Closed%20%2F%20Zero--Root-f59e0b?style=flat-square" alt="Security" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/许可证-MIT-94a3b8?style=flat-square" alt="License" /></a>
+</p>
 
-通过 app 内嵌的 Tailscale userspace 节点，仅为本 app 到私有 Bridge 的流量提供加密通道。不占用 Android 系统 VPN 槽位，允许其他 VPN 应用继续正常工作。连接必须通过 enrollment ticket 配对，不存在通用网络 API。
+</div>
 
-### 通知同步
+---
 
-- 策略驱动的通知采集，支持 allowlist/denylist 模式，按包名和字段（metadata / content）精细控制
-- Agent 可查询、订阅和取消订阅通知，支持 on-demand 按需查询和 auto-send 自动推送
-- 加密 outbox 缓存，不留明文通知于日志或磁盘重试队列
-- 默认策略为空 allowlist + metadata 级别，拒绝的通知不采集、不持久化、不发送
+## 📖 项目目的
 
-### 助手对话
+**open-android-intelligence** 为 Android 设备与用户自托管的 AI Agent（如 Hermes、OpenClaw 等）建立起一条**完全去中心化、细粒度可授权、基于安全沙箱与强隔离的通信与能力协作桥梁**，用于取代即时通讯软件作为agent连接器。同时可提供安卓本地命令执行，手机操控能力，无需依赖手机厂或其他第三方 Agent 服务提供商
 
-- 注册为系统默认数字助手，通过系统手势或按键唤起
-- 支持文字输入、按住说话、流式语音回复、图片和文件对话
-- 主 APK 与 assistant-holder 双 APK 隔离，默认 deny 的 handoff gate，需用户显式启用
+### 核心设计原则
+- **客户端仅负责连接Agent端网关**：所有模型、工具调用，agent编排等均由远程自部署Agent负责，客户端仅负责通信与命令执行
 
-### 分层能力授权
+- **手机是本地信任边界的最终裁决者**：Agent、Gateway、设备插件和模型输出均仅能发起“请求”；手机端的不可卸载平台内核（Platform Kernel）及用户本人，始终拥有最终决定权与拒绝权。
 
-所有数据采集和设备操作采用风险分级、逐能力授权：
+- **极简宿主与纯模块化解耦**：Android 宿主仅保留对话交互、网关连接与用户主动选择的附件上传；电话、短信、通知等业务能力彻底解耦为独立插件，按需加载、即用即审。
 
-| 能力 | 授权策略 |
+---
+
+## 🏛️ 最新架构全景
+
+项目采用 **模块化插件架构（Modular Plugin Architecture）** 与 **Gateway Protocol v2**。
+
+<div align="center">
+  <img src="assets/readme/architecture.svg" alt="Open Android Intelligence Architecture" width="100%" />
+</div>
+
+### 1. Android 端架构分层
+
+- **可见核心（Android Host）**：
+  - 基于现代 Material 3 原生规范打造的界面交互体系，支持官方 Dynamic Color 与符合物理直觉的流体动效；
+  - 提供 Gateway 账号登录、连接管理、实时多线程会话流管理（Workbench / Thread Drawer / Assistant Session）；
+  - 承载经过严格鉴权校验的用户主动附件上传（通过系统 Photo Picker / SAF 系统选择器，严禁静默扫盘）。
+- **不可卸载平台内核（Platform Kernel）**：
+  - 手机端的常驻本地权威，掌管设备身份（Ed25519 密钥环）与 Gateway 账号刷新凭据；
+  - 固化内核安全原语，统一裁决所有敏感操作与人工确认阻断；
+  - 掌管设备插件的完整生命周期（验证、安装、配额管理、安全隔离、启停、回滚与卸载）；
+  - 维护物理级一键紧急熔断机制（Kill Switch）与操作审计日志。
+- **模块化插件体系（Device Plugins）**：
+  - **受保护模式（Protected Plugins）**：基于 WebAssembly（WASM）运行时沙箱隔离的 `.alp` 标准插件包，采用 RFC 8785 确定性封装与作者签名防伪，运行时受严格 CPU、内存、存储配额硬限制；
+  - **Companion 独立 APK**：用于满足系统包络外权限与深层进程隔离需求（如 Tailscale Companion 插件，利用 tsnet 提供用户态无缝私网通道，绝不占用系统 VPN 槽位）；
+  - **开发者信任原生模式（Native Plugins）**：同进程原生扩展，需用户显式信任，支持版本化原生界面接管。
+
+### 2. 网关协议与传输层（Gateway Protocol v2）
+
+- **标准 HTTPS + SSE 管道**：基于端到端 HTTPS 双向传输与 Server-Sent Events 流式事件下发；
+- **封闭契约规范**：全线基于 JSON Schema 2020-12，全字段封闭校验，拒绝未知字段；
+- **Ed25519 请求签名**：每个关键请求均附带防重放时间戳、一次性随机数与设备/网关端签名；
+- **幂等状态机**：操作具备确定性 Tombstone 生命周期与有界重试，杜绝网络抖动造成的重复操作。
+
+### 3. Agent 宿主端适配层
+
+- **原生嵌入式适配器（In-host Gateway Adapter）**：
+  - 告别过去需要独立运行 Docker/systemd Bridge 的历史，Hermes 与 OpenClaw 直接通过原生插件方式加载适配器；
+- **多账号与多租户隔离**：
+  - 单个适配器部署支持托管多个彼此独立的 Gateway 账号；
+  - 各账号的配对设备、会话记录、消息状态、长期记忆与密钥物理隔离；
+- **零保留（Zero-Retention）推理支持**：
+  - 与模型提供方交互遵循隐私合规与零留存原则，不留下用户设备私密资产持久副本。
+
+---
+
+## 🛡️ 安全模型与设计底线
+
+<div align="center">
+  <img src="assets/readme/security-model.svg" alt="Security Model" width="100%" />
+</div>
+
+| 能力维度 | 授权策略与安全边界 |
 | --- | --- |
-| 通话记录 | 元数据只读，不含通话控制、录音或转写 |
-| 短信 | 可读；发送须逐条人工确认 |
-| 联系人 | 只读 |
-| 日历与闹钟 | 可读；创建/修改须确认 |
-| 屏幕内容 | 无障碍语义树与像素画面分开授权 |
-| 传感器 | 快照、低频聚合或限时连续流 |
-| 后台命令 | 类型化动作优先，受限 shell 逐次确认 |
-| 图片/文件 | 仅限用户通过系统选择器明确选择 |
+| **通话记录** | 仅元数据只读；严禁通话录音、远程转写、接听、挂断或自动拨号 |
+| **短信交互** | 接收与历史查询受限可读；短信发送**必须逐条经过屏幕人工确认** |
+| **通知同步** | 默认空白名单 + 仅元数据级；支持包名/字段精细控制；加密出站缓冲，拒绝明文落盘 |
+| **文件与媒体** | 仅限用户在手机端通过系统 Photo Picker / SAF 文件选择器主动选择提交，严禁后台扫描文件系统 |
+| **网络穿透** | Tailscale tsnet 运行于用户态；不占用 Android VPN 通道，不提供通用代理或旁路路由 |
+| **存储配额** | 严格硬逻辑配额限制（9,663,676,416 字节），超限坚决拒绝而非静默覆写 |
 
-> 安全边界：任意 Root Shell、脚本、通用命令解释器不会暴露给 Agent；Agent 不能远程启用 Root、Shizuku、无障碍、通知访问等权限。
+---
 
-### 多用户隔离
+## 📦 项目目录结构
 
-一个 Bridge 管理多位用户的多台手机，设备、数据、会话、长期记忆和密钥按 tenant 严格隔离。
-
-### 操作安全
-
-- 持久化操作 tombstone + 有界轮询，防止重放
-- 精确逻辑配额（9,663,676,416 bytes），超限拒绝而非静默驱逐
-- terminal `result_unknown` 机制，无法证明副作用时不自动重试
-- 所有安全事件和设备事件有明确的生命周期和 ACK 窗口
-
-### Agent 后端集成
-
-通过服务端适配器无缝接入 Hermes 和 OpenClaw Agent，统一工具契约、事件和会话系统。
-
-### 附件管理（M1.1）
-
-- 图片/文件通过系统 Photo Picker/SAF 选择，拒绝任意路径和 URL
-- digest → proof-of-possession → ticket → 提交的完整生命周期
-- 24 小时未提交孤儿自动回收
-- 限制：每消息 4 个文件，单文件 25 MiB，总计 50 MiB
-
-## 目标与非目标
-
-### 目标
-
-- 为 Android 手机和自托管 Agent 提供统一、可版本化的双向能力协议
-- 用户逐项控制数据源、字段、同步模式、主动读取、写入和屏幕控制权限
-- 多用户隔离：设备、数据、会话、长期记忆、密钥和审计记录
-- 标准 Android API 为首选，Device Owner / Shizuku / 类型化 Root 为可选增强后端
-- 不占用系统 VPN 通道，允许其他 VPN 继续正常工作
-- 可立即生效的暂停、撤销和紧急停止能力
-
-### 非目标
-
-- 不保证被强制停止、关机、Doze 或断网时即时响应
-- 不实现持续监听的自定义语音唤醒词
-- 不录制通话音频、不远程接听/挂断/拨号
-- 不提取密码、OTP、支付凭据或生物识别内容
-- 不暴露任意 Root Shell、脚本或通用命令解释器
-- 不提供 VPN、出口节点、子网路由或通用 Tailnet 拨号服务
-- 不让 Agent 静默浏览文件系统
-
-## 架构概览
-
-```
-多位用户的 Android 14+ 手机
-  ├─ 助手/对话界面（assistant-holder APK）
-  ├─ 本机授权与风险策略引擎（policy-engine）
-  ├─ 数据采集器与能力适配层
-  │    ├─ 通知采集器（notification-collector）
-  │    ├─ SMS 采集器（sms-collector）
-  │    ├─ 通话记录采集器（call-log-collector）
-  │    ├─ 标准 Android API / Device Owner / Shizuku / 类型化 Root
-  │    └─ 能力端口（capability-ports）+ 控制端口（control-ports）
-  ├─ 加密缓冲、临时附件、审计（encrypted-store）
-  └─ 出站 transport
-       ├─ 内嵌 Tailscale userspace core（tailnet-core）
-       │    └─ 仅 App→Bridge 的私有通道；DIRECT 或 DERP/RELAY
-       └─ 用户手动启用的公网 HTTPS 备用
-             │
-       Agent Device Bridge（bridge-runtime）
-  ├─ 租户/principal/设备注册与密钥
-  ├─ 消息路由、事件、幂等、审计
-  ├─ 按用户隔离的数据存储与保留
-  └─ Agent 适配器
-       ├─ Hermes：plugin / platform adapter / MCP
-       └─ OpenClaw：plugin / Gateway adapter
-             │
-        本地或远程模型提供方（零保留推理）
+```text
+open-android-intelligence/
+├── apps/android/                     # Android 原生宿主工程（AGP 8.9.2, SDK 35, Kotlin 2.1.20）
+│   ├── app/                          # 主入口 APK（宿主交互、平台设置、网关连接）
+│   ├── platform-kernel/              # 不可卸载平台内核（权限仲裁、插件生命周期、安全原语）
+│   ├── plugin-package/               # .alp 插件包解析、Ed25519 验签与安装器
+│   ├── plugin-runtime-wasm/          # WebAssembly 沙箱运行时
+│   ├── conversation-ui/              # 原生 Material 3 会话界面组件库
+│   ├── assistant-holder/             # 系统助手角色承载与全局触发 APK
+│   ├── tailscale-companion/          # 可选 Tailscale 连接插件 Companion APK
+│   └── ...                           # 领域模型、数据存储与契约端口模块
+├── gateway-contract/                 # Gateway Protocol v2 核心契约与双宿主一致性套件
+│   ├── schemas/                      # 严谨封闭的 JSON Schema 2020-12 协议定义
+│   ├── vectors/                      # 语言无关的跨宿主黄金测试向量（24 例）
+│   ├── src/                          # TypeScript 契约实现（Schema 编译、请求签名校验、状态机）
+│   └── tools/                        # Hermes (Python) 与 OpenClaw (TS) 一致性执行套件
+├── plugins/                          # 官方第一方参考设备插件（遵循 .alp 规范构建）
+│   ├── notifications/                # 策略驱动通知采集插件源码（Rust/WASM）
+│   ├── sms/                          # 短信查询与确认发送插件源码（Rust/WASM）
+│   ├── call-log/                     # 通话记录元数据只读插件源码（Rust/WASM）
+│   ├── sdk-rust/                     # 设备插件官方 Rust SDK
+│   └── dist/                         # 确定性构建生成的 .alp 标准产物包
+├── plugin-tooling/                   # 设备插件构建与签名工具链（确定性打包器）
+├── integrations/                     # Agent 宿主适配器集成
+│   ├── hermes/                       # Hermes Python 原生网关适配器（open_android_intelligence_gateway）
+│   └── openclaw/                     # OpenClaw 原生网关适配器插件
+├── hermes-account.py                 # Hermes 网关本地多账号命令行管理工具
+├── docs/                             # 规范文档、ADR 架构决策与实施计划
+└── legacy/                           # 已冻结归档的旧 Bridge 与历史组件
 ```
 
-## 项目结构
+---
 
-| 目录 | 说明 | 技术栈 |
-| --- | --- | --- |
-| `apps/android/` | Android 双 APK（14 个 Gradle 模块） | Kotlin 2.1.20, AGP 8.9.2, SDK 35 |
-| `protocol/` | 闭合协议契约（注册表、Schema、src、test） | TypeScript, JSON Schema 2020-12 |
-| `bridge-contract/` | Bridge 服务契约（配对/通知/订阅/操作/对话） | TypeScript |
-| `bridge-runtime/` | Bridge 运行时适配器与部署模板 | TypeScript, Docker, systemd |
-| `artifact-contract/` | 附件 ticket/PoP/提交契约 | TypeScript |
-| `mvp-contract/` | MVP 垂直切片契约（通知/SMS/通话/助手）与 wire codec | TypeScript, JSON Schema |
-| `integrations/` | Hermes / OpenClaw 适配器与 skill | TypeScript |
-| `e2e/` | 端到端 smoke 与 readiness 检查 | Shell, Python |
-| `docs/` | 设计规格、实施计划、准备度报告与门禁决策 | Markdown |
+## 🚀 快速上手与使用方法
 
-### Android 模块
+### 1. 环境准备
 
-| 模块 | 说明 |
-| --- | --- |
-| `app` | 主 APK（通知、SMS、通话记录、策略引擎、传输） |
-| `assistant-holder` | 助手 APK（语音交互、附件选择、对话界面） |
-| `artifact-ports` | 附件 ticket/PoP 提交端口 |
-| `capability-ports` | 能力定义契约（类型化 action 与 grant） |
-| `capability-sync-runtime` | 能力同步运行时 |
-| `core-model` | 共享领域模型 |
-| `control-ports` | 控制端口（后台命令、受限 shell） |
-| `policy-engine` | 本地授权与风险策略引擎 |
-| `notification-collector` | 通知采集器（策略驱动、加密 outbox） |
-| `sms-collector` | SMS 采集器（fail-closed 调度、重启恢复） |
-| `call-log-collector` | 通话记录采集器 |
-| `tailnet-core` | Tailscale userspace AAR（tsnet bridge） |
-| `transport` | 出站传输层（内嵌 Tailscale / HTTPS 备用） |
-| `encrypted-store` | 加密缓冲与持久化存储 |
+- **Node.js**：`>= 24.18.0`（推荐使用 nvm）
+- **Python**：`>= 3.12`
+- **JDK**：`JDK 17` 或更高
+- **Android SDK**：`compileSdk 35`, `minSdk 34`
 
-## 快速开始
+### 2. 协议契约与跨宿主一致性校验
 
-### SDK-free 检查（无需 Android SDK）
+在根目录执行 Gateway Protocol v2 的多语言一致性测试（同时覆盖 TypeScript 与 Python 双端）：
 
 ```bash
-e2e/mvp/run-smoke.sh --sdk-free
-e2e/mvp/run-readiness.sh --sdk-free
-npm run mvp:lock:check
+# 安装基础依赖
+npm install
+
+# 运行跨宿主网关一致性测试（Hermes + OpenClaw 24/24 向量一致性全绿）
+npm run gateway:v2:conformance
 ```
 
-### Bridge 契约测试
+### 3. Agent 端 Hermes 网关账号配置
+
+项目提供了开箱即用的命令行工具 `hermes-account.py`，用于快速完成 Hermes 网关初始化与多账号生命周期管理：
 
 ```bash
-# 协议契约（32 files / 334 tests）
-npx vitest --root . run protocol/test/
-npx tsc --noEmit --strict
+# 步骤 1：生成 0600 受限主密钥文件（遵循 ADR 0023 规范）
+./hermes-account.py init-key
 
-# Bridge 契约与运行时
-npx vitest --root . run bridge-contract/test/
-npx vitest --root . run bridge-runtime/test/
-npx vitest --root . run artifact-contract/test/
-npx tsc --noEmit --strict -p bridge-contract/tsconfig.json
-npx tsc --noEmit --strict -p bridge-runtime/tsconfig.json
+# 步骤 2：创建 Gateway 账号（支持为不同用户创建独立隔离的网关上下文）
+./hermes-account.py create my_user
+# 按照终端交互提示设置强密码，或保存自动生成的账号刷新凭证
+
+# 步骤 3：查看网关当前托管状态与配对概况
+./hermes-account.py status
 ```
 
-### Android 构建
+### 4. 构建官方设备插件包（.alp）
 
-需要 Android SDK 35+、JDK 17、Kotlin 2.1.20：
+你可以使用项目自带的确定性构建工具打包设备插件：
+
+```bash
+cd plugin-tooling
+npm install
+npm run build:references
+```
+构建产物将输出在 `plugins/dist/` 目录下：
+- `org.agentlife.notifications-1.0.0.alp`
+- `org.agentlife.sms-1.0.0.alp`
+- `org.agentlife.call-log-1.0.0.alp`
+
+### 5. Android 宿主编译
+
+进入 Android 工程目录，执行模块检查与调试包编译：
 
 ```bash
 cd apps/android
-./gradlew --no-daemon check
+./gradlew --no-daemon :app:assembleDebug
 ```
 
-### Hermes 网关安装与配置（Agent 端）
+---
 
-需要 Python 3.12+：
+## 📊 当前实现与验证状态
 
-```bash
-# 1. 一条命令安装插件
-pip install -e integrations/hermes
+项目坚持真实测试闭环与“逐步完成”原则，所有状态以实际机读与运行门禁为准：
 
-# 2. 运行向导完成平台启用与账号初始化（交互式一步完成）
-hermes gateway setup
-# 在菜单中选择 [X] 📱 Open Android Intelligence (Gateway v2)
+| 验证领域 | 门禁规范与证据 | 状态 |
+| --- | --- | --- |
+| **Gateway Protocol v2 跨宿主契约** | `gateway-contract` 24 项跨语言（TS/Python）黄金向量 | ✅ **PASS (24/24 全绿)** |
+| **Hermes 原生网关适配器** | `integrations/hermes` 单元与集成测试 | ✅ **PASS** |
+| **OpenClaw 适配器插件** | `integrations/openclaw` 运行时及 Schema 验证 | ✅ **PASS** |
+| **设备插件确定性打包器** | `plugin-tooling` RFC 8785 标准 ZIP 容器 | ✅ **PASS** |
+| **官方参考插件构建** | 通知、短信、通话记录三款 .alp 真实输出产物 | ✅ **READY** |
+| **Android 核心架构实现** | Platform Kernel、WASM 运行时集成、Material 3 界面 | ✅ **READY** |
+| **物理真机无缝网络全链路** | 依赖特定物理设备网络环境及 Rootless tsnet 连通性测试 | ⏳ **PENDING (推进中)** |
 
-# 3. 或使用 Hermes 原生命令行管理
-hermes open-android-intelligence account list
-hermes open-android-intelligence account create -u <用户名> -p <密码> --confirm-local
-hermes open-android-intelligence status
-```
+---
 
-## 当前状态
+## 🗺️ 待完成功能与发展路线（Roadmap）
 
-| 门禁 | 状态 |
-| --- | --- |
-| 协议契约测试 | ✅ 32 files / 334 tests, typecheck GREEN |
-| Bridge/集成/MVP 联调 | ✅ 16 files / 98 tests |
-| Android SDK-free 静态门禁 | ✅ 48 tests |
-| 依赖锁（7 行） | ✅ PASS（Tailscale v1.98.10, AGP 8.9.2, Hermes v0.9.0, OpenClaw v0.9.0） |
-| Tailscale AAR 集成 | ⚠️ AAR 已验证（arm64-v8a + x86_64），NDK 工具链摘要 provisional |
-| Android 生产构建 | ⏳ PENDING（缺少锁定的 Gradle 分发、NDK 完整安装与参考设备） |
-| Bridge 生产栈 | ✅ 本地验证、真实 drill、Docker 两个镜像构建通过；⏳ 物理 Tailnet/E2E 阻塞 |
+- [ ] **物理设备端到端（E2E）深度闭环**：
+  - 适配 Android 系统物理助手按键与全面屏长按手势的无缝呼出体验。
+- [ ] **扩充官方 WASM 受保护插件生态**：
+  - 引入联系人受控只读插件；
+  - 引入日历与系统闹钟受控写入插件（需逐次确认）；
+  - 引入传感器低频聚合与按需采样插件；
+  - 引入无障碍屏幕语义树（Accessibility Node Tree）按需解析插件。
+- [ ] **去中心化插件索引与生态分发**：
+  - 构建轻量化、支持 Ed25519 签名链核验的插件市场元数据索引；
+  - 支持用户直接从自定义 URL 或 GitHub Release 导入并验证安装 `.alp` 插件包。
+- [ ] **端侧双向全双工流式语音交互**：
+  - 支持 WebSocket/WebRTC 备用低延迟全双工音频通路；
+  - 接入端侧轻量化语音活动检测（VAD）与打断机制。
+- [ ] **多设备漫游与 Gateway 多账号热切换**：
+  - 优化一台手机在多个自托管 Gateway（如家庭服务器、办公私有云）之间的零感知秒级切换体验。
 
-> 详细准备度报告见 [docs/mvp/mvp-readiness-report.md](docs/mvp/mvp-readiness-report.md)
-> 依赖锁审计见 [docs/mvp/mvp-dependency-lock-audit-2026-08-17.md](docs/mvp/mvp-dependency-lock-audit-2026-08-17.md)
+---
 
-## 关键设计决策
+## 🤝 贡献与规范
 
-| 决策 | 说明 |
-| --- | --- |
-| 无系统 VPN | 内嵌 Tailscale userspace，不占用系统 VPN 槽位 |
-| Ticket-bound 传输 | 连接必须通过 enrollment ticket 配对，不暴露通用网络 API |
-| Fail-closed 安全模型 | 所有边界默认拒绝；通知、控制、附件均需显式授权 |
-| 闭合 Schema | 所有 API 使用 JSON Schema 2020-12，拒绝未知字段 |
-| 操作幂等 | 持久化 tombstone + 有界轮询，terminal `result_unknown` |
-| 零保留推理 | 模型 API 采用零保留配置，不形成提供商侧持久副本 |
-| 双 APK 隔离 | 主 APK 与 assistant-holder 分离，默认 deny 的 handoff gate |
+欢迎参与 open-android-intelligence 的建设！在提交代码前，请务必阅读以下文档：
 
-详见 [docs/mvp/p0a-gate-decisions.md](docs/mvp/p0a-gate-decisions.md) 和 [设计规格](docs/superpowers/specs/2026-08-08-agent-bridge-android-design.md)。
+- 领域术语与设计边界：[`CONTEXT.md`](CONTEXT.md)
+- 架构演进总规格：[`docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md`](docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md)
+- Gateway Protocol v2 契约：[`docs/contracts/gateway-protocol-v2.md`](docs/contracts/gateway-protocol-v2.md)
+- 设备插件包规范：[`docs/contracts/device-plugin-package-v1.md`](docs/contracts/device-plugin-package-v1.md)
+- Agent 行为规范与提交原则：[`AGENTS.md`](AGENTS.md)
 
-## 许可证
+---
 
-MIT
+## 📄 许可证
+
+本项目基于 [MIT 许可证](LICENSE) 开源。

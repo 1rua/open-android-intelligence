@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="100%" height="auto" fill="none">
+  <title>Open Android Intelligence Security Model</title>
+  <defs>
+    <linearGradient id="secBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b1311"/>
+      <stop offset="100%" stop-color="#0e1714"/>
+    </linearGradient>
+    <linearGradient id="cardBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#15241e"/>
+      <stop offset="100%" stop-color="#101a16"/>
+    </linearGradient>
+  </defs>
+
+  <style>
+    .sec-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 20px; font-weight: 700; fill: #ffffff; }
+    .sec-header { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 15px; font-weight: 700; fill: #34d399; }
+    .sec-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12px; font-weight: 400; fill: #cbd5e1; line-height: 1.6; }
+    .badge-pass { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; font-weight: 600; fill: #6ee7b7; }
+    .badge-warn { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; font-weight: 600; fill: #fde047; }
+    .badge-deny { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; font-weight: 600; fill: #f87171; }
+  </style>
+
+  <rect width="1200" height="320" rx="16" fill="url(#secBg)" stroke="#1e2f29" stroke-width="1.5"/>
+
+  <text x="48" y="40" class="sec-title">核心安全防线与原则 (Zero-Trust Security Boundary)</text>
+  <text x="48" y="62" font-family="-apple-system, sans-serif" font-size="13" fill="#64748b">所有操作默认拒绝 (Fail-Closed) · 不提供任意远程 Shell · 用户物理屏幕/输入优先裁决</text>
+
+  <!-- Card 1: 平台内核唯一仲裁 -->
+  <g transform="translate(48, 84)">
+    <rect width="260" height="204" rx="10" fill="url(#cardBg)" stroke="#223932" stroke-width="1"/>
+    <text x="18" y="32" class="sec-header">🛡️ 平台内核唯一仲裁</text>
+    <text x="18" y="60" class="sec-body">• 手机是最终授权者</text>
+    <text x="18" y="82" class="sec-body">• Gateway 仅能提出请求</text>
+    <text x="18" y="104" class="sec-body">• 插件不能自扩权限</text>
+    <text x="18" y="126" class="sec-body">• 严格硬限制 9.66 GB 配额</text>
+    <text x="18" y="148" class="sec-body">• 一键硬件级紧急熔断</text>
+    <rect x="18" y="168" width="224" height="24" rx="4" fill="#0f1f1a"/>
+    <text x="26" y="184" class="badge-pass">STATUS: UNCOMPROMISED</text>
+  </g>
+
+  <!-- Card 2: 细粒度分层授权 -->
+  <g transform="translate(328, 84)">
+    <rect width="260" height="204" rx="10" fill="url(#cardBg)" stroke="#223932" stroke-width="1"/>
+    <text x="18" y="32" class="sec-header">🔐 细粒度分级授权</text>
+    <text x="18" y="60" class="sec-body">• 通话记录：仅元数据只读</text>
+    <text x="18" y="82" class="sec-body">• 短信：只读；发信逐条确认</text>
+    <text x="18" y="104" class="sec-body">• 通知：白名单包名+字段过滤</text>
+    <text x="18" y="126" class="sec-body">• 附件：用户系统选择器点选</text>
+    <text x="18" y="148" class="sec-body">• 绝无后台静默扫盘</text>
+    <rect x="18" y="168" width="224" height="24" rx="4" fill="#1f1e10"/>
+    <text x="26" y="184" class="badge-warn">ACTION: USER GATED</text>
+  </g>
+
+  <!-- Card 3: 绝对防御（非目标边界） -->
+  <g transform="translate(608, 84)">
+    <rect width="260" height="204" rx="10" fill="url(#cardBg)" stroke="#223932" stroke-width="1"/>
+    <text x="18" y="32" class="sec-header" fill="#f87171">🚫 绝对禁区 (Non-Goals)</text>
+    <text x="18" y="60" class="sec-body">• 严禁任意远程 Root Shell</text>
+    <text x="18" y="82" class="sec-body">• 严禁提取密码/OTP/支付验证</text>
+    <text x="18" y="104" class="sec-body">• 严禁通话录音与远程接拨</text>
+    <text x="18" y="126" class="sec-body">• 严禁持续偷听唤醒词</text>
+    <text x="18" y="148" class="sec-body">• 严禁私设旁路 VPN 出口</text>
+    <rect x="18" y="168" width="224" height="24" rx="4" fill="#241313"/>
+    <text x="26" y="184" class="badge-deny">FAIL-CLOSED: NEVER EXPOSED</text>
+  </g>
+
+  <!-- Card 4: 多租户隔离机制 -->
+  <g transform="translate(888, 84)">
+    <rect width="264" height="204" rx="10" fill="url(#cardBg)" stroke="#223932" stroke-width="1"/>
+    <text x="18" y="32" class="sec-header">👥 租户与隐私强隔离</text>
+    <text x="18" y="60" class="sec-body">• 单网关部署支持多账号</text>
+    <text x="18" y="82" class="sec-body">• 设备配对、密钥独立存储</text>
+    <text x="18" y="104" class="sec-body">• 长期记忆与审计按租户分立</text>
+    <text x="18" y="126" class="sec-body">• 零保留推理：保护模型交互</text>
+    <text x="18" y="148" class="sec-body">• 登出即注销令牌与本地镜像</text>
+    <rect x="18" y="168" width="228" height="24" rx="4" fill="#0f1f1a"/>
+    <text x="26" y="184" class="badge-pass">TENANT: STRICT ISOLATED</text>
+  </g>
+</svg>
