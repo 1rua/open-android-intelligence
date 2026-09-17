@@ -40,7 +40,10 @@ object ContentResolverExtensions {
             throw IllegalArgumentException("ATTACHMENT_TOO_LARGE: 文件大小超出 25MB 限制 ($sizeBytes bytes)")
         }
 
-        val mediaType = contentResolver.getType(uri) ?: "application/octet-stream"
+        val rawType = contentResolver.getType(uri)?.takeIf { it.isNotBlank() }
+        val mediaType = rawType?.split(";")?.firstOrNull()?.trim()?.lowercase()
+            ?: inferMimeType(filename)
+            ?: "application/octet-stream"
 
         val bytes = contentResolver.openInputStream(uri)?.use { input ->
             val buffer = ByteArray(8192)
@@ -62,5 +65,27 @@ object ContentResolverExtensions {
             mediaType = mediaType,
             bytes = bytes,
         )
+    }
+    private fun inferMimeType(filename: String): String? {
+        val ext = filename.substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "heic" -> "image/heic"
+            "heif" -> "image/heif"
+            "gif" -> "image/gif"
+            "bmp" -> "image/bmp"
+            "pdf" -> "application/pdf"
+            "txt" -> "text/plain"
+            "md", "markdown" -> "text/markdown"
+            "json" -> "application/json"
+            "doc" -> "application/msword"
+            "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "xls" -> "application/vnd.ms-excel"
+            "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "zip" -> "application/zip"
+            else -> null
+        }
     }
 }

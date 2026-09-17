@@ -386,7 +386,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
             val part = JsonFields.obj(raw) ?: return@mapNotNull null
             when (JsonFields.string(part, "type")) {
                 "text" -> MessagePart.Text(JsonFields.string(part, "text").orEmpty())
-                "attachment_ref" -> JsonFields.string(part, "attachmentId")?.let {
+                "attachment_ref", "attachment" -> (JsonFields.string(part, "attachmentId") ?: JsonFields.string(part, "id"))?.let {
                     MessagePart.AttachmentRef(it)
                 }
                 else -> null

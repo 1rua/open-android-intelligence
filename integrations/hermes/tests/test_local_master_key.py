@@ -253,3 +253,67 @@ def test_account_created_through_the_cli_already_carries_a_master_key(tmp_path):
     key_file = home / ".open-android-intelligence" / "gateway-master-key"
     assert key_file.exists()
     assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+
+
+def test_mobile_media_types_including_heic_and_office_are_accepted(tmp_path):
+    store = LocalMasterKeyStore(_key_file(tmp_path))
+    core = create_gateway_core(storage_root=tmp_path / "storage", secret_store=store)
+    account = core.open_gateway_account(ACCOUNT_ID)
+
+    for mtype in ["image/heic", "image/heif", "image/gif", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream"]:
+        att = account.attachments.create(
+            client_attachment_id="att_" + mtype.replace("/", "_").replace(".", "_"),
+            filename="sample_file",
+            media_type=mtype,
+            size_bytes=16,
+            sha256="0" * 64,
+            correlation_id="cor_type",
+        )
+        assert att["attachmentId"].startswith("att_")
+        assert att["mediaType"] == mtype
+
+
+def test_get_conversation_messages_timeline_returns_history_chronologically(tmp_path):
+    store = LocalMasterKeyStore(_key_file(tmp_path))
+    core = create_gateway_core(storage_root=tmp_path / "storage", secret_store=store)
+    ctx = _context()
+
+    # 1. 创建会话
+    c_resp = core.handle(VerifiedGatewayRequest(
+        context=ctx, method="POST", target="/open-android-intelligence/v2/conversations",
+        idempotencyKey="req_local", body={"clientConversationId": "conv_tm_1"}, now="2026-09-17T10:00:00.000Z",
+    ))
+    conv_id = c_resp["data"]["conversation"]["conversationId"]
+
+    # 2. 发送用户消息
+    ctx_msg = VerifiedRequestContext(
+        accountId=ACCOUNT_ID, deviceId="dev_local", sessionId="sess_local",
+        requestId="req_msg_1", correlationId="cor_msg_1",
+        pairingGeneration=1, grantRevision=1,
+    )
+    core.handle(VerifiedGatewayRequest(
+        context=ctx_msg, method="POST", target=f"/open-android-intelligence/v2/conversations/{conv_id}/messages",
+        idempotencyKey="req_msg_1", body={"clientMessageId": "cmsg_1", "text": "用户提问", "attachments": []},
+        now="2026-09-17T10:00:01.000Z",
+    ))
+
+    # 3. 记录助手回复
+    account = core.open_gateway_account(ACCOUNT_ID)
+    account.conversations.record_assistant_message(conv_id, "msg_reply_1", "助手回答内容", now="2026-09-17T10:00:05.000Z")
+    account.close()
+
+    # 4. GET 时间线（带 query 参数）
+    ctx_get = VerifiedRequestContext(
+        accountId=ACCOUNT_ID, deviceId="dev_local", sessionId="sess_local",
+        requestId="req_get_1", correlationId="cor_get_1",
+        pairingGeneration=1, grantRevision=1,
+    )
+    res = core.handle(VerifiedGatewayRequest(
+        context=ctx_get, method="GET", target=f"/open-android-intelligence/v2/conversations/{conv_id}/messages?limit=50",
+        idempotencyKey=None, body=None, now="2026-09-17T10:00:10.000Z",
+    ))
+    assert "error" not in res
+    msgs = res["data"]["messages"]
+    assert len(msgs) == 2
+    assert msgs[0]["sender"] == "user" and msgs[0]["text"] == "用户提问"
+    assert msgs[1]["sender"] == "assistant" and msgs[1]["text"] == "助手回答内容"

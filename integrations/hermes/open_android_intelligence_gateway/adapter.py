@@ -624,6 +624,11 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         payload = self._message_payload(chat_id, message_id, text, occurred_at)
         account = self.services.core.open_gateway_account(self._account_id)
         try:
+            if event_type == "conversation.message.completed":
+                try:
+                    account.conversations.record_assistant_message(chat_id, message_id, text, occurred_at)
+                except Exception as rec_err:
+                    logger.warning("[open_android] Failed to record completed message: %s", rec_err)
             event = account.events.append(event_type, message_id, payload, occurred_at)
         finally:
             account.close()

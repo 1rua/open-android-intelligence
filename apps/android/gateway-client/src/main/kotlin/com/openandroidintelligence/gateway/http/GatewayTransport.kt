@@ -31,9 +31,9 @@ class GatewayTransport(
     private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
         ?: error("GATEWAY_ENDPOINT_INVALID: ${profile.gatewayBaseUrl}")
 
-    override suspend fun execute(request: WireRequest): WireResponse {
+    override suspend fun execute(request: WireRequest): WireResponse = kotlinx.coroutines.withContext(Dispatchers.IO) {
         val connection = open(request)
-        return try {
+        try {
             if (request.body.isNotEmpty()) {
                 connection.doOutput = true
             }

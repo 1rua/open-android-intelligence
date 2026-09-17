@@ -76,8 +76,23 @@ class AttachmentPolicy:
     max_single_attachment_bytes: int = 26_214_400
     max_message_attachment_bytes: int = 52_428_800
     allowed_media_types: tuple[str, ...] = (
-        "image/jpeg", "image/png", "image/webp", "application/pdf",
-        "text/plain", "audio/mp4",
+        "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif",
+        "image/heic", "image/heif", "image/bmp", "image/x-ms-bmp",
+        "image/svg+xml", "image/tiff",
+        "audio/mp4", "audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg",
+        "audio/aac", "audio/m4a", "audio/x-m4a", "audio/flac",
+        "video/mp4", "video/webm", "video/quicktime", "video/3gpp",
+        "text/plain", "text/markdown", "text/x-markdown", "text/csv",
+        "text/html", "text/xml",
+        "application/pdf", "application/json", "application/xml",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/zip", "application/x-zip-compressed", "application/x-tar",
+        "application/gzip", "application/octet-stream",
     )
     attachment_ttl_seconds: int = 3600
 
@@ -906,7 +921,10 @@ class AccountStore:
             CREATE TABLE IF NOT EXISTS messages (
               message_id TEXT PRIMARY KEY NOT NULL,
               conversation_id TEXT NOT NULL, client_message_id TEXT NOT NULL,
+              sender TEXT NOT NULL DEFAULT 'user',
+              text TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL, attachment_ids_json TEXT NOT NULL,
+              state TEXT NOT NULL DEFAULT 'CONFIRMED',
               FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
             );
             CREATE TABLE IF NOT EXISTS device_requests (
@@ -959,6 +977,14 @@ class AccountStore:
             );
             """
         )
+        existing_cols = {row[1] for row in self.database.execute("PRAGMA table_info(messages)").fetchall()}
+        for col_name, col_type in [
+            ("sender", "TEXT NOT NULL DEFAULT 'user'"),
+            ("text", "TEXT NOT NULL DEFAULT ''"),
+            ("state", "TEXT NOT NULL DEFAULT 'CONFIRMED'"),
+        ]:
+            if col_name not in existing_cols:
+                self.database.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
         if self.aead is None:
             existing_ref = self.database.execute(
                 "SELECT value FROM account_metadata WHERE key = 'master_key_ref'"
@@ -1233,12 +1259,16 @@ class AttachmentStore:
         self.store.require_aead()
         current = _now(input.get("now"))
         attachment_id = f"att_{uuid.uuid4()}"
-        media_type = input["media_type"] if "media_type" in input else input["mediaType"]
+        raw_media_type = input["media_type"] if "media_type" in input else input["mediaType"]
+        media_type = str(raw_media_type).split(";")[0].strip().lower()
         size_bytes = int(input["size_bytes"] if "size_bytes" in input else input["sizeBytes"])
         if (
             size_bytes < 0
             or size_bytes > self.policy.max_single_attachment_bytes
-            or media_type not in self.policy.allowed_media_types
+            or (
+                media_type not in self.policy.allowed_media_types
+                and not media_type.startswith(("image/", "audio/", "video/", "text/"))
+            )
         ):
             raise GatewayError("ATTACHMENT_LIMIT_EXCEEDED")
         requested_expiry = input.get("expires_at") or input.get("expiresAt")
@@ -1853,15 +1883,16 @@ class ConversationPort:
     def create(self, client_conversation_id: str, title: str | None, correlation_id: str, now: datetime | str | None = None) -> dict[str, Any]:
         current = _now(now)
         conversation_id = f"conv_{uuid.uuid4()}"
-        self.store.database.execute(
-            "INSERT INTO conversations(conversation_id, client_conversation_id, title, created_at) VALUES (?, ?, ?, ?)",
-            (conversation_id, client_conversation_id, title, iso_millis(current)),
-        )
-        self.audit.append(
-            "conversation.created", {"accountId": self.account_id},
-            {"conversationId": conversation_id, "clientConversationId": client_conversation_id},
-            correlation_id, current,
-        )
+        with self.store.transaction():
+            self.store.database.execute(
+                "INSERT INTO conversations(conversation_id, client_conversation_id, title, created_at) VALUES (?, ?, ?, ?)",
+                (conversation_id, client_conversation_id, title, iso_millis(current)),
+            )
+            self.audit.append(
+                "conversation.created", {"accountId": self.account_id},
+                {"conversationId": conversation_id, "clientConversationId": client_conversation_id},
+                correlation_id, current,
+            )
         return {"conversationId": conversation_id, "clientConversationId": client_conversation_id, "title": title}
 
     def accept_message(
@@ -1884,8 +1915,13 @@ class ConversationPort:
                 raise GatewayError("SCHEMA_INVALID")
             message_id = f"msg_{uuid.uuid4()}"
             self.store.database.execute(
-                "INSERT INTO messages(message_id, conversation_id, client_message_id, created_at, attachment_ids_json) VALUES (?, ?, ?, ?, ?)",
-                (message_id, conversation_id, client_message_id, iso_millis(current), _json(attachment_ids)),
+                """
+                INSERT INTO messages(
+                    message_id, conversation_id, client_message_id, sender, text,
+                    created_at, attachment_ids_json, state
+                ) VALUES (?, ?, ?, 'user', ?, ?, ?, 'CONFIRMED')
+                """,
+                (message_id, conversation_id, client_message_id, text, iso_millis(current), _json(attachment_ids)),
             )
             self.audit.append(
                 "conversation.message.accepted", {"accountId": self.account_id, "deviceId": device_id},
@@ -1893,6 +1929,89 @@ class ConversationPort:
                 correlation_id, current,
             )
             return {"status": "accepted", "messageId": message_id, "conversationId": conversation_id}
+
+    def record_assistant_message(
+        self, conversation_id: str, message_id: str, text: str,
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        current = _now(now)
+        with self.store.transaction():
+            self.store.database.execute(
+                """
+                INSERT INTO messages(
+                    message_id, conversation_id, client_message_id, sender, text,
+                    created_at, attachment_ids_json, state
+                ) VALUES (?, ?, ?, 'assistant', ?, ?, '[]', 'CONFIRMED')
+                ON CONFLICT(message_id) DO UPDATE SET text = excluded.text
+                """,
+                (message_id, conversation_id, message_id, text, iso_millis(current)),
+            )
+            return {"status": "recorded", "messageId": message_id, "conversationId": conversation_id}
+
+    def list_messages(
+        self, conversation_id: str, client_message_id: str | None = None,
+        cursor: str | None = None, limit: int = 50,
+    ) -> dict[str, Any]:
+        row = self.store.database.execute(
+            "SELECT conversation_id FROM conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            raise GatewayError("SCHEMA_INVALID")
+
+        query = (
+            "SELECT message_id, conversation_id, client_message_id, sender, text, "
+            "created_at, attachment_ids_json, state FROM messages WHERE conversation_id = ?"
+        )
+        params: list[Any] = [conversation_id]
+        if client_message_id:
+            query += " AND client_message_id = ?"
+            params.append(client_message_id)
+        query += " ORDER BY created_at ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 100)))
+
+        rows = self.store.database.execute(query, params).fetchall()
+        result_messages = []
+        for r in rows:
+            att_ids = []
+            try:
+                raw_json = r["attachment_ids_json"] if hasattr(r, "keys") and "attachment_ids_json" in r.keys() else r[6]
+                att_ids = json.loads(raw_json) if raw_json else []
+            except Exception:
+                pass
+
+            mid = r["message_id"] if hasattr(r, "keys") and "message_id" in r.keys() else r[0]
+            cid = r["conversation_id"] if hasattr(r, "keys") and "conversation_id" in r.keys() else r[1]
+            cmid = r["client_message_id"] if hasattr(r, "keys") and "client_message_id" in r.keys() else r[2]
+            sender = r["sender"] if hasattr(r, "keys") and "sender" in r.keys() else r[3]
+            txt = r["text"] if hasattr(r, "keys") and "text" in r.keys() else r[4]
+            created = r["created_at"] if hasattr(r, "keys") and "created_at" in r.keys() else r[5]
+            st = r["state"] if hasattr(r, "keys") and "state" in r.keys() else r[7]
+
+            parts = []
+            if txt:
+                parts.append({"type": "text", "text": txt})
+            for aid in att_ids:
+                parts.append({"type": "attachment", "attachmentId": aid})
+
+            ts = 0
+            try:
+                ts = _epoch_millis(created)
+            except Exception:
+                pass
+
+            result_messages.append({
+                "messageId": mid,
+                "clientMessageId": cmid,
+                "conversationId": cid,
+                "sender": sender or "assistant",
+                "text": txt or "",
+                "parts": parts,
+                "timestamp": ts,
+                "state": st or "CONFIRMED",
+                "createdAt": created,
+            })
+        return {"messages": result_messages, "nextCursor": None, "snapshotRevision": 1}
 
     def list(self) -> list[dict[str, Any]]:
         rows = self.store.database.execute("SELECT conversation_id, client_conversation_id, title FROM conversations ORDER BY conversation_id").fetchall()
@@ -2680,16 +2799,22 @@ class GatewayCore:
                             return _failure(context, "CURSOR_EXPIRED", {"recoverableResources": ["conversations", "attachments", "device-requests"]})
                         raise
 
+                parsed_target = urlsplit(str(target))
+                target_path = parsed_target.path
+                query_params: dict[str, str] = {}
+                if parsed_target.query:
+                    for item in parsed_target.query.split("&"):
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            query_params[k] = v
+
                 def work() -> dict[str, Any]:
-                    if method == "GET" and isinstance(target, str) and (
-                        target == "/open-android-intelligence/v2/commands"
-                        or target.startswith("/open-android-intelligence/v2/commands?")
-                    ):
-                        language_code = _query_value(target, "languageCode") or "en"
+                    if method == "GET" and target_path == "/open-android-intelligence/v2/commands":
+                        language_code = query_params.get("languageCode") or "en"
                         return _success(context, self.command_catalog_response(language_code))
-                    if method == "POST" and target == "/open-android-intelligence/v2/negotiate":
+                    if method == "POST" and target_path == "/open-android-intelligence/v2/negotiate":
                         return _success(context, self._negotiate(account, context, body, _request_now(request)))
-                    if method == "POST" and target == "/open-android-intelligence/v2/conversations":
+                    if method == "POST" and target_path == "/open-android-intelligence/v2/conversations":
                         body_map = body if isinstance(body, Mapping) else None
                         if body_map is None or not self.contracts.validate("conversation.create", body_map):
                             raise GatewayError("SCHEMA_INVALID")
@@ -2697,12 +2822,17 @@ class GatewayCore:
                             str(body_map["clientConversationId"]),
                             body_map.get("title"), context["correlationId"], _request_now(request),
                         )})
-                    if method == "GET" and target == "/open-android-intelligence/v2/conversations":
+                    if method == "GET" and target_path == "/open-android-intelligence/v2/conversations":
                         return _success(context, {"conversations": account.conversations.list()})
-                    conversation_get = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)", str(target))
-                    if method == "GET" and conversation_get:
-                        return _success(context, {"conversation": account.conversations.get(conversation_get.group(1))})
-                    message_match = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/messages", str(target))
+                    message_match = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/messages", target_path)
+                    if method == "GET" and message_match:
+                        conv_id = message_match.group(1)
+                        client_msg_id = query_params.get("clientMessageId")
+                        cursor = query_params.get("cursor")
+                        limit = int(query_params.get("limit", 50))
+                        return _success(context, account.conversations.list_messages(
+                            conv_id, client_message_id=client_msg_id, cursor=cursor, limit=limit,
+                        ))
                     if method == "POST" and message_match:
                         body_map = body if isinstance(body, Mapping) else None
                         if body_map is None or not self.contracts.validate("message.create", body_map):
@@ -2713,7 +2843,10 @@ class GatewayCore:
                             message_match.group(1), str(body_map["clientMessageId"]), str(body_map["text"]),
                             attachment_ids, context["deviceId"], context["requestId"], context["correlationId"], _request_now(request),
                         )})
-                    if method == "POST" and target == "/open-android-intelligence/v2/attachments":
+                    conversation_get = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)", target_path)
+                    if method == "GET" and conversation_get:
+                        return _success(context, {"conversation": account.conversations.get(conversation_get.group(1))})
+                    if method == "POST" and target_path == "/open-android-intelligence/v2/attachments":
                         body_map = body if isinstance(body, Mapping) else None
                         if body_map is None or not self.contracts.validate("attachment.create", body_map):
                             raise GatewayError("SCHEMA_INVALID")
@@ -2723,31 +2856,31 @@ class GatewayCore:
                             sizeBytes=int(body_map["sizeBytes"]), sha256=str(body_map["sha256"]),
                             correlationId=context["correlationId"], now=_request_now(request),
                         )})
-                    attachment_content = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)/content", str(target))
+                    attachment_content = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)/content", target_path)
                     if method == "PUT" and attachment_content:
                         if not isinstance(body, (bytes, bytearray, memoryview)):
                             raise GatewayError("SCHEMA_INVALID")
                         return _success(context, {"attachment": account.attachments.upload_content(
                             attachment_content.group(1), bytes(body), _request_now(request),
                         )})
-                    attachment_commit = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)/commit", str(target))
+                    attachment_commit = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)/commit", target_path)
                     if method == "POST" and attachment_commit:
                         return _success(context, {"attachment": account.attachments.commit(
                             attachment_commit.group(1), _request_now(request),
                         )})
-                    attachment_get = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)", str(target))
+                    attachment_get = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)", target_path)
                     if method == "GET" and attachment_get:
                         return _success(context, {"attachment": account.attachments.get(
                             attachment_get.group(1), _request_now(request),
                         )})
-                    claim_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/claim", str(target))
+                    claim_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/claim", target_path)
                     if method == "POST" and claim_match:
                         return _success(context, {"receipt": account.device_requests.claim(
                             request_id=claim_match.group(1), device_id=context["deviceId"],
                             pairing_generation=int(context["pairingGeneration"]), grant_revision=int(context["grantRevision"]),
                             correlation_id=context["correlationId"], now=_request_now(request),
                         )})
-                    result_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/result", str(target))
+                    result_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/result", target_path)
                     if method == "POST" and result_match:
                         body_map = body if isinstance(body, Mapping) else None
                         if body_map is None or int(body_map.get("grantRevision", -1)) != int(context["grantRevision"]):
@@ -2761,19 +2894,19 @@ class GatewayCore:
                             claim_id=str(body_map.get("claimId")), result=result_value,
                             correlation_id=context["correlationId"], now=_request_now(request),
                         )})
-                    device_get = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)", str(target))
+                    device_get = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)", target_path)
                     if method == "GET" and device_get:
                         return _success(context, {"deviceRequest": account.device_requests.get(device_get.group(1))})
                     return _failure(context, "SCHEMA_INVALID")
 
                 replay_check = None
-                claim_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/claim", str(target))
+                claim_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/claim", target_path)
                 if method == "POST" and claim_match:
                     replay_check = lambda: account.device_requests.validate_claim_replay(
                         claim_match.group(1), context["deviceId"], int(context["pairingGeneration"]),
                         int(context["grantRevision"]), _request_now(request),
                     )
-                result_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/result", str(target))
+                result_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/result", target_path)
                 if method == "POST" and result_match and isinstance(body, Mapping):
                     replay_check = lambda: account.device_requests.validate_result_replay(
                         result_match.group(1), context["deviceId"], int(context["pairingGeneration"]),
