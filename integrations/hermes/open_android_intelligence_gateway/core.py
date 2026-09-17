@@ -1992,7 +1992,16 @@ class ConversationPort:
             if txt:
                 parts.append({"type": "text", "text": txt})
             for aid in att_ids:
-                parts.append({"type": "attachment", "attachmentId": aid})
+                part_dict: dict[str, Any] = {"type": "attachment", "attachmentId": aid}
+                try:
+                    att_obj = self.attachments.get(aid)
+                    if att_obj:
+                        part_dict["filename"] = att_obj.get("filename") or ""
+                        part_dict["mediaType"] = att_obj.get("mediaType") or ""
+                        part_dict["sizeBytes"] = att_obj.get("sizeBytes") or 0
+                except Exception:
+                    pass
+                parts.append(part_dict)
 
             ts = 0
             try:

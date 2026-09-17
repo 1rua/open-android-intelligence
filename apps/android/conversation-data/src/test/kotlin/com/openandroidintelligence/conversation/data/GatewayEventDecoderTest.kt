@@ -89,4 +89,25 @@ class GatewayEventDecoderTest {
         assertNotNull(events.firstOrNull())
         assertNull(GatewayEventDecoder.decode(events.first()))
     }
+
+    @Test
+    fun decodesAttachmentWithFilenameAndMediaType() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_att",
+                event = "conversation.timeline.upsert",
+                data = """
+                    {"payload":{"messageId":"msg_att","sender":"user","state":"CONFIRMED","revision":1,"parts":[{"type":"attachment","attachmentId":"att_123","filename":"photo.png","mediaType":"image/png"}]},"occurredAt":"2026-09-01T08:00:00.000Z"}
+                """.trimIndent(),
+            ),
+        )
+        assertEquals(1, events.size)
+        val decoded = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.TimelineUpsert
+        assertEquals(1, decoded.message.parts.size)
+        val part = decoded.message.parts.first() as com.openandroidintelligence.conversation.model.MessagePart.Attachment
+        assertEquals("att_123", part.draftId.value)
+        assertEquals("photo.png", part.filename)
+        assertEquals("image/png", part.mediaType)
+    }
 }

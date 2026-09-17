@@ -35,6 +35,8 @@ sealed class MessagePart {
     data class Text(val text: String) : MessagePart()
     data class AttachmentRef(
         val attachmentId: String,
+        val filename: String = "",
+        val mediaType: String = "",
         val visualContext: VisualContext? = null,
     ) : MessagePart()
 }
@@ -386,8 +388,17 @@ class ConversationClient(private val http: GatewayHttpClient) {
             val part = JsonFields.obj(raw) ?: return@mapNotNull null
             when (JsonFields.string(part, "type")) {
                 "text" -> MessagePart.Text(JsonFields.string(part, "text").orEmpty())
-                "attachment_ref", "attachment" -> (JsonFields.string(part, "attachmentId") ?: JsonFields.string(part, "id"))?.let {
-                    MessagePart.AttachmentRef(it)
+                "attachment_ref", "attachment" -> {
+                    val id = JsonFields.string(part, "attachmentId") ?: JsonFields.string(part, "id")
+                    val filename = JsonFields.string(part, "filename").orEmpty()
+                    val mediaType = JsonFields.string(part, "mediaType").orEmpty()
+                    id?.let {
+                        MessagePart.AttachmentRef(
+                            attachmentId = it,
+                            filename = filename,
+                            mediaType = mediaType,
+                        )
+                    }
                 }
                 else -> null
             }

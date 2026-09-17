@@ -152,10 +152,18 @@ object GatewayEventDecoder {
                 "text" -> com.openandroidintelligence.conversation.model.MessagePart.Text(
                     JsonFields.string(part, "text").orEmpty(),
                 )
-                "attachment" -> JsonFields.string(part, "draftId")
-                    ?.let { com.openandroidintelligence.conversation.model.MessagePart.Attachment(
-                        com.openandroidintelligence.conversation.model.AttachmentDraftId(it),
-                    ) }
+                "attachment" -> {
+                    val draftId = JsonFields.string(part, "draftId") ?: JsonFields.string(part, "attachmentId")
+                    val filename = JsonFields.string(part, "filename").orEmpty()
+                    val mediaType = JsonFields.string(part, "mediaType").orEmpty()
+                    draftId?.let {
+                        com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                            draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(it),
+                            filename = filename,
+                            mediaType = mediaType,
+                        )
+                    }
+                }
                 "command" -> JsonFields.string(part, "rawText")
                     ?.let { com.openandroidintelligence.conversation.model.MessagePart.Command(it) }
                 else -> null

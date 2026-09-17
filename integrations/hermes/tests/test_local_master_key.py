@@ -1,3 +1,4 @@
+import hashlib
 """ADR 0023: operator-provided master key file and fail-closed Gateway startup."""
 
 import asyncio
@@ -317,3 +318,67 @@ def test_get_conversation_messages_timeline_returns_history_chronologically(tmp_
     assert len(msgs) == 2
     assert msgs[0]["sender"] == "user" and msgs[0]["text"] == "用户提问"
     assert msgs[1]["sender"] == "assistant" and msgs[1]["text"] == "助手回答内容"
+
+def test_timeline_messages_include_attachment_metadata_and_adapter_upstream(tmp_path: Path) -> None:
+    store = LocalMasterKeyStore(_key_file(tmp_path))
+    core = create_gateway_core(storage_root=tmp_path / "storage", secret_store=store)
+
+    adapter = OpenAndroidPlatformAdapter(_Config(), _services(core))
+    assert adapter.authorization_is_upstream is True
+
+    # 1. 创建附件
+    account = core.open_gateway_account(ACCOUNT_ID)
+    att = account.attachments.create(
+        clientAttachmentId="c_att_1", filename="photo.png",
+        mediaType="image/png", sizeBytes=4, sha256=hashlib.sha256(b"test").hexdigest(),
+        correlationId="cor_att_1", now="2026-09-17T10:00:00.000Z",
+    )
+    att_id = att["attachmentId"]
+    account.attachments.upload_content(att_id, b"test", now="2026-09-17T10:00:01.000Z")
+    account.attachments.commit(att_id, now="2026-09-17T10:00:02.000Z")
+    account.close()
+
+    # 2. 创建会话
+    ctx_conv = VerifiedRequestContext(
+        accountId=ACCOUNT_ID, deviceId="dev_local", sessionId="sess_local",
+        requestId="req_conv_att", correlationId="cor_conv_att",
+        pairingGeneration=1, grantRevision=1,
+    )
+    c_resp = core.handle(VerifiedGatewayRequest(
+        context=ctx_conv, method="POST", target="/open-android-intelligence/v2/conversations",
+        idempotencyKey="req_conv_att", body={"clientConversationId": "client_c1", "title": "附件会话"},
+        now="2026-09-17T10:00:03.000Z",
+    ))
+    conv_id = c_resp["data"]["conversation"]["conversationId"]
+
+    # 3. 发送带附件消息
+    ctx_msg = VerifiedRequestContext(
+        accountId=ACCOUNT_ID, deviceId="dev_local", sessionId="sess_local",
+        requestId="req_msg_att", correlationId="cor_msg_att",
+        pairingGeneration=1, grantRevision=1,
+    )
+    p_res = core.handle(VerifiedGatewayRequest(
+        context=ctx_msg, method="POST", target=f"/open-android-intelligence/v2/conversations/{conv_id}/messages",
+        idempotencyKey="req_msg_att", body={"clientMessageId": "cmsg_att", "text": "", "attachments": [{"attachmentId": att_id}]},
+        now="2026-09-17T10:00:04.000Z",
+    ))
+    assert "error" not in p_res
+
+    # 4. 拉取消息列表，验证附件元数据
+    ctx_get = VerifiedRequestContext(
+        accountId=ACCOUNT_ID, deviceId="dev_local", sessionId="sess_local",
+        requestId="req_get_att", correlationId="cor_get_att",
+        pairingGeneration=1, grantRevision=1,
+    )
+    res = core.handle(VerifiedGatewayRequest(
+        context=ctx_get, method="GET", target=f"/open-android-intelligence/v2/conversations/{conv_id}/messages",
+        idempotencyKey=None, body=None, now="2026-09-17T10:00:05.000Z",
+    ))
+    msgs = res["data"]["messages"]
+    assert len(msgs) == 1
+    parts = msgs[0]["parts"]
+    assert len(parts) == 1
+    assert parts[0]["type"] == "attachment"
+    assert parts[0]["attachmentId"] == att_id
+    assert parts[0]["filename"] == "photo.png"
+    assert parts[0]["mediaType"] == "image/png"

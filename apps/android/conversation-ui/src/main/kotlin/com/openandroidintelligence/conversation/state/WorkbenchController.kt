@@ -42,6 +42,7 @@ data class TimelineEntry(
     val timestamp: Long,
     val pendingAcceptance: Boolean,
     val batchGroupId: String?,
+    val attachments: List<com.openandroidintelligence.conversation.model.TimelineAttachment> = emptyList(),
 )
 
 data class WorkbenchUiState(
@@ -89,6 +90,7 @@ class WorkbenchController(
 
     private val attachmentJobs = LinkedHashMap<String, Job>()
     private val attachmentSelections = LinkedHashMap<String, com.openandroidintelligence.conversation.ports.LocalAttachmentSelection>()
+    private val historicalAttachments = LinkedHashMap<String, com.openandroidintelligence.conversation.model.TimelineAttachment>()
 
     private var eventJob: Job? = null
     private var activeThreadId: String? = null
@@ -324,12 +326,30 @@ class WorkbenchController(
                 val target = submission.conversationId ?: activeThreadId ?: createThreadAsync().await().getOrThrow()
                 // Only clear the snapshot that was sent; typing during creation keeps the newer draft.
                 if (draftRevision == submission.revision) update { it.copy(draft = "") }
+                val submittedAttachments = submission.attachmentIds.map { id ->
+                    val sel = attachmentSelections[id]
+                    val d = drafts[id]
+                    val att = com.openandroidintelligence.conversation.model.TimelineAttachment(
+                        draftId = id,
+                        filename = sel?.filename ?: d?.filename.orEmpty(),
+                        mediaType = sel?.mediaType ?: d?.mediaType.orEmpty(),
+                        imageBytes = sel?.bytes,
+                    )
+                    historicalAttachments[id] = att
+                    att
+                }
+                submission.attachmentIds.zip(remoteIds).forEach { (draftId, remoteId) ->
+                    historicalAttachments[draftId]?.let { att ->
+                        historicalAttachments[remoteId] = att.copy(draftId = remoteId)
+                    }
+                }
                 submission.attachmentIds.forEach(::removeAttachment)
                 val entry = TimelineEntry(
                     key = "local_" + UUID.randomUUID().toString(), sender = "user",
-                    text = submission.text.ifBlank { "[附件]" }, isUser = true,
+                    text = submission.text.ifBlank { if (submittedAttachments.isNotEmpty()) "" else "[附件]" }, isUser = true,
                     timestamp = System.currentTimeMillis(), pendingAcceptance = true,
                     batchGroupId = null,
+                    attachments = submittedAttachments,
                 )
                 val message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
                 update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(entry), pendingBatch = it.pendingBatch + entry) }
@@ -343,8 +363,15 @@ class WorkbenchController(
                             id = acceptance.messageId, sender = "user",
                             parts = buildList {
                                 if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
-                                submission.attachmentIds.forEach { add(com.openandroidintelligence.conversation.model.MessagePart.Attachment(
-                                    com.openandroidintelligence.conversation.model.AttachmentDraftId(it))) }
+                                submission.attachmentIds.zip(remoteIds).forEach { (draftId, remoteId) ->
+                                    val sel = attachmentSelections[draftId]
+                                    val d = drafts[draftId]
+                                    add(com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                                        draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(remoteId),
+                                        filename = sel?.filename ?: d?.filename.orEmpty(),
+                                        mediaType = sel?.mediaType ?: d?.mediaType.orEmpty(),
+                                    ))
+                                }
                             },
                             timestamp = entry.timestamp,
                         )
@@ -520,20 +547,41 @@ class WorkbenchController(
         mirrored.values
             .sortedBy { it.timestamp }
             .map { message ->
+                val messageAttachments = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
+                    .map { att ->
+                        val id = att.draftId.value
+                        historicalAttachments[id] ?: run {
+                            val sel = attachmentSelections[id]
+                            val d = _state.value.attachments.firstOrNull { it.id.value == id }
+                            com.openandroidintelligence.conversation.model.TimelineAttachment(
+                                draftId = id,
+                                filename = (sel?.filename ?: d?.filename).takeUnless { it.isNullOrBlank() } ?: att.filename,
+                                mediaType = (sel?.mediaType ?: d?.mediaType).takeUnless { it.isNullOrBlank() } ?: att.mediaType,
+                                imageBytes = sel?.bytes,
+                            )
+                        }
+                    }
+                val textParts = message.parts.joinToString("") { part ->
+                    when (part) {
+                        is com.openandroidintelligence.conversation.model.MessagePart.Text -> part.value
+                        is com.openandroidintelligence.conversation.model.MessagePart.Command -> part.rawText
+                        is com.openandroidintelligence.conversation.model.MessagePart.Attachment -> ""
+                    }
+                }
+                val displayText = if (textParts.isBlank() && messageAttachments.isEmpty()) {
+                    if (message.parts.any { it is com.openandroidintelligence.conversation.model.MessagePart.Attachment }) "[附件]" else ""
+                } else {
+                    textParts
+                }
                 TimelineEntry(
                     key = message.id,
                     sender = message.sender,
-                    text = message.parts.joinToString("") { part ->
-                        when (part) {
-                            is com.openandroidintelligence.conversation.model.MessagePart.Text -> part.value
-                            is com.openandroidintelligence.conversation.model.MessagePart.Command -> part.rawText
-                            is com.openandroidintelligence.conversation.model.MessagePart.Attachment -> "[附件]"
-                        }
-                    },
+                    text = displayText,
                     isUser = message.sender == "user",
                     timestamp = message.timestamp,
                     pendingAcceptance = message.state == "PENDING",
                     batchGroupId = null,
+                    attachments = messageAttachments,
                 )
             }
 

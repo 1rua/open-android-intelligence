@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +29,11 @@ import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.Dimensions
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -78,13 +84,69 @@ private fun UserMessageBubble(entry: TimelineEntry) {
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                SelectionContainer {
-                    Text(
-                        text = entry.text.ifBlank { "此消息没有可显示的文本" },
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontSize = 15.sp,
-                        lineHeight = 22.sp,
-                    )
+                // Attachments preview strip (Images thumbnail or Document chip)
+                if (entry.attachments.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        entry.attachments.forEach { attachment ->
+                            if (attachment.isImage && attachment.imageBytes != null) {
+                                val bitmap = remember(attachment.imageBytes) {
+                                    runCatching {
+                                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                        BitmapFactory.decodeByteArray(attachment.imageBytes, 0, attachment.imageBytes.size, opts)
+                                        var sample = 1
+                                        while (opts.outWidth / sample > 600 || opts.outHeight / sample > 600) {
+                                            sample *= 2
+                                        }
+                                        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
+                                        BitmapFactory.decodeByteArray(attachment.imageBytes, 0, attachment.imageBytes.size, decodeOpts)?.asImageBitmap()
+                                    }.getOrNull()
+                                }
+                                if (bitmap != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 240.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MaterialTheme.colorScheme.surface),
+                                    ) {
+                                        Image(
+                                            bitmap = bitmap,
+                                            contentDescription = attachment.filename.ifBlank { "图片预览" },
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                    }
+                                } else {
+                                    AttachmentFallbackChip(attachment.filename.ifBlank { "图片附件" }, isImage = true)
+                                }
+                            } else {
+                                AttachmentFallbackChip(attachment.filename.ifBlank { "附件文件" }, isImage = attachment.isImage)
+                            }
+                        }
+                    }
+                }
+
+                if (entry.text.isNotBlank()) {
+                    SelectionContainer {
+                        Text(
+                            text = entry.text,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontSize = 15.sp,
+                            lineHeight = 22.sp,
+                        )
+                    }
+                } else if (entry.attachments.isEmpty()) {
+                    SelectionContainer {
+                        Text(
+                            text = "此消息没有可显示的文本",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontSize = 15.sp,
+                            lineHeight = 22.sp,
+                        )
+                    }
                 }
 
                 Row(
@@ -125,6 +187,33 @@ private fun UserMessageBubble(entry: TimelineEntry) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentFallbackChip(filename: String, isImage: Boolean) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                imageVector = if (isImage) Icons.Default.Image else Icons.AutoMirrored.Filled.InsertDriveFile,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = filename,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+            )
         }
     }
 }

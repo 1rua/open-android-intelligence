@@ -442,6 +442,11 @@ createGatewayRequestVerifier = create_gateway_request_verifier
 class OpenAndroidPlatformAdapter(BasePlatformAdapter):
     """Hermes messaging platform adapter hosting the Gateway Protocol v2 HTTP/SSE server."""
 
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """OpenAndroid gateway connections are already authenticated via Ed25519/MasterKey/HMAC."""
+        return True
+
     supports_code_blocks: bool = True
     supports_status_text: bool = False
     supports_async_delivery: bool = True
@@ -476,6 +481,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         # One subscriber set per account: an event is only ever handed to the
         # stream of the account that produced it.
         self._active_sse_queues: Dict[str, Set[asyncio.Queue]] = {}
+        self._conv_to_account: Dict[str, str] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the Gateway Protocol v2 HTTP & SSE server."""
@@ -550,25 +556,17 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send message from Hermes AI agent back to the mobile client."""
-        if not self._account_id:
-            # Without a configured account there is nothing to deliver into: a
-            # guessed account would write an agent reply into someone else's data.
+        target_account = (
+            (metadata.get("account_id") if isinstance(metadata, dict) else None)
+            or self._conv_to_account.get(chat_id)
+            or self._account_id
+        )
+        if not target_account:
             return SendResult(success=False, error="ACCOUNT_NOT_CONFIGURED", retryable=False)
         try:
-            account = self.services.core.open_gateway_account(self._account_id)
             now_iso = iso_millis()
             message_id = f"msg_{uuid.uuid4().hex[:12]}"
-            turn_id = f"turn_{uuid.uuid4().hex[:12]}"
-
-            # Record message into SQLite database
-            try:
-                account.conversations.accept_message(
-                    chat_id, turn_id, content, [], "agent-host", turn_id, turn_id, now_iso,
-                )
-            finally:
-                account.close()
-
-            await self.complete_message(chat_id, message_id, content, occurred_at=now_iso)
+            await self.complete_message(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[open_android] Failed to deliver message to %s: %s", chat_id, exc)
@@ -580,6 +578,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         message_id: str,
         accumulated_text: str,
         occurred_at: Optional[str] = None,
+        account_id: Optional[str] = None,
     ) -> None:
         """Publish one partial assistant message.
 
@@ -588,8 +587,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         fragment. Hosts driving a token stream call this per chunk and then
         finish with [complete_message].
         """
+        target_account = account_id or self._conv_to_account.get(chat_id) or self._account_id
         await self._publish_event(
-            "conversation.message.delta", chat_id, message_id, accumulated_text, occurred_at,
+            "conversation.message.delta", chat_id, message_id, accumulated_text, occurred_at, account_id=target_account,
         )
 
     async def complete_message(
@@ -598,10 +598,12 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
         occurred_at: Optional[str] = None,
+        account_id: Optional[str] = None,
     ) -> None:
         """Publish the final assistant message for one turn."""
+        target_account = account_id or self._conv_to_account.get(chat_id) or self._account_id
         await self._publish_event(
-            "conversation.message.completed", chat_id, message_id, content, occurred_at,
+            "conversation.message.completed", chat_id, message_id, content, occurred_at, account_id=target_account,
         )
 
     async def _publish_event(
@@ -611,6 +613,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         message_id: str,
         text: str,
         occurred_at: Optional[str] = None,
+        account_id: Optional[str] = None,
     ) -> None:
         """Persist one assistant event, then hand its frame to the stream.
 
@@ -618,11 +621,12 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         disconnect the phone replays the event from the account store instead of
         depending on this process still holding it in memory.
         """
-        if not self._account_id:
+        target_account = account_id or self._conv_to_account.get(chat_id) or self._account_id
+        if not target_account:
             logger.warning("[open_android] No account configured; %s was not published", event_type)
             return
         payload = self._message_payload(chat_id, message_id, text, occurred_at)
-        account = self.services.core.open_gateway_account(self._account_id)
+        account = self.services.core.open_gateway_account(target_account)
         try:
             if event_type == "conversation.message.completed":
                 try:
@@ -632,7 +636,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             event = account.events.append(event_type, message_id, payload, occurred_at)
         finally:
             account.close()
-        await self._broadcast_sse(self._account_id, _sse_frame(event))
+        await self._broadcast_sse(target_account, _sse_frame(event))
 
     def _message_payload(
         self,
@@ -756,13 +760,13 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 if p == "conversations" and i + 1 < len(parts):
                     conv_id = parts[i + 1]
                     break
+            self._conv_to_account[conv_id] = source_account
 
             data = json.loads(body_bytes.decode("utf-8"))
             user_text = data.get("text") or data.get("content") or ""
             client_turn = data.get("clientTurnId") or str(uuid.uuid4())
 
-            source = Source(
-                platform=self.platform,
+            source = self.build_source(
                 chat_id=conv_id,
                 chat_name="Android Client",
                 chat_type="dm",

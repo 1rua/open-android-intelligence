@@ -54,6 +54,17 @@ class HermesHttpInteropTest {
             assertEquals(bytes.size.toLong(), JsonFields.long(record, "sizeBytes"))
             val accepted = repository.submitMessage(conversation.id.value, OutgoingMessage(ClientMessageId("cmsg_interop"), "请读取附件", listOf(id)))
             assertTrue(accepted.messageId.startsWith("msg_"))
+
+            // 验证切换会话/拉取时间线时，附件元数据完整保留
+            val timeline = repository.timeline(conversation.id.value, PageRequest())
+            assertEquals(1, timeline.messages.size)
+            val msg = timeline.messages.single()
+            assertEquals("user", msg.sender)
+            assertEquals("请读取附件", (msg.parts.first() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+            val attPart = msg.parts[1] as com.openandroidintelligence.conversation.model.MessagePart.Attachment
+            assertEquals(id, attPart.draftId.value)
+            assertEquals("interop.txt", attPart.filename)
+            assertEquals("text/plain", attPart.mediaType)
         } finally {
             process.destroy()
             check(process.waitFor(10, TimeUnit.SECONDS)) { "Fixture did not stop" }

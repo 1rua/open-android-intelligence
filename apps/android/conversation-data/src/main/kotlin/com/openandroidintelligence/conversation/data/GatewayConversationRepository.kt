@@ -89,7 +89,9 @@ class GatewayConversationRepository(
                                 com.openandroidintelligence.conversation.model.MessagePart.Text(part.text)
                             is com.openandroidintelligence.gateway.conversations.MessagePart.AttachmentRef ->
                                 com.openandroidintelligence.conversation.model.MessagePart.Attachment(
-                                    com.openandroidintelligence.conversation.model.AttachmentDraftId(part.attachmentId),
+                                    draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(part.attachmentId),
+                                    filename = part.filename,
+                                    mediaType = part.mediaType,
                                 )
                         }
                     },
