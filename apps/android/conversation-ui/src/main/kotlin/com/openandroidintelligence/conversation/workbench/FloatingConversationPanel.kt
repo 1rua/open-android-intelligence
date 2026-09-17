@@ -7,6 +7,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import com.openandroidintelligence.conversation.assistant.AssistantSurface
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.selection.ScreenSelectionOverlay
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
@@ -35,6 +36,12 @@ fun FloatingConversationPanel(
             val last = (state.timeline as? Loadable.Ready)?.value?.takeLast(1).orEmpty()
             if (last.isNotEmpty()) MessageTimeline(last)
             else Text("与当前 Gateway 继续对话", style = MaterialTheme.typography.bodyMedium)
+            val isThinking = (state.generation == GenerationState.QUEUED ||
+                state.generation == GenerationState.RUNNING) &&
+                last.none { !it.isUser && it.isStreaming }
+            if (isThinking) {
+                ThinkingIndicator(modifier = Modifier.padding(vertical = Dimensions.SpaceSmall))
+            }
             if (state.activeThreadId == null) TextButton(onClick = controller::createThread) { Text("新建对话") }
             CommandMenu(state.catalog, state.draft, controller::selectCommand, controller::loadCatalog)
             ComposerBar(draft = state.draft, onDraftChange = controller::editDraft,

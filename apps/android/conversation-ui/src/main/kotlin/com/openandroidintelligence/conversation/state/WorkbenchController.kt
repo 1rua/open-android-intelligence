@@ -43,6 +43,7 @@ data class TimelineEntry(
     val pendingAcceptance: Boolean,
     val batchGroupId: String?,
     val attachments: List<com.openandroidintelligence.conversation.model.TimelineAttachment> = emptyList(),
+    val isStreaming: Boolean = false,
 )
 
 data class WorkbenchUiState(
@@ -166,6 +167,7 @@ class WorkbenchController(
                 onSuccess = { page ->
                     mirrored.clear()
                     page.messages.forEach { mirrored[it.id] = it }
+                    val hasStreaming = page.messages.any { it.sender == "assistant" && it.state == "STREAMING" }
                     update { state ->
                         state.copy(
                             timeline = if (page.messages.isEmpty()) {
@@ -173,6 +175,7 @@ class WorkbenchController(
                             } else {
                                 Loadable.Ready(renderTimeline())
                             },
+                            generation = if (hasStreaming) GenerationState.RUNNING else GenerationState.IDLE,
                         )
                     }
                 },
@@ -303,7 +306,7 @@ class WorkbenchController(
         val current = _state.value
         if (!current.canSend) return
         pendingSubmission = DraftSubmission(current.draft, current.attachments.map { it.id.value }, draftRevision, activeThreadId)
-        update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null) }
+        update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null, generation = GenerationState.QUEUED) }
         submitWhenAttachmentsVerified()
     }
 
@@ -352,7 +355,7 @@ class WorkbenchController(
                     attachments = submittedAttachments,
                 )
                 val message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
-                update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(entry), pendingBatch = it.pendingBatch + entry) }
+                update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
                 if (supportsMessageBatches && !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()) {
                     batchTargets[message.clientMessageId.value] = target
                     batcher.offer(scopeFactory(), message)
@@ -375,8 +378,12 @@ class WorkbenchController(
                             },
                             timestamp = entry.timestamp,
                         )
-                        update { it.copy(timeline = Loadable.Ready(renderTimeline()),
-                            pendingBatch = it.pendingBatch.filterNot { row -> row.key == entry.key }, notice = null) }
+                        update { it.copy(
+                            timeline = Loadable.Ready(renderTimeline()),
+                            pendingBatch = it.pendingBatch.filterNot { row -> row.key == entry.key },
+                            notice = null,
+                            generation = GenerationState.QUEUED,
+                        ) }
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -424,6 +431,16 @@ class WorkbenchController(
         val generationId = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)
             ?.generationId?.value
         if (generationId == null) {
+            if (_state.value.generation == GenerationState.QUEUED ||
+                _state.value.generation == GenerationState.RUNNING ||
+                mirrored.values.any { it.state == "STREAMING" }
+            ) {
+                mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
+                    mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
+                }
+                update { it.copy(generation = GenerationState.CANCELLED, timeline = Loadable.Ready(renderTimeline()), notice = "已停止生成") }
+                return
+            }
             update { it.copy(notice = "STOP_UNAVAILABLE:NO_GENERATION") }
             return
         }
@@ -433,8 +450,14 @@ class WorkbenchController(
                 repository.cancelGeneration(generationId, "req_" + UUID.randomUUID().toString().replace("-", ""))
             }.fold(
                 onSuccess = { result ->
+                    if (result.outcome == com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED) {
+                        mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
+                            mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
+                        }
+                    }
                     update { state ->
                         state.copy(
+                            timeline = Loadable.Ready(renderTimeline()),
                             generation = when (result.outcome) {
                                 com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED ->
                                     GenerationState.CANCELLED
@@ -514,7 +537,13 @@ class WorkbenchController(
                     }
 
                     is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.GenerationCancelled -> {
-                        update { it.copy(generation = GenerationState.CANCELLED) }
+                        mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
+                            mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
+                        }
+                        update { it.copy(
+                            generation = GenerationState.CANCELLED,
+                            timeline = Loadable.Ready(renderTimeline()),
+                        ) }
                     }
 
                     is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.SnapshotInvalidated -> {
@@ -582,6 +611,7 @@ class WorkbenchController(
                     pendingAcceptance = message.state == "PENDING",
                     batchGroupId = null,
                     attachments = messageAttachments,
+                    isStreaming = message.state == "STREAMING",
                 )
             }
 

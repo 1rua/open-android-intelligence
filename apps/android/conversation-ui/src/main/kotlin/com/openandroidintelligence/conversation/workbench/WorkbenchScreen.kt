@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.LoadableRegion
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.components.SignalStitch
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -58,6 +59,10 @@ fun WorkbenchScreen(
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     var showAttachmentLibrary by remember { mutableStateOf(false) }
 
+    val isThinking = (state.generation == GenerationState.QUEUED ||
+        state.generation == GenerationState.RUNNING) &&
+        entries.none { !it.isUser && it.isStreaming }
+
     LaunchedEffect(state.notice) {
         state.notice?.let { notice ->
             controller.dismissNotice()
@@ -69,8 +74,11 @@ fun WorkbenchScreen(
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
             .distinctUntilChanged().collect { (scrolling, below) -> if (scrolling) followLatest = !below }
     }
-    LaunchedEffect(state.activeThreadId, entries.lastOrNull()?.key, entries.lastOrNull()?.text, followLatest) {
-        if (followLatest && entries.isNotEmpty()) listState.scrollToItem(entries.lastIndex, Int.MAX_VALUE)
+    LaunchedEffect(state.activeThreadId, entries.lastOrNull()?.key, entries.lastOrNull()?.text, isThinking, followLatest) {
+        if (followLatest) {
+            val totalItems = entries.size + if (isThinking) 1 else 0
+            if (totalItems > 0) listState.scrollToItem(totalItems - 1, Int.MAX_VALUE)
+        }
     }
 
     BoxWithConstraints(modifier.fillMaxSize()) {
@@ -220,6 +228,11 @@ fun WorkbenchScreen(
                                         ) {
                                             items(rows, key = { it.key }) { entry ->
                                                 MessageTimeline(listOf(entry))
+                                            }
+                                            if (isThinking) {
+                                                item(key = "thinking_indicator") {
+                                                    ThinkingIndicator(modifier = Modifier.padding(vertical = Dimensions.SpaceSmall))
+                                                }
                                             }
                                         }
                                     },

@@ -452,6 +452,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
     supports_async_delivery: bool = True
     interactive_resume: bool = True
     splits_long_messages: bool = True
+    REQUIRES_EDIT_FINALIZE: bool = True
 
     def __init__(self, config: Any, services: Any):
         try:
@@ -566,11 +567,42 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         try:
             now_iso = iso_millis()
             message_id = f"msg_{uuid.uuid4().hex[:12]}"
-            await self.complete_message(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
+            if isinstance(metadata, dict) and metadata.get("expect_edits"):
+                await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
+            else:
+                await self.complete_message(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[open_android] Failed to deliver message to %s: %s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=False)
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        **kwargs: Any,
+    ) -> bool:
+        """Progressive edit support for streaming consumers.
+
+        Streams intermediate deltas via [stream_delta] and final message via [complete_message].
+        """
+        target_account = (
+            kwargs.get("account_id")
+            or self._conv_to_account.get(chat_id)
+            or self._account_id
+        )
+        if not target_account:
+            logger.warning("[open_android] No account configured; cannot edit message %s", message_id)
+            return False
+        now_iso = iso_millis()
+        if finalize:
+            await self.complete_message(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
+        else:
+            await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
+        return True
 
     async def stream_delta(
         self,
@@ -675,6 +707,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
     # Host-adapter naming aliases.
     streamDelta = stream_delta
     completeMessage = complete_message
+    editMessage = edit_message
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         return web.Response(text="ok", content_type="text/plain")

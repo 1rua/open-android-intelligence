@@ -164,3 +164,49 @@ def test_stream_without_a_verifier_answers_401_over_http(tmp_path):
             await adapter.disconnect()
 
     asyncio.run(scenario())
+
+
+def test_adapter_streaming_edits_progressive_delivery(tmp_path):
+    async def scenario():
+        services, core = _services(tmp_path, None)
+        exposure = create_gateway_exposure(
+            "host-route", core=core, host_version="1.0.0", host_api=TEST_HOST_API,
+            verify_request=_verifier(EVENT_STREAM_PATH, now="2026-09-13T00:00:00.000Z"),
+        )
+        services = GatewayServices(core, services.admin, exposure)
+        adapter = OpenAndroidPlatformAdapter(_Config(0), services)
+        assert adapter.REQUIRES_EDIT_FINALIZE is True
+        assert await adapter.connect() is True
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{_port(adapter)}{EVENT_STREAM_PATH}",
+                    headers={"Accept": "text/event-stream"},
+                ) as response:
+                    assert response.status == 200
+
+                    # 1. Send with expect_edits -> stream_delta
+                    res = await adapter.send("conv_stream", "Hello", metadata={"expect_edits": True})
+                    assert res.success is True
+                    msg_id = res.message_id
+                    frame1 = await _read_event_frame(response)
+                    assert "event: conversation.message.delta" in frame1
+                    assert _data_of(frame1)["payload"]["text"] == "Hello"
+
+                    # 2. edit_message intermediate -> stream_delta
+                    ok_edit = await adapter.edit_message("conv_stream", msg_id, "Hello world", finalize=False)
+                    assert ok_edit is True
+                    frame2 = await _read_event_frame(response)
+                    assert "event: conversation.message.delta" in frame2
+                    assert _data_of(frame2)["payload"]["text"] == "Hello world"
+
+                    # 3. edit_message finalize -> complete_message
+                    ok_final = await adapter.edit_message("conv_stream", msg_id, "Hello world!", finalize=True)
+                    assert ok_final is True
+                    frame3 = await _read_event_frame(response)
+                    assert "event: conversation.message.completed" in frame3
+                    assert _data_of(frame3)["payload"]["text"] == "Hello world!"
+        finally:
+            await adapter.disconnect()
+
+    asyncio.run(scenario())

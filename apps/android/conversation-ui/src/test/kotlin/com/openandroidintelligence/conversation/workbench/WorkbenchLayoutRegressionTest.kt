@@ -15,11 +15,13 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.openandroidintelligence.conversation.model.CatalogVersion
 import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import org.junit.After
 import org.junit.Assert.*
@@ -76,6 +78,140 @@ class WorkbenchLayoutRegressionTest {
         val readable = noticeText("SEND_FAILED:MASTER_KEY_UNAVAILABLE")
         assertTrue("失败提示必须给出可操作说明：$readable", readable.contains("主密钥") && !readable.contains("MASTER_KEY_UNAVAILABLE"))
         assertEquals("已创建新对话", noticeText("已创建新对话"))
+    }
+
+    @Test
+    fun thinkingIndicatorRendersWhenThinkingAndDisappearsWhenStreamingDeltaArrives() {
+        val eventFlow = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 16)
+        val gateway = object : ConversationRepository {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
+                Conversation(ConversationId("conv_streaming"), "新对话", 0)
+            override suspend fun submitMessage(message: OutgoingMessage) =
+                MessageAcceptance("msg_user_1", message.clientMessageId.value)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId, emptyList())
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun cancelGeneration(generationId: String, requestId: String) =
+                CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        }
+        val controller = WorkbenchController(
+            scope,
+            gateway,
+            object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) =
+                    AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+            },
+            { ConversationScope("p", "g", "a", "i") },
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {})
+            }
+        }
+
+        // Welcome screen is displayed initially, no thinking indicator
+        compose.onNodeWithText("从一个想法开始").assertIsDisplayed()
+        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+
+        // Send a draft to enter QUEUED generation state
+        compose.runOnIdle {
+            controller.editDraft("你好")
+            controller.sendDraft()
+        }
+
+        // Thinking indicator must be displayed while QUEUED/RUNNING and no assistant streaming yet
+        compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
+        compose.onNodeWithText("你好").assertIsDisplayed()
+
+        // Assistant streaming delta arrives
+        compose.runOnIdle {
+            eventFlow.tryEmit(
+                VerifiedConversationEvent.TimelineUpsert(
+                    eventId = "evt_1",
+                    occurredAt = 1000L,
+                    revision = 1L,
+                    message = TimelineMessage(
+                        id = "msg_asst_1",
+                        sender = "assistant",
+                        parts = listOf(MessagePart.Text("助理正在回答中")),
+                        timestamp = 1000L,
+                        state = "STREAMING",
+                    ),
+                ),
+            )
+        }
+
+        // Thinking indicator disappears, streaming indicator and streaming text appear
+        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("正在输出…").assertIsDisplayed()
+        compose.onNodeWithText("助理正在回答中", substring = true).assertIsDisplayed()
+
+        // Final completion event arrives
+        compose.runOnIdle {
+            eventFlow.tryEmit(
+                VerifiedConversationEvent.TimelineUpsert(
+                    eventId = "evt_2",
+                    occurredAt = 1010L,
+                    revision = 2L,
+                    message = TimelineMessage(
+                        id = "msg_asst_1",
+                        sender = "assistant",
+                        parts = listOf(MessagePart.Text("助理正在回答中，回答完毕。")),
+                        timestamp = 1000L,
+                        state = "CONFIRMED",
+                    ),
+                ),
+            )
+        }
+
+        // Thinking indicator remains absent, streaming tag is gone, complete message is displayed
+        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("正在输出…").assertDoesNotExist()
+        compose.onNodeWithText("助理正在回答中，回答完毕。", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun thinkingIndicatorDisappearsWhenGenerationIsStopped() {
+        val gateway = object : ConversationRepository {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
+                Conversation(ConversationId("conv_stop"), "新对话", 0)
+            override suspend fun submitMessage(message: OutgoingMessage) =
+                MessageAcceptance("msg_user_1", message.clientMessageId.value)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId, emptyList())
+            override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
+            override suspend fun cancelGeneration(generationId: String, requestId: String) =
+                CancelGenerationResult(CancelGenerationOutcome.CANCELLED)
+        }
+        val controller = WorkbenchController(
+            scope,
+            gateway,
+            object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) =
+                    AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+            },
+            { ConversationScope("p", "g", "a", "i") },
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {})
+            }
+        }
+
+        compose.runOnIdle {
+            controller.editDraft("正在提问")
+            controller.sendDraft()
+        }
+        compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
+
+        compose.runOnIdle {
+            controller.stopGeneration()
+        }
+        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
     }
 
     private fun SemanticsNodeInteraction.textLayoutHeight(): Int {

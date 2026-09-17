@@ -34,6 +34,20 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.asImageBitmap
 import android.graphics.BitmapFactory
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.buildAnnotatedString
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -238,24 +252,66 @@ private fun AssistantMessageRow(entry: TimelineEntry) {
                 .padding(vertical = 2.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            val content = entry.text.ifBlank { "此消息没有可显示的文本" }
-            val blocks = remember(content) { parseMarkdownBlocks(content) }
+            val content = entry.text.ifBlank {
+                if (entry.isStreaming) "" else "此消息没有可显示的文本"
+            }
 
-            blocks.forEach { block ->
-                when (block) {
-                    is TimelineBlock.Paragraph -> {
-                        SelectionContainer {
-                            Text(
-                                text = block.text,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                fontSize = 15.sp,
-                                lineHeight = 22.sp,
-                            )
+            if (content.isBlank() && entry.isStreaming) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                ) {
+                    StreamingCursor()
+                }
+            } else {
+                val blocks = remember(content) { parseMarkdownBlocks(content) }
+
+                blocks.forEachIndexed { index, block ->
+                    val isLastBlock = index == blocks.lastIndex && entry.isStreaming
+                    when (block) {
+                        is TimelineBlock.Paragraph -> {
+                            val cursorInlineId = "streaming_cursor"
+                            val annotatedText = remember(block.text, isLastBlock) {
+                                buildAnnotatedString {
+                                    append(block.text)
+                                    if (isLastBlock) {
+                                        append(" ")
+                                        appendInlineContent(cursorInlineId, "[cursor]")
+                                    }
+                                }
+                            }
+                            val inlineContent = remember(isLastBlock) {
+                                if (isLastBlock) {
+                                    mapOf(
+                                        cursorInlineId to InlineTextContent(
+                                            Placeholder(
+                                                width = 4.sp,
+                                                height = 16.sp,
+                                                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
+                                            ),
+                                        ) {
+                                            StreamingCursor()
+                                        },
+                                    )
+                                } else {
+                                    emptyMap()
+                                }
+                            }
+
+                            SelectionContainer {
+                                Text(
+                                    text = annotatedText,
+                                    inlineContent = inlineContent,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontSize = 15.sp,
+                                    lineHeight = 22.sp,
+                                )
+                            }
                         }
-                    }
-                    is TimelineBlock.CodeBlock -> {
-                        MarkdownCodeBlock(block = block)
+                        is TimelineBlock.CodeBlock -> {
+                            MarkdownCodeBlock(block = block, isStreaming = isLastBlock)
+                        }
                     }
                 }
             }
@@ -267,28 +323,198 @@ private fun AssistantMessageRow(entry: TimelineEntry) {
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                 modifier = Modifier.padding(top = 2.dp),
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(5.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary),
-                )
-                if (timeStr.isNotEmpty()) {
+                if (entry.isStreaming) {
+                    val infiniteTransition = rememberInfiniteTransition(label = "streaming-dot")
+                    val dotAlpha by infiniteTransition.animateFloat(
+                        initialValue = 0.4f,
+                        targetValue = 1f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(durationMillis = 600),
+                            repeatMode = RepeatMode.Reverse,
+                        ),
+                        label = "dot-alpha",
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(5.dp)
+                            .clip(CircleShape)
+                            .alpha(dotAlpha)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
                     Text(
-                        text = timeStr,
+                        text = "正在输出…",
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.primary,
                     )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(5.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                    if (timeStr.isNotEmpty()) {
+                        Text(
+                            text = timeStr,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+/**
+ * 伴随流式输出闪烁的光标，视觉效果严格对齐 fronted-preview 的 .streaming-cursor
+ */
 @Composable
-private fun MarkdownCodeBlock(block: TimelineBlock.CodeBlock) {
+fun StreamingCursor(modifier: Modifier = Modifier) {
+    val reduced = LocalMotionPolicy.current.reduceMotion
+    val alpha = if (reduced) {
+        1f
+    } else {
+        val infiniteTransition = rememberInfiniteTransition(label = "streaming-cursor")
+        infiniteTransition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0f,
+            animationSpec = infiniteRepeatable(
+                animation = keyframes {
+                    durationMillis = 800
+                    1f at 0
+                    1f at 400
+                    0f at 401
+                    0f at 800
+                },
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "cursor-alpha",
+        ).value
+    }
+    Box(
+        modifier = modifier
+            .width(2.5.dp)
+            .height(16.dp)
+            .alpha(alpha)
+            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp)),
+    )
+}
+
+/**
+ * 正在思考动画组件：对齐 fronted-preview 的 #thinkingIndicator 与 .typing-dot
+ */
+@Composable
+fun ThinkingIndicator(
+    modifier: Modifier = Modifier,
+    text: String = "AI 正在思考",
+) {
+    val reduced = LocalMotionPolicy.current.reduceMotion
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start,
+        verticalAlignment = Alignment.Top,
+    ) {
+        SignalStitch(
+            modifier = Modifier
+                .padding(top = 4.dp)
+                .height(28.dp),
+        )
+        Spacer(Modifier.width(Dimensions.SpaceSmall))
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = 4.dp,
+                bottomEnd = 16.dp,
+            ),
+            modifier = Modifier.padding(vertical = 2.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TypingDots(reduced = reduced)
+            }
+        }
+    }
+}
+
+/**
+ * 3 颗连续跳动点：对齐 fronted-preview 的 .typing-dot 关键帧动画
+ */
+@Composable
+fun TypingDots(
+    modifier: Modifier = Modifier,
+    reduced: Boolean = false,
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "typing-dots")
+    val dotCount = 3
+    val dotAnimations = List(dotCount) { index ->
+        if (reduced) {
+            remember { mutableStateOf(1f) }
+        } else {
+            infiniteTransition.animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = keyframes {
+                        durationMillis = 1400
+                        val delay = index * 160
+                        0f at 0
+                        if (delay > 0) 0f at delay
+                        1f at (delay + 300).coerceAtMost(1400)
+                        0f at (delay + 600).coerceAtMost(1400)
+                        0f at 1400
+                    },
+                    repeatMode = RepeatMode.Restart,
+                ),
+                label = "dot-anim-$index",
+            )
+        }
+    }
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        dotAnimations.forEach { animState ->
+            val scale = animState.value
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .graphicsLayer {
+                        scaleX = 0.4f + 0.6f * scale
+                        scaleY = 0.4f + 0.6f * scale
+                        alpha = 0.3f + 0.7f * scale
+                    }
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MarkdownCodeBlock(
+    block: TimelineBlock.CodeBlock,
+    isStreaming: Boolean = false,
+) {
     val clipboardManager = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     val isDark = isSystemInDarkTheme()
@@ -354,9 +580,37 @@ private fun MarkdownCodeBlock(block: TimelineBlock.CodeBlock) {
                     .horizontalScroll(rememberScrollState())
                     .padding(12.dp),
             ) {
+                val cursorInlineId = "streaming_code_cursor"
+                val annotatedCode = remember(block.code, isStreaming) {
+                    buildAnnotatedString {
+                        append(block.code)
+                        if (isStreaming) {
+                            append(" ")
+                            appendInlineContent(cursorInlineId, "[cursor]")
+                        }
+                    }
+                }
+                val inlineContent = remember(isStreaming) {
+                    if (isStreaming) {
+                        mapOf(
+                            cursorInlineId to InlineTextContent(
+                                Placeholder(
+                                    width = 4.sp,
+                                    height = 14.sp,
+                                    placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
+                                ),
+                            ) {
+                                StreamingCursor()
+                            },
+                        )
+                    } else {
+                        emptyMap()
+                    }
+                }
                 SelectionContainer {
                     Text(
-                        text = block.code,
+                        text = annotatedCode,
+                        inlineContent = inlineContent,
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
                         fontSize = 12.sp,
