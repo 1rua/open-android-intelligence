@@ -117,6 +117,14 @@ class GatewayTransportSecurityTest {
     }
 
     @Test
+    fun theFactoryAllowsZeroReadTimeoutForStreaming() {
+        val connection = GatewayConnectionFactory()
+            .open(URL("http://gateway.example.invalid/open-android-intelligence/v2"), readTimeoutMillis = 0)
+
+        assertEquals(0, connection.readTimeout)
+    }
+
+    @Test
     fun theFactoryStillOpensTlsConnections() {
         val connection = GatewayConnectionFactory()
             .open(URL("https://gateway.example.invalid/open-android-intelligence/v2"))

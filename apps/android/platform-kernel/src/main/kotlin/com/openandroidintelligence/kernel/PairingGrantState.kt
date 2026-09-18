@@ -1,6 +1,6 @@
 package com.openandroidintelligence.kernel
 
-import java.net.URL
+import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Base64
@@ -23,8 +23,8 @@ data class PairingGrantBinding(
 ) {
     init {
         val validGateway = runCatching {
-            val url = URL(gatewayId)
-            (url.protocol == "https" || url.protocol == "http") && url.host.isNotBlank()
+            val uri = URI(gatewayId)
+            (uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrBlank()
         }.getOrDefault(false)
         require(validGateway) { "pairing grant gateway must be http or https" }
         require(accountId.isNotBlank()) { "pairing grant account must not be blank" }

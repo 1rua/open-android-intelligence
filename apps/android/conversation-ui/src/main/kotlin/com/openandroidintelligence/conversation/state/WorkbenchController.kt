@@ -8,7 +8,9 @@ import com.openandroidintelligence.conversation.model.AttachmentState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
@@ -385,6 +387,10 @@ class WorkbenchController(
                 val message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
                 update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
 
+                if (eventJob?.isActive != true) {
+                    observeThreadEvents()
+                }
+
                 val currentTitle = _state.value.activeThreadTitle
                 val needsAutoTitle = (currentTitle.isBlank() || currentTitle == "新对话") && !userRenamedThreads.contains(target)
                 if (needsAutoTitle) {
@@ -426,7 +432,7 @@ class WorkbenchController(
                             timeline = Loadable.Ready(renderTimeline()),
                             pendingBatch = it.pendingBatch.filterNot { row -> row.key == entry.key },
                             notice = null,
-                            generation = GenerationState.QUEUED,
+                            generation = if (it.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED,
                         ) }
                     }
                 }
@@ -534,81 +540,114 @@ class WorkbenchController(
     private fun observeThreadEvents() {
         eventJob?.cancel()
         eventJob = scope.launch {
-            repository.observeEvents(scopeFactory()).catch { cause ->
-                if (cause is CancellationException) throw cause
-                update { it.copy(notice = "EVENTS_FAILED:${errorCodeOf(cause)}") }
-            }.collect { event ->
-                when (event) {
-                    is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
-                        update { state ->
-                            state.copy(
-                                pendingBatch = state.pendingBatch.filterNot { it.key.endsWith(event.correlationId) },
-                            )
-                        }
+            repository.observeEvents(scopeFactory())
+                .retryWhen { cause, _ ->
+                    if (cause is CancellationException) {
+                        false
+                    } else {
+                        update { it.copy(notice = "EVENTS_FAILED:${errorCodeOf(cause)}") }
+                        delay(1000L)
+                        true
                     }
-
-                    is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
-                        val message = event.message
-                        if (message.sender == "user" || message.sender == "assistant") {
-                            mirrored[message.id] = message
-                        }
-                        update { state ->
-                            state.copy(
-                                timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
-                                    Loadable.Ready(renderTimeline())
-                                } else {
-                                    state.timeline
-                                },
-                                generation = if (message.sender == "assistant" && message.state == "STREAMING") {
-                                    GenerationState.RUNNING
-                                } else if (message.sender == "assistant" && message.state == "CONFIRMED") {
-                                    GenerationState.COMPLETED
-                                } else {
-                                    state.generation
-                                },
-                            )
-                        }
-                    }
-
-                    is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineTombstoned -> {
-                        mirrored.remove(event.messageId)
-                        update { state ->
-                            state.copy(timeline = Loadable.Ready(renderTimeline()))
-                        }
-                    }
-
-                    is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TitleUpdated -> {
-                        val threadId = event.conversationId.value
-                        if (!userRenamedThreads.contains(threadId)) {
-                            if (threadId == activeThreadId) {
-                                update { it.copy(activeThreadTitle = event.newTitle) }
+                }
+                .collect { event ->
+                    when (event) {
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
+                            val eventConvId = event.conversationId?.value
+                            val currentActiveId = activeThreadId
+                            if (eventConvId == null || eventConvId == currentActiveId) {
+                                update { state ->
+                                    state.copy(
+                                        pendingBatch = state.pendingBatch.filterNot { it.key.endsWith(event.correlationId) },
+                                    )
+                                }
                             }
                         }
-                        refreshThreads()
-                    }
 
-                    is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.GenerationCancelled -> {
-                        mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
-                            mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
+                            val message = event.message
+                            val eventConvId = message.conversationId?.value
+                            val currentActiveId = activeThreadId
+                            if (eventConvId != null && eventConvId != currentActiveId) {
+                                refreshThreads()
+                                return@collect
+                            }
+                            if (currentActiveId == null && eventConvId != null) {
+                                refreshThreads()
+                                return@collect
+                            }
+                            if (message.sender == "user" || message.sender == "assistant") {
+                                mirrored[message.id] = message
+                            }
+                            update { state ->
+                                state.copy(
+                                    timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
+                                        Loadable.Ready(renderTimeline())
+                                    } else {
+                                        state.timeline
+                                    },
+                                    generation = if (message.sender == "assistant" && message.state == "STREAMING") {
+                                        GenerationState.RUNNING
+                                    } else if (message.sender == "assistant" && message.state == "CONFIRMED") {
+                                        GenerationState.COMPLETED
+                                    } else {
+                                        state.generation
+                                    },
+                                )
+                            }
                         }
-                        update { it.copy(
-                            generation = GenerationState.CANCELLED,
-                            timeline = Loadable.Ready(renderTimeline()),
-                        ) }
-                    }
 
-                    is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.SnapshotInvalidated -> {
-                        activeThreadId?.let { id -> reloadTimeline(id) }
-                    }
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineTombstoned -> {
+                            val eventConvId = event.conversationId?.value
+                            val currentActiveId = activeThreadId
+                            if (eventConvId == null || eventConvId == currentActiveId) {
+                                mirrored.remove(event.messageId)
+                                update { state ->
+                                    state.copy(timeline = Loadable.Ready(renderTimeline()))
+                                }
+                            }
+                        }
 
-                    is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult -> {
-                        event.conversationId?.let { created ->
-                            update { it.copy(notice = "已创建新对话") }
-                            openThread(created.value)
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TitleUpdated -> {
+                            val threadId = event.conversationId.value
+                            if (!userRenamedThreads.contains(threadId)) {
+                                if (threadId == activeThreadId) {
+                                    update { it.copy(activeThreadTitle = event.newTitle) }
+                                }
+                            }
+                            refreshThreads()
+                        }
+
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.GenerationCancelled -> {
+                            val eventConvId = event.conversationId?.value
+                            val currentActiveId = activeThreadId
+                            if (eventConvId == null || eventConvId == currentActiveId) {
+                                mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
+                                    mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
+                                }
+                                update { it.copy(
+                                    generation = GenerationState.CANCELLED,
+                                    timeline = Loadable.Ready(renderTimeline()),
+                                ) }
+                            }
+                        }
+
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.SnapshotInvalidated -> {
+                            val eventConvId = event.conversationId?.value
+                            val currentActiveId = activeThreadId
+                            if (currentActiveId != null && (eventConvId == null || eventConvId == currentActiveId)) {
+                                reloadTimeline(currentActiveId)
+                            }
+                        }
+
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult -> {
+                            event.conversationId?.let { created ->
+                                update { it.copy(notice = "已创建新对话") }
+                                openThread(created.value)
+                            }
                         }
                     }
                 }
-            }
         }
     }
 

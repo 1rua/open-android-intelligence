@@ -6,6 +6,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -225,6 +226,195 @@ class WorkbenchSendRegressionTest {
         controller.openThread("thread_finished")
         advanceUntilIdle()
         assertEquals(GenerationState.IDLE, controller.state.value.generation)
+    }
+
+    @Test fun otherConversationTimelineUpsertDoesNotPolluteActiveTimeline() = runTest {
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        var listConversationsCalls = 0
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage {
+                listConversationsCalls++
+                return ConversationPage(emptyList(), null)
+            }
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        advanceUntilIdle()
+
+        controller.editDraft("hello from conv_1")
+        controller.sendDraft()
+        advanceUntilIdle()
+        assertEquals(GenerationState.QUEUED, controller.state.value.generation)
+        val initialListCalls = listConversationsCalls
+
+        // Emit TimelineUpsert belonging to conv_2 (other conversation) with STREAMING
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_other_1",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_other_stream",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("Other conversation delta")),
+                    timestamp = 1000L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_2"),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        // 1. Current timeline should NOT contain msg_other_stream
+        val entries1 = (controller.state.value.timeline as Loadable.Ready).value
+        assertNull(entries1.find { it.key == "msg_other_stream" })
+        assertFalse(entries1.any { it.text.contains("Other conversation delta") })
+        // 2. Generation state must NOT transition to RUNNING!
+        assertEquals(GenerationState.QUEUED, controller.state.value.generation)
+        // 3. refreshThreads() should have been called
+        assertTrue(listConversationsCalls > initialListCalls)
+
+        // Emit TimelineUpsert belonging to conv_2 with CONFIRMED
+        val beforeConfirmedCalls = listConversationsCalls
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_other_2",
+                occurredAt = 2000L,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "msg_other_stream",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("Other conversation complete")),
+                    timestamp = 2000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_2"),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        // Current timeline still does not contain other conversation message
+        val entries2 = (controller.state.value.timeline as Loadable.Ready).value
+        assertNull(entries2.find { it.key == "msg_other_stream" })
+        // Generation state must NOT transition to COMPLETED!
+        assertEquals(GenerationState.QUEUED, controller.state.value.generation)
+        assertTrue(listConversationsCalls > beforeConfirmedCalls)
+        coroutineContext.cancelChildren()
+    }
+
+    @Test fun activeConversationTimelineUpsertUpdatesImmediately() = runTest {
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        advanceUntilIdle()
+
+        // Emit delta for active thread conv_1
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_act_1",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_act_stream",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("streaming message")),
+                    timestamp = 1000L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_1"),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        var entries = (controller.state.value.timeline as Loadable.Ready).value
+        var entry = entries.find { it.key == "msg_act_stream" }
+        assertNotNull(entry)
+        assertTrue(entry!!.isStreaming)
+        assertEquals("streaming message", entry.text)
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+
+        // Emit completed for active thread conv_1
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_act_2",
+                occurredAt = 1050L,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "msg_act_stream",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("streaming message finalized")),
+                    timestamp = 1000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_1"),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        entries = (controller.state.value.timeline as Loadable.Ready).value
+        entry = entries.find { it.key == "msg_act_stream" }
+        assertNotNull(entry)
+        assertFalse(entry!!.isStreaming)
+        assertEquals("streaming message finalized", entry.text)
+        assertEquals(GenerationState.COMPLETED, controller.state.value.generation)
+        coroutineContext.cancelChildren()
+    }
+
+    @Test fun observeThreadEventsRetriesOnException() = runTest {
+        var attempts = 0
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = kotlinx.coroutines.flow.flow {
+                attempts++
+                if (attempts == 1) {
+                    throw java.io.IOException("connection dropped")
+                }
+                emitAll(eventFlow)
+            }
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        runCurrent()
+
+        assertEquals(1, attempts)
+        assertTrue(controller.state.value.notice.orEmpty().contains("EVENTS_FAILED"))
+
+        // Advance by 1000ms delay to trigger retryWhen
+        advanceTimeBy(1001L)
+        runCurrent()
+        assertEquals(2, attempts)
+
+        // Verify that after reconnect, events are processed
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_reconnected",
+                occurredAt = 2000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_after_reconnect",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("reconnected ok")),
+                    timestamp = 2000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_1"),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertNotNull(entries.find { it.key == "msg_after_reconnect" })
+        coroutineContext.cancelChildren()
     }
 
     private fun TestScope.controller(repository: RecordingRepository) = WorkbenchController(

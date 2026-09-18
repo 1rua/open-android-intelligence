@@ -77,24 +77,42 @@ class SseParser(private val onEvent: (GatewayEvent) -> Unit = {}) {
     }
 
     /**
-     * A frame ends at the first blank line. Both LF and CRLF are accepted, and
-     * a lone CR is not treated as a terminator.
+     * A frame ends at the first blank line. Both LF and CRLF are accepted,
+     * including \n\n, \r\n\r\n, \n\r\n, and \r\n\n. A lone CR or lone LF is not
+     * treated as a terminator, and bounds are strictly checked.
      */
     private fun findTerminator(bytes: ByteArray): Terminator? {
+        val cr = '\r'.code.toByte()
+        val lf = '\n'.code.toByte()
         var index = 0
         while (index < bytes.size) {
-            when (bytes[index]) {
-                '\n'.code.toByte() -> {
-                    val next = index + 1
-                    val isBlankLine = next >= bytes.size || bytes[next] == '\n'.code.toByte() ||
-                        (bytes[next] == '\r'.code.toByte() && next + 1 < bytes.size && bytes[next + 1] == '\n'.code.toByte())
-                    if (isBlankLine) {
-                        return Terminator(index, if (bytes[next] == '\r'.code.toByte()) next + 2 else next + 1)
+            if (bytes[index] == cr && index + 1 < bytes.size && bytes[index + 1] == lf) {
+                val next = index + 2
+                if (next < bytes.size) {
+                    if (bytes[next] == lf) {
+                        return Terminator(index, next + 1)
                     }
-                    index = next
+                    if (bytes[next] == cr && next + 1 < bytes.size && bytes[next + 1] == lf) {
+                        return Terminator(index, next + 2)
+                    }
                 }
-                else -> index += 1
+                index += 2
+                continue
             }
+            if (bytes[index] == lf) {
+                val next = index + 1
+                if (next < bytes.size) {
+                    if (bytes[next] == lf) {
+                        return Terminator(index, next + 1)
+                    }
+                    if (bytes[next] == cr && next + 1 < bytes.size && bytes[next + 1] == lf) {
+                        return Terminator(index, next + 2)
+                    }
+                }
+                index += 1
+                continue
+            }
+            index += 1
         }
         return null
     }

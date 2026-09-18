@@ -53,7 +53,7 @@ class GatewayTransport(
     }
 
     override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
-        val connection = open(request)
+        val connection = open(request, readTimeoutMillis = 0)
         try {
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
@@ -78,8 +78,15 @@ class GatewayTransport(
         }
     }.flowOn(Dispatchers.IO)
 
-    private fun open(request: WireRequest): HttpURLConnection {
-        val connection = factory.open(URL(endpoint.baseUrl.trimEnd('/') + request.target))
+    private fun open(
+        request: WireRequest,
+        readTimeoutMillis: Int = GatewayConnectionFactory.READ_TIMEOUT_MILLIS,
+    ): HttpURLConnection {
+        val connection = factory.open(
+            URL(endpoint.baseUrl.trimEnd('/') + request.target),
+            readTimeoutMillis = readTimeoutMillis,
+        )
+        connection.readTimeout = readTimeoutMillis
         connection.requestMethod = request.method
         connection.doInput = true
         connection.setRequestProperty("Accept", "application/json")

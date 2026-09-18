@@ -23,10 +23,12 @@ from .core import (
 )
 
 try:
-    from aiohttp import web
+    from aiohttp import WSCloseCode, WSMsgType, web
     AIOHTTP_AVAILABLE = True
 except ImportError:
     web = None  # type: ignore
+    WSCloseCode = None  # type: ignore
+    WSMsgType = None  # type: ignore
     AIOHTTP_AVAILABLE = False
 
 try:
@@ -396,6 +398,7 @@ class GatewayRequestVerifier:
 
 
 EVENT_STREAM_PATH = "/open-android-intelligence/v2/events"
+EVENT_STREAM_WS_PATH = "/open-android-intelligence/v2/events/ws"
 # Heartbeats are SSE comments: they carry no event id, so a client cannot mistake
 # one for a resumable event.
 SSE_HEARTBEAT = b": ping\n\n"
@@ -419,6 +422,71 @@ def _sse_frame(event: Mapping[str, Any]) -> bytes:
         f"event: {event.get('eventType')}\n"
         f"data: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
     ).encode("utf-8")
+
+
+def _ws_event_frame(event: Mapping[str, Any]) -> str:
+    """One WebSocket event frame carrying durable cursor and JSON-encoded data."""
+    data = {
+        "correlationId": event.get("correlationId"),
+        "occurredAt": event.get("occurredAt"),
+        "payload": event.get("payload") or {},
+    }
+    return json.dumps(
+        {
+            "id": event.get("eventId"),
+            "event": event.get("eventType"),
+            "data": json.dumps(data, ensure_ascii=False),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _ws_message_from_queue_item(item: Any) -> Optional[str]:
+    """Convert an item popped from an active subscriber queue into a WebSocket message."""
+    if isinstance(item, (bytes, bytearray, memoryview)):
+        text = bytes(item).decode("utf-8")
+    elif isinstance(item, str):
+        text = item
+    elif isinstance(item, Mapping):
+        return _ws_event_frame(item)
+    else:
+        return None
+
+    if text.lstrip().startswith(":"):
+        return None
+
+    if "id:" in text or "event:" in text:
+        event_id = None
+        event_type = None
+        data_str = "{}"
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("id:"):
+                event_id = stripped[3:].strip()
+            elif stripped.startswith("event:"):
+                event_type = stripped[6:].strip()
+            elif stripped.startswith("data:"):
+                data_str = stripped[5:].strip()
+        if event_id is not None or event_type is not None:
+            return json.dumps(
+                {
+                    "id": event_id,
+                    "event": event_type,
+                    "data": data_str,
+                },
+                ensure_ascii=False,
+            )
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and ("id" in parsed or "event" in parsed):
+            return text
+        if isinstance(parsed, dict):
+            return _ws_event_frame(parsed)
+    except Exception:
+        pass
+
+    return text
 
 
 def _raw_body(input: Mapping[str, Any]) -> bytes:
@@ -738,6 +806,15 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
         raw_req = self._raw_request(request, body_bytes)
 
+        # Check for WebSocket upgrade on event stream paths
+        is_ws_path = path in (EVENT_STREAM_PATH, EVENT_STREAM_WS_PATH)
+        is_ws_upgrade = (
+            "websocket" in str(request.headers.get("Upgrade", "")).lower()
+            or "sec-websocket-key" in request.headers
+        )
+        if is_ws_path and is_ws_upgrade:
+            return await self._handle_ws_stream(request, raw_req)
+
         # The event stream is the one route whose response is framed as SSE. It
         # is still authenticated as an ordinary request: the route decides that,
         # and a client that asks for JSON gets the same events as a JSON body.
@@ -871,6 +948,111 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 self._active_sse_queues.pop(account_id, None)
 
         return response
+
+    async def _handle_ws_stream(
+        self, request: web.Request, raw_req: Mapping[str, Any],
+    ) -> web.StreamResponse:
+        """Authenticated WebSocket event stream with durable, cursor-authoritative recovery.
+
+        The route performs the handshake (signature, cursor, expiry) and returns
+        the events to replay; this method sets up the WebSocket connection, replays
+        the backlog, and subscribes to real-time events while handling incoming
+        pings and connection lifecycle events.
+        """
+        route = next(
+            (item for item in self.services.exposure.routes if item.path == EVENT_STREAM_PATH),
+            None,
+        )
+        if route is None:
+            return web.json_response({"errorCode": "NOT_FOUND"}, status=404)
+        handshake = route.event_backlog(raw_req)
+        status = int(handshake.get("statusCode", 200))
+        if status != 200:
+            return web.json_response(handshake.get("body", {}), status=status)
+        account_id = str(handshake["accountId"])
+
+        ws = web.WebSocketResponse(heartbeat=15.0)
+        await ws.prepare(request)
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=SSE_QUEUE_SIZE)
+        subscribers = self._active_sse_queues.setdefault(account_id, set())
+        subscribers.add(queue)
+
+        try:
+            for event in handshake.get("events", []):
+                await ws.send_str(_ws_event_frame(event))
+
+            async def send_loop() -> None:
+                while self._running and not ws.closed:
+                    try:
+                        item = await queue.get()
+                    except asyncio.CancelledError:
+                        break
+                    msg = _ws_message_from_queue_item(item)
+                    if msg is not None and not ws.closed:
+                        try:
+                            await ws.send_str(msg)
+                        except (asyncio.CancelledError, ConnectionResetError):
+                            break
+
+            async def receive_loop() -> None:
+                while self._running and not ws.closed:
+                    try:
+                        msg = await ws.receive()
+                    except (asyncio.CancelledError, ConnectionResetError):
+                        break
+                    if msg.type == WSMsgType.TEXT:
+                        text_stripped = msg.data.strip().lower()
+                        if text_stripped == "ping":
+                            if not ws.closed:
+                                try:
+                                    await ws.send_str("pong")
+                                except (asyncio.CancelledError, ConnectionResetError):
+                                    break
+                        elif text_stripped == "close":
+                            if not ws.closed:
+                                await ws.close()
+                            break
+                    elif msg.type == WSMsgType.PING:
+                        if not ws.closed:
+                            try:
+                                await ws.pong(msg.data)
+                            except (asyncio.CancelledError, ConnectionResetError):
+                                break
+                    elif msg.type == WSMsgType.PONG:
+                        pass
+                    elif msg.type in (
+                        WSMsgType.CLOSE,
+                        WSMsgType.CLOSING,
+                        WSMsgType.CLOSED,
+                        WSMsgType.ERROR,
+                    ):
+                        break
+
+            send_task = asyncio.create_task(send_loop())
+            receive_task = asyncio.create_task(receive_loop())
+            done, pending = await asyncio.wait(
+                [send_task, receive_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+            for t in done:
+                exc = t.exception()
+                if exc and not isinstance(exc, (asyncio.CancelledError, ConnectionResetError)):
+                    logger.debug("[open_android] WebSocket task completed with error: %s", exc)
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        finally:
+            subscribers.discard(queue)
+            if not subscribers:
+                self._active_sse_queues.pop(account_id, None)
+
+        return ws
 
     async def _broadcast_sse(self, account_id: str, frame: bytes) -> None:
         """Hand one persisted frame to the subscribers of that account.

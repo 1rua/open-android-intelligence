@@ -35,4 +35,17 @@ object GatewayConnectionSecurity {
         SpkiPinning.verify(https, pins)
         return if (pins.isEmpty()) TransportSecurity.TLS_SYSTEM_TRUST else TransportSecurity.TLS_PINNED
     }
+
+    fun classify(socket: java.net.Socket, pins: Set<String>): TransportSecurity {
+        val sslSocket = socket as? javax.net.ssl.SSLSocket
+        if (sslSocket == null) {
+            if (pins.isNotEmpty()) {
+                throw IOException(PIN_REQUIRES_HTTPS)
+            }
+            return TransportSecurity.PLAINTEXT
+        }
+        sslSocket.startHandshake()
+        SpkiPinning.verify(sslSocket.session.peerCertificates, pins)
+        return if (pins.isEmpty()) TransportSecurity.TLS_SYSTEM_TRUST else TransportSecurity.TLS_PINNED
+    }
 }

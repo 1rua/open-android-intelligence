@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.http
 import com.openandroidintelligence.gateway.events.EventCursorStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -148,5 +149,129 @@ class GatewayEventStreamTest {
         // restarts from the retained window (events are idempotent upserts)
         // instead of producing an unexplainable verification failure.
         assertEquals("/open-android-intelligence/v2/events", requireNotNull(transport.lastRequest).target)
+    }
+
+    @Test
+    fun `websocket failure falls back gracefully to sse stream`() = runBlocking {
+        val transport = RecordingTransport(listOf(completedFrame))
+        val cursorStore = MemoryCursorStore().apply { seed("acc_test", "cur_start") }
+        val failingWs = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(profile(), { ByteArray(64) }) {
+            override fun events(cursor: String?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+                throw java.io.IOException("WEBSOCKET_HANDSHAKE_FAILED: 404 Not Found")
+            }
+        }
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = transport,
+            signer = { ByteArray(64) },
+            cursorStore = cursorStore,
+            webSocketTransport = failingWs,
+        )
+
+        val events = client.events().toList()
+
+        assertEquals(1, events.size)
+        assertEquals("evt_01", events[0].id)
+        assertEquals("/open-android-intelligence/v2/events?cursor=cur_start", requireNotNull(transport.lastRequest).target)
+        assertEquals("evt_01", cursorStore.load("acc_test"))
+    }
+
+    @Test
+    fun `websocket success emits events without calling sse`() = runBlocking {
+        val transport = RecordingTransport(listOf(completedFrame))
+        val cursorStore = MemoryCursorStore().apply { seed("acc_test", "cur_start") }
+        val wsEvent = com.openandroidintelligence.gateway.events.GatewayEvent("ws_evt_1", "test.event", "{}")
+        val successfulWs = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(profile(), { ByteArray(64) }) {
+            override fun events(cursor: String?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+                emit(wsEvent)
+            }
+        }
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = transport,
+            signer = { ByteArray(64) },
+            cursorStore = cursorStore,
+            webSocketTransport = successfulWs,
+        )
+
+        val events = client.events().toList()
+
+        assertEquals(1, events.size)
+        assertEquals("ws_evt_1", events[0].id)
+        org.junit.Assert.assertNull("SSE transport must not be called when WebSocket succeeds", transport.lastRequest)
+        assertEquals("ws_evt_1", cursorStore.load("acc_test"))
+    }
+
+    @Test
+    fun `reconnect mechanism uses exponential backoff and updated cursor on failure`() = runBlocking {
+        val recordedDelays = mutableListOf<Long>()
+        val requestedTargets = mutableListOf<String>()
+        var attemptCount = 0
+
+        val failingThenSucceedingTransport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attemptCount++
+                requestedTargets += request.target
+                if (attemptCount == 1) {
+                    emit("id: evt_01\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+                    throw java.io.IOException("Connection reset by peer")
+                } else {
+                    emit("id: evt_02\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+                }
+            }
+        }
+
+        val cursorStore = MemoryCursorStore().apply { seed("acc_test", "cur_0") }
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = failingThenSucceedingTransport,
+            signer = { ByteArray(64) },
+            cursorStore = cursorStore,
+            webSocketTransport = null,
+            delayFn = { recordedDelays += it },
+        )
+
+        val events = client.events().toList()
+
+        assertEquals(2, events.size)
+        assertEquals("evt_01", events[0].id)
+        assertEquals("evt_02", events[1].id)
+        assertEquals("evt_02", cursorStore.load("acc_test"))
+
+        assertEquals(listOf(1000L), recordedDelays)
+        assertEquals("/open-android-intelligence/v2/events?cursor=cur_0", requestedTargets[0])
+        assertEquals("/open-android-intelligence/v2/events?cursor=evt_01", requestedTargets[1])
+    }
+
+    @Test
+    fun `exponential backoff progression reaches 2s and 5s`() = runBlocking {
+        val recordedDelays = mutableListOf<Long>()
+        var attempts = 0
+        val multiFailTransport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attempts++
+                if (attempts < 4) {
+                    throw java.io.IOException("Temporary network failure $attempts")
+                }
+                emit("id: final_evt\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+            }
+        }
+
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = multiFailTransport,
+            signer = { ByteArray(64) },
+            cursorStore = MemoryCursorStore(),
+            webSocketTransport = null,
+            delayFn = { recordedDelays += it },
+        )
+
+        val events = client.events().toList()
+
+        assertEquals(1, events.size)
+        assertEquals("final_evt", events[0].id)
+        assertEquals(listOf(1000L, 2000L, 5000L), recordedDelays)
     }
 }

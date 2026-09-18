@@ -33,35 +33,37 @@ object GatewayEventDecoder {
                 messageId = JsonFields.string(payload, "messageId").orEmpty(),
                 correlationId = JsonFields.string(payload, "correlationId")
                     ?: JsonFields.string(body, "correlationId").orEmpty(),
-                conversationId = conversationIdOf(payload),
+                conversationId = conversationIdOf(payload, body),
             )
 
-            "conversation.message.delta" -> timelineUpsert(eventId, occurredAt, payload, "STREAMING")
+            "conversation.message.delta" -> timelineUpsert(eventId, occurredAt, payload, "STREAMING", body)
 
-            "conversation.message.completed" -> timelineUpsert(eventId, occurredAt, payload, "CONFIRMED")
+            "conversation.message.completed" -> timelineUpsert(eventId, occurredAt, payload, "CONFIRMED", body)
 
             "conversation.generation.cancelled" -> VerifiedConversationEvent.GenerationCancelled(
                 eventId = eventId,
                 occurredAt = occurredAt,
                 generationId = JsonFields.string(payload, "generationId").orEmpty(),
-                conversationId = conversationIdOf(payload),
+                conversationId = conversationIdOf(payload, body),
             )
 
             "conversation.command.result" -> VerifiedConversationEvent.CommandResult(
                 eventId = eventId,
                 occurredAt = occurredAt,
                 command = JsonFields.string(payload, "command").orEmpty(),
-                conversationId = JsonFields.string(payload, "conversationId")?.let { ConversationId(it) },
+                conversationId = conversationIdOf(payload, body),
             )
 
             "conversation.title.updated" -> {
-                val conversationId = JsonFields.string(payload, "conversationId") ?: return null
+                val conversationId = conversationIdOf(payload, body) ?: return null
                 VerifiedConversationEvent.TitleUpdated(
                     eventId = eventId,
                     occurredAt = occurredAt,
-                    conversationId = ConversationId(conversationId),
+                    conversationId = conversationId,
                     newTitle = JsonFields.string(payload, "title")
-                        ?: JsonFields.string(payload, "newTitle").orEmpty(),
+                        ?: JsonFields.string(payload, "newTitle")
+                        ?: JsonFields.string(body, "title")
+                        ?: JsonFields.string(body, "newTitle").orEmpty(),
                 )
             }
 
@@ -70,6 +72,7 @@ object GatewayEventDecoder {
                 occurredAt = occurredAt,
                 payload = payload,
                 state = JsonFields.string(payload, "state") ?: "CONFIRMED",
+                body = body,
             )
 
             "conversation.timeline.tombstoned" -> {
@@ -79,7 +82,7 @@ object GatewayEventDecoder {
                     occurredAt = occurredAt,
                     messageId = messageId,
                     revision = JsonFields.long(payload, "revision") ?: 0L,
-                    conversationId = conversationIdOf(payload),
+                    conversationId = conversationIdOf(payload, body),
                 )
             }
 
@@ -87,7 +90,7 @@ object GatewayEventDecoder {
                 eventId = eventId,
                 occurredAt = occurredAt,
                 snapshotRevision = JsonFields.long(payload, "snapshotRevision") ?: 0L,
-                conversationId = conversationIdOf(payload),
+                conversationId = conversationIdOf(payload, body),
             )
 
             else -> null
@@ -114,32 +117,42 @@ object GatewayEventDecoder {
         occurredAt: Long,
         payload: JsonValue.JObject?,
         state: String,
+        body: JsonValue.JObject? = null,
     ): VerifiedConversationEvent.TimelineUpsert? {
         val messageId = JsonFields.string(payload, "messageId") ?: return null
         return VerifiedConversationEvent.TimelineUpsert(
             eventId = eventId,
             occurredAt = occurredAt,
             revision = JsonFields.long(payload, "revision") ?: 0L,
-                message = com.openandroidintelligence.conversation.ports.TimelineMessage(
-                    id = messageId,
-                    sender = JsonFields.string(payload, "sender") ?: "assistant",
-                    parts = readParts(payload),
-                    timestamp = JsonFields.long(payload, "timestamp") ?: occurredAt,
-                    state = state,
-                    conversationId = conversationIdOf(payload),
-                ),
-            )
+            message = com.openandroidintelligence.conversation.ports.TimelineMessage(
+                id = messageId,
+                sender = JsonFields.string(payload, "sender") ?: "assistant",
+                parts = readParts(payload),
+                timestamp = JsonFields.long(payload, "timestamp") ?: occurredAt,
+                state = state,
+                conversationId = conversationIdOf(payload, body),
+            ),
+        )
     }
+
+    private val CONVERSATION_ID_KEYS = listOf("conversationId", "conversation_id", "chat_id")
 
     /**
      * Conversation ids are optional on the legacy event payloads, but when a
      * Gateway sends one it is the only safe way for a shared account stream to
      * keep an event from another thread out of the active timeline.
      */
-    private fun conversationIdOf(payload: JsonValue.JObject?): ConversationId? =
-        JsonFields.string(payload, "conversationId")
-            ?.takeIf { it.isNotBlank() }
-            ?.let { value -> runCatching { ConversationId(value) }.getOrNull() }
+    private fun conversationIdOf(payload: JsonValue.JObject?, body: JsonValue.JObject? = null): ConversationId? {
+        for (target in listOfNotNull(payload, body)) {
+            for (key in CONVERSATION_ID_KEYS) {
+                val value = JsonFields.string(target, key)?.trim()
+                if (!value.isNullOrBlank()) {
+                    return runCatching { ConversationId(value) }.getOrNull()
+                }
+            }
+        }
+        return null
+    }
 
     private fun readParts(payload: JsonValue.JObject?): List<com.openandroidintelligence.conversation.model.MessagePart> {
         val items = JsonFields.array(JsonFields.field(payload, "parts"))?.items

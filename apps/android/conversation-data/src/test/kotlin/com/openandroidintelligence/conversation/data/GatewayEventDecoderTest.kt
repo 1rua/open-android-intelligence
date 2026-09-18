@@ -126,4 +126,103 @@ class GatewayEventDecoderTest {
         assertEquals("photo.png", part.filename)
         assertEquals("image/png", part.mediaType)
     }
+
+    @Test
+    fun decodesWithUnderscoreConversationIdInPayload() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_cid_1",
+                event = "conversation.timeline.upsert",
+                data = """{"payload":{"messageId":"msg_u","conversation_id":"conv_score_1","sender":"assistant","text":"hello"}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.TimelineUpsert
+        assertEquals("conv_score_1", decoded.message.conversationId?.value)
+    }
+
+    @Test
+    fun decodesWithChatIdInPayload() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_cid_2",
+                event = "conversation.timeline.upsert",
+                data = """{"payload":{"messageId":"msg_c","chat_id":"chat_999","sender":"assistant","text":"hi"}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.TimelineUpsert
+        assertEquals("chat_999", decoded.message.conversationId?.value)
+    }
+
+    @Test
+    fun decodesWithConversationIdInOuterBody() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_cid_3",
+                event = "conversation.message.delta",
+                data = """{"conversationId":"conv_body_1","payload":{"messageId":"msg_d","sender":"assistant","text":"streaming"}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.TimelineUpsert
+        assertEquals("conv_body_1", decoded.message.conversationId?.value)
+        assertEquals("STREAMING", decoded.message.state)
+    }
+
+    @Test
+    fun decodesWithUnderscoreConversationIdInOuterBody() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_cid_4",
+                event = "conversation.message.completed",
+                data = """{"conversation_id":"conv_body_2","payload":{"messageId":"msg_comp","sender":"assistant","text":"done"}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.TimelineUpsert
+        assertEquals("conv_body_2", decoded.message.conversationId?.value)
+        assertEquals("CONFIRMED", decoded.message.state)
+    }
+
+    @Test
+    fun decodesWithChatIdInOuterBody() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_cid_5",
+                event = "conversation.timeline.tombstoned",
+                data = """{"chat_id":"chat_body_3","payload":{"messageId":"msg_tomb","revision":5}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.TimelineTombstoned
+        assertEquals("chat_body_3", decoded.conversationId?.value)
+        assertEquals("msg_tomb", decoded.messageId)
+    }
+
+    @Test
+    fun decodesGenerationCancelledAndSnapshotInvalidatedWithOuterBodyConversationId() {
+        val parser = SseParser()
+        val cancelEvents = parser.feed(
+            frame(
+                id = "evt_can",
+                event = "conversation.generation.cancelled",
+                data = """{"conversation_id":"conv_can","payload":{"generationId":"gen_1"}}""",
+            ),
+        )
+        val cancelDecoded = GatewayEventDecoder.decode(cancelEvents.first()) as VerifiedConversationEvent.GenerationCancelled
+        assertEquals("conv_can", cancelDecoded.conversationId?.value)
+        assertEquals("gen_1", cancelDecoded.generationId)
+
+        val snapEvents = parser.feed(
+            frame(
+                id = "evt_snap",
+                event = "conversation.snapshot.invalidated",
+                data = """{"chat_id":"conv_snap","payload":{"snapshotRevision":10}}""",
+            ),
+        )
+        val snapDecoded = GatewayEventDecoder.decode(snapEvents.first()) as VerifiedConversationEvent.SnapshotInvalidated
+        assertEquals("conv_snap", snapDecoded.conversationId?.value)
+        assertEquals(10L, snapDecoded.snapshotRevision)
+    }
 }

@@ -1,0 +1,368 @@
+package com.openandroidintelligence.gateway.ws
+
+import com.openandroidintelligence.gateway.events.GatewayEvent
+import com.openandroidintelligence.gateway.events.SseParser
+import com.openandroidintelligence.gateway.http.GatewayConnectionSecurity
+import com.openandroidintelligence.gateway.http.GatewayProfile
+import com.openandroidintelligence.gateway.http.RequestSigner
+import com.openandroidintelligence.gateway.http.SignedRequestInput
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
+import java.io.ByteArrayOutputStream
+import java.io.EOFException
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.URI
+import java.security.SecureRandom
+import java.time.Instant
+import java.util.Base64
+import java.util.UUID
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
+
+/**
+ * Pure Kotlin RFC 6455 WebSocket transport for Gateway event streaming.
+ *
+ * Owned within gateway-client (networkOwnerModules): uses standard java.net.Socket
+ * and javax.net.ssl.SSLSocket with zero external weight dependencies.
+ *
+ * Supports ws:// and wss:// with certificate classification / SPKI pin verification,
+ * authenticated HTTP 101 Upgrade handshakes carrying the 9 contract singletons,
+ * RFC 6455 frame decoding, automatic Pong reply to incoming Pings, and emission of
+ * parsed GatewayEvents over Flow<GatewayEvent>.
+ */
+open class GatewayWebSocketTransport(
+    private val profile: GatewayProfile,
+    private val signer: (ByteArray) -> ByteArray,
+    private val socketFactory: ((host: String, port: Int, isTls: Boolean) -> Socket)? = null,
+) {
+    private val secureRandom = SecureRandom()
+
+    open fun events(cursor: String? = null): Flow<GatewayEvent> = flow {
+        val uri = URI(profile.gatewayBaseUrl)
+        val scheme = uri.scheme?.lowercase() ?: "http"
+        val isTls = scheme == "wss" || scheme == "https"
+        val host = uri.host ?: error("GATEWAY_ENDPOINT_INVALID: missing host in ${profile.gatewayBaseUrl}")
+        val port = if (uri.port != -1) uri.port else if (isTls) 443 else 80
+        val hostHeader = if ((isTls && port == 443) || (!isTls && port == 80)) host else "$host:$port"
+
+        val target = if (cursor == null) EVENTS_TARGET else "$EVENTS_TARGET?cursor=$cursor"
+
+        val socket: Socket = if (socketFactory != null) {
+            socketFactory.invoke(host, port, isTls)
+        } else if (isTls) {
+            val sslSocket = SSLSocketFactory.getDefault().createSocket()
+            sslSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+            sslSocket
+        } else {
+            val plainSocket = Socket()
+            plainSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+            plainSocket
+        }
+        socket.soTimeout = 0
+
+        try {
+            // Verify TLS / pins
+            GatewayConnectionSecurity.classify(socket, profile.pinnedSpkiSha256)
+
+            val outputStream = socket.getOutputStream()
+            val inputStream = socket.getInputStream()
+
+            // Build authenticated handshake
+            performHandshake(outputStream, inputStream, hostHeader, target)
+
+            // RFC 6455 frame decode loop
+            val messageBuffer = ByteArrayOutputStream()
+            var currentOpcode = -1
+
+            while (currentCoroutineContext().isActive) {
+                val frame = readFrame(inputStream) ?: break
+                when (frame.opcode) {
+                    OPCODE_PING -> {
+                        sendPong(outputStream, frame.payload)
+                    }
+                    OPCODE_PONG -> {
+                        // Heartbeat response, no action required
+                    }
+                    OPCODE_CLOSE -> {
+                        runCatching { sendClose(outputStream) }
+                        break
+                    }
+                    OPCODE_TEXT, OPCODE_BINARY -> {
+                        messageBuffer.reset()
+                        currentOpcode = frame.opcode
+                        messageBuffer.write(frame.payload)
+                        if (frame.fin) {
+                            val text = messageBuffer.toString(Charsets.UTF_8.name())
+                            parseWebSocketEvent(text)?.let { emit(it) }
+                            messageBuffer.reset()
+                            currentOpcode = -1
+                        }
+                    }
+                    OPCODE_CONTINUATION -> {
+                        if (currentOpcode != -1) {
+                            messageBuffer.write(frame.payload)
+                            if (frame.fin) {
+                                val text = messageBuffer.toString(Charsets.UTF_8.name())
+                                parseWebSocketEvent(text)?.let { emit(it) }
+                                messageBuffer.reset()
+                                currentOpcode = -1
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            runCatching { socket.close() }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    private fun performHandshake(
+        output: OutputStream,
+        input: InputStream,
+        hostHeader: String,
+        target: String,
+    ) {
+        val requestId = "req" + UUID.randomUUID().toString().replace("-", "").take(20)
+        val timestamp = RequestSigner.formatTimestamp(
+            Instant.ofEpochMilli(Instant.now().toEpochMilli()),
+        )
+        val nonceBytes = ByteArray(16)
+        secureRandom.nextBytes(nonceBytes)
+        val nonce = Base64.getUrlEncoder().withoutPadding().encodeToString(nonceBytes)
+
+        val signedInput = SignedRequestInput(
+            method = "GET",
+            target = target,
+            accountId = profile.accountId,
+            deviceId = profile.deviceId,
+            sessionId = profile.sessionId,
+            requestId = requestId,
+            timestamp = timestamp,
+            nonce = nonce,
+            body = ByteArray(0),
+        )
+        val signatureBase64Url = Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(signer(RequestSigner.preimage(signedInput)))
+
+        val keyBytes = ByteArray(16)
+        secureRandom.nextBytes(keyBytes)
+        val secWebSocketKey = Base64.getEncoder().encodeToString(keyBytes)
+
+        val requestBuilder = StringBuilder()
+        requestBuilder.append("GET $target HTTP/1.1\r\n")
+        requestBuilder.append("Host: $hostHeader\r\n")
+        requestBuilder.append("Upgrade: websocket\r\n")
+        requestBuilder.append("Connection: Upgrade\r\n")
+        requestBuilder.append("Sec-WebSocket-Key: $secWebSocketKey\r\n")
+        requestBuilder.append("Sec-WebSocket-Version: 13\r\n")
+        // The 9 singleton authentication headers
+        requestBuilder.append("Authorization: Bearer ${profile.accessToken}\r\n")
+        requestBuilder.append("X-Open-Android-Intelligence-Protocol: $PROTOCOL_HEADER\r\n")
+        requestBuilder.append("X-Open-Android-Intelligence-Account: ${profile.accountId}\r\n")
+        requestBuilder.append("X-Open-Android-Intelligence-Device: ${profile.deviceId}\r\n")
+        requestBuilder.append("X-Open-Android-Intelligence-Session: ${profile.sessionId}\r\n")
+        requestBuilder.append("X-Open-Android-Intelligence-Request-Id: $requestId\r\n")
+        requestBuilder.append("X-Open-Android-Intelligence-Timestamp: $timestamp\r\n")
+        requestBuilder.append("X-Open-Android-Intelligence-Nonce: $nonce\r\n")
+        requestBuilder.append("X-Open-Android-Intelligence-Signature: $signatureBase64Url\r\n")
+        requestBuilder.append("\r\n")
+
+        output.write(requestBuilder.toString().toByteArray(Charsets.US_ASCII))
+        output.flush()
+
+        val statusLine = readLine(input)
+            ?: throw IOException("WEBSOCKET_HANDSHAKE_FAILED: unexpected end of stream")
+        if (!statusLine.contains(" 101 ") && !statusLine.endsWith(" 101")) {
+            throw IOException("WEBSOCKET_HANDSHAKE_FAILED: $statusLine")
+        }
+
+        while (true) {
+            val line = readLine(input) ?: break
+            if (line.isEmpty()) break
+        }
+    }
+
+    private fun readFrame(input: InputStream): WebSocketFrame? {
+        val b0 = input.read()
+        if (b0 == -1) return null
+        val fin = (b0 and 0x80) != 0
+        val opcode = b0 and 0x0F
+
+        val b1 = input.read()
+        if (b1 == -1) throw EOFException("Unexpected EOF reading WebSocket frame header")
+        val masked = (b1 and 0x80) != 0
+        var payloadLen = (b1 and 0x7F).toLong()
+
+        if (payloadLen == 126L) {
+            val b2 = input.read()
+            val b3 = input.read()
+            if (b2 == -1 || b3 == -1) throw EOFException("Unexpected EOF reading 16-bit payload length")
+            payloadLen = (((b2 and 0xFF) shl 8) or (b3 and 0xFF)).toLong()
+        } else if (payloadLen == 127L) {
+            var len = 0L
+            for (i in 0 until 8) {
+                val b = input.read()
+                if (b == -1) throw EOFException("Unexpected EOF reading 64-bit payload length")
+                len = (len shl 8) or (b.toLong() and 0xFFL)
+            }
+            payloadLen = len
+        }
+
+        if (payloadLen > MAX_PAYLOAD_BYTES) {
+            throw IOException("WebSocket frame payload exceeds limit: $payloadLen bytes")
+        }
+
+        val maskingKey = if (masked) {
+            val key = ByteArray(4)
+            readFully(input, key)
+            key
+        } else null
+
+        val payload = ByteArray(payloadLen.toInt())
+        readFully(input, payload)
+
+        if (maskingKey != null) {
+            for (i in payload.indices) {
+                payload[i] = (payload[i].toInt() xor maskingKey[i % 4].toInt()).toByte()
+            }
+        }
+
+        return WebSocketFrame(fin, opcode, payload)
+    }
+
+    private fun readFully(input: InputStream, buffer: ByteArray) {
+        var offset = 0
+        while (offset < buffer.size) {
+            val count = input.read(buffer, offset, buffer.size - offset)
+            if (count == -1) throw EOFException("Unexpected EOF reading WebSocket payload")
+            offset += count
+        }
+    }
+
+    private fun sendPong(output: OutputStream, payload: ByteArray) {
+        sendFrame(output, opcode = OPCODE_PONG, payload = payload)
+    }
+
+    private fun sendClose(output: OutputStream) {
+        sendFrame(output, opcode = OPCODE_CLOSE, payload = ByteArray(0))
+    }
+
+    private fun sendFrame(output: OutputStream, opcode: Int, payload: ByteArray) {
+        val b0 = 0x80 or (opcode and 0x0F)
+        output.write(b0)
+
+        val maskBit = 0x80
+        val maskKey = ByteArray(4)
+        secureRandom.nextBytes(maskKey)
+
+        if (payload.size <= 125) {
+            output.write(maskBit or payload.size)
+        } else if (payload.size <= 65535) {
+            output.write(maskBit or 126)
+            output.write((payload.size shr 8) and 0xFF)
+            output.write(payload.size and 0xFF)
+        } else {
+            output.write(maskBit or 127)
+            for (i in 7 downTo 0) {
+                output.write(((payload.size.toLong() shr (i * 8)) and 0xFF).toInt())
+            }
+        }
+
+        output.write(maskKey)
+        val masked = ByteArray(payload.size)
+        for (i in payload.indices) {
+            masked[i] = (payload[i].toInt() xor maskKey[i % 4].toInt()).toByte()
+        }
+        output.write(masked)
+        output.flush()
+    }
+
+    private fun readLine(input: InputStream): String? {
+        val out = ByteArrayOutputStream()
+        var last = -1
+        while (true) {
+            val b = input.read()
+            if (b == -1) {
+                if (out.size() == 0) return null
+                break
+            }
+            if (b == '\n'.code) {
+                val bytes = out.toByteArray()
+                val len = if (last == '\r'.code && bytes.isNotEmpty()) bytes.size - 1 else bytes.size
+                return String(bytes, 0, len, Charsets.US_ASCII)
+            }
+            out.write(b)
+            last = b
+        }
+        val bytes = out.toByteArray()
+        val len = if (last == '\r'.code && bytes.isNotEmpty()) bytes.size - 1 else bytes.size
+        return String(bytes, 0, len, Charsets.US_ASCII)
+    }
+
+    companion object {
+        const val PROTOCOL_HEADER = "2.0"
+        const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
+        const val CONNECT_TIMEOUT_MILLIS = 10_000
+        const val MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
+
+        const val OPCODE_CONTINUATION = 0x00
+        const val OPCODE_TEXT = 0x01
+        const val OPCODE_BINARY = 0x02
+        const val OPCODE_CLOSE = 0x08
+        const val OPCODE_PING = 0x09
+        const val OPCODE_PONG = 0x0A
+
+        fun parseWebSocketEvent(text: String): GatewayEvent? {
+            val trimmed = text.trim()
+            if (trimmed.startsWith("{")) {
+                return runCatching {
+                    val json = Json.parse(trimmed) as? JsonValue.JObject ?: return null
+                    val id = json.fields.firstOrNull { it.first == "id" }?.second?.let {
+                        when (it) {
+                            is JsonValue.JString -> it.value
+                            is JsonValue.JNull -> null
+                            else -> null
+                        }
+                    }
+                    val event = json.fields.firstOrNull { it.first == "event" }?.second?.let {
+                        when (it) {
+                            is JsonValue.JString -> it.value
+                            is JsonValue.JNull -> null
+                            else -> null
+                        }
+                    }
+                    val dataValue = json.fields.firstOrNull { it.first == "data" }?.second
+                    val data = when (dataValue) {
+                        is JsonValue.JString -> dataValue.value
+                        is JsonValue.JObject, is JsonValue.JArray -> Json.canonical(dataValue)
+                        is JsonValue.JNumber -> dataValue.raw
+                        is JsonValue.JBool -> dataValue.value.toString()
+                        is JsonValue.JNull, null -> ""
+                    }
+                    GatewayEvent(id = id, event = event, data = data)
+                }.getOrNull()
+            }
+            var parsedEvent: GatewayEvent? = null
+            val parser = SseParser { parsedEvent = it }
+            val sseInput = if (trimmed.endsWith("\n\n")) trimmed else "$trimmed\n\n"
+            parser.feed(sseInput)
+            return parsedEvent
+        }
+    }
+
+    private class WebSocketFrame(
+        val fin: Boolean,
+        val opcode: Int,
+        val payload: ByteArray,
+    )
+}

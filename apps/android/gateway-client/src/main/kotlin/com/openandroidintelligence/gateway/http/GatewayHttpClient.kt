@@ -3,10 +3,14 @@ package com.openandroidintelligence.gateway.http
 import com.openandroidintelligence.gateway.events.EventCursorStore
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.events.SseParser
+import com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 data class GatewayProfile(
@@ -62,6 +66,8 @@ class GatewayHttpClient(
     private val transport: GatewayByteTransport,
     private val signer: (ByteArray) -> ByteArray,
     private val cursorStore: EventCursorStore,
+    private val webSocketTransport: GatewayWebSocketTransport? = if (transport is GatewayTransport) GatewayWebSocketTransport(profile, signer) else null,
+    private val delayFn: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
 ) {
 
     suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
@@ -78,44 +84,103 @@ class GatewayHttpClient(
     }
 
     /**
-     * Opens the event stream from the stored cursor.
+     * Opens the event stream from the stored cursor with dual-channel support and auto-reconnect.
      *
      * The cursor is only advanced for a fully framed event, so a disconnect in
      * the middle of a frame resumes from the previous complete one rather than
      * skipping the remainder.
+     * Tries WebSocket first; if it fails or the server does not support it, automatically
+     * falls back to the SSE stream. On network disconnect or error, reconnects with exponential
+     * backoff (1s, 2s, 5s...) carrying the newest cursor, ensuring the stream stays alive.
      */
-    fun events(): Flow<GatewayEvent> = flow {
-        val storedCursor = cursorStore.load(profile.accountId)
-        // A cursor that is not a wire ID would produce a target the Gateway
-        // refuses as non-canonical; starting over replays retained events, which
-        // the phone treats as idempotent upserts.
-        val cursor = storedCursor?.takeIf { CURSOR_ALPHABET.matches(it) }
-        val target = if (cursor == null) {
-            EVENTS_TARGET
-        } else {
-            "$EVENTS_TARGET?cursor=$cursor"
-        }
+    fun events(autoReconnect: Boolean = true): Flow<GatewayEvent> = flow {
+        var backoffMillis = 1000L
+        val maxBackoffMillis = 60_000L
+        var preferWebSocket = (webSocketTransport != null)
 
-        val parser = SseParser { event ->
-            event.id?.let { cursorStore.save(profile.accountId, it) }
-        }
+        while (currentCoroutineContext().isActive) {
+            val storedCursor = cursorStore.load(profile.accountId)
+            val cursor = storedCursor?.takeIf { CURSOR_ALPHABET.matches(it) }
+            var receivedAnyEventInAttempt = false
+            var streamFailed = false
 
-        // The stream is an authenticated request like any other: the signature
-        // covers the canonical target including the cursor query, so nothing on
-        // the path can move the phone's resume point.
-        val headers = RawHeaders.validate(
-            listOf(
-                RawHeader("Accept", "text/event-stream"),
-                RawHeader("Cache-Control", "no-store"),
-            ),
-        )
-        val input = signedInput("GET", target, ByteArray(0))
-        val streamHeaders = headers + authenticationHeaders(input, signatureOf(input), "GET")
+            // 1. Try WebSocket first if preferred and available
+            if (preferWebSocket && webSocketTransport != null) {
+                try {
+                    webSocketTransport.events(cursor).collect { event ->
+                        receivedAnyEventInAttempt = true
+                        backoffMillis = 1000L
+                        event.id?.let { cursorStore.save(profile.accountId, it) }
+                        emit(event)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    streamFailed = true
+                    if (!receivedAnyEventInAttempt) {
+                        preferWebSocket = false
+                    }
+                }
+            }
 
-        transport.eventStream(
-            WireRequest(input.method, input.target, streamHeaders, ByteArray(0)),
-        ).collect { chunk ->
-            for (event in parser.feedBytes(chunk)) emit(event)
+            // 2. Fallback to SSE stream if WebSocket not preferred or failed to connect
+            if (!preferWebSocket || (!receivedAnyEventInAttempt && streamFailed)) {
+                streamFailed = false
+                try {
+                    val target = if (cursor == null) {
+                        EVENTS_TARGET
+                    } else {
+                        "$EVENTS_TARGET?cursor=$cursor"
+                    }
+
+                    val parser = SseParser { event ->
+                        event.id?.let { cursorStore.save(profile.accountId, it) }
+                    }
+
+                    val headers = RawHeaders.validate(
+                        listOf(
+                            RawHeader("Accept", "text/event-stream"),
+                            RawHeader("Cache-Control", "no-store"),
+                        ),
+                    )
+                    val input = signedInput("GET", target, ByteArray(0))
+                    val streamHeaders = headers + authenticationHeaders(input, signatureOf(input), "GET")
+
+                    transport.eventStream(
+                        WireRequest(input.method, input.target, streamHeaders, ByteArray(0)),
+                    ).collect { chunk ->
+                        val parsedEvents = parser.feedBytes(chunk)
+                        if (parsedEvents.isNotEmpty()) {
+                            receivedAnyEventInAttempt = true
+                            backoffMillis = 1000L
+                        }
+                        for (event in parsedEvents) emit(event)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    streamFailed = true
+                }
+            }
+
+            if (receivedAnyEventInAttempt) {
+                preferWebSocket = (webSocketTransport != null)
+            }
+
+            // If reconnect is disabled, or if stream ended cleanly without error:
+            if (!autoReconnect || !streamFailed) {
+                break
+            }
+
+            // Exponential backoff before reconnecting: 1s, 2s, 5s...
+            if (currentCoroutineContext().isActive) {
+                delayFn(backoffMillis)
+                backoffMillis = when (backoffMillis) {
+                    1000L -> 2000L
+                    2000L -> 5000L
+                    else -> minOf(backoffMillis * 2, maxBackoffMillis)
+                }
+            }
         }
     }.flowOn(Dispatchers.IO)
 

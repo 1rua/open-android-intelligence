@@ -115,4 +115,103 @@ class SseParserTest {
         assertEquals(1, events.size)
         assertEquals("e1", events[0].id)
     }
+
+    @Test
+    fun singleByteChunkingReassemblesEvent() {
+        val cursorStore = InMemoryEventCursorStore()
+        val parser = parser(cursorStore)
+        val raw = "id: chunk-1\nevent: notice\ndata: payload\n\n"
+        val rawBytes = raw.toByteArray(Charsets.UTF_8)
+
+        val emitted = mutableListOf<GatewayEvent>()
+        for (i in 0 until rawBytes.size - 1) {
+            emitted += parser.feedBytes(byteArrayOf(rawBytes[i]))
+            assertTrue("Should not emit before terminator completes", emitted.isEmpty())
+        }
+        emitted += parser.feedBytes(byteArrayOf(rawBytes.last()))
+
+        assertEquals(1, emitted.size)
+        assertEquals("chunk-1", emitted[0].id)
+        assertEquals("notice", emitted[0].event)
+        assertEquals("payload", emitted[0].data)
+        assertEquals("chunk-1", cursorStore.load("acct-1"))
+    }
+
+    @Test
+    fun trailingSingleNewlineDoesNotTriggerEmission() {
+        val cursorStore = InMemoryEventCursorStore()
+        val parser = parser(cursorStore)
+
+        // Trailing single \n
+        var events = parser.feed("id: e1\nevent: notice\ndata: hello\n")
+        assertTrue(events.isEmpty())
+        assertEquals(null, cursorStore.load("acct-1"))
+
+        // Completing the terminator with second \n
+        events = parser.feed("\n")
+        assertEquals(1, events.size)
+        assertEquals("hello", events[0].data)
+        assertEquals("e1", cursorStore.load("acct-1"))
+    }
+
+    @Test
+    fun trailingSingleCrLfDoesNotTriggerEmission() {
+        val cursorStore = InMemoryEventCursorStore()
+        val parser = parser(cursorStore)
+
+        // Trailing \r\n (one line break, not a blank line)
+        var events = parser.feed("id: e2\nevent: notice\ndata: world\r\n")
+        assertTrue(events.isEmpty())
+        assertEquals(null, cursorStore.load("acct-1"))
+
+        // Complete with \r\n
+        events = parser.feed("\r\n")
+        assertEquals(1, events.size)
+        assertEquals("world", events[0].data)
+        assertEquals("e2", cursorStore.load("acct-1"))
+    }
+
+    @Test
+    fun allTerminatorVariantsAreSupported() {
+        val parser = parser()
+
+        // 1. \n\n
+        var events = parser.feed("data: variant1\n\n")
+        assertEquals(1, events.size)
+        assertEquals("variant1", events[0].data)
+
+        // 2. \r\n\r\n
+        events = parser.feed("data: variant2\r\n\r\n")
+        assertEquals(1, events.size)
+        assertEquals("variant2", events[0].data)
+
+        // 3. \n\r\n
+        events = parser.feed("data: variant3\n\r\n")
+        assertEquals(1, events.size)
+        assertEquals("variant3", events[0].data)
+
+        // 4. \r\n\n
+        events = parser.feed("data: variant4\r\n\n")
+        assertEquals(1, events.size)
+        assertEquals("variant4", events[0].data)
+    }
+
+    @Test
+    fun boundaryPartialTerminatorsDoNotThrowOutOfBounds() {
+        val parser = parser()
+
+        // Partial sequences at chunk boundaries must not throw or emit prematurely
+        assertTrue(parser.feed("data: test\r").isEmpty())
+        assertTrue(parser.feed("\n").isEmpty())
+        assertTrue(parser.feed("\r").isEmpty())
+        val events = parser.feed("\n") // Completes \r\n\r\n
+        assertEquals(1, events.size)
+        assertEquals("test", events[0].data)
+
+        // Ending with \n\r
+        assertTrue(parser.feed("data: test2\n\r").isEmpty())
+        val events2 = parser.feed("\n") // Completes \n\r\n
+        assertEquals(1, events2.size)
+        assertEquals("test2", events2[0].data)
+    }
 }

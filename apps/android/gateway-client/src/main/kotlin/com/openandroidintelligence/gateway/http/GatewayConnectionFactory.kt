@@ -21,7 +21,7 @@ import java.net.URL
  */
 class GatewayConnectionFactory {
 
-    fun open(url: URL): HttpURLConnection {
+    fun open(url: URL, readTimeoutMillis: Int = READ_TIMEOUT_MILLIS): HttpURLConnection {
         val scheme = url.protocol.lowercase()
         require(scheme == GatewayEndpoint.HTTP || scheme == GatewayEndpoint.HTTPS) {
             "gateway transport supports http or https, got $scheme"
@@ -30,11 +30,11 @@ class GatewayConnectionFactory {
             ?: error("gateway transport requires an HTTP connection")
         connection.instanceFollowRedirects = false
         connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
-        connection.readTimeout = READ_TIMEOUT_MILLIS
+        connection.readTimeout = readTimeoutMillis
         return connection
     }
 
-    private companion object {
+    companion object {
         const val CONNECT_TIMEOUT_MILLIS = 15_000
         const val READ_TIMEOUT_MILLIS = 30_000
     }
