@@ -123,7 +123,6 @@ class WorkbenchLayoutRegressionTest {
 
         // Thinking indicator must be displayed while QUEUED/RUNNING and no assistant streaming yet
         compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
-        compose.onNodeWithText("你好").assertIsDisplayed()
         compose.onAllNodesWithText("你好").onFirst().assertIsDisplayed()
 
         // Assistant streaming delta arrives
@@ -213,6 +212,48 @@ class WorkbenchLayoutRegressionTest {
             controller.stopGeneration()
         }
         compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+    }
+
+    @Test
+    fun manualRenameButtonDisplaysWhenActiveThreadExistsAndTriggersRenameDialog() {
+        val gateway = object : ConversationRepository {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
+                ConversationPage(emptyList(), null)
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
+                Conversation(ConversationId("conv_rename"), "原始标题", 0)
+            override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("msg_test", message.clientMessageId.value)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId, emptyList())
+            override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
+            override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+            override suspend fun updateTitle(conversationId: String, title: String): Boolean = true
+        }
+        val controller = WorkbenchController(
+            scope,
+            gateway,
+            object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) =
+                    AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+            },
+            { ConversationScope("p", "g", "a", "i") },
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {})
+            }
+        }
+
+        // Initially no active thread, rename button is not present
+        compose.onNodeWithContentDescription("重命名对话").assertDoesNotExist()
+
+        // Open thread
+        compose.runOnIdle {
+            controller.openThread("conv_rename")
+        }
+
+        // Rename button is displayed in TopAppBar
+        compose.onNodeWithContentDescription("重命名对话").assertIsDisplayed()
     }
 
     private fun SemanticsNodeInteraction.textLayoutHeight(): Int {

@@ -14,7 +14,7 @@ object ConversationTitlePolicy {
         locale: Locale = Locale.getDefault(),
     ): String {
         val rawText = firstMessage.text.trim()
-        if (rawText.startsWith("/new")) {
+        if (rawText == "/new" || rawText.startsWith("/new ")) {
             return "新对话"
         }
         if (rawText.isBlank()) {
@@ -33,7 +33,6 @@ object ConversationTitlePolicy {
             }
         }
 
-        return truncateGraphemes(rawText, locale)
         val firstLine = rawText.lines().firstOrNull { it.isNotBlank() }?.trim() ?: "新对话"
         return truncateGraphemes(firstLine, locale)
     }

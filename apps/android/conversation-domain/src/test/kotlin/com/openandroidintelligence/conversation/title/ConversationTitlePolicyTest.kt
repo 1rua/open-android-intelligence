@@ -20,7 +20,11 @@ class ConversationTitlePolicyTest {
         assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("/new")))
         assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("/new topic")))
         assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("   /new   ")))
-        assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("/newest ideas")))
+    }
+
+    @Test
+    fun commandBoundaryPreservesNonNewCommands() {
+        assertEquals("/newest ideas", ConversationTitlePolicy.generateTitle(msg("/newest ideas")))
     }
 
     @Test
@@ -30,7 +34,6 @@ class ConversationTitlePolicyTest {
 
     @Test
     fun normalizesConsecutiveWhitespace() {
-        val input = "  Hello   \t\n   world \n\n  how   are  you  "
         val input = "  Hello   \t   world   how   are  you  "
         assertEquals("Hello world how are you", ConversationTitlePolicy.generateTitle(msg(input)))
     }

@@ -32,6 +32,10 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
@@ -49,6 +53,8 @@ fun MarkdownToolCallView(
     modifier: Modifier = Modifier,
 ) {
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    val view = LocalView.current
     val coroutineScope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
     var outputExpanded by remember { mutableStateOf(false) }
@@ -94,10 +100,20 @@ fun MarkdownToolCallView(
 
                 Row(
                     modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                         .clip(RoundedCornerShape(6.dp))
-                        .clickable {
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = "复制代码",
+                        ) {
                             clipboardManager.setText(AnnotatedString(block.command))
                             copied = true
+                            try {
+                                view.announceForAccessibility("已复制到剪贴板")
+                            } catch (_: Throwable) {}
+                            try {
+                                Toast.makeText(context, "已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                            } catch (_: Throwable) {}
                             coroutineScope.launch {
                                 delay(1500)
                                 copied = false

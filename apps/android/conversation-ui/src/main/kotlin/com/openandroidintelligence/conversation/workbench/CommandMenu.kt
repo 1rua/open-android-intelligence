@@ -22,7 +22,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -130,6 +132,8 @@ fun CommandAutocompletePopup(
     query: String,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
+    visible: Boolean = query.startsWith("/"),
+    onDismissRequest: (() -> Unit)? = null,
     onRetry: (() -> Unit)? = null,
 ) {
     val commands = remember(catalogState) {
@@ -140,6 +144,8 @@ fun CommandAutocompletePopup(
         query = query,
         onSelect = onSelect,
         modifier = modifier,
+        visible = visible,
+        onDismissRequest = onDismissRequest,
     )
 }
 
@@ -149,11 +155,24 @@ fun CommandAutocompletePopup(
     query: String,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
+    visible: Boolean = query.startsWith("/"),
+    onDismissRequest: (() -> Unit)? = null,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
+    var dismissedLocally by remember { mutableStateOf(false) }
+    var lastQuery by remember { mutableStateOf(query) }
+
+    if (query != lastQuery) {
+        if (!query.startsWith("/") || (lastQuery.startsWith("/") && query.length < lastQuery.length)) {
+            dismissedLocally = false
+        }
+        lastQuery = query
+    }
+
+    val isVisible = visible && !dismissedLocally && query.startsWith("/")
 
     AnimatedVisibility(
-        visible = query.startsWith("/"),
+        visible = isVisible,
         enter = if (reduced) {
             EnterTransition.None
         } else {
@@ -210,7 +229,11 @@ fun CommandAutocompletePopup(
                         items(matchedCommands, key = { it.command }) { command ->
                             CommandItemRow(
                                 command = command,
-                                onSelect = onSelect,
+                                onSelect = { selectedCmd ->
+                                    dismissedLocally = true
+                                    onSelect(selectedCmd)
+                                    onDismissRequest?.invoke()
+                                },
                             )
                         }
                     }
@@ -293,12 +316,16 @@ fun CommandMenu(
     onSelect: (String) -> Unit,
     onRetry: () -> Unit = {},
     modifier: Modifier = Modifier,
+    visible: Boolean = query.startsWith("/"),
+    onDismissRequest: (() -> Unit)? = null,
 ) {
     CommandAutocompletePopup(
         catalogState = catalogState,
         query = query,
         onSelect = onSelect,
         modifier = modifier,
+        visible = visible,
+        onDismissRequest = onDismissRequest,
         onRetry = onRetry,
     )
 }

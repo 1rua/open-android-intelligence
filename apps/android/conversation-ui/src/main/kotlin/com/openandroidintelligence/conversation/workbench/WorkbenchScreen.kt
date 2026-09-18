@@ -60,6 +60,9 @@ fun WorkbenchScreen(
     var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     var showAttachmentLibrary by remember { mutableStateOf(false) }
+    var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameDraft by remember { mutableStateOf("") }
 
     val isThinking = (state.generation == GenerationState.QUEUED ||
         state.generation == GenerationState.RUNNING) &&
@@ -181,6 +184,14 @@ fun WorkbenchScreen(
                             }
                         },
                         actions = {
+                            if (state.activeThreadId != null) {
+                                IconButton(onClick = {
+                                    renameDraft = state.activeThreadTitle
+                                    showRenameDialog = true
+                                }) {
+                                    Icon(Icons.Default.Edit, contentDescription = "重命名对话")
+                                }
+                            }
                             onOpenAssistant?.let { open ->
                                 IconButton(onClick = open) {
                                     Icon(Icons.Default.PictureInPictureAlt, contentDescription = "浮动助理")
@@ -206,42 +217,25 @@ fun WorkbenchScreen(
                         .padding(padding),
                     contentAlignment = Alignment.TopCenter,
                 ) {
-                    Column(
                     var bottomDockHeightPx by remember { mutableIntStateOf(0) }
                     val density = LocalDensity.current
+                    val isCommandPopupVisible = !commandPopupDismissed && state.draft.startsWith("/")
+
+                    if (isCommandPopupVisible) {
+                        BackHandler {
+                            commandPopupDismissed = true
+                        }
+                    }
 
                     Box(
                         modifier = Modifier
                             .widthIn(max = Dimensions.ReadingWidth)
                             .fillMaxSize(),
                     ) {
-                        // 会话消息区域
-                        Box(Modifier.weight(1f)) {
-                            if (state.timeline == Loadable.Empty || (state.activeThreadId == null && state.timeline == Loadable.Idle)) {
-                                ConversationWelcome(onCreate = if (state.activeThreadId == null) controller::createThread else null)
-                            } else {
-                                LoadableRegion(
-                                    state.timeline,
-                                    "写下第一条消息，开始这段对话",
-                                    controller::retryTimeline,
-                                    modifier = Modifier.fillMaxSize(),
-                                    ready = { rows ->
-                                        LazyColumn(
-                                            state = listState,
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentPadding = PaddingValues(Dimensions.SpaceMedium),
-                                            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceLarge),
-                                        ) {
-                                            items(rows, key = { it.key }) { entry ->
-                                                MessageTimeline(listOf(entry))
-                                            }
-                                            if (isThinking) {
-                                                item(key = "thinking_indicator") {
-                                                    ThinkingIndicator(modifier = Modifier.padding(vertical = Dimensions.SpaceSmall))
                         Column(
                             modifier = Modifier.fillMaxSize(),
                         ) {
-                            // 会话消息区域
+                            // a) 会话消息区域
                             Box(Modifier.weight(1f)) {
                                 if (state.timeline == Loadable.Empty || (state.activeThreadId == null && state.timeline == Loadable.Idle)) {
                                     ConversationWelcome(onCreate = if (state.activeThreadId == null) controller::createThread else null)
@@ -267,7 +261,6 @@ fun WorkbenchScreen(
                                                     }
                                                 }
                                             }
-                                        }
                                         },
                                     )
                                 }
@@ -285,6 +278,7 @@ fun WorkbenchScreen(
                                 }
                             }
 
+                            // b) Bottom dock
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -295,7 +289,14 @@ fun WorkbenchScreen(
                                 PendingBatchStrip(state.pendingBatch)
                                 ComposerBar(
                                     draft = state.draft,
-                                    onDraftChange = controller::editDraft,
+                                    onDraftChange = { newDraft ->
+                                        if (commandPopupDismissed && (newDraft.isEmpty() || !newDraft.startsWith(state.draft))) {
+                                            commandPopupDismissed = false
+                                        } else if (newDraft != state.draft && !newDraft.startsWith("/")) {
+                                            commandPopupDismissed = false
+                                        }
+                                        controller.editDraft(newDraft)
+                                    },
                                     generation = state.generation,
                                     canSend = state.canSend,
                                     onSend = controller::sendDraft,
@@ -310,39 +311,9 @@ fun WorkbenchScreen(
                                     modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
                                 )
                             }
-                            if (!followLatest && entries.isNotEmpty()) {
-                                FilledTonalButton(
-                                    onClick = { followLatest = true },
-                                    modifier = Modifier
-                                        .align(Alignment.BottomCenter)
-                                        .padding(Dimensions.SpaceSmall),
-                                ) {
-                                    Icon(Icons.Default.ArrowDownward, null)
-                                    Spacer(Modifier.width(Dimensions.SpaceSmall))
-                                    Text("回到最新")
-                                }
-                            }
                         }
 
-                        CommandMenu(state.catalog, state.draft, controller::selectCommand, controller::loadCatalog)
-                        PendingBatchStrip(state.pendingBatch)
-                        ComposerBar(
-                            draft = state.draft,
-                            onDraftChange = controller::editDraft,
-                            generation = state.generation,
-                            canSend = state.canSend,
-                            onSend = controller::sendDraft,
-                            onStop = controller::stopGeneration,
-                            onPickCamera = onPickCamera,
-                            onPickGallery = onPickGallery,
-                            onPickDocument = onPickDocument,
-                            onVoiceInput = onVoiceInput,
-                            attachments = state.attachments,
-                            onRemoveAttachment = controller::removeAttachment,
-                            onRetryAttachment = controller::retryAttachment,
-                            modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
-                        )
-                        // 悬浮定位（Floating Overlay）：位于输入栏正上方 8dp，不挤占时间线视口高度
+                        // c) Command autocomplete popup overlay
                         val bottomOffset = with(density) { bottomDockHeightPx.toDp() } + 8.dp
                         Box(
                             modifier = Modifier
@@ -350,7 +321,17 @@ fun WorkbenchScreen(
                                 .fillMaxWidth()
                                 .padding(bottom = bottomOffset),
                         ) {
-                            CommandMenu(state.catalog, state.draft, controller::selectCommand, controller::loadCatalog)
+                            CommandMenu(
+                                catalogState = state.catalog,
+                                query = state.draft,
+                                onSelect = { cmd ->
+                                    commandPopupDismissed = true
+                                    controller.selectCommand(cmd)
+                                },
+                                onRetry = controller::loadCatalog,
+                                visible = isCommandPopupVisible,
+                                onDismissRequest = { commandPopupDismissed = true },
+                            )
                         }
                     }
                 }
@@ -389,6 +370,40 @@ fun WorkbenchScreen(
                     onClose = { showAttachmentLibrary = false },
                 )
             }
+        }
+
+        if (showRenameDialog) {
+            AlertDialog(
+                onDismissRequest = { showRenameDialog = false },
+                title = { Text("重命名对话") },
+                text = {
+                    OutlinedTextField(
+                        value = renameDraft,
+                        onValueChange = { renameDraft = it },
+                        singleLine = true,
+                        label = { Text("对话标题") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val trimmed = renameDraft.trim()
+                            if (trimmed.isNotEmpty()) {
+                                controller.renameActiveThread(trimmed)
+                            }
+                            showRenameDialog = false
+                        },
+                    ) {
+                        Text("确定")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRenameDialog = false }) {
+                        Text("取消")
+                    }
+                },
+            )
         }
     }
 }

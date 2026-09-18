@@ -275,6 +275,25 @@ class CommandAutocompleteTest {
     }
 
     @Test
+    fun selectingCommandDismissesPopupEvenThoughQueryStartsWithSlash() {
+        var query = "/st"
+        compose.setContent {
+            MaterialTheme {
+                CommandAutocompletePopup(
+                    catalogState = Loadable.Empty,
+                    query = query,
+                    onSelect = { query = "/status " },
+                )
+            }
+        }
+
+        compose.onNodeWithText("/status").assertIsDisplayed()
+        compose.onNodeWithText("/status").performClick()
+        // After selection, popup is dismissed/hidden
+        compose.onNodeWithText("/status").assertDoesNotExist()
+    }
+
+    @Test
     fun nonSlashQueryDoesNotShowPopup() {
         compose.setContent {
             MaterialTheme {

@@ -20,7 +20,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -152,6 +155,14 @@ fun MarkdownThoughtBlockView(
                         streamingCursorInlineContent(showCursor, cursorHeight = 13.sp)
                     }
 
+                    val contentModifier = if (isStreaming && !block.isComplete) {
+                        Modifier
+                            .fillMaxWidth()
+                            .semantics { liveRegion = LiveRegionMode.Polite }
+                    } else {
+                        Modifier.fillMaxWidth()
+                    }
+
                     SelectionContainer {
                         Text(
                             text = annotatedThought,
@@ -159,7 +170,7 @@ fun MarkdownThoughtBlockView(
                             fontSize = 13.sp,
                             lineHeight = (13 * 1.4).sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = contentModifier,
                         )
                     }
                 }

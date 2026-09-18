@@ -187,9 +187,7 @@ object MarkdownParser {
                 val toolName = if (firstLine.contains("shell")) "adb_shell" else "adb"
                 val command = firstLine.removePrefix("$ ").trim()
                 val remainingText = remainingLines.joinToString("\n")
-                val isFail = remainingText.contains("error", ignoreCase = true) ||
-                    remainingText.contains("failed", ignoreCase = true) ||
-                    remainingText.contains("failure", ignoreCase = true)
+                val isFail = isExecutionFailure(remainingText)
                 val isSuccess = !isFail
                 val (summary, output) = if (remainingLines.size == 1 && remainingText.length <= 80) {
                     remainingText to null
@@ -209,6 +207,11 @@ object MarkdownParser {
         return null
     }
 
+    fun isExecutionFailure(text: String): Boolean =
+        text.contains("error", ignoreCase = true) ||
+            text.contains("failed", ignoreCase = true) ||
+            text.contains("failure", ignoreCase = true)
+
     private fun parseToolCallFromFencedCode(toolName: String, code: String): TimelineBlock.ToolCallBlock {
         val trimmed = code.trim()
         if (trimmed.contains("<command>")) {
@@ -220,9 +223,7 @@ object MarkdownParser {
         if (splitMatch != null) {
             val cmdPart = trimmed.substring(0, splitMatch.range.first).trim().removePrefix("$ ").trim()
             val outPart = trimmed.substring(splitMatch.range.last + 1).trim()
-            val isFail = outPart.contains("error", ignoreCase = true) ||
-                outPart.contains("failed", ignoreCase = true) ||
-                outPart.contains("failure", ignoreCase = true)
+            val isFail = isExecutionFailure(outPart)
             val isSuccess = !isFail
             val lines = outPart.lines()
             val summary = if (lines.size == 1 && lines[0].length <= 80) lines[0] else if (isSuccess) "执行成功" else "执行失败"
@@ -241,9 +242,7 @@ object MarkdownParser {
             val cmd = lines[0].removePrefix("$ ").trim()
             val remaining = lines.drop(1).joinToString("\n").trim()
             if (remaining.isNotEmpty()) {
-                val isFail = remaining.contains("error", ignoreCase = true) ||
-                    remaining.contains("failed", ignoreCase = true) ||
-                    remaining.contains("failure", ignoreCase = true)
+                val isFail = isExecutionFailure(remaining)
                 val isSuccess = !isFail
                 val summary = if (lines.size == 2 && remaining.length <= 80) remaining else if (isSuccess) "执行成功" else "执行失败"
                 val output = if (lines.size > 2 || remaining.length > 80) remaining else null

@@ -82,7 +82,7 @@ class WorkbenchController(
     private val supportsMessageBatches: Boolean = false,
     /** Reports the active thread so cancellation and events scope to the right conversation. */
     private val onActiveThreadChanged: (String?) -> Unit = {},
-) {
+) : AutoCloseable {
     private val _state = MutableStateFlow(WorkbenchUiState())
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
 
@@ -128,9 +128,11 @@ class WorkbenchController(
         renameThread(id, newTitle)
     }
 
-    fun cancel() {
+    override fun close() {
         eventJob?.cancel()
     }
+
+    fun cancel() = close()
 
     private val batcher = DebounceBatcher(
         scope = scope,
@@ -576,8 +578,6 @@ class WorkbenchController(
                     }
 
                     is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TitleUpdated -> {
-                        if (event.conversationId.value == activeThreadId) {
-                            update { it.copy(activeThreadTitle = event.newTitle) }
                         val threadId = event.conversationId.value
                         if (!userRenamedThreads.contains(threadId)) {
                             if (threadId == activeThreadId) {
