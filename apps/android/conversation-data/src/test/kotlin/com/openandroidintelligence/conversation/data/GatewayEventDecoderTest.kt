@@ -58,6 +58,22 @@ class GatewayEventDecoderTest {
     }
 
     @Test
+    fun decodesTitleUpdateWithNewTitleField() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_2b",
+                event = "conversation.title.updated",
+                data = """{"payload":{"conversationId":"conv_9","newTitle":"量子计算与经典物理的核心区别"}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first())
+        assertTrue(decoded is VerifiedConversationEvent.TitleUpdated)
+        assertEquals("conv_9", (decoded as VerifiedConversationEvent.TitleUpdated).conversationId.value)
+        assertEquals("量子计算与经典物理的核心区别", decoded.newTitle)
+    }
+
+    @Test
     fun unknownEventNameStaysUnknown() {
         val parser = SseParser()
         val events = parser.feed(

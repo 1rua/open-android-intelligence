@@ -60,6 +60,8 @@ fun MarkdownDocumentView(
                 is TimelineBlock.OrderedList -> MarkdownOrderedListView(block, isLast, colors)
                 is TimelineBlock.Table -> MarkdownTableView(block, isLast, colors)
                 is TimelineBlock.ThematicBreak -> MarkdownThematicBreakView()
+                is TimelineBlock.ThoughtBlock -> MarkdownThoughtBlockView(block, isStreaming = isLast)
+                is TimelineBlock.ToolCallBlock -> MarkdownToolCallView(block)
             }
         }
     }

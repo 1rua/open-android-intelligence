@@ -105,6 +105,32 @@ class WorkbenchController(
     )
     private var pendingSubmission: DraftSubmission? = null
     private val batchTargets = mutableMapOf<String, String>()
+    private val userRenamedThreads = mutableSetOf<String>()
+
+    val isCurrentThreadUserRenamed: Boolean
+        get() = activeThreadId?.let { userRenamedThreads.contains(it) } ?: false
+
+    fun isThreadUserRenamed(threadId: String): Boolean = userRenamedThreads.contains(threadId)
+
+    fun renameThread(threadId: String, newTitle: String) {
+        userRenamedThreads.add(threadId)
+        if (activeThreadId == threadId) {
+            update { it.copy(activeThreadTitle = newTitle) }
+        }
+        scope.launch {
+            repository.updateTitle(threadId, newTitle)
+            refreshThreads()
+        }
+    }
+
+    fun renameActiveThread(newTitle: String) {
+        val id = activeThreadId ?: return
+        renameThread(id, newTitle)
+    }
+
+    fun cancel() {
+        eventJob?.cancel()
+    }
 
     private val batcher = DebounceBatcher(
         scope = scope,
@@ -356,6 +382,22 @@ class WorkbenchController(
                 )
                 val message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
                 update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
+
+                val currentTitle = _state.value.activeThreadTitle
+                val needsAutoTitle = (currentTitle.isBlank() || currentTitle == "新对话") && !userRenamedThreads.contains(target)
+                if (needsAutoTitle) {
+                    val autoTitle = com.openandroidintelligence.conversation.title.ConversationTitlePolicy.generateTitle(
+                        firstMessage = message,
+                        attachmentNames = submittedAttachments.map { it.filename },
+                    )
+                    if (autoTitle.isNotBlank() && autoTitle != "新对话" && !userRenamedThreads.contains(target)) {
+                        update { it.copy(activeThreadTitle = autoTitle) }
+                        scope.launch {
+                            repository.updateTitle(target, autoTitle)
+                            refreshThreads()
+                        }
+                    }
+                }
                 if (supportsMessageBatches && !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()) {
                     batchTargets[message.clientMessageId.value] = target
                     batcher.offer(scopeFactory(), message)
@@ -424,7 +466,11 @@ class WorkbenchController(
     /** Fills the composer with a command; the user still confirms the send. */
     fun selectCommand(command: String) {
         val withSlash = if (command.startsWith("/")) command else "/$command"
-        update { it.copy(draft = if (it.draft.isBlank()) withSlash else "$withSlash ") }
+        update {
+            val rest = if (it.draft.contains(' ')) it.draft.substringAfter(' ') else ""
+            val newDraft = if (rest.isEmpty()) "$withSlash " else "$withSlash $rest"
+            it.copy(draft = newDraft)
+        }
     }
 
     fun stopGeneration() {
@@ -532,6 +578,11 @@ class WorkbenchController(
                     is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TitleUpdated -> {
                         if (event.conversationId.value == activeThreadId) {
                             update { it.copy(activeThreadTitle = event.newTitle) }
+                        val threadId = event.conversationId.value
+                        if (!userRenamedThreads.contains(threadId)) {
+                            if (threadId == activeThreadId) {
+                                update { it.copy(activeThreadTitle = event.newTitle) }
+                            }
                         }
                         refreshThreads()
                     }

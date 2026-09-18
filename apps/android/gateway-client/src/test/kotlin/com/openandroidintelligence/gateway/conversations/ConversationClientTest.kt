@@ -60,4 +60,28 @@ class ConversationClientTest {
         assertTrue(bodyStr.contains("clientMessageId"))
         assertTrue(bodyStr.contains("att_01"))
     }
+
+    @Test
+    fun updatesConversationTitleViaPatch() = runBlocking {
+        val transport = RecordingTransport().apply {
+            responseToReturn = WireResponse(
+                status = 200,
+                headers = listOf(RawHeader("content-type", "application/json")),
+                body = """{"protocol":"2.0","data":{"conversation":{"conversationId":"conv_123","title":"新的对话标题"}}}""".toByteArray(Charsets.UTF_8),
+            )
+        }
+        val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")
+        val http = GatewayHttpClient(profile, transport, { ByteArray(64) }, MemoryCursorStore())
+        val client = ConversationClient(http)
+
+        val success = client.updateConversationTitle("conv_123", "新的对话标题")
+        assertTrue(success)
+        val recorded = transport.lastRequest
+        assertNotNull(recorded)
+        assertEquals("PATCH", recorded?.method)
+        assertEquals("/open-android-intelligence/v2/conversations/conv_123", recorded?.target)
+        val bodyStr = String(recorded!!.body, Charsets.UTF_8)
+        assertTrue(bodyStr.contains("新的对话标题"))
+        assertTrue(bodyStr.contains("title"))
+    }
 }

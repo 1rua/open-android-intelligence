@@ -159,6 +159,7 @@ interface ConversationRepository {
         generationId: String,
         requestId: String,
     ): CancelGenerationResult = cancelGeneration(generationId, requestId)
+    suspend fun updateTitle(conversationId: String, title: String): Boolean = false
 }
 
 /**

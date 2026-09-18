@@ -189,7 +189,7 @@ class GatewayHttpRoute:
                     "requestId": _get(request, "requestId", "request_id", default="open-android-intelligence-session"),
                     "correlationId": _get(request, "correlationId", "correlation_id", default="open-android-intelligence-session"),
                 }
-            elif context is None or method not in {"GET", "POST", "PUT", "DELETE"}:
+            elif context is None or method not in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
                 return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(request, "AUTHENTICATION_REQUIRED")}
             else:
                 verified = {
@@ -309,7 +309,7 @@ class GatewayHttpRoute:
             return {"statusCode": 503, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "HOST_INCOMPATIBLE")}
         method = _get(request, "method")
         target = _get(request, "url", "target")
-        if method not in {"GET", "POST", "PUT", "DELETE"} or not isinstance(target, str) or not target.startswith("/"):
+        if method not in {"GET", "POST", "PUT", "DELETE", "PATCH"} or not isinstance(target, str) or not target.startswith("/"):
             return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "AUTHENTICATION_REQUIRED")}
         body = _raw_body(request)
         if body is None:

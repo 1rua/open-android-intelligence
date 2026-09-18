@@ -191,6 +191,16 @@ class ConversationClient(private val http: GatewayHttpClient) {
         )
     }
 
+    suspend fun updateConversationTitle(conversationId: String, title: String): Boolean {
+        val payload = mapOf("title" to title)
+        val response = execute(
+            method = "PATCH",
+            target = "/open-android-intelligence/v2/conversations/$conversationId",
+            body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
+        )
+        return response.status in 200..299
+    }
+
     /**
      * Reads one page of the timeline, oldest page first.
      *

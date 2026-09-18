@@ -210,3 +210,59 @@ def test_adapter_streaming_edits_progressive_delivery(tmp_path):
             await adapter.disconnect()
 
     asyncio.run(scenario())
+
+
+def test_conversation_patch_updates_title_and_appends_event(tmp_path):
+    async def scenario():
+        services, core = _services(tmp_path, None)
+        account = core.open_gateway_account(ACCOUNT_ID)
+        try:
+            conv = account.conversations.create("cconv_1", "原标题", "cor_create")
+            conv_id = conv["conversationId"]
+        finally:
+            account.close()
+
+        req = make_verified_request({
+            "context": {
+                "accountId": ACCOUNT_ID, "deviceId": "dev_1", "sessionId": "sess_1",
+                "requestId": "req_patch", "correlationId": "cor_patch",
+                "pairingGeneration": 1, "grantRevision": 1,
+            },
+            "idempotencyKey": "req_patch",
+            "method": "PATCH",
+            "target": f"/open-android-intelligence/v2/conversations/{conv_id}",
+            "body": {"title": "量子计算与经典物理的核心区别"},
+        })
+        res = core.handle(req)
+        assert "data" in res
+        assert res["data"]["conversation"]["title"] == "量子计算与经典物理的核心区别"
+
+        account = core.open_gateway_account(ACCOUNT_ID)
+        try:
+            persisted = account.conversations.get(conv_id)
+            assert persisted["title"] == "量子计算与经典物理的核心区别"
+            events = account.events.read_after(None)
+            title_events = [e for e in events if e["eventType"] == "conversation.title.updated"]
+            assert len(title_events) == 1
+            assert title_events[0]["payload"]["title"] == "量子计算与经典物理的核心区别"
+            assert title_events[0]["payload"]["newTitle"] == "量子计算与经典物理的核心区别"
+        finally:
+            account.close()
+
+    asyncio.run(scenario())
+
+
+def test_command_catalog_includes_all_standard_commands(tmp_path):
+    services, core = _services(tmp_path, None)
+    res = core.command_catalog_response("zh-CN")
+    commands = {c["invocation"]: c for c in res["commands"]}
+    for cmd in ["/new", "/models", "/status", "/review", "/gateway", "/clear", "/help"]:
+        assert cmd in commands, f"Missing command: {cmd}"
+    assert commands["/models"]["acceptsArguments"] is True
+    assert commands["/status"]["acceptsArguments"] is False
+    assert commands["/review"]["acceptsArguments"] is True
+    assert commands["/gateway"]["acceptsArguments"] is True
+    assert commands["/clear"]["acceptsArguments"] is False
+    assert commands["/help"]["acceptsArguments"] is True
+    assert commands["/new"]["acceptsArguments"] is False
+

@@ -124,6 +124,7 @@ class WorkbenchLayoutRegressionTest {
         // Thinking indicator must be displayed while QUEUED/RUNNING and no assistant streaming yet
         compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
         compose.onNodeWithText("你好").assertIsDisplayed()
+        compose.onAllNodesWithText("你好").onFirst().assertIsDisplayed()
 
         // Assistant streaming delta arrives
         compose.runOnIdle {

@@ -60,7 +60,8 @@ object GatewayEventDecoder {
                     eventId = eventId,
                     occurredAt = occurredAt,
                     conversationId = ConversationId(conversationId),
-                    newTitle = JsonFields.string(payload, "title").orEmpty(),
+                    newTitle = JsonFields.string(payload, "title")
+                        ?: JsonFields.string(payload, "newTitle").orEmpty(),
                 )
             }
 

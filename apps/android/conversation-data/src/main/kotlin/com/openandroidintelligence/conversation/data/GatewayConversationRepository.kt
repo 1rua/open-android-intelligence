@@ -169,6 +169,9 @@ class GatewayConversationRepository(
         )
     }
 
+    override suspend fun updateTitle(conversationId: String, title: String): Boolean =
+        runCatching { client.updateConversationTitle(conversationId, title) }.getOrDefault(false)
+
     override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> =
         client.rawEvents().mapNotNull { event ->
             decoder.generationIdOf(event)?.let { _generationId.value = it }

@@ -26,7 +26,19 @@ sealed interface TimelineBlock {
         val rows: List<List<String>>,
     ) : TimelineBlock
     data object ThematicBreak : TimelineBlock
+
+    data class ThoughtBlock(
+        val thought: String,
+        val isComplete: Boolean = true,
+    ) : TimelineBlock
+
+    data class ToolCallBlock(
+        val toolName: String,
+        val command: String,
+        val output: String? = null,
+        val isSuccess: Boolean = true,
+        val summary: String? = null,
+    ) : TimelineBlock
 }
 
 typealias MarkdownBlock = TimelineBlock
-

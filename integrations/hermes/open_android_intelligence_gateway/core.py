@@ -2035,6 +2035,31 @@ class ConversationPort:
             raise GatewayError("SCHEMA_INVALID")
         return {"conversationId": row[0], "clientConversationId": row[1], "title": row[2]}
 
+    def update_title(
+        self, conversation_id: str, title: str, correlation_id: str,
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        current = _now(now)
+        with self.store.transaction():
+            row = self.store.database.execute(
+                "SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                raise GatewayError("SCHEMA_INVALID")
+            self.store.database.execute(
+                "UPDATE conversations SET title = ? WHERE conversation_id = ?",
+                (title, conversation_id),
+            )
+            self.audit.append(
+                "conversation.title.updated",
+                {"accountId": self.account_id},
+                {"conversationId": conversation_id, "title": title},
+                correlation_id,
+                current,
+            )
+        return {"conversationId": conversation_id, "clientConversationId": row[1], "title": title}
+
     acceptMessage = accept_message
 
 
@@ -2346,8 +2371,56 @@ DEFAULT_COMMAND_CATALOG: tuple[dict[str, Any], ...] = (
         "id": "new",
         "invocation": "/new",
         "title": "新建对话",
-        "description": "开始一个不继承当前上下文的新对话",
+        "description": "结束当前会话并创建全新对话线程",
         "acceptsArguments": False,
+        "availability": "available",
+    },
+    {
+        "id": "models",
+        "invocation": "/models",
+        "title": "[provider]",
+        "description": "切换或查看活动大模型与参数",
+        "acceptsArguments": True,
+        "availability": "available",
+    },
+    {
+        "id": "status",
+        "invocation": "/status",
+        "title": "网关状态",
+        "description": "查看当前网关连通性、时延与配对状态",
+        "acceptsArguments": False,
+        "availability": "available",
+    },
+    {
+        "id": "review",
+        "invocation": "/review",
+        "title": "[diff]",
+        "description": "审查代码变更、规范或当前文档",
+        "acceptsArguments": True,
+        "availability": "available",
+    },
+    {
+        "id": "gateway",
+        "invocation": "/gateway",
+        "title": "<url>",
+        "description": "切换或添加连接的 Agent Gateway",
+        "acceptsArguments": True,
+        "availability": "available",
+    },
+    {
+        "id": "clear",
+        "invocation": "/clear",
+        "title": "清空时间线",
+        "description": "清空当前时间线临时渲染状态",
+        "acceptsArguments": False,
+        "availability": "available",
+    },
+    {
+        "id": "help",
+        "invocation": "/help",
+        "title": "[command]",
+        "description": "查看所有可用指令与使用指南",
+        "acceptsArguments": True,
         "availability": "available",
     },
 )
@@ -2855,6 +2928,35 @@ class GatewayCore:
                     conversation_get = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)", target_path)
                     if method == "GET" and conversation_get:
                         return _success(context, {"conversation": account.conversations.get(conversation_get.group(1))})
+                    if method == "PATCH" and conversation_get:
+                        body_map = None
+                        if isinstance(body, (bytes, bytearray)):
+                            try:
+                                body_map = json.loads(body.decode("utf-8"))
+                            except Exception:
+                                pass
+                        elif isinstance(body, str):
+                            try:
+                                body_map = json.loads(body)
+                            except Exception:
+                                pass
+                        elif isinstance(body, Mapping):
+                            body_map = body
+                        if body_map is None:
+                            raise GatewayError("SCHEMA_INVALID")
+                        title = str(body_map.get("title", ""))
+                        conv_id = conversation_get.group(1)
+                        now = _request_now(request)
+                        updated = account.conversations.update_title(
+                            conv_id, title, context["correlationId"], now,
+                        )
+                        account.events.append(
+                            "conversation.title.updated",
+                            context["correlationId"],
+                            {"conversationId": conv_id, "title": title, "newTitle": title},
+                            now,
+                        )
+                        return _success(context, {"conversation": updated})
                     if method == "POST" and target_path == "/open-android-intelligence/v2/attachments":
                         body_map = body if isinstance(body, Mapping) else None
                         if body_map is None or not self.contracts.validate("attachment.create", body_map):

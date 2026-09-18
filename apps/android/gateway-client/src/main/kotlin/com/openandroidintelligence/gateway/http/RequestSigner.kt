@@ -23,7 +23,7 @@ data class SignedRequestInput(
  */
 object RequestSigner {
 
-    private val METHODS = setOf("GET", "POST", "PUT", "DELETE")
+    private val METHODS = setOf("GET", "POST", "PUT", "DELETE", "PATCH")
     private val WIRE_ID = Regex("^[A-Za-z0-9._~-]{1,128}$")
     private val TIMESTAMP = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$")
     private val BASE64URL = Regex("^[A-Za-z0-9_-]+$")

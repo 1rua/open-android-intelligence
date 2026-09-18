@@ -16,6 +16,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -205,6 +207,10 @@ fun WorkbenchScreen(
                     contentAlignment = Alignment.TopCenter,
                 ) {
                     Column(
+                    var bottomDockHeightPx by remember { mutableIntStateOf(0) }
+                    val density = LocalDensity.current
+
+                    Box(
                         modifier = Modifier
                             .widthIn(max = Dimensions.ReadingWidth)
                             .fillMaxSize(),
@@ -232,10 +238,76 @@ fun WorkbenchScreen(
                                             if (isThinking) {
                                                 item(key = "thinking_indicator") {
                                                     ThinkingIndicator(modifier = Modifier.padding(vertical = Dimensions.SpaceSmall))
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            // 会话消息区域
+                            Box(Modifier.weight(1f)) {
+                                if (state.timeline == Loadable.Empty || (state.activeThreadId == null && state.timeline == Loadable.Idle)) {
+                                    ConversationWelcome(onCreate = if (state.activeThreadId == null) controller::createThread else null)
+                                } else {
+                                    LoadableRegion(
+                                        state.timeline,
+                                        "写下第一条消息，开始这段对话",
+                                        controller::retryTimeline,
+                                        modifier = Modifier.fillMaxSize(),
+                                        ready = { rows ->
+                                            LazyColumn(
+                                                state = listState,
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentPadding = PaddingValues(Dimensions.SpaceMedium),
+                                                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceLarge),
+                                            ) {
+                                                items(rows, key = { it.key }) { entry ->
+                                                    MessageTimeline(listOf(entry))
+                                                }
+                                                if (isThinking) {
+                                                    item(key = "thinking_indicator") {
+                                                        ThinkingIndicator(modifier = Modifier.padding(vertical = Dimensions.SpaceSmall))
+                                                    }
                                                 }
                                             }
                                         }
+                                        },
+                                    )
+                                }
+                                if (!followLatest && entries.isNotEmpty()) {
+                                    FilledTonalButton(
+                                        onClick = { followLatest = true },
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(Dimensions.SpaceSmall),
+                                    ) {
+                                        Icon(Icons.Default.ArrowDownward, null)
+                                        Spacer(Modifier.width(Dimensions.SpaceSmall))
+                                        Text("回到最新")
+                                    }
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onGloballyPositioned { coordinates ->
+                                        bottomDockHeightPx = coordinates.size.height
                                     },
+                            ) {
+                                PendingBatchStrip(state.pendingBatch)
+                                ComposerBar(
+                                    draft = state.draft,
+                                    onDraftChange = controller::editDraft,
+                                    generation = state.generation,
+                                    canSend = state.canSend,
+                                    onSend = controller::sendDraft,
+                                    onStop = controller::stopGeneration,
+                                    onPickCamera = onPickCamera,
+                                    onPickGallery = onPickGallery,
+                                    onPickDocument = onPickDocument,
+                                    onVoiceInput = onVoiceInput,
+                                    attachments = state.attachments,
+                                    onRemoveAttachment = controller::removeAttachment,
+                                    onRetryAttachment = controller::retryAttachment,
+                                    modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
                                 )
                             }
                             if (!followLatest && entries.isNotEmpty()) {
@@ -270,6 +342,16 @@ fun WorkbenchScreen(
                             onRetryAttachment = controller::retryAttachment,
                             modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
                         )
+                        // 悬浮定位（Floating Overlay）：位于输入栏正上方 8dp，不挤占时间线视口高度
+                        val bottomOffset = with(density) { bottomDockHeightPx.toDp() } + 8.dp
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .padding(bottom = bottomOffset),
+                        ) {
+                            CommandMenu(state.catalog, state.draft, controller::selectCommand, controller::loadCatalog)
+                        }
                     }
                 }
             }

@@ -171,7 +171,7 @@ class GatewayHttpClient(
     private companion object {
         const val PROTOCOL_HEADER = "2.0"
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
-        val MUTATING_METHODS = setOf("POST", "PUT", "DELETE")
+        val MUTATING_METHODS = setOf("POST", "PUT", "DELETE", "PATCH")
 
         /** The closed wire ID alphabet from contract §2, used for opaque cursors. */
         val CURSOR_ALPHABET = Regex("[A-Za-z0-9._~-]{1,128}")
