@@ -61,6 +61,7 @@ Thumbs.db
 *~
 *.bak
 /.toolchains
+/apps/android/.toolchains/
 /node_modules
 /legacy/bridge-runtime/dist/
 /legacy/bridge-runtime/ingress/open-android-intelligence-tsnet
@@ -92,3 +93,4 @@ integrations/hermes/build/
 .open-android-intelligence-hermes/
 .agent-life-hermes/
 
+apps/android/.toolchains/
