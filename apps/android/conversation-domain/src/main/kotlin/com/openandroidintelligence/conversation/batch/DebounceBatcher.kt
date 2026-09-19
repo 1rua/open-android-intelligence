@@ -16,34 +16,44 @@ data class DebouncePolicy(
 class DebounceBatcher(
     private val scope: CoroutineScope,
     private val policy: DebouncePolicy = DebouncePolicy(),
-    private val onFlush: suspend (ConversationScope, List<OutgoingMessage>) -> Unit,
+    private val onFlush: suspend (ConversationScope, String, List<OutgoingMessage>) -> Unit,
 ) : AutoCloseable {
-    private val activeBatches = mutableMapOf<ConversationScope, MutableList<OutgoingMessage>>()
-    private val activeJobs = mutableMapOf<ConversationScope, Job>()
+    private val activeBatches = mutableMapOf<String, MutableList<OutgoingMessage>>()
+    private val activeScopes = mutableMapOf<String, ConversationScope>()
+    private val activeJobs = mutableMapOf<String, Job>()
 
-    fun offer(targetScope: ConversationScope, message: OutgoingMessage) {
-        val list = activeBatches.getOrPut(targetScope) { mutableListOf() }
+    /**
+     * Collects one message into its conversation's batch.
+     *
+     * Batches are keyed by conversation and not by the gateway scope: one scope
+     * covers every thread on a gateway, so keying by scope merged two threads
+     * typed into within the same window into a single batch and delivered it to
+     * whichever conversation happened to be flushed first.
+     */
+    fun offer(targetScope: ConversationScope, conversationId: String, message: OutgoingMessage) {
+        activeScopes[conversationId] = targetScope
+        val list = activeBatches.getOrPut(conversationId) { mutableListOf() }
         list.add(message)
 
         if (list.size >= policy.maximumMembers) {
-            flush(targetScope)
+            flush(conversationId)
             return
         }
 
-        activeJobs[targetScope]?.cancel()
-        activeJobs[targetScope] = scope.launch {
+        activeJobs[conversationId]?.cancel()
+        activeJobs[conversationId] = scope.launch {
             delay(policy.delay)
-            flush(targetScope)
+            flush(conversationId)
         }
     }
 
-    fun flush(targetScope: ConversationScope) {
-        activeJobs[targetScope]?.cancel()
-        activeJobs.remove(targetScope)
-        val messages = activeBatches.remove(targetScope) ?: return
+    fun flush(conversationId: String) {
+        activeJobs.remove(conversationId)?.cancel()
+        val messages = activeBatches.remove(conversationId) ?: return
+        val targetScope = activeScopes.remove(conversationId) ?: return
         if (messages.isNotEmpty()) {
             scope.launch {
-                onFlush(targetScope, messages)
+                onFlush(targetScope, conversationId, messages)
             }
         }
     }
@@ -52,5 +62,6 @@ class DebounceBatcher(
         activeJobs.values.forEach { it.cancel() }
         activeJobs.clear()
         activeBatches.clear()
+        activeScopes.clear()
     }
 }

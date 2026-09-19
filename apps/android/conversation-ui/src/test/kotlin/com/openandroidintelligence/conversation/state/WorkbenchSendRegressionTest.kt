@@ -727,12 +727,94 @@ class WorkbenchSendRegressionTest {
         coroutineContext.cancelChildren()
     }
 
-    private fun TestScope.controller(repository: RecordingRepository) = WorkbenchController(
+    @Test fun anUnansweredSendIsReportedInsteadOfWaitingForever() = runTest {
+        val repository = object : RecordingRepository() {
+            var timelineCalls = 0
+            override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
+                timelineCalls++
+                return TimelinePage(emptyList(), null)
+            }
+        }
+        val controller = controller(
+            repository,
+            WorkbenchController.ReplyTimeouts(firstReplyMillis = 20_000L, giveUpMillis = 120_000L),
+        )
+        runCurrent()
+        controller.openThread("conv_a")
+        runCurrent()
+        val beforeSend = repository.timelineCalls
+
+        controller.editDraft("你好")
+        controller.sendDraft()
+        runCurrent()
+
+        // First deadline: a reply produced while the stream was down is still
+        // recoverable, so the timeline is pulled before anything is claimed.
+        advanceTimeBy(20_000L)
+        runCurrent()
+        assertTrue("超时后应当重新拉取时间线补偿", repository.timelineCalls > beforeSend)
+
+        // Final deadline: silence is reported rather than left as a spinner.
+        advanceTimeBy(100_000L)
+        runCurrent()
+        assertTrue(
+            "始终无回复必须明确提示，实际: ${controller.state.value.notice}",
+            controller.state.value.notice.orEmpty().contains("REPLY_TIMEOUT"),
+        )
+        controller.cancel()
+    }
+
+    @Test fun anArrivingAssistantMessageDisarmsTheWatchdog() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+        }
+        val controller = controller(
+            repository,
+            WorkbenchController.ReplyTimeouts(firstReplyMillis = 20_000L, giveUpMillis = 120_000L),
+        )
+        runCurrent()
+        controller.openThread("conv_a")
+        runCurrent()
+        controller.editDraft("你好")
+        controller.sendDraft()
+        runCurrent()
+
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_1",
+                occurredAt = 0L,
+                revision = 0L,
+                message = TimelineMessage(
+                    id = "msg_assistant",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("正在处理")),
+                    timestamp = 1000L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_a"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        advanceTimeBy(120_000L)
+        runCurrent()
+        assertNull("已经收到回复就不该再报超时", controller.state.value.notice)
+        controller.cancel()
+    }
+
+    private fun TestScope.controller(
+        repository: RecordingRepository,
+        replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
+    ) = WorkbenchController(
         this, repository,
         object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
         },
         { ConversationScope("profile", "gateway", "account", "install") },
+        // A virtual clock would run the reply watchdog's real minutes instantly,
+        // so the watchdog is off here and covered by its own tests instead.
+        replyTimeouts = replyTimeouts,
     )
 
     private open class RecordingRepository : ConversationRepository, GenerationTracker {

@@ -12,6 +12,8 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
+
 /**
  * The app's real Gateway transport: HTTPS or plaintext HTTP, plus SSE.
  *
@@ -60,6 +62,7 @@ class GatewayTransport(
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+        GatewayLog.d(TAG, "sse open ${request.method} ${request.target}")
         val connection = open(request, readTimeoutMillis = SSE_IDLE_TIMEOUT_MILLIS)
         val job = currentCoroutineContext()[Job]
         val cancelHandle = job?.invokeOnCompletion(onCancelling = true) {
@@ -82,15 +85,24 @@ class GatewayTransport(
                     val read = try {
                         stream.read(buffer)
                     } catch (e: java.net.SocketTimeoutException) {
+                        // Half-open connection: the Gateway's heartbeat is every
+                        // 15s, so no byte for this long means the socket is dead
+                        // even though nobody sent a reset.
+                        GatewayLog.w(TAG, "sse stalled after ${SSE_IDLE_TIMEOUT_MILLIS}ms")
                         throw IOException("EVENT_STREAM_STALLED: no bytes received for ${SSE_IDLE_TIMEOUT_MILLIS}ms", e)
                     } catch (e: java.net.SocketException) {
                         if (!currentCoroutineContext().isActive || e.message?.contains("closed", ignoreCase = true) == true) break
+                        GatewayLog.w(TAG, "sse socket error: ${e.message}")
                         throw e
                     } catch (e: IOException) {
                         if (!currentCoroutineContext().isActive || e.message?.contains("closed", ignoreCase = true) == true) break
+                        GatewayLog.w(TAG, "sse io error: ${e.message}")
                         throw e
                     }
-                    if (read == -1) break
+                    if (read == -1) {
+                        GatewayLog.d(TAG, "sse ended by server")
+                        break
+                    }
                     if (read > 0) emit(buffer.copyOf(read))
                 }
             }
@@ -144,8 +156,17 @@ class GatewayTransport(
     }
 
     companion object {
-        const val SSE_IDLE_TIMEOUT_MILLIS = 45_000
+        /**
+         * Longest silence tolerated on an open SSE stream.
+         *
+         * The Gateway heartbeats every 15s, so this is one heartbeat plus
+         * slack: long enough to survive a slow network, short enough that a
+         * half-open socket is noticed in seconds rather than the better part of
+         * a minute, which is how a reply used to disappear without a trace.
+         */
+        const val SSE_IDLE_TIMEOUT_MILLIS = 20_000
         const val EVENT_CHUNK_BYTES = 8 * 1024
         const val BODY_CHUNK_BYTES = 16 * 1024
+        private const val TAG = "GatewaySse"
     }
 }

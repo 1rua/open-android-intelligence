@@ -1,5 +1,6 @@
 package com.openandroidintelligence.gateway.ws
 
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.events.SseParser
 import com.openandroidintelligence.gateway.http.GatewayConnectionSecurity
@@ -92,7 +93,7 @@ open class GatewayWebSocketTransport(
                 throw t
             }
         }
-        socket.soTimeout = 45_000
+        socket.soTimeout = READ_TIMEOUT_MILLIS
 
         val job = currentCoroutineContext()[Job]
         val cancelHandle = job?.invokeOnCompletion(onCancelling = true) { runCatching { socket.close() } }
@@ -123,12 +124,15 @@ open class GatewayWebSocketTransport(
                 val frame = try {
                     readFrame(inputStream) ?: break
                 } catch (e: java.net.SocketTimeoutException) {
-                    throw IOException("WEBSOCKET_STREAM_STALLED: no bytes received for 45000ms", e)
+                    GatewayLog.w(TAG, "websocket stalled after ${READ_TIMEOUT_MILLIS}ms")
+                    throw IOException("WEBSOCKET_STREAM_STALLED: no bytes received for ${READ_TIMEOUT_MILLIS}ms", e)
                 } catch (e: java.net.SocketException) {
                     if (!currentCoroutineContext().isActive || socket.isClosed) break
+                    GatewayLog.w(TAG, "websocket socket error: ${e.message}")
                     throw e
                 } catch (e: IOException) {
                     if (!currentCoroutineContext().isActive || socket.isClosed) break
+                    GatewayLog.w(TAG, "websocket io error: ${e.message}")
                     throw e
                 }
                 when (frame.opcode) {
@@ -253,6 +257,7 @@ open class GatewayWebSocketTransport(
     private fun readFrame(input: InputStream): WebSocketFrame? {
         try {
             val b0 = input.read()
+            if (b0 == -1) GatewayLog.d(TAG, "websocket closed by peer")
             if (b0 == -1) return null
             if ((b0 and 0x70) != 0) {
                 throw IOException("WEBSOCKET_PROTOCOL_ERROR: RSV bits must be 0")
@@ -301,7 +306,7 @@ open class GatewayWebSocketTransport(
 
             return WebSocketFrame(fin, opcode, payload)
         } catch (e: java.net.SocketTimeoutException) {
-            throw IOException("WEBSOCKET_STREAM_STALLED: no bytes received for 45000ms", e)
+            throw IOException("WEBSOCKET_STREAM_STALLED: no bytes received for ${READ_TIMEOUT_MILLIS}ms", e)
         }
     }
 
@@ -379,11 +384,25 @@ open class GatewayWebSocketTransport(
 
     companion object {
         const val PROTOCOL_HEADER = "2.0"
-        const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
+        /**
+         * The upgrade target the Gateway serves WebSockets on.
+         *
+         * The plain `/events` target is the SSE route: asking it to upgrade
+         * never yields a 101, so the channel used to fail and silently fall
+         * back on every single attempt.
+         */
+        const val EVENTS_TARGET = "/open-android-intelligence/v2/events/ws"
         const val CONNECT_TIMEOUT_MILLIS = 10_000
+        /**
+         * Longest silence tolerated on an open socket. The Gateway heartbeats
+         * every 15s, so this is one heartbeat plus slack: a half-open socket is
+         * detected in seconds instead of after 45s of silence.
+         */
+        const val READ_TIMEOUT_MILLIS = 20_000
         const val MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
         const val MAX_HEADER_LINE_BYTES = 8192
         const val WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        private const val TAG = "GatewayWs"
 
         const val OPCODE_CONTINUATION = 0x00
         const val OPCODE_TEXT = 0x01

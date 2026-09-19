@@ -1,6 +1,9 @@
 package com.openandroidintelligence.gateway.http
 
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.events.EventCursorStore
+import com.openandroidintelligence.gateway.events.EventStreamStatus
+import com.openandroidintelligence.gateway.events.EventStreamStatusSink
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.events.SseParser
 import com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport
@@ -68,6 +71,15 @@ class GatewayHttpClient(
     private val cursorStore: EventCursorStore,
     private val webSocketTransport: GatewayWebSocketTransport? = if (transport is GatewayTransport) GatewayWebSocketTransport(profile, signer) else null,
     private val delayFn: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+    /** Where the stream reports its health. Absent means nobody is watching. */
+    private val statusSink: EventStreamStatusSink? = null,
+    /**
+     * How many consecutive dead rounds before the stream stops retrying and
+     * fails loudly. Retrying forever is what made a dropped reply look like an
+     * app that never answered: nothing above could tell "reconnecting" from
+     * "working".
+     */
+    private val maxConsecutiveFailures: Int = 6,
 ) {
 
     suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
@@ -97,6 +109,10 @@ class GatewayHttpClient(
         var backoffMillis = 1000L
         val maxBackoffMillis = 60_000L
         var preferWebSocket = (webSocketTransport != null)
+        var consecutiveFailures = 0
+
+        statusSink?.report(EventStreamStatus.CONNECTING)
+        GatewayLog.d(TAG, "event stream start autoReconnect=$autoReconnect")
 
         while (currentCoroutineContext().isActive) {
             val storedCursor = cursorStore.load(profile.accountId)
@@ -104,14 +120,22 @@ class GatewayHttpClient(
             var receivedAnyEventInAttempt = false
             var receivedWsEventInAttempt = false
             var streamFailed = false
+            var lastFailure: Throwable? = null
+
+            GatewayLog.d(TAG, "event stream attempt cursor=$cursor viaWs=$preferWebSocket")
 
             // 1. Try WebSocket first if preferred and available
             if (preferWebSocket && webSocketTransport != null) {
                 try {
                     webSocketTransport.events(cursor).collect { event ->
+                        if (!receivedWsEventInAttempt) {
+                            GatewayLog.d(TAG, "event stream live over websocket")
+                        }
                         receivedAnyEventInAttempt = true
                         receivedWsEventInAttempt = true
                         backoffMillis = 1000L
+                        consecutiveFailures = 0
+                        statusSink?.report(EventStreamStatus.LIVE)
                         event.id?.let { cursorStore.save(profile.accountId, it) }
                         emit(event)
                     }
@@ -125,9 +149,11 @@ class GatewayHttpClient(
                     throw e
                 } catch (e: Throwable) {
                     streamFailed = true
+                    lastFailure = e
                     if (!receivedWsEventInAttempt) {
                         preferWebSocket = false
                     }
+                    GatewayLog.w(TAG, "websocket attempt failed: ${e.message}")
                 }
             }
 
@@ -161,16 +187,26 @@ class GatewayHttpClient(
                     ).collect { chunk ->
                         val parsedEvents = parser.feedBytes(chunk)
                         if (parsedEvents.isNotEmpty()) {
+                            if (!receivedAnyEventInAttempt) {
+                                GatewayLog.d(TAG, "event stream live over sse")
+                            }
                             receivedAnyEventInAttempt = true
                             backoffMillis = 1000L
+                            consecutiveFailures = 0
+                            statusSink?.report(EventStreamStatus.LIVE)
                             preferWebSocket = (webSocketTransport != null)
                         }
-                        for (event in parsedEvents) emit(event)
+                        for (event in parsedEvents) {
+                            GatewayLog.d(TAG, "event ${event.event} id=${event.id}")
+                            emit(event)
+                        }
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
                     streamFailed = true
+                    lastFailure = e
+                    GatewayLog.w(TAG, "sse attempt failed: ${e.message}")
                 }
             }
 
@@ -178,9 +214,29 @@ class GatewayHttpClient(
                 preferWebSocket = (webSocketTransport != null)
             }
 
+            // A round counts as failed only when both channels failed: a
+            // WebSocket that is unsupported and hands over to SSE is a normal
+            // downgrade, not an outage.
+            if (streamFailed) {
+                consecutiveFailures++
+                GatewayLog.w(TAG, "event stream round failed $consecutiveFailures/$maxConsecutiveFailures")
+                // Stop retrying instead of looping forever: a stream that never
+                // recovers has to reach the user as a failure, because silence
+                // is indistinguishable from an app that forgot to answer.
+                if (autoReconnect && consecutiveFailures >= maxConsecutiveFailures) {
+                    statusSink?.report(EventStreamStatus.FAILED)
+                    throw lastFailure ?: java.io.IOException("EVENT_STREAM_FAILED:retries-exhausted")
+                }
+            }
+
             // If reconnect is disabled:
             if (!autoReconnect) {
+                if (streamFailed) statusSink?.report(EventStreamStatus.FAILED)
                 break
+            }
+
+            if (streamFailed) {
+                statusSink?.report(EventStreamStatus.RECONNECTING)
             }
 
             // Exponential backoff before reconnecting on failure: 1s, 2s, 5s...
@@ -219,6 +275,7 @@ class GatewayHttpClient(
     companion object {
         const val PROTOCOL_HEADER = "2.0"
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
+        private const val TAG = "GatewayEvents"
         val MUTATING_METHODS = setOf("POST", "PUT", "DELETE", "PATCH")
 
         /** The closed wire ID alphabet from contract §2, used for opaque cursors. */

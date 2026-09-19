@@ -62,6 +62,9 @@ data class WorkbenchUiState(
     /** Batch members collected by the debounce window, newest last. */
     val pendingBatch: List<TimelineEntry> = emptyList(),
     val notice: String? = null,
+    /** Whether the inbound reply channel is alive; a dead one explains silence. */
+    val streamHealth: com.openandroidintelligence.conversation.model.StreamHealth =
+        com.openandroidintelligence.conversation.model.StreamHealth.IDLE,
 ) {
     val canSend: Boolean get() = (draft.isNotBlank() || attachments.isNotEmpty()) &&
         composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
@@ -85,7 +88,24 @@ class WorkbenchController(
     private val supportsMessageBatches: Boolean = false,
     /** Reports the active thread so cancellation and events scope to the right conversation. */
     private val onActiveThreadChanged: (String?) -> Unit = {},
+    /** The reply channel's health, when the repository can report it. */
+    private val streamHealthSource: com.openandroidintelligence.conversation.model.StreamHealthSource? = null,
+    /** Injectable wall clock and sleeper so the reply watchdog is testable. */
+    private val replyTimeouts: ReplyTimeouts = ReplyTimeouts(),
 ) : AutoCloseable {
+
+    /**
+     * How long a send may stay unanswered before the phone stops trusting
+     * silence and does something about it.
+     */
+    data class ReplyTimeouts(
+        /** No first token within this time: pull the timeline as a fallback. */
+        val firstReplyMillis: Long = 20_000L,
+        /** Still unfinished after this: tell the user instead of spinning forever. */
+        val giveUpMillis: Long = 120_000L,
+        /** Off for a caller driving the controller with a virtual clock. */
+        val enabled: Boolean = true,
+    )
     private val _state = MutableStateFlow(WorkbenchUiState())
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
 
@@ -103,6 +123,10 @@ class WorkbenchController(
 
     private var eventJob: Job? = null
     private var timelineJob: Job? = null
+    private var healthJob: Job? = null
+    /** Watchdog for one send: the difference between "thinking" and "broken". */
+    private var replyWatchdog: Job? = null
+    private var awaitingReplyInThread: String? = null
     private var activeThreadId: String? = null
     private var creationJob: Deferred<Result<String>>? = null
     private var draftRevision = 0L
@@ -113,7 +137,6 @@ class WorkbenchController(
         val conversationId: String?,
     )
     private var pendingSubmission: DraftSubmission? = null
-    private val batchTargets = mutableMapOf<String, String>()
     private val userRenamedThreads = mutableSetOf<String>()
 
     val isCurrentThreadUserRenamed: Boolean
@@ -172,6 +195,8 @@ class WorkbenchController(
         attachmentJobs.clear()
         creationJob?.cancel()
         eventJob?.cancel()
+        healthJob?.cancel()
+        disarmReplyWatchdog()
         batcher.close()
     }
 
@@ -180,12 +205,82 @@ class WorkbenchController(
     private val batcher = DebounceBatcher(
         scope = scope,
         policy = debouncePolicy,
-        onFlush = { conversationScope, messages -> submitBatch(conversationScope, messages) },
+        onFlush = { conversationScope, conversationId, messages ->
+            submitBatch(conversationScope, conversationId, messages)
+        },
     )
 
     init {
         refreshThreads()
         loadCatalog()
+        observeStreamHealth()
+    }
+
+    /**
+     * Mirrors the reply channel's health into the state a screen renders.
+     *
+     * Two transitions matter for a user waiting on an answer: going from live
+     * to reconnecting means events produced in that gap may never arrive, so
+     * the timeline is pulled once as a fallback; reaching failed is reported
+     * outright, because a stream that gave up is a fact the user can act on.
+     */
+    private fun observeStreamHealth() {
+        val source = streamHealthSource ?: return
+        healthJob?.cancel()
+        healthJob = scope.launch {
+            source.streamHealth.collect { health ->
+                val previous = _state.value.streamHealth
+                update { it.copy(streamHealth = health) }
+                if (previous == com.openandroidintelligence.conversation.model.StreamHealth.LIVE &&
+                    health != com.openandroidintelligence.conversation.model.StreamHealth.LIVE
+                ) {
+                    activeThreadId?.let(::reloadTimeline)
+                }
+                if (health == com.openandroidintelligence.conversation.model.StreamHealth.FAILED) {
+                    update { it.copy(notice = "EVENTS_FAILED:EVENT_STREAM_FAILED") }
+                }
+            }
+        }
+    }
+
+    /**
+     * Starts watching one sent message for an answer.
+     *
+     * A reply only ever arrives as an event, so a send with no event and no
+     * timer can only ever be silence. This turns silence into either a
+     * recovered timeline or a message the user can read.
+     */
+    private fun armReplyWatchdog(conversationId: String) {
+        if (!replyTimeouts.enabled) return
+        replyWatchdog?.cancel()
+        awaitingReplyInThread = conversationId
+        replyWatchdog = scope.launch {
+            delay(replyTimeouts.firstReplyMillis)
+            if (awaitingReplyInThread != conversationId) return@launch
+            // The event for this reply may have been produced while the stream
+            // was down; the timeline is the authoritative answer either way.
+            if (activeThreadId == conversationId) reloadTimeline(conversationId)
+            delay((replyTimeouts.giveUpMillis - replyTimeouts.firstReplyMillis).coerceAtLeast(0L))
+            if (awaitingReplyInThread != conversationId) return@launch
+            awaitingReplyInThread = null
+            update { state ->
+                if (state.activeThreadId != conversationId) return@update state
+                state.copy(
+                    notice = "REPLY_TIMEOUT:NO_REPLY_RECEIVED",
+                    generation = if (state.generation == GenerationState.RUNNING) {
+                        GenerationState.RUNNING
+                    } else {
+                        GenerationState.OUTCOME_UNKNOWN
+                    },
+                )
+            }
+        }
+    }
+
+    private fun disarmReplyWatchdog() {
+        replyWatchdog?.cancel()
+        replyWatchdog = null
+        awaitingReplyInThread = null
     }
 
     fun retryTimeline() {
@@ -226,6 +321,7 @@ class WorkbenchController(
         mirroredRevisions.clear()
         eventJob?.cancel()
         timelineJob?.cancel()
+        disarmReplyWatchdog()
         update {
             it.copy(
                 activeThreadId = threadId,
@@ -474,8 +570,7 @@ class WorkbenchController(
                     }
                 }
                 if (supportsMessageBatches && !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()) {
-                    batchTargets[message.clientMessageId.value] = target
-                    batcher.offer(scopeFactory(), message)
+                    batcher.offer(scopeFactory(), target, message)
                 } else {
                     val acceptance = repository.submitMessage(target, message)
                     if (activeThreadId == target) {
@@ -505,6 +600,7 @@ class WorkbenchController(
                                 generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED,
                             )
                         }
+                        armReplyWatchdog(target)
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -515,17 +611,20 @@ class WorkbenchController(
         }
     }
 
-    private suspend fun submitBatch(conversationScope: ConversationScope, messages: List<OutgoingMessage>) {
+    private suspend fun submitBatch(
+        conversationScope: ConversationScope,
+        conversationId: String,
+        messages: List<OutgoingMessage>,
+    ) {
         if (messages.isEmpty()) return
         val batchId = "batch_" + UUID.randomUUID().toString()
         val flushedKeys = messages.map { "local_" + it.clientMessageId.value }.toSet()
         Result.runCatching {
-            messages.groupBy { batchTargets.remove(it.clientMessageId.value) ?: error("BATCH_TARGET_MISSING") }
-                .forEach { (target, members) ->
-                    repository.submitBatch(target, com.openandroidintelligence.conversation.ports.MessageBatch(
-                        batchId = batchId + "_" + target, messages = members, clientConversationId = target,
-                    ))
-                }
+            // The batch already carries its conversation: re-deriving the target
+            // from a side map is how a member used to end up in the wrong thread.
+            repository.submitBatch(conversationId, com.openandroidintelligence.conversation.ports.MessageBatch(
+                batchId = batchId, messages = messages, clientConversationId = conversationId,
+            ))
         }.fold(
             onSuccess = { _ ->
                 val pendingEntries = _state.value.pendingBatch
@@ -563,6 +662,7 @@ class WorkbenchController(
                         notice = null,
                     )
                 }
+                activeThreadId?.let(::armReplyWatchdog)
                 refreshThreads()
             },
             onFailure = { cause ->
@@ -675,6 +775,10 @@ class WorkbenchController(
                                 mirrored[message.id] = message
                                 mirroredRevisions[message.id] = event.revision
                             }
+                            // Assistant traffic of any kind is the answer the
+                            // watchdog is waiting for: a delta counts as much as
+                            // a completion, because the reply is clearly coming.
+                            if (message.sender == "assistant") disarmReplyWatchdog()
                             update { state ->
                                 state.copy(
                                     timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
