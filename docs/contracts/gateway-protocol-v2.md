@@ -11,6 +11,7 @@ version: 2.0.0
 
 本契约定义 Android 宿主与一个账号所属逻辑 Gateway 之间的应用层协议。它不定义 Hermes/OpenClaw 内部 API、插件 WASM ABI 或 Companion IPC。
 
+V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme 无关，但传输必须满足：HTTPS 是默认且唯一身份可核验的链路，客户端在协商返回 `tlsSpkiSha256` 时必须固定该身份；只有当用户显式输入 `http://` 地址时才允许明文连接，此时没有可核验的 Gateway 身份，客户端必须持续显示未加密警告，且声明了 TLS 指纹的账号不得降级到明文（见 ADR 0047）。SSE 是唯一 V1 流式事件通道，不提供等价 WebSocket 通道。
 V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme 无关，但传输必须满足：HTTPS 是默认且唯一身份可核验的链路，客户端在协商返回 `tlsSpkiSha256` 时必须固定该身份；只有当用户显式输入 `http://` 地址时才允许明文连接，此时没有可核验的 Gateway 身份，客户端必须持续显示未加密警告，且声明了 TLS 指纹的账号不得降级到明文（见 ADR 0047）。事件流原生支持 RFC 6455 WebSocket 与 SSE (Server-Sent Events) 双通道传输，客户端优先协商 WebSocket 并支持自动降级至 SSE。
 
 ## 2. 基础约定
@@ -488,8 +489,10 @@ type AttachmentEvent =
 
 只有 `verified` 附件可被消息引用。宿主确认接收后 Gateway 删除暂存字节并保留无正文终态。TTL 到期必须立即删除 staged bytes，并通过 `expire` 把协议元数据记录为 `expired`；后续单独的 `cleanup` 才把该无正文元数据转为 `deleted`。解除配对和账号删除仍以资源级事务立即移除对应 bytes 和元数据，不伪造 reducer 的逐附件跳转。
 
+## 9. SSE 事件流
 ## 9. 事件流传输 (WebSocket 与 SSE)
 
+`GET /events?cursor=<opaque>` 使用 `Accept: text/event-stream`。认证 SSE 恢复以 canonical query 中的 `cursor` 为权威；`Last-Event-ID` 若存在，必须与 query cursor 逐字节精确相等，否则返回 `CURSOR_CONFLICT`。只有 header、没有 query cursor 不能选择恢复位置。
 端点 `GET /events?cursor=<opaque>` 提供全链路事件订阅与断点续传能力，支持双通道传输：
 
 1. **WebSocket 传输 (RFC 6455)**：
