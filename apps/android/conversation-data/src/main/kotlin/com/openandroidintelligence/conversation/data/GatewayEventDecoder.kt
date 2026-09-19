@@ -56,14 +56,16 @@ object GatewayEventDecoder {
 
             "conversation.title.updated" -> {
                 val conversationId = conversationIdOf(payload, body) ?: return null
+                val newTitle = JsonFields.string(payload, "title")
+                    ?: JsonFields.string(payload, "newTitle")
+                    ?: if (payload !== body) {
+                        JsonFields.string(body, "title") ?: JsonFields.string(body, "newTitle").orEmpty()
+                    } else ""
                 VerifiedConversationEvent.TitleUpdated(
                     eventId = eventId,
                     occurredAt = occurredAt,
                     conversationId = conversationId,
-                    newTitle = JsonFields.string(payload, "title")
-                        ?: JsonFields.string(payload, "newTitle")
-                        ?: JsonFields.string(body, "title")
-                        ?: JsonFields.string(body, "newTitle").orEmpty(),
+                    newTitle = newTitle,
                 )
             }
 
@@ -143,7 +145,8 @@ object GatewayEventDecoder {
      * keep an event from another thread out of the active timeline.
      */
     private fun conversationIdOf(payload: JsonValue.JObject?, body: JsonValue.JObject? = null): ConversationId? {
-        for (target in listOfNotNull(payload, body)) {
+        val targets = if (payload === body || body == null) listOfNotNull(payload) else listOfNotNull(payload, body)
+        for (target in targets) {
             for (key in CONVERSATION_ID_KEYS) {
                 val value = JsonFields.string(target, key)?.trim()
                 if (!value.isNullOrBlank()) {

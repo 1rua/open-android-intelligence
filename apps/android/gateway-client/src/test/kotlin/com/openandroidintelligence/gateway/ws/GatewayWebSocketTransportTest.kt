@@ -139,6 +139,15 @@ class GatewayWebSocketTransportTest {
         return (requestLine ?: "") to headers
     }
 
+    private fun mock101Response(headers: Map<String, String>): String {
+        val clientKey = headers["sec-websocket-key"] ?: ""
+        val accept = GatewayWebSocketTransport.computeSecWebSocketAccept(clientKey)
+        return "HTTP/1.1 101 Switching Protocols\r\n" +
+            "Upgrade: websocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Sec-WebSocket-Accept: $accept\r\n\r\n"
+    }
+
     @Test
     fun `handshake carries 9 authentication headers and websocket upgrade headers`() {
         val server = ServerSocket(0)
@@ -155,10 +164,7 @@ class GatewayWebSocketTransportTest {
             receivedHeaders.putAll(headers)
 
             // Send 101 response
-            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n" +
-                "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n"
+            val response = mock101Response(headers)
             client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
             client.getOutputStream().flush()
 
@@ -222,11 +228,9 @@ class GatewayWebSocketTransportTest {
 
         val serverThread = thread {
             val client = server.accept()
-            readHttpHeaders(client.getInputStream())
+            val (_, headers) = readHttpHeaders(client.getInputStream())
 
-            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n\r\n"
+            val response = mock101Response(headers)
             client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
             client.getOutputStream().flush()
 
@@ -272,9 +276,9 @@ class GatewayWebSocketTransportTest {
 
         val serverThread = thread {
             val client = server.accept()
-            readHttpHeaders(client.getInputStream())
+            val (_, headers) = readHttpHeaders(client.getInputStream())
 
-            val response = "HTTP/1.1 101 Switching Protocols\r\n\r\n"
+            val response = mock101Response(headers)
             client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
             client.getOutputStream().flush()
 
@@ -378,11 +382,9 @@ class GatewayWebSocketTransportTest {
         val serverThread = thread {
             try {
                 val client = server.accept()
-                readHttpHeaders(client.getInputStream())
+                val (_, headers) = readHttpHeaders(client.getInputStream())
 
-                val response = "HTTP/1.1 101 Switching Protocols\r\n" +
-                    "Upgrade: websocket\r\n" +
-                    "Connection: Upgrade\r\n\r\n"
+                val response = mock101Response(headers)
                 client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
                 client.getOutputStream().flush()
 
@@ -435,9 +437,7 @@ class GatewayWebSocketTransportTest {
             val (_, headers) = readHttpHeaders(client.getInputStream())
             receivedHost = headers["host"] ?: ""
 
-            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n\r\n"
+            val response = mock101Response(headers)
             client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
             client.getOutputStream().flush()
             handshakeReceived.countDown()
@@ -483,12 +483,10 @@ class GatewayWebSocketTransportTest {
 
         val serverThread = thread {
             val client = server.accept()
-            val (reqLine, _) = readHttpHeaders(client.getInputStream())
+            val (reqLine, headers) = readHttpHeaders(client.getInputStream())
             receivedRequestLine = reqLine
 
-            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n\r\n"
+            val response = mock101Response(headers)
             client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
             client.getOutputStream().flush()
             handshakeReceived.countDown()
@@ -642,11 +640,9 @@ class GatewayWebSocketTransportTest {
 
         val serverThread = thread {
             val client = server.accept()
-            readHttpHeaders(client.getInputStream())
+            val (_, headers) = readHttpHeaders(client.getInputStream())
 
-            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n\r\n"
+            val response = mock101Response(headers)
             client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
             client.getOutputStream().flush()
 
@@ -684,11 +680,9 @@ class GatewayWebSocketTransportTest {
 
         val serverThread = thread {
             val client = server.accept()
-            readHttpHeaders(client.getInputStream())
+            val (_, headers) = readHttpHeaders(client.getInputStream())
 
-            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n\r\n"
+            val response = mock101Response(headers)
             client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
             client.getOutputStream().flush()
 
@@ -724,7 +718,43 @@ class GatewayWebSocketTransportTest {
     }
 
     @Test
-    fun `sendPong truncates payload exceeding 125 bytes`() {
+    fun `control frame with payload exceeding 125 bytes throws protocol error`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            client.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // Ping with 150 bytes payload (> 125)
+            val oversizedPayload = ByteArray(150) { it.toByte() }
+            writeServerFrame(client.getOutputStream(), 0x09, oversizedPayload)
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected control frame payload error, got: $msg", msg.contains("WEBSOCKET_PROTOCOL_ERROR: control frame payload exceeds 125 bytes"))
+    }
+
+    @Test
+    fun `server ping payload up to 125 bytes is echoed verbatim in pong reply`() {
         val server = ServerSocket(0)
         val port = server.localPort
 
@@ -734,17 +764,13 @@ class GatewayWebSocketTransportTest {
 
         val serverThread = thread {
             val client = server.accept()
-            readHttpHeaders(client.getInputStream())
-
-            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n\r\n"
-            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            client.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
             client.getOutputStream().flush()
 
-            // Ping with 150 bytes payload (> 125)
-            val oversizedPayload = ByteArray(150) { it.toByte() }
-            writeServerFrame(client.getOutputStream(), 0x09, oversizedPayload)
+            // Ping with 125 bytes payload
+            val pingPayloadBytes = ByteArray(125) { it.toByte() }
+            writeServerFrame(client.getOutputStream(), 0x09, pingPayloadBytes)
 
             val (opcode, payload) = readClientFrame(client.getInputStream())
             pongOpcode = opcode
@@ -776,5 +802,499 @@ class GatewayWebSocketTransportTest {
             assertEquals(i.toByte(), pongPayload[i])
         }
         assertEquals("evt_done", events[0].id)
+    }
+
+    @Test
+    fun `masked server frame throws protocol error`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            client.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // Server frame with MASK bit set (b1 = 0x80)
+            val output = client.getOutputStream()
+            output.write(0x81) // FIN=1, Opcode=1 (Text)
+            output.write(0x80) // MASK=1, len=0
+            output.write(byteArrayOf(0, 0, 0, 0)) // 4-byte mask key
+            output.flush()
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected server mask error, got: $msg", msg.contains("WEBSOCKET_PROTOCOL_ERROR: server must not mask frames"))
+    }
+
+    @Test
+    fun `fragmented control frame throws protocol error`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            client.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // Control frame (0x09 Ping) with fin = false
+            writeServerFrame(client.getOutputStream(), 0x09, "ping".toByteArray(Charsets.UTF_8), fin = false)
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected control frame fragmentation error, got: $msg", msg.contains("WEBSOCKET_PROTOCOL_ERROR: control frames must not be fragmented"))
+    }
+
+    @Test
+    fun `handshake fails when connection header does not contain upgrade`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            val clientKey = headers["sec-websocket-key"] ?: ""
+            val accept = GatewayWebSocketTransport.computeSecWebSocketAccept(clientKey)
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: keep-alive\r\n" +
+                "Sec-WebSocket-Accept: $accept\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected Connection header error, got: $msg", msg.contains("WEBSOCKET_HANDSHAKE_FAILED: missing or invalid Connection header"))
+    }
+
+    @Test
+    fun `handshake fails when header line exceeds MAX_HEADER_LINE_BYTES`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            readHttpHeaders(client.getInputStream())
+
+            val longHeader = "X-Oversized: " + "a".repeat(9000) + "\r\n"
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" + longHeader
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected line limit error, got: $msg", msg.contains("WEBSOCKET_HANDSHAKE_FAILED: header line exceeds 8192 bytes"))
+    }
+
+    @Test
+    fun `continuation frame without active data frame throws protocol error`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            client.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // Opcode 0x00 without prior fragmented data frame
+            writeServerFrame(client.getOutputStream(), 0x00, "orphan".toByteArray(Charsets.UTF_8), fin = true)
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected continuation error, got: $msg", msg.contains("WEBSOCKET_PROTOCOL_ERROR: received continuation frame without an active message"))
+    }
+
+    @Test
+    fun `new data frame before completing fragmented message throws protocol error`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            client.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // Part 1: Opcode Text, FIN = false
+            writeServerFrame(client.getOutputStream(), 0x01, "part1".toByteArray(Charsets.UTF_8), fin = false)
+            // Part 2: Opcode Text again (invalid during fragmentation)
+            writeServerFrame(client.getOutputStream(), 0x01, "part2".toByteArray(Charsets.UTF_8), fin = true)
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected protocol error, got: $msg", msg.contains("WEBSOCKET_PROTOCOL_ERROR: received new data frame before completing fragmented message"))
+    }
+
+    @Test
+    fun `fragmented message exceeding MAX_PAYLOAD_BYTES throws buffer overflow`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            client.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // 1MB payload parts
+            val oneMb = ByteArray(1024 * 1024)
+            writeServerFrame(client.getOutputStream(), 0x01, oneMb, fin = false)
+            // Send 16 more MBs to exceed 16MB limit
+            for (i in 0 until 16) {
+                writeServerFrame(client.getOutputStream(), 0x00, oneMb, fin = (i == 15))
+            }
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected buffer overflow, got: $msg", msg.contains("WEBSOCKET_BUFFER_OVERFLOW"))
+    }
+
+    @Test
+    fun `socket timeout during frame read throws WEBSOCKET_STREAM_STALLED`() {
+        val mockSocket = object : Socket() {
+            private val output = ByteArrayOutputStream()
+            override fun getOutputStream(): OutputStream = output
+            override fun getInputStream(): InputStream = object : InputStream() {
+                private var pos = 0
+                private val handshakeBytes: ByteArray by lazy {
+                    val keyRegex = Regex("Sec-WebSocket-Key: (.*)\r\n", RegexOption.IGNORE_CASE)
+                    val key = keyRegex.find(output.toString(Charsets.US_ASCII.name()))?.groupValues?.get(1)?.trim() ?: ""
+                    val accept = GatewayWebSocketTransport.computeSecWebSocketAccept(key)
+                    ("HTTP/1.1 101 Switching Protocols\r\n" +
+                        "Upgrade: websocket\r\n" +
+                        "Connection: Upgrade\r\n" +
+                        "Sec-WebSocket-Accept: $accept\r\n\r\n").toByteArray(Charsets.US_ASCII)
+                }
+
+                override fun read(): Int {
+                    if (pos < handshakeBytes.size) {
+                        return handshakeBytes[pos++].toInt() and 0xFF
+                    }
+                    throw java.net.SocketTimeoutException("Read timed out")
+                }
+            }
+            override fun close() {}
+            override fun isClosed(): Boolean = false
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(1234),
+            signer = { ByteArray(64) },
+            socketFactory = { _, _, _ -> mockSocket },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected stalled error, got: $msg", msg.contains("WEBSOCKET_STREAM_STALLED: no bytes received for 45000ms"))
+    }
+
+    @Test
+    fun `control frames interleaved between fragmented text frames do not reset fragmentation state`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val pongReceived = CountDownLatch(1)
+        var pongOpcode = -1
+        var pongPayload = ByteArray(0)
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            client.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            val part1 = "{\"id\":\"evt_interleaved\",\"event\":\"msg\",\"data\":\"hello ".toByteArray(Charsets.UTF_8)
+            val part2 = "world\"}".toByteArray(Charsets.UTF_8)
+
+            // 1. Text frame fragment (fin = false)
+            writeServerFrame(client.getOutputStream(), 0x01, part1, fin = false)
+
+            // 2. Interleaved Ping control frame (opcode 0x09, fin = true)
+            writeServerFrame(client.getOutputStream(), 0x09, "ping_in_middle".toByteArray(Charsets.UTF_8), fin = true)
+
+            // Read Pong from client
+            val (opcode, payload) = readClientFrame(client.getInputStream())
+            pongOpcode = opcode
+            pongPayload = payload
+            pongReceived.countDown()
+
+            // 3. Interleaved Pong control frame from server (opcode 0x0A, fin = true)
+            writeServerFrame(client.getOutputStream(), 0x0A, ByteArray(0), fin = true)
+
+            // 4. Continuation frame completing the message (fin = true)
+            writeServerFrame(client.getOutputStream(), 0x00, part2, fin = true)
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val events = runBlocking {
+            transport.events().take(1).toList()
+        }
+
+        assertTrue(pongReceived.await(5, TimeUnit.SECONDS))
+        serverThread.join(5000)
+
+        assertEquals(0x0A, pongOpcode)
+        assertEquals("ping_in_middle", String(pongPayload, Charsets.UTF_8))
+        assertEquals(1, events.size)
+        assertEquals("evt_interleaved", events[0].id)
+        assertEquals("msg", events[0].event)
+        assertEquals("hello world", events[0].data)
+    }
+
+    @Test
+    fun `handshake succeeds when connection header is duplicated across multiple lines`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            val clientKey = headers["sec-websocket-key"] ?: ""
+            val accept = GatewayWebSocketTransport.computeSecWebSocketAccept(clientKey)
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: keep-alive\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Accept: $accept\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            val jsonEvent = "{\"id\":\"evt_multi_conn\",\"event\":\"ok\",\"data\":\"{}\"}"
+            writeServerFrame(client.getOutputStream(), 0x01, jsonEvent.toByteArray(Charsets.UTF_8))
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+            verifyAcceptHeader = true,
+        )
+
+        val events = runBlocking {
+            transport.events().take(1).toList()
+        }
+
+        serverThread.join(5000)
+        assertEquals(1, events.size)
+        assertEquals("evt_multi_conn", events[0].id)
+    }
+
+    @Test
+    fun `gateway http client invokes delayFn before reconnecting on clean stream disconnect`() = runBlocking {
+        var connectCount = 0
+        val recordedDelays = mutableListOf<Long>()
+        val finiteTransport = object : com.openandroidintelligence.gateway.http.GatewayByteTransport {
+            override suspend fun execute(request: com.openandroidintelligence.gateway.http.WireRequest): com.openandroidintelligence.gateway.http.WireResponse = error("unused")
+            override fun eventStream(request: com.openandroidintelligence.gateway.http.WireRequest): kotlinx.coroutines.flow.Flow<ByteArray> = kotlinx.coroutines.flow.flow {
+                connectCount++
+                emit("id: evt_$connectCount\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+            }
+        }
+        val client = com.openandroidintelligence.gateway.http.GatewayHttpClient(
+            profile = testProfile(1234),
+            transport = finiteTransport,
+            signer = { ByteArray(64) },
+            cursorStore = object : com.openandroidintelligence.gateway.events.EventCursorStore {
+                override fun load(accountId: String): String? = null
+                override fun save(accountId: String, cursor: String) {}
+                override fun clear(accountId: String) {}
+            },
+            webSocketTransport = null,
+            delayFn = { recordedDelays += it },
+        )
+
+        val events = client.events(autoReconnect = true).take(2).toList()
+
+        assertEquals(2, events.size)
+        assertEquals("evt_1", events[0].id)
+        assertEquals("evt_2", events[1].id)
+        assertEquals(listOf(1000L), recordedDelays)
+    }
+
+    @Test
+    fun `websocket sticky downgrade recovers after sse succeeds`() = runBlocking {
+        var wsAttempts = 0
+        var sseAttempts = 0
+        val recordedDelays = mutableListOf<Long>()
+
+        val failingThenWorkingWs = object : GatewayWebSocketTransport(
+            profile = testProfile(1234),
+            signer = { ByteArray(64) },
+        ) {
+            override fun events(cursor: String?): kotlinx.coroutines.flow.Flow<GatewayEvent> = kotlinx.coroutines.flow.flow {
+                wsAttempts++
+                if (wsAttempts == 1) {
+                    // Fail first attempt with EOF (0 events)
+                    return@flow
+                } else {
+                    emit(GatewayEvent("ws_event_after_recovery", "ws.event", "{}"))
+                    kotlinx.coroutines.awaitCancellation()
+                }
+            }
+        }
+
+        val sseTransport = object : com.openandroidintelligence.gateway.http.GatewayByteTransport {
+            override suspend fun execute(request: com.openandroidintelligence.gateway.http.WireRequest): com.openandroidintelligence.gateway.http.WireResponse = error("unused")
+            override fun eventStream(request: com.openandroidintelligence.gateway.http.WireRequest): kotlinx.coroutines.flow.Flow<ByteArray> = kotlinx.coroutines.flow.flow {
+                sseAttempts++
+                emit("id: sse_event\nevent: sse\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+            }
+        }
+
+        val client = com.openandroidintelligence.gateway.http.GatewayHttpClient(
+            profile = testProfile(1234),
+            transport = sseTransport,
+            signer = { ByteArray(64) },
+            cursorStore = object : com.openandroidintelligence.gateway.events.EventCursorStore {
+                override fun load(accountId: String): String? = null
+                override fun save(accountId: String, cursor: String) {}
+                override fun clear(accountId: String) {}
+            },
+            webSocketTransport = failingThenWorkingWs,
+            delayFn = { recordedDelays += it },
+        )
+
+        // Attempt 1: WS fails (0 events) -> downgrades to SSE -> SSE emits sse_event -> clean EOF
+        // Reconnect: preferWebSocket restored to true!
+        // Attempt 2: WS retried! WS emits ws_event_after_recovery
+        val events = client.events(autoReconnect = true).take(2).toList()
+
+        assertEquals(2, events.size)
+        assertEquals("sse_event", events[0].id)
+        assertEquals("ws_event_after_recovery", events[1].id)
+        assertEquals(2, wsAttempts)
+        assertEquals(1, sseAttempts)
+        assertEquals(listOf(1000L), recordedDelays)
     }
 }

@@ -17,7 +17,7 @@ class DebounceBatcher(
     private val scope: CoroutineScope,
     private val policy: DebouncePolicy = DebouncePolicy(),
     private val onFlush: suspend (ConversationScope, List<OutgoingMessage>) -> Unit,
-) {
+) : AutoCloseable {
     private val activeBatches = mutableMapOf<ConversationScope, MutableList<OutgoingMessage>>()
     private val activeJobs = mutableMapOf<ConversationScope, Job>()
 
@@ -46,5 +46,11 @@ class DebounceBatcher(
                 onFlush(targetScope, messages)
             }
         }
+    }
+
+    override fun close() {
+        activeJobs.values.forEach { it.cancel() }
+        activeJobs.clear()
+        activeBatches.clear()
     }
 }

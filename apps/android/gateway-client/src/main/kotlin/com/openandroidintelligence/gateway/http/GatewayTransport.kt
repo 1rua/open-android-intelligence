@@ -84,10 +84,10 @@ class GatewayTransport(
                     } catch (e: java.net.SocketTimeoutException) {
                         throw IOException("EVENT_STREAM_STALLED: no bytes received for ${SSE_IDLE_TIMEOUT_MILLIS}ms", e)
                     } catch (e: java.net.SocketException) {
-                        if (!currentCoroutineContext().isActive) break
+                        if (!currentCoroutineContext().isActive || e.message?.contains("closed", ignoreCase = true) == true) break
                         throw e
                     } catch (e: IOException) {
-                        if (!currentCoroutineContext().isActive) break
+                        if (!currentCoroutineContext().isActive || e.message?.contains("closed", ignoreCase = true) == true) break
                         throw e
                     }
                     if (read == -1) break
@@ -108,7 +108,6 @@ class GatewayTransport(
             URL(endpoint.baseUrl.trimEnd('/') + request.target),
             readTimeoutMillis = readTimeoutMillis,
         )
-        connection.readTimeout = readTimeoutMillis
         connection.requestMethod = request.method
         connection.doInput = true
         connection.setRequestProperty("Accept", "application/json")

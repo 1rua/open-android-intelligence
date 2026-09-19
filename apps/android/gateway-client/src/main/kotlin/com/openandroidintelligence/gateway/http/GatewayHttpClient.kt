@@ -115,6 +115,12 @@ class GatewayHttpClient(
                         event.id?.let { cursorStore.save(profile.accountId, it) }
                         emit(event)
                     }
+                    if (currentCoroutineContext().isActive) {
+                        streamFailed = true
+                        if (!receivedWsEventInAttempt) {
+                            preferWebSocket = false
+                        }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -157,6 +163,7 @@ class GatewayHttpClient(
                         if (parsedEvents.isNotEmpty()) {
                             receivedAnyEventInAttempt = true
                             backoffMillis = 1000L
+                            preferWebSocket = (webSocketTransport != null)
                         }
                         for (event in parsedEvents) emit(event)
                     }
@@ -167,7 +174,7 @@ class GatewayHttpClient(
                 }
             }
 
-            if (receivedWsEventInAttempt) {
+            if (receivedWsEventInAttempt || receivedAnyEventInAttempt) {
                 preferWebSocket = (webSocketTransport != null)
             }
 
@@ -186,68 +193,90 @@ class GatewayHttpClient(
                         else -> minOf(backoffMillis * 2, maxBackoffMillis)
                     }
                 } else {
-                    backoffMillis = 1000L
                     kotlinx.coroutines.yield()
+                    if (currentCoroutineContext().isActive) {
+                        delayFn(backoffMillis)
+                    }
+                    backoffMillis = 1000L
+                    preferWebSocket = (webSocketTransport != null)
                 }
             }
         }
-    }.flowOn(Dispatchers.IO)
+    }
 
-    private fun signedInput(method: String, target: String, body: ByteArray): SignedRequestInput =
-        SignedRequestInput(
-            method = method,
-            target = target,
-            accountId = profile.accountId,
-            deviceId = profile.deviceId,
-            sessionId = profile.sessionId,
-            requestId = newRequestId(),
-            // Millisecond precision: the wire format is fixed at three fractional
-            // digits and the Gateway refuses anything else.
-            timestamp = RequestSigner.formatTimestamp(
-                java.time.Instant.ofEpochMilli(java.time.Instant.now().toEpochMilli()),
-            ),
-            nonce = newNonce(),
-            body = body,
-        )
+    internal fun signedInput(method: String, target: String, body: ByteArray): SignedRequestInput =
+        signedInput(profile, method, target, body)
 
-    private fun signatureOf(input: SignedRequestInput): String =
-        java.util.Base64.getUrlEncoder().withoutPadding()
-            .encodeToString(signer(RequestSigner.preimage(input)))
+    internal fun signatureOf(input: SignedRequestInput): String =
+        signatureOf(signer, input)
 
-    private fun authenticationHeaders(
+    internal fun authenticationHeaders(
         input: SignedRequestInput,
         signatureBase64Url: String,
         method: String,
-    ): List<RawHeader> = buildList {
-        add(RawHeader("Authorization", "Bearer ${profile.accessToken}"))
-        add(RawHeader("X-Open-Android-Intelligence-Protocol", PROTOCOL_HEADER))
-        add(RawHeader("X-Open-Android-Intelligence-Account", profile.accountId))
-        add(RawHeader("X-Open-Android-Intelligence-Device", profile.deviceId))
-        add(RawHeader("X-Open-Android-Intelligence-Session", profile.sessionId))
-        add(RawHeader("X-Open-Android-Intelligence-Request-Id", input.requestId))
-        add(RawHeader("X-Open-Android-Intelligence-Timestamp", input.timestamp))
-        add(RawHeader("X-Open-Android-Intelligence-Nonce", input.nonce))
-        add(RawHeader("X-Open-Android-Intelligence-Signature", signatureBase64Url))
-        if (method in MUTATING_METHODS) {
-            add(RawHeader("Idempotency-Key", input.requestId))
-        }
-    }
+    ): List<RawHeader> = authenticationHeaders(profile, input, signatureBase64Url, method)
 
-    private fun newRequestId(): String =
-        "req" + java.util.UUID.randomUUID().toString().replace("-", "").take(20)
-
-    private fun newNonce(): String {
-        val bytes = ByteArray(16)
-        java.security.SecureRandom().nextBytes(bytes)
-        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-    }
-
-    private companion object {
+    companion object {
         const val PROTOCOL_HEADER = "2.0"
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
         val MUTATING_METHODS = setOf("POST", "PUT", "DELETE", "PATCH")
 
         /** The closed wire ID alphabet from contract §2, used for opaque cursors. */
         val CURSOR_ALPHABET = Regex("[A-Za-z0-9._~-]{1,128}")
+
+        internal fun signedInput(
+            profile: GatewayProfile,
+            method: String,
+            target: String,
+            body: ByteArray,
+        ): SignedRequestInput =
+            SignedRequestInput(
+                method = method,
+                target = target,
+                accountId = profile.accountId,
+                deviceId = profile.deviceId,
+                sessionId = profile.sessionId,
+                requestId = newRequestId(),
+                // Millisecond precision: the wire format is fixed at three fractional
+                // digits and the Gateway refuses anything else.
+                timestamp = RequestSigner.formatTimestamp(
+                    java.time.Instant.ofEpochMilli(java.time.Instant.now().toEpochMilli()),
+                ),
+                nonce = newNonce(),
+                body = body,
+            )
+
+        internal fun signatureOf(signer: (ByteArray) -> ByteArray, input: SignedRequestInput): String =
+            java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(signer(RequestSigner.preimage(input)))
+
+        internal fun authenticationHeaders(
+            profile: GatewayProfile,
+            input: SignedRequestInput,
+            signatureBase64Url: String,
+            method: String,
+        ): List<RawHeader> = buildList {
+            add(RawHeader("Authorization", "Bearer ${profile.accessToken}"))
+            add(RawHeader("X-Open-Android-Intelligence-Protocol", PROTOCOL_HEADER))
+            add(RawHeader("X-Open-Android-Intelligence-Account", profile.accountId))
+            add(RawHeader("X-Open-Android-Intelligence-Device", profile.deviceId))
+            add(RawHeader("X-Open-Android-Intelligence-Session", profile.sessionId))
+            add(RawHeader("X-Open-Android-Intelligence-Request-Id", input.requestId))
+            add(RawHeader("X-Open-Android-Intelligence-Timestamp", input.timestamp))
+            add(RawHeader("X-Open-Android-Intelligence-Nonce", input.nonce))
+            add(RawHeader("X-Open-Android-Intelligence-Signature", signatureBase64Url))
+            if (method in MUTATING_METHODS) {
+                add(RawHeader("Idempotency-Key", input.requestId))
+            }
+        }
+
+        private fun newRequestId(): String =
+            "req" + java.util.UUID.randomUUID().toString().replace("-", "").take(20)
+
+        private fun newNonce(): String {
+            val bytes = ByteArray(16)
+            java.security.SecureRandom().nextBytes(bytes)
+            return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+        }
     }
 }

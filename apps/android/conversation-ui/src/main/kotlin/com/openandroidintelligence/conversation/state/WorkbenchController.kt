@@ -95,7 +95,7 @@ class WorkbenchController(
 
     private val attachmentJobs = LinkedHashMap<String, Job>()
     private val attachmentSelections = LinkedHashMap<String, com.openandroidintelligence.conversation.ports.LocalAttachmentSelection>()
-    private val historicalAttachments = object : LinkedHashMap<String, com.openandroidintelligence.conversation.model.TimelineAttachment>(32, 0.75f, true) {
+    private val historicalAttachments = object : LinkedHashMap<String, com.openandroidintelligence.conversation.model.TimelineAttachment>(32, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, com.openandroidintelligence.conversation.model.TimelineAttachment>?): Boolean {
             return size > 30
         }
@@ -212,14 +212,18 @@ class WorkbenchController(
             result.fold(
                 onSuccess = { page ->
                     if (activeThreadId != threadId) return@launch
-                    mirrored.clear()
-                    mirroredRevisions.clear()
-                    page.messages.forEach { mirrored[it.id] = it }
-                    val hasStreaming = page.messages.any { it.sender == "assistant" && it.state == "STREAMING" }
+                    page.messages.forEach { message ->
+                        val currentRevision = mirroredRevisions[message.id] ?: 0L
+                        if (!mirrored.containsKey(message.id) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
+                            mirrored[message.id] = message
+                            mirroredRevisions.putIfAbsent(message.id, 0L)
+                        }
+                    }
+                    val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
                     update { state ->
                         if (state.activeThreadId != threadId) return@update state
                         state.copy(
-                            timeline = if (page.messages.isEmpty()) {
+                            timeline = if (mirrored.isEmpty()) {
                                 Loadable.Empty
                             } else {
                                 Loadable.Ready(renderTimeline(state.pendingBatch))
@@ -410,7 +414,7 @@ class WorkbenchController(
                     attachments = submittedAttachments,
                 )
                 val message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
-                update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
+                update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(it.timeline, entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
 
                 if (eventJob?.isActive != true) {
                     observeThreadEvents()
@@ -451,7 +455,9 @@ class WorkbenchController(
                             },
                             timestamp = entry.timestamp,
                         )
-                        mirroredRevisions[acceptance.messageId] = 0L
+                        if (!mirroredRevisions.containsKey(acceptance.messageId)) {
+                            mirroredRevisions[acceptance.messageId] = 0L
+                        }
                         update { state ->
                             val remainingBatch = state.pendingBatch.filterNot { row -> row.key == entry.key }
                             state.copy(
@@ -483,10 +489,39 @@ class WorkbenchController(
                     ))
                 }
         }.fold(
-            onSuccess = { acceptance ->
+            onSuccess = { _ ->
+                val pendingEntries = _state.value.pendingBatch
+                messages.forEach { msg ->
+                    val id = msg.clientMessageId.value
+                    val entry = pendingEntries.firstOrNull { it.key == "local_$id" || it.key == id }
+                    val timestamp = entry?.timestamp ?: System.currentTimeMillis()
+                    val parts = buildList {
+                        if (msg.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(msg.text))
+                        entry?.attachments?.forEach { att ->
+                            add(
+                                com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                                    draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(att.draftId),
+                                    filename = att.filename,
+                                    mediaType = att.mediaType,
+                                )
+                            )
+                        }
+                    }
+                    mirrored[id] = TimelineMessage(
+                        id = id,
+                        sender = "user",
+                        parts = parts,
+                        timestamp = timestamp,
+                    )
+                    if (!mirroredRevisions.containsKey(id)) {
+                        mirroredRevisions[id] = 0L
+                    }
+                }
                 update { state ->
+                    val remainingBatch = state.pendingBatch.filterNot { it.key in flushedKeys }
                     state.copy(
-                        pendingBatch = state.pendingBatch.filterNot { it.key in flushedKeys },
+                        timeline = Loadable.Ready(renderTimeline(remainingBatch)),
+                        pendingBatch = remainingBatch,
                         notice = null,
                     )
                 }
@@ -595,11 +630,12 @@ class WorkbenchController(
                                 return@collect
                             }
                             val previousRevision = mirroredRevisions[message.id]
-                            if (previousRevision == null || event.revision >= previousRevision) {
-                                if (message.sender == "user" || message.sender == "assistant") {
-                                    mirrored[message.id] = message
-                                    mirroredRevisions[message.id] = event.revision
-                                }
+                            if (previousRevision != null && event.revision < previousRevision) {
+                                return@collect
+                            }
+                            if (message.sender == "user" || message.sender == "assistant") {
+                                mirrored[message.id] = message
+                                mirroredRevisions[message.id] = event.revision
                             }
                             update { state ->
                                 state.copy(
@@ -680,12 +716,16 @@ class WorkbenchController(
             if (activeThreadId != threadId) return@launch
             result.onSuccess { page ->
                 if (activeThreadId != threadId) return@launch
-                mirrored.clear()
-                mirroredRevisions.clear()
-                page.messages.forEach { mirrored[it.id] = it }
+                page.messages.forEach { message ->
+                    val currentRevision = mirroredRevisions[message.id] ?: 0L
+                    if (!mirrored.containsKey(message.id) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
+                        mirrored[message.id] = message
+                        mirroredRevisions.putIfAbsent(message.id, 0L)
+                    }
+                }
                 update { state ->
                     if (state.activeThreadId != threadId) state
-                    else state.copy(timeline = if (page.messages.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(state.pendingBatch)))
+                    else state.copy(timeline = if (mirrored.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(state.pendingBatch)))
                 }
             }
         }
@@ -741,9 +781,12 @@ class WorkbenchController(
         return (mirroredEntries + unconfirmedPending).sortedBy { it.timestamp }
     }
 
-    private fun appendLocal(entry: TimelineEntry): Loadable<List<TimelineEntry>> {
-        val current = when (val existing = _state.value.timeline) {
-            is Loadable.Ready -> existing.value
+    private fun appendLocal(
+        currentTimeline: Loadable<List<TimelineEntry>>,
+        entry: TimelineEntry,
+    ): Loadable<List<TimelineEntry>> {
+        val current = when (currentTimeline) {
+            is Loadable.Ready -> currentTimeline.value
             is Loadable.Empty -> emptyList()
             else -> emptyList()
         }
@@ -760,8 +803,4 @@ class WorkbenchController(
     private fun update(transform: (WorkbenchUiState) -> WorkbenchUiState) {
         _state.update(transform)
     }
-}
-
-private fun DebounceBatcher.close() {
-    (this as? AutoCloseable)?.close()
 }

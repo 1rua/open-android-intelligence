@@ -62,20 +62,25 @@ class SseParser(private val onEvent: (GatewayEvent) -> Unit = {}) {
     }
 
     private fun drain(): List<GatewayEvent> {
+        val buffered = buffer.toByteArray()
         val emitted = mutableListOf<GatewayEvent>()
-        while (true) {
-            val buffered = buffer.toByteArray()
-            val terminator = findTerminator(buffered) ?: break
+        var offset = 0
+        while (offset < buffered.size) {
+            val terminator = findTerminator(buffered, offset) ?: break
 
             // Decode only up to the terminator; trailing bytes stay buffered.
-            val frame = String(buffered, 0, terminator.start, Charsets.UTF_8)
-            val consumed = terminator.endExclusive
-            buffer.reset()
-            buffer.write(buffered, consumed, buffered.size - consumed)
+            val frame = String(buffered, offset, terminator.start - offset, Charsets.UTF_8)
+            offset = terminator.endExclusive
 
             parseFrame(frame)?.let { event ->
                 onEvent(event)
                 emitted += event
+            }
+        }
+        if (offset > 0) {
+            buffer.reset()
+            if (offset < buffered.size) {
+                buffer.write(buffered, offset, buffered.size - offset)
             }
         }
         return emitted
@@ -86,40 +91,32 @@ class SseParser(private val onEvent: (GatewayEvent) -> Unit = {}) {
      * including \n\n, \r\n\r\n, \n\r\n, and \r\n\n. A lone CR or lone LF is not
      * treated as a terminator, and bounds are strictly checked.
      */
-    private fun findTerminator(bytes: ByteArray): Terminator? {
-        val cr = '\r'.code.toByte()
-        val lf = '\n'.code.toByte()
-        var index = 0
+    private fun findTerminator(bytes: ByteArray, startIndex: Int = 0): Terminator? {
+        var index = startIndex
         while (index < bytes.size) {
-            if (bytes[index] == cr && index + 1 < bytes.size && bytes[index + 1] == lf) {
-                val next = index + 2
-                if (next < bytes.size) {
-                    if (bytes[next] == lf) {
-                        return Terminator(index, next + 1)
-                    }
-                    if (bytes[next] == cr && next + 1 < bytes.size && bytes[next + 1] == lf) {
-                        return Terminator(index, next + 2)
-                    }
+            val firstLen = matchNewline(bytes, index)
+            if (firstLen > 0) {
+                val secondLen = matchNewline(bytes, index + firstLen)
+                if (secondLen > 0) {
+                    return Terminator(index, index + firstLen + secondLen)
                 }
-                index += 2
-                continue
-            }
-            if (bytes[index] == lf) {
-                val next = index + 1
-                if (next < bytes.size) {
-                    if (bytes[next] == lf) {
-                        return Terminator(index, next + 1)
-                    }
-                    if (bytes[next] == cr && next + 1 < bytes.size && bytes[next + 1] == lf) {
-                        return Terminator(index, next + 2)
-                    }
-                }
+                index += firstLen
+            } else {
                 index += 1
-                continue
             }
-            index += 1
         }
         return null
+    }
+
+    private fun matchNewline(bytes: ByteArray, index: Int): Int {
+        if (index >= bytes.size) return 0
+        val cr = '\r'.code.toByte()
+        val lf = '\n'.code.toByte()
+        return when {
+            bytes[index] == cr && index + 1 < bytes.size && bytes[index + 1] == lf -> 2
+            bytes[index] == lf -> 1
+            else -> 0
+        }
     }
 
     private fun parseFrame(frame: String): GatewayEvent? {

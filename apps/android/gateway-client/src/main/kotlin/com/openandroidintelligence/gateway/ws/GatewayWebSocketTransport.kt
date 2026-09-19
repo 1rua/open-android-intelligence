@@ -3,10 +3,10 @@ package com.openandroidintelligence.gateway.ws
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.events.SseParser
 import com.openandroidintelligence.gateway.http.GatewayConnectionSecurity
+import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayProfile
-import com.openandroidintelligence.gateway.http.RequestSigner
-import com.openandroidintelligence.gateway.http.SignedRequestInput
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,9 +26,8 @@ import java.net.URI
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.time.Instant
 import java.util.Base64
-import java.util.UUID
+import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -47,7 +46,7 @@ open class GatewayWebSocketTransport(
     private val profile: GatewayProfile,
     private val signer: (ByteArray) -> ByteArray,
     private val socketFactory: ((host: String, port: Int, isTls: Boolean) -> Socket)? = null,
-    private val verifyAcceptHeader: Boolean = false,
+    private val verifyAcceptHeader: Boolean = true,
 ) {
     private val secureRandom = SecureRandom()
 
@@ -71,19 +70,29 @@ open class GatewayWebSocketTransport(
             socketFactory.invoke(host, port, isTls)
         } else if (isTls) {
             val plainSocket = Socket()
-            plainSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
-            val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
-                .createSocket(plainSocket, host, port, true) as SSLSocket
-            val params = sslSocket.sslParameters ?: sslSocket.sslParameters
-            params.endpointIdentificationAlgorithm = "HTTPS"
-            sslSocket.sslParameters = params
-            sslSocket
+            try {
+                plainSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+                val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+                    .createSocket(plainSocket, host, port, true) as SSLSocket
+                val params = sslSocket.sslParameters ?: SSLParameters()
+                params.endpointIdentificationAlgorithm = "HTTPS"
+                sslSocket.sslParameters = params
+                sslSocket
+            } catch (t: Throwable) {
+                runCatching { plainSocket.close() }
+                throw t
+            }
         } else {
             val plainSocket = Socket()
-            plainSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
-            plainSocket
+            try {
+                plainSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+                plainSocket
+            } catch (t: Throwable) {
+                runCatching { plainSocket.close() }
+                throw t
+            }
         }
-        socket.soTimeout = 0
+        socket.soTimeout = 45_000
 
         val job = currentCoroutineContext()[Job]
         val cancelHandle = job?.invokeOnCompletion(onCancelling = true) { runCatching { socket.close() } }
@@ -96,7 +105,15 @@ open class GatewayWebSocketTransport(
             val inputStream = socket.getInputStream()
 
             // Build authenticated handshake
-            performHandshake(outputStream, inputStream, hostHeader, target)
+            try {
+                performHandshake(outputStream, inputStream, hostHeader, target)
+            } catch (e: java.net.SocketException) {
+                if (!currentCoroutineContext().isActive || socket.isClosed) return@flow
+                throw e
+            } catch (e: IOException) {
+                if (!currentCoroutineContext().isActive || socket.isClosed) return@flow
+                throw e
+            }
 
             // RFC 6455 frame decode loop
             val messageBuffer = ByteArrayOutputStream()
@@ -105,6 +122,8 @@ open class GatewayWebSocketTransport(
             while (currentCoroutineContext().isActive) {
                 val frame = try {
                     readFrame(inputStream) ?: break
+                } catch (e: java.net.SocketTimeoutException) {
+                    throw IOException("WEBSOCKET_STREAM_STALLED: no bytes received for 45000ms", e)
                 } catch (e: java.net.SocketException) {
                     if (!currentCoroutineContext().isActive || socket.isClosed) break
                     throw e
@@ -124,8 +143,29 @@ open class GatewayWebSocketTransport(
                         break
                     }
                     OPCODE_TEXT, OPCODE_BINARY -> {
-                        messageBuffer.reset()
-                        currentOpcode = frame.opcode
+                        if (currentOpcode != -1) {
+                            throw IOException("WEBSOCKET_PROTOCOL_ERROR: received new data frame before completing fragmented message")
+                        }
+                        if (messageBuffer.size().toLong() + frame.payload.size.toLong() > MAX_PAYLOAD_BYTES) {
+                            throw IOException("WEBSOCKET_BUFFER_OVERFLOW: frame size exceeds max payload bytes")
+                        }
+                        messageBuffer.write(frame.payload)
+                        if (frame.fin) {
+                            val text = messageBuffer.toString(Charsets.UTF_8.name())
+                            parseWebSocketEvent(text)?.let { emit(it) }
+                            messageBuffer.reset()
+                            currentOpcode = -1
+                        } else {
+                            currentOpcode = frame.opcode
+                        }
+                    }
+                    OPCODE_CONTINUATION -> {
+                        if (currentOpcode == -1) {
+                            throw IOException("WEBSOCKET_PROTOCOL_ERROR: received continuation frame without an active message")
+                        }
+                        if (messageBuffer.size().toLong() + frame.payload.size.toLong() > MAX_PAYLOAD_BYTES) {
+                            throw IOException("WEBSOCKET_BUFFER_OVERFLOW: frame size exceeds max payload bytes")
+                        }
                         messageBuffer.write(frame.payload)
                         if (frame.fin) {
                             val text = messageBuffer.toString(Charsets.UTF_8.name())
@@ -134,16 +174,8 @@ open class GatewayWebSocketTransport(
                             currentOpcode = -1
                         }
                     }
-                    OPCODE_CONTINUATION -> {
-                        if (currentOpcode != -1) {
-                            messageBuffer.write(frame.payload)
-                            if (frame.fin) {
-                                val text = messageBuffer.toString(Charsets.UTF_8.name())
-                                parseWebSocketEvent(text)?.let { emit(it) }
-                                messageBuffer.reset()
-                                currentOpcode = -1
-                            }
-                        }
+                    else -> {
+                        throw IOException("WEBSOCKET_PROTOCOL_ERROR: unknown or unsupported opcode ${frame.opcode}")
                     }
                 }
             }
@@ -159,27 +191,9 @@ open class GatewayWebSocketTransport(
         hostHeader: String,
         target: String,
     ) {
-        val requestId = "req" + UUID.randomUUID().toString().replace("-", "").take(20)
-        val timestamp = RequestSigner.formatTimestamp(
-            Instant.ofEpochMilli(Instant.now().toEpochMilli()),
-        )
-        val nonceBytes = ByteArray(16)
-        secureRandom.nextBytes(nonceBytes)
-        val nonce = Base64.getUrlEncoder().withoutPadding().encodeToString(nonceBytes)
-
-        val signedInput = SignedRequestInput(
-            method = "GET",
-            target = target,
-            accountId = profile.accountId,
-            deviceId = profile.deviceId,
-            sessionId = profile.sessionId,
-            requestId = requestId,
-            timestamp = timestamp,
-            nonce = nonce,
-            body = ByteArray(0),
-        )
-        val signatureBase64Url = Base64.getUrlEncoder().withoutPadding()
-            .encodeToString(signer(RequestSigner.preimage(signedInput)))
+        val signedInput = GatewayHttpClient.signedInput(profile, "GET", target, ByteArray(0))
+        val signatureBase64Url = GatewayHttpClient.signatureOf(signer, signedInput)
+        val authHeaders = GatewayHttpClient.authenticationHeaders(profile, signedInput, signatureBase64Url, "GET")
 
         val keyBytes = ByteArray(16)
         secureRandom.nextBytes(keyBytes)
@@ -192,16 +206,9 @@ open class GatewayWebSocketTransport(
         requestBuilder.append("Connection: Upgrade\r\n")
         requestBuilder.append("Sec-WebSocket-Key: $secWebSocketKey\r\n")
         requestBuilder.append("Sec-WebSocket-Version: 13\r\n")
-        // The 9 singleton authentication headers
-        requestBuilder.append("Authorization: Bearer ${profile.accessToken}\r\n")
-        requestBuilder.append("X-Open-Android-Intelligence-Protocol: $PROTOCOL_HEADER\r\n")
-        requestBuilder.append("X-Open-Android-Intelligence-Account: ${profile.accountId}\r\n")
-        requestBuilder.append("X-Open-Android-Intelligence-Device: ${profile.deviceId}\r\n")
-        requestBuilder.append("X-Open-Android-Intelligence-Session: ${profile.sessionId}\r\n")
-        requestBuilder.append("X-Open-Android-Intelligence-Request-Id: $requestId\r\n")
-        requestBuilder.append("X-Open-Android-Intelligence-Timestamp: $timestamp\r\n")
-        requestBuilder.append("X-Open-Android-Intelligence-Nonce: $nonce\r\n")
-        requestBuilder.append("X-Open-Android-Intelligence-Signature: $signatureBase64Url\r\n")
+        for (header in authHeaders) {
+            requestBuilder.append("${header.name}: ${header.value}\r\n")
+        }
         requestBuilder.append("\r\n")
 
         output.write(requestBuilder.toString().toByteArray(Charsets.US_ASCII))
@@ -221,7 +228,8 @@ open class GatewayWebSocketTransport(
             if (colonIndex != -1) {
                 val name = line.substring(0, colonIndex).trim().lowercase()
                 val value = line.substring(colonIndex + 1).trim()
-                headers[name] = value
+                val existing = headers[name]
+                headers[name] = if (existing == null) value else "$existing, $value"
             }
         }
 
@@ -229,6 +237,10 @@ open class GatewayWebSocketTransport(
             val upgrade = headers["upgrade"]
             if (upgrade == null || !upgrade.equals("websocket", ignoreCase = true)) {
                 throw IOException("WEBSOCKET_HANDSHAKE_FAILED: missing or invalid Upgrade header: $upgrade")
+            }
+            val conn = headers["connection"]
+            if (conn == null || !conn.split(',').any { it.trim().equals("upgrade", ignoreCase = true) }) {
+                throw IOException("WEBSOCKET_HANDSHAKE_FAILED: missing or invalid Connection header: $conn")
             }
             val expectedAccept = computeSecWebSocketAccept(secWebSocketKey)
             val actualAccept = headers["sec-websocket-accept"]
@@ -239,54 +251,58 @@ open class GatewayWebSocketTransport(
     }
 
     private fun readFrame(input: InputStream): WebSocketFrame? {
-        val b0 = input.read()
-        if (b0 == -1) return null
-        if ((b0 and 0x70) != 0) {
-            throw IOException("WEBSOCKET_PROTOCOL_ERROR: RSV bits must be 0")
-        }
-        val fin = (b0 and 0x80) != 0
-        val opcode = b0 and 0x0F
-
-        val b1 = input.read()
-        if (b1 == -1) throw EOFException("Unexpected EOF reading WebSocket frame header")
-        val masked = (b1 and 0x80) != 0
-        var payloadLen = (b1 and 0x7F).toLong()
-
-        if (payloadLen == 126L) {
-            val b2 = input.read()
-            val b3 = input.read()
-            if (b2 == -1 || b3 == -1) throw EOFException("Unexpected EOF reading 16-bit payload length")
-            payloadLen = (((b2 and 0xFF) shl 8) or (b3 and 0xFF)).toLong()
-        } else if (payloadLen == 127L) {
-            var len = 0L
-            for (i in 0 until 8) {
-                val b = input.read()
-                if (b == -1) throw EOFException("Unexpected EOF reading 64-bit payload length")
-                len = (len shl 8) or (b.toLong() and 0xFFL)
+        try {
+            val b0 = input.read()
+            if (b0 == -1) return null
+            if ((b0 and 0x70) != 0) {
+                throw IOException("WEBSOCKET_PROTOCOL_ERROR: RSV bits must be 0")
             }
-            payloadLen = len
-        }
+            val fin = (b0 and 0x80) != 0
+            val opcode = b0 and 0x0F
 
-        if (payloadLen < 0 || payloadLen > MAX_PAYLOAD_BYTES) {
-            throw IOException("WebSocket frame payload length invalid: $payloadLen bytes")
-        }
-
-        val maskingKey = if (masked) {
-            val key = ByteArray(4)
-            readFully(input, key)
-            key
-        } else null
-
-        val payload = ByteArray(payloadLen.toInt())
-        readFully(input, payload)
-
-        if (maskingKey != null) {
-            for (i in payload.indices) {
-                payload[i] = (payload[i].toInt() xor maskingKey[i % 4].toInt()).toByte()
+            val b1 = input.read()
+            if (b1 == -1) throw EOFException("Unexpected EOF reading WebSocket frame header")
+            val masked = (b1 and 0x80) != 0
+            if (masked) {
+                throw IOException("WEBSOCKET_PROTOCOL_ERROR: server must not mask frames")
             }
-        }
+            var payloadLen = (b1 and 0x7F).toLong()
 
-        return WebSocketFrame(fin, opcode, payload)
+            if (payloadLen == 126L) {
+                val b2 = input.read()
+                val b3 = input.read()
+                if (b2 == -1 || b3 == -1) throw EOFException("Unexpected EOF reading 16-bit payload length")
+                payloadLen = (((b2 and 0xFF) shl 8) or (b3 and 0xFF)).toLong()
+            } else if (payloadLen == 127L) {
+                var len = 0L
+                for (i in 0 until 8) {
+                    val b = input.read()
+                    if (b == -1) throw EOFException("Unexpected EOF reading 64-bit payload length")
+                    len = (len shl 8) or (b.toLong() and 0xFFL)
+                }
+                payloadLen = len
+            }
+
+            if (payloadLen < 0 || payloadLen > MAX_PAYLOAD_BYTES) {
+                throw IOException("WebSocket frame payload length invalid: $payloadLen bytes")
+            }
+
+            if (opcode >= 0x08) {
+                if (!fin) {
+                    throw IOException("WEBSOCKET_PROTOCOL_ERROR: control frames must not be fragmented")
+                }
+                if (payloadLen > 125) {
+                    throw IOException("WEBSOCKET_PROTOCOL_ERROR: control frame payload exceeds 125 bytes: $payloadLen")
+                }
+            }
+
+            val payload = ByteArray(payloadLen.toInt())
+            readFully(input, payload)
+
+            return WebSocketFrame(fin, opcode, payload)
+        } catch (e: java.net.SocketTimeoutException) {
+            throw IOException("WEBSOCKET_STREAM_STALLED: no bytes received for 45000ms", e)
+        }
     }
 
     private fun readFully(input: InputStream, buffer: ByteArray) {
@@ -299,8 +315,7 @@ open class GatewayWebSocketTransport(
     }
 
     private fun sendPong(output: OutputStream, payload: ByteArray) {
-        val pongPayload = if (payload.size <= 125) payload else payload.copyOf(minOf(payload.size, 125))
-        sendFrame(output, opcode = OPCODE_PONG, payload = pongPayload)
+        sendFrame(output, opcode = OPCODE_PONG, payload = payload)
     }
 
     private fun sendClose(output: OutputStream) {
@@ -352,6 +367,9 @@ open class GatewayWebSocketTransport(
                 return String(bytes, 0, len, Charsets.US_ASCII)
             }
             out.write(b)
+            if (out.size() > MAX_HEADER_LINE_BYTES) {
+                throw IOException("WEBSOCKET_HANDSHAKE_FAILED: header line exceeds $MAX_HEADER_LINE_BYTES bytes")
+            }
             last = b
         }
         val bytes = out.toByteArray()
@@ -364,6 +382,7 @@ open class GatewayWebSocketTransport(
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
         const val CONNECT_TIMEOUT_MILLIS = 10_000
         const val MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
+        const val MAX_HEADER_LINE_BYTES = 8192
         const val WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
         const val OPCODE_CONTINUATION = 0x00
@@ -383,22 +402,10 @@ open class GatewayWebSocketTransport(
             val trimmed = text.trim()
             if (trimmed.startsWith("{")) {
                 return runCatching {
-                    val json = Json.parse(trimmed) as? JsonValue.JObject ?: return null
-                    val id = json.fields.firstOrNull { it.first == "id" }?.second?.let {
-                        when (it) {
-                            is JsonValue.JString -> it.value
-                            is JsonValue.JNull -> null
-                            else -> null
-                        }
-                    }
-                    val event = json.fields.firstOrNull { it.first == "event" }?.second?.let {
-                        when (it) {
-                            is JsonValue.JString -> it.value
-                            is JsonValue.JNull -> null
-                            else -> null
-                        }
-                    }
-                    val dataValue = json.fields.firstOrNull { it.first == "data" }?.second
+                    val json = JsonFields.obj(Json.parse(trimmed)) ?: return null
+                    val id = JsonFields.string(json, "id")
+                    val event = JsonFields.string(json, "event")
+                    val dataValue = JsonFields.field(json, "data")
                     val data = when (dataValue) {
                         is JsonValue.JString -> dataValue.value
                         is JsonValue.JObject, is JsonValue.JArray -> Json.canonical(dataValue)

@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Set
 
+from urllib.parse import parse_qs, unquote, urlsplit
+
 from .local_keys import master_key_unavailable_reason
 from .core import (
     VerifiedGatewayRequest,
@@ -23,11 +25,10 @@ from .core import (
 )
 
 try:
-    from aiohttp import WSCloseCode, WSMsgType, web
+    from aiohttp import WSMsgType, web
     AIOHTTP_AVAILABLE = True
 except ImportError:
     web = None  # type: ignore
-    WSCloseCode = None  # type: ignore
     WSMsgType = None  # type: ignore
     AIOHTTP_AVAILABLE = False
 
@@ -629,45 +630,18 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         self._site: Optional[web.TCPSite] = None
         # One subscriber set per account: an event is only ever handed to the
         # stream of the account that produced it.
-        self._active_sse_queues: Dict[str, Set[asyncio.Queue]] = {}
+        self._event_subscribers: Dict[str, Set[asyncio.Queue]] = {}
         self._conv_to_account: Dict[str, str] = {}
 
     @property
-    def _event_subscribers(self) -> Dict[str, Set[asyncio.Queue]]:
-        """Alias for _active_sse_queues to support subscriber collection inspection."""
-        return self._active_sse_queues
+    def _active_sse_queues(self) -> Dict[str, Set[asyncio.Queue]]:
+        """Compatibility alias for _event_subscribers."""
+        return self._event_subscribers
 
-    @_event_subscribers.setter
-    def _event_subscribers(self, value: Dict[str, Set[asyncio.Queue]]) -> None:
-        self._active_sse_queues = value
+    @_active_sse_queues.setter
+    def _active_sse_queues(self, value: Dict[str, Set[asyncio.Queue]]) -> None:
+        self._event_subscribers = value
 
-    def _peek_account_id(self, route: Any, raw_req: Mapping[str, Any]) -> Optional[str]:
-        """Resolve account ID prior to backlog query and handshake."""
-        verifier = getattr(getattr(route, "_services", None), "verify_request", None)
-        if callable(verifier):
-            try:
-                headers = raw_req.get("headers") or {}
-                verified = verifier({
-                    "request": raw_req,
-                    "req": raw_req,
-                    "method": raw_req.get("method", "GET"),
-                    "target": raw_req.get("url") or raw_req.get("target"),
-                    "headers": dict(headers) if isinstance(headers, Mapping) else {},
-                    "rawHeaders": tuple(raw_req.get("rawHeaders") or ()),
-                    "body": raw_req.get("body") or b"",
-                })
-                if verified and hasattr(verified, "context") and getattr(verified.context, "accountId", None):
-                    return str(verified.context.accountId).strip()
-            except Exception:
-                pass
-            return None
-
-        headers = raw_req.get("headers") or {}
-        if isinstance(headers, Mapping):
-            for k, v in headers.items():
-                if str(k).lower() == "x-open-android-intelligence-account" and v:
-                    return str(v).strip()
-        return self._account_id
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the Gateway Protocol v2 HTTP & SSE server."""
@@ -853,7 +827,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             event = account.events.append(event_type, message_id, payload, occurred_at)
         finally:
             account.close()
-        await self._broadcast_sse(target_account, _sse_frame(event))
+        await self._broadcast_event(target_account, _sse_frame(event))
 
     def _message_payload(
         self,
@@ -1028,9 +1002,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             return web.json_response({"errorCode": "NOT_FOUND"}, status=404)
 
         queue: asyncio.Queue = asyncio.Queue(maxsize=SSE_QUEUE_SIZE)
-        registered_account_id = self._peek_account_id(route, raw_req)
-        if registered_account_id:
-            self._event_subscribers.setdefault(registered_account_id, set()).add(queue)
+        registered_account_id: Optional[str] = None
 
         try:
             handshake = route.event_backlog(raw_req)
@@ -1038,15 +1010,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             if status != 200:
                 return web.json_response(handshake.get("body", {}), status=status)
             account_id = str(handshake["accountId"])
-            if registered_account_id != account_id:
-                if registered_account_id:
-                    old_subs = self._event_subscribers.get(registered_account_id)
-                    if old_subs:
-                        old_subs.discard(queue)
-                        if not old_subs:
-                            self._event_subscribers.pop(registered_account_id, None)
-                registered_account_id = account_id
-                self._event_subscribers.setdefault(registered_account_id, set()).add(queue)
+            registered_account_id = account_id
+            self._event_subscribers.setdefault(account_id, set()).add(queue)
 
             response = web.StreamResponse(
                 status=200,
@@ -1065,10 +1030,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             last_event_id = headers.get("last-event-id") or headers.get("Last-Event-Id")
             if last_event_id:
                 seen_event_ids[str(last_event_id)] = None
-            query_str = (raw_req.get("url") or "").partition("?")[2]
-            for part in query_str.split("&") if query_str else ():
-                if part.startswith("cursor="):
-                    seen_event_ids[part[7:]] = None
+            query = parse_qs(urlsplit(raw_req.get("url") or raw_req.get("target") or "").query)
+            for c in query.get("cursor", ()):
+                seen_event_ids[unquote(c)] = None
 
             for event in handshake.get("events", []):
                 eid = event.get("eventId") or event.get("id")
@@ -1129,9 +1093,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             return web.json_response({"errorCode": "NOT_FOUND"}, status=404)
 
         queue: asyncio.Queue = asyncio.Queue(maxsize=SSE_QUEUE_SIZE)
-        registered_account_id = self._peek_account_id(route, raw_req)
-        if registered_account_id:
-            self._event_subscribers.setdefault(registered_account_id, set()).add(queue)
+        registered_account_id: Optional[str] = None
 
         try:
             handshake = route.event_backlog(raw_req)
@@ -1139,15 +1101,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             if status != 200:
                 return web.json_response(handshake.get("body", {}), status=status)
             account_id = str(handshake["accountId"])
-            if registered_account_id != account_id:
-                if registered_account_id:
-                    old_subs = self._event_subscribers.get(registered_account_id)
-                    if old_subs:
-                        old_subs.discard(queue)
-                        if not old_subs:
-                            self._event_subscribers.pop(registered_account_id, None)
-                registered_account_id = account_id
-                self._event_subscribers.setdefault(registered_account_id, set()).add(queue)
+            registered_account_id = account_id
+            self._event_subscribers.setdefault(account_id, set()).add(queue)
 
             ws = web.WebSocketResponse(heartbeat=15.0)
             await ws.prepare(request)
@@ -1157,10 +1112,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             last_event_id = headers.get("last-event-id") or headers.get("Last-Event-Id")
             if last_event_id:
                 seen_event_ids[str(last_event_id)] = None
-            query_str = (raw_req.get("url") or "").partition("?")[2]
-            for part in query_str.split("&") if query_str else ():
-                if part.startswith("cursor="):
-                    seen_event_ids[part[7:]] = None
+            query = parse_qs(urlsplit(raw_req.get("url") or raw_req.get("target") or "").query)
+            for c in query.get("cursor", ()):
+                seen_event_ids[unquote(c)] = None
 
             for event in handshake.get("events", []):
                 eid = event.get("eventId") or event.get("id")
@@ -1275,7 +1229,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
         return ws
 
-    async def _broadcast_sse(self, account_id: str, frame: bytes) -> None:
+    async def _broadcast_event(self, account_id: str, frame: bytes) -> None:
         """Hand one persisted frame to the subscribers of that account.
 
         A subscriber whose queue is full is skipped rather than blocking the
@@ -1287,6 +1241,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 queue.put_nowait(frame)
             except asyncio.QueueFull:
                 logger.warning(
-                    "[open_android] SSE subscriber is behind; it will resume from its cursor"
+                    "[open_android] Event subscriber queue is full; client will resume from cursor"
                 )
+
+    _broadcast_sse = _broadcast_event
 
