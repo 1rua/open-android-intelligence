@@ -17,6 +17,7 @@ AGENTS.md
 .marscode/deviceInfo.json
 fronted-preview/
 artifacts/test-runs
+/artifacts/apk/
 
 # Android
 apps/android/local.properties

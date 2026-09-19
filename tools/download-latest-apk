@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# 等待 GitHub Actions 上的 APK 构建跑完，并把产物下载到本地。
+#
+# 用法：
+#   tools/download-latest-apk                  # 等待当前 HEAD 提交的构建，完成后下载
+#   tools/download-latest-apk --sha <sha>      # 指定提交
+#   tools/download-latest-apk --run <run-id>   # 指定某次运行（跳过等待查找）
+#   tools/download-latest-apk --out <dir>      # 指定下载目录（默认 artifacts/apk）
+#
+# 可用环境变量：WORKFLOW / BRANCH / ARTIFACT / OUT_DIR / WAIT_TIMEOUT / POLL_SECONDS
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+WORKFLOW="${WORKFLOW:-android-apk.yml}"
+BRANCH="${BRANCH:-main}"
+ARTIFACT="${ARTIFACT:-app-full-debug}"
+OUT_DIR="${OUT_DIR:-${REPO_ROOT}/artifacts/apk}"
+WAIT_TIMEOUT="${WAIT_TIMEOUT:-3600}"
+POLL_SECONDS="${POLL_SECONDS:-15}"
+
+RUN_ID=""
+SHA=""
+
+usage() {
+  sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --run)
+      RUN_ID="${2:?--run 需要一个运行 ID}"
+      shift 2
+      ;;
+    --sha)
+      SHA="${2:?--sha 需要一个提交哈希}"
+      shift 2
+      ;;
+    --workflow)
+      WORKFLOW="${2:?--workflow 需要工作流文件名}"
+      shift 2
+      ;;
+    --branch)
+      BRANCH="${2:?--branch 需要分支名}"
+      shift 2
+      ;;
+    --artifact)
+      ARTIFACT="${2:?--artifact 需要产物名称}"
+      shift 2
+      ;;
+    --out)
+      OUT_DIR="${2:?--out 需要目录路径}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "未知参数：$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+command -v gh >/dev/null 2>&1 || {
+  echo "缺少 gh CLI，请先安装：https://cli.github.com" >&2
+  exit 1
+}
+
+if ! gh auth status >/dev/null 2>&1; then
+  echo "gh 尚未登录，请先执行：gh auth login" >&2
+  exit 1
+fi
+
+if [ -z "$RUN_ID" ]; then
+  if ! gh workflow view "$WORKFLOW" >/dev/null 2>&1; then
+    echo "找不到工作流 ${WORKFLOW}，请确认它已推送到默认分支。" >&2
+    exit 1
+  fi
+
+  if [ -z "$SHA" ]; then
+    SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  fi
+  echo "等待提交 ${SHA:0:9} 的 APK 构建（工作流 ${WORKFLOW}，分支 ${BRANCH}）……"
+
+  deadline=$((SECONDS + WAIT_TIMEOUT))
+  while :; do
+    run_line="$(gh run list \
+      --workflow "$WORKFLOW" \
+      --branch "$BRANCH" \
+      --limit 30 \
+      --json databaseId,status,conclusion,headSha,url \
+      --jq "(first(.[] | select(.headSha == \"${SHA}\")) // empty) | [.databaseId, .status, .conclusion, .url] | @tsv")"
+
+    if [ -n "$run_line" ]; then
+      break
+    fi
+
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "等待超时：${WAIT_TIMEOUT} 秒内未发现该提交的运行记录。" >&2
+      echo "请确认已推送该提交，或稍后重试。" >&2
+      exit 1
+    fi
+
+    echo "  尚未排队，${POLL_SECONDS} 秒后重试……"
+    sleep "$POLL_SECONDS"
+  done
+
+  IFS=$'\t' read -r RUN_ID status _conclusion run_url <<<"$run_line"
+else
+  IFS=$'\t' read -r status _conclusion run_url <<<"$(
+    gh run view "$RUN_ID" --json status,conclusion,url --jq '[.status, .conclusion, .url] | @tsv'
+  )"
+fi
+
+echo "运行地址：${run_url}"
+
+deadline=$((SECONDS + WAIT_TIMEOUT))
+while [ "$status" != "completed" ]; do
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    echo "等待超时：运行 ${RUN_ID} 仍未结束。" >&2
+    exit 1
+  fi
+  echo "  当前状态：${status}，${POLL_SECONDS} 秒后再查……"
+  sleep "$POLL_SECONDS"
+  status="$(gh run view "$RUN_ID" --json status --jq '.status')"
+done
+
+conclusion="$(gh run view "$RUN_ID" --json conclusion --jq '.conclusion')"
+if [ "$conclusion" != "success" ]; then
+  echo "构建未成功（conclusion=${conclusion}），未下载产物。" >&2
+  echo "查看日志：${run_url}" >&2
+  exit 1
+fi
+
+artifact_count="$(gh api "repos/{owner}/{repo}/actions/runs/${RUN_ID}/artifacts" \
+  --jq "[.artifacts[] | select(.name == \"${ARTIFACT}\")] | length")"
+if [ "$artifact_count" = "0" ]; then
+  echo "该运行没有名为 ${ARTIFACT} 的产物（可能未上传或已过期）。" >&2
+  echo "查看日志：${run_url}" >&2
+  exit 1
+fi
+
+mkdir -p "$OUT_DIR"
+echo "构建成功，正在下载产物 ${ARTIFACT} ……"
+gh run download "$RUN_ID" --name "$ARTIFACT" --dir "$OUT_DIR"
+
+downloaded="$(find "$OUT_DIR" -maxdepth 1 -name '*.apk' -newermt '-10 minutes' -print -quit)"
+if [ -z "$downloaded" ]; then
+  downloaded="$(find "$OUT_DIR" -maxdepth 1 -name '*.apk' -print -quit)"
+fi
+
+if [ -z "$downloaded" ]; then
+  echo "产物中未找到 APK 文件，请检查下载目录：${OUT_DIR}" >&2
+  exit 1
+fi
+
+apk_path="$(cd "$(dirname "$downloaded")" && pwd)/$(basename "$downloaded")"
+echo "已下载：${apk_path}"
+echo "大小：$(du -h "$apk_path" | cut -f1)"
+echo "SHA256：$(sha256sum "$apk_path" | cut -d' ' -f1)"
+echo "安装：adb install -r \"${apk_path}\""

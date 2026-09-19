@@ -1,0 +1,56 @@
+name: Android APK
+
+# 编译出可直接安装的 APK，并上传为可下载的构建产物（Artifact）。
+# 推送 v* 标签时，额外创建 Release 并附上 APK，便于直接下载。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    name: Build Full Debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        working-directory: apps/android
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleFullDebug --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-full-debug
+          path: apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release with APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "构建产物：app-full-debug.apk（full flavor / debug 构建）" \
+            apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
