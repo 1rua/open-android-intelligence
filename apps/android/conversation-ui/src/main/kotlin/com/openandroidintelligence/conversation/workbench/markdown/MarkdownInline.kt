@@ -30,13 +30,12 @@ data class MarkdownColors(
 
 @Composable
 fun defaultMarkdownColors(): MarkdownColors {
-    val isDark = isSystemInDarkTheme()
     return MarkdownColors(
         textColor = MaterialTheme.colorScheme.onSurface,
-        boldColor = if (isDark) Color(0xFFFFFFFF) else MaterialTheme.colorScheme.onSurface,
+        boldColor = MaterialTheme.colorScheme.onSurface,
         italicColor = MaterialTheme.colorScheme.onSurfaceVariant,
         codeColor = MaterialTheme.colorScheme.primary,
-        codeBackground = if (isDark) Color(0xFF141D18) else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.55f),
+        codeBackground = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f),
         linkColor = MaterialTheme.colorScheme.primary,
     )
 }

@@ -45,6 +45,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import kotlin.math.roundToInt
 
@@ -192,7 +193,7 @@ private fun UnavailableSelectionState(
     Surface(
         modifier = modifier
             .padding(Dimensions.SpaceLarge),
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(AppRadius.ExtraLarge),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 3.dp,
     ) {
@@ -236,7 +237,7 @@ private fun SelectionControls(
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(Dimensions.SpaceMedium),
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(AppRadius.ExtraLarge),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 3.dp,
     ) {

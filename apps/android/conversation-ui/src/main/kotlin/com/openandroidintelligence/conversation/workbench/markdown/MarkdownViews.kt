@@ -32,10 +32,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.theme.AppRadius
 
 /**
  * 完整 Markdown 文档渲染器：根据 AST 节点分发渲染至具体组件，
- * 视觉风格严格对齐 mobile_motion_preview.html。
+ * 颜色与圆角一律取自 MaterialTheme 语义角色与 AppRadius 令牌。
  */
 @Composable
 fun MarkdownDocumentView(
@@ -297,11 +298,11 @@ fun MarkdownTableView(
     val scrollState = rememberScrollState()
     val borderColor = MaterialTheme.colorScheme.outlineVariant
     val headerBg = MaterialTheme.colorScheme.surfaceContainerHigh
-    val isDark = isSystemInDarkTheme()
-    val cellBg = if (isDark) Color(0xFF131A16) else MaterialTheme.colorScheme.surfaceContainerLowest
+    val evenBg = MaterialTheme.colorScheme.surfaceContainerLowest
+    val oddBg = MaterialTheme.colorScheme.surfaceContainerLow
 
     Surface(
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(AppRadius.Small),
         border = BorderStroke(1.dp, borderColor),
         color = MaterialTheme.colorScheme.surface,
         modifier = modifier
@@ -364,8 +365,7 @@ fun MarkdownTableView(
 
                 // 表体行
                 block.rows.forEachIndexed { rowIdx, rowCells ->
-                    val isEven = rowIdx % 2 == 0
-                    val rowBg = if (isEven) cellBg else cellBg.copy(alpha = 0.7f)
+                    val rowBg = if (rowIdx % 2 == 0) evenBg else oddBg
                     Row(
                         modifier = Modifier
                             .background(rowBg)
@@ -443,14 +443,13 @@ fun MarkdownCodeBlock(
 ) {
     val clipboardManager = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
-    val isDark = isSystemInDarkTheme()
-
-    val containerBg = if (isDark) Color(0xFF0E1412) else Color(0xFFEAEFEB)
-    val headerBg = if (isDark) Color(0xFF151E1A) else Color(0xFFDFE6E1)
-    val borderColor = if (isDark) Color(0xFF26332E) else Color(0xFFD5E2DC)
+    // 沿用最高一级容器角色，让代码块与正文和卡片拉开一层深浅，避免写死编辑器主题色。
+    val containerBg = MaterialTheme.colorScheme.surfaceContainerHighest
+    val headerBg = MaterialTheme.colorScheme.surfaceContainerHigh
+    val borderColor = MaterialTheme.colorScheme.outlineVariant
 
     Surface(
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(AppRadius.Medium),
         color = containerBg,
         border = BorderStroke(1.dp, borderColor),
         modifier = modifier
@@ -476,7 +475,7 @@ fun MarkdownCodeBlock(
                 )
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
+                        .clip(RoundedCornerShape(AppRadius.ExtraSmall))
                         .clickable {
                             clipboardManager.setText(AnnotatedString(block.code))
                             copied = true

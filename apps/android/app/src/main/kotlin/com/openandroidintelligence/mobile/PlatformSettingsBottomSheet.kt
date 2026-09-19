@@ -1,26 +1,67 @@
 package com.openandroidintelligence.mobile
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Animation
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.components.SettingsCardHeader
+import com.openandroidintelligence.conversation.components.SettingsSectionCard
+import com.openandroidintelligence.conversation.components.SettingsSwitchItem
+import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.kernel.PairingGrantCapabilities
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 enum class SettingsTab {
     GATEWAY,
@@ -31,14 +72,11 @@ enum class SettingsTab {
 }
 
 /**
- * 设置底板（Settings Bottom Sheet），严格还原设计原型（截图 3）：
+ * 设置底板（Modal Bottom Sheet）：
  * 1. 顶部拖拽把手 + 标题「设置」与关闭按钮；
- * 2. 四大分类横向标签：网关账号、内核安全、设备插件、传输链路；
- * 3. 网关账号：真实活动资料、刷新凭据、配对能力清单（短信/屏幕/剪贴板权限开关）、退出登录/解除配对；
- * 4. 内核安全：开发者信任模式开关（带安全确认弹窗）、内核安全原语、真实安全审计记录、一键紧急停用；
- * 5. 设备插件：真实查询 PluginKernel 已激活插件，无插件时真实呈现空状态说明；
- * 6. 传输链路：直接 HTTPS + SSE 默认链路、明文 HTTP 降级连接的持续警告与 Tailscale Companion 状态；
- * 7. 完全符合 Material Design 3 规范与系统动态取色。
+ * 2. 分类横向标签（网关账号、内核安全、设备插件、传输链路、外观动效），切换走标准淡入滑移转场；
+ * 3. 每个分类内部改为「分组大卡片 + 官方 ListItem 条目」的 M3 设置页结构；
+ * 4. 值全部来自真实运行时：活动 Gateway 资料、真实授权清单、真实审计与真实信任模式状态。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,126 +87,110 @@ fun PlatformSettingsBottomSheet(
 ) {
     val phase by runtime.phase.collectAsState()
     var currentTab by remember { mutableStateOf(SettingsTab.GATEWAY) }
+    val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         dragHandle = {
-            Box(
-                modifier = Modifier
-                    .padding(vertical = 12.dp)
-                    .width(40.dp)
-                    .height(4.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.outlineVariant),
-            )
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.padding(vertical = Dimensions.SpaceCompact),
+            ) {
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier
+                        .size(width = 32.dp, height = 4.dp),
+                )
+            }
         },
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp),
+                .padding(horizontal = Dimensions.ScreenHorizontal)
+                .padding(bottom = Dimensions.SpaceLarge),
         ) {
-            // ===== 1. 标题行 =====
+            SettingsSheetTitle(onDismissRequest = onDismissRequest)
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp),
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "设置",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-
-                IconButton(
-                    onClick = onDismissRequest,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape),
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "关闭",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
-
-            // ===== 2. 分类标签胶囊行 =====
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(bottom = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .padding(bottom = Dimensions.SpaceMedium),
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
                 SettingsTabChip(
                     title = "网关账号",
                     icon = Icons.Default.Person,
                     selected = currentTab == SettingsTab.GATEWAY,
                     onClick = { currentTab = SettingsTab.GATEWAY },
+                    modifier = Modifier.weight(1f),
                 )
                 SettingsTabChip(
                     title = "内核安全",
                     icon = Icons.Default.Security,
                     selected = currentTab == SettingsTab.SECURITY,
                     onClick = { currentTab = SettingsTab.SECURITY },
+                    modifier = Modifier.weight(1f),
                 )
                 SettingsTabChip(
                     title = "设备插件",
                     icon = Icons.Default.Extension,
                     selected = currentTab == SettingsTab.PLUGINS,
                     onClick = { currentTab = SettingsTab.PLUGINS },
+                    modifier = Modifier.weight(1f),
                 )
                 SettingsTabChip(
                     title = "传输链路",
-                    icon = Icons.Default.Language,
+                    icon = Icons.Default.Hub,
                     selected = currentTab == SettingsTab.TRANSPORT,
                     onClick = { currentTab = SettingsTab.TRANSPORT },
+                    modifier = Modifier.weight(1f),
                 )
                 SettingsTabChip(
                     title = "外观动效",
                     icon = Icons.Default.Palette,
                     selected = currentTab == SettingsTab.APPEARANCE,
                     onClick = { currentTab = SettingsTab.APPEARANCE },
+                    modifier = Modifier.weight(1f),
                 )
             }
 
-            // ===== 3. 内容滚动区 =====
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                when (currentTab) {
-                    SettingsTab.GATEWAY -> GatewayTabContent(
-                        phase = phase,
-                        runtime = runtime,
-                        environment = environment,
-                        onDismiss = onDismissRequest,
-                    )
-                    SettingsTab.SECURITY -> SecurityTabContent(environment = environment)
-                    SettingsTab.PLUGINS -> PluginsTabContent(environment)
-                    SettingsTab.TRANSPORT -> TransportTabContent(phase = phase)
-                    SettingsTab.APPEARANCE -> AppearanceTabContent(environment = environment)
+            AnimatedContent(
+                targetState = currentTab,
+                transitionSpec = {
+                    (androidx.compose.animation.slideInHorizontally(
+                        animationSpec = MotionSpecs.emphasized(reduceMotion),
+                        initialOffsetX = { full -> if (targetState.ordinal >= initialState.ordinal) full / 8 else -full / 8 },
+                    ) + androidx.compose.animation.fadeIn(MotionSpecs.fade(reduceMotion))) togetherWith
+                        (androidx.compose.animation.slideOutHorizontally(
+                            animationSpec = MotionSpecs.emphasized(reduceMotion),
+                            targetOffsetX = { full -> if (targetState.ordinal >= initialState.ordinal) -full / 8 else full / 8 },
+                        ) + androidx.compose.animation.fadeOut(MotionSpecs.fade(reduceMotion))) using
+                        SizeTransform(clip = false)
+                },
+                label = "settings-tab-transition",
+            ) { tab ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+                ) {
+                    when (tab) {
+                        SettingsTab.GATEWAY -> GatewayTabContent(
+                            phase = phase,
+                            runtime = runtime,
+                            environment = environment,
+                            onDismiss = onDismissRequest,
+                        )
+                        SettingsTab.SECURITY -> SecurityTabContent(environment = environment)
+                        SettingsTab.PLUGINS -> PluginsTabContent()
+                        SettingsTab.TRANSPORT -> TransportTabContent(phase = phase)
+                        SettingsTab.APPEARANCE -> AppearanceTabContent(environment = environment)
+                    }
                 }
             }
         }
@@ -176,38 +198,64 @@ fun PlatformSettingsBottomSheet(
 }
 
 @Composable
+private fun SettingsSheetTitle(onDismissRequest: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = Dimensions.SpaceCompact),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.Settings,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(Dimensions.Icon),
+            )
+            Text(
+                text = "设置",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(start = Dimensions.SpaceSmall),
+            )
+        }
+        IconButton(
+            onClick = onDismissRequest,
+            modifier = Modifier.size(Dimensions.MinimumTouchTarget),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "关闭",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** 分类胶囊：命中态用 secondaryContainer，避免和卡片的 surfaceContainer 抢层级。 */
+@Composable
 private fun SettingsTabChip(
     title: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     selected: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Surface(
-        shape = CircleShape,
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier
-            .clip(CircleShape)
-            .clickable(onClick = onClick),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(title, maxLines = 1) },
+        leadingIcon = {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(FilterChipDefaults.IconSize),
             )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
+        },
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(AppRadius.Small),
+        modifier = modifier,
+    )
 }
 
 /**
@@ -224,161 +272,82 @@ private fun GatewayTabContent(
     val grantState by environment.pairingGrants.state.collectAsState()
     var showUnpairDialog by remember { mutableStateOf(false) }
 
-    // 卡片 1: 活动 Gateway 账号资料
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "活动 Gateway 账号资料",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (connected != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                ) {
-                    Text(
-                        text = if (connected != null) "已配对 · 在线" else "未连接",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = if (connected != null) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                    )
-                }
-            }
-
+    SettingsSectionCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(
+                title = "活动 Gateway 账号资料",
+                trailing = { ConnectionBadge(connected = connected != null) },
+            )
             Text(
                 text = "当前手机绑定的逻辑 Agent Gateway 与独立配对信任关系。",
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("账号主体", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        text = connected?.username ?: "未登录",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-                FilledTonalButton(
-                    onClick = { runtime.restoreSessionIfAvailable() },
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                ) {
-                    Text("刷新凭据", style = MaterialTheme.typography.labelSmall)
-                }
-            }
-
-            Column {
-                Text("Gateway 节点地址", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = connected?.gatewayUrl ?: "—",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            DetailRow(
+                label = "账号主体",
+                value = connected?.username ?: "未登录",
+                action = {
+                    FilledTonalButton(
+                        onClick = { runtime.restoreSessionIfAvailable() },
+                        contentPadding = PaddingValues(horizontal = Dimensions.SpaceCompact),
                     ) {
-                        Text(
-                            text = when {
-                                connected == null -> "未连接"
-                                !connected.transportSecurity.isEncrypted -> "未加密（HTTP）"
-                                connected.tlsSpkiSha256 != null -> "TLS 已固定"
-                                else -> "系统 CA 信任"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = when {
-                                connected == null -> MaterialTheme.colorScheme.onSurfaceVariant
-                                connected.transportSecurity.isEncrypted -> MaterialTheme.colorScheme.primary
-                                else -> MaterialTheme.colorScheme.error
-                            },
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
+                        Text("刷新凭据", style = MaterialTheme.typography.labelMedium)
                     }
-                }
-            }
-
-            Column {
-                Text("配对会话标识 (Pairing Key)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    text = connected?.pairingSummary ?: "未返回配对摘要",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+                },
+            )
+            DetailRow(
+                label = "Gateway 节点地址",
+                value = connected?.gatewayUrl ?: "—",
+                monospace = true,
+                trailing = { TransportBadge(phase) },
+            )
+            DetailRow(
+                label = "配对会话标识",
+                value = connected?.pairingSummary ?: "未返回配对摘要",
+                monospace = true,
+            )
         }
     }
 
-    // 卡片 2: 配对能力授权清单
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    SettingsSectionCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(title = "配对能力授权清单")
             Text(
-                text = "配对能力授权清单 (Pairing Grants)",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = "手机端作为最终授权者，随时撤销分配给当前 Gateway 的设备能力。",
-                style = MaterialTheme.typography.bodySmall,
+                text = "手机端作为最终授权者，随时可撤销分配给当前 Gateway 的设备能力。",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-
             Text(
                 text = grantState?.let { "本机授权版本 r${it.revision}" } ?: "未连接 Gateway，授权暂不可用",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
             )
-
-            GrantSwitchRow(
-                title = "读取与发送短信 (SMS Broker)",
-                subtitle = "限制：每次交互须经手机确认",
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SettingsSwitchItem(
+                headline = "读取与发送短信",
+                supporting = "限制：每次交互须经手机确认",
                 checked = grantState?.granted?.contains(PairingGrantCapabilities.SMS) == true,
                 enabled = grantState != null,
+                icon = Icons.Default.Sms,
                 onCheckedChange = {
                     environment.pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, it)
                 },
             )
-            GrantSwitchRow(
-                title = "屏幕上下文分析与圈选",
-                subtitle = "支持数字助理 Assist 选区截图",
+            SettingsSwitchItem(
+                headline = "屏幕上下文分析与圈选",
+                supporting = "支持数字助理 Assist 选区截图",
                 checked = grantState?.screenSelectionEnabled == true,
                 enabled = grantState != null,
+                icon = Icons.Default.Fullscreen,
                 onCheckedChange = { environment.pairingGrants.updateScreenSelection(it) },
             )
-            GrantSwitchRow(
-                title = "系统通知推送",
-                subtitle = "后台低功耗推送服务",
+            SettingsSwitchItem(
+                headline = "系统通知推送",
+                supporting = "后台低功耗推送服务",
                 checked = grantState?.granted?.contains(PairingGrantCapabilities.NOTIFICATIONS) == true,
                 enabled = grantState != null,
+                icon = Icons.Default.Notifications,
                 onCheckedChange = {
                     environment.pairingGrants.updatePrimitive(PairingGrantCapabilities.NOTIFICATIONS, it)
                 },
@@ -386,10 +355,9 @@ private fun GatewayTabContent(
         }
     }
 
-    // 操作按钮：退出登录 与 解除配对
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
     ) {
         FilledTonalButton(
             onClick = {
@@ -439,23 +407,81 @@ private fun GatewayTabContent(
 }
 
 @Composable
-private fun GrantSwitchRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    enabled: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+private fun ConnectionBadge(connected: Boolean) {
+    Surface(
+        shape = CircleShape,
+        color = if (connected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+    ) {
+        Text(
+            text = if (connected) "已配对 · 在线" else "未连接",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (connected) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun TransportBadge(phase: ConnectionPhase) {
+    val connected = phase as? ConnectionPhase.Connected
+    val (label, error) = when {
+        connected == null -> "未连接" to false
+        !connected.transportSecurity.isEncrypted -> "未加密（HTTP）" to true
+        connected.tlsSpkiSha256 != null -> "TLS 已固定" to false
+        else -> "系统 CA 信任" to false
+    }
+    Surface(
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(AppRadius.ExtraSmall),
+        color = if (error) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (error) {
+                MaterialTheme.colorScheme.onErrorContainer
+            } else {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            },
+            modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun DetailRow(
+    label: String,
+    value: String,
+    monospace: Boolean = false,
+    trailing: (@Composable () -> Unit)? = null,
+    action: (@Composable () -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = if (monospace) FontFamily.Monospace else null,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                trailing?.invoke()
+            }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        action?.invoke()
     }
 }
 
@@ -463,9 +489,7 @@ private fun GrantSwitchRow(
  * Tab 2: 内核安全与模式
  */
 @Composable
-private fun SecurityTabContent(
-    environment: PlatformSettingsEnvironment,
-) {
+private fun SecurityTabContent(environment: PlatformSettingsEnvironment) {
     var trustEnabled by remember { mutableStateOf(environment.trustMode.isEnabled()) }
     var showAckDialog by remember { mutableStateOf(false) }
     var emergencyStopped by remember { mutableStateOf(environment.kernel.isEmergencyStopped()) }
@@ -530,61 +554,45 @@ private fun SecurityTabContent(
         )
     }
 
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Android 宿主运行安全模式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    SettingsSectionCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(title = "Android 宿主运行安全模式")
             Text(
                 "受保护模式（默认）：强制 WASM 沙箱隔离与资源限额，不可接管原生 UI。\n开发者信任模式：允许同进程 Native DEX/Kotlin 插件完全接管界面。",
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                    Text("开发者信任模式 (Trust Mode)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                    Text(
-                        if (trustEnabled) "已开启：原生代码可接管界面" else "未开启（处于沙箱隔离保护状态）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(
-                    checked = trustEnabled,
-                    enabled = environment.allowDeveloperTrustMode,
-                    onCheckedChange = { requested ->
-                        if (requested) {
-                            showAckDialog = true
-                        } else {
-                            environment.trustMode.disable()
-                            trustEnabled = false
-                        }
-                    },
-                )
-            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SettingsSwitchItem(
+                headline = "开发者信任模式 (Trust Mode)",
+                supporting = if (trustEnabled) {
+                    "已开启：原生代码可接管界面"
+                } else {
+                    "未开启（处于沙箱隔离保护状态）"
+                },
+                checked = trustEnabled,
+                enabled = environment.allowDeveloperTrustMode,
+                icon = Icons.Default.Security,
+                onCheckedChange = { requested ->
+                    if (requested) {
+                        showAckDialog = true
+                    } else {
+                        environment.trustMode.disable()
+                        trustEnabled = false
+                    }
+                },
+            )
         }
     }
 
-    // 内核安全原语监控
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("内核安全原语监控 (Kernel Primitives)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text("由平台内核固定定义并执行硬上限，插件无法擅自篡改。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
+    SettingsSectionCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(title = "内核安全原语监控")
+            Text(
+                "由平台内核固定定义并执行硬上限，插件无法擅自篡改。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text(
                 "本页不展示未由内核端口提供的配额、代理或存储运行状态。需要查看具体插件时，请使用内核实际提供的状态接口。",
                 style = MaterialTheme.typography.bodySmall,
@@ -593,29 +601,24 @@ private fun SecurityTabContent(
         }
     }
 
-    // 安全审计日志
     val auditEvents by environment.auditSink.eventsFlow.collectAsState()
     val auditLines = auditEvents.map { environment.audit.render(it) }
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("安全审计日志 (Audit Records)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("${auditLines.size} 条", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-            }
-
+    SettingsSectionCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(
+                title = "安全审计日志",
+                trailing = {
+                    Text(
+                        "${auditLines.size} 条",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+            )
             if (auditLines.isEmpty()) {
                 Text(
                     "本会话暂无安全审计记录。平台内核在敏感授权和原语调用时会在此记入不可篡改记录。",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
@@ -631,21 +634,13 @@ private fun SecurityTabContent(
         }
     }
 
-    // 一键紧急停用：系统级安全熔断，隔离全部插件并切断内核调用。
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("系统级安全熔断 (Kill Switch)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    SettingsSectionCard(containerColor = MaterialTheme.colorScheme.errorContainer) {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(title = "系统级安全熔断 (Kill Switch)")
             Text(
                 "在插件失控、密钥疑似泄露或出现异常授权时使用：立即隔离全部已启用插件、关闭开发者信任模式，并拒绝内核后续一切调用。此操作不可在应用内撤销。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
             )
-
             Button(
                 onClick = { showEmergencyDialog = true },
                 enabled = !emergencyStopped,
@@ -653,23 +648,20 @@ private fun SecurityTabContent(
                     containerColor = MaterialTheme.colorScheme.error,
                     contentColor = MaterialTheme.colorScheme.onError,
                 ),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(AppRadius.Small),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(
                     imageVector = Icons.Default.Warning,
                     contentDescription = null,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.padding(end = Dimensions.SpaceSmall),
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("一键紧急停用", fontWeight = FontWeight.Bold)
+                Text("一键紧急停用")
             }
-
             if (emergencyStopped) {
                 Text(
                     text = "已触发紧急停用：平台内核已切断，共隔离 $stoppedCount 个已启用插件。请重启应用以恢复。",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
         }
@@ -680,18 +672,13 @@ private fun SecurityTabContent(
  * Tab 3: 设备插件
  */
 @Composable
-private fun PluginsTabContent(environment: PlatformSettingsEnvironment) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("设备插件 (Device Plugins)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+private fun PluginsTabContent() {
+    SettingsSectionCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(title = "设备插件")
             Text(
                 "当前组合根没有可观察的插件目录端口，因此不猜测已安装或启用状态。插件需由作者签名并经平台内核验证、隔离和授权。",
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -703,26 +690,21 @@ private fun PluginsTabContent(environment: PlatformSettingsEnvironment) {
  */
 @Composable
 private fun TransportTabContent(phase: ConnectionPhase) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("网络传输通道与安全拓扑", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    SettingsSectionCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(title = "网络传输通道与安全拓扑")
             Text(
                 "• 默认传输: 直连 HTTPS + 证书指纹核验 (SPKI Pinned)\n" +
-                "• 事件流通道: Server-Sent Events (SSE) 断点自动重连\n" +
-                "• Tailscale Companion：当前未提供运行时状态端口",
-                style = MaterialTheme.typography.bodySmall,
+                    "• 事件流通道: Server-Sent Events (SSE) 断点自动重连\n" +
+                    "• Tailscale Companion：当前未提供运行时状态端口",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (phase is ConnectionPhase.Connected && !phase.transportSecurity.isEncrypted) {
                 Text(
                     text = "⚠ 当前连接未加密：地址为明文 HTTP，没有可核验的 Gateway 身份。" +
                         "账号口令、消息与附件内容对网络中的旁观者可读；已固定 TLS 身份的连接不会被允许这样降级。",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
@@ -736,32 +718,21 @@ private fun TransportTabContent(phase: ConnectionPhase) {
 @Composable
 private fun AppearanceTabContent(environment: PlatformSettingsEnvironment) {
     val settings by environment.appearance.settings.collectAsState()
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    SettingsSectionCard {
+        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            SettingsCardHeader(title = "外观与动效偏好")
             Text(
-                text = "外观与动效偏好",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = "品牌默认使用专属配色；系统动态取色和减少动态均为可持久化的本机偏好。",
-                style = MaterialTheme.typography.bodySmall,
+                text = "系统动态取色在 Android 12+ 默认开启；关闭时回落到品牌默认配色。两项都是可持久化的本机偏好。",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
-
-            Text("主题模式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SettingsCardHeader(title = "主题模式")
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
-                ThemePreference.values().forEach { option ->
+                ThemePreference.entries.forEach { option ->
                     FilterChip(
                         selected = settings.theme == option,
                         onClick = { environment.appearance.setTheme(option) },
@@ -778,20 +749,19 @@ private fun AppearanceTabContent(environment: PlatformSettingsEnvironment) {
                     )
                 }
             }
-
-            GrantSwitchRow(
-                title = "系统动态取色",
-                subtitle = "从壁纸提取色调（Android 12+）。关闭时使用默认品牌色。",
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SettingsSwitchItem(
+                headline = "系统动态取色",
+                supporting = "从壁纸提取色调（Android 12+）。关闭时使用默认品牌配色。",
                 checked = settings.dynamicColor,
-                enabled = true,
+                icon = Icons.Default.Palette,
                 onCheckedChange = environment.appearance::setDynamicColor,
             )
-
-            GrantSwitchRow(
-                title = "减少动态",
-                subtitle = "使用平滑淡化替换位移与缩放动效。",
+            SettingsSwitchItem(
+                headline = "减少动态",
+                supporting = "使用平滑淡化替换位移与缩放动效。",
                 checked = settings.reduceMotion,
-                enabled = true,
+                icon = Icons.Default.Animation,
                 onCheckedChange = environment.appearance::setReduceMotion,
             )
         }

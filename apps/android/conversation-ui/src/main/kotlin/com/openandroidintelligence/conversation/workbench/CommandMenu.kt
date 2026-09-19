@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.ports.AgentCommand
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.state.Loadable
+import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
@@ -190,7 +191,7 @@ fun CommandAutocompletePopup(
         modifier = modifier,
     ) {
         Surface(
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(AppRadius.Medium),
             color = MaterialTheme.colorScheme.surfaceContainer,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             shadowElevation = 8.dp,
@@ -260,7 +261,7 @@ fun CommandItemRow(
 
     Surface(
         onClick = { onSelect(command.command) },
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(AppRadius.Small),
         color = backgroundColor,
         interactionSource = interactionSource,
         modifier = modifier

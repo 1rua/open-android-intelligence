@@ -35,6 +35,7 @@ import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentState
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
@@ -120,7 +121,7 @@ fun ComposerBar(
 
             // [ 胶囊输入框 ]
             Surface(
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(AppRadius.Bubble),
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 modifier = Modifier
                     .weight(1f)
@@ -142,7 +143,7 @@ fun ComposerBar(
                         .onFocusChanged { focused = it.isFocused },
                     minLines = 1,
                     maxLines = 4,
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(AppRadius.Bubble),
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color.Transparent,
                         unfocusedContainerColor = Color.Transparent,
@@ -324,7 +325,7 @@ fun AttachmentDraftChip(
     val uploading = state == AttachmentState.UPLOADING
 
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(AppRadius.Medium),
         color = if (failed) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = modifier,
     ) {
@@ -427,7 +428,7 @@ fun PendingBatchStrip(
     if (members.isEmpty()) return
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(AppRadius.Medium),
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp),

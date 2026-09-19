@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.state.TimelineEntry
+import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import androidx.compose.foundation.Image
 import androidx.compose.ui.layout.ContentScale
@@ -123,7 +124,7 @@ private fun UserMessageBubble(entry: TimelineEntry) {
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .heightIn(max = 240.dp)
-                                            .clip(RoundedCornerShape(8.dp))
+                                            .clip(RoundedCornerShape(AppRadius.Small))
                                             .background(MaterialTheme.colorScheme.surface),
                                     ) {
                                         Image(
@@ -208,7 +209,7 @@ private fun UserMessageBubble(entry: TimelineEntry) {
 @Composable
 private fun AttachmentFallbackChip(filename: String, isImage: Boolean) {
     Surface(
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(AppRadius.Small),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = Modifier.fillMaxWidth(),
     ) {

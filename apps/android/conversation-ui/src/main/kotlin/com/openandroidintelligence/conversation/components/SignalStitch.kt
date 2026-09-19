@@ -1,7 +1,6 @@
 package com.openandroidintelligence.conversation.components
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
@@ -10,7 +9,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.unit.dp
-import com.openandroidintelligence.conversation.theme.AppColors
 import com.openandroidintelligence.conversation.theme.Dimensions
 
 /**
@@ -26,9 +24,10 @@ fun SignalStitch(
     failed: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val isDark = isSystemInDarkTheme()
     val line = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-    val dot = if (failed) MaterialTheme.colorScheme.error else if (isDark) AppColors.DarkAccent else AppColors.LightAccent
+    // 茶金小点走 tertiary 角色：开启动态取色后会跟随系统调色，
+    // 但「一条主色短线 + 一个小圆点」的结构签名保持不变。
+    val dot = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary
 
     Canvas(
         modifier = modifier

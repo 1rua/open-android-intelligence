@@ -24,8 +24,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.components.SettingsListItem
+import com.openandroidintelligence.conversation.components.SettingsTone
 import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.state.Loadable
+import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 
 /**
@@ -68,9 +71,9 @@ fun ThreadDrawer(
                     .background(
                         Brush.linearGradient(
                             colors = listOf(
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.95f),
-                                Color(0xFF1A3A34),
+                                MaterialTheme.colorScheme.primary,
+                                MaterialTheme.colorScheme.primaryContainer,
+                                MaterialTheme.colorScheme.secondaryContainer,
                             ),
                         ),
                     )
@@ -84,9 +87,9 @@ fun ThreadDrawer(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color.Black.copy(alpha = 0.2f),
-                            modifier = Modifier.size(44.dp),
+                            shape = RoundedCornerShape(AppRadius.Medium),
+                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.14f),
+                            modifier = Modifier.size(Dimensions.MinimumTouchTarget),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
@@ -171,9 +174,9 @@ fun ThreadDrawer(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(6.dp)
+                                .size(Dimensions.SpaceSmall)
                                 .clip(CircleShape)
-                                .background(Color(0xFF4ADE80)),
+                                .background(MaterialTheme.colorScheme.primary),
                         )
                         Text(
                             text = "在线",
@@ -202,7 +205,7 @@ fun ThreadDrawer(
                         onCreateThread()
                         onCloseDrawer()
                     },
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(AppRadius.Small),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -225,7 +228,7 @@ fun ThreadDrawer(
                     placeholder = { Text("搜索会话…", fontSize = 12.sp) },
                     leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(16.dp)) },
                     singleLine = true,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(AppRadius.Small),
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = Dimensions.MinimumTouchTarget),
@@ -289,54 +292,48 @@ fun ThreadDrawer(
                 } else {
                     filtered.forEach { thread ->
                         val isSelected = thread.id.value == activeThreadId
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onOpenThread(thread.id.value)
-                                    onCloseDrawer()
-                                }
-                                .padding(vertical = 2.dp),
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(
-                                    start = if (isSelected) 0.dp else 10.dp,
-                                    end = 10.dp,
-                                    top = 8.dp,
-                                    bottom = 8.dp,
-                                ),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                if (isSelected) {
-                                    Box(
-                                        modifier = Modifier
-                                            .width(3.dp)
-                                            .height(20.dp)
-                                            .clip(RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp))
-                                            .background(MaterialTheme.colorScheme.primary),
-                                    )
-                                }
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Outlined.Chat,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                        ListItem(
+                            headlineContent = {
                                 Text(
                                     text = thread.title.ifBlank { "未命名对话" },
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    fontSize = 13.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
                                 )
-                            }
-                        }
+                            },
+                            leadingContent = {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.Chat,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(Dimensions.SmallIcon),
+                                )
+                            },
+                            colors = ListItemDefaults.colors(
+                                containerColor = if (isSelected) {
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                } else {
+                                    Color.Transparent
+                                },
+                                headlineColor = if (isSelected) {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                                leadingIconColor = if (isSelected) {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(AppRadius.Medium))
+                                .clickable {
+                                    onOpenThread(thread.id.value)
+                                    onCloseDrawer()
+                                },
+                        )
                     }
                 }
 
@@ -405,6 +402,7 @@ fun ThreadDrawer(
     }
 }
 
+/** 抽屉底部的功能入口：与设置页共用同一套官方 ListItem 规范。 */
 @Composable
 private fun DrawerNavItem(
     icon: ImageVector,
@@ -413,31 +411,11 @@ private fun DrawerNavItem(
     modifier: Modifier = Modifier,
     isActive: Boolean = false,
 ) {
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else Color.Transparent,
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                fontSize = 13.sp,
-            )
-        }
-    }
+    SettingsListItem(
+        headline = label,
+        modifier = modifier.clip(RoundedCornerShape(AppRadius.Medium)),
+        icon = icon,
+        tone = if (isActive) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
+        onClick = onClick,
+    )
 }

@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile
 
 import android.content.Context
+import com.openandroidintelligence.conversation.theme.supportsDynamicColor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,9 +20,15 @@ enum class ThemePreference {
     DARK,
 }
 
+/**
+ * 本机外观偏好。
+ *
+ * 动态取色在 Android 12+ 默认开启：系统壁纸提取的 Monet 调色是 M3 的原生形态，
+ * 用户在「外观与动效」里可以随时关回品牌默认配色。
+ */
 data class AppearanceSettings(
     val theme: ThemePreference = ThemePreference.SYSTEM,
-    val dynamicColor: Boolean = false,
+    val dynamicColor: Boolean = supportsDynamicColor(),
     val reduceMotion: Boolean = false,
 )
 
@@ -50,7 +57,7 @@ class AppearancePreferences(context: Context) {
         theme = preferences.getString(KEY_THEME, ThemePreference.SYSTEM.name)
             ?.let { value -> runCatching { ThemePreference.valueOf(value) }.getOrNull() }
             ?: ThemePreference.SYSTEM,
-        dynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, false),
+        dynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, supportsDynamicColor()),
         reduceMotion = preferences.getBoolean(KEY_REDUCE_MOTION, false),
     )
 

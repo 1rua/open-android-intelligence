@@ -21,7 +21,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -30,8 +29,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.http.TransportSecurity
@@ -67,10 +68,6 @@ fun GatewayLoginScreen(
     val isBusy = phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
-    val cardBg = if (isDarkTheme) Color(0xFF19231F) else Color.White
-    val cardBorder = if (isDarkTheme) Color(0xFF26332E) else Color(0xFFD5E2DC)
-    val inputBg = if (isDarkTheme) Color(0xFF101613) else Color(0xFFE3ECE7)
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -81,8 +78,8 @@ fun GatewayLoginScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .widthIn(max = 390.dp)
-                .padding(horizontal = 24.dp, vertical = 16.dp),
+                .widthIn(max = Dimensions.FormWidth)
+                .padding(horizontal = Dimensions.ScreenHorizontal, vertical = Dimensions.ScreenVertical),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // ===== 1. Top Bar: Right-aligned Status and Round Theme Toggle =====
@@ -99,11 +96,11 @@ fun GatewayLoginScreen(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(7.dp)
+                            .size(Dimensions.SpaceSmall)
                             .clip(CircleShape)
                             .background(
-                                if (phase is ConnectionPhase.Connected) Color(0xFF4ADE80)
-                                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                if (phase is ConnectionPhase.Connected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outlineVariant,
                             ),
                     )
                     Text(
@@ -120,8 +117,8 @@ fun GatewayLoginScreen(
                             1.dp,
                             MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                         ),
-                        modifier = Modifier
-                            .size(32.dp)
+                        modifier =                         Modifier
+                            .size(Dimensions.MinimumTouchTarget - 8.dp)
                             .clip(CircleShape)
                             .clickable { onToggleTheme?.invoke() },
                     ) {
@@ -159,34 +156,33 @@ fun GatewayLoginScreen(
             Spacer(modifier = Modifier.height(20.dp))
 
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(AppRadius.Large),
                 color = MaterialTheme.colorScheme.primary,
-                shadowElevation = 2.dp,
-                modifier = Modifier.size(64.dp),
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(Dimensions.BrandMark),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Default.DeveloperBoard,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier.size(Dimensions.SpaceXLarge),
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
 
             // ===== 3. Gateway Login Form Card =====
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = cardBg,
-                border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-                shadowElevation = 1.dp,
-                modifier = Modifier.fillMaxWidth(),
+            SettingsSectionCard(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                contentPadding = PaddingValues(
+                    horizontal = Dimensions.SpaceMedium,
+                    vertical = Dimensions.SpaceMedium,
+                ),
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
                 ) {
                     FormInputField(
                         label = "网关地址",
@@ -204,7 +200,6 @@ fun GatewayLoginScreen(
                         },
                         onClear = { url = "" },
                         placeholder = "https://gateway.example.local:8443 或 http://10.0.2.2:8045",
-                        inputBg = inputBg,
                         isError = showUrlError,
                         supportingText = if (showUrlError) "请输入包含主机名的有效网关地址（例如 http://10.0.2.2:8045 或 https://gateway.example.com）" else null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
@@ -221,7 +216,6 @@ fun GatewayLoginScreen(
                         onValueChange = { username = it },
                         onClear = { username = "" },
                         placeholder = "输入账号",
-                        inputBg = inputBg,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                     )
 
@@ -230,7 +224,6 @@ fun GatewayLoginScreen(
                         value = password,
                         onValueChange = { password = it },
                         placeholder = "输入访问凭据或密码",
-                        inputBg = inputBg,
                         isPassword = true,
                         passwordVisible = passwordVisible,
                         onTogglePassword = { passwordVisible = !passwordVisible },
@@ -264,14 +257,10 @@ fun GatewayLoginScreen(
                             onLogin(normalizedUrl, username.trim(), secret)
                         },
                         enabled = urlIsValid && username.isNotBlank() && password.isNotEmpty() && !isBusy,
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary,
-                        ),
+                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(44.dp),
+                            .heightIn(min = Dimensions.MinimumTouchTarget + 8.dp),
                     ) {
                         if (isBusy) {
                             CircularProgressIndicator(
@@ -298,19 +287,18 @@ fun GatewayLoginScreen(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(8.dp)
+                        .size(Dimensions.SpaceSmall)
                         .clip(CircleShape)
                         .background(
-                            if (phase is ConnectionPhase.Connected) Color(0xFF4ADE80)
-                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                            if (phase is ConnectionPhase.Connected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outlineVariant,
                         ),
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
                 Text(
                     text = if (phase is ConnectionPhase.Connected) "已连接 Gateway" else "尚未连接 Gateway",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 13.sp,
                 )
             }
 
@@ -351,13 +339,16 @@ fun GatewayLoginScreen(
     }
 }
 
+/**
+ * 标准 M3 表单输入框：Outlined 变体不需要自造底色，描边与焦点态全部由 M3 负责，
+ * 因此这里不存在任何容器色，深浅主题与动态取色都能正确跟随。
+ */
 @Composable
 private fun FormInputField(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,
     placeholder: String,
-    inputBg: Color,
     modifier: Modifier = Modifier,
     isPassword: Boolean = false,
     passwordVisible: Boolean = false,
@@ -373,32 +364,28 @@ private fun FormInputField(
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(5.dp),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 13.sp,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        TextField(
+        OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
             placeholder = {
-                Text(
-                    placeholder,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                    fontSize = 13.sp,
-                )
+                Text(placeholder, style = MaterialTheme.typography.bodyMedium)
             },
             singleLine = singleLine,
             minLines = minLines,
             maxLines = maxLines,
             isError = isError,
-            supportingText = supportingText?.let { { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp) } },
+            supportingText = supportingText?.let {
+                { Text(it, style = MaterialTheme.typography.bodySmall) }
+            },
             visualTransformation = if (isPassword && !passwordVisible) {
                 PasswordVisualTransformation()
             } else {
@@ -410,8 +397,6 @@ private fun FormInputField(
                         Icon(
                             imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                             contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
                         )
                     }
                 }
@@ -421,23 +406,11 @@ private fun FormInputField(
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "清除内容",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
                         )
                     }
                 }
             } else null,
-            shape = RoundedCornerShape(8.dp),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = inputBg,
-                unfocusedContainerColor = inputBg,
-                disabledContainerColor = inputBg,
-                errorContainerColor = inputBg,
-                focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-                unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-            ),
+            shape = RoundedCornerShape(AppRadius.Medium),
             keyboardOptions = keyboardOptions,
             keyboardActions = keyboardActions,
             modifier = Modifier.fillMaxWidth(),
@@ -500,7 +473,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
         is ConnectionPhase.Failed -> Surface(
             color = MaterialTheme.colorScheme.errorContainer,
             contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            shape = RoundedCornerShape(8.dp),
+            shape = RoundedCornerShape(AppRadius.Medium),
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(modifier = Modifier.padding(Dimensions.SpaceCompact)) {
@@ -518,7 +491,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun StatusDot(color: Color) {
+private fun StatusDot(color: androidx.compose.ui.graphics.Color) {
     Box(
         modifier = Modifier
             .size(Dimensions.SpaceSmall)
@@ -533,11 +506,11 @@ private fun PlaintextConnectionNotice() {
     Surface(
         color = MaterialTheme.colorScheme.errorContainer,
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(AppRadius.Medium),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            modifier = Modifier.padding(Dimensions.SpaceCompact),
             verticalAlignment = Alignment.Top,
         ) {
             Icon(
@@ -571,7 +544,7 @@ private fun TransportSecurityChip(security: TransportSecurity) {
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant
         },
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(AppRadius.ExtraSmall),
     ) {
         Text(
             text = when (security) {

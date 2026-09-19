@@ -11,6 +11,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
@@ -20,9 +22,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
+import com.openandroidintelligence.conversation.workbench.FloatingConversationPanel
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.core.model.AssistantHandoffDecision
 import com.openandroidintelligence.core.model.AssistantHandoffDenialReason
 import com.openandroidintelligence.core.model.AssistantHandoffGate
@@ -156,58 +161,67 @@ class MainActivity : ComponentActivity() {
 
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background,
+                    color = MaterialTheme.colorScheme.surfaceContainerLowest,
                 ) {
-                    when (val currentPhase = phase) {
-                        is ConnectionPhase.Connected -> {
-                            val activeController = controller
-                            if (activeController != null) {
-                                WorkbenchScreen(
-                                    controller = activeController,
-                                    gatewayLabel = currentPhase.gatewayUrl,
-                                    onOpenSettings = { showSettingsSheet = true },
-                                    onOpenAssistant = { showAssistant = true },
-                                    onPickCamera = { takePictureLauncher.launch(null) },
-                                    onPickGallery = {
-                                        pickMediaLauncher.launch(
-                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                        )
-                                    },
-                                    onPickDocument = {
-                                        openDocumentLauncher.launch(arrayOf("*/*"))
-                                    },
-                                    onVoiceInput = startVoiceInput,
-                                )
-                                if (showAssistant) {
-                                    com.openandroidintelligence.conversation.workbench.FloatingConversationPanel(
-                                        controller = activeController,
-                                        onClose = { showAssistant = false },
-                                        onPickCamera = { takePictureLauncher.launch(null) },
-                                        onPickGallery = {
-                                            pickMediaLauncher.launch(
-                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                            )
-                                        },
-                                        onPickDocument = {
-                                            openDocumentLauncher.launch(arrayOf("*/*"))
-                                        },
-                                        onVoiceInput = startVoiceInput,
-                                    )
-                                }
-                            } else {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(strokeWidth = 2.dp)
-                                }
-                            }
-                        }
-                        else -> {
+                    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+                    // 登录页 ↔ 工作台：统一走标准淡入滑移转场，禁止生硬替换。
+                    val enterWorkbench = phase is ConnectionPhase.Connected && controller != null
+                    AnimatedContent(
+                        targetState = enterWorkbench,
+                        transitionSpec = {
+                            AppTransitions.enter(reduceMotion, forward = targetState) togetherWith
+                                AppTransitions.exit(reduceMotion, forward = targetState)
+                        },
+                        label = "root-surface",
+                    ) { onWorkbench ->
+                        if (!onWorkbench) {
                             GatewayLoginScreen(
-                                phase = currentPhase,
+                                phase = phase,
                                 onLogin = { url, username, password ->
                                     runtime.login(url, username, password)
                                 },
                                 onOpenSettings = { showSettingsSheet = true },
                                 onRetry = { runtime.resetFailure() },
+                            )
+                            return@AnimatedContent
+                        }
+                        val activeController = controller
+                        if (activeController == null) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(strokeWidth = 2.dp)
+                            }
+                            return@AnimatedContent
+                        }
+                        WorkbenchScreen(
+                            controller = activeController,
+                            gatewayLabel = (phase as? ConnectionPhase.Connected)?.gatewayUrl ?: "",
+                            onOpenSettings = { showSettingsSheet = true },
+                            onOpenAssistant = { showAssistant = true },
+                            onPickCamera = { takePictureLauncher.launch(null) },
+                            onPickGallery = {
+                                pickMediaLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            onPickDocument = {
+                                openDocumentLauncher.launch(arrayOf("*/*"))
+                            },
+                            onVoiceInput = startVoiceInput,
+                        )
+                        if (showAssistant) {
+                            FloatingConversationPanel(
+                                controller = activeController,
+                                onClose = { showAssistant = false },
+                                onPickCamera = { takePictureLauncher.launch(null) },
+                                onPickGallery = {
+                                    pickMediaLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                },
+                                onPickDocument = {
+                                    openDocumentLauncher.launch(arrayOf("*/*"))
+                                },
+                                onVoiceInput = startVoiceInput,
                             )
                         }
                     }

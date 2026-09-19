@@ -149,11 +149,11 @@ fun WorkbenchScreen(
                                     }
                                     Box(
                                         modifier = Modifier
-                                            .size(10.dp)
+                                            .size(Dimensions.SpaceCompact)
                                             .align(Alignment.BottomEnd)
                                             .clip(CircleShape)
-                                            .background(Color(0xFF4ADE80))
-                                            .border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape),
+                                            .background(MaterialTheme.colorScheme.primary)
+                                            .border(Dimensions.StrokeStitch, MaterialTheme.colorScheme.surface, CircleShape),
                                     )
                                 }
                                 Column {

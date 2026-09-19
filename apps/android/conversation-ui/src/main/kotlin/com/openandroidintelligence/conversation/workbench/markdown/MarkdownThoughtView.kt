@@ -1,9 +1,7 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.runtime.Composable
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +25,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.components.ExpandableRegion
+import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /**
@@ -53,37 +55,29 @@ fun MarkdownThoughtBlockView(
     } else {
         animateFloatAsState(
             targetValue = if (isExpanded) 180f else 0f,
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = 400f),
+            animationSpec = MotionSpecs.spatial(reduceMotion),
             label = "thought-chevron",
         ).value
     }
 
-    val containerModifier = if (reduceMotion) {
-        modifier
-    } else {
-        modifier.animateContentSize(
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = 400f),
-        )
-    }
-
     Surface(
-        modifier = containerModifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(12.dp),
+            .padding(vertical = Dimensions.SpaceTiny),
+        shape = RoundedCornerShape(AppRadius.Medium),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = Dimensions.SpaceCompact, vertical = 10.dp),
         ) {
             // 标题栏 (可点击折叠/展开)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(AppRadius.Small))
                     .clickable(
                         role = Role.Button,
                         onClickLabel = if (isExpanded) "收起思考过程" else "展开思考过程",
@@ -133,11 +127,11 @@ fun MarkdownThoughtBlockView(
                 )
             }
 
-            // 正文内容区
-            if (isExpanded) {
-                Spacer(Modifier.height(8.dp))
+            // 正文内容区：统一走 Emphasized 的 expandVertically + fadeIn
+            ExpandableRegion(expanded = isExpanded) {
+                Spacer(Modifier.height(Dimensions.SpaceSmall))
                 if (block.thought.isEmpty() && !block.isComplete) {
-                    Box(modifier = Modifier.fillMaxWidth().padding(top = 2.dp)) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(top = Dimensions.SpaceTiny)) {
                         StreamingCursor()
                     }
                 } else {
