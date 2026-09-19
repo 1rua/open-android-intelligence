@@ -2,8 +2,12 @@ package com.openandroidintelligence.gateway.ws
 
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.http.GatewayProfile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -347,5 +351,416 @@ class GatewayWebSocketTransportTest {
 
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull()?.message?.contains("WEBSOCKET_HANDSHAKE_FAILED") == true)
+    }
+
+    @Test
+    fun `coroutine cancellation immediately closes underlying socket`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val connectedLatch = CountDownLatch(1)
+        val disconnectedLatch = CountDownLatch(1)
+
+        val serverThread = thread {
+            try {
+                val client = server.accept()
+                readHttpHeaders(client.getInputStream())
+
+                val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n\r\n"
+                client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+                client.getOutputStream().flush()
+
+                connectedLatch.countDown()
+
+                try {
+                    val b = client.getInputStream().read()
+                    if (b == -1) {
+                        disconnectedLatch.countDown()
+                    }
+                } catch (e: Exception) {
+                    disconnectedLatch.countDown()
+                } finally {
+                    client.close()
+                }
+            } catch (e: Exception) {
+                // Ignore
+            } finally {
+                server.close()
+            }
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        runBlocking {
+            val job = launch(Dispatchers.IO) {
+                transport.events().collect { }
+            }
+            assertTrue(connectedLatch.await(5, TimeUnit.SECONDS))
+            job.cancelAndJoin()
+            assertTrue("Socket should be closed upon cancellation", disconnectedLatch.await(5, TimeUnit.SECONDS))
+        }
+
+        serverThread.join(5000)
+    }
+
+    @Test
+    fun `ipv6 host is wrapped in brackets for http host header`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val handshakeReceived = CountDownLatch(1)
+        var receivedHost = ""
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            receivedHost = headers["host"] ?: ""
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+            handshakeReceived.countDown()
+
+            val jsonEvent = "{\"id\":\"evt_ipv6\",\"event\":\"test\",\"data\":\"\"}"
+            writeServerFrame(client.getOutputStream(), 0x01, jsonEvent.toByteArray(Charsets.UTF_8))
+
+            client.close()
+            server.close()
+        }
+
+        val profile = GatewayProfile(
+            accountId = "acc_test",
+            deviceId = "dev_test",
+            sessionId = "sess_test",
+            gatewayBaseUrl = "http://[::1]:$port",
+            accessToken = "test_token",
+        )
+        val transport = GatewayWebSocketTransport(
+            profile = profile,
+            signer = { ByteArray(64) },
+            socketFactory = { _, _, _ -> Socket("127.0.0.1", port) },
+        )
+
+        val events = runBlocking {
+            transport.events().take(1).toList()
+        }
+
+        assertTrue(handshakeReceived.await(5, TimeUnit.SECONDS))
+        serverThread.join(5000)
+
+        assertEquals("[::1]:$port", receivedHost)
+        assertEquals(1, events.size)
+    }
+
+    @Test
+    fun `cursor query parameter is url encoded in target and signed`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val handshakeReceived = CountDownLatch(1)
+        var receivedRequestLine = ""
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (reqLine, _) = readHttpHeaders(client.getInputStream())
+            receivedRequestLine = reqLine
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+            handshakeReceived.countDown()
+
+            val jsonEvent = "{\"id\":\"evt_1\",\"event\":\"test\",\"data\":\"\"}"
+            writeServerFrame(client.getOutputStream(), 0x01, jsonEvent.toByteArray(Charsets.UTF_8))
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val cursor = "cur:100/v1"
+        val events = runBlocking {
+            transport.events(cursor).take(1).toList()
+        }
+
+        assertTrue(handshakeReceived.await(5, TimeUnit.SECONDS))
+        serverThread.join(5000)
+
+        assertTrue(receivedRequestLine.startsWith("GET /open-android-intelligence/v2/events?cursor=cur%3A100%2Fv1 HTTP/1.1"))
+        assertEquals(1, events.size)
+    }
+
+    @Test
+    fun `verifyAcceptHeader true succeeds with valid accept header`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            val clientKey = headers["sec-websocket-key"] ?: ""
+            val expectedAccept = GatewayWebSocketTransport.computeSecWebSocketAccept(clientKey)
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Accept: $expectedAccept\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            val jsonEvent = "{\"id\":\"evt_ok\",\"event\":\"msg\",\"data\":\"hello\"}"
+            writeServerFrame(client.getOutputStream(), 0x01, jsonEvent.toByteArray(Charsets.UTF_8))
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+            verifyAcceptHeader = true,
+        )
+
+        val events = runBlocking {
+            transport.events().take(1).toList()
+        }
+
+        serverThread.join(5000)
+        assertEquals(1, events.size)
+        assertEquals("evt_ok", events[0].id)
+    }
+
+    @Test
+    fun `verifyAcceptHeader true fails when upgrade header is missing or invalid`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            val (_, headers) = readHttpHeaders(client.getInputStream())
+            val clientKey = headers["sec-websocket-key"] ?: ""
+            val expectedAccept = GatewayWebSocketTransport.computeSecWebSocketAccept(clientKey)
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: wrong-proto\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Accept: $expectedAccept\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+            verifyAcceptHeader = true,
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected upgrade header error, got: $msg", msg.contains("missing or invalid Upgrade header"))
+    }
+
+    @Test
+    fun `verifyAcceptHeader true fails when accept header does not match key digest`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            readHttpHeaders(client.getInputStream())
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                "Sec-WebSocket-Accept: invalidAcceptValue=\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+            verifyAcceptHeader = true,
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected Sec-WebSocket-Accept mismatch error, got: $msg", msg.contains("Sec-WebSocket-Accept mismatch"))
+    }
+
+    @Test
+    fun `readFrame rejects frame with non-zero rsv bits`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            readHttpHeaders(client.getInputStream())
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // Frame with RSV1 set (0x40): b0 = 0xC1 (FIN=1, RSV1=1, Opcode=1)
+            val output = client.getOutputStream()
+            output.write(0xC1)
+            output.write(0x00)
+            output.flush()
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected RSV bits error, got: $msg", msg.contains("WEBSOCKET_PROTOCOL_ERROR: RSV bits must be 0"))
+    }
+
+    @Test
+    fun `readFrame rejects 64-bit payload length overflow or negative length`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val serverThread = thread {
+            val client = server.accept()
+            readHttpHeaders(client.getInputStream())
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // 64-bit payload length with MSB set (negative signed Long)
+            val output = client.getOutputStream()
+            output.write(0x81) // FIN=1, Opcode=1
+            output.write(127)  // 64-bit length
+            output.write(0x80) // MSB = 1
+            for (i in 0 until 7) {
+                output.write(0x00)
+            }
+            output.flush()
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val result = runCatching {
+            runBlocking {
+                transport.events().toList()
+            }
+        }
+
+        serverThread.join(5000)
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Expected payload length invalid error, got: $msg", msg.contains("WebSocket frame payload length invalid"))
+    }
+
+    @Test
+    fun `sendPong truncates payload exceeding 125 bytes`() {
+        val server = ServerSocket(0)
+        val port = server.localPort
+
+        val pongReceived = CountDownLatch(1)
+        var pongOpcode = -1
+        var pongPayload = ByteArray(0)
+
+        val serverThread = thread {
+            val client = server.accept()
+            readHttpHeaders(client.getInputStream())
+
+            val response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n\r\n"
+            client.getOutputStream().write(response.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+
+            // Ping with 150 bytes payload (> 125)
+            val oversizedPayload = ByteArray(150) { it.toByte() }
+            writeServerFrame(client.getOutputStream(), 0x09, oversizedPayload)
+
+            val (opcode, payload) = readClientFrame(client.getInputStream())
+            pongOpcode = opcode
+            pongPayload = payload
+            pongReceived.countDown()
+
+            val jsonEvent = "{\"id\":\"evt_done\",\"event\":\"ok\",\"data\":\"{}\"}"
+            writeServerFrame(client.getOutputStream(), 0x01, jsonEvent.toByteArray(Charsets.UTF_8))
+
+            client.close()
+            server.close()
+        }
+
+        val transport = GatewayWebSocketTransport(
+            profile = testProfile(port),
+            signer = { ByteArray(64) },
+        )
+
+        val events = runBlocking {
+            transport.events().take(1).toList()
+        }
+
+        assertTrue(pongReceived.await(5, TimeUnit.SECONDS))
+        serverThread.join(5000)
+
+        assertEquals(0x0A, pongOpcode)
+        assertEquals(125, pongPayload.size)
+        for (i in 0 until 125) {
+            assertEquals(i.toByte(), pongPayload[i])
+        }
+        assertEquals("evt_done", events[0].id)
     }
 }

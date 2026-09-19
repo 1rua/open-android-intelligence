@@ -1,9 +1,12 @@
 package com.openandroidintelligence.gateway.http
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -43,17 +46,28 @@ class GatewayTransport(
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
             if (request.body.isNotEmpty()) {
                 connection.outputStream.use { stream -> stream.write(request.body) }
+                connection.outputStream.use { stream ->
+                    stream.write(request.body)
+                }
             }
             val status = connection.responseCode
             val headers = readHeaders(connection)
             WireResponse(status = status, headers = headers, body = readBody(connection, status))
+            val body = readBody(connection, status)
+            WireResponse(status, headers, body)
         } finally {
             connection.disconnect()
         }
     }
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
         val connection = open(request, readTimeoutMillis = 0)
+        val connection = open(request, readTimeoutMillis = SSE_IDLE_TIMEOUT_MILLIS)
+        val job = currentCoroutineContext()[Job]
+        val cancelHandle = job?.invokeOnCompletion(onCancelling = true) {
+            runCatching { connection.disconnect() }
+        }
         try {
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
@@ -69,11 +83,24 @@ class GatewayTransport(
                 val buffer = ByteArray(EVENT_CHUNK_BYTES)
                 while (true) {
                     val read = stream.read(buffer)
+                while (currentCoroutineContext().isActive) {
+                    val read = try {
+                        stream.read(buffer)
+                    } catch (e: java.net.SocketTimeoutException) {
+                        throw IOException("EVENT_STREAM_STALLED: no bytes received for ${SSE_IDLE_TIMEOUT_MILLIS}ms", e)
+                    } catch (e: java.net.SocketException) {
+                        if (!currentCoroutineContext().isActive) break
+                        throw e
+                    } catch (e: IOException) {
+                        if (!currentCoroutineContext().isActive) break
+                        throw e
+                    }
                     if (read == -1) break
                     if (read > 0) emit(buffer.copyOf(read))
                 }
             }
         } finally {
+            cancelHandle?.dispose()
             connection.disconnect()
         }
     }.flowOn(Dispatchers.IO)
@@ -123,6 +150,8 @@ class GatewayTransport(
     }
 
     private companion object {
+    companion object {
+        const val SSE_IDLE_TIMEOUT_MILLIS = 45_000
         const val EVENT_CHUNK_BYTES = 8 * 1024
         const val BODY_CHUNK_BYTES = 16 * 1024
     }

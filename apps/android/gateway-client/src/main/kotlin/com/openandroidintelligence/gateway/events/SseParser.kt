@@ -1,5 +1,7 @@
 package com.openandroidintelligence.gateway.events
 
+import java.io.IOException
+
 /**
  * One SSE frame, emitted only once its terminating blank line has arrived.
  */
@@ -43,6 +45,9 @@ class SseParser(private val onEvent: (GatewayEvent) -> Unit = {}) {
     private val dataLines = mutableListOf<String>()
 
     fun feedBytes(chunk: ByteArray): List<GatewayEvent> {
+        if (buffer.size() + chunk.size > MAX_BUFFERED_BYTES) {
+            throw IOException("SSE_BUFFER_OVERFLOW: frame terminator not found within $MAX_BUFFERED_BYTES bytes")
+        }
         buffer.write(chunk, 0, chunk.size)
         return drain()
     }
@@ -159,4 +164,8 @@ class SseParser(private val onEvent: (GatewayEvent) -> Unit = {}) {
     }
 
     private class Terminator(val start: Int, val endExclusive: Int)
+
+    companion object {
+        const val MAX_BUFFERED_BYTES = 10 * 1024 * 1024
+    }
 }

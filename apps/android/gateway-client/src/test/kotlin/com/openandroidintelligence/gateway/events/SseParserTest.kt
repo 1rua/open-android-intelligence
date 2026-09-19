@@ -214,4 +214,15 @@ class SseParserTest {
         assertEquals(1, events2.size)
         assertEquals("test2", events2[0].data)
     }
+
+    @Test
+    fun feedBytesExceedingMaxBufferThrowsIOException() {
+        val parser = parser()
+        val oversizedChunk = ByteArray(SseParser.MAX_BUFFERED_BYTES + 1)
+        val result = runCatching {
+            parser.feedBytes(oversizedChunk)
+        }
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message?.contains("SSE_BUFFER_OVERFLOW") == true)
+    }
 }

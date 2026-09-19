@@ -5,6 +5,7 @@ import com.openandroidintelligence.conversation.ports.*
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.test.*
@@ -417,6 +418,315 @@ class WorkbenchSendRegressionTest {
         coroutineContext.cancelChildren()
     }
 
+    @Test fun stopGenerationWithoutGenerationIdSetsUnsupportedAndNotice() = runTest {
+        val repository = object : RecordingRepository() {
+            override val generationId = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("hello assistant")
+        controller.sendDraft()
+        advanceUntilIdle()
+
+        controller.stopGeneration()
+        runCurrent()
+        assertEquals(GenerationState.UNSUPPORTED, controller.state.value.generation)
+        assertEquals("STOP_UNAVAILABLE:NO_GENERATION", controller.state.value.notice)
+        coroutineContext.cancelChildren()
+    }
+
+    @Test fun outOfOrderTimelineUpsertLowerRevisionDoesNotOverwrite() = runTest {
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        advanceUntilIdle()
+
+        // 1. Revision 2 arrives first (e.g. Completed message)
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_2",
+                occurredAt = 2000L,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "msg_1",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("final completed text")),
+                    timestamp = 2000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_1"),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        var entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals("final completed text", entries.find { it.key == "msg_1" }?.text)
+
+        // 2. Out-of-order Revision 1 arrives later (delayed delta)
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_1",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_1",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("stale delta text")),
+                    timestamp = 1000L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_1"),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+
+        // Content must NOT regress to stale delta text
+        entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals("final completed text", entries.find { it.key == "msg_1" }?.text)
+        coroutineContext.cancelChildren()
+    }
+
+    @Test fun messageAcceptedRequiresExactMatchAndNotBlankCorrelationId() = runTest {
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val submitGate = CompletableDeferred<Unit>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
+                submitGate.await()
+                return MessageAcceptance("msg_srv", message.clientMessageId.value)
+            }
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        advanceUntilIdle()
+
+        controller.editDraft("test message")
+        controller.sendDraft()
+        runCurrent()
+
+        val pending = controller.state.value.pendingBatch
+        assertTrue(pending.isNotEmpty())
+        val localKey = pending.first().key
+        val clientMsgId = localKey.removePrefix("local_")
+
+        // Emit MessageAccepted with BLANK correlationId -> must NOT remove pending batch
+        eventFlow.emit(
+            VerifiedConversationEvent.MessageAccepted(
+                eventId = "evt_acc_blank",
+                occurredAt = 1000L,
+                messageId = "msg_srv",
+                correlationId = "",
+                conversationId = ConversationId("conv_1"),
+            )
+        )
+        advanceUntilIdle()
+        assertEquals(pending.size, controller.state.value.pendingBatch.size)
+
+        // Emit MessageAccepted with partial substring -> must NOT remove (due to exact match)
+        eventFlow.emit(
+            VerifiedConversationEvent.MessageAccepted(
+                eventId = "evt_acc_partial",
+                occurredAt = 1000L,
+                messageId = "msg_srv",
+                correlationId = clientMsgId.take(5),
+                conversationId = ConversationId("conv_1"),
+            )
+        )
+        advanceUntilIdle()
+        assertEquals(pending.size, controller.state.value.pendingBatch.size)
+
+        // Emit MessageAccepted with exact correlationId -> removed!
+        eventFlow.emit(
+            VerifiedConversationEvent.MessageAccepted(
+                eventId = "evt_acc_exact",
+                occurredAt = 1000L,
+                messageId = "msg_srv",
+                correlationId = clientMsgId,
+                conversationId = ConversationId("conv_1"),
+            )
+        )
+        advanceUntilIdle()
+        assertTrue(controller.state.value.pendingBatch.isEmpty())
+        submitGate.complete(Unit)
+        coroutineContext.cancelChildren()
+    }
+
+    @Test fun unownedEventWithoutConversationIdIsIntercepted() = runTest {
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(
+                listOf(
+                    TimelineMessage(
+                        id = "msg_1",
+                        sender = "assistant",
+                        parts = listOf(MessagePart.Text("original")),
+                        timestamp = 1000L,
+                        conversationId = ConversationId("conv_1"),
+                    )
+                ),
+                null,
+            )
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        advanceUntilIdle()
+
+        var entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(1, entries.size)
+
+        // Emit TimelineTombstoned with null conversationId -> intercepted, must NOT delete msg_1
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineTombstoned(
+                eventId = "evt_tomb_unowned",
+                occurredAt = 2000L,
+                messageId = "msg_1",
+                revision = 1L,
+                conversationId = null,
+            )
+        )
+        advanceUntilIdle()
+
+        entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(1, entries.size)
+        assertEquals("msg_1", entries.first().key)
+
+        // Emit TimelineTombstoned with matching conversationId -> deleted
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineTombstoned(
+                eventId = "evt_tomb_owned",
+                occurredAt = 2000L,
+                messageId = "msg_1",
+                revision = 2L,
+                conversationId = ConversationId("conv_1"),
+            )
+        )
+        advanceUntilIdle()
+
+        entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertTrue(entries.isEmpty())
+        coroutineContext.cancelChildren()
+    }
+
+    @Test fun renderTimelineMergesPendingLocalBatchWithMirroredMessages() = runTest {
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val submitGate = CompletableDeferred<Unit>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
+                submitGate.await()
+                return MessageAcceptance("msg_srv", message.clientMessageId.value)
+            }
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        advanceUntilIdle()
+
+        controller.editDraft("my pending draft")
+        controller.sendDraft()
+        runCurrent()
+
+        // User draft is in pendingBatch and timeline
+        var entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(1, entries.size)
+        assertEquals("my pending draft", entries.first().text)
+
+        // Assistant streaming arrives while user message is still in pendingBatch
+        val streamTime = System.currentTimeMillis() + 100L
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_stream",
+                occurredAt = streamTime,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_assistant_stream",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("Assistant is replying...")),
+                    timestamp = streamTime,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_1"),
+                ),
+            )
+        )
+        runCurrent()
+
+        // Both the user message (from pendingBatch) AND assistant streaming message are in timeline!
+        entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(2, entries.size)
+        assertEquals("my pending draft", entries[0].text)
+        assertEquals("Assistant is replying...", entries[1].text)
+        submitGate.complete(Unit)
+        coroutineContext.cancelChildren()
+    }
+
+    @Test fun switchingThreadsCancelsPreviousTimelineJob() = runTest {
+        var conv1Loaded = false
+        val repository = object : RecordingRepository() {
+            override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
+                if (conversationId == "conv_slow") {
+                    delay(5000L)
+                    conv1Loaded = true
+                    return TimelinePage(
+                        listOf(TimelineMessage("msg_slow", "assistant", listOf(MessagePart.Text("slow")), 100L)),
+                        null,
+                    )
+                }
+                return TimelinePage(
+                    listOf(TimelineMessage("msg_fast", "assistant", listOf(MessagePart.Text("fast")), 200L)),
+                    null,
+                )
+            }
+        }
+        val controller = controller(repository)
+        runCurrent()
+
+        // Open slow thread
+        controller.openThread("conv_slow")
+        runCurrent()
+
+        // Immediately switch to fast thread before slow completes
+        controller.openThread("conv_fast")
+        advanceUntilIdle()
+
+        assertEquals("conv_fast", controller.state.value.activeThreadId)
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(1, entries.size)
+        assertEquals("msg_fast", entries.first().key)
+        assertFalse(conv1Loaded)
+        coroutineContext.cancelChildren()
+    }
+
+    @Test fun historicalAttachmentsDoesNotExceedCapacity() = runTest {
+        val repository = RecordingRepository()
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        advanceUntilIdle()
+
+        val field = WorkbenchController::class.java.getDeclaredField("historicalAttachments").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val map = field.get(controller) as MutableMap<String, TimelineAttachment>
+
+        for (i in 1..40) {
+            map["att_$i"] = TimelineAttachment("att_$i", "file_$i.png", "image/png")
+        }
+
+        assertTrue(map.size <= 30)
+        assertFalse(map.containsKey("att_1"))
+        assertTrue(map.containsKey("att_40"))
+        coroutineContext.cancelChildren()
+    }
+
     private fun TestScope.controller(repository: RecordingRepository) = WorkbenchController(
         this, repository,
         object : AgentCommandCatalogRepository {
@@ -425,10 +735,11 @@ class WorkbenchSendRegressionTest {
         { ConversationScope("profile", "gateway", "account", "install") },
     )
 
-    private open class RecordingRepository : ConversationRepository {
+    private open class RecordingRepository : ConversationRepository, GenerationTracker {
         var creates = 0
         var failCreate = false
         val sent = mutableListOf<OutgoingMessage>()
+        override val generationId = kotlinx.coroutines.flow.MutableStateFlow<String?>("gen_test_id")
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
             creates++
@@ -445,6 +756,7 @@ class WorkbenchSendRegressionTest {
             return MessageAcceptance("msg_server", message.clientMessageId.value)
         }
         override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
-        override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        override suspend fun cancelGeneration(generationId: String, requestId: String) =
+            CancelGenerationResult(CancelGenerationOutcome.CANCELLED, "已停止生成")
     }
 }

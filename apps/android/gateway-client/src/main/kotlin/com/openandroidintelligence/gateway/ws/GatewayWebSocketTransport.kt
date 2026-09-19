@@ -9,6 +9,7 @@ import com.openandroidintelligence.gateway.http.SignedRequestInput
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -22,6 +23,8 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
+import java.net.URLEncoder
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Instant
 import java.util.Base64
@@ -44,24 +47,36 @@ open class GatewayWebSocketTransport(
     private val profile: GatewayProfile,
     private val signer: (ByteArray) -> ByteArray,
     private val socketFactory: ((host: String, port: Int, isTls: Boolean) -> Socket)? = null,
+    private val verifyAcceptHeader: Boolean = false,
 ) {
     private val secureRandom = SecureRandom()
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     open fun events(cursor: String? = null): Flow<GatewayEvent> = flow {
         val uri = URI(profile.gatewayBaseUrl)
         val scheme = uri.scheme?.lowercase() ?: "http"
         val isTls = scheme == "wss" || scheme == "https"
         val host = uri.host ?: error("GATEWAY_ENDPOINT_INVALID: missing host in ${profile.gatewayBaseUrl}")
         val port = if (uri.port != -1) uri.port else if (isTls) 443 else 80
-        val hostHeader = if ((isTls && port == 443) || (!isTls && port == 80)) host else "$host:$port"
+        val formattedHost = if (host.contains(':') && !(host.startsWith('[') && host.endsWith(']'))) "[$host]" else host
+        val hostHeader = if ((isTls && port == 443) || (!isTls && port == 80)) formattedHost else "$formattedHost:$port"
 
-        val target = if (cursor == null) EVENTS_TARGET else "$EVENTS_TARGET?cursor=$cursor"
+        val target = if (cursor == null) {
+            EVENTS_TARGET
+        } else {
+            "$EVENTS_TARGET?cursor=${URLEncoder.encode(cursor, "UTF-8")}"
+        }
 
         val socket: Socket = if (socketFactory != null) {
             socketFactory.invoke(host, port, isTls)
         } else if (isTls) {
-            val sslSocket = SSLSocketFactory.getDefault().createSocket()
-            sslSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+            val plainSocket = Socket()
+            plainSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS)
+            val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+                .createSocket(plainSocket, host, port, true) as SSLSocket
+            val params = sslSocket.sslParameters ?: sslSocket.sslParameters
+            params.endpointIdentificationAlgorithm = "HTTPS"
+            sslSocket.sslParameters = params
             sslSocket
         } else {
             val plainSocket = Socket()
@@ -69,6 +84,10 @@ open class GatewayWebSocketTransport(
             plainSocket
         }
         socket.soTimeout = 0
+
+        val job = currentCoroutineContext()[Job]
+        val cancelHandle = job?.invokeOnCompletion { runCatching { socket.close() } }
+        val cancelHandle = job?.invokeOnCompletion(onCancelling = true) { runCatching { socket.close() } }
 
         try {
             // Verify TLS / pins
@@ -86,6 +105,15 @@ open class GatewayWebSocketTransport(
 
             while (currentCoroutineContext().isActive) {
                 val frame = readFrame(inputStream) ?: break
+                val frame = try {
+                    readFrame(inputStream) ?: break
+                } catch (e: java.net.SocketException) {
+                    if (!currentCoroutineContext().isActive || socket.isClosed) break
+                    throw e
+                } catch (e: IOException) {
+                    if (!currentCoroutineContext().isActive || socket.isClosed) break
+                    throw e
+                }
                 when (frame.opcode) {
                     OPCODE_PING -> {
                         sendPong(outputStream, frame.payload)
@@ -122,6 +150,7 @@ open class GatewayWebSocketTransport(
                 }
             }
         } finally {
+            cancelHandle?.dispose()
             runCatching { socket.close() }
         }
     }.flowOn(Dispatchers.IO)
@@ -186,15 +215,37 @@ open class GatewayWebSocketTransport(
             throw IOException("WEBSOCKET_HANDSHAKE_FAILED: $statusLine")
         }
 
+        val headers = mutableMapOf<String, String>()
         while (true) {
             val line = readLine(input) ?: break
             if (line.isEmpty()) break
+            val colonIndex = line.indexOf(':')
+            if (colonIndex != -1) {
+                val name = line.substring(0, colonIndex).trim().lowercase()
+                val value = line.substring(colonIndex + 1).trim()
+                headers[name] = value
+            }
+        }
+
+        if (verifyAcceptHeader) {
+            val upgrade = headers["upgrade"]
+            if (upgrade == null || !upgrade.equals("websocket", ignoreCase = true)) {
+                throw IOException("WEBSOCKET_HANDSHAKE_FAILED: missing or invalid Upgrade header: $upgrade")
+            }
+            val expectedAccept = computeSecWebSocketAccept(secWebSocketKey)
+            val actualAccept = headers["sec-websocket-accept"]
+            if (actualAccept != expectedAccept) {
+                throw IOException("WEBSOCKET_HANDSHAKE_FAILED: Sec-WebSocket-Accept mismatch: expected $expectedAccept but got $actualAccept")
+            }
         }
     }
 
     private fun readFrame(input: InputStream): WebSocketFrame? {
         val b0 = input.read()
         if (b0 == -1) return null
+        if ((b0 and 0x70) != 0) {
+            throw IOException("WEBSOCKET_PROTOCOL_ERROR: RSV bits must be 0")
+        }
         val fin = (b0 and 0x80) != 0
         val opcode = b0 and 0x0F
 
@@ -218,8 +269,8 @@ open class GatewayWebSocketTransport(
             payloadLen = len
         }
 
-        if (payloadLen > MAX_PAYLOAD_BYTES) {
-            throw IOException("WebSocket frame payload exceeds limit: $payloadLen bytes")
+        if (payloadLen < 0 || payloadLen > MAX_PAYLOAD_BYTES) {
+            throw IOException("WebSocket frame payload length invalid: $payloadLen bytes")
         }
 
         val maskingKey = if (masked) {
@@ -250,7 +301,8 @@ open class GatewayWebSocketTransport(
     }
 
     private fun sendPong(output: OutputStream, payload: ByteArray) {
-        sendFrame(output, opcode = OPCODE_PONG, payload = payload)
+        val pongPayload = if (payload.size <= 125) payload else payload.copyOf(minOf(payload.size, 125))
+        sendFrame(output, opcode = OPCODE_PONG, payload = pongPayload)
     }
 
     private fun sendClose(output: OutputStream) {
@@ -314,6 +366,7 @@ open class GatewayWebSocketTransport(
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
         const val CONNECT_TIMEOUT_MILLIS = 10_000
         const val MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
+        const val WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
         const val OPCODE_CONTINUATION = 0x00
         const val OPCODE_TEXT = 0x01
@@ -321,6 +374,12 @@ open class GatewayWebSocketTransport(
         const val OPCODE_CLOSE = 0x08
         const val OPCODE_PING = 0x09
         const val OPCODE_PONG = 0x0A
+
+        fun computeSecWebSocketAccept(secWebSocketKey: String): String {
+            val sha1 = MessageDigest.getInstance("SHA-1")
+            val digest = sha1.digest((secWebSocketKey + WEBSOCKET_GUID).toByteArray(Charsets.US_ASCII))
+            return Base64.getEncoder().encodeToString(digest)
+        }
 
         fun parseWebSocketEvent(text: String): GatewayEvent? {
             val trimmed = text.trim()

@@ -83,6 +83,7 @@ fun WorkbenchScreen(
         if (followLatest) {
             val totalItems = entries.size + if (isThinking) 1 else 0
             if (totalItems > 0) listState.scrollToItem(totalItems - 1, Int.MAX_VALUE)
+            if (totalItems > 0) listState.scrollToItem(totalItems - 1, 0)
         }
     }
 

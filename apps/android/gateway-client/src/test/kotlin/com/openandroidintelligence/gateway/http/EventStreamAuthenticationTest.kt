@@ -25,6 +25,7 @@ class EventStreamAuthenticationTest {
             transport, { preimage -> signed += preimage; ByteArray(64) { 1 } }, cursors,
         )
         val events = client.events().toList()
+        val events = client.events(autoReconnect = false).toList()
         val request = requireNotNull(wire)
         assertEquals("GET", request.method)
         assertEquals("/open-android-intelligence/v2/events?cursor=cur_7", request.target)

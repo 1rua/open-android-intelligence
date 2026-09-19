@@ -102,6 +102,7 @@ class GatewayHttpClient(
             val storedCursor = cursorStore.load(profile.accountId)
             val cursor = storedCursor?.takeIf { CURSOR_ALPHABET.matches(it) }
             var receivedAnyEventInAttempt = false
+            var receivedWsEventInAttempt = false
             var streamFailed = false
 
             // 1. Try WebSocket first if preferred and available
@@ -109,6 +110,7 @@ class GatewayHttpClient(
                 try {
                     webSocketTransport.events(cursor).collect { event ->
                         receivedAnyEventInAttempt = true
+                        receivedWsEventInAttempt = true
                         backoffMillis = 1000L
                         event.id?.let { cursorStore.save(profile.accountId, it) }
                         emit(event)
@@ -118,6 +120,7 @@ class GatewayHttpClient(
                 } catch (e: Throwable) {
                     streamFailed = true
                     if (!receivedAnyEventInAttempt) {
+                    if (!receivedWsEventInAttempt) {
                         preferWebSocket = false
                     }
                 }
@@ -128,9 +131,13 @@ class GatewayHttpClient(
                 streamFailed = false
                 try {
                     val target = if (cursor == null) {
+                    val sseStoredCursor = cursorStore.load(profile.accountId)
+                    val sseCursor = sseStoredCursor?.takeIf { CURSOR_ALPHABET.matches(it) }
+                    val target = if (sseCursor == null) {
                         EVENTS_TARGET
                     } else {
                         "$EVENTS_TARGET?cursor=$cursor"
+                        "$EVENTS_TARGET?cursor=$sseCursor"
                     }
 
                     val parser = SseParser { event ->
@@ -164,21 +171,35 @@ class GatewayHttpClient(
             }
 
             if (receivedAnyEventInAttempt) {
+            if (receivedWsEventInAttempt) {
                 preferWebSocket = (webSocketTransport != null)
             }
 
             // If reconnect is disabled, or if stream ended cleanly without error:
             if (!autoReconnect || !streamFailed) {
+            // If reconnect is disabled:
+            if (!autoReconnect) {
                 break
             }
 
             // Exponential backoff before reconnecting: 1s, 2s, 5s...
+            // Exponential backoff before reconnecting on failure: 1s, 2s, 5s...
             if (currentCoroutineContext().isActive) {
                 delayFn(backoffMillis)
                 backoffMillis = when (backoffMillis) {
                     1000L -> 2000L
                     2000L -> 5000L
                     else -> minOf(backoffMillis * 2, maxBackoffMillis)
+                if (streamFailed) {
+                    delayFn(backoffMillis)
+                    backoffMillis = when (backoffMillis) {
+                        1000L -> 2000L
+                        2000L -> 5000L
+                        else -> minOf(backoffMillis * 2, maxBackoffMillis)
+                    }
+                } else {
+                    backoffMillis = 1000L
+                    kotlinx.coroutines.yield()
                 }
             }
         }

@@ -4,6 +4,7 @@ import com.openandroidintelligence.gateway.events.EventCursorStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -88,6 +89,7 @@ class GatewayEventStreamTest {
         val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, MemoryCursorStore())
 
         client.events().toList()
+        client.events(autoReconnect = false).toList()
 
         val request = requireNotNull(transport.lastRequest)
         assertEquals("GET", request.method)
@@ -112,6 +114,7 @@ class GatewayEventStreamTest {
         )
 
         client.events().toList()
+        client.events(autoReconnect = false).toList()
 
         val request = requireNotNull(transport.lastRequest)
         assertEquals("/open-android-intelligence/v2/events?cursor=evt_00", request.target)
@@ -130,6 +133,7 @@ class GatewayEventStreamTest {
         val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, cursorStore)
 
         val events = client.events().toList()
+        val events = client.events(autoReconnect = false).toList()
 
         assertEquals(1, events.size)
         assertEquals("evt_01", events.single().id)
@@ -144,6 +148,7 @@ class GatewayEventStreamTest {
         val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, cursorStore)
 
         client.events().toList()
+        client.events(autoReconnect = false).toList()
 
         // The Gateway refuses a non-canonical target, so a corrupt local cursor
         // restarts from the retained window (events are idempotent upserts)
@@ -169,6 +174,7 @@ class GatewayEventStreamTest {
         )
 
         val events = client.events().toList()
+        val events = client.events(autoReconnect = false).toList()
 
         assertEquals(1, events.size)
         assertEquals("evt_01", events[0].id)
@@ -195,6 +201,7 @@ class GatewayEventStreamTest {
         )
 
         val events = client.events().toList()
+        val events = client.events(autoReconnect = false).toList()
 
         assertEquals(1, events.size)
         assertEquals("ws_evt_1", events[0].id)
@@ -233,6 +240,7 @@ class GatewayEventStreamTest {
         )
 
         val events = client.events().toList()
+        val events = client.events().take(2).toList()
 
         assertEquals(2, events.size)
         assertEquals("evt_01", events[0].id)
@@ -269,9 +277,62 @@ class GatewayEventStreamTest {
         )
 
         val events = client.events().toList()
+        val events = client.events().take(1).toList()
 
         assertEquals(1, events.size)
         assertEquals("final_evt", events[0].id)
         assertEquals(listOf(1000L, 2000L, 5000L), recordedDelays)
+    }
+
+    @Test
+    fun `clean stream disconnect reconnects when autoReconnect is true`() = runBlocking {
+        var connectCount = 0
+        val finiteTransport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                connectCount++
+                emit("id: evt_$connectCount\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+            }
+        }
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = finiteTransport,
+            signer = { ByteArray(64) },
+            cursorStore = MemoryCursorStore(),
+            webSocketTransport = null,
+            delayFn = { /* no delay */ },
+        )
+
+        val events = client.events(autoReconnect = true).take(2).toList()
+
+        assertEquals(2, events.size)
+        assertTrue("Expected reconnect on clean disconnect", connectCount >= 2)
+        assertEquals("evt_1", events[0].id)
+        assertEquals("evt_2", events[1].id)
+    }
+
+    @Test
+    fun `clean stream disconnect terminates when autoReconnect is false`() = runBlocking {
+        var connectCount = 0
+        val finiteTransport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                connectCount++
+                emit("id: evt_$connectCount\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+            }
+        }
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = finiteTransport,
+            signer = { ByteArray(64) },
+            cursorStore = MemoryCursorStore(),
+            webSocketTransport = null,
+        )
+
+        val events = client.events(autoReconnect = false).toList()
+
+        assertEquals(1, events.size)
+        assertEquals(1, connectCount)
+        assertEquals("evt_1", events[0].id)
     }
 }

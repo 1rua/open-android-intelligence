@@ -26,6 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -90,12 +91,18 @@ class WorkbenchController(
 
     /** Server-mirrored messages for the active thread, by message id. */
     private val mirrored = LinkedHashMap<String, TimelineMessage>()
+    private val mirroredRevisions = LinkedHashMap<String, Long>()
 
     private val attachmentJobs = LinkedHashMap<String, Job>()
     private val attachmentSelections = LinkedHashMap<String, com.openandroidintelligence.conversation.ports.LocalAttachmentSelection>()
-    private val historicalAttachments = LinkedHashMap<String, com.openandroidintelligence.conversation.model.TimelineAttachment>()
+    private val historicalAttachments = object : LinkedHashMap<String, com.openandroidintelligence.conversation.model.TimelineAttachment>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, com.openandroidintelligence.conversation.model.TimelineAttachment>?): Boolean {
+            return size > 30
+        }
+    }
 
     private var eventJob: Job? = null
+    private var timelineJob: Job? = null
     private var activeThreadId: String? = null
     private var creationJob: Deferred<Result<String>>? = null
     private var draftRevision = 0L
@@ -131,7 +138,12 @@ class WorkbenchController(
     }
 
     override fun close() {
+        timelineJob?.cancel()
+        attachmentJobs.values.forEach { it.cancel() }
+        attachmentJobs.clear()
+        creationJob?.cancel()
         eventJob?.cancel()
+        batcher.close()
     }
 
     fun cancel() = close()
@@ -182,7 +194,9 @@ class WorkbenchController(
         activeThreadId = threadId
         onActiveThreadChanged(threadId)
         mirrored.clear()
+        mirroredRevisions.clear()
         eventJob?.cancel()
+        timelineJob?.cancel()
         update {
             it.copy(
                 activeThreadId = threadId,
@@ -192,25 +206,34 @@ class WorkbenchController(
             )
         }
 
-        scope.launch {
-            Result.runCatching { repository.timeline(threadId, PageRequest()) }.fold(
+        timelineJob = scope.launch {
+            val result = Result.runCatching { repository.timeline(threadId, PageRequest()) }
+            if (activeThreadId != threadId) return@launch
+            result.fold(
                 onSuccess = { page ->
+                    if (activeThreadId != threadId) return@launch
                     mirrored.clear()
+                    mirroredRevisions.clear()
                     page.messages.forEach { mirrored[it.id] = it }
                     val hasStreaming = page.messages.any { it.sender == "assistant" && it.state == "STREAMING" }
                     update { state ->
+                        if (state.activeThreadId != threadId) return@update state
                         state.copy(
                             timeline = if (page.messages.isEmpty()) {
                                 Loadable.Empty
                             } else {
-                                Loadable.Ready(renderTimeline())
+                                Loadable.Ready(renderTimeline(state.pendingBatch))
                             },
                             generation = if (hasStreaming) GenerationState.RUNNING else GenerationState.IDLE,
                         )
                     }
                 },
                 onFailure = { cause ->
-                    update { it.copy(timeline = Loadable.Failed(errorCodeOf(cause))) }
+                    if (activeThreadId != threadId) return@launch
+                    update { state ->
+                        if (state.activeThreadId != threadId) state
+                        else state.copy(timeline = Loadable.Failed(errorCodeOf(cause)))
+                    }
                 },
             )
         }
@@ -237,7 +260,9 @@ class WorkbenchController(
                 activeThreadId = conversation.id.value
                 onActiveThreadChanged(conversation.id.value)
                 mirrored.clear()
+                mirroredRevisions.clear()
                 eventJob?.cancel()
+                timelineJob?.cancel()
                 update {
                     it.copy(activeThreadId = conversation.id.value, activeThreadTitle = conversation.title,
                         timeline = Loadable.Empty, pendingBatch = emptyList(), notice = null)
@@ -416,24 +441,26 @@ class WorkbenchController(
                             id = acceptance.messageId, sender = "user",
                             parts = buildList {
                                 if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
-                                submission.attachmentIds.zip(remoteIds).forEach { (draftId, remoteId) ->
-                                    val sel = attachmentSelections[draftId]
-                                    val d = drafts[draftId]
+                                submittedAttachments.zip(remoteIds).forEach { (att, remoteId) ->
                                     add(com.openandroidintelligence.conversation.model.MessagePart.Attachment(
                                         draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(remoteId),
-                                        filename = sel?.filename ?: d?.filename.orEmpty(),
-                                        mediaType = sel?.mediaType ?: d?.mediaType.orEmpty(),
+                                        filename = att.filename,
+                                        mediaType = att.mediaType,
                                     ))
                                 }
                             },
                             timestamp = entry.timestamp,
                         )
-                        update { it.copy(
-                            timeline = Loadable.Ready(renderTimeline()),
-                            pendingBatch = it.pendingBatch.filterNot { row -> row.key == entry.key },
-                            notice = null,
-                            generation = if (it.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED,
-                        ) }
+                        mirroredRevisions[acceptance.messageId] = 0L
+                        update { state ->
+                            val remainingBatch = state.pendingBatch.filterNot { row -> row.key == entry.key }
+                            state.copy(
+                                timeline = Loadable.Ready(renderTimeline(remainingBatch)),
+                                pendingBatch = remainingBatch,
+                                notice = null,
+                                generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED,
+                            )
+                        }
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -485,17 +512,7 @@ class WorkbenchController(
         val generationId = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)
             ?.generationId?.value
         if (generationId == null) {
-            if (_state.value.generation == GenerationState.QUEUED ||
-                _state.value.generation == GenerationState.RUNNING ||
-                mirrored.values.any { it.state == "STREAMING" }
-            ) {
-                mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
-                    mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
-                }
-                update { it.copy(generation = GenerationState.CANCELLED, timeline = Loadable.Ready(renderTimeline()), notice = "已停止生成") }
-                return
-            }
-            update { it.copy(notice = "STOP_UNAVAILABLE:NO_GENERATION") }
+            update { it.copy(generation = GenerationState.UNSUPPORTED, notice = "STOP_UNAVAILABLE:NO_GENERATION") }
             return
         }
         update { it.copy(generation = GenerationState.CANCEL_REQUESTED) }
@@ -511,7 +528,7 @@ class WorkbenchController(
                     }
                     update { state ->
                         state.copy(
-                            timeline = Loadable.Ready(renderTimeline()),
+                            timeline = Loadable.Ready(renderTimeline(state.pendingBatch)),
                             generation = when (result.outcome) {
                                 com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED ->
                                     GenerationState.CANCELLED
@@ -551,14 +568,20 @@ class WorkbenchController(
                     }
                 }
                 .collect { event ->
+                    val currentActiveId = activeThreadId ?: run {
+                        refreshThreads()
+                        return@collect
+                    }
                     when (event) {
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                             val eventConvId = event.conversationId?.value
-                            val currentActiveId = activeThreadId
-                            if (eventConvId == null || eventConvId == currentActiveId) {
+                            val correlationId = event.correlationId
+                            if (eventConvId == currentActiveId && correlationId.isNotBlank()) {
                                 update { state ->
                                     state.copy(
-                                        pendingBatch = state.pendingBatch.filterNot { it.key.endsWith(event.correlationId) },
+                                        pendingBatch = state.pendingBatch.filterNot {
+                                            it.key == "local_$correlationId" || it.key == correlationId
+                                        },
                                     )
                                 }
                             }
@@ -567,22 +590,21 @@ class WorkbenchController(
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
                             val message = event.message
                             val eventConvId = message.conversationId?.value
-                            val currentActiveId = activeThreadId
                             if (eventConvId != null && eventConvId != currentActiveId) {
                                 refreshThreads()
                                 return@collect
                             }
-                            if (currentActiveId == null && eventConvId != null) {
-                                refreshThreads()
-                                return@collect
-                            }
-                            if (message.sender == "user" || message.sender == "assistant") {
-                                mirrored[message.id] = message
+                            val previousRevision = mirroredRevisions[message.id]
+                            if (previousRevision == null || event.revision >= previousRevision) {
+                                if (message.sender == "user" || message.sender == "assistant") {
+                                    mirrored[message.id] = message
+                                    mirroredRevisions[message.id] = event.revision
+                                }
                             }
                             update { state ->
                                 state.copy(
                                     timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
-                                        Loadable.Ready(renderTimeline())
+                                        Loadable.Ready(renderTimeline(state.pendingBatch))
                                     } else {
                                         state.timeline
                                     },
@@ -599,11 +621,11 @@ class WorkbenchController(
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineTombstoned -> {
                             val eventConvId = event.conversationId?.value
-                            val currentActiveId = activeThreadId
-                            if (eventConvId == null || eventConvId == currentActiveId) {
+                            if (eventConvId == currentActiveId) {
                                 mirrored.remove(event.messageId)
+                                mirroredRevisions.remove(event.messageId)
                                 update { state ->
-                                    state.copy(timeline = Loadable.Ready(renderTimeline()))
+                                    state.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch)))
                                 }
                             }
                         }
@@ -620,22 +642,22 @@ class WorkbenchController(
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.GenerationCancelled -> {
                             val eventConvId = event.conversationId?.value
-                            val currentActiveId = activeThreadId
-                            if (eventConvId == null || eventConvId == currentActiveId) {
+                            if (eventConvId == currentActiveId) {
                                 mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
                                     mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
                                 }
-                                update { it.copy(
-                                    generation = GenerationState.CANCELLED,
-                                    timeline = Loadable.Ready(renderTimeline()),
-                                ) }
+                                update { state ->
+                                    state.copy(
+                                        generation = GenerationState.CANCELLED,
+                                        timeline = Loadable.Ready(renderTimeline(state.pendingBatch)),
+                                    )
+                                }
                             }
                         }
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.SnapshotInvalidated -> {
                             val eventConvId = event.conversationId?.value
-                            val currentActiveId = activeThreadId
-                            if (currentActiveId != null && (eventConvId == null || eventConvId == currentActiveId)) {
+                            if (eventConvId == currentActiveId) {
                                 reloadTimeline(currentActiveId)
                             }
                         }
@@ -652,19 +674,25 @@ class WorkbenchController(
     }
 
     private fun reloadTimeline(threadId: String) {
-        scope.launch {
-            Result.runCatching { repository.timeline(threadId, PageRequest()) }
-                .onSuccess { page ->
-                    mirrored.clear()
-                    page.messages.forEach { mirrored[it.id] = it }
-                    update { it.copy(timeline = if (page.messages.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline())) }
+        timelineJob?.cancel()
+        timelineJob = scope.launch {
+            val result = Result.runCatching { repository.timeline(threadId, PageRequest()) }
+            if (activeThreadId != threadId) return@launch
+            result.onSuccess { page ->
+                if (activeThreadId != threadId) return@launch
+                mirrored.clear()
+                mirroredRevisions.clear()
+                page.messages.forEach { mirrored[it.id] = it }
+                update { state ->
+                    if (state.activeThreadId != threadId) state
+                    else state.copy(timeline = if (page.messages.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(state.pendingBatch)))
                 }
+            }
         }
     }
 
-    private fun renderTimeline(): List<TimelineEntry> =
-        mirrored.values
-            .sortedBy { it.timestamp }
+    private fun renderTimeline(pendingBatch: List<TimelineEntry> = _state.value.pendingBatch): List<TimelineEntry> {
+        val mirroredEntries = mirrored.values
             .map { message ->
                 val messageAttachments = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
                     .map { att ->
@@ -705,6 +733,14 @@ class WorkbenchController(
                 )
             }
 
+        val mirroredKeys = mirrored.keys
+        val unconfirmedPending = pendingBatch.filterNot { entry ->
+            mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_"))
+        }
+
+        return (mirroredEntries + unconfirmedPending).sortedBy { it.timestamp }
+    }
+
     private fun appendLocal(entry: TimelineEntry): Loadable<List<TimelineEntry>> {
         val current = when (val existing = _state.value.timeline) {
             is Loadable.Ready -> existing.value
@@ -722,6 +758,10 @@ class WorkbenchController(
             ?: "新对话"
 
     private fun update(transform: (WorkbenchUiState) -> WorkbenchUiState) {
-        _state.value = transform(_state.value)
+        _state.update(transform)
     }
+}
+
+private fun DebounceBatcher.close() {
+    (this as? AutoCloseable)?.close()
 }
