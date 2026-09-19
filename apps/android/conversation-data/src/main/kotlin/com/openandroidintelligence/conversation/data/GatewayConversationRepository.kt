@@ -33,12 +33,25 @@ import kotlinx.coroutines.flow.mapNotNull
 class GatewayConversationRepository(
     private val client: ConversationClient,
     private val decoder: GatewayEventDecoder = GatewayEventDecoder,
+    /** Where the transport reports whether the reply channel is actually alive. */
+    private val streamStatus: com.openandroidintelligence.gateway.events.EventStreamStatusSink? = null,
     /** The thread cancellation and event scope act on; owned by the screen holder. */
     private val activeConversationId: () -> String? = { null },
-) : ConversationRepository, com.openandroidintelligence.conversation.ports.GenerationTracker {
+) : ConversationRepository,
+    com.openandroidintelligence.conversation.ports.GenerationTracker,
+    com.openandroidintelligence.conversation.model.StreamHealthSource {
 
     private val _generationId = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     override val generationId: kotlinx.coroutines.flow.StateFlow<String?> = _generationId
+
+    /**
+     * The transport's own status, in the domain's vocabulary.
+     *
+     * Without this a screen could only infer health from silence, which is
+     * exactly how a dropped reply used to look like an app that never answered.
+     */
+    override val streamHealth: kotlinx.coroutines.flow.Flow<com.openandroidintelligence.conversation.model.StreamHealth> =
+        com.openandroidintelligence.conversation.data.StreamHealthBridge.of(streamStatus)
 
 
     override suspend fun listConversations(

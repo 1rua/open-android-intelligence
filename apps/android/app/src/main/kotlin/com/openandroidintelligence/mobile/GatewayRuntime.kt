@@ -313,14 +313,20 @@ class GatewayRuntime(
             ),
         )
         val transport = GatewayTransport(profile)
+        val eventStreamStatus = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
         val http = GatewayHttpClient(
             profile = profile,
             transport = transport,
             signer = { preimage -> deviceKeys.sign(profileId, preimage) },
             cursorStore = InMemoryEventCursorStore(),
+            statusSink = eventStreamStatus,
         )
         val conversationClient = ConversationClient(http)
-        val repository = GatewayConversationRepository(conversationClient) { activeThread.get() }
+        val repository = GatewayConversationRepository(
+            client = conversationClient,
+            activeConversationId = { activeThread.get() },
+            streamStatus = eventStreamStatus,
+        )
         val catalogRepository = GatewayCommandCatalogRepository(CommandCatalogClient(http))
         accessTokenHolder = session.accessToken
         lastAccountId = session.accountId
@@ -353,6 +359,7 @@ class GatewayRuntime(
             attachmentCoordinator = attachmentCoordinator,
             supportsMessageBatches = "message-batches-v1" in conversationUi,
             onActiveThreadChanged = { threadId -> activeThread.set(threadId) },
+            streamHealthSource = repository,
         )
         _phase.value = ConnectionPhase.Connected(
             gatewayUrl = endpoint.baseUrl,

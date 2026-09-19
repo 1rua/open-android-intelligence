@@ -161,6 +161,9 @@ class WorkbenchTitleRegressionTest {
                 AgentCommandCatalog(CatalogVersion("v1"), emptyList())
         },
         scopeFactory = { ConversationScope("p1", "gw1", "acc1", "inst1") },
+        // The reply watchdog sleeps in real minutes; a virtual clock would fire
+        // it immediately and change the state these title cases assert on.
+        replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
     )
 
     private class TitleRecordingRepository(

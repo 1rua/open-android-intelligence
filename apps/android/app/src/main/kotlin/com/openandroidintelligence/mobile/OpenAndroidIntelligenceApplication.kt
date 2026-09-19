@@ -65,6 +65,11 @@ class OpenAndroidIntelligenceApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The transport writes diagnostics through GatewayLog so it stays testable
+        // on a JVM; the app is the only place that knows what Logcat is.
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { tag, message ->
+            android.util.Log.d(tag, message)
+        }
         trustMode = DeveloperTrustMode()
         auditSink = PersistentAuditSink(File(filesDir, "platform-kernel/audit-events.log"))
         auditStore = AndroidAuditStore(sink = auditSink)

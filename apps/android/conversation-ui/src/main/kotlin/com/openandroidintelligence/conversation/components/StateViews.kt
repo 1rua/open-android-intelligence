@@ -54,11 +54,35 @@ fun readableFailure(code: String): String {
         value.contains("SSL") || value.contains("TLS") || value.contains("CERTIFICATE") -> "无法验证 Gateway 的安全连接，请检查地址与证书配置。"
         value.contains("413") || value.contains("TOO_LARGE") -> "内容超过了 Gateway 限制，请选择较小的文件。"
         value.contains("429") || value.contains("RATE_LIMIT") -> "请求过于频繁，请稍后重试。"
+        value.contains("REPLY_TIMEOUT") || value.contains("NO_REPLY") ->
+            "Gateway 一直没有返回回复。已尝试重新同步会话，若仍无内容请检查 Gateway 与 Agent 是否在运行。"
+        value.contains("EVENTS_FAILED") || value.contains("EVENT_STREAM") ->
+            "与 Gateway 的实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务后重试。"
         value.contains("TIMEOUT") || value.contains("TIMED OUT") -> "连接超时，请检查网络后重试。"
         value.contains("CONNECT") || value.contains("NETWORK") || value.contains("IOEXCEPTION") || value.contains("UNKNOWNHOST") -> "暂时无法连接 Gateway，请检查网络和服务地址后重试。"
         else -> "暂时无法取得内容。请检查连接后重试；若持续失败，请检查 Gateway 服务。"
     }
 }
+
+/** 顶栏副标题用的通道状态短标签：始终有值，让「连着」和「断了」一眼可分。 */
+fun connectionLabel(health: com.openandroidintelligence.conversation.model.StreamHealth): String =
+    when (health) {
+        com.openandroidintelligence.conversation.model.StreamHealth.IDLE -> "已连接"
+        com.openandroidintelligence.conversation.model.StreamHealth.CONNECTING -> "正在连接…"
+        com.openandroidintelligence.conversation.model.StreamHealth.LIVE -> "已连接"
+        com.openandroidintelligence.conversation.model.StreamHealth.RECONNECTING -> "重连中…"
+        com.openandroidintelligence.conversation.model.StreamHealth.FAILED -> "通道已断开"
+    }
+
+/** 实时通道状态的一句话说明；健康时不显示，避免噪音。 */
+fun streamHealthText(health: com.openandroidintelligence.conversation.model.StreamHealth): String? =
+    when (health) {
+        com.openandroidintelligence.conversation.model.StreamHealth.IDLE -> null
+        com.openandroidintelligence.conversation.model.StreamHealth.CONNECTING -> "正在连接 Gateway…"
+        com.openandroidintelligence.conversation.model.StreamHealth.LIVE -> null
+        com.openandroidintelligence.conversation.model.StreamHealth.RECONNECTING -> "连接中断，正在重连…"
+        com.openandroidintelligence.conversation.model.StreamHealth.FAILED -> "实时通道已断开，暂时收不到回复"
+    }
 
 /**
  * Turns an internal failure code into something the user can act on, while

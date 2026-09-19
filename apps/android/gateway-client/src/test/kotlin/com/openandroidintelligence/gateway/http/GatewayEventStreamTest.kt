@@ -7,8 +7,10 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -326,5 +328,81 @@ class GatewayEventStreamTest {
         assertEquals(1, events.size)
         assertEquals(1, connectCount)
         assertEquals("evt_1", events[0].id)
+    }
+
+    /**
+     * Retrying forever is what made a dropped reply look like an app that never
+     * answered: nothing above the transport could tell "reconnecting" from
+     * "working". A stream that never recovers now fails loudly.
+     */
+    @Test
+    fun `a stream that never recovers fails instead of retrying forever`() = runBlocking {
+        val recordedDelays = mutableListOf<Long>()
+        val alwaysFailing = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                throw java.io.IOException("Connection reset by peer")
+            }
+        }
+        val sink = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = alwaysFailing,
+            signer = { ByteArray(64) },
+            cursorStore = MemoryCursorStore(),
+            webSocketTransport = null,
+            delayFn = { recordedDelays += it },
+            statusSink = sink,
+            maxConsecutiveFailures = 3,
+        )
+
+        // Bounded so a regression shows up as a failed assertion instead of a
+        // build that hangs: retrying forever was the original defect.
+        val result = withTimeoutOrNull(5_000L) { runCatching { client.events().toList() } }
+
+        assertNotNull("事件流必须给出结论，不能永远重试下去", result)
+        assertTrue("必须向上抛出异常，否则上层永远看不到故障", result!!.isFailure)
+        assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("Connection reset by peer"))
+        // Three dead rounds: two backoffs, then the third one gives up.
+        assertEquals(listOf(1000L, 2000L), recordedDelays)
+        assertEquals(
+            com.openandroidintelligence.gateway.events.EventStreamStatus.FAILED,
+            sink.status.value,
+        )
+    }
+
+    @Test
+    fun `the stream reports live on the first event and reconnecting after a break`() = runBlocking {
+        var attempt = 0
+        val flaky = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attempt++
+                if (attempt == 1) {
+                    emit("id: evt_1\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+                    throw java.io.IOException("Connection reset by peer")
+                }
+                emit("id: evt_2\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+            }
+        }
+        val sink = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = flaky,
+            signer = { ByteArray(64) },
+            cursorStore = MemoryCursorStore(),
+            webSocketTransport = null,
+            delayFn = { /* no delay */ },
+            statusSink = sink,
+        )
+
+        val events = client.events().take(2).toList()
+
+        assertEquals(2, events.size)
+        // A stream that recovered must not leave the user looking at a failure.
+        assertEquals(
+            com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE,
+            sink.status.value,
+        )
     }
 }

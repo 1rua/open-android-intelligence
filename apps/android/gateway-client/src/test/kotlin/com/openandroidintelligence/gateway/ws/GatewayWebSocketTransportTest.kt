@@ -191,7 +191,7 @@ class GatewayWebSocketTransportTest {
         serverThread.join(5000)
 
         // Verify request line
-        assertTrue(receivedRequestLine.startsWith("GET /open-android-intelligence/v2/events?cursor=cur_0 HTTP/1.1"))
+        assertTrue(receivedRequestLine.startsWith("GET /open-android-intelligence/v2/events/ws?cursor=cur_0 HTTP/1.1"))
 
         // Verify upgrade headers
         assertTrue(receivedHeaders["upgrade"].equals("websocket", ignoreCase = true))
@@ -511,7 +511,7 @@ class GatewayWebSocketTransportTest {
         assertTrue(handshakeReceived.await(5, TimeUnit.SECONDS))
         serverThread.join(5000)
 
-        assertTrue(receivedRequestLine.startsWith("GET /open-android-intelligence/v2/events?cursor=cur%3A100%2Fv1 HTTP/1.1"))
+        assertTrue(receivedRequestLine.startsWith("GET /open-android-intelligence/v2/events/ws?cursor=cur%3A100%2Fv1 HTTP/1.1"))
         assertEquals(1, events.size)
     }
 
@@ -1106,7 +1106,10 @@ class GatewayWebSocketTransportTest {
 
         assertTrue(result.isFailure)
         val msg = result.exceptionOrNull()?.message ?: ""
-        assertTrue("Expected stalled error, got: $msg", msg.contains("WEBSOCKET_STREAM_STALLED: no bytes received for 45000ms"))
+        assertTrue(
+            "Expected stalled error, got: $msg",
+            msg.contains("WEBSOCKET_STREAM_STALLED: no bytes received for ${GatewayWebSocketTransport.READ_TIMEOUT_MILLIS}ms"),
+        )
     }
 
     @Test

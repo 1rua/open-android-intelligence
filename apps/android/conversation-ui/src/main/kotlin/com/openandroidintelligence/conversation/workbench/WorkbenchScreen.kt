@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.LoadableRegion
+import com.openandroidintelligence.conversation.components.connectionLabel
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.model.GenerationState
@@ -73,6 +74,13 @@ fun WorkbenchScreen(
             controller.dismissNotice()
             // A failed send must explain itself: an error code alone reads as "no reaction".
             snackbar.showSnackbar(noticeText(notice))
+        }
+    }
+    // A dead reply channel is the one cause of "sent but nothing came back"
+    // that the user cannot see from the timeline, so it says so out loud.
+    LaunchedEffect(state.streamHealth) {
+        if (state.streamHealth == com.openandroidintelligence.conversation.model.StreamHealth.FAILED) {
+            snackbar.showSnackbar("实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务。")
         }
     }
     LaunchedEffect(listState) {
@@ -166,9 +174,16 @@ fun WorkbenchScreen(
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        text = "${gatewayLabel.removePrefix("https://")} · 已连接",
+                                        text = "${gatewayLabel.removePrefix("https://")} · " +
+                                            connectionLabel(state.streamHealth),
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = if (state.streamHealth ==
+                                            com.openandroidintelligence.conversation.model.StreamHealth.FAILED
+                                        ) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
                                         fontSize = 11.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
