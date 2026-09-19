@@ -88,7 +88,6 @@ class GatewayEventStreamTest {
         val transport = RecordingTransport(listOf(completedFrame))
         val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, MemoryCursorStore())
 
-        client.events().toList()
         client.events(autoReconnect = false).toList()
 
         val request = requireNotNull(transport.lastRequest)
@@ -113,7 +112,6 @@ class GatewayEventStreamTest {
             cursorStore,
         )
 
-        client.events().toList()
         client.events(autoReconnect = false).toList()
 
         val request = requireNotNull(transport.lastRequest)
@@ -132,7 +130,6 @@ class GatewayEventStreamTest {
         val cursorStore = MemoryCursorStore()
         val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, cursorStore)
 
-        val events = client.events().toList()
         val events = client.events(autoReconnect = false).toList()
 
         assertEquals(1, events.size)
@@ -147,7 +144,6 @@ class GatewayEventStreamTest {
         val cursorStore = MemoryCursorStore().apply { seed("acc_test", "not a wire id") }
         val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, cursorStore)
 
-        client.events().toList()
         client.events(autoReconnect = false).toList()
 
         // The Gateway refuses a non-canonical target, so a corrupt local cursor
@@ -173,7 +169,6 @@ class GatewayEventStreamTest {
             webSocketTransport = failingWs,
         )
 
-        val events = client.events().toList()
         val events = client.events(autoReconnect = false).toList()
 
         assertEquals(1, events.size)
@@ -200,7 +195,6 @@ class GatewayEventStreamTest {
             webSocketTransport = successfulWs,
         )
 
-        val events = client.events().toList()
         val events = client.events(autoReconnect = false).toList()
 
         assertEquals(1, events.size)
@@ -239,7 +233,6 @@ class GatewayEventStreamTest {
             delayFn = { recordedDelays += it },
         )
 
-        val events = client.events().toList()
         val events = client.events().take(2).toList()
 
         assertEquals(2, events.size)
@@ -276,7 +269,6 @@ class GatewayEventStreamTest {
             delayFn = { recordedDelays += it },
         )
 
-        val events = client.events().toList()
         val events = client.events().take(1).toList()
 
         assertEquals(1, events.size)

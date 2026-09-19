@@ -45,14 +45,12 @@ class GatewayTransport(
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
             if (request.body.isNotEmpty()) {
-                connection.outputStream.use { stream -> stream.write(request.body) }
                 connection.outputStream.use { stream ->
                     stream.write(request.body)
                 }
             }
             val status = connection.responseCode
             val headers = readHeaders(connection)
-            WireResponse(status = status, headers = headers, body = readBody(connection, status))
             val body = readBody(connection, status)
             WireResponse(status, headers, body)
         } finally {
@@ -62,7 +60,6 @@ class GatewayTransport(
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
-        val connection = open(request, readTimeoutMillis = 0)
         val connection = open(request, readTimeoutMillis = SSE_IDLE_TIMEOUT_MILLIS)
         val job = currentCoroutineContext()[Job]
         val cancelHandle = job?.invokeOnCompletion(onCancelling = true) {
@@ -81,8 +78,6 @@ class GatewayTransport(
             }
             connection.inputStream.use { stream ->
                 val buffer = ByteArray(EVENT_CHUNK_BYTES)
-                while (true) {
-                    val read = stream.read(buffer)
                 while (currentCoroutineContext().isActive) {
                     val read = try {
                         stream.read(buffer)
@@ -149,7 +144,6 @@ class GatewayTransport(
         return out.toByteArray()
     }
 
-    private companion object {
     companion object {
         const val SSE_IDLE_TIMEOUT_MILLIS = 45_000
         const val EVENT_CHUNK_BYTES = 8 * 1024

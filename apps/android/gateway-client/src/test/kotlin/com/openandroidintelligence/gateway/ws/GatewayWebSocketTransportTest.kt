@@ -60,27 +60,41 @@ class GatewayWebSocketTransportTest {
 
     private fun readClientFrame(input: InputStream): Pair<Int, ByteArray> {
         val b0 = input.read()
+        if (b0 == -1) return -1 to ByteArray(0)
         val opcode = b0 and 0x0F
         val b1 = input.read()
+        if (b1 == -1) return -1 to ByteArray(0)
         val masked = (b1 and 0x80) != 0
         var len = (b1 and 0x7F).toLong()
         if (len == 126L) {
             val h = input.read()
             val l = input.read()
+            if (h == -1 || l == -1) return -1 to ByteArray(0)
             len = (((h and 0xFF) shl 8) or (l and 0xFF)).toLong()
+        } else if (len == 127L) {
+            var l = 0L
+            for (i in 0 until 8) {
+                val b = input.read()
+                if (b == -1) return -1 to ByteArray(0)
+                l = (l shl 8) or (b.toLong() and 0xFFL)
+            }
+            len = l
         }
         val maskKey = ByteArray(4)
         if (masked) {
             var off = 0
             while (off < 4) {
                 val r = input.read(maskKey, off, 4 - off)
+                if (r == -1) return -1 to ByteArray(0)
                 off += r
             }
         }
+        if (len < 0 || len > 10 * 1024 * 1024) return opcode to ByteArray(0)
         val payload = ByteArray(len.toInt())
         var off = 0
         while (off < payload.size) {
             val r = input.read(payload, off, payload.size - off)
+            if (r == -1) return -1 to ByteArray(0)
             off += r
         }
         if (masked) {

@@ -86,7 +86,6 @@ open class GatewayWebSocketTransport(
         socket.soTimeout = 0
 
         val job = currentCoroutineContext()[Job]
-        val cancelHandle = job?.invokeOnCompletion { runCatching { socket.close() } }
         val cancelHandle = job?.invokeOnCompletion(onCancelling = true) { runCatching { socket.close() } }
 
         try {
@@ -104,7 +103,6 @@ open class GatewayWebSocketTransport(
             var currentOpcode = -1
 
             while (currentCoroutineContext().isActive) {
-                val frame = readFrame(inputStream) ?: break
                 val frame = try {
                     readFrame(inputStream) ?: break
                 } catch (e: java.net.SocketException) {

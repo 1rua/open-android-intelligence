@@ -24,7 +24,6 @@ class EventStreamAuthenticationTest {
             GatewayProfile("account_test", "device_test", "session_test", "https://gateway.example", accessToken = "test-bearer"),
             transport, { preimage -> signed += preimage; ByteArray(64) { 1 } }, cursors,
         )
-        val events = client.events().toList()
         val events = client.events(autoReconnect = false).toList()
         val request = requireNotNull(wire)
         assertEquals("GET", request.method)
