@@ -182,10 +182,10 @@ export interface MessageBatchMember {
 
 export function joinMessageBatch(
   members: readonly Readonly<{ clientMessageId: string; text: string }>[],
-): Uint8Array {
+): string {
   if (members.length === 0 || members.length > 20) throw new Error("SCHEMA_INVALID");
   if (new Set(members.map((member) => member.clientMessageId)).size !== members.length) {
     throw new Error("SCHEMA_INVALID");
   }
-  return new TextEncoder().encode(members.map((member) => member.text).join("\n"));
+  return members.map((m) => m.text.replace(/^\n+|\n+$/g, "")).join("\n");
 }
