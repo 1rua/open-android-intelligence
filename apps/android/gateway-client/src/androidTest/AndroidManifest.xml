@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 测试宿主（androidTest APK）需要真实网络访问，用于对回环网关观察客户端发出的
+         原始 HTTP 请求（会话重命名走 PATCH，只有平台实现允许该方法）。
+         该清单只出现在测试 APK 的合并结果中，不改变
+         com.openandroidintelligence.mobile 正式 APK 的权限面。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- 回环网关是明文 http，测试 APK 需要显式允许明文连接；正式 APK 的明文策略
+         由 app/src/main/AndroidManifest.xml 单独声明（ADR 0047）。 -->
+    <application android:usesCleartextTraffic="true" />
+
+</manifest>

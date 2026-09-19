@@ -105,6 +105,54 @@ class WorkbenchTitleRegressionTest {
         controller.cancel()
     }
 
+    /**
+     * A rename the Gateway refused must not stay on screen: otherwise the phone
+     * shows a title the Gateway never stored, which is exactly how the PATCH
+     * rejection used to look like a working feature.
+     */
+    @Test
+    fun manualRenameRevertsAndExplainsWhenGatewayRejectsIt() = runTest {
+        val repository = TitleRecordingRepository(acceptsTitleUpdate = false)
+        val controller = createController(repository)
+        runCurrent()
+
+        controller.openThread("conv_test")
+        advanceUntilIdle()
+        val originalTitle = controller.state.value.activeThreadTitle
+
+        controller.renameActiveThread("用户自定义会话名称")
+        advanceUntilIdle()
+
+        assertEquals(1, repository.titleUpdates)
+        assertEquals("用户自定义会话名称", repository.lastUpdatedTitle)
+        assertEquals(originalTitle, controller.state.value.activeThreadTitle)
+        assertFalse(controller.isCurrentThreadUserRenamed)
+        assertEquals(
+            "CONVERSATION_RENAME_FAILED:CONVERSATION_RENAME_REJECTED",
+            controller.state.value.notice,
+        )
+        controller.cancel()
+    }
+
+    /** The automatic title is only kept when the Gateway actually stored it. */
+    @Test
+    fun automaticTitleRevertsWhenGatewayRejectsIt() = runTest {
+        val repository = TitleRecordingRepository(acceptsTitleUpdate = false)
+        val controller = createController(repository)
+        runCurrent()
+
+        controller.openThread("conv_test")
+        advanceUntilIdle()
+        controller.editDraft("如何理解量子纠缠？")
+        controller.sendDraft()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.titleUpdates)
+        assertEquals("如何理解量子纠缠？", repository.lastUpdatedTitle)
+        assertEquals("新对话", controller.state.value.activeThreadTitle)
+        controller.cancel()
+    }
+
     private fun TestScope.createController(repository: TitleRecordingRepository) = WorkbenchController(
         scope = this,
         repository = repository,
@@ -117,9 +165,11 @@ class WorkbenchTitleRegressionTest {
 
     private class TitleRecordingRepository(
         private val events: MutableSharedFlow<VerifiedConversationEvent> = MutableSharedFlow(),
+        private val acceptsTitleUpdate: Boolean = true,
     ) : ConversationRepository {
         var lastUpdatedConversationId: String? = null
         var lastUpdatedTitle: String? = null
+        var titleUpdates = 0
 
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage =
             ConversationPage(listOf(ConversationSummary(ConversationId("conv_test"), "新对话", 100L)), null)
@@ -144,7 +194,8 @@ class WorkbenchTitleRegressionTest {
         override suspend fun updateTitle(conversationId: String, title: String): Boolean {
             lastUpdatedConversationId = conversationId
             lastUpdatedTitle = title
-            return true
+            titleUpdates++
+            return acceptsTitleUpdate
         }
     }
 }

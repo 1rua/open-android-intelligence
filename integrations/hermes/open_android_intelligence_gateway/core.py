@@ -416,7 +416,7 @@ def canonicalize_target(target: str) -> str:
 
 def request_signature_preimage(input: Mapping[str, Any]) -> bytes:
     method = input.get("method")
-    if method not in {"GET", "POST", "PUT", "DELETE"}:
+    if method not in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
         raise GatewayError("SCHEMA_INVALID")
     target = input.get("target")
     canonical = canonicalize_target(target)

@@ -121,14 +121,43 @@ class WorkbenchController(
 
     fun isThreadUserRenamed(threadId: String): Boolean = userRenamedThreads.contains(threadId)
 
+    /**
+     * Renames one thread, on the Gateway's authority.
+     *
+     * The title is shown optimistically, but a Gateway that did not accept the
+     * rename must not leave a title that looks saved: the previous title comes
+     * back and the failure is explained. The user-override marker is only kept
+     * when the rename actually landed, otherwise an Agent title suggestion would
+     * be blocked forever by a rename that never happened.
+     */
     fun renameThread(threadId: String, newTitle: String) {
+        val previousTitle = if (activeThreadId == threadId) {
+            _state.value.activeThreadTitle
+        } else {
+            threadTitleOf(threadId)
+        }
+        val alreadyUserRenamed = userRenamedThreads.contains(threadId)
         userRenamedThreads.add(threadId)
         if (activeThreadId == threadId) {
             update { it.copy(activeThreadTitle = newTitle) }
         }
         scope.launch {
-            repository.updateTitle(threadId, newTitle)
-            refreshThreads()
+            val saved = runCatching { repository.updateTitle(threadId, newTitle) }.getOrDefault(false)
+            if (saved) {
+                refreshThreads()
+                return@launch
+            }
+            if (!alreadyUserRenamed) {
+                userRenamedThreads.remove(threadId)
+            }
+            if (activeThreadId == threadId && _state.value.activeThreadTitle == newTitle) {
+                update {
+                    it.copy(
+                        activeThreadTitle = previousTitle,
+                        notice = "CONVERSATION_RENAME_FAILED:CONVERSATION_RENAME_REJECTED",
+                    )
+                }
+            }
         }
     }
 
@@ -430,8 +459,17 @@ class WorkbenchController(
                     if (autoTitle.isNotBlank() && autoTitle != "新对话" && !userRenamedThreads.contains(target)) {
                         update { it.copy(activeThreadTitle = autoTitle) }
                         scope.launch {
-                            repository.updateTitle(target, autoTitle)
-                            refreshThreads()
+                            val saved = runCatching { repository.updateTitle(target, autoTitle) }.getOrDefault(false)
+                            if (saved) {
+                                refreshThreads()
+                            } else if (activeThreadId == target &&
+                                _state.value.activeThreadTitle == autoTitle &&
+                                !userRenamedThreads.contains(target)
+                            ) {
+                                // The Gateway never stored this title, so the phone
+                                // must not keep displaying it as if it had.
+                                update { it.copy(activeThreadTitle = currentTitle) }
+                            }
                         }
                     }
                 }

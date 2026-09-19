@@ -298,7 +298,7 @@ X-Open-Android-Intelligence-Signature
 
 以下五个条件 header 也必须从同一 raw header 列表执行 singleton 规则：
 
-- `Idempotency-Key`：每个已认证 `POST`、`PUT`、`DELETE` 请求必须恰好一次，值按第 6.5 节绑定 request ID；已认证 `GET` 必须不出现。
+- `Idempotency-Key`：每个已认证 `POST`、`PUT`、`PATCH`、`DELETE` 请求必须恰好一次，值按第 6.5 节绑定 request ID；已认证 `GET` 必须不出现。
 - `Last-Event-ID`：只允许在 `GET /events` 且 canonical query 已含非空 `cursor` 时出现零次或一次；若出现必须逐字节等于 query cursor，其他路由必须不出现。
 - `Content-Type`：声明 JSON entity-body 的路由必须恰好一次且值精确为 `application/json`；附件 content 的原始 bytes 路由允许零次或一次，若出现必须精确等于创建附件时已验证的 `mediaType`；无 body 路由不得出现。
 - `Content-Length`：`PUT /attachments/{attachmentId}/content` 必须恰好一次；其他带 entity-body 的路由可以不出现或恰好一次，由 HTTP transfer framing 决定；无 body 路由不得出现。
@@ -313,7 +313,7 @@ token 验证得到的 `accountId`、`deviceId`、`sessionId` 必须分别与三�
 已认证请求字段语法为：
 
 ```text
-method    = "GET" / "POST" / "PUT" / "DELETE"
+method    = "GET" / "POST" / "PUT" / "PATCH" / "DELETE"
 timestamp = RFC3339 UTC with exactly milliseconds
 nonce     = canonical unpadded base64url of exactly 16 bytes
 signature = canonical unpadded base64url of exactly 64 Ed25519 bytes
@@ -409,6 +409,7 @@ GET  /conversations/{conversationId}/messages?clientMessageId=<id>
 GET  /conversations
 POST /conversations
 GET  /conversations/{conversationId}
+PATCH /conversations/{conversationId}
 POST /conversations/{conversationId}/messages
 GET  /conversations/{conversationId}/attachments/{attachmentId}/metadata
 POST /conversations/{conversationId}/attachments/{attachmentId}/cache-grant
@@ -428,6 +429,23 @@ GET  /conversations/{conversationId}/attachments/{attachmentId}/content
 ```
 
 Gateway 返回 `accepted` 及服务端 message ID；Agent 回复通过 SSE 发送 `conversation.message.delta` 和 `conversation.message.completed`。每个 conversation 只属于当前逻辑 Gateway，服务端拒绝跨账号、跨 Gateway 或跨 conversation 附件引用。
+
+重命名请求体是封闭的 `{"title": "<非空显示标题>"}`，成功时返回：
+
+```json
+{
+  "protocol": "2.0",
+  "data": {
+    "conversation": {
+      "conversationId": "conv_01...",
+      "clientConversationId": "cconv_01...",
+      "title": "量子计算与经典物理的核心区别"
+    }
+  }
+}
+```
+
+Gateway 先原子更新标题并写入审计，再追加 `conversation.title.updated` 事件（`payload` 同时携带 `title` 与 `newTitle`），随后向已连接的设备补齐该事件。会话不存在时返回第 14 节的错误信封，绝不静默创建。手机端生成的自动标题和用户手动重命名走同一端点；一旦用户手动重命名，客户端不再让后续 Agent 标题建议覆盖该标题。
 
 宿主拥有长期对话与 Agent 记忆。Gateway 只保存完成可靠交付所需映射、幂等结果和短期暂存，不复制长期对话正文。
 
@@ -515,6 +533,7 @@ V2 事件类型：
 
 - `conversation.message.delta`
 - `conversation.message.completed`
+- `conversation.title.updated`
 - `device.requested`
 - `device.request.cancel.requested`
 - `pairing.grant.changed`

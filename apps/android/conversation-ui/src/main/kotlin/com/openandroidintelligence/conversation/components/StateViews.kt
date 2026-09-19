@@ -42,6 +42,7 @@ fun readableFailure(code: String): String {
     return when {
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
         value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请联系网关部署者执行 ./hermes-account.py init-key 并重启网关。"
+        value.contains("RENAME") || value.contains("TITLE_UPDATE") -> "网关没有保存这次重命名，已恢复原标题。请确认网关版本支持会话重命名。"
         value.contains("REQUEST_BODY_INVALID") -> "网关拒绝了这次请求的内容，请更新 App 或检查网关版本。"
         value.contains("CURSOR_EXPIRED") -> "会话进度已过期，请刷新以重新同步内容。"
         value.contains("URL-SCHEME") -> "网关地址不受支持，请使用 http:// 或 https:// 开头的地址。"

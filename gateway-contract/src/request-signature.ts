@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 const wireIdPattern = /^[A-Za-z0-9._~-]{1,128}$/;
 const timestampPattern = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
 const base64UrlPattern = /^[A-Za-z0-9_-]+$/;
-const methods = ["GET", "POST", "PUT", "DELETE"] as const;
+// PATCH is signed exactly like the other mutating verbs; it carries the
+// conversation title update defined in contract section 7.
+const methods = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
 const hexDigits = /^[0-9A-Fa-f]$/;
 const unreservedByte = (byte: number): boolean =>
   (byte >= 0x41 && byte <= 0x5a) ||

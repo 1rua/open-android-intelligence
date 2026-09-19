@@ -49,6 +49,9 @@ def main():
         def do_POST(self): self.dispatch()
         def do_PUT(self): self.dispatch()
         def do_DELETE(self): self.dispatch()
+        # Conversation rename (contract section 7) travels as PATCH; without this
+        # handler the fixture would answer 501 and hide a real client defect.
+        def do_PATCH(self): self.dispatch()
 
         def dispatch(self):
             content = self.rfile.read(int(self.headers.get("Content-Length", "0")))

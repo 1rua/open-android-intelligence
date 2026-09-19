@@ -307,7 +307,10 @@ class GatewayRequestVerifier:
     def _verify(self, input: Mapping[str, Any]) -> VerifiedGatewayRequest | None:
         method = input.get("method")
         target = input.get("target")
-        if method not in {"GET", "POST", "PUT", "DELETE"} or not isinstance(target, str):
+        # PATCH carries the conversation title update (contract §7); leaving it out
+        # of the signed method set made every rename fail closed with 401 while the
+        # HTTP boundary above already accepted PATCH.
+        if method not in {"GET", "POST", "PUT", "DELETE", "PATCH"} or not isinstance(target, str):
             return None
         headers = _singleton_headers(input)
         if headers is None:

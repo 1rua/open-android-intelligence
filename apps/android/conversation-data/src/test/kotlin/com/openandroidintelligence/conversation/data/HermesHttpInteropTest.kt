@@ -19,7 +19,14 @@ import java.security.Signature
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 
-/** Real HTTP, real password session, real signatures, real Python Gateway Core. */
+/**
+ * Real HTTP, real password session, real signatures, real Python Gateway Core.
+ *
+ * 会话重命名走 `PATCH`，而 JDK 的 `HttpURLConnection` 明确拒绝 PATCH（平台上的
+ * OkHttp 实现才允许），因此这条链路的“手机端确实发出 PATCH”证据由设备侧插桩测试
+ * `ConversationRenameTransportInstrumentedTest` 承担，“网关接受并落库”证据由
+ * `integrations/hermes/tests/test_conversation_rename.py` 承担。
+ */
 class HermesHttpInteropTest {
     @Test fun passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes() = runBlocking {
         val root = File("../../..").canonicalFile
