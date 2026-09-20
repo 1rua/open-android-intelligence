@@ -37,7 +37,7 @@ import com.openandroidintelligence.conversation.theme.Dimensions
  * 2. 新建对话；
  * 3. 当前 Gateway 的对话线程（支持搜索与选中高亮）；
  * 4. 附件库；
- * 5. 设置与平台管理；
+ * 5. 设置与平台管理（置于底部页脚常驻区吸底显示）；
  * 坚决不包含假设备卡片（ADB、电量、Wi-Fi）及越界导航项（通知中心、帮助反馈等）。
  */
 @Composable
@@ -350,8 +350,18 @@ fun ThreadDrawer(
                         onCloseDrawer()
                     },
                 )
+            }
 
-                // 平台设置入口
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+
+            // ===== 4. Footer (Settings, Protocol Version & Logout) =====
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                // 平台设置入口（常驻吸底）
                 DrawerNavItem(
                     icon = Icons.Default.Settings,
                     label = "设置与平台管理",
@@ -360,42 +370,39 @@ fun ThreadDrawer(
                         onCloseDrawer()
                     },
                 )
-            }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
-
-            // ===== 4. Footer (Protocol Version & Logout) =====
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Gateway Protocol v2",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                )
-
-                TextButton(
-                    onClick = { onLogout?.invoke() ?: onOpenSettings() },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ExitToApp,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(4.dp))
                     Text(
-                        text = "退出登录",
+                        text = "Gateway Protocol v2",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
                     )
+
+                    TextButton(
+                        onClick = { onLogout?.invoke() ?: onOpenSettings() },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "退出登录",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
                 }
             }
         }
