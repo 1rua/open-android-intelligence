@@ -284,6 +284,41 @@ class NewConversationAuthorityTest {
     }
 
     @Test
+    fun aGenuinelyNewAnswerAfterAnAbandonedOneStillSwitches() = runWorkbench {
+        val repository = FakeRepository().apply { holdSend = true }
+        val controller = controller(repository, watchdogEnabled = true)
+        advanceUntilIdle()
+        controller.createThread()
+
+        advanceTimeBy(60_001L)
+        assertTrue(controller.state.value.notice.orEmpty().contains("CONVERSATION_CREATE_TIMEOUT"))
+
+        repository.events.emit(commandResult().copy(eventId = "evt_late", sourceMessageId = "msg_late"))
+        advanceUntilIdle()
+        assertEquals("被放弃那次请求的迟到结果不得切换", SOURCE_ID, controller.state.value.activeThreadId)
+
+        repository.events.emit(commandResult().copy(eventId = "evt_fresh", sourceMessageId = "msg_fresh"))
+        advanceUntilIdle()
+        assertEquals("一次放弃只能认领一个迟到结果", CREATED_ID, controller.state.value.activeThreadId)
+    }
+
+    @Test
+    fun lateAnswerAfterAFailedSendDoesNotSwitchEither() = runWorkbench {
+        val repository = FakeRepository().apply { failSend = true }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceUntilIdle()
+        assertTrue(controller.state.value.notice.orEmpty().contains("CONVERSATION_CREATE_FAILED"))
+
+        repository.events.emit(commandResult())
+        advanceUntilIdle()
+
+        assertEquals("发送失败后的迟到结果同样不得切换", SOURCE_ID, controller.state.value.activeThreadId)
+        assertFalse(controller.state.value.creatingThread)
+    }
+
+    @Test
     fun userTypedNewStillSwitchesWithoutARequestOfOurOwn() = runWorkbench {
         val repository = FakeRepository()
         val controller = controller(repository)

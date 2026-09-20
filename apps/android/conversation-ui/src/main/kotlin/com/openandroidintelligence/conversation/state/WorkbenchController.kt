@@ -217,13 +217,26 @@ class WorkbenchController(
     private var creationWatchdog: Job? = null
 
     /**
+     * A `/new` request this phone stopped waiting for.
+     *
+     * Only what a late answer can be recognised by is kept. The answer may not
+     * reverse the ending the user was already told about — but it is also the
+     * one answer this record is about, so the record is spent on first match
+     * rather than shadowing every later result from the same thread.
+     */
+    private data class SettledCreation(
+        val sourceThreadId: String,
+        val sourceMessageId: String?,
+    )
+
+    /**
      * Requests this phone stopped waiting for.
      *
      * A late answer must not reverse a timeout or a failed send: the user was
      * already told the request ended, so the answer is only allowed to enrich
      * the thread list, never to move the screen.
      */
-    private val settledCreations = ArrayDeque<PendingCreation>()
+    private val settledCreations = ArrayDeque<SettledCreation>()
 
     /**
      * The zero-conversation bootstrap still talks to the Gateway directly.
@@ -304,6 +317,7 @@ class WorkbenchController(
         creationSendJob?.cancel()
         creationWatchdog?.cancel()
         pendingCreation = null
+        settledCreations.clear()
         eventJob?.cancel()
         healthJob?.cancel()
         disarmReplyWatchdog()
@@ -511,6 +525,9 @@ class WorkbenchController(
             return
         }
         cancelPendingSubmission()
+        // A retry supersedes what this thread was given up on before: the
+        // answer to an abandoned request cannot keep shadowing a new one.
+        settledCreations.removeAll { it.sourceThreadId == sourceThreadId }
         val clientMessageId = ClientMessageId("cmd_" + UUID.randomUUID().toString().replace("-", ""))
         pendingCreation = PendingCreation(sourceThreadId = sourceThreadId, clientMessageId = clientMessageId)
         update { it.copy(creatingThread = true, notice = null) }
@@ -582,10 +599,9 @@ class WorkbenchController(
     }
 
     private fun rememberSettledCreation(waiting: PendingCreation) {
-        // Parked answers die with the wait: a send judged failed leaves the
-        // decision to the user rather than completing it behind their back.
-        waiting.parkedResults.clear()
-        settledCreations.addLast(waiting)
+        // Answers parked for this wait die with it: a send judged failed leaves
+        // the decision to the user rather than completing it behind their back.
+        settledCreations.addLast(SettledCreation(waiting.sourceThreadId, waiting.sourceMessageId))
         while (settledCreations.size > MAX_SETTLED_CREATIONS) settledCreations.removeFirst()
     }
 
@@ -601,11 +617,15 @@ class WorkbenchController(
         event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult,
     ) {
         val waiting = pendingCreation ?: return
+        val eventSource = event.sourceConversationId?.value
+        if (eventSource != null && eventSource != waiting.sourceThreadId) return
         // An answer that names a source message while ours is still unnamed
         // cannot be told apart honestly, so it waits for the send response
         // instead of being judged on the conversation alone.
         if (waiting.sourceMessageId == null && !event.sourceMessageId.isNullOrBlank()) {
-            if (waiting.parkedResults.none { it.eventId == event.eventId }) waiting.parkedResults += event
+            if (waiting.parkedResults.none { it.eventId == event.eventId } &&
+                waiting.parkedResults.size < MAX_PARKED_CREATION_RESULTS
+            ) waiting.parkedResults += event
             return
         }
         if (!isThisCreationAnswer(event, waiting)) return
@@ -1278,17 +1298,18 @@ class WorkbenchController(
                                     // Not so for an answer we already gave up on:
                                     // its timeout told the user "stayed put", and
                                     // arriving late must not silently undo that.
-                                    val settled = settledCreations.any { abandoned ->
-                                        abandoned.sourceThreadId == source && (
-                                            abandoned.sourceMessageId == null ||
+                                    // The record is spent on it, because it is
+                                    // the only answer the record is about — a
+                                    // later, genuinely new one must still land.
+                                    val abandoned = settledCreations.firstOrNull { settled ->
+                                        settled.sourceThreadId == source && (
+                                            settled.sourceMessageId == null ||
                                                 event.sourceMessageId.isNullOrBlank() ||
-                                                abandoned.sourceMessageId == event.sourceMessageId
+                                                settled.sourceMessageId == event.sourceMessageId
                                             )
                                     }
-                                    if (settled) {
-                                        update { it.copy(notice = "已创建新对话") }
-                                        refreshThreads()
-                                    } else if (source == null || source == activeThreadId) {
+                                    if (abandoned != null) settledCreations.remove(abandoned)
+                                    if (abandoned == null && (source == null || source == activeThreadId)) {
                                         event.conversationId?.let { created ->
                                             switchToAgentCreatedThread(created.value)
                                         }
@@ -1677,5 +1698,13 @@ class WorkbenchController(
          * a few retries; the cap keeps a long session bounded.
          */
         const val MAX_SETTLED_CREATIONS = 8
+
+        /**
+         * How many answers may wait for the send response at once.
+         *
+         * One `/new` has one answer; the cap only exists so a Gateway that
+         * floods the stream cannot grow the wait without bound.
+         */
+        const val MAX_PARKED_CREATION_RESULTS = 8
     }
 }
