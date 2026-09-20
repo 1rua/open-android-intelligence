@@ -1032,7 +1032,13 @@ class WorkbenchController(
         }
 
         val rawList = (mirroredEntries + unconfirmedPending).sortedWith(
-            compareBy<TimelineEntry> { it.timestamp }.thenBy { if (it.isStreaming) 0 else 1 },
+            compareBy<TimelineEntry> { entry ->
+                if (entry.timestamp > 0L) entry.timestamp else Long.MAX_VALUE
+            }.thenBy { entry ->
+                if (entry.pendingAcceptance) 1 else 0
+            }.thenBy { entry ->
+                if (entry.isStreaming) 0 else 1
+            },
         )
         return deduplicateTimelineEntries(rawList)
     }
@@ -1129,7 +1135,11 @@ class WorkbenchController(
         }
 
         return (keptConfirmed + keptStreaming).sortedWith(
-            compareBy<TimelineEntry> { it.timestamp }.thenBy { if (it.isStreaming) 0 else 1 }
+            compareBy<TimelineEntry> { entry ->
+                if (entry.timestamp > 0L) entry.timestamp else Long.MAX_VALUE
+            }.thenBy { entry ->
+                if (entry.isStreaming) 0 else 1
+            },
         )
     }
 

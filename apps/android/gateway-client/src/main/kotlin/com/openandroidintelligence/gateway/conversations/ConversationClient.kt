@@ -228,14 +228,21 @@ class ConversationClient(private val http: GatewayHttpClient) {
                 val messageId = JsonFields.string(message, "messageId")
                     ?: JsonFields.string(message, "id")
                     ?: return@mapNotNull null
+                val rawTimestamp = JsonFields.long(message, "timestamp")
+                val timestamp = if (rawTimestamp != null && rawTimestamp > 0L) {
+                    rawTimestamp
+                } else {
+                    parseIsoMillis(JsonFields.string(message, "createdAt"))
+                        ?: parseIsoMillis(JsonFields.string(message, "occurredAt"))
+                        ?: 0L
+                }
                 GatewayTimelineMessage(
                     messageId = messageId,
                     sender = JsonFields.string(message, "sender")
                         ?: JsonFields.string(message, "role")
                         ?: "assistant",
                     parts = readParts(message),
-                    timestamp = JsonFields.long(message, "timestamp")
-                        ?: parseIsoMillis(JsonFields.string(message, "createdAt")),
+                    timestamp = timestamp,
                     state = JsonFields.string(message, "state") ?: "CONFIRMED",
                 )
             },
@@ -260,11 +267,19 @@ class ConversationClient(private val http: GatewayHttpClient) {
             ?: JsonFields.obj(JsonFields.field(body, "message"))
             ?: return null
         val messageId = JsonFields.string(raw, "messageId") ?: return null
+        val rawTimestamp = JsonFields.long(raw, "timestamp")
+        val timestamp = if (rawTimestamp != null && rawTimestamp > 0L) {
+            rawTimestamp
+        } else {
+            parseIsoMillis(JsonFields.string(raw, "createdAt"))
+                ?: parseIsoMillis(JsonFields.string(raw, "occurredAt"))
+                ?: 0L
+        }
         return GatewayTimelineMessage(
             messageId = messageId,
             sender = JsonFields.string(raw, "sender") ?: "assistant",
             parts = readParts(raw),
-            timestamp = JsonFields.long(raw, "timestamp"),
+            timestamp = timestamp,
             state = JsonFields.string(raw, "state") ?: "CONFIRMED",
         )
     }
@@ -415,9 +430,35 @@ class ConversationClient(private val http: GatewayHttpClient) {
         }
     }
 
-    private fun parseIsoMillis(value: String?): Long? {
-        if (value == null) return null
-        return runCatching { java.time.Instant.parse(value).toEpochMilli() }.getOrNull()
+    internal fun parseIsoMillis(value: String?): Long? {
+        if (value.isNullOrBlank()) return null
+        val trimmed = value.trim()
+        // 1. Standard ISO-8601 parsing (e.g. 2026-09-20T16:00:00.000Z or with offset +08:00)
+        runCatching { java.time.Instant.parse(trimmed).toEpochMilli() }.getOrNull()?.let { return it }
+
+        // 2. Space-separated normalized to 'T'
+        val normalized = trimmed.replace(' ', 'T')
+        runCatching { java.time.Instant.parse(normalized).toEpochMilli() }.getOrNull()?.let { return it }
+
+        // 3. OffsetDateTime / ZonedDateTime
+        runCatching { java.time.OffsetDateTime.parse(normalized).toInstant().toEpochMilli() }.getOrNull()?.let { return it }
+        runCatching {
+            java.time.ZonedDateTime.parse(normalized, java.time.format.DateTimeFormatter.ISO_DATE_TIME).toInstant().toEpochMilli()
+        }.getOrNull()?.let { return it }
+
+        // 4. LocalDateTime without timezone -> assume UTC
+        runCatching {
+            val local = java.time.LocalDateTime.parse(
+                if (normalized.endsWith("Z")) normalized.dropLast(1) else normalized,
+                java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME,
+            )
+            local.toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        }.getOrNull()?.let { return it }
+
+        // 5. String of digits (epoch timestamp)
+        trimmed.toLongOrNull()?.takeIf { it > 0L }?.let { return it }
+
+        return null
     }
 
     /**

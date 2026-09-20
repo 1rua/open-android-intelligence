@@ -55,6 +55,23 @@ class GatewayWireRegressionTest {
         }
     }
 
+    @Test fun timelineEnsuresStrictlyPositiveTimestampsEvenIfWireReturnsZero() = runBlocking {
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                val wireData = """{"messages":[{"messageId":"msg_1","sender":"user","parts":[{"type":"text","text":"hi"}],"timestamp":0,"createdAt":null},{"messageId":"msg_2","sender":"assistant","parts":[{"type":"text","text":"hello"}],"timestamp":0,"createdAt":null}]}"""
+                return WireResponse(200, emptyList(), """{"protocol":"2.0","data":$wireData}""".toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repository = GatewayConversationRepository(ConversationClient(http(transport))) { "conv_server" }
+        val timeline = repository.timeline("conv_server", PageRequest())
+        assertEquals(2, timeline.messages.size)
+        assertTrue(timeline.messages[0].timestamp > 0L)
+        assertTrue(timeline.messages[1].timestamp > 0L)
+        assertTrue("Second message timestamp must be strictly greater than first",
+            timeline.messages[1].timestamp > timeline.messages[0].timestamp)
+    }
+
     private fun http(transport: GatewayByteTransport) = GatewayHttpClient(
         GatewayProfile("account", "device", "session", "https://gateway.example", accessToken = "test-token"),
         transport, { ByteArray(64) }, InMemoryEventCursorStore(),

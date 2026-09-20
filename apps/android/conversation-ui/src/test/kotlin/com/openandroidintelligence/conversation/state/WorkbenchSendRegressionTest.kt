@@ -1135,6 +1135,52 @@ class WorkbenchSendRegressionTest {
         controller.cancel()
     }
 
+    @Test fun timelineWithZeroTimestampsPreservesChronologicalOrderAndDoesNotGroupAtTop() = runTest {
+        val repository = object : RecordingRepository() {
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(
+                listOf(
+                    TimelineMessage(id = "msg_u1", sender = "user", parts = listOf(MessagePart.Text("/new")), timestamp = 1000L),
+                    TimelineMessage(id = "msg_a1", sender = "assistant", parts = listOf(MessagePart.Text("Session started")), timestamp = 2000L),
+                    TimelineMessage(id = "msg_u2", sender = "user", parts = listOf(MessagePart.Text("你好")), timestamp = 0L),
+                ),
+                null,
+            )
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_zero_ts")
+        advanceUntilIdle()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(3, entries.size)
+        assertEquals("msg_u1", entries[0].key)
+        assertEquals("msg_a1", entries[1].key)
+        assertEquals("msg_u2", entries[2].key)
+    }
+
+    @Test fun timelineWithIdenticalTimestampsPreservesStableArrivalOrder() = runTest {
+        val repository = object : RecordingRepository() {
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(
+                listOf(
+                    TimelineMessage(id = "msg_u1", sender = "user", parts = listOf(MessagePart.Text("msg1")), timestamp = 1789892646000L),
+                    TimelineMessage(id = "msg_u2", sender = "user", parts = listOf(MessagePart.Text("msg2")), timestamp = 1789892646000L),
+                    TimelineMessage(id = "msg_a1", sender = "assistant", parts = listOf(MessagePart.Text("reply")), timestamp = 1789892646000L),
+                ),
+                null,
+            )
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_identical_ts")
+        advanceUntilIdle()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(3, entries.size)
+        assertEquals("msg_u1", entries[0].key)
+        assertEquals("msg_u2", entries[1].key)
+        assertEquals("msg_a1", entries[2].key)
+    }
+
     private fun TestScope.controller(
         repository: RecordingRepository,
         replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),

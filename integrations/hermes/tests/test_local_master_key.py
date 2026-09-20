@@ -318,6 +318,9 @@ def test_get_conversation_messages_timeline_returns_history_chronologically(tmp_
     assert len(msgs) == 2
     assert msgs[0]["sender"] == "user" and msgs[0]["text"] == "用户提问"
     assert msgs[1]["sender"] == "assistant" and msgs[1]["text"] == "助手回答内容"
+    assert isinstance(msgs[0]["timestamp"], int) and msgs[0]["timestamp"] > 1_000_000_000_000
+    assert isinstance(msgs[1]["timestamp"], int) and msgs[1]["timestamp"] > 1_000_000_000_000
+    assert msgs[0]["timestamp"] < msgs[1]["timestamp"]
 
 def test_timeline_messages_include_attachment_metadata_and_adapter_upstream(tmp_path: Path) -> None:
     store = LocalMasterKeyStore(_key_file(tmp_path))
