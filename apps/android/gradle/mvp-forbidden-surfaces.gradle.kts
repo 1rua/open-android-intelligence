@@ -53,13 +53,143 @@ val absenceAuditFiles = setOf(
     "tailnet-core/src/androidTest/kotlin/com/openandroidintelligence/tailnet/core/P0tVpnSurfaceInstrumentedTest.kt",
 )
 
+/**
+ * 剥除代码中的单行/多行注释，将注释内容替换为空格并保留换行符，
+ * 确保既过滤掉注释中的无关关键字，又精确保留原文件的行号与代码结构。
+ */
+fun stripComments(file: File): List<String> {
+    val text = file.readText()
+    val isXml = file.extension.equals("xml", ignoreCase = true)
+    val out = java.lang.StringBuilder(text.length)
+    var i = 0
+    val n = text.length
+
+    if (isXml) {
+        var inXmlComment = false
+        while (i < n) {
+            if (!inXmlComment && i + 3 < n && text[i] == '<' && text[i + 1] == '!' && text[i + 2] == '-' && text[i + 3] == '-') {
+                inXmlComment = true
+                out.append("    ")
+                i += 4
+            } else if (inXmlComment && i + 2 < n && text[i] == '-' && text[i + 1] == '-' && text[i + 2] == '>') {
+                inXmlComment = false
+                out.append("   ")
+                i += 3
+            } else if (inXmlComment) {
+                out.append(if (text[i] == '\n' || text[i] == '\r') text[i] else ' ')
+                i++
+            } else {
+                out.append(text[i])
+                i++
+            }
+        }
+        return out.toString().lines()
+    }
+
+    var inBlockComment = 0
+    var inLineComment = false
+    var inString = false
+    var inRawString = false
+    var inChar = false
+
+    while (i < n) {
+        val c = text[i]
+        val next = if (i + 1 < n) text[i + 1] else '\u0000'
+        val next2 = if (i + 2 < n) text[i + 2] else '\u0000'
+
+        if (inLineComment) {
+            if (c == '\n') {
+                inLineComment = false
+                out.append('\n')
+            } else if (c == '\r') {
+                out.append('\r')
+            } else {
+                out.append(' ')
+            }
+            i++
+        } else if (inBlockComment > 0) {
+            if (c == '/' && next == '*') {
+                inBlockComment++
+                out.append("  ")
+                i += 2
+            } else if (c == '*' && next == '/') {
+                inBlockComment--
+                out.append("  ")
+                i += 2
+            } else {
+                out.append(if (c == '\n' || c == '\r') c else ' ')
+                i++
+            }
+        } else if (inRawString) {
+            if (c == '"' && next == '"' && next2 == '"') {
+                inRawString = false
+                out.append("\"\"\"")
+                i += 3
+            } else {
+                out.append(c)
+                i++
+            }
+        } else if (inString) {
+            if (c == '\\' && i + 1 < n) {
+                out.append(c).append(next)
+                i += 2
+            } else if (c == '"') {
+                inString = false
+                out.append(c)
+                i++
+            } else {
+                out.append(c)
+                i++
+            }
+        } else if (inChar) {
+            if (c == '\\' && i + 1 < n) {
+                out.append(c).append(next)
+                i += 2
+            } else if (c == '\'') {
+                inChar = false
+                out.append(c)
+                i++
+            } else {
+                out.append(c)
+                i++
+            }
+        } else {
+            if (c == '/' && next == '/') {
+                inLineComment = true
+                out.append("  ")
+                i += 2
+            } else if (c == '/' && next == '*') {
+                inBlockComment = 1
+                out.append("  ")
+                i += 2
+            } else if (c == '"' && next == '"' && next2 == '"') {
+                inRawString = true
+                out.append("\"\"\"")
+                i += 3
+            } else if (c == '"') {
+                inString = true
+                out.append(c)
+                i++
+            } else if (c == '\'') {
+                inChar = true
+                out.append(c)
+                i++
+            } else {
+                out.append(c)
+                i++
+            }
+        }
+    }
+
+    return out.toString().lines()
+}
+
 fun scanNoVpnSurfaces(files: Iterable<File>, banned: List<Regex>): List<String> = buildList {
     files.filter { it.isFile && it.extension in setOf("kt", "java", "xml") }.forEach { file ->
-        file.useLines { lines ->
-            lines.forEachIndexed { index, line ->
-                if (banned.any { it.containsMatchIn(line) }) {
-                    add("${file.path}:${index + 1}: forbidden surface")
-                }
+        val lines = stripComments(file)
+        lines.forEachIndexed { index, line ->
+            if (banned.any { it.containsMatchIn(line) }) {
+                add("${file.path}:${index + 1}: forbidden surface")
             }
         }
     }

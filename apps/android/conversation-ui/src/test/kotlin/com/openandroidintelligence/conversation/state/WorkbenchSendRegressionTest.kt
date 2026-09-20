@@ -1050,7 +1050,7 @@ class WorkbenchSendRegressionTest {
         controller.openThread("conv_dup_test")
         runCurrent()
 
-        // Confirmed event arrived via WS/SSE with an ephemeral or transport ID
+        // Confirmed event arrived via WebSocket/SSE with an ephemeral or transport ID
         events.emit(
             VerifiedConversationEvent.TimelineUpsert(
                 eventId = "evt_transport_1",
