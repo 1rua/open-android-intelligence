@@ -184,7 +184,7 @@ class WorkbenchTitleRegressionTest {
             TimelinePage(emptyList(), null)
 
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance =
-            BatchAcceptance(batch.batchId, listOf("msg_ack"))
+            BatchAcceptance(batch.batchId, batch.messages.associate { it.clientMessageId.value to "msg_ack" })
 
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance =
             MessageAcceptance("msg_1", message.clientMessageId.value)

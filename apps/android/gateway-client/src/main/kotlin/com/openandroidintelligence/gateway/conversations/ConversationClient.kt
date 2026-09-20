@@ -346,6 +346,12 @@ class ConversationClient(private val http: GatewayHttpClient) {
             val server = JsonFields.string(member, "messageId") ?: return@mapNotNull null
             client to server
         }.toMap()
+        // The mapping is the only authoritative link between a member the phone
+        // sent and the id the Gateway issued for it. An incomplete answer would
+        // leave the caller keying the mirror by its own local id — exactly the
+        // duplicate this mapping exists to prevent — so it is refused instead of
+        // being degraded into a silent second copy on screen.
+        check(memberIds.size == batch.members.size) { "SUBMIT_BATCH_FAILED:missing-member-ids" }
         return BatchAcceptance(
             batchId = JsonFields.string(body, "batchId")
                 ?: throw IllegalStateException("SUBMIT_BATCH_FAILED:missing-batch-id"),

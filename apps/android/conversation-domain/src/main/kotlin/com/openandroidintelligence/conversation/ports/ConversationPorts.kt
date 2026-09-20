@@ -48,9 +48,16 @@ data class OutgoingMessage(
  */
 data class BatchAcceptance(
     val batchId: String,
-    val acceptedMessageIds: List<String>,
     val memberIds: Map<String, String> = emptyMap(),
-)
+) {
+    /**
+     * The ids the Gateway issued for the accepted members.
+     *
+     * Derived from [memberIds] rather than stored beside it: a second list
+     * would be a state that can disagree with the mapping it mirrors.
+     */
+    val acceptedMessageIds: List<String> get() = memberIds.values.toList()
+}
 data class MessageAcceptance(val messageId: String, val correlationId: String)
 
 enum class CancelGenerationOutcome {

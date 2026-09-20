@@ -121,6 +121,10 @@ class WorkbenchController(
      * backlog, and re-subscribing restarts the stream. Applying an event once,
      * keyed by the Gateway's own event id, is what keeps a replay from being
      * treated as new traffic by the timeline rules below.
+     *
+     * The Gateway client drops replays of its own accord; this holds the same
+     * rule at the port, so a repository backed by something other than that
+     * client cannot reintroduce duplicate frames.
      */
     private val handledEventIds = LinkedHashSet<String>()
 
@@ -131,6 +135,15 @@ class WorkbenchController(
             return size > 30
         }
     }
+
+    /**
+     * Whether this controller has been released.
+     *
+     * Cancelling the jobs alone is not a terminal state: a method called after
+     * close would find no active job and simply start a new subscription on a
+     * controller the owner has already thrown away.
+     */
+    private var closed = false
 
     private var eventJob: Job? = null
     private var timelineJob: Job? = null
@@ -201,6 +214,7 @@ class WorkbenchController(
     }
 
     override fun close() {
+        closed = true
         timelineJob?.cancel()
         attachmentJobs.values.forEach { it.cancel() }
         attachmentJobs.clear()
@@ -524,10 +538,19 @@ class WorkbenchController(
         update { it.copy(composer = ComposerState.SUBMITTING) }
         scope.launch {
             var localEntryKey: String? = null
+            var sendTarget: String? = null
+            // Whether this send emptied the composer: only then may a failure
+            // hand the text back. The draft revision cannot answer that,
+            // because releasing the attachment drafts below advances it too.
+            var draftWasCleared = false
             try {
                 val target = submission.conversationId ?: activeThreadId ?: createThreadAsync().await().getOrThrow()
+                sendTarget = target
                 // Only clear the snapshot that was sent; typing during creation keeps the newer draft.
-                if (draftRevision == submission.revision) update { it.copy(draft = "") }
+                if (draftRevision == submission.revision) {
+                    update { it.copy(draft = "") }
+                    draftWasCleared = true
+                }
                 val submittedAttachments = submission.attachmentIds.map { id ->
                     val sel = attachmentSelections[id]
                     val d = drafts[id]
@@ -545,7 +568,6 @@ class WorkbenchController(
                         historicalAttachments[remoteId] = att.copy(draftId = remoteId)
                     }
                 }
-                submission.attachmentIds.forEach(::removeAttachment)
                 val entry = TimelineEntry(
                     key = "local_" + UUID.randomUUID().toString(), sender = "user",
                     text = submission.text.ifBlank { if (submittedAttachments.isNotEmpty()) "" else "[附件]" }, isUser = true,
@@ -619,6 +641,10 @@ class WorkbenchController(
                         armReplyWatchdog(target)
                     }
                 }
+                // Released only now: an attachment draft that was dropped
+                // before the Gateway accepted the message left a failed send
+                // with nothing to retry from.
+                submission.attachmentIds.forEach(::removeAttachment)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (cause: Exception) {
@@ -636,12 +662,19 @@ class WorkbenchController(
                     state.copy(
                         composer = ComposerState.FAILED,
                         notice = "SEND_FAILED:${errorCodeOf(cause)}",
-                        timeline = Loadable.Ready(renderTimeline(remainingBatch)),
+                        // The timeline belongs to whichever thread is open now:
+                        // a send that failed after a thread switch must not
+                        // repaint the conversation the user moved to.
+                        timeline = if (sendTarget != null && state.activeThreadId == sendTarget) {
+                            Loadable.Ready(renderTimeline(remainingBatch))
+                        } else {
+                            state.timeline
+                        },
                         pendingBatch = remainingBatch,
                         // The text returns to the composer while it is still
                         // untouched, so a retry sends it again instead of
                         // leaving the user with nothing to send.
-                        draft = if (state.draft.isEmpty() && draftRevision == submission.revision) {
+                        draft = if (draftWasCleared && state.draft.isEmpty()) {
                             submission.text
                         } else {
                             state.draft
@@ -782,6 +815,7 @@ class WorkbenchController(
      * overlapping — the window in which one event could be applied twice.
      */
     private fun observeThreadEvents() {
+        if (closed) return
         if (eventJob?.isActive == true) return
         eventJob = scope.launch {
             repository.observeEvents(scopeFactory())
@@ -796,11 +830,14 @@ class WorkbenchController(
                 }
                 .collect { event ->
                     if (!isActive) return@collect
-                    if (!markEventHandled(event.eventId)) return@collect
                     val currentActiveId = activeThreadId ?: run {
                         refreshThreads()
                         return@collect
                     }
+                    // Recorded only once the event can actually be routed: an
+                    // event that arrived while no thread was open must still be
+                    // applied when one is, not be swallowed as already seen.
+                    if (!markEventHandled(event.eventId)) return@collect
                     when (event) {
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                             val eventConvId = event.conversationId?.value
@@ -1283,8 +1320,12 @@ class WorkbenchController(
 
     private companion object {
         /**
-         * How many event ids stay remembered. The window only has to outlast a
-         * reconnect, and a bound keeps a long session from growing forever.
+         * How many event ids stay remembered.
+         *
+         * Only a reconnect distance has to fit, and a reconnect resumes from
+         * the stored cursor, so that distance is the events produced while the
+         * socket was down. The cap keeps a long session bounded, and the events
+         * it forgets are ones the timeline pull re-covers anyway.
          */
         const val MAX_HANDLED_EVENT_IDS = 2048
     }

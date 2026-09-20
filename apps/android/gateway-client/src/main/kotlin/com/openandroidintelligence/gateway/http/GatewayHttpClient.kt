@@ -91,6 +91,15 @@ class GatewayHttpClient(
      * collection — is what makes delivery idempotent across those boundaries:
      * a replay is dropped at the network edge rather than being filtered again
      * by every layer above it.
+     *
+     * Two consequences the callers must know:
+     * - delivery is **at most once per client instance**: an event is recorded
+     *   before it is emitted, so a collector cancelled mid-emit loses it. The
+     *   loss is compensated by the timeline pull a caller performs when the
+     *   stream reports a break;
+     * - it assumes a **single concurrent collector** per client, which is how
+     *   the app drives it (one account-wide subscription). A second collector
+     *   would be starved rather than served, so use one client per stream.
      */
     private val deliveredEventIds = LinkedHashSet<String>()
 
@@ -329,8 +338,12 @@ class GatewayHttpClient(
         /**
          * How many event ids stay remembered for replay suppression.
          *
-         * The window only has to outlast a reconnect, and it is bounded so a
-         * long-lived session cannot grow the set without limit.
+         * A reconnect resumes from the stored cursor, so the replay distance is
+         * the events produced while the previous socket was dead — far below
+         * this window in practice. Evicting the oldest half on overflow keeps a
+         * long session bounded, and the case it would miss (more than this many
+         * events replayed in one reconnect) is a backlog the caller re-pulls as
+         * a timeline snapshot anyway.
          */
         private const val MAX_TRACKED_EVENT_IDS = 4096
         private const val TAG = "GatewayEvents"

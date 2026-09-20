@@ -1525,7 +1525,6 @@ class WorkbenchSendRegressionTest {
                 val localId = batch.messages.first().clientMessageId.value
                 return BatchAcceptance(
                     batchId = batch.batchId,
-                    acceptedMessageIds = listOf("msg_batch_server"),
                     memberIds = mapOf(localId to "msg_batch_server"),
                 )
             }
@@ -1575,6 +1574,86 @@ class WorkbenchSendRegressionTest {
         controller.cancel()
     }
 
+    /**
+     * Releasing an attachment draft advances the draft revision, so a failure
+     * hand-back keyed on that revision never fired for a message with
+     * attachments: the text was lost and the attachment was already gone.
+     */
+    @Test fun aFailedSendWithAnAttachmentKeepsTheDraftAndItsAttachment() = runTest {
+        val repository = object : RecordingRepository() {
+            override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
+                throw java.io.IOException("offline")
+            }
+        }
+        val controller = controllerWithAttachments(repository, RecordingAttachmentCoordinator())
+        runCurrent()
+        controller.openThread("conv_1")
+        runCurrent()
+
+        controller.addAttachment(LocalAttachmentSelection("报告.pdf", "application/pdf", ByteArray(8)))
+        runCurrent()
+        controller.editDraft("请查看附件")
+        controller.sendDraft()
+        advanceUntilIdle()
+
+        assertEquals(
+            "带附件发送失败后文本必须回到输入框",
+            "请查看附件",
+            controller.state.value.draft,
+        )
+        assertEquals("失败的附件必须留在编辑器里，否则用户无从重试", 1, controller.state.value.attachments.size)
+        assertTrue("失败的发送不得残留待发条目", controller.state.value.pendingBatch.isEmpty())
+        controller.cancel()
+    }
+
+    private fun TestScope.controllerWithAttachments(
+        repository: RecordingRepository,
+        coordinator: AttachmentDraftCoordinator,
+    ) = WorkbenchController(
+        this, repository,
+        object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+        },
+        { ConversationScope("profile", "gateway", "account", "install") },
+        attachmentCoordinator = coordinator,
+        replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
+    )
+
+    /** Verifies immediately, so a send can be driven without a real upload. */
+    private class RecordingAttachmentCoordinator : AttachmentDraftCoordinator {
+        private var created = 0
+
+        override suspend fun prepare(selection: LocalAttachmentSelection): AttachmentDraft {
+            created++
+            return AttachmentDraft(
+                id = AttachmentDraftId("draft_$created"),
+                filename = selection.filename,
+                mediaType = selection.mediaType,
+                sizeBytes = selection.bytes.size.toLong(),
+                sha256 = "sha256:" + "0".repeat(64),
+                state = AttachmentState.VERIFIED,
+            )
+        }
+
+        override suspend fun armSubmission(draftId: String, revision: Long) = PendingSubmissionIntent(
+            intentId = SubmitIntentId("intent_$draftId"),
+            clientMessageId = ClientMessageId("client_$draftId"),
+            draftRevision = revision,
+            text = "",
+        )
+
+        override suspend fun cancelSubmission(intentId: String) = CancelSubmissionResult(true)
+
+        override fun observe(draftId: String): kotlinx.coroutines.flow.Flow<AttachmentDraftState> =
+            kotlinx.coroutines.flow.flowOf(
+                AttachmentDraftState(AttachmentDraftId(draftId), AttachmentState.VERIFIED, 1f, null),
+            )
+
+        override fun retry(draftId: String, selection: LocalAttachmentSelection) = Unit
+
+        override fun remoteAttachmentId(draftId: String): String? = "att_$draftId"
+    }
+
     private fun TestScope.batchedController(
         repository: RecordingRepository,
         replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
@@ -1616,7 +1695,7 @@ class WorkbenchSendRegressionTest {
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {
             sent += batch.messages
-            return BatchAcceptance(batch.batchId, listOf("msg_server"))
+            return BatchAcceptance(batch.batchId, batch.messages.associate { it.clientMessageId.value to "msg_server" })
         }
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
             sent += message

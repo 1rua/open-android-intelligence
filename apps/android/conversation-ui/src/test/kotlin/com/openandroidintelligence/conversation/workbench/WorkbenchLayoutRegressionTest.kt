@@ -126,7 +126,7 @@ class WorkbenchLayoutRegressionTest {
                 Conversation(ConversationId("conv_streaming"), "新对话", 0)
             override suspend fun submitMessage(message: OutgoingMessage) =
                 MessageAcceptance("msg_user_1", message.clientMessageId.value)
-            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId, emptyList())
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
             override fun observeEvents(scope: ConversationScope) = eventFlow
             override suspend fun cancelGeneration(generationId: String, requestId: String) =
                 CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
@@ -217,7 +217,7 @@ class WorkbenchLayoutRegressionTest {
                 Conversation(ConversationId("conv_stop"), "新对话", 0)
             override suspend fun submitMessage(message: OutgoingMessage) =
                 MessageAcceptance("msg_user_1", message.clientMessageId.value)
-            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId, emptyList())
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
             override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
             override suspend fun cancelGeneration(generationId: String, requestId: String) =
                 CancelGenerationResult(CancelGenerationOutcome.CANCELLED)
@@ -259,7 +259,7 @@ class WorkbenchLayoutRegressionTest {
             override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
                 Conversation(ConversationId("conv_rename"), "原始标题", 0)
             override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("msg_test", message.clientMessageId.value)
-            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId, emptyList())
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
             override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
             override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
             override suspend fun updateTitle(conversationId: String, title: String): Boolean = true
@@ -303,7 +303,7 @@ class WorkbenchLayoutRegressionTest {
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_test"), "新对话", 0)
         override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("msg_test", message.clientMessageId.value)
-        override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId, emptyList())
+        override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
         override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
         override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
     }
