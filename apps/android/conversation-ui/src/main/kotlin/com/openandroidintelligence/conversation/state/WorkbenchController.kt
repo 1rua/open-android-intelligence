@@ -134,7 +134,12 @@ class WorkbenchController(
      * the user can read instead of a spinner that never ends.
      */
     data class NewConversationTimeouts(
-        val timeoutMillis: Long = 60_000L,
+        /**
+         * Long enough for a loaded Gateway to accept a message and publish its
+         * event, short enough that a dead command entry is reported while the
+         * user is still looking at it.
+         */
+        val timeoutMillis: Long = NEW_CONVERSATION_TIMEOUT_MILLIS,
         /** Off for a caller driving the controller with a virtual clock. */
         val enabled: Boolean = true,
     )
@@ -190,7 +195,12 @@ class WorkbenchController(
      * At most one exists, keyed to the thread it was sent from: the switch is
      * only safe for as long as the user is still looking at that thread.
      */
-    private data class PendingCreation(val sourceThreadId: String, val clientMessageId: ClientMessageId)
+    private data class PendingCreation(
+        val sourceThreadId: String,
+        val clientMessageId: ClientMessageId,
+        /** The id the Gateway issued for the `/new` message, once it answered. */
+        var sourceMessageId: String? = null,
+    )
 
     private var pendingCreation: PendingCreation? = null
     private var creationSendJob: Job? = null
@@ -496,7 +506,11 @@ class WorkbenchController(
                     abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:${errorCodeOf(cause)}")
                 }
                 .onSuccess { acceptance ->
-                    if (pendingCreation?.clientMessageId?.value != clientMessageId.value) return@onSuccess
+                    val waiting = pendingCreation
+                    if (waiting == null || waiting.clientMessageId.value != clientMessageId.value) return@onSuccess
+                    // Recorded so a later command result can be tied to this
+                    // very request instead of to any other `/new` on the account.
+                    waiting.sourceMessageId = acceptance.messageId
                     // The command stays visible in the thread it was sent from,
                     // mirrored under the id the Gateway issued for it.
                     mirrorCommandInSourceThread(sourceThreadId, clientMessageId.value, acceptance.messageId)
@@ -552,12 +566,13 @@ class WorkbenchController(
      * disagreement in the opposite direction.
      */
     private fun applyAgentThreadCreation(
-        outcome: com.openandroidintelligence.conversation.ports.CommandOutcome,
-        newThreadId: String?,
+        event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult,
     ) {
         val waiting = pendingCreation ?: return
-        when (outcome) {
+        if (!isThisCreationAnswer(event, waiting)) return
+        when (event.outcome) {
             com.openandroidintelligence.conversation.ports.CommandOutcome.CREATED_CONVERSATION -> {
+                val newThreadId = event.conversationId?.value
                 if (newThreadId.isNullOrBlank()) {
                     abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:MISSING_CONVERSATION_ID")
                     return
@@ -569,9 +584,7 @@ class WorkbenchController(
                     refreshThreads()
                     return
                 }
-                openThread(newThreadId)
-                syncThreadMetadata(newThreadId)
-                update { it.copy(creatingThread = false, notice = "已创建新对话") }
+                switchToAgentCreatedThread(newThreadId)
             }
             com.openandroidintelligence.conversation.ports.CommandOutcome.REJECTED ->
                 abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:REJECTED")
@@ -580,6 +593,35 @@ class WorkbenchController(
             com.openandroidintelligence.conversation.ports.CommandOutcome.OUTCOME_UNKNOWN ->
                 abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:OUTCOME_UNKNOWN")
         }
+    }
+
+    /**
+     * Whether one command result is the answer to the request still pending.
+     *
+     * The event stream is account-wide, so `/new` results produced elsewhere —
+     * another device, another thread of this account — arrive here too. A
+     * result that names a different source is not ours and must not move the
+     * screen; a result with no source at all is accepted only because a
+     * Gateway that predates the field cannot be told apart from ours.
+     */
+    private fun isThisCreationAnswer(
+        event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult,
+        waiting: PendingCreation,
+    ): Boolean {
+        val source = event.sourceConversationId?.value
+        if (source != null && source != waiting.sourceThreadId) return false
+        val sourceMessage = event.sourceMessageId
+        if (!sourceMessage.isNullOrBlank() && waiting.sourceMessageId != null &&
+            sourceMessage != waiting.sourceMessageId
+        ) return false
+        return true
+    }
+
+    /** The single way a Gateway-named conversation becomes the open one. */
+    private fun switchToAgentCreatedThread(newThreadId: String) {
+        openThread(newThreadId)
+        syncThreadMetadata(newThreadId)
+        update { it.copy(creatingThread = false, notice = "已创建新对话") }
     }
 
     /**
@@ -597,7 +639,16 @@ class WorkbenchController(
         }
     }
 
-    private fun bootstrapConversation(): Deferred<Result<String>> {
+    /**
+     * The one sanctioned place a conversation is created by endpoint.
+     *
+     * Reachable only from the first send on an account that has no thread:
+     * `/new` is a message, so it needs somewhere to travel, and a first message
+     * needs a thread to be filed under. The "new conversation" entry point
+     * never calls this — it asks the Agent, which is what makes the resulting
+     * id authoritative on both sides.
+     */
+    private fun bootstrapConversationForFirstMessage(): Deferred<Result<String>> {
         bootstrapJob?.takeIf { it.isActive }?.let { return it }
         return scope.async {
             try {
@@ -738,7 +789,8 @@ class WorkbenchController(
             // because releasing the attachment drafts below advances it too.
             var draftWasCleared = false
             try {
-                val target = submission.conversationId ?: activeThreadId ?: bootstrapConversation().await().getOrThrow()
+                val target = submission.conversationId ?: activeThreadId
+                    ?: bootstrapConversationForFirstMessage().await().getOrThrow()
                 sendTarget = target
                 // Only clear the snapshot that was sent; typing during creation keeps the newer draft.
                 if (draftRevision == submission.revision) {
@@ -1163,14 +1215,21 @@ class WorkbenchController(
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult -> {
                             if (isNewConversationCommand(event.command)) {
                                 if (pendingCreation != null) {
-                                    applyAgentThreadCreation(event.outcome, event.conversationId?.value)
+                                    applyAgentThreadCreation(event)
                                 } else if (event.outcome == com.openandroidintelligence.conversation.ports.CommandOutcome.CREATED_CONVERSATION) {
                                     // The user sent `/new` themselves; the same
                                     // authority applies, only without the wait.
-                                    event.conversationId?.let { created ->
-                                        openThread(created.value)
-                                        syncThreadMetadata(created.value)
+                                    // They still have to be looking at the thread
+                                    // it was sent from, or the jump would yank
+                                    // them out of whatever they moved to.
+                                    val source = event.sourceConversationId?.value
+                                    if (source == null || source == activeThreadId) {
+                                        event.conversationId?.let { created ->
+                                            switchToAgentCreatedThread(created.value)
+                                        }
+                                    } else {
                                         update { it.copy(notice = "已创建新对话") }
+                                        refreshThreads()
                                     }
                                 }
                             }
@@ -1542,5 +1601,8 @@ class WorkbenchController(
          * between "the Agent has to create a thread" and "leave the text alone".
          */
         const val NEW_CONVERSATION_COMMAND = "/new"
+
+        /** The default wait for the Agent's answer to `/new`. */
+        const val NEW_CONVERSATION_TIMEOUT_MILLIS = 60_000L
     }
 }

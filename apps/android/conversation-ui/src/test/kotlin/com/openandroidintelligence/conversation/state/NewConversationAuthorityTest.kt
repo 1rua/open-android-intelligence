@@ -191,6 +191,21 @@ class NewConversationAuthorityTest {
     }
 
     @Test
+    fun commandResultFromAnotherThreadIsNotThisRequest() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceUntilIdle()
+
+        repository.events.emit(commandResult().copy(sourceConversationId = ConversationId("conv_elsewhere")))
+        advanceUntilIdle()
+
+        assertEquals("别的线程的结果不得切换或结束等待", SOURCE_ID, controller.state.value.activeThreadId)
+        assertTrue(controller.state.value.creatingThread)
+    }
+
+    @Test
     fun unansweredRequestTimesOutAndRollsBack() = runWorkbench {
         // The only test in which the watchdog is armed: silence is the subject.
         val repository = FakeRepository()
