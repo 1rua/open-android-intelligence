@@ -227,10 +227,10 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (showSettingsSheet) {
-                        PlatformSettingsBottomSheet(
+                        SettingsScreen(
                             environment = app.platformSettingsEnvironment(),
                             runtime = runtime,
-                            onDismissRequest = { showSettingsSheet = false },
+                            onBack = { showSettingsSheet = false },
                         )
                     }
                 }
