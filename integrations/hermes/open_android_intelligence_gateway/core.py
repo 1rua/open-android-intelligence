@@ -730,6 +730,25 @@ def iso_millis(value: datetime | str | None = None) -> str:
     return _now(value).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _epoch_millis(value: datetime | str | None = None) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        dt = _now(value)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        try:
+            text = str(value).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return 0
+
+
 def _json(value: Any) -> str:
     def encode(child: Any) -> Any:
         if isinstance(child, (bytes, bytearray, memoryview)):
@@ -2008,6 +2027,8 @@ class ConversationPort:
                 ts = _epoch_millis(created)
             except Exception:
                 pass
+            if ts <= 0:
+                ts = _epoch_millis(_now())
 
             result_messages.append({
                 "messageId": mid,

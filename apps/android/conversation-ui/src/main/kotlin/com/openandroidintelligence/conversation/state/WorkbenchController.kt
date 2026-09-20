@@ -920,7 +920,13 @@ class WorkbenchController(
             mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_"))
         }
 
-        return (mirroredEntries + unconfirmedPending).sortedBy { it.timestamp }
+        return (mirroredEntries + unconfirmedPending).sortedWith(
+            compareBy<TimelineEntry> { entry ->
+                if (entry.timestamp > 0L) entry.timestamp else Long.MAX_VALUE
+            }.thenBy { entry ->
+                if (entry.pendingAcceptance) 1 else 0
+            },
+        )
     }
 
     private fun appendLocal(

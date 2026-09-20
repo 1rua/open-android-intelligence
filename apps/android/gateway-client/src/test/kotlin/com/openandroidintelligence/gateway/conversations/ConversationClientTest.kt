@@ -84,4 +84,94 @@ class ConversationClientTest {
         assertTrue(bodyStr.contains("新的对话标题"))
         assertTrue(bodyStr.contains("title"))
     }
+
+    @Test
+    fun parseIsoMillisSupportsVariousFormats() {
+        val transport = RecordingTransport()
+        val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")
+        val http = GatewayHttpClient(profile, transport, { ByteArray(64) }, MemoryCursorStore())
+        val client = ConversationClient(http)
+
+        // 1. Standard ISO with millis and Z
+        val t1 = client.parseIsoMillis("2026-09-20T16:00:01.123Z")
+        assertNotNull(t1)
+        assertEquals(java.time.Instant.parse("2026-09-20T16:00:01.123Z").toEpochMilli(), t1)
+
+        // 2. ISO without millis and with Z
+        val t2 = client.parseIsoMillis("2026-09-20T16:00:01Z")
+        assertNotNull(t2)
+        assertEquals(java.time.Instant.parse("2026-09-20T16:00:01Z").toEpochMilli(), t2)
+
+        // 3. With timezone offset
+        val t3 = client.parseIsoMillis("2026-09-20T16:00:01+08:00")
+        assertNotNull(t3)
+        assertEquals(java.time.OffsetDateTime.parse("2026-09-20T16:00:01+08:00").toInstant().toEpochMilli(), t3)
+
+        // 4. Space separated
+        val t4 = client.parseIsoMillis("2026-09-20 16:00:01.500Z")
+        assertNotNull(t4)
+
+        // 5. Without timezone offset (local format)
+        val t5 = client.parseIsoMillis("2026-09-20T16:00:01")
+        assertNotNull(t5)
+
+        // 6. Direct epoch timestamp string
+        val t6 = client.parseIsoMillis("1789920001123")
+        assertEquals(1789920001123L, t6)
+
+        // 7. Invalid or blank returns null
+        org.junit.Assert.assertNull(client.parseIsoMillis(null))
+        org.junit.Assert.assertNull(client.parseIsoMillis(""))
+        org.junit.Assert.assertNull(client.parseIsoMillis("not-a-date"))
+    }
+
+    @Test
+    fun readTimelineFallsBackToCreatedAtWhenTimestampIsZero() = runBlocking {
+        val wireBody = """
+            {
+              "protocol": "2.0",
+              "data": {
+                "messages": [
+                  {
+                    "messageId": "msg_user_1",
+                    "sender": "user",
+                    "text": "用户消息",
+                    "timestamp": 0,
+                    "createdAt": "2026-09-20T16:00:01.500Z"
+                  },
+                  {
+                    "messageId": "msg_assistant_1",
+                    "sender": "assistant",
+                    "text": "助手回复",
+                    "timestamp": 1789920005000,
+                    "createdAt": "2026-09-20T16:00:05.000Z"
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+        val transport = RecordingTransport().apply {
+            responseToReturn = WireResponse(
+                status = 200,
+                headers = listOf(RawHeader("content-type", "application/json")),
+                body = wireBody.toByteArray(Charsets.UTF_8),
+            )
+        }
+        val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")
+        val http = GatewayHttpClient(profile, transport, { ByteArray(64) }, MemoryCursorStore())
+        val client = ConversationClient(http)
+
+        val page = client.readTimeline("conv_123")
+        assertEquals(2, page.messages.size)
+
+        val userMsg = page.messages[0]
+        val expectedUserTs = java.time.Instant.parse("2026-09-20T16:00:01.500Z").toEpochMilli()
+        assertEquals("msg_user_1", userMsg.messageId)
+        assertEquals(expectedUserTs, userMsg.timestamp)
+        assertTrue("User message timestamp must be non-zero", userMsg.timestamp != null && userMsg.timestamp!! > 0L)
+
+        val assistantMsg = page.messages[1]
+        assertEquals("msg_assistant_1", assistantMsg.messageId)
+        assertEquals(1789920005000L, assistantMsg.timestamp)
+    }
 }

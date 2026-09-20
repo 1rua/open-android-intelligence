@@ -130,7 +130,9 @@ object GatewayEventDecoder {
                 id = messageId,
                 sender = JsonFields.string(payload, "sender") ?: "assistant",
                 parts = readParts(payload),
-                timestamp = JsonFields.long(payload, "timestamp") ?: occurredAt,
+                timestamp = JsonFields.long(payload, "timestamp")?.takeIf { it > 0L }
+                    ?: occurredAt.takeIf { it > 0L }
+                    ?: System.currentTimeMillis(),
                 state = state,
                 conversationId = conversationIdOf(payload, body),
             ),

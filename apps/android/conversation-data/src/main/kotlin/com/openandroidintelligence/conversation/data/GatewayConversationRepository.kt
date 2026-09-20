@@ -91,8 +91,20 @@ class GatewayConversationRepository(
             cursor = page.cursor,
             limit = page.limit,
         )
+        var lastValidTimestamp = 0L
         return TimelinePage(
-            messages = result.messages.map { message ->
+            messages = result.messages.mapIndexed { index, message ->
+                val rawTs = message.timestamp ?: 0L
+                val resolvedTimestamp = if (rawTs > 0L) {
+                    lastValidTimestamp = rawTs
+                    rawTs
+                } else if (lastValidTimestamp > 0L) {
+                    lastValidTimestamp += 1L
+                    lastValidTimestamp
+                } else {
+                    val fallbackBase = System.currentTimeMillis() - ((result.messages.size - index) * 1000L)
+                    fallbackBase.coerceAtLeast(1L)
+                }
                 com.openandroidintelligence.conversation.ports.TimelineMessage(
                     id = message.messageId,
                     sender = message.sender,
@@ -108,7 +120,7 @@ class GatewayConversationRepository(
                                 )
                         }
                     },
-                    timestamp = message.timestamp ?: 0L,
+                    timestamp = resolvedTimestamp,
                     state = message.state,
                 )
             },
