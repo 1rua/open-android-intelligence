@@ -437,4 +437,48 @@ class GatewayEventStreamTest {
         assertEquals("evt_repeat", events[0].id)
         assertEquals("evt_new", events[1].id)
     }
+
+    @Test
+    fun `websocket reconnect replaying already seen event id updates status to live and skips duplicate emission`() = runBlocking {
+        var wsAttempt = 0
+        val wsEvent1 = com.openandroidintelligence.gateway.events.GatewayEvent("ws_evt_repeat", "test.event", "{}")
+        val wsEvent2 = com.openandroidintelligence.gateway.events.GatewayEvent("ws_evt_new", "test.event", "{}")
+
+        val replayingWs = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(profile(), { ByteArray(64) }) {
+            override fun events(cursor: String?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+                wsAttempt++
+                if (wsAttempt == 1) {
+                    emit(wsEvent1)
+                    throw java.io.IOException("WebSocket connection lost")
+                }
+                // Attempt 2 replays ws_evt_repeat then emits ws_evt_new
+                emit(wsEvent1)
+                emit(wsEvent2)
+            }
+        }
+
+        val sseTransport = RecordingTransport(emptyList())
+        val sink = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
+        val cursorStore = MemoryCursorStore().apply { seed("acc_test", "cur_start") }
+
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = sseTransport,
+            signer = { ByteArray(64) },
+            cursorStore = cursorStore,
+            webSocketTransport = replayingWs,
+            delayFn = { /* no delay */ },
+            statusSink = sink,
+        )
+
+        val events = client.events(autoReconnect = true).take(2).toList()
+
+        assertEquals(2, events.size)
+        assertEquals("ws_evt_repeat", events[0].id)
+        assertEquals("ws_evt_new", events[1].id)
+        assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, sink.status.value)
+        org.junit.Assert.assertNull("SSE transport must not be called when WebSocket handles replay and stays live", sseTransport.lastRequest)
+        assertEquals("ws_evt_new", cursorStore.load("acc_test"))
+    }
 }
+

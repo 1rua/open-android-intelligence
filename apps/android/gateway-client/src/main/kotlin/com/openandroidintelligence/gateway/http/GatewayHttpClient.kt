@@ -129,8 +129,18 @@ class GatewayHttpClient(
             if (preferWebSocket && webSocketTransport != null) {
                 try {
                     webSocketTransport.events(cursor).collect { event ->
+                        if (!receivedWsEventInAttempt) {
+                            GatewayLog.d(TAG, "event stream live over websocket")
+                        }
+                        receivedAnyEventInAttempt = true
+                        receivedWsEventInAttempt = true
+                        backoffMillis = 1000L
+                        consecutiveFailures = 0
+                        statusSink?.report(EventStreamStatus.LIVE)
+
                         val eventId = event.id
                         if (!eventId.isNullOrBlank()) {
+                            cursorStore.save(profile.accountId, eventId)
                             if (!seenEventIds.add(eventId)) {
                                 GatewayLog.d(TAG, "skipping duplicate ws event id=$eventId")
                                 return@collect
@@ -141,14 +151,6 @@ class GatewayHttpClient(
                             }
                             cursorStore.save(profile.accountId, eventId)
                         }
-                        if (!receivedWsEventInAttempt) {
-                            GatewayLog.d(TAG, "event stream live over websocket")
-                        }
-                        receivedAnyEventInAttempt = true
-                        receivedWsEventInAttempt = true
-                        backoffMillis = 1000L
-                        consecutiveFailures = 0
-                        statusSink?.report(EventStreamStatus.LIVE)
                         emit(event)
                     }
                     if (currentCoroutineContext().isActive) {

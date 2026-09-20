@@ -1181,6 +1181,285 @@ class WorkbenchSendRegressionTest {
         assertEquals("msg_a1", entries[2].key)
     }
 
+    @Test fun reloadTimelineWithHistoricalConfirmedRepliesDoesNotKillCurrentStreamingReply() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val historicalMessages = listOf(
+            TimelineMessage(
+                id = "msg_turn1_user",
+                sender = "user",
+                parts = listOf(MessagePart.Text("第一轮问题")),
+                timestamp = 1000L,
+                state = "CONFIRMED",
+                conversationId = ConversationId("conv_multi_turn"),
+            ),
+            TimelineMessage(
+                id = "msg_turn1_assistant",
+                sender = "assistant",
+                parts = listOf(MessagePart.Text("第一轮助手的已确认回复")),
+                timestamp = 1500L,
+                state = "CONFIRMED",
+                conversationId = ConversationId("conv_multi_turn"),
+            ),
+        )
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(historicalMessages, null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_multi_turn")
+        runCurrent()
+
+        // Verify Turn 1 is loaded
+        val initialEntries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(2, initialEntries.size)
+
+        // User asks Turn 2 question
+        val turn2UserTs = 5000L
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_turn2_user",
+                occurredAt = turn2UserTs,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_turn2_user",
+                    sender = "user",
+                    parts = listOf(MessagePart.Text("第二轮新问题")),
+                    timestamp = turn2UserTs,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_multi_turn"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        // Turn 2 assistant reply starts STREAMING
+        val turn2StreamTs = 5100L
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_turn2_stream",
+                occurredAt = turn2StreamTs,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "stream_turn2_reply",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("正在生成第二轮的深度思考内容...")),
+                    timestamp = turn2StreamTs,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_multi_turn"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        assertEquals("流式消息到达时状态必须为 RUNNING", GenerationState.RUNNING, controller.state.value.generation)
+        val preReloadEntries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(4, preReloadEntries.size)
+        assertTrue("第二轮流式消息必须存在", preReloadEntries.any { it.key == "stream_turn2_reply" && it.isStreaming })
+
+        // Trigger reloadTimeline (as happens on watchdog fallback, snapshot invalidation, or reconnection)
+        controller.retryTimeline()
+        runCurrent()
+
+        // Check that Turn 2 streaming message was NOT wiped out by Turn 1 historical confirmed message!
+        val postReloadEntries = (controller.state.value.timeline as Loadable.Ready).value
+        val streamingEntry = postReloadEntries.find { it.key == "stream_turn2_reply" }
+        assertNotNull("历史消息拉取绝不能误杀当前活跃轮次的流式回复", streamingEntry)
+        assertTrue(streamingEntry!!.isStreaming)
+        assertEquals("正在生成第二轮的深度思考内容...", streamingEntry.text)
+        assertEquals("流式消息未被误杀，生成状态应保持 RUNNING 而不是提前变为 COMPLETED", GenerationState.RUNNING, controller.state.value.generation)
+        controller.cancel()
+    }
+
+    @Test fun streamingReplyStartingWithPreviousConfirmedStepTextIsNotPruned() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_prefix")
+        runCurrent()
+
+        // User message
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_u",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(id = "msg_u", sender = "user", parts = listOf(MessagePart.Text("查询数据")), timestamp = 1000L),
+            ),
+        )
+        runCurrent()
+
+        // 1. Confirmed step message: "Step 1: 查询成功"
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_step1",
+                occurredAt = 1010L,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "msg_step1",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("Step 1: 查询成功")),
+                    timestamp = 1010L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_prefix"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        // 2. Next streaming message starts with the previous text as prefix:
+        // "Step 1: 查询成功，正在执行 Step 2..." (stream.text.startsWith(confirmed.text) is true)
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_step2_stream",
+                occurredAt = 1020L,
+                revision = 3L,
+                message = TimelineMessage(
+                    id = "stream_step2",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("Step 1: 查询成功，正在执行 Step 2...")),
+                    timestamp = 1020L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_prefix"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        val streamingEntry = entries.find { it.key == "stream_step2" }
+        assertNotNull("后续流式文本以已确认步骤为前缀时，绝不能被危险前缀匹配误删", streamingEntry)
+        assertEquals("Step 1: 查询成功，正在执行 Step 2...", streamingEntry!!.text)
+        assertTrue(streamingEntry.isStreaming)
+        controller.cancel()
+    }
+
+    @Test fun identicalAssistantReplyInSubsequentTurnWithin60sIsNotPruned() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_multi_turn")
+        runCurrent()
+
+        // Turn 1: User asks
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_u1",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(id = "msg_u1", sender = "user", parts = listOf(MessagePart.Text("你好")), timestamp = 1000L),
+            ),
+        )
+        runCurrent()
+
+        // Turn 1: Assistant replies "好的" (confirmed)
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_a1",
+                occurredAt = 1010L,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "msg_a1",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("好的")),
+                    timestamp = 1010L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_multi_turn"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        // Turn 2: User asks "在吗"
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_u2",
+                occurredAt = 1020L,
+                revision = 3L,
+                message = TimelineMessage(id = "msg_u2", sender = "user", parts = listOf(MessagePart.Text("在吗")), timestamp = 1020L),
+            ),
+        )
+        runCurrent()
+
+        // Turn 2: Assistant replies "好的" (confirmed, within 60s of previous reply)
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_a2",
+                occurredAt = 1030L,
+                revision = 4L,
+                message = TimelineMessage(
+                    id = "msg_a2",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("好的")),
+                    timestamp = 1030L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_multi_turn"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        val a1Entry = entries.find { it.key == "msg_a1" }
+        val a2Entry = entries.find { it.key == "msg_a2" }
+        assertNotNull("第 1 轮的助手回复 msg_a1 绝不能在第 2 轮收到相同内容时被误杀删除", a1Entry)
+        assertNotNull("第 2 轮的助手回复 msg_a2 必须正常显示", a2Entry)
+        assertEquals(4, entries.size)
+        controller.cancel()
+    }
+
+    @Test fun oldConfirmedEventWhileQueuedDoesNotPrematurelyCompleteGeneration() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_queued_guard")
+        runCurrent()
+
+        // User edits draft and sends
+        controller.editDraft("新问题")
+        controller.sendDraft()
+        runCurrent()
+
+        assertEquals("发送后状态应为 QUEUED", GenerationState.QUEUED, controller.state.value.generation)
+
+        // Late confirmed event from a historical turn arrives (timestamp 500L, before user's question)
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_historical",
+                occurredAt = 500L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_historical",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("历史旧回复")),
+                    timestamp = 500L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_queued_guard"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        assertEquals(
+            "收到历史轮次的 confirmed 消息绝不能将当前处于 QUEUED 态的新轮次误置为 COMPLETED",
+            GenerationState.QUEUED,
+            controller.state.value.generation,
+        )
+        controller.cancel()
+    }
+
     private fun TestScope.controller(
         repository: RecordingRepository,
         replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
