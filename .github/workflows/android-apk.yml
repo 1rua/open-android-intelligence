@@ -37,6 +37,15 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleFullDebug --stacktrace
 
+      # 固定 debug 签名的一致性是"能否直接覆盖安装"的前提：
+      # 签名一旦与 app/keystore 里的固定密钥不符，安装时会报 INSTALL_FAILED_UPDATE_INCOMPATIBLE。
+      - name: Verify Debug Signing Identity
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          bash apps/android/tools/verify-debug-signing.sh \
+            apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:

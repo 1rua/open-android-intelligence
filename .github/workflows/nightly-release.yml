@@ -36,6 +36,14 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleFullDebug --stacktrace
 
+      # 发布前确认签名身份与仓库固定调试密钥一致：Nightly 包要能直接覆盖安装到用户手机上。
+      - name: Verify Debug Signing Identity
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          bash apps/android/tools/verify-debug-signing.sh \
+            apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
+
       - name: Prepare Release Notes
         run: |
           COMMIT_SHA_SHORT=$(git rev-parse --short HEAD)

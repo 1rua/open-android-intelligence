@@ -173,4 +173,15 @@ apk_path="$(cd "$(dirname "$downloaded")" && pwd)/$(basename "$downloaded")"
 echo "已下载：${apk_path}"
 echo "大小：$(du -h "$apk_path" | cut -f1)"
 echo "SHA256：$(sha256sum "$apk_path" | cut -d' ' -f1)"
+
+# 调试签名校验：签名与仓库固定密钥不一致的包，覆盖安装会报
+# INSTALL_FAILED_UPDATE_INCOMPATIBLE，先提示再让用户决定。
+VERIFY_SCRIPT="${REPO_ROOT}/apps/android/tools/verify-debug-signing.sh"
+if [ -f "$VERIFY_SCRIPT" ]; then
+  if ! bash "$VERIFY_SCRIPT" "$apk_path"; then
+    echo "警告：该 APK 的调试签名与仓库固定密钥不一致（或无法校验）。" >&2
+    echo "      直接覆盖安装可能失败；确需安装时请先执行：adb uninstall com.openandroidintelligence.mobile" >&2
+  fi
+fi
+
 echo "安装：adb install -r \"${apk_path}\""

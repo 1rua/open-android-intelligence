@@ -102,3 +102,25 @@ The SMS slice therefore has no Android SDK/device or native AAR validation in
 this checkout. Its persisted JobScheduler configuration also conflicts with
 the deliberate absence of `RECEIVE_BOOT_COMPLETED`; do not represent periodic
 work as reboot-resilient until that reviewed policy decision is made.
+
+## Debug signing
+
+Debug variants are signed with the checked-in key `app/keystore/debug.keystore`
+(alias `androiddebugkey`, password `android`) instead of the per-machine
+`~/.android/debug.keystore` that AGP would create on demand. A machine-local key
+means every workstation — and every fresh CI runner — signs with a different
+identity, so installing a new build over an existing one fails with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` until the app is uninstalled. With the pinned
+key, local, CI and released debug APKs share one signing identity and can be
+installed over each other.
+
+Verify any debug APK against the pinned certificate:
+
+```sh
+apps/android/tools/verify-debug-signing.sh [path/to/app-full-debug.apk]
+```
+
+CI (`android-apk.yml`, `nightly-release.yml`) runs the same script before uploading
+or publishing an APK, so a regression fails the workflow instead of reaching a
+device. Key parameters and the regeneration procedure: `app/keystore/README.md`.
+This key is for debugging only and must never sign a release build.
