@@ -803,6 +803,338 @@ class WorkbenchSendRegressionTest {
         controller.cancel()
     }
 
+    @Test fun streamingWithTempIdFollowedByConfirmedWithPermanentIdDoesNotDuplicate() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        runCurrent()
+
+        // 1. Streaming arrives with temporary stream ID
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_1",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "stream_temp_123",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("你好！我是智能助手。")),
+                    timestamp = 1000L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_1"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        var entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals("流式阶段应只有1条消息", 1, entries.size)
+        assertTrue(entries.first().isStreaming)
+        assertEquals("stream_temp_123", entries.first().key)
+
+        // 2. Confirmed arrives with permanent message ID
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_2",
+                occurredAt = 1020L,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "msg_confirmed_456",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("你好！我是智能助手。")),
+                    timestamp = 1000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_1"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals("确认后必须淘汰流式临时ID，且界面只显示1条回复，严禁双倍渲染", 1, entries.size)
+        assertFalse("应当转为已确认状态", entries.first().isStreaming)
+        assertEquals("应当保留确认ID", "msg_confirmed_456", entries.first().key)
+        assertEquals("你好！我是智能助手。", entries.first().text)
+        assertEquals(GenerationState.COMPLETED, controller.state.value.generation)
+        controller.cancel()
+    }
+
+    @Test fun reloadTimelineAndStreamingEventRaceDoesNotDuplicateAssistantReply() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(
+                listOf(
+                    TimelineMessage(
+                        id = "msg_server_1",
+                        sender = "assistant",
+                        parts = listOf(MessagePart.Text("执行结果如下：成功")),
+                        timestamp = 1000L,
+                        state = "CONFIRMED",
+                        conversationId = ConversationId("conv_race"),
+                    ),
+                ),
+                null,
+            )
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_race")
+        runCurrent()
+
+        // Streaming event with a different ID arrives concurrently or just before/after reload
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_stream",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "stream_worker_chunk",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("执行结果如下：")),
+                    timestamp = 1000L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_race"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        // Trigger reload (as would happen via watchdog or reconnect fallback)
+        controller.retryTimeline()
+        runCurrent()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals("接口补偿与流式事件并发时，必须合并去重，只保留1条回复", 1, entries.size)
+        assertEquals("msg_server_1", entries.first().key)
+        assertEquals("执行结果如下：成功", entries.first().text)
+        assertFalse(entries.first().isStreaming)
+        controller.cancel()
+    }
+
+    @Test fun reloadTimelinePullingConfirmedReplyDisarmsWatchdog() = runTest {
+        var replyReady = false
+        val repository = object : RecordingRepository() {
+            override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
+                return if (replyReady) {
+                    TimelinePage(
+                        listOf(
+                            TimelineMessage(
+                                id = "msg_confirmed_watchdog",
+                                sender = "assistant",
+                                parts = listOf(MessagePart.Text("补偿拉取成功获取回复")),
+                                timestamp = System.currentTimeMillis() + 1000L,
+                                state = "CONFIRMED",
+                                conversationId = ConversationId("conv_wd"),
+                            ),
+                        ),
+                        null,
+                    )
+                } else {
+                    TimelinePage(emptyList(), null)
+                }
+            }
+        }
+        val controller = controller(
+            repository,
+            WorkbenchController.ReplyTimeouts(firstReplyMillis = 20_000L, giveUpMillis = 120_000L),
+        )
+        runCurrent()
+        controller.openThread("conv_wd")
+        runCurrent()
+
+        controller.editDraft("请执行任务")
+        controller.sendDraft()
+        runCurrent()
+
+        // Server finished reply in the background while stream was silent
+        replyReady = true
+
+        // First timeout triggers reloadTimeline at 20s
+        advanceTimeBy(20_000L)
+        runCurrent()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(2, entries.size) // 1 user + 1 assistant
+        assertEquals("补偿拉取成功获取回复", entries.last().text)
+
+        // Advance past giveUpMillis (120s)
+        advanceTimeBy(100_000L)
+        runCurrent()
+
+        // Watchdog should have been disarmed by reloadTimeline, no timeout error!
+        assertNull("reloadTimeline 既然已拉取到确认回复，看门狗必须解除，不得报超时", controller.state.value.notice)
+        controller.cancel()
+    }
+
+    @Test fun delayedStreamingChunkDoesNotReintroduceDuplicateAfterConfirmedReply() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_delayed")
+        runCurrent()
+
+        // Confirmed message already arrived
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_conf",
+                occurredAt = 1010L,
+                revision = 10L,
+                message = TimelineMessage(
+                    id = "msg_final",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("完整处理结果")),
+                    timestamp = 1000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_delayed"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        // A delayed in-flight streaming chunk arrives AFTER confirmed message
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_delayed_chunk",
+                occurredAt = 1005L,
+                revision = 5L,
+                message = TimelineMessage(
+                    id = "stream_chunk_delayed",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("完整")),
+                    timestamp = 1000L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_delayed"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals("迟到的流式分块不得重新插入已经确认的消息前，保持唯一回复", 1, entries.size)
+        assertEquals("msg_final", entries.first().key)
+        assertEquals("完整处理结果", entries.first().text)
+        assertFalse(entries.first().isStreaming)
+        controller.cancel()
+    }
+
+    @Test fun confirmedEventFollowedByReloadWithDifferentIdDoesNotDuplicateReply() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(
+                listOf(
+                    TimelineMessage(
+                        id = "msg_db_persisted_id",
+                        sender = "assistant",
+                        parts = listOf(MessagePart.Text("你好！有什么我可以帮你的？")),
+                        timestamp = 1000L,
+                        state = "CONFIRMED",
+                        conversationId = ConversationId("conv_dup_test"),
+                    ),
+                ),
+                null,
+            )
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_dup_test")
+        runCurrent()
+
+        // Confirmed event arrived via WebSocket/SSE with an ephemeral or transport ID
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_transport_1",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_transport_ephemeral_id",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("你好！有什么我可以帮你的？")),
+                    timestamp = 1000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_dup_test"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        // Now reloadTimeline runs (watchdog fallback, reconnect sync, or user refresh)
+        controller.retryTimeline()
+        runCurrent()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals("即使服务端事件与历史拉取的 confirmed 消息 ID 不同，内容相同也绝不能在界面双倍渲染", 1, entries.size)
+        assertEquals("你好！有什么我可以帮你的？", entries.first().text)
+        controller.cancel()
+    }
+
+    @Test fun streamingReplyAfterToolExecutionConfirmedMessageIsPreserved() = runTest {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_tool")
+        runCurrent()
+
+        // 1. Tool execution confirmation message arrived first
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_tool",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_tool_step",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("正在查询天气信息...")),
+                    timestamp = 1000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_tool"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        // 2. Final reply starts streaming with DIFFERENT content
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_final_stream",
+                occurredAt = 1005L,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "stream_final_reply",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("今天北京晴天，气温20度。")),
+                    timestamp = 1005L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_tool"),
+                ),
+            ),
+        )
+        runCurrent()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals("前置确认消息之后的独立流式消息不得被误伤过滤，应同时展示工具执行结果与当前流式内容", 2, entries.size)
+        assertEquals("msg_tool_step", entries[0].key)
+        assertEquals("正在查询天气信息...", entries[0].text)
+        assertEquals("stream_final_reply", entries[1].key)
+        assertEquals("今天北京晴天，气温20度。", entries[1].text)
+        assertTrue(entries[1].isStreaming)
+        controller.cancel()
+    }
+
     private fun TestScope.controller(
         repository: RecordingRepository,
         replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),

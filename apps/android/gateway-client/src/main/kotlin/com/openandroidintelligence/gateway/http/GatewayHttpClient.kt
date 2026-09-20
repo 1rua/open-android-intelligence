@@ -110,6 +110,7 @@ class GatewayHttpClient(
         val maxBackoffMillis = 60_000L
         var preferWebSocket = (webSocketTransport != null)
         var consecutiveFailures = 0
+        val seenEventIds = LinkedHashSet<String>()
 
         statusSink?.report(EventStreamStatus.CONNECTING)
         GatewayLog.d(TAG, "event stream start autoReconnect=$autoReconnect")
@@ -128,6 +129,18 @@ class GatewayHttpClient(
             if (preferWebSocket && webSocketTransport != null) {
                 try {
                     webSocketTransport.events(cursor).collect { event ->
+                        val eventId = event.id
+                        if (!eventId.isNullOrBlank()) {
+                            if (!seenEventIds.add(eventId)) {
+                                GatewayLog.d(TAG, "skipping duplicate ws event id=$eventId")
+                                return@collect
+                            }
+                            if (seenEventIds.size > 1000) {
+                                val iter = seenEventIds.iterator()
+                                repeat(500) { if (iter.hasNext()) { iter.next(); iter.remove() } }
+                            }
+                            cursorStore.save(profile.accountId, eventId)
+                        }
                         if (!receivedWsEventInAttempt) {
                             GatewayLog.d(TAG, "event stream live over websocket")
                         }
@@ -136,7 +149,6 @@ class GatewayHttpClient(
                         backoffMillis = 1000L
                         consecutiveFailures = 0
                         statusSink?.report(EventStreamStatus.LIVE)
-                        event.id?.let { cursorStore.save(profile.accountId, it) }
                         emit(event)
                     }
                     if (currentCoroutineContext().isActive) {
@@ -170,7 +182,10 @@ class GatewayHttpClient(
                     }
 
                     val parser = SseParser { event ->
-                        event.id?.let { cursorStore.save(profile.accountId, it) }
+                        val eventId = event.id
+                        if (!eventId.isNullOrBlank()) {
+                            cursorStore.save(profile.accountId, eventId)
+                        }
                     }
 
                     val headers = RawHeaders.validate(
@@ -194,9 +209,19 @@ class GatewayHttpClient(
                             backoffMillis = 1000L
                             consecutiveFailures = 0
                             statusSink?.report(EventStreamStatus.LIVE)
-                            preferWebSocket = (webSocketTransport != null)
                         }
                         for (event in parsedEvents) {
+                            val eventId = event.id
+                            if (!eventId.isNullOrBlank()) {
+                                if (!seenEventIds.add(eventId)) {
+                                    GatewayLog.d(TAG, "skipping duplicate sse event id=$eventId")
+                                    continue
+                                }
+                                if (seenEventIds.size > 1000) {
+                                    val iter = seenEventIds.iterator()
+                                    repeat(500) { if (iter.hasNext()) { iter.next(); iter.remove() } }
+                                }
+                            }
                             GatewayLog.d(TAG, "event ${event.event} id=${event.id}")
                             emit(event)
                         }
@@ -210,7 +235,7 @@ class GatewayHttpClient(
                 }
             }
 
-            if (receivedWsEventInAttempt || receivedAnyEventInAttempt) {
+            if (receivedWsEventInAttempt) {
                 preferWebSocket = (webSocketTransport != null)
             }
 

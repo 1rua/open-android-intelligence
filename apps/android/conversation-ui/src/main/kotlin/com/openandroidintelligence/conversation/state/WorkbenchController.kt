@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -333,21 +334,39 @@ class WorkbenchController(
 
         timelineJob = scope.launch {
             val result = Result.runCatching { repository.timeline(threadId, PageRequest()) }
-            if (activeThreadId != threadId) return@launch
+            if (!isActive || activeThreadId != threadId) return@launch
             result.fold(
                 onSuccess = { page ->
-                    if (activeThreadId != threadId) return@launch
+                    if (!isActive || activeThreadId != threadId) return@launch
                     page.messages.forEach { message ->
                         val currentRevision = mirroredRevisions[message.id] ?: 0L
                         if (!mirrored.containsKey(message.id) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
+                            if (message.sender == "assistant" && message.state == "CONFIRMED") {
+                                val messageText = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+                                    .joinToString("") { it.value }
+                                val duplicateKey = mirrored.entries.firstOrNull { (k, v) ->
+                                    k != message.id &&
+                                    v.sender == "assistant" &&
+                                    v.state == "CONFIRMED" &&
+                                    (normalizeEntryKey(k) == normalizeEntryKey(message.id) ||
+                                     (Math.abs(v.timestamp - message.timestamp) <= 60_000L &&
+                                      ((messageText.isNotBlank() && v.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+                                          .joinToString("") { it.value } == messageText) ||
+                                       v.parts == message.parts)))
+                                }?.key
+                                if (duplicateKey != null) {
+                                    mirrored.remove(duplicateKey)
+                                    mirroredRevisions.remove(duplicateKey)
+                                }
+                            }
                             mirrored[message.id] = message
                             mirroredRevisions.putIfAbsent(message.id, 0L)
                         }
                     }
                     val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
                     update { state ->
-                        if (state.activeThreadId != threadId) return@update state
-                        state.copy(
+                        if (!isActive || state.activeThreadId != threadId) state
+                        else state.copy(
                             timeline = if (mirrored.isEmpty()) {
                                 Loadable.Empty
                             } else {
@@ -358,9 +377,9 @@ class WorkbenchController(
                     }
                 },
                 onFailure = { cause ->
-                    if (activeThreadId != threadId) return@launch
+                    if (!isActive || activeThreadId != threadId) return@launch
                     update { state ->
-                        if (state.activeThreadId != threadId) state
+                        if (!isActive || state.activeThreadId != threadId) state
                         else state.copy(timeline = Loadable.Failed(errorCodeOf(cause)))
                     }
                 },
@@ -741,6 +760,7 @@ class WorkbenchController(
                     }
                 }
                 .collect { event ->
+                    if (!isActive) return@collect
                     val currentActiveId = activeThreadId ?: run {
                         refreshThreads()
                         return@collect
@@ -771,6 +791,54 @@ class WorkbenchController(
                             if (previousRevision != null && event.revision < previousRevision) {
                                 return@collect
                             }
+                            if (message.sender == "assistant") {
+                                disarmReplyWatchdog()
+                                val messageText = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+                                    .joinToString("") { it.value }
+                                if (message.state == "CONFIRMED") {
+                                    // Remove any prior in-flight STREAMING assistant message(s) from mirrored
+                                    // so the temporary streaming draft and confirmed message do not both appear.
+                                    val streamingKeys = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" }.keys.toList()
+                                    for (k in streamingKeys) {
+                                        mirrored.remove(k)
+                                        mirroredRevisions.remove(k)
+                                    }
+                                    // Also prune duplicate confirmed message if one with identical text already exists under another id
+                                    if (messageText.isNotBlank()) {
+                                        val duplicateKey = mirrored.entries.firstOrNull { (k, v) ->
+                                            k != message.id &&
+                                            v.sender == "assistant" &&
+                                            v.state == "CONFIRMED" &&
+                                            Math.abs(v.timestamp - message.timestamp) <= 60_000L &&
+                                            v.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+                                                .joinToString("") { it.value } == messageText
+                                        }?.key
+                                        if (duplicateKey != null) {
+                                            mirrored.remove(duplicateKey)
+                                            mirroredRevisions.remove(duplicateKey)
+                                        }
+                                    }
+                                } else if (message.state == "STREAMING") {
+                                    // If a confirmed assistant message with this content already exists, skip adding this late streaming chunk
+                                    val alreadyConfirmed = messageText.isNotBlank() && mirrored.values.any {
+                                        it.sender == "assistant" &&
+                                        it.state == "CONFIRMED" &&
+                                        Math.abs(it.timestamp - message.timestamp) <= 60_000L &&
+                                        it.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+                                            .joinToString("") { part -> part.value }
+                                            .startsWith(messageText)
+                                    }
+                                    if (alreadyConfirmed) {
+                                        return@collect
+                                    }
+                                    // Prune any other older streaming assistant message with different id
+                                    val oldStreamingKeys = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" && it.id != message.id }.keys.toList()
+                                    for (k in oldStreamingKeys) {
+                                        mirrored.remove(k)
+                                        mirroredRevisions.remove(k)
+                                    }
+                                }
+                            }
                             if (message.sender == "user" || message.sender == "assistant") {
                                 mirrored[message.id] = message
                                 mirroredRevisions[message.id] = event.revision
@@ -780,6 +848,7 @@ class WorkbenchController(
                             // a completion, because the reply is clearly coming.
                             if (message.sender == "assistant") disarmReplyWatchdog()
                             update { state ->
+                                if (!isActive) return@update state
                                 state.copy(
                                     timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
                                         Loadable.Ready(renderTimeline(state.pendingBatch))
@@ -855,19 +924,61 @@ class WorkbenchController(
         timelineJob?.cancel()
         timelineJob = scope.launch {
             val result = Result.runCatching { repository.timeline(threadId, PageRequest()) }
-            if (activeThreadId != threadId) return@launch
+            if (!isActive || activeThreadId != threadId) return@launch
             result.onSuccess { page ->
-                if (activeThreadId != threadId) return@launch
+                if (!isActive || activeThreadId != threadId) return@launch
+                var receivedConfirmedAssistant = false
                 page.messages.forEach { message ->
                     val currentRevision = mirroredRevisions[message.id] ?: 0L
                     if (!mirrored.containsKey(message.id) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
+                        if (message.sender == "assistant" && message.state == "CONFIRMED") {
+                            val messageText = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+                                .joinToString("") { it.value }
+                            val duplicateKey = mirrored.entries.firstOrNull { (k, v) ->
+                                k != message.id &&
+                                v.sender == "assistant" &&
+                                v.state == "CONFIRMED" &&
+                                (normalizeEntryKey(k) == normalizeEntryKey(message.id) ||
+                                 (Math.abs(v.timestamp - message.timestamp) <= 60_000L &&
+                                  ((messageText.isNotBlank() && v.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+                                      .joinToString("") { it.value } == messageText) ||
+                                   v.parts == message.parts)))
+                            }?.key
+                            if (duplicateKey != null) {
+                                mirrored.remove(duplicateKey)
+                                mirroredRevisions.remove(duplicateKey)
+                            }
+                        }
                         mirrored[message.id] = message
                         mirroredRevisions.putIfAbsent(message.id, 0L)
                     }
+                    if (message.sender == "assistant" && message.state == "CONFIRMED") {
+                        receivedConfirmedAssistant = true
+                    }
+                }
+                if (receivedConfirmedAssistant) {
+                    val streamingKeys = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" }.keys.toList()
+                    for (k in streamingKeys) {
+                        mirrored.remove(k)
+                        mirroredRevisions.remove(k)
+                    }
+                    disarmReplyWatchdog()
                 }
                 update { state ->
-                    if (state.activeThreadId != threadId) state
-                    else state.copy(timeline = if (mirrored.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(state.pendingBatch)))
+                    if (!isActive || state.activeThreadId != threadId) state
+                    else {
+                        val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
+                        state.copy(
+                            timeline = if (mirrored.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(state.pendingBatch)),
+                            generation = if (hasStreaming) {
+                                GenerationState.RUNNING
+                            } else if (receivedConfirmedAssistant && (state.generation == GenerationState.RUNNING || state.generation == GenerationState.QUEUED)) {
+                                GenerationState.COMPLETED
+                            } else {
+                                state.generation
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -920,7 +1031,106 @@ class WorkbenchController(
             mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_"))
         }
 
-        return (mirroredEntries + unconfirmedPending).sortedBy { it.timestamp }
+        val rawList = (mirroredEntries + unconfirmedPending).sortedWith(
+            compareBy<TimelineEntry> { it.timestamp }.thenBy { if (it.isStreaming) 0 else 1 },
+        )
+        return deduplicateTimelineEntries(rawList)
+    }
+
+    private fun normalizeEntryKey(key: String): String =
+        key.removePrefix("local_")
+            .removePrefix("stream_")
+            .removePrefix("msg_")
+            .removePrefix("cconv_")
+
+    private fun deduplicateTimelineEntries(entries: List<TimelineEntry>): List<TimelineEntry> {
+        if (entries.size <= 1) return entries
+
+        val result = mutableListOf<TimelineEntry>()
+        var i = 0
+        while (i < entries.size) {
+            val entry = entries[i]
+            if (entry.isUser) {
+                val lastEntry = result.lastOrNull()
+                val isDuplicateUser = lastEntry != null && lastEntry.isUser &&
+                    ((normalizeEntryKey(entry.key) == normalizeEntryKey(lastEntry.key)) ||
+                     (entry.text == lastEntry.text && entry.attachments == lastEntry.attachments &&
+                      Math.abs(entry.timestamp - lastEntry.timestamp) <= 10_000L))
+                if (isDuplicateUser) {
+                    if (lastEntry!!.pendingAcceptance && !entry.pendingAcceptance) {
+                        result[result.size - 1] = entry
+                    }
+                } else {
+                    result.add(entry)
+                }
+                i++
+            } else {
+                val assistantGroup = mutableListOf<TimelineEntry>()
+                while (i < entries.size && !entries[i].isUser) {
+                    assistantGroup.add(entries[i])
+                    i++
+                }
+                val deduplicatedAssistant = deduplicateAssistantGroup(assistantGroup)
+                result.addAll(deduplicatedAssistant)
+            }
+        }
+        return result
+    }
+
+    private fun deduplicateAssistantGroup(group: List<TimelineEntry>): List<TimelineEntry> {
+        if (group.size <= 1) return group
+
+        val confirmed = group.filter { !it.isStreaming }
+        val streaming = group.filter { it.isStreaming }
+
+        val keptStreaming = if (confirmed.isNotEmpty()) {
+            streaming.filter { s ->
+                confirmed.none { c ->
+                    val sameNormalizedKey = normalizeEntryKey(s.key).isNotBlank() &&
+                        normalizeEntryKey(s.key) == normalizeEntryKey(c.key)
+                    val isSameTurn = Math.abs(s.timestamp - c.timestamp) <= 120_000L
+                    val isPrefixOrExactMatch = (s.text.isNotBlank() && (c.text == s.text || c.text.startsWith(s.text) || s.text.startsWith(c.text))) ||
+                        (s.attachments.isNotEmpty() && s.attachments == c.attachments)
+                    val isStaleEmpty = s.text.isBlank() && s.attachments.isEmpty() && s.timestamp <= c.timestamp
+                    sameNormalizedKey || (isSameTurn && (isPrefixOrExactMatch || isStaleEmpty))
+                }
+            }
+        } else {
+            val deduplicatedStreaming = mutableListOf<TimelineEntry>()
+            for (s in streaming) {
+                val duplicateIndex = deduplicatedStreaming.indexOfFirst { existing ->
+                    (normalizeEntryKey(s.key).isNotBlank() && normalizeEntryKey(s.key) == normalizeEntryKey(existing.key)) ||
+                    (Math.abs(s.timestamp - existing.timestamp) <= 60_000L &&
+                        (existing.text.startsWith(s.text) || s.text.startsWith(existing.text)))
+                }
+                if (duplicateIndex != -1) {
+                    val existing = deduplicatedStreaming[duplicateIndex]
+                    if (s.text.length > existing.text.length) {
+                        deduplicatedStreaming[duplicateIndex] = s
+                    }
+                } else {
+                    deduplicatedStreaming.add(s)
+                }
+            }
+            deduplicatedStreaming
+        }
+
+        val keptConfirmed = mutableListOf<TimelineEntry>()
+        for (c in confirmed) {
+            val isDuplicate = keptConfirmed.any { existing ->
+                (normalizeEntryKey(c.key).isNotBlank() && normalizeEntryKey(c.key) == normalizeEntryKey(existing.key)) ||
+                ((c.text.isNotEmpty() || c.attachments.isNotEmpty()) &&
+                 c.text == existing.text && c.attachments == existing.attachments &&
+                 Math.abs(c.timestamp - existing.timestamp) <= 60_000L)
+            }
+            if (!isDuplicate) {
+                keptConfirmed.add(c)
+            }
+        }
+
+        return (keptConfirmed + keptStreaming).sortedWith(
+            compareBy<TimelineEntry> { it.timestamp }.thenBy { if (it.isStreaming) 0 else 1 }
+        )
     }
 
     private fun appendLocal(

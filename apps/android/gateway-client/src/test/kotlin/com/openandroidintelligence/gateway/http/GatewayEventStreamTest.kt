@@ -405,4 +405,36 @@ class GatewayEventStreamTest {
             sink.status.value,
         )
     }
+
+    @Test
+    fun `reconnect replaying already seen event id skips duplicate emission`() = runBlocking {
+        var attempt = 0
+        val replayingTransport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attempt++
+                if (attempt == 1) {
+                    emit("id: evt_repeat\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+                    throw java.io.IOException("Connection reset")
+                }
+                // Attempt 2 replays evt_repeat from backlog cursor, then emits evt_new
+                emit("id: evt_repeat\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+                emit("id: evt_new\nevent: notice\ndata: {}\n\n".toByteArray(Charsets.UTF_8))
+            }
+        }
+        val client = GatewayHttpClient(
+            profile = profile(),
+            transport = replayingTransport,
+            signer = { ByteArray(64) },
+            cursorStore = MemoryCursorStore(),
+            webSocketTransport = null,
+            delayFn = { /* no delay */ },
+        )
+
+        val events = client.events().take(2).toList()
+
+        assertEquals(2, events.size)
+        assertEquals("evt_repeat", events[0].id)
+        assertEquals("evt_new", events[1].id)
+    }
 }
