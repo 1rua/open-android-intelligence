@@ -40,9 +40,21 @@ fun AttachmentLibraryScreen(
             }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    FilledTonalButton(onClick = onPickGallery, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.PhotoLibrary, null); Spacer(Modifier.width(Dimensions.SpaceSmall)); Text("选择图片") }
-                    OutlinedButton(onClick = onPickDocument, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.AttachFile, null); Spacer(Modifier.width(Dimensions.SpaceSmall)); Text("选择文件") }
-                    TextButton(onClick = onPickCamera, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.PhotoCamera, null); Spacer(Modifier.width(Dimensions.SpaceSmall)); Text("拍摄照片") }
+                    FilledTonalButton(onClick = onPickGallery, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.PhotoLibrary, null, modifier = Modifier.size(Dimensions.SmallIcon))
+                        Spacer(Modifier.width(Dimensions.SpaceSmall))
+                        Text("选择图片")
+                    }
+                    OutlinedButton(onClick = onPickDocument, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.AttachFile, null, modifier = Modifier.size(Dimensions.SmallIcon))
+                        Spacer(Modifier.width(Dimensions.SpaceSmall))
+                        Text("选择文件")
+                    }
+                    TextButton(onClick = onPickCamera, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(Dimensions.SmallIcon))
+                        Spacer(Modifier.width(Dimensions.SpaceSmall))
+                        Text("拍摄照片")
+                    }
                 }
             }
             item { Text("当前待发送", style = MaterialTheme.typography.titleMedium) }

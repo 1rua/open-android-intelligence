@@ -54,6 +54,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
@@ -167,6 +168,11 @@ private fun AssistantSurfaceLayout(
             targetValue = if (expanded) 1f else 0f,
             animationSpec = MotionSpecs.fade<Float>(reduceMotion),
             label = "assistant-content-alpha",
+        )
+        val contentScale by animateFloatAsState(
+            targetValue = if (expanded) 1f else 0.94f,
+            animationSpec = MotionSpecs.spatial<Float>(reduceMotion),
+            label = "assistant-content-scale",
         )
         val ballAlpha by animateFloatAsState(
             targetValue = if (!expanded) 1f else 0f,
@@ -365,7 +371,11 @@ private fun AssistantSurfaceLayout(
                             horizontal = Dimensions.SpaceMedium,
                             vertical = Dimensions.SpaceSmall,
                         )
-                        .alpha(contentAlpha)
+                        .graphicsLayer {
+                            alpha = contentAlpha
+                            scaleX = contentScale
+                            scaleY = contentScale
+                        }
                         .semantics {
                             if (!expanded) invisibleToUser()
                         },

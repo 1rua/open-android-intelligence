@@ -2,10 +2,12 @@ package com.openandroidintelligence.conversation.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -190,14 +192,16 @@ fun SettingsNavigationItem(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(Dimensions.SmallIcon),
             )
         },
     )
 }
 
 /**
- * 前置图标容器：40dp 圆形底衬 + 20dp 图标，颜色取自 M3 容器角色。
- * 图标永远是「底衬上的符号」，而不是一根裸露的描边。
+ * 前置图标容器：32dp 圆形底衬 + 18dp 图标，颜色取自 M3 容器角色。
+ * 遵循现代开源项目（如 rikka-hub）与 Material 3 精致紧凑规范。
+ * 图标置于底衬中心，形成层级分明的视觉符号。
  */
 @Composable
 fun SettingsIconBadge(
@@ -223,10 +227,15 @@ fun SettingsIconBadge(
             .size(size)
             .alpha(if (enabled) 1f else 0.38f),
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(Dimensions.SmallIcon),
-        )
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+        }
     }
 }

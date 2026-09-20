@@ -1,6 +1,12 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -27,9 +33,11 @@ import com.openandroidintelligence.conversation.components.connectionLabel
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -64,6 +72,7 @@ fun WorkbenchScreen(
     var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameDraft by remember { mutableStateOf("") }
+    val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
     val isThinking = (state.generation == GenerationState.QUEUED ||
         state.generation == GenerationState.RUNNING) &&
@@ -140,18 +149,18 @@ fun WorkbenchScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                Box(modifier = Modifier.size(36.dp)) {
+                                Box(modifier = Modifier.size(Dimensions.LeadingIconContainer)) {
                                     Surface(
                                         shape = CircleShape,
                                         color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(36.dp),
+                                        modifier = Modifier.size(Dimensions.LeadingIconContainer),
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
                                             Icon(
                                                 imageVector = Icons.Default.SmartToy,
                                                 contentDescription = null,
                                                 tint = MaterialTheme.colorScheme.onPrimary,
-                                                modifier = Modifier.size(20.dp),
+                                                modifier = Modifier.size(Dimensions.SmallIcon),
                                             )
                                         }
                                     }
@@ -279,18 +288,12 @@ fun WorkbenchScreen(
                                         },
                                     )
                                 }
-                                if (!followLatest && entries.isNotEmpty()) {
-                                    FilledTonalButton(
-                                        onClick = { followLatest = true },
-                                        modifier = Modifier
-                                            .align(Alignment.BottomCenter)
-                                            .padding(Dimensions.SpaceSmall),
-                                    ) {
-                                        Icon(Icons.Default.ArrowDownward, null)
-                                        Spacer(Modifier.width(Dimensions.SpaceSmall))
-                                        Text("回到最新")
-                                    }
-                                }
+                                ScrollToBottomButton(
+                                    visible = !followLatest && entries.isNotEmpty(),
+                                    reduceMotion = reduceMotion,
+                                    onClick = { followLatest = true },
+                                    modifier = Modifier.align(Alignment.BottomCenter),
+                                )
                             }
 
                             // b) Bottom dock
@@ -441,7 +444,11 @@ private fun ConversationWelcome(onCreate: (() -> Unit)?) {
             )
             if (onCreate != null) {
                 Button(onClick = onCreate) {
-                    Icon(Icons.Default.Add, null)
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
                     Spacer(Modifier.width(Dimensions.SpaceSmall))
                     Text("新建对话")
                 }
@@ -455,3 +462,38 @@ private fun ConversationWelcome(onCreate: (() -> Unit)?) {
         }
     }
 }
+
+@Composable
+private fun ScrollToBottomButton(
+    visible: Boolean,
+    reduceMotion: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(MotionSpecs.fade(reduceMotion)) + scaleIn(
+            animationSpec = tween(MotionSpecs.Enter, easing = MotionSpecs.EmphasizedDecelerateEasing),
+            initialScale = 0.85f,
+        ),
+        exit = fadeOut(MotionSpecs.fade(reduceMotion)) + scaleOut(
+            animationSpec = tween(MotionSpecs.Exit, easing = MotionSpecs.EmphasizedAccelerateEasing),
+            targetScale = 0.85f,
+        ),
+        modifier = modifier,
+    ) {
+        FilledTonalButton(
+            onClick = onClick,
+            modifier = Modifier.padding(Dimensions.SpaceSmall),
+        ) {
+            Icon(
+                imageVector = Icons.Default.ArrowDownward,
+                contentDescription = null,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+            Spacer(Modifier.width(Dimensions.SpaceSmall))
+            Text("回到最新")
+        }
+    }
+}
+

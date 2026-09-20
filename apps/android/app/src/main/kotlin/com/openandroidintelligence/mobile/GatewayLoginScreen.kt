@@ -1,8 +1,11 @@
 package com.openandroidintelligence.mobile
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -156,7 +159,7 @@ fun GatewayLoginScreen(
             Spacer(modifier = Modifier.height(20.dp))
 
             Surface(
-                shape = RoundedCornerShape(AppRadius.Large),
+                shape = RoundedCornerShape(AppRadius.Medium),
                 color = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier.size(Dimensions.BrandMark),
@@ -166,7 +169,7 @@ fun GatewayLoginScreen(
                         imageVector = Icons.Default.DeveloperBoard,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(Dimensions.SpaceXLarge),
+                        modifier = Modifier.size(Dimensions.Icon),
                     )
                 }
             }
@@ -242,8 +245,18 @@ fun GatewayLoginScreen(
                     AnimatedContent(
                         targetState = phase,
                         transitionSpec = {
-                            fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
-                                fadeOut(MotionSpecs.fade(reduceMotion))
+                            if (reduceMotion) {
+                                fadeIn(MotionSpecs.fade(true)) togetherWith
+                                    fadeOut(MotionSpecs.fade(true))
+                            } else {
+                                (fadeIn(MotionSpecs.fade(false)) + scaleIn(
+                                    animationSpec = tween(MotionSpecs.Enter, easing = MotionSpecs.EmphasizedDecelerateEasing),
+                                    initialScale = 0.92f,
+                                )) togetherWith (fadeOut(MotionSpecs.fade(false)) + scaleOut(
+                                    animationSpec = tween(MotionSpecs.Exit, easing = MotionSpecs.EmphasizedAccelerateEasing),
+                                    targetScale = 0.95f,
+                                ))
+                            }
                         },
                         label = "gateway-login-phase",
                     ) { currentPhase ->

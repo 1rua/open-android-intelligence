@@ -12,6 +12,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -208,7 +209,11 @@ class MainActivity : ComponentActivity() {
                             },
                             onVoiceInput = startVoiceInput,
                         )
-                        if (showAssistant) {
+                        AnimatedVisibility(
+                            visible = showAssistant,
+                            enter = AppTransitions.modalEnter(reduceMotion),
+                            exit = AppTransitions.modalExit(reduceMotion),
+                        ) {
                             FloatingConversationPanel(
                                 controller = activeController,
                                 onClose = { showAssistant = false },
@@ -226,7 +231,11 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    if (showSettingsSheet) {
+                    AnimatedVisibility(
+                        visible = showSettingsSheet,
+                        enter = AppTransitions.modalEnter(reduceMotion),
+                        exit = AppTransitions.modalExit(reduceMotion),
+                    ) {
                         SettingsScreen(
                             environment = app.platformSettingsEnvironment(),
                             runtime = runtime,

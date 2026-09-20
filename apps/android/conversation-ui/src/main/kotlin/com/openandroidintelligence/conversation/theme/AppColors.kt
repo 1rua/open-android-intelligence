@@ -79,15 +79,15 @@ object Dimensions {
     /** M3 最小可点击/可触摸尺寸。 */
     val MinimumTouchTarget = 48.dp
     /** 悬浮球直径。 */
-    val DockedBall = 56.dp
-    /** 品牌标识高度（信号缝线）。 */
-    val BrandMark = 64.dp
+    val DockedBall = 48.dp
+    /** 品牌标识高度（信号缝线/登录徽章）。 */
+    val BrandMark = 48.dp
     /** 标准图标尺寸。 */
     val Icon = 24.dp
     /** 次级图标尺寸。 */
-    val SmallIcon = 20.dp
+    val SmallIcon = 18.dp
     /** 列表前置图标容器直径。 */
-    val LeadingIconContainer = 40.dp
+    val LeadingIconContainer = 32.dp
     /** 进度指示器尺寸。 */
     val Progress = 24.dp
     /** 细分隔线粗细。 */

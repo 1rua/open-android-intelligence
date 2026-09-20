@@ -214,7 +214,7 @@ fun ThreadDrawer(
                         .fillMaxWidth()
                         .height(44.dp),
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(Dimensions.SmallIcon))
                     Spacer(Modifier.width(8.dp))
                     Text("新建对话", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                 }

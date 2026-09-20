@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -75,6 +76,7 @@ import com.openandroidintelligence.conversation.components.SettingsNavigationIte
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.SettingsSwitchItem
 import com.openandroidintelligence.conversation.components.SettingsTone
+import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.gateway.http.TransportSecurity
@@ -134,7 +136,11 @@ fun SettingsScreen(
     NavHost(
         navController = navController,
         startDestination = SettingsRoutes.OVERVIEW,
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
+        enterTransition = { AppTransitions.navEnter(uiState.appearance.reduceMotion) },
+        exitTransition = { AppTransitions.navExit(uiState.appearance.reduceMotion) },
+        popEnterTransition = { AppTransitions.navPopEnter(uiState.appearance.reduceMotion) },
+        popExitTransition = { AppTransitions.navPopExit(uiState.appearance.reduceMotion) },
     ) {
         composable(SettingsRoutes.OVERVIEW) {
             SettingsOverviewScreen(
@@ -388,6 +394,7 @@ private fun SettingsOverviewScreen(
                                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(Dimensions.SmallIcon),
                                 )
                             }
                         },
@@ -592,6 +599,7 @@ private fun SettingsOverviewScreen(
                                 Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(Dimensions.SmallIcon),
                             )
                         },
                     )
@@ -609,6 +617,7 @@ private fun SettingsOverviewScreen(
                                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.size(Dimensions.SmallIcon),
                                 )
                             },
                         )
