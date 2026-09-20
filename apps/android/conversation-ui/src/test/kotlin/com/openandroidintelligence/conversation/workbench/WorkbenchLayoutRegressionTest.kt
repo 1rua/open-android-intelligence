@@ -74,6 +74,42 @@ class WorkbenchLayoutRegressionTest {
         )
     }
 
+    @Test
+    fun settingsEntryRemainsVisibleInFooterEvenWithManyThreads() {
+        val manyThreads = (1..30).map { i ->
+            ConversationSummary(ConversationId("id_$i"), "历史会话 $i", 1000L + i)
+        }
+        var settingsOpened = false
+        var drawerClosed = false
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(320.dp, 480.dp)) {
+                    ThreadDrawer(
+                        gatewayLabel = "user@test",
+                        threads = Loadable.Ready(manyThreads),
+                        activeThreadId = null,
+                        onOpenThread = {},
+                        onCreateThread = {},
+                        onRefresh = {},
+                        onOpenSettings = { settingsOpened = true },
+                        onCloseDrawer = { drawerClosed = true },
+                    )
+                }
+            }
+        }
+
+        // 即使有 30 条会话撑满列表，固定页脚中的「设置与平台管理」也必须常驻可见，无需滚动
+        val settingsNode = compose.onNodeWithText("设置与平台管理")
+        settingsNode.assertIsDisplayed()
+        settingsNode.performClick()
+        assertTrue("点击设置项必须触发 onOpenSettings", settingsOpened)
+        assertTrue("点击设置项必须触发关闭抽屉 onCloseDrawer", drawerClosed)
+
+        // 页脚同级的协议版本号与退出登录也必须常驻可见
+        compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
+        compose.onNodeWithText("退出登录").assertIsDisplayed()
+    }
+
     @Test fun failedSendExplainsItselfInsteadOfShowingABareErrorCode() {
         val readable = noticeText("SEND_FAILED:MASTER_KEY_UNAVAILABLE")
         assertTrue("失败提示必须给出可操作说明：$readable", readable.contains("主密钥") && !readable.contains("MASTER_KEY_UNAVAILABLE"))
