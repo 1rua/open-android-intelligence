@@ -201,6 +201,56 @@ class GatewayEventDecoderTest {
     }
 
     @Test
+    fun decodesCommandResultWithTheClosedOutcomeAndItsSource() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_cmd_1",
+                event = "conversation.command.result",
+                data = """{"payload":{"command":"new","commandId":"new","outcome":"created-conversation","sourceConversationId":"conv_src","sourceMessageId":"msg_cmd","conversationId":"conv_created"}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first())
+        assertTrue(decoded is VerifiedConversationEvent.CommandResult)
+        val result = decoded as VerifiedConversationEvent.CommandResult
+        assertEquals("new", result.command)
+        assertEquals(com.openandroidintelligence.conversation.ports.CommandOutcome.CREATED_CONVERSATION, result.outcome)
+        assertEquals("conv_src", result.sourceConversationId?.value)
+        assertEquals("msg_cmd", result.sourceMessageId)
+        assertEquals("conv_created", result.conversationId?.value)
+    }
+
+    @Test
+    fun commandResultWithoutKnownOutcomeStaysUnknownInsteadOfBecomingASwitch() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_cmd_2",
+                event = "conversation.command.result",
+                data = """{"payload":{"command":"new","outcome":"something-we-do-not-model","conversationId":"conv_x"}}""",
+            ),
+        )
+        val result = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.CommandResult
+        assertEquals(com.openandroidintelligence.conversation.ports.CommandOutcome.OUTCOME_UNKNOWN, result.outcome)
+    }
+
+    @Test
+    fun commandResultNamedClarifiesRefusals() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_cmd_3",
+                event = "conversation.command.result",
+                data = """{"payload":{"command":"new","outcome":"unsupported"}}""",
+            ),
+        )
+        val result = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.CommandResult
+        assertEquals(com.openandroidintelligence.conversation.ports.CommandOutcome.UNSUPPORTED, result.outcome)
+        assertNull(result.conversationId)
+        assertNull(result.sourceConversationId)
+    }
+
+    @Test
     fun decodesGenerationCancelledAndSnapshotInvalidatedWithOuterBodyConversationId() {
         val parser = SseParser()
         val cancelEvents = parser.feed(

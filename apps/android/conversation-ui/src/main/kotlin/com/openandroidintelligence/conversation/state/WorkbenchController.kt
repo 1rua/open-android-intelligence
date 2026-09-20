@@ -63,6 +63,14 @@ data class WorkbenchUiState(
     /** Batch members collected by the debounce window, newest last. */
     val pendingBatch: List<TimelineEntry> = emptyList(),
     val notice: String? = null,
+    /**
+     * True while the phone is waiting for the Agent's own new conversation.
+     *
+     * Nothing else has changed yet: the switch happens only once the Gateway
+     * names the conversation it created, so this flag describes a request in
+     * flight rather than a conversation that already exists.
+     */
+    val creatingThread: Boolean = false,
     /** Whether the inbound reply channel is alive; a dead one explains silence. */
     val streamHealth: com.openandroidintelligence.conversation.model.StreamHealth =
         com.openandroidintelligence.conversation.model.StreamHealth.IDLE,
@@ -87,6 +95,16 @@ class WorkbenchController(
     private val attachmentCoordinator: com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator? = null,
     debouncePolicy: DebouncePolicy = DebouncePolicy(),
     private val supportsMessageBatches: Boolean = false,
+    /**
+     * Whether this Gateway agreed to serve the `/new` command entry.
+     *
+     * Without it the workbench refuses to "create" anything at all: a
+     * conversation the phone invented would exist only here, and every message
+     * sent afterwards would be filed under an id the Agent has never heard of.
+     */
+    private val supportsAgentCommandNew: Boolean = false,
+    /** How long the phone waits for the Agent to answer `/new`. */
+    private val newConversationTimeouts: NewConversationTimeouts = NewConversationTimeouts(),
     /** Reports the active thread so cancellation and events scope to the right conversation. */
     private val onActiveThreadChanged: (String?) -> Unit = {},
     /** The reply channel's health, when the repository can report it. */
@@ -104,6 +122,19 @@ class WorkbenchController(
         val firstReplyMillis: Long = 20_000L,
         /** Still unfinished after this: tell the user instead of spinning forever. */
         val giveUpMillis: Long = 120_000L,
+        /** Off for a caller driving the controller with a virtual clock. */
+        val enabled: Boolean = true,
+    )
+
+    /**
+     * How long the phone waits for the Agent to answer its own `/new`.
+     *
+     * The new conversation arrives as an event, so silence is indistinguishable
+     * from "nothing happened". Giving up is what turns that silence into a fact
+     * the user can read instead of a spinner that never ends.
+     */
+    data class NewConversationTimeouts(
+        val timeoutMillis: Long = 60_000L,
         /** Off for a caller driving the controller with a virtual clock. */
         val enabled: Boolean = true,
     )
@@ -152,7 +183,29 @@ class WorkbenchController(
     private var replyWatchdog: Job? = null
     private var awaitingReplyInThread: String? = null
     private var activeThreadId: String? = null
-    private var creationJob: Deferred<Result<String>>? = null
+
+    /**
+     * The one `/new` request waiting for the Agent's answer.
+     *
+     * At most one exists, keyed to the thread it was sent from: the switch is
+     * only safe for as long as the user is still looking at that thread.
+     */
+    private data class PendingCreation(val sourceThreadId: String, val clientMessageId: ClientMessageId)
+
+    private var pendingCreation: PendingCreation? = null
+    private var creationSendJob: Job? = null
+    private var creationWatchdog: Job? = null
+
+    /**
+     * The zero-conversation bootstrap still talks to the Gateway directly.
+     *
+     * `/new` is a message, so it needs a thread to travel in. When an account
+     * has none yet there is nowhere to send it, and the first user message
+     * would otherwise have no thread to be filed under either. This is the one
+     * place a conversation may be created by the endpoint instead of the Agent,
+     * and it exists solely so that "nothing exists yet" is not a dead end.
+     */
+    private var bootstrapJob: Deferred<Result<String>>? = null
     private var draftRevision = 0L
     private data class DraftSubmission(
         val text: String,
@@ -218,7 +271,10 @@ class WorkbenchController(
         timelineJob?.cancel()
         attachmentJobs.values.forEach { it.cancel() }
         attachmentJobs.clear()
-        creationJob?.cancel()
+        bootstrapJob?.cancel()
+        creationSendJob?.cancel()
+        creationWatchdog?.cancel()
+        pendingCreation = null
         eventJob?.cancel()
         healthJob?.cancel()
         disarmReplyWatchdog()
@@ -321,7 +377,7 @@ class WorkbenchController(
                 .map { page -> page.conversations }
             update { it.copy(threads = result) }
             // Open the most recent thread automatically on a first successful load.
-            if (result is Loadable.Ready && activeThreadId == null && creationJob?.isActive != true) {
+            if (result is Loadable.Ready && activeThreadId == null && bootstrapJob?.isActive != true) {
                 result.value.maxByOrNull { summary -> summary.updatedAt }?.let { openThread(it.id.value) }
             }
         }
@@ -398,19 +454,151 @@ class WorkbenchController(
         observeThreadEvents()
     }
 
+    /**
+     * Asks the Agent for a new conversation.
+     *
+     * The phone does not decide the new conversation's identity: it sends
+     * `/new` into the thread it is leaving and waits for the Gateway to name
+     * what it created. Until that named answer arrives nothing here moves — the
+     * timeline, the title and the send target all still belong to the thread
+     * the user can see, which is exactly why a failure needs no rollback of a
+     * state that was never claimed.
+     */
     fun createThread() {
-        if (creationJob?.isActive == true) return
+        if (closed) return
+        if (pendingCreation != null || bootstrapJob?.isActive == true) return
+        if (!supportsAgentCommandNew) {
+            // Refusing is the honest answer. Manufacturing a thread here would
+            // put the user in a conversation the Gateway cannot serve, and the
+            // first message would be filed under an id only this phone knows.
+            update { it.copy(notice = "CONVERSATION_CREATE_UNSUPPORTED:GATEWAY_UNSUPPORTED") }
+            return
+        }
+        val sourceThreadId = activeThreadId
+        if (sourceThreadId == null) {
+            // `/new` travels as a message, so it needs the thread it leaves.
+            // With no thread there is nothing to send it into.
+            update { it.copy(notice = "CONVERSATION_CREATE_UNAVAILABLE:NO_SOURCE_CONVERSATION") }
+            return
+        }
         cancelPendingSubmission()
-        val creation = createThreadAsync()
+        val clientMessageId = ClientMessageId("cmd_" + UUID.randomUUID().toString().replace("-", ""))
+        pendingCreation = PendingCreation(sourceThreadId = sourceThreadId, clientMessageId = clientMessageId)
+        update { it.copy(creatingThread = true, notice = null) }
+        armCreationWatchdog()
+        observeThreadEvents()
+        creationSendJob?.cancel()
+        creationSendJob = scope.launch {
+            Result.runCatching { repository.submitMessage(sourceThreadId, OutgoingMessage(clientMessageId, NEW_CONVERSATION_COMMAND)) }
+                .onFailure { cause ->
+                    if (cause is CancellationException) throw cause
+                    // Nothing to undo beyond the wait: no local thread was made.
+                    abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:${errorCodeOf(cause)}")
+                }
+                .onSuccess { acceptance ->
+                    if (pendingCreation?.clientMessageId?.value != clientMessageId.value) return@onSuccess
+                    // The command stays visible in the thread it was sent from,
+                    // mirrored under the id the Gateway issued for it.
+                    mirrorCommandInSourceThread(sourceThreadId, clientMessageId.value, acceptance.messageId)
+                }
+        }
+    }
+
+    private fun mirrorCommandInSourceThread(sourceThreadId: String, clientMessageId: String, messageId: String) {
+        if (activeThreadId != sourceThreadId) return
+        mirrored[messageId] = TimelineMessage(
+            id = messageId,
+            sender = "user",
+            parts = listOf(com.openandroidintelligence.conversation.model.MessagePart.Command(NEW_CONVERSATION_COMMAND)),
+            timestamp = System.currentTimeMillis(),
+            conversationId = ConversationId(sourceThreadId),
+        )
+        mirroredRevisions.putIfAbsent(messageId, 0L)
+        update { state ->
+            if (state.activeThreadId != sourceThreadId) state
+            else state.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch)))
+        }
+    }
+
+    private fun armCreationWatchdog() {
+        if (!newConversationTimeouts.enabled) return
+        val waiting = pendingCreation ?: return
+        creationWatchdog?.cancel()
+        creationWatchdog = scope.launch {
+            delay(newConversationTimeouts.timeoutMillis)
+            if (pendingCreation !== waiting) return@launch
+            abandonAgentThreadCreation("CONVERSATION_CREATE_TIMEOUT:NO_COMMAND_RESULT")
+        }
+    }
+
+    private fun disarmCreationWatchdog() {
+        creationWatchdog?.cancel()
+        creationWatchdog = null
+    }
+
+    private fun abandonAgentThreadCreation(notice: String) {
+        pendingCreation ?: return
+        pendingCreation = null
+        disarmCreationWatchdog()
+        update { it.copy(creatingThread = false, notice = notice) }
+    }
+
+    /**
+     * Applies the Agent's answer to `/new`.
+     *
+     * Only a `created-conversation` outcome naming a conversation is authority
+     * to switch, and only while the user is still where the request started:
+     * hijacking the screen after they moved on would be the same
+     * disagreement in the opposite direction.
+     */
+    private fun applyAgentThreadCreation(
+        outcome: com.openandroidintelligence.conversation.ports.CommandOutcome,
+        newThreadId: String?,
+    ) {
+        val waiting = pendingCreation ?: return
+        when (outcome) {
+            com.openandroidintelligence.conversation.ports.CommandOutcome.CREATED_CONVERSATION -> {
+                if (newThreadId.isNullOrBlank()) {
+                    abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:MISSING_CONVERSATION_ID")
+                    return
+                }
+                pendingCreation = null
+                disarmCreationWatchdog()
+                if (activeThreadId != waiting.sourceThreadId) {
+                    update { it.copy(creatingThread = false, notice = "已创建新对话") }
+                    refreshThreads()
+                    return
+                }
+                openThread(newThreadId)
+                syncThreadMetadata(newThreadId)
+                update { it.copy(creatingThread = false, notice = "已创建新对话") }
+            }
+            com.openandroidintelligence.conversation.ports.CommandOutcome.REJECTED ->
+                abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:REJECTED")
+            com.openandroidintelligence.conversation.ports.CommandOutcome.UNSUPPORTED ->
+                abandonAgentThreadCreation("CONVERSATION_CREATE_UNSUPPORTED:COMMAND_REJECTED")
+            com.openandroidintelligence.conversation.ports.CommandOutcome.OUTCOME_UNKNOWN ->
+                abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:OUTCOME_UNKNOWN")
+        }
+    }
+
+    /**
+     * Pulls the conversation the Gateway named, so what the user reads comes
+     * from the Gateway rather than from what the phone assumed.
+     */
+    private fun syncThreadMetadata(threadId: String) {
         scope.launch {
-            creation.await().onFailure { cause ->
-                update { it.copy(notice = "CONVERSATION_CREATE_FAILED:${errorCodeOf(cause)}") }
+            val detail = runCatching { repository.readConversation(threadId) }.getOrNull()
+            refreshThreads()
+            if (detail == null) return@launch
+            if (activeThreadId == threadId && !isThreadUserRenamed(threadId)) {
+                update { it.copy(activeThreadTitle = detail.title) }
             }
         }
     }
 
-    private fun createThreadAsync(): Deferred<Result<String>> {
-        creationJob?.takeIf { it.isActive }?.let { return it }
+    private fun bootstrapConversation(): Deferred<Result<String>> {
+        bootstrapJob?.takeIf { it.isActive }?.let { return it }
         return scope.async {
             try {
                 val clientId = "cconv_" + UUID.randomUUID().toString().replace("-", "")
@@ -432,7 +620,7 @@ class WorkbenchController(
             } catch (cause: Exception) {
                 Result.failure(cause)
             }
-        }.also { creationJob = it }
+        }.also { bootstrapJob = it }
     }
 
     fun editDraft(text: String) {
@@ -517,6 +705,12 @@ class WorkbenchController(
     fun sendDraft() {
         val current = _state.value
         if (!current.canSend) return
+        if (pendingCreation != null) {
+            // A send during the wait would land in the thread being left —
+            // exactly the mismatch this flow exists to prevent.
+            update { it.copy(notice = "CONVERSATION_CREATING:SEND_BLOCKED") }
+            return
+        }
         pendingSubmission = DraftSubmission(current.draft, current.attachments.map { it.id.value }, draftRevision, activeThreadId)
         update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null, generation = GenerationState.QUEUED) }
         submitWhenAttachmentsVerified()
@@ -544,7 +738,7 @@ class WorkbenchController(
             // because releasing the attachment drafts below advances it too.
             var draftWasCleared = false
             try {
-                val target = submission.conversationId ?: activeThreadId ?: createThreadAsync().await().getOrThrow()
+                val target = submission.conversationId ?: activeThreadId ?: bootstrapConversation().await().getOrThrow()
                 sendTarget = target
                 // Only clear the snapshot that was sent; typing during creation keeps the newer draft.
                 if (draftRevision == submission.revision) {
@@ -967,9 +1161,18 @@ class WorkbenchController(
                         }
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult -> {
-                            event.conversationId?.let { created ->
-                                update { it.copy(notice = "已创建新对话") }
-                                openThread(created.value)
+                            if (isNewConversationCommand(event.command)) {
+                                if (pendingCreation != null) {
+                                    applyAgentThreadCreation(event.outcome, event.conversationId?.value)
+                                } else if (event.outcome == com.openandroidintelligence.conversation.ports.CommandOutcome.CREATED_CONVERSATION) {
+                                    // The user sent `/new` themselves; the same
+                                    // authority applies, only without the wait.
+                                    event.conversationId?.let { created ->
+                                        openThread(created.value)
+                                        syncThreadMetadata(created.value)
+                                        update { it.copy(notice = "已创建新对话") }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1318,6 +1521,9 @@ class WorkbenchController(
         _state.update(transform)
     }
 
+    private fun isNewConversationCommand(command: String): Boolean =
+        command.trim().trimStart('/').equals(NEW_CONVERSATION_COMMAND.trimStart('/'), ignoreCase = true)
+
     private companion object {
         /**
          * How many event ids stay remembered.
@@ -1328,5 +1534,13 @@ class WorkbenchController(
          * it forgets are ones the timeline pull re-covers anyway.
          */
         const val MAX_HANDLED_EVENT_IDS = 2048
+
+        /**
+         * The reserved `/new` invocation (contract §7.1).
+         *
+         * It travels as ordinary text: this constant only names the boundary
+         * between "the Agent has to create a thread" and "leave the text alone".
+         */
+        const val NEW_CONVERSATION_COMMAND = "/new"
     }
 }

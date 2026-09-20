@@ -71,6 +71,7 @@
               "items": {
                 "enum": [
                   "agent-command-catalog-v1",
+                  "agent-command-new-v1",
                   "message-batches-v1",
                   "newline-v1",
                   "generation-cancel-v1",
@@ -121,6 +122,7 @@
               "items": {
                 "enum": [
                   "agent-command-catalog-v1",
+                  "agent-command-new-v1",
                   "message-batches-v1",
                   "newline-v1",
                   "generation-cancel-v1",

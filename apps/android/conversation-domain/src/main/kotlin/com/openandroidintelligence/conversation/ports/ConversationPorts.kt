@@ -68,6 +68,20 @@ enum class CancelGenerationOutcome {
 }
 
 data class CancelGenerationResult(val outcome: CancelGenerationOutcome, val message: String? = null)
+
+/**
+ * The closed set an Agent-side command may answer with (contract §7.1).
+ *
+ * `OUTCOME_UNKNOWN` is a real answer too: it is what the Gateway says when it
+ * cannot tell whether the command landed, so the UI must not paint it as
+ * success or as a refusal it can retry blindly.
+ */
+enum class CommandOutcome {
+    CREATED_CONVERSATION,
+    REJECTED,
+    UNSUPPORTED,
+    OUTCOME_UNKNOWN,
+}
 data class CancelSubmissionResult(val success: Boolean)
 data class PendingSubmissionIntent(
     val intentId: SubmitIntentId,
@@ -116,6 +130,17 @@ sealed interface VerifiedConversationEvent {
         override val eventId: String,
         override val occurredAt: Long,
         val command: String,
+        /**
+         * The Gateway's closed answer for one command.
+         *
+         * Only [CommandOutcome.CREATED_CONVERSATION] together with a non-null
+         * [conversationId] is permission to switch: the others are facts about
+         * what the Agent refused or could not do, and the caller has to say so
+         * rather than degrade into a locally invented conversation.
+         */
+        val outcome: CommandOutcome = CommandOutcome.OUTCOME_UNKNOWN,
+        val sourceConversationId: ConversationId? = null,
+        val sourceMessageId: String? = null,
         val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
 
@@ -179,6 +204,15 @@ interface ConversationRepository {
         requestId: String,
     ): CancelGenerationResult = cancelGeneration(generationId, requestId)
     suspend fun updateTitle(conversationId: String, title: String): Boolean = false
+
+    /**
+     * One conversation's authoritative metadata as the Gateway has it.
+     *
+     * `null` means this repository cannot answer, which is a fact the caller
+     * must handle by falling back to the thread list — never by inventing a
+     * title or a creation time locally.
+     */
+    suspend fun readConversation(conversationId: String): Conversation? = null
 }
 
 /**

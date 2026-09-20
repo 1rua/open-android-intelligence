@@ -51,6 +51,9 @@ object GatewayEventDecoder {
                 eventId = eventId,
                 occurredAt = occurredAt,
                 command = JsonFields.string(payload, "command").orEmpty(),
+                outcome = commandOutcomeOf(JsonFields.string(payload, "outcome")),
+                sourceConversationId = conversationIdOfKey(payload, "sourceConversationId"),
+                sourceMessageId = JsonFields.string(payload, "sourceMessageId")?.takeIf { it.isNotBlank() },
                 conversationId = conversationIdOf(payload, body),
             )
 
@@ -140,6 +143,27 @@ object GatewayEventDecoder {
     }
 
     private val CONVERSATION_ID_KEYS = listOf("conversationId", "conversation_id", "chat_id")
+
+    /**
+     * The closed command answer (contract §7.1).
+     *
+     * An absent or unrecognised value is `OUTCOME_UNKNOWN` rather than a guess:
+     * the UI has to be able to tell "the Agent created something" from "we do
+     * not know what happened", because only the first one permits a switch.
+     */
+    private fun commandOutcomeOf(value: String?): com.openandroidintelligence.conversation.ports.CommandOutcome =
+        when (value?.trim()) {
+            "created-conversation" -> com.openandroidintelligence.conversation.ports.CommandOutcome.CREATED_CONVERSATION
+            "rejected" -> com.openandroidintelligence.conversation.ports.CommandOutcome.REJECTED
+            "unsupported" -> com.openandroidintelligence.conversation.ports.CommandOutcome.UNSUPPORTED
+            else -> com.openandroidintelligence.conversation.ports.CommandOutcome.OUTCOME_UNKNOWN
+        }
+
+    private fun conversationIdOfKey(payload: JsonValue.JObject?, key: String): ConversationId? {
+        val value = JsonFields.string(payload, key)?.trim() ?: return null
+        if (value.isBlank()) return null
+        return runCatching { ConversationId(value) }.getOrNull()
+    }
 
     /**
      * Conversation ids are optional on the legacy event payloads, but when a

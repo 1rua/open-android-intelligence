@@ -196,6 +196,22 @@ class GatewayConversationRepository(
     override suspend fun updateTitle(conversationId: String, title: String): Boolean =
         runCatching { client.updateConversationTitle(conversationId, title) }.getOrDefault(false)
 
+    /**
+     * One conversation's metadata, straight from the Gateway.
+     *
+     * A new conversation arrives as an id carried by a command result; reading
+     * it back here is how the phone learns the title the Gateway actually
+     * stored instead of assuming one.
+     */
+    override suspend fun readConversation(conversationId: String): Conversation? {
+        val detail = runCatching { client.readConversation(conversationId) }.getOrNull() ?: return null
+        return Conversation(
+            id = ConversationId(detail.conversationId),
+            title = detail.title?.takeIf { it.isNotBlank() } ?: "新对话",
+            createdAt = parseMillis(detail.createdAt),
+        )
+    }
+
     override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> =
         client.rawEvents().mapNotNull { event ->
             decoder.generationIdOf(event)?.let { _generationId.value = it }

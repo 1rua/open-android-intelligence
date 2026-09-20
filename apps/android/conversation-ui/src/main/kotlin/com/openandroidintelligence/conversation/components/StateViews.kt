@@ -42,6 +42,14 @@ fun readableFailure(code: String): String {
     return when {
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
         value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请联系网关部署者执行 ./hermes-account.py init-key 并重启网关。"
+        value.contains("CONVERSATION_CREATING") -> "正在等待 Agent 返回新会话，请稍候。"
+        value.contains("CONVERSATION_CREATE_UNSUPPORTED") ->
+            "该 Gateway 不支持由 App 新建对话。App 不会创建只有本机可见的会话，请升级 Gateway 或联系部署者。"
+        value.contains("CONVERSATION_CREATE_UNAVAILABLE") -> "还没有可承接新对话的会话，请先发送一条消息。"
+        value.contains("CONVERSATION_CREATE_TIMEOUT") ->
+            "Agent 迟迟没有返回新建的会话，已停在原会话。请确认 Gateway 与 Agent 正在运行后重试。"
+        value.contains("CONVERSATION_CREATE_FAILED") ->
+            "新建对话失败，已停留在原会话，本地没有留下与 Gateway 不一致的会话。请检查连接后重试。"
         value.contains("RENAME") || value.contains("TITLE_UPDATE") -> "网关没有保存这次重命名，已恢复原标题。请确认网关版本支持会话重命名。"
         value.contains("REQUEST_BODY_INVALID") -> "网关拒绝了这次请求的内容，请更新 App 或检查网关版本。"
         value.contains("CURSOR_EXPIRED") -> "会话进度已过期，请刷新以重新同步内容。"

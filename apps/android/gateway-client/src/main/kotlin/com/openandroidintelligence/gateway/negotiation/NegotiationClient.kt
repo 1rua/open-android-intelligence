@@ -130,10 +130,14 @@ class NegotiationClient(
         /**
          * Conversation-surface features this client implements today:
          * the command catalog, message batches and generation cancel endpoints
-         * are all served by [com.openandroidintelligence.gateway.http.GatewayHttpClient].
+         * are all served by [com.openandroidintelligence.gateway.http.GatewayHttpClient],
+         * and `agent-command-new-v1` is served by the workbench: creating a new
+         * conversation means sending `/new` to the Agent and waiting for the
+         * authoritative id it answers with.
          */
         val CONVERSATION_UI_FEATURES = listOf(
             "agent-command-catalog-v1",
+            "agent-command-new-v1",
             "message-batches-v1",
             "generation-cancel-v1",
         )

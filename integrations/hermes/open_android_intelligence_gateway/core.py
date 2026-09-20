@@ -46,6 +46,11 @@ CORE_SCHEMA_FILE_NAMES = (
     "session.schema.json",
 )
 
+# The reserved `/new` invocation (contract §7.1). The catalog declares it with
+# `acceptsArguments: false`, so only this exact text is the new-conversation
+# command; `/new <anything>` stays ordinary text the Agent has to interpret.
+NEW_CONVERSATION_COMMAND = "/new"
+
 # The exact six shared vector documents of contract section 16. The enumeration
 # is closed: its `schemaName` set does not include the conversation-UI schemas,
 # so `conversation-ui.json` stays a local suite and is not a conformance input.
@@ -2630,7 +2635,11 @@ class GatewayCore:
         # capability claim the phone would then rely on.
         supported_auth = {"password", "refresh"}
         auth = [item for item in requested["auth"] if item in supported_auth]
-        supported_conversation_ui = {"agent-command-catalog-v1"}
+        # Only capabilities this adapter really serves. `agent-command-new-v1`
+        # means the `/new` command entry exists here: it creates the new
+        # conversation and answers with the authoritative id. Advertising it
+        # without that entry would make the agreement a claim, not a fact.
+        supported_conversation_ui = {"agent-command-catalog-v1", "agent-command-new-v1"}
         conversation_ui = [
             item for item in requested.get("conversationUi", [])
             if item in supported_conversation_ui
@@ -2862,6 +2871,77 @@ class GatewayCore:
                 raise TransactionOutcomeUnknown({"reason": "idempotency outcome persistence unknown"}) from exc
             return response
 
+    def _handle_new_conversation(
+        self,
+        account: Any,
+        source_conversation_id: str,
+        client_message_id: str,
+        correlation_id: str,
+        device_id: str,
+        request_id: str,
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """
+        The `/new` command entry (contract §7.1, ADR 0043).
+
+        The phone never mints a conversation id of its own: it sends `/new`
+        into the thread it is leaving, and this entry answers with the id the
+        Agent host really created. Message acceptance, conversation creation,
+        the event and the audit are one transaction, so an interruption cannot
+        leave a conversation that exists without the event that names it, or
+        an event pointing at a conversation nobody stored.
+
+        The command itself stays in the source thread — the phone keeps showing
+        it there — and the new thread starts empty.
+        """
+        current = _now(now)
+        with account.store.transaction():
+            accepted = account.conversations.accept_message(
+                source_conversation_id, client_message_id, NEW_CONVERSATION_COMMAND,
+                [], device_id, request_id, correlation_id, current,
+            )
+            created = account.conversations.create(
+                # Derived from the id the phone chose for the command itself, so
+                # the same request cannot end up with two new threads: a replay
+                # of this request is answered from the idempotency ledger before
+                # this code runs again.
+                client_conversation_id=f"{client_message_id}-new",
+                title=None,
+                correlation_id=correlation_id,
+                now=current,
+            )
+            account.events.append(
+                "conversation.command.result",
+                correlation_id,
+                {
+                    "command": "new",
+                    "commandId": "new",
+                    "outcome": "created-conversation",
+                    "sourceConversationId": source_conversation_id,
+                    "sourceMessageId": accepted["messageId"],
+                    "conversationId": created["conversationId"],
+                },
+                current,
+            )
+            # The binding this adapter knows how to record: the request that
+            # asked for a new thread and the thread it got. No `agentSessionId`
+            # is minted here — there is no Agent runtime behind this adapter,
+            # and inventing one would be a fabricated fact.
+            account.audit.append(
+                "conversation.command.new",
+                {"accountId": account.account_id, "deviceId": device_id},
+                {
+                    "command": "new",
+                    "requestId": request_id,
+                    "sourceConversationId": source_conversation_id,
+                    "sourceMessageId": accepted["messageId"],
+                    "conversationId": created["conversationId"],
+                },
+                correlation_id,
+                current,
+            )
+        return {"message": accepted}
+
     def handle(self, request: VerifiedGatewayRequest) -> GatewayResponse:
         try:
             method = _value(request, "method")
@@ -2942,8 +3022,21 @@ class GatewayCore:
                             raise GatewayError("SCHEMA_INVALID")
                         attachments = body_map.get("attachments", [])
                         attachment_ids = [str(item["attachmentId"]) for item in attachments] if isinstance(attachments, list) else []
+                        source_conversation_id = message_match.group(1)
+                        client_message_id = str(body_map["clientMessageId"])
+                        text_value = str(body_map["text"])
+                        if text_value.strip() == NEW_CONVERSATION_COMMAND:
+                            return _success(context, self._handle_new_conversation(
+                                account,
+                                source_conversation_id=source_conversation_id,
+                                client_message_id=client_message_id,
+                                correlation_id=context["correlationId"],
+                                device_id=context["deviceId"],
+                                request_id=context["requestId"],
+                                now=_request_now(request),
+                            ))
                         return _success(context, {"message": account.conversations.accept_message(
-                            message_match.group(1), str(body_map["clientMessageId"]), str(body_map["text"]),
+                            source_conversation_id, client_message_id, text_value,
                             attachment_ids, context["deviceId"], context["requestId"], context["correlationId"], _request_now(request),
                         )})
                     conversation_get = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)", target_path)

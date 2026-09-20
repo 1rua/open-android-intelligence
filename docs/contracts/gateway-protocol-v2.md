@@ -133,7 +133,9 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 
 协议主版本不同、核心 Schema 不兼容、未知安全字段或未知高风险能力时返回 `PROTOCOL_INCOMPATIBLE`。次版本差异只启用双方声明的交集。协商结果由 `negotiationId` 绑定后续认证会话，客户端不能在单次请求中自行扩大功能。
 
-`messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力（命令目录、批消息、换行、生成取消、会话镜像、附件状态）放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
+`messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
+
+`agent-command-new-v1` 表示该 Gateway 服务 `/new` 命令入口：能接收以普通文本形式送达的 `/new`，由宿主命令层原子创建新会话、保存绑定，并通过 `conversation.command.result` 返回权威 `conversationId`（第 7 节）。未实现该入口的 Gateway **不得**声明该能力，也不得以任何本地构造的会话标识冒充已知会话；客户端在能力缺失时必须明示不可用，而不是退化为自建会话。
 
 `schemaHashes.core` 是具名 Schema 文档集合的摘要，算法固定为：
 
@@ -446,6 +448,41 @@ Gateway 返回 `accepted` 及服务端 message ID；Agent 回复通过 SSE 发�
 ```
 
 Gateway 先原子更新标题并写入审计，再追加 `conversation.title.updated` 事件（`payload` 同时携带 `title` 与 `newTitle`），随后向已连接的设备补齐该事件。会话不存在时返回第 14 节的错误信封，绝不静默创建。手机端生成的自动标题和用户手动重命名走同一端点；一旦用户手动重命名，客户端不再让后续 Agent 标题建议覆盖该标题。
+
+### 7.1 `/new` 与 `conversation.command.result`
+
+`/new` 命令以普通文本形式通过 `POST /conversations/{sourceConversationId}/messages` 送达，Gateway 不得把它当成字段或本地指令解释。声明了 `agent-command-new-v1` 的宿主在命令入口处理它：在**同一个原子操作**内落库来源消息、创建新会话、保存「命令请求 ↔ 新会话」绑定、写入审计，并追加事件：
+
+```json
+{
+  "protocol": "2.0",
+  "event": "conversation.command.result",
+  "eventId": "evt_01...",
+  "occurredAt": "2026-09-21T09:00:00.000Z",
+  "payload": {
+    "command": "new",
+    "commandId": "new",
+    "outcome": "created-conversation",
+    "sourceConversationId": "conv_01...",
+    "sourceMessageId": "msg_01...",
+    "conversationId": "conv_02..."
+  }
+}
+```
+
+`payload` 至少携带来源消息、来源会话、命令 id、`outcome` 与新会话标识。`outcome` 是闭集：
+
+```text
+created-conversation | rejected | unsupported | outcome-unknown
+```
+
+规则：
+
+- `/new` 保留在来源会话（命令本身不消失、不被改写为新会话的首条消息）；新会话从空上下文开始；旧会话及其未完成的 generation 继续存在、可恢复。
+- Gateway 认证 `sessionId` 不因 `/new` 变化。`agentSessionId` 是宿主内部概念，**不向客户端下发**，客户端也不得本地生成或猜测它。
+- 幂等按第 6.5 节绑定：同一 `Idempotency-Key` / `requestId` 重放必须回到同一个 `conversationId`，不允许重复创建第二个会话。
+- 客户端只有在 `outcome` 为 `created-conversation` 且 `conversationId` 非空时才切换到该会话，并在切换后重新读取该会话的时间线与元数据；拒绝、不支持、未知结果或超时一律停留在来源会话并如实报错，**不得本地构造会话**。
+- 未实现该命令入口的宿主不得声明 `agent-command-new-v1`；`/new` 在此类宿主上仅作为普通文本被接受与透传，不得产生创建会话的响应或事件。
 
 宿主拥有长期对话与 Agent 记忆。Gateway 只保存完成可靠交付所需映射、幂等结果和短期暂存，不复制长期对话正文。
 

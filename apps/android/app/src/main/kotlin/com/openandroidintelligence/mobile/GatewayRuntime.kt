@@ -358,6 +358,10 @@ class GatewayRuntime(
             scopeFactory = { conversationScope },
             attachmentCoordinator = attachmentCoordinator,
             supportsMessageBatches = "message-batches-v1" in conversationUi,
+            // Whether this Gateway serves the `/new` command entry. Without it
+            // the workbench refuses to create a thread at all rather than
+            // building one only the phone knows about.
+            supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
             onActiveThreadChanged = { threadId -> activeThread.set(threadId) },
             streamHealthSource = repository,
         )

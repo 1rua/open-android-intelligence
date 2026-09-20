@@ -224,7 +224,7 @@ fun WorkbenchScreen(
                             IconButton(onClick = { showAttachmentLibrary = true }) {
                                 Icon(Icons.Default.AttachFile, contentDescription = "附件库")
                             }
-                            IconButton(onClick = controller::createThread) {
+                            IconButton(onClick = controller::createThread, enabled = !state.creatingThread) {
                                 Icon(Icons.Default.Add, contentDescription = "新建对话")
                             }
                             IconButton(onClick = onOpenSettings) {
