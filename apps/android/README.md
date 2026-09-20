@@ -112,7 +112,10 @@ means every workstation — and every fresh CI runner — signs with a different
 identity, so installing a new build over an existing one fails with
 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` until the app is uninstalled. With the pinned
 key, local, CI and released debug APKs share one signing identity and can be
-installed over each other.
+installed over each other. The configuration lives in the root `build.gradle.kts`
+and applies to every `com.android.application` module (`app`, `assistant-holder`),
+so signature-protected IPC between the holder and the host app cannot silently
+break on a machine change.
 
 Verify any debug APK against the pinned certificate:
 

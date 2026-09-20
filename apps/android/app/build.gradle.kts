@@ -4,44 +4,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// 固定调试签名：仓库内 app/keystore/debug.keystore（alias androiddebugkey / 口令 android，
-// 详见同目录 README.md）。若不显式指定，AGP 会退回到每台机器、每次 CI 构建各自随机生成的
-// ~/.android/debug.keystore，于是同一份代码打出的调试包签名互不相同，覆盖安装会报
-// INSTALL_FAILED_UPDATE_INCOMPATIBLE。该密钥仅用于调试，禁止用于正式发布。
-val debugKeystore = layout.projectDirectory.file("keystore/debug.keystore")
-check(debugKeystore.asFile.isFile) {
-    "缺少固定调试密钥：${debugKeystore.asFile}（生成方式见 apps/android/app/keystore/README.md）"
-}
-val debugKeystoreAlias = "androiddebugkey"
-val debugKeystorePassword = "android"
+// 固定调试签名（app/keystore/debug.keystore，见同目录 README.md）在根工程
+// build.gradle.kts 里对所有 APK 模块统一配置，此处无需重复声明。
 
 android {
     namespace = "com.openandroidintelligence.mobile"
     defaultConfig {
         applicationId = "com.openandroidintelligence.mobile"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    signingConfigs {
-        // 覆盖 AGP 预置的 debug 签名配置，统一指向仓库内固定密钥。
-        getByName("debug").apply {
-            storeFile = debugKeystore.asFile
-            storePassword = debugKeystorePassword
-            keyAlias = debugKeystoreAlias
-            keyPassword = debugKeystorePassword
-            // v2/v3 是现代设备实际校验的方案；保留 v1(JAR) 签名是为了让只有 JDK 的环境
-            // （apps/android/tools/verify-debug-signing.sh 的 keytool 路径）也能读出签名者证书。
-            enableV1Signing = true
-            enableV2Signing = true
-            enableV3Signing = true
-        }
-    }
-
-    buildTypes {
-        getByName("debug").apply {
-            // 显式绑定固定调试签名，避免回落到机器本地随机调试密钥。
-            signingConfig = signingConfigs.getByName("debug")
-        }
     }
 
     flavorDimensions += "distribution"

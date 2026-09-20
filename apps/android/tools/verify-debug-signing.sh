@@ -51,6 +51,18 @@ prettify() {
   printf '%s' "$1" | sed 's/../&:/g; s/:$//'
 }
 
+# 统一转成绝对路径：apksigner 回退分支要临时切换工作目录，相对路径在那里会失效。
+abs_path() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "${PWD%/}" "$1" ;;
+  esac
+}
+
+APK="$(abs_path "$APK")"
+KEYSTORE="$(abs_path "$KEYSTORE")"
+FINGERPRINT_FILE="$(abs_path "$FINGERPRINT_FILE")"
+
 [ -f "$APK" ] || fail "找不到 APK：${APK}
 请先构建（cd apps/android && ./gradlew :app:assembleFullDebug），或把 APK 路径作为第一个参数传入。"
 [ -f "$KEYSTORE" ] || fail "找不到固定调试密钥：${KEYSTORE}"
@@ -97,12 +109,14 @@ if [ -z "$APK_CERT" ]; then
     APK_CERT="$(normalize "$( (cd "${TMPDIR:-/tmp}" && env LANG=C.UTF-8 LC_ALL=C.UTF-8 \
       "$APKSIGNER" verify --print-certs "$APK") 2>/dev/null \
       | awk -F': ' '/SHA-256 digest/ {print $2; exit}' || true)")"
+    [ -n "$APK_CERT" ] || fail "apksigner 读不出该 APK 的签名者证书：${APK}
+（APK 可能未签名或已损坏；本次使用的 apksigner：${APKSIGNER}）"
+  else
+    fail "该 APK 没有 v1(JAR) 签名，环境里也找不到 apksigner，无法校验签名身份：${APK}
+请保持 debug 签名的 enableV1Signing = true（见 apps/android/build.gradle.kts），
+或用 APKSIGNER 环境变量指定 Android SDK build-tools 目录下的 apksigner。"
   fi
 fi
-
-[ -n "$APK_CERT" ] || fail "读不出 APK 的签名者证书：${APK}
-可能原因：APK 未签名；或既没有 v1(JAR) 签名、也找不到 apksigner
-（Android SDK 的 build-tools 目录里有 apksigner，可用 APKSIGNER 环境变量指定）。"
 
 if [ "$APK_CERT" != "$PINNED" ]; then
   fail "APK 签名与仓库固定调试密钥不一致：

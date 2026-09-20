@@ -33,8 +33,9 @@ signatures do not match previously installed version; ignoring!]
 | 证书主体 | `CN=Android Debug, O=Android, C=US` |
 | 证书 SHA-256 指纹 | 见 `debug.keystore.fingerprint` |
 
-使用方式写在 `apps/android/app/build.gradle.kts` 的 `signingConfigs`（`debug` 配置）
-与 `buildTypes.debug` 中，不再依赖任何机器本地生成的调试密钥。
+使用方式写在根工程 `apps/android/build.gradle.kts`：所有 `com.android.application` 模块
+（`app`、`assistant-holder`）的 `signingConfigs.debug` 都指向这个密钥并显式绑定到
+`buildTypes.debug`，不再依赖任何机器本地生成的调试密钥。
 
 ## 安全边界
 
