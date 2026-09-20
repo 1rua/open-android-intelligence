@@ -82,6 +82,42 @@ class GatewayHttpClient(
     private val maxConsecutiveFailures: Int = 6,
 ) {
 
+    /**
+     * Event ids this client has already handed to a collector.
+     *
+     * The stream reconnects by itself and is re-subscribed whenever a screen
+     * reopens, so a Gateway backlog replay can offer the same frame more than
+     * once. Remembering the ids on the client — instead of inside one
+     * collection — is what makes delivery idempotent across those boundaries:
+     * a replay is dropped at the network edge rather than being filtered again
+     * by every layer above it.
+     */
+    private val deliveredEventIds = LinkedHashSet<String>()
+
+    /**
+     * True when this event id has not been delivered yet.
+     *
+     * A blank id is never tracked: the Gateway uses un-ided frames for notices
+     * and heartbeats, and dropping them would silently break the channel. The
+     * critical section is a set insertion, so it stays safe to call from the
+     * main dispatcher.
+     */
+    @Synchronized
+    private fun markEventDelivered(eventId: String?): Boolean {
+        if (eventId.isNullOrBlank()) return true
+        if (!deliveredEventIds.add(eventId)) return false
+        if (deliveredEventIds.size > MAX_TRACKED_EVENT_IDS) {
+            val iterator = deliveredEventIds.iterator()
+            repeat(MAX_TRACKED_EVENT_IDS / 2) {
+                if (iterator.hasNext()) {
+                    iterator.next()
+                    iterator.remove()
+                }
+            }
+        }
+        return true
+    }
+
     suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
         val validatedHeaders = RawHeaders.validate(request.headers)
         val input = signedInput(request.method, request.target, request.body)
@@ -110,7 +146,6 @@ class GatewayHttpClient(
         val maxBackoffMillis = 60_000L
         var preferWebSocket = (webSocketTransport != null)
         var consecutiveFailures = 0
-        val seenEventIds = LinkedHashSet<String>()
 
         statusSink?.report(EventStreamStatus.CONNECTING)
         GatewayLog.d(TAG, "event stream start autoReconnect=$autoReconnect")
@@ -141,15 +176,10 @@ class GatewayHttpClient(
                         val eventId = event.id
                         if (!eventId.isNullOrBlank()) {
                             cursorStore.save(profile.accountId, eventId)
-                            if (!seenEventIds.add(eventId)) {
+                            if (!markEventDelivered(eventId)) {
                                 GatewayLog.d(TAG, "skipping duplicate ws event id=$eventId")
                                 return@collect
                             }
-                            if (seenEventIds.size > 1000) {
-                                val iter = seenEventIds.iterator()
-                                repeat(500) { if (iter.hasNext()) { iter.next(); iter.remove() } }
-                            }
-                            cursorStore.save(profile.accountId, eventId)
                         }
                         emit(event)
                     }
@@ -214,15 +244,9 @@ class GatewayHttpClient(
                         }
                         for (event in parsedEvents) {
                             val eventId = event.id
-                            if (!eventId.isNullOrBlank()) {
-                                if (!seenEventIds.add(eventId)) {
-                                    GatewayLog.d(TAG, "skipping duplicate sse event id=$eventId")
-                                    continue
-                                }
-                                if (seenEventIds.size > 1000) {
-                                    val iter = seenEventIds.iterator()
-                                    repeat(500) { if (iter.hasNext()) { iter.next(); iter.remove() } }
-                                }
+                            if (!markEventDelivered(eventId)) {
+                                GatewayLog.d(TAG, "skipping duplicate sse event id=$eventId")
+                                continue
                             }
                             GatewayLog.d(TAG, "event ${event.event} id=${event.id}")
                             emit(event)
@@ -302,6 +326,13 @@ class GatewayHttpClient(
     companion object {
         const val PROTOCOL_HEADER = "2.0"
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
+        /**
+         * How many event ids stay remembered for replay suppression.
+         *
+         * The window only has to outlast a reconnect, and it is bounded so a
+         * long-lived session cannot grow the set without limit.
+         */
+        private const val MAX_TRACKED_EVENT_IDS = 4096
         private const val TAG = "GatewayEvents"
         val MUTATING_METHODS = setOf("POST", "PUT", "DELETE", "PATCH")
 

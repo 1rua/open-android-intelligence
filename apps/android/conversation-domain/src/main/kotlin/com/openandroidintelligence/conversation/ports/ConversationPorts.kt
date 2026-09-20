@@ -38,7 +38,19 @@ data class OutgoingMessage(
     val command: MessagePart.Command? = null,
 )
 
-data class BatchAcceptance(val batchId: String, val acceptedMessageIds: List<String>)
+/**
+ * The Gateway's answer to a batch submission.
+ *
+ * [memberIds] is the authoritative client→server message id mapping. A member
+ * mirrored under its local client id would appear a second time as soon as the
+ * same message arrives from the Gateway under the id the Gateway issued, so
+ * callers must key the mirror by [memberIds] rather than by the local id.
+ */
+data class BatchAcceptance(
+    val batchId: String,
+    val acceptedMessageIds: List<String>,
+    val memberIds: Map<String, String> = emptyMap(),
+)
 data class MessageAcceptance(val messageId: String, val correlationId: String)
 
 enum class CancelGenerationOutcome {

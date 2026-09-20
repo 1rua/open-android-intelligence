@@ -1460,6 +1460,134 @@ class WorkbenchSendRegressionTest {
         controller.cancel()
     }
 
+    @Test fun switchingThreadsKeepsASingleEventSubscription() = runTest {
+        var subscriptions = 0
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope): kotlinx.coroutines.flow.Flow<VerifiedConversationEvent> {
+                subscriptions++
+                return events
+            }
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        runCurrent()
+        controller.openThread("conv_2")
+        runCurrent()
+        controller.openThread("conv_3")
+        runCurrent()
+
+        assertEquals(
+            "事件流是账号级的：切换会话反复重建订阅会让新旧订阅重叠，同一事件将被处理两次",
+            1,
+            subscriptions,
+        )
+        controller.cancel()
+    }
+
+    @Test fun aReplayedEventIdIsAppliedOnlyOnce() = runTest {
+        var timelineReads = 0
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
+                timelineReads++
+                return TimelinePage(emptyList(), null)
+            }
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        runCurrent()
+        val readsAfterOpen = timelineReads
+
+        val invalidated = VerifiedConversationEvent.SnapshotInvalidated(
+            eventId = "evt_snapshot_replayed",
+            occurredAt = 1000L,
+            snapshotRevision = 1L,
+            conversationId = ConversationId("conv_1"),
+        )
+        // 重连或重新订阅时，Gateway 会重放同一帧：只能生效一次
+        events.emit(invalidated)
+        runCurrent()
+        events.emit(invalidated)
+        runCurrent()
+
+        assertEquals("重放同一条事件只允许生效一次", 1, timelineReads - readsAfterOpen)
+        controller.cancel()
+    }
+
+    @Test fun batchMembersAreMirroredUnderTheGatewaysMessageId() = runTest {
+        val repository = object : RecordingRepository() {
+            override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {
+                sent += batch.messages
+                val localId = batch.messages.first().clientMessageId.value
+                return BatchAcceptance(
+                    batchId = batch.batchId,
+                    acceptedMessageIds = listOf("msg_batch_server"),
+                    memberIds = mapOf(localId to "msg_batch_server"),
+                )
+            }
+        }
+        val controller = batchedController(repository)
+        runCurrent()
+        controller.editDraft("批量发送的消息")
+        controller.sendDraft()
+        runCurrent()
+        advanceTimeBy(1_501L)
+        runCurrent()
+
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(1, entries.size)
+        assertEquals(
+            "批量成员必须以 Gateway 颁发的 messageId 建镜像，否则同一条消息会以本地 id 再出现一次",
+            "msg_batch_server",
+            entries.first().key,
+        )
+        controller.cancel()
+    }
+
+    @Test fun aFailedSendLeavesNoPendingCopyAndRestoresTheDraft() = runTest {
+        val repository = object : RecordingRepository() {
+            override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
+                throw java.io.IOException("offline")
+            }
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.openThread("conv_1")
+        runCurrent()
+        controller.editDraft("会失败的消息")
+        controller.sendDraft()
+        advanceUntilIdle()
+
+        assertTrue(
+            "发送失败后不得残留待发条目，否则用户重试会让同一条消息出现两次",
+            controller.state.value.pendingBatch.isEmpty(),
+        )
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        assertTrue(
+            "没有被 Gateway 接受的消息不得作为已发送条目留在时间线上",
+            entries.none { it.text == "会失败的消息" },
+        )
+        assertEquals("失败的消息必须回到输入框供用户重试", "会失败的消息", controller.state.value.draft)
+        controller.cancel()
+    }
+
+    private fun TestScope.batchedController(
+        repository: RecordingRepository,
+        replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
+    ) = WorkbenchController(
+        this, repository,
+        object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+        },
+        { ConversationScope("profile", "gateway", "account", "install") },
+        supportsMessageBatches = true,
+        replyTimeouts = replyTimeouts,
+    )
+
     private fun TestScope.controller(
         repository: RecordingRepository,
         replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),

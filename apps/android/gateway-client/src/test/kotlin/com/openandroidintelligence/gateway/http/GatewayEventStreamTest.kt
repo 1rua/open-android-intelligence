@@ -438,6 +438,25 @@ class GatewayEventStreamTest {
         assertEquals("evt_new", events[1].id)
     }
 
+    /**
+     * A re-subscription — a screen reopening, a thread switch that used to
+     * restart the stream — replays the same window from the stored cursor. The
+     * frame was already handed to the previous collector, so it must not be
+     * handed over again: the phone would apply one event twice.
+     */
+    @Test
+    fun `re-subscribing does not redeliver an event the client already handed over`() = runBlocking {
+        val transport = RecordingTransport(listOf(completedFrame))
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, MemoryCursorStore())
+
+        val first = client.events(autoReconnect = false).toList()
+        val second = client.events(autoReconnect = false).toList()
+
+        assertEquals(1, first.size)
+        assertEquals("evt_01", first.single().id)
+        assertEquals("跨订阅重放同一事件必须被丢弃", 0, second.size)
+    }
+
     @Test
     fun `websocket reconnect replaying already seen event id updates status to live and skips duplicate emission`() = runBlocking {
         var wsAttempt = 0

@@ -149,6 +149,9 @@ class GatewayConversationRepository(
         return BatchAcceptance(
             batchId = acceptance.batchId,
             acceptedMessageIds = acceptance.memberIds.values.toList(),
+            // The mapping itself travels upward: it is the only way a caller can
+            // key a mirrored member by the id the Gateway will use for it.
+            memberIds = acceptance.memberIds,
         )
     }
 

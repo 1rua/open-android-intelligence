@@ -114,6 +114,16 @@ class WorkbenchController(
     private val mirrored = LinkedHashMap<String, TimelineMessage>()
     private val mirroredRevisions = LinkedHashMap<String, Long>()
 
+    /**
+     * Event ids already applied to the timeline.
+     *
+     * One frame can be offered more than once: a reconnect replays the account
+     * backlog, and re-subscribing restarts the stream. Applying an event once,
+     * keyed by the Gateway's own event id, is what keeps a replay from being
+     * treated as new traffic by the timeline rules below.
+     */
+    private val handledEventIds = LinkedHashSet<String>()
+
     private val attachmentJobs = LinkedHashMap<String, Job>()
     private val attachmentSelections = LinkedHashMap<String, com.openandroidintelligence.conversation.ports.LocalAttachmentSelection>()
     private val historicalAttachments = object : LinkedHashMap<String, com.openandroidintelligence.conversation.model.TimelineAttachment>(32, 0.75f, false) {
@@ -320,7 +330,6 @@ class WorkbenchController(
         onActiveThreadChanged(threadId)
         mirrored.clear()
         mirroredRevisions.clear()
-        eventJob?.cancel()
         timelineJob?.cancel()
         disarmReplyWatchdog()
         update {
@@ -396,7 +405,6 @@ class WorkbenchController(
                 onActiveThreadChanged(conversation.id.value)
                 mirrored.clear()
                 mirroredRevisions.clear()
-                eventJob?.cancel()
                 timelineJob?.cancel()
                 update {
                     it.copy(activeThreadId = conversation.id.value, activeThreadTitle = conversation.title,
@@ -515,6 +523,7 @@ class WorkbenchController(
         pendingSubmission = null
         update { it.copy(composer = ComposerState.SUBMITTING) }
         scope.launch {
+            var localEntryKey: String? = null
             try {
                 val target = submission.conversationId ?: activeThreadId ?: createThreadAsync().await().getOrThrow()
                 // Only clear the snapshot that was sent; typing during creation keeps the newer draft.
@@ -545,6 +554,7 @@ class WorkbenchController(
                     attachments = submittedAttachments,
                 )
                 val message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
+                localEntryKey = entry.key
                 update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(it.timeline, entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
 
                 if (eventJob?.isActive != true) {
@@ -612,7 +622,32 @@ class WorkbenchController(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (cause: Exception) {
-                update { it.copy(composer = ComposerState.FAILED, notice = "SEND_FAILED:${errorCodeOf(cause)}") }
+                // A message the Gateway never accepted must not stay on screen
+                // as a pending send: the retry used to stack a second copy of
+                // the same text beside the one that had already failed, and the
+                // user saw the same message twice.
+                update { state ->
+                    val failedKey = localEntryKey
+                    val remainingBatch = if (failedKey == null) {
+                        state.pendingBatch
+                    } else {
+                        state.pendingBatch.filterNot { it.key == failedKey }
+                    }
+                    state.copy(
+                        composer = ComposerState.FAILED,
+                        notice = "SEND_FAILED:${errorCodeOf(cause)}",
+                        timeline = Loadable.Ready(renderTimeline(remainingBatch)),
+                        pendingBatch = remainingBatch,
+                        // The text returns to the composer while it is still
+                        // untouched, so a retry sends it again instead of
+                        // leaving the user with nothing to send.
+                        draft = if (state.draft.isEmpty() && draftRevision == submission.revision) {
+                            submission.text
+                        } else {
+                            state.draft
+                        },
+                    )
+                }
             }
         }
     }
@@ -632,11 +667,16 @@ class WorkbenchController(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
             ))
         }.fold(
-            onSuccess = { _ ->
+            onSuccess = { acceptance ->
                 val pendingEntries = _state.value.pendingBatch
                 messages.forEach { msg ->
-                    val id = msg.clientMessageId.value
-                    val entry = pendingEntries.firstOrNull { it.key == "local_$id" || it.key == id }
+                    val localId = msg.clientMessageId.value
+                    // The Gateway's id is the only key the mirror may use: a
+                    // member mirrored under its own local id showed up a second
+                    // time as soon as the same message reached the phone under
+                    // the id the Gateway had issued for it.
+                    val id = acceptance.memberIds[localId]?.takeIf { it.isNotBlank() } ?: localId
+                    val entry = pendingEntries.firstOrNull { it.key == "local_$localId" || it.key == localId }
                     val timestamp = entry?.timestamp ?: System.currentTimeMillis()
                     val parts = buildList {
                         if (msg.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(msg.text))
@@ -733,8 +773,16 @@ class WorkbenchController(
         update { it.copy(notice = null) }
     }
 
+    /**
+     * Subscribes to the account's event stream, once.
+     *
+     * The stream carries every conversation of the account, so switching
+     * threads has no reason to restart it. Cancelling and re-opening the
+     * subscription per thread switch left the dying stream and the new one
+     * overlapping — the window in which one event could be applied twice.
+     */
     private fun observeThreadEvents() {
-        eventJob?.cancel()
+        if (eventJob?.isActive == true) return
         eventJob = scope.launch {
             repository.observeEvents(scopeFactory())
                 .retryWhen { cause, _ ->
@@ -748,6 +796,7 @@ class WorkbenchController(
                 }
                 .collect { event ->
                     if (!isActive) return@collect
+                    if (!markEventHandled(event.eventId)) return@collect
                     val currentActiveId = activeThreadId ?: run {
                         refreshThreads()
                         return@collect
@@ -1207,7 +1256,36 @@ class WorkbenchController(
             ?.title
             ?: "新对话"
 
+    /**
+     * True when this event has not been applied yet.
+     *
+     * A blank id carries no identity to deduplicate on, so it is always
+     * applied; dropping it would lose the frame entirely.
+     */
+    private fun markEventHandled(eventId: String): Boolean {
+        if (eventId.isBlank()) return true
+        if (!handledEventIds.add(eventId)) return false
+        if (handledEventIds.size > MAX_HANDLED_EVENT_IDS) {
+            val iterator = handledEventIds.iterator()
+            repeat(MAX_HANDLED_EVENT_IDS / 2) {
+                if (iterator.hasNext()) {
+                    iterator.next()
+                    iterator.remove()
+                }
+            }
+        }
+        return true
+    }
+
     private fun update(transform: (WorkbenchUiState) -> WorkbenchUiState) {
         _state.update(transform)
+    }
+
+    private companion object {
+        /**
+         * How many event ids stay remembered. The window only has to outlast a
+         * reconnect, and a bound keeps a long session from growing forever.
+         */
+        const val MAX_HANDLED_EVENT_IDS = 2048
     }
 }
