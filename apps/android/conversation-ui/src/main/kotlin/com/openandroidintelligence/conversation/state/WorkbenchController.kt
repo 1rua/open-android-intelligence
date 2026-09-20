@@ -200,11 +200,30 @@ class WorkbenchController(
         val clientMessageId: ClientMessageId,
         /** The id the Gateway issued for the `/new` message, once it answered. */
         var sourceMessageId: String? = null,
+        /**
+         * Answers that arrived before the send response could name the request.
+         *
+         * The event stream and the HTTP reply are separate channels, so the
+         * result of this very `/new` can show up while [sourceMessageId] is
+         * still null. They wait here instead of being judged against a
+         * half-known request.
+         */
+        val parkedResults: MutableList<com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult> =
+            mutableListOf(),
     )
 
     private var pendingCreation: PendingCreation? = null
     private var creationSendJob: Job? = null
     private var creationWatchdog: Job? = null
+
+    /**
+     * Requests this phone stopped waiting for.
+     *
+     * A late answer must not reverse a timeout or a failed send: the user was
+     * already told the request ended, so the answer is only allowed to enrich
+     * the thread list, never to move the screen.
+     */
+    private val settledCreations = ArrayDeque<PendingCreation>()
 
     /**
      * The zero-conversation bootstrap still talks to the Gateway directly.
@@ -511,6 +530,8 @@ class WorkbenchController(
                     // Recorded so a later command result can be tied to this
                     // very request instead of to any other `/new` on the account.
                     waiting.sourceMessageId = acceptance.messageId
+                    // Only now can the results that beat this reply be judged.
+                    replayParkedCreationResults(waiting)
                     // The command stays visible in the thread it was sent from,
                     // mirrored under the id the Gateway issued for it.
                     mirrorCommandInSourceThread(sourceThreadId, clientMessageId.value, acceptance.messageId)
@@ -551,10 +572,21 @@ class WorkbenchController(
     }
 
     private fun abandonAgentThreadCreation(notice: String) {
-        pendingCreation ?: return
+        val waiting = pendingCreation ?: return
         pendingCreation = null
+        // The wait is over either way; a late answer belongs to a request the
+        // user has already been told ended, so it must not still move them.
+        rememberSettledCreation(waiting)
         disarmCreationWatchdog()
         update { it.copy(creatingThread = false, notice = notice) }
+    }
+
+    private fun rememberSettledCreation(waiting: PendingCreation) {
+        // Parked answers die with the wait: a send judged failed leaves the
+        // decision to the user rather than completing it behind their back.
+        waiting.parkedResults.clear()
+        settledCreations.addLast(waiting)
+        while (settledCreations.size > MAX_SETTLED_CREATIONS) settledCreations.removeFirst()
     }
 
     /**
@@ -569,6 +601,13 @@ class WorkbenchController(
         event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult,
     ) {
         val waiting = pendingCreation ?: return
+        // An answer that names a source message while ours is still unnamed
+        // cannot be told apart honestly, so it waits for the send response
+        // instead of being judged on the conversation alone.
+        if (waiting.sourceMessageId == null && !event.sourceMessageId.isNullOrBlank()) {
+            if (waiting.parkedResults.none { it.eventId == event.eventId }) waiting.parkedResults += event
+            return
+        }
         if (!isThisCreationAnswer(event, waiting)) return
         when (event.outcome) {
             com.openandroidintelligence.conversation.ports.CommandOutcome.CREATED_CONVERSATION -> {
@@ -615,6 +654,19 @@ class WorkbenchController(
             sourceMessage != waiting.sourceMessageId
         ) return false
         return true
+    }
+
+    /**
+     * Judges the answers that arrived before the send response did.
+     *
+     * Once the Gateway has named the `/new` message, every parked result can
+     * finally be matched against it; the first one that is ours decides, and
+     * the rest are dropped because one request has one answer.
+     */
+    private fun replayParkedCreationResults(waiting: PendingCreation) {
+        val parked = waiting.parkedResults.toList()
+        waiting.parkedResults.clear()
+        parked.firstOrNull { isThisCreationAnswer(it, waiting) }?.let(::applyAgentThreadCreation)
     }
 
     /** The single way a Gateway-named conversation becomes the open one. */
@@ -1223,7 +1275,20 @@ class WorkbenchController(
                                     // it was sent from, or the jump would yank
                                     // them out of whatever they moved to.
                                     val source = event.sourceConversationId?.value
-                                    if (source == null || source == activeThreadId) {
+                                    // Not so for an answer we already gave up on:
+                                    // its timeout told the user "stayed put", and
+                                    // arriving late must not silently undo that.
+                                    val settled = settledCreations.any { abandoned ->
+                                        abandoned.sourceThreadId == source && (
+                                            abandoned.sourceMessageId == null ||
+                                                event.sourceMessageId.isNullOrBlank() ||
+                                                abandoned.sourceMessageId == event.sourceMessageId
+                                            )
+                                    }
+                                    if (settled) {
+                                        update { it.copy(notice = "已创建新对话") }
+                                        refreshThreads()
+                                    } else if (source == null || source == activeThreadId) {
                                         event.conversationId?.let { created ->
                                             switchToAgentCreatedThread(created.value)
                                         }
@@ -1604,5 +1669,13 @@ class WorkbenchController(
 
         /** The default wait for the Agent's answer to `/new`. */
         const val NEW_CONVERSATION_TIMEOUT_MILLIS = 60_000L
+
+        /**
+         * How many abandoned `/new` requests stay remembered.
+         *
+         * Only a late answer has to be recognised, so the distance to cover is
+         * a few retries; the cap keeps a long session bounded.
+         */
+        const val MAX_SETTLED_CREATIONS = 8
     }
 }

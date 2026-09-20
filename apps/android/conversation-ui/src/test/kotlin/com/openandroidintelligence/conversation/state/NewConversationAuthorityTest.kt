@@ -21,6 +21,7 @@ import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.TimelinePage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -206,6 +207,97 @@ class NewConversationAuthorityTest {
     }
 
     @Test
+    fun commandResultForAnotherRequestInTheSameThreadIsNotThisRequest() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceUntilIdle()
+
+        repository.events.emit(
+            commandResult().copy(eventId = "evt_other_device", sourceMessageId = "msg_other_device"),
+        )
+        advanceUntilIdle()
+
+        assertEquals("同一来源会话但来源消息不同，不得切换", SOURCE_ID, controller.state.value.activeThreadId)
+        assertTrue(controller.state.value.creatingThread)
+    }
+
+    @Test
+    fun answerFromAnotherDeviceThatBeatsTheSendResponseIsNotOurs() = runWorkbench {
+        // 把发送应答扣在手里，让事件流真的赢下这次竞速。
+        val repository = FakeRepository().apply { holdSend = true }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceUntilIdle()
+
+        repository.events.emit(
+            commandResult().copy(eventId = "evt_other_device", sourceMessageId = "msg_other_device"),
+        )
+        advanceUntilIdle()
+        repository.releaseSend()
+        advanceUntilIdle()
+
+        assertEquals("别人的结果不得切换本机会话", SOURCE_ID, controller.state.value.activeThreadId)
+        assertTrue("不得替用户放弃等待", controller.state.value.creatingThread)
+    }
+
+    @Test
+    fun answerThatArrivesBeforeTheSendResponseStillSwitches() = runWorkbench {
+        val repository = FakeRepository().apply { holdSend = true }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceUntilIdle()
+
+        repository.events.emit(commandResult())
+        advanceUntilIdle()
+        assertEquals("应答未到时只能等待", SOURCE_ID, controller.state.value.activeThreadId)
+
+        repository.releaseSend()
+        advanceUntilIdle()
+
+        assertEquals("先到的应答不得被丢弃", CREATED_ID, controller.state.value.activeThreadId)
+        assertFalse(controller.state.value.creatingThread)
+    }
+
+    @Test
+    fun lateAnswerToAnAbandonedRequestDoesNotReverseTheTimeout() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository, watchdogEnabled = true)
+        advanceUntilIdle()
+        controller.createThread()
+
+        advanceTimeBy(60_001L)
+        assertTrue(controller.state.value.notice.orEmpty().contains("CONVERSATION_CREATE_TIMEOUT"))
+
+        repository.events.emit(commandResult())
+        advanceUntilIdle()
+
+        assertEquals(
+            "超时已告知用户停在原会话，迟到的结果不得再把他拽走",
+            SOURCE_ID,
+            controller.state.value.activeThreadId,
+        )
+        assertFalse(controller.state.value.creatingThread)
+    }
+
+    @Test
+    fun userTypedNewStillSwitchesWithoutARequestOfOurOwn() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+
+        // 用户自己在输入框里敲的 `/new`：本机没有发起过请求。
+        repository.events.emit(commandResult())
+        advanceUntilIdle()
+
+        assertEquals(CREATED_ID, controller.state.value.activeThreadId)
+        assertFalse(controller.state.value.creatingThread)
+    }
+
+    @Test
     fun unansweredRequestTimesOutAndRollsBack() = runWorkbench {
         // The only test in which the watchdog is armed: silence is the subject.
         val repository = FakeRepository()
@@ -319,6 +411,16 @@ class NewConversationAuthorityTest {
         val timelineRequests = mutableListOf<String>()
         val createCalls = mutableListOf<String>()
         var failSend = false
+        /**
+         * Holds the send reply back so a test can let the event stream win the
+         * race — the Gateway pushes results and answers on separate channels.
+         */
+        var holdSend = false
+        private val sendGate = CompletableDeferred<Unit>()
+
+        fun releaseSend() {
+            sendGate.complete(Unit)
+        }
 
         override suspend fun listConversations(
             scope: ConversationScope,
@@ -363,6 +465,7 @@ class NewConversationAuthorityTest {
 
         override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
             if (failSend) error("SEND_FAILED:offline")
+            if (holdSend) sendGate.await()
             sentMessages += conversationId to message
             return MessageAcceptance("msg_cmd", message.clientMessageId.value)
         }
