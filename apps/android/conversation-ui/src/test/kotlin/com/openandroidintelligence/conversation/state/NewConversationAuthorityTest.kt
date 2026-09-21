@@ -33,6 +33,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -392,7 +393,7 @@ class NewConversationAuthorityTest {
 
         assertEquals("conv_other", controller.state.value.activeThreadId)
         assertFalse(controller.state.value.creatingThread)
-        assertEquals(null, controller.state.value.creationSourceThreadId)
+        assertNull(controller.state.value.creationSourceThreadId)
         assertTrue(controller.state.value.notice.orEmpty().contains("已创建新对话"))
     }
 
@@ -448,7 +449,7 @@ class NewConversationAuthorityTest {
         advanceUntilIdle()
 
         assertFalse("取消后必须退出等待态", controller.state.value.creatingThread)
-        assertEquals(null, controller.state.value.creationSourceThreadId)
+        assertNull(controller.state.value.creationSourceThreadId)
         assertEquals(SOURCE_ID, controller.state.value.activeThreadId)
         assertTrue("不得本地创建会话", repository.createCalls.isEmpty())
         assertTrue(
