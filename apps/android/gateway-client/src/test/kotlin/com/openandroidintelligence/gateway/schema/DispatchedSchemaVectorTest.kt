@@ -19,17 +19,32 @@ class DispatchedSchemaVectorTest {
         DispatchedSchemaRegistry.fromContractDir(SharedContract.contractDir())
 
     @Test
-    fun readsTheSharedRegistryAndRecomputesAllFourDigests() {
+    fun readsTheSharedRegistryAndRecomputesEveryDigest() {
         val registry = registry()
 
         assertEquals("1.0.0", registry.formatVersion)
-        assertEquals(4, registry.catalogEntries.size)
+        assertEquals(5, registry.catalogEntries.size)
         assertEquals("gateway-core-fixtures-v1", registry.bindingSetId)
         assertEquals(
             "every binding must point at a catalog entry with a matching digest",
-            4,
+            5,
             registry.bindings.size,
         )
+    }
+
+    @Test
+    fun theCommandResultPayloadIsBoundForThisClientToo() {
+        val registry = registry()
+
+        val resolved = registry.resolve(
+            dispatch = mapOf("kind" to "event", "eventType" to "conversation.command.result"),
+            bindingSetId = "gateway-core-fixtures-v1",
+        )
+        val entry = registry.catalogEntries.first {
+            it.logicalKey["eventType"] == "conversation.command.result"
+        }
+
+        assertEquals(entry.schemaSha256, resolved.schemaSha256)
     }
 
     @Test
