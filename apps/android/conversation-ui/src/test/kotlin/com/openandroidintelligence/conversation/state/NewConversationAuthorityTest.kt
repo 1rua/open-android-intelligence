@@ -457,7 +457,9 @@ class NewConversationAuthorityTest {
         state: String = "CONFIRMED",
         timestamp: Long = 2L,
     ): VerifiedConversationEvent.TimelineUpsert = VerifiedConversationEvent.TimelineUpsert(
-        eventId = "evt_reply_$messageId",
+        // One event id per frame: two frames of one reply are two events, and a
+        // repeated id would be dropped as a replay before it is ever applied.
+        eventId = "evt_reply_${state}_$messageId",
         occurredAt = timestamp,
         revision = 1L,
         message = TimelineMessage(
@@ -598,6 +600,11 @@ class NewConversationAuthorityTest {
 
         repository.events.emit(assistantReply(state = "STREAMING", messageId = "msg_streaming"))
         advanceTimeBy(1L)
+        assertEquals(
+            "分片必须真的被应用，否则下面的断言就只是在测被丢弃的帧",
+            GenerationState.RUNNING,
+            controller.state.value.generation,
+        )
         assertTrue("流式分片本身不代表本轮结束", controller.state.value.creatingThread)
 
         repository.events.emit(

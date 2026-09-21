@@ -82,6 +82,8 @@
 | 根 vitest / 契约一致性 | 本次未改 TS 与契约资产，由 CI 复跑 |
 | Android 编译与单测 | 本机不跑 Gradle（无 android sdk、用户会取消）⇒ **只能靠 CI**（`ci.yml` 的 `Android Build & Check` 跑 `./gradlew check`） |
 
+CI 首轮红了 1 例（`aStreamedReplyEndsTheWaitWhenItsCompletionArrives`）：测试辅助函数给同一回复的 STREAMING 与 CONFIRMED 两帧用了**同一个 eventId**，第二帧被 `markEventHandled` 当重复帧丢弃（生产环境每帧 id 唯一）——属测试缺陷，已修并把「分片必须真的被应用」写成断言，避免同类假绿。
+
 **必须先做的一步**：部署宿主补丁后**重启 Hermes 网关进程**——当前进程里仍是旧代码，不重启则客户端再稳也只能"提前结束等待"，不会真正跳转。重启后真机复测：点新建不应再出现 `Session reset!` 文案，界面应切换到新会话；发一条含工具调用的回复后切出重进，应只剩 1 条。
 
 ---
