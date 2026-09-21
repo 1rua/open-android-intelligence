@@ -126,11 +126,40 @@ def test_send_prefers_the_message_id_the_host_named(tmp_path):
         conversation = _seed_conversation(core, "cconv_named")
         adapter = _adapter(core)
 
-        result = await adapter.send(conversation, "好的", reply_to="msg_named_by_host")
+        result = await adapter.send(
+            conversation, "好的", metadata={"messageId": "msg_named_by_host"},
+        )
 
         assert result.success is True
         assert result.message_id == "msg_named_by_host"
         assert [row["messageId"] for row in _rows(core, conversation)] == ["msg_named_by_host"]
+    asyncio.run(scenario())
+
+
+def test_the_message_being_replied_to_is_never_overwritten(tmp_path):
+    """`reply_to` names the answered message: it must not become our own id."""
+    async def scenario():
+        core = create_gateway_core(storage_root=tmp_path)
+        conversation = _seed_conversation(core, "cconv_reply_to")
+        adapter = _adapter(core)
+
+        account = core.open_gateway_account(ACCOUNT_ID)
+        try:
+            account.conversations.accept_message(
+                conversation, "client_msg_1", "现在几点", [], "dev_1", "req_1", "cor_1",
+            )
+        finally:
+            account.close()
+        user_row = next(row for row in _rows(core, conversation) if row["sender"] == "user")
+
+        await adapter.send(conversation, "现在是晚上 21:20 啦", reply_to=user_row["messageId"])
+
+        rows = {row["messageId"]: row for row in _rows(core, conversation)}
+        assert rows[user_row["messageId"]]["sender"] == "user"
+        assert rows[user_row["messageId"]]["text"] == "现在几点"
+        assistant_rows = [row for row in rows.values() if row["sender"] == "assistant"]
+        assert len(assistant_rows) == 1
+        assert assistant_rows[0]["messageId"] != user_row["messageId"]
     asyncio.run(scenario())
 
 

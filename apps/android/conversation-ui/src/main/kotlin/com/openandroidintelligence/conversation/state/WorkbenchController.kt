@@ -225,6 +225,15 @@ class WorkbenchController(
     private data class PendingCreation(
         val sourceThreadId: String,
         val clientMessageId: ClientMessageId,
+        /**
+         * The newest timestamp the source thread already had when `/new` was sent.
+         *
+         * A reply newer than this is part of this turn; anything at or below it is
+         * history the phone had already read (a replay, not this turn's answer).
+         * Comparing server timestamps with each other avoids trusting the phone's
+         * clock, which the host's clock may disagree with.
+         */
+        val replyBaselineTimestamp: Long = 0L,
         /** The id the Gateway issued for the `/new` message, once it answered. */
         var sourceMessageId: String? = null,
         /**
@@ -524,6 +533,7 @@ class WorkbenchController(
                             mirroredRevisions.putIfAbsent(message.id, 0L)
                         }
                     }
+                    maybeArmCreationGraceFromTimeline(threadId)
                     val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
                     update { state ->
                         if (!isActive || state.activeThreadId != threadId) state
@@ -581,7 +591,13 @@ class WorkbenchController(
         // answer to an abandoned request cannot keep shadowing a new one.
         settledCreations.removeAll { it.sourceThreadId == sourceThreadId }
         val clientMessageId = ClientMessageId("cmd_" + UUID.randomUUID().toString().replace("-", ""))
-        pendingCreation = PendingCreation(sourceThreadId = sourceThreadId, clientMessageId = clientMessageId)
+        pendingCreation = PendingCreation(
+            sourceThreadId = sourceThreadId,
+            clientMessageId = clientMessageId,
+            // Read before the command is mirrored, so the echo of `/new` itself
+            // cannot raise the baseline above the reply we are waiting for.
+            replyBaselineTimestamp = mirrored.values.maxOfOrNull { it.timestamp } ?: 0L,
+        )
         update { it.copy(creatingThread = true, creationSourceThreadId = sourceThreadId, notice = null) }
         armCreationWatchdog()
         observeThreadEvents()
@@ -716,17 +732,40 @@ class WorkbenchController(
     /**
      * Whether one event is evidence that the `/new` turn is over.
      *
-     * Only traffic this phone has never seen counts: a reconnect replays the
-     * account backlog, and an old reply is not evidence about this request. The
-     * reply also has to belong to the thread the command was sent from — an
-     * answer in some other conversation says nothing about this one.
+     * Only a reply newer than the thread's state when the command was sent counts:
+     * a reconnect replays the account backlog, and history is not evidence about
+     * this request. The reply also has to belong to the thread the command was
+     * sent from — an answer in some other conversation says nothing about this one.
+     *
+     * A streaming host publishes the reply as deltas and then a completion; both
+     * carry the reply's own timestamp, so either frame is enough to recognise it.
      */
-    private fun maybeArmCreationGrace(conversationId: String?, message: TimelineMessage, unseen: Boolean) {
-        if (!unseen) return
+    private fun maybeArmCreationGrace(conversationId: String?, message: TimelineMessage) {
         val waiting = pendingCreation ?: return
         if (conversationId != waiting.sourceThreadId) return
         if (message.sender != "assistant" || message.state != "CONFIRMED") return
+        if (message.timestamp <= waiting.replyBaselineTimestamp) return
         armCreationGrace()
+    }
+
+    /**
+     * The same evidence, read instead of pushed.
+     *
+     * A reply can also reach the phone through a timeline read — a reconnect, a
+     * health-driven reload, a manual retry — and the wait has to end the same way.
+     */
+    private fun maybeArmCreationGraceFromTimeline(threadId: String) {
+        val waiting = pendingCreation ?: return
+        if (threadId != waiting.sourceThreadId) return
+        // Without a baseline the thread was empty when the command was sent, and a
+        // reply read back from it cannot be told apart from one that predates the
+        // request: the slower watchdog is the honest answer there.
+        if (waiting.replyBaselineTimestamp <= 0L) return
+        val newestReply = mirrored.values
+            .filter { it.sender == "assistant" && it.state == "CONFIRMED" }
+            .maxOfOrNull { it.timestamp }
+            ?: return
+        if (newestReply > waiting.replyBaselineTimestamp) armCreationGrace()
     }
 
     private fun abandonAgentThreadCreation(notice: String) {
@@ -1330,9 +1369,9 @@ class WorkbenchController(
                                 return@collect
                             }
                             val previousRevision = mirroredRevisions[message.id]
-                            // A reply this phone has never seen, in the thread the
-                            // command was sent from, is the Agent's turn ending.
-                            maybeArmCreationGrace(eventConvId, message, previousRevision == null)
+                            // A reply newer than the thread's pre-command state is
+                            // the Agent's turn ending.
+                            maybeArmCreationGrace(eventConvId, message)
                             if (previousRevision != null && event.revision < previousRevision) {
                                 return@collect
                             }
@@ -1347,17 +1386,7 @@ class WorkbenchController(
                                 } else if (message.state == "STREAMING") {
                                     disarmReplyWatchdog()
                                     // If a confirmed assistant message with this content already exists, skip adding this late streaming chunk
-                                    val alreadyConfirmed = mirrored.values.any {
-                                        it.sender == "assistant" &&
-                                        it.state == "CONFIRMED" &&
-                                        ((normalizeEntryKey(it.id).isNotBlank() && normalizeEntryKey(it.id) == normalizeEntryKey(message.id)) ||
-                                         (messageText.isNotBlank() &&
-                                          !hasUserMessageBetween(it.timestamp, message.timestamp) &&
-                                          it.timestamp >= message.timestamp - 5_000L &&
-                                          Math.abs(it.timestamp - message.timestamp) <= 120_000L &&
-                                          messageTextOf(it).startsWith(messageText)))
-                                    }
-                                    if (alreadyConfirmed) {
+                                    if (isAlreadyCoveredByConfirmedReply(message, messageText)) {
                                         return@collect
                                     }
                                     // Prune any other older streaming assistant message with different id
@@ -1518,6 +1547,7 @@ class WorkbenchController(
                 if (receivedConfirmedAssistantForCurrentTurn) {
                     disarmReplyWatchdog()
                 }
+                maybeArmCreationGraceFromTimeline(threadId)
                 update { state ->
                     if (!isActive || state.activeThreadId != threadId) state
                     else {
@@ -1560,6 +1590,25 @@ class WorkbenchController(
     private fun messageTextOf(message: TimelineMessage): String =
         message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
             .joinToString("") { it.value }
+
+    /**
+     * Whether a late streaming chunk is already covered by a confirmed reply.
+     *
+     * The two frames of one reply can be minutes apart (a tool round sits between
+     * them), so the turn — no user message in between — decides, not a clock.
+     * The 5s tolerance only absorbs equal-or-slightly-earlier timestamps, not a
+     * whole turn.
+     */
+    private fun isAlreadyCoveredByConfirmedReply(message: TimelineMessage, text: String): Boolean =
+        mirrored.values.any { existing ->
+            existing.sender == "assistant" &&
+                existing.state == "CONFIRMED" &&
+                ((normalizeEntryKey(existing.id).isNotBlank() && normalizeEntryKey(existing.id) == normalizeEntryKey(message.id)) ||
+                    (text.isNotBlank() &&
+                        !hasUserMessageBetween(existing.timestamp, message.timestamp) &&
+                        existing.timestamp >= message.timestamp - 5_000L &&
+                        messageTextOf(existing).startsWith(text)))
+        }
 
     /**
      * Integrates a confirmed assistant message by:

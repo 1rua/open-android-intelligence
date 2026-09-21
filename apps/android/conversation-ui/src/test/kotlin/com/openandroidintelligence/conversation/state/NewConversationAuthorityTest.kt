@@ -470,6 +470,21 @@ class NewConversationAuthorityTest {
         ),
     )
 
+    /** A message the source thread already had before the command was sent. */
+    private fun historyMessage(
+        sender: String,
+        id: String,
+        text: String,
+        timestamp: Long,
+    ): TimelineMessage = TimelineMessage(
+        id = id,
+        sender = sender,
+        parts = listOf(MessagePart.Text(text)),
+        timestamp = timestamp,
+        state = "CONFIRMED",
+        conversationId = ConversationId(SOURCE_ID),
+    )
+
     @Test
     fun anAgentReplyWithoutACommandResultEndsTheWaitHonestly() = runWorkbench {
         // The watchdog is on: this test is about a wait that must not last.
@@ -531,12 +546,70 @@ class NewConversationAuthorityTest {
         advanceTimeBy(1L)
 
         repository.events.emit(
-            assistantReply(messageId = "msg_seen_before", text = "上一轮的回复"),
+            assistantReply(messageId = "msg_seen_before", text = "上一轮的回复", timestamp = 1L),
         )
         advanceTimeBy(defaultGraceMillis + 1L)
 
         assertTrue("重放不是本轮结束的证据，必须继续等待", controller.state.value.creatingThread)
         assertEquals(SOURCE_ID, controller.state.value.activeThreadId)
+    }
+
+    @Test
+    fun aReplyReadBackThroughTheTimelineAlsoEndsTheWait() = runWorkbench {
+        // The reply never arrives on the stream (the socket was down); a reload
+        // brings it back, and that is the same evidence.
+        val repository = FakeRepository().apply {
+            sourceHistory = listOf(historyMessage(sender = "user", id = "msg_old", text = "之前的问题", timestamp = 1L))
+        }
+        val controller = controller(repository, watchdogEnabled = true)
+        advanceUntilIdle()
+        assertEquals(SOURCE_ID, controller.state.value.activeThreadId)
+        controller.createThread()
+        advanceTimeBy(1L)
+
+        repository.sourceHistory = repository.sourceHistory + historyMessage(
+            sender = "assistant", id = "msg_from_reload", text = "已重置", timestamp = 5L,
+        )
+        repository.events.emit(
+            VerifiedConversationEvent.SnapshotInvalidated(
+                eventId = "evt_snapshot",
+                occurredAt = 5L,
+                snapshotRevision = 1L,
+                conversationId = ConversationId(SOURCE_ID),
+            ),
+        )
+        advanceTimeBy(defaultGraceMillis + 1L)
+
+        assertFalse("从时间线读回的新回复同样是本轮结束", controller.state.value.creatingThread)
+        assertTrue(
+            controller.state.value.notice.orEmpty().contains("CONVERSATION_CREATE_NO_RESULT"),
+        )
+    }
+
+    @Test
+    fun aStreamedReplyEndsTheWaitWhenItsCompletionArrives() = runWorkbench {
+        // A streaming host publishes one reply as a delta and then a completion,
+        // both under the reply's own id; the second frame is the turn ending.
+        val repository = FakeRepository()
+        val controller = controller(repository, watchdogEnabled = true)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceTimeBy(1L)
+
+        repository.events.emit(assistantReply(state = "STREAMING", messageId = "msg_streaming"))
+        advanceTimeBy(1L)
+        assertTrue("流式分片本身不代表本轮结束", controller.state.value.creatingThread)
+
+        repository.events.emit(
+            assistantReply(state = "CONFIRMED", messageId = "msg_streaming", timestamp = 3L),
+        )
+        advanceTimeBy(defaultGraceMillis + 1L)
+
+        assertFalse("完成帧到达后等待必须结束", controller.state.value.creatingThread)
+        assertEquals(SOURCE_ID, controller.state.value.activeThreadId)
+        assertTrue(
+            controller.state.value.notice.orEmpty().contains("CONVERSATION_CREATE_NO_RESULT"),
+        )
     }
 
     @Test

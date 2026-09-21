@@ -2140,6 +2140,7 @@ class ConversationPort:
                     created_at, attachment_ids_json, state
                 ) VALUES (?, ?, ?, 'assistant', ?, ?, '[]', 'CONFIRMED')
                 ON CONFLICT(message_id) DO UPDATE SET text = excluded.text
+                WHERE messages.sender = 'assistant'
                 """,
                 (message_id, conversation_id, message_id, text, iso_millis(current)),
             )

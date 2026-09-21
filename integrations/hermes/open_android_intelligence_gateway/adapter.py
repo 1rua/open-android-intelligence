@@ -799,9 +799,14 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="ACCOUNT_NOT_CONFIGURED", retryable=False)
         try:
             now_iso = iso_millis()
-            named = reply_to
-            if named is None and isinstance(metadata, dict):
-                named = metadata.get("messageId") or metadata.get("message_id")
+            # `reply_to` names the message being answered, not this one: using it
+            # as our own id would overwrite the user's row. Only an id the host
+            # explicitly hands over as *this* message's is honoured.
+            named: Optional[str] = None
+            if isinstance(metadata, dict):
+                candidate = metadata.get("messageId") or metadata.get("message_id")
+                if isinstance(candidate, str) and candidate:
+                    named = candidate
             message_id = self._published_reply_id(chat_id, content, named)
             if isinstance(metadata, dict) and metadata.get("expect_edits"):
                 await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)

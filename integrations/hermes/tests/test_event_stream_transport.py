@@ -328,7 +328,7 @@ def test_a_committed_core_event_reaches_the_live_stream(tmp_path):
                     # session: the command entry decides that a conversation exists,
                     # the host decides which session owns it.
                     created = payload["conversationId"]
-                    binding = await _await_binding(core, created)
+                    binding = await _await_agent_session_binding(core, created)
                     assert binding is not None
                     assert binding["createdVia"] == "new-command"
                     assert binding["agentSessionId"] == store.sessions[created]
@@ -348,15 +348,21 @@ def _binding(core, conversation_id: str):
         account.close()
 
 
-async def _await_binding(core, conversation_id: str, timeout: float = 5.0):
-    """The binding is written off the delivery path; wait instead of racing it."""
+async def _await_agent_session_binding(core, conversation_id: str, timeout: float = 5.0):
+    """Wait for the host's session id, not just for the row.
+
+    The command entry records the row inside its own transaction; the adapter
+    attaches the host's session id from a background task afterwards. Waiting for
+    the row alone would let a test read the state between the two and call a
+    correct binding empty.
+    """
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         binding = _binding(core, conversation_id)
-        if binding is not None:
+        if binding is not None and binding["agentSessionId"]:
             return binding
         await asyncio.sleep(0.05)
-    return None
+    return _binding(core, conversation_id)
 
 
 def test_committed_events_for_another_account_stay_off_this_stream(tmp_path):
