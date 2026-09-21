@@ -34,8 +34,19 @@ fun FloatingConversationPanel(
         AssistantSurface(expanded, { expanded = it }, onClose, { explainSelection = true }) {
             Text(state.activeThreadTitle.ifBlank { "浮动对话" }, style = MaterialTheme.typography.titleMedium)
             val last = (state.timeline as? Loadable.Ready)?.value?.takeLast(1).orEmpty()
-            if (last.isNotEmpty()) MessageTimeline(last)
-            else Text("与当前 Gateway 继续对话", style = MaterialTheme.typography.bodyMedium)
+            if (last.isNotEmpty()) {
+                // The panel shows the newest row, which is often an approval
+                // card. Its buttons must reach the same decision path as the full
+                // screen: a card whose press goes nowhere is a dead control, and
+                // the command behind it stays blocked.
+                val approvalId = last.last().approval?.request?.approvalId?.value
+                MessageTimeline(
+                    entries = last,
+                    onDecide = { choice -> approvalId?.let { controller.decideApproval(it, choice) } },
+                )
+            } else {
+                Text("与当前 Gateway 继续对话", style = MaterialTheme.typography.bodyMedium)
+            }
             val isThinking = (state.generation == GenerationState.QUEUED ||
                 state.generation == GenerationState.RUNNING) &&
                 last.none { !it.isUser && it.isStreaming }

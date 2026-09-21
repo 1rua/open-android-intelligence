@@ -35,8 +35,6 @@ class GatewayConversationRepository(
     private val decoder: GatewayEventDecoder = GatewayEventDecoder,
     /** Where the transport reports whether the reply channel is actually alive. */
     private val streamStatus: com.openandroidintelligence.gateway.events.EventStreamStatusSink? = null,
-    /** The thread cancellation and event scope act on; owned by the screen holder. */
-    private val activeConversationId: () -> String? = { null },
     /**
      * The approval decision endpoint, when this Gateway negotiated §7.2 cards.
      *
@@ -45,6 +43,8 @@ class GatewayConversationRepository(
      * then leave the command blocked.
      */
     private val approvals: com.openandroidintelligence.gateway.approvals.ApprovalClient? = null,
+    /** The thread cancellation and event scope act on; owned by the screen holder. */
+    private val activeConversationId: () -> String? = { null },
 ) : ConversationRepository,
     com.openandroidintelligence.conversation.ports.GenerationTracker,
     com.openandroidintelligence.conversation.model.StreamHealthSource {
@@ -277,6 +277,14 @@ class GatewayConversationRepository(
                 }
             },
             errorCode = result.errorCode,
+            // `timeout` and `withdrawn` are outcomes the Gateway owns, not tiers
+            // a phone may press: mapping them onto a choice would invent a press
+            // that never happened.
+            settledOutcome = when (result.rawDecision) {
+                "timeout" -> com.openandroidintelligence.conversation.model.ApprovalOutcome.TIMED_OUT
+                "withdrawn" -> com.openandroidintelligence.conversation.model.ApprovalOutcome.WITHDRAWN
+                else -> null
+            },
         )
     }
 

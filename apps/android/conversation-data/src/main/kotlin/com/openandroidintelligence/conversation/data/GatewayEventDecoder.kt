@@ -169,6 +169,11 @@ object GatewayEventDecoder {
         val requestedAt = JsonFields.long(payload, "requestedAt")?.takeIf { it > 0L }
             ?: occurredAt.takeIf { it > 0L }
             ?: System.currentTimeMillis()
+        // The Gateway's own deadline wins when it sends one: a phone counting to
+        // its own arithmetic could grey the card out at a different moment than
+        // the Gateway stops accepting an answer.
+        val expiresAt = JsonFields.long(payload, "expiresAt")?.takeIf { it > 0L }
+            ?: (requestedAt + timeoutSeconds * 1_000L)
         return VerifiedConversationEvent.ApprovalRequested(
             eventId = eventId,
             occurredAt = occurredAt,
@@ -181,6 +186,7 @@ object GatewayEventDecoder {
                 options = options,
                 timeoutSeconds = timeoutSeconds,
                 requestedAt = requestedAt,
+                expiresAt = expiresAt,
             ),
             conversationId = conversationIdOf(payload, body),
         )

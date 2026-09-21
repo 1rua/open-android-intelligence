@@ -141,15 +141,16 @@ class ApprovalStateMachineTest {
 
         val row = cardRow(controller)
         assertNotNull(row, "审批必须作为一行出现在会话里")
-        val card = row.approval
-        assertTrue(card is ApprovalCardState.Waiting)
-        assertEquals("python3 -c \"print(1)\"", card.request.command)
-        assertEquals("内联解释器执行", card.request.reason)
-        assertEquals(REQUESTED_AT + TIMEOUT_SECONDS * 1_000L, card.request.expiresAt)
+        val card = row!!.approval
+        assertTrue(card is ApprovalCardState.Waiting, "审批卡片必须先处于等待态：$card")
+        val waiting = card as ApprovalCardState.Waiting
+        assertEquals("python3 -c \"print(1)\"", waiting.request.command)
+        assertEquals("内联解释器执行", waiting.request.reason)
+        assertEquals(REQUESTED_AT + TIMEOUT_SECONDS * 1_000L, waiting.request.expiresAt)
         // Only the tiers the Gateway offered may be drawn.
         assertEquals(
             listOf(ApprovalChoice.ONCE, ApprovalChoice.ALWAYS, ApprovalChoice.DENY),
-            card.request.options.map { it.choice },
+            waiting.request.options.map { it.choice },
         )
         assertEquals("approval_$APPROVAL_ID", row.key)
     }
@@ -165,8 +166,9 @@ class ApprovalStateMachineTest {
         controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
         advanceUntilIdle()
 
-        val submitting = cardRow(controller)?.approval
-        assertTrue(submitting is ApprovalCardState.Submitting, "按下后必须立刻进入受理态：$submitting")
+        val pressed = cardRow(controller)!!.approval
+        assertTrue(pressed is ApprovalCardState.Submitting, "按下后必须立刻进入受理态：$pressed")
+        val submitting = pressed as ApprovalCardState.Submitting
         assertEquals(ApprovalChoice.ONCE, submitting.choice)
         assertFalse("受理态不是结果，不得显示为已允许", submitting.isSettled)
         assertEquals(listOf(APPROVAL_ID to ApprovalChoice.ONCE), repository.decisions)
@@ -179,8 +181,9 @@ class ApprovalStateMachineTest {
         repository.events.emit(resolved(outcome = ApprovalOutcome.ALLOWED_ONCE))
         advanceUntilIdle()
 
-        val settled = cardRow(controller)?.approval
-        assertTrue(settled is ApprovalCardState.Resolved)
+        val answered = cardRow(controller)!!.approval
+        assertTrue(answered is ApprovalCardState.Resolved, "网关的事件才能落定卡片：$answered")
+        val settled = answered as ApprovalCardState.Resolved
         assertEquals(ApprovalOutcome.ALLOWED_ONCE, settled.outcome)
         assertEquals(ApprovalChoice.ONCE, settled.settledChoice)
     }
@@ -196,8 +199,8 @@ class ApprovalStateMachineTest {
         controller.decideApproval(APPROVAL_ID, ApprovalChoice.DENY)
         advanceUntilIdle()
 
-        val card = cardRow(controller)?.approval
-        assertTrue(card is ApprovalCardState.Waiting, "失败的提交必须退回可重试的等待态：$card")
+        val returned = cardRow(controller)!!.approval
+        assertTrue(returned is ApprovalCardState.Waiting, "失败的提交必须退回可重试的等待态：$returned")
         assertTrue(
             controller.state.value.notice.orEmpty().contains(ApprovalNotices.FAILED),
             "失败必须如实提示：${controller.state.value.notice}",
@@ -244,9 +247,9 @@ class ApprovalStateMachineTest {
         repository.events.emit(requested(eventId = "evt_requested_replay"))
         advanceUntilIdle()
 
-        val card = cardRow(controller)?.approval
-        assertTrue(card is ApprovalCardState.Resolved, "重连重放不得让已落定的卡片复活：$card")
-        assertEquals(ApprovalOutcome.DENIED, card.outcome)
+        val replayed = cardRow(controller)!!.approval
+        assertTrue(replayed is ApprovalCardState.Resolved, "重连重放不得让已落定的卡片复活：$replayed")
+        assertEquals(ApprovalOutcome.DENIED, (replayed as ApprovalCardState.Resolved).outcome)
     }
 
     @Test
@@ -266,11 +269,12 @@ class ApprovalStateMachineTest {
 
         val card = cardRow(controller)?.approval
         assertNotNull(card, "切回会话必须还是同一张卡片")
-        assertEquals(APPROVAL_ID, card.request.approvalId.value)
+        val restored = card!!
+        assertEquals(APPROVAL_ID, restored.request.approvalId.value)
         // The countdown is derived from the Gateway's own timestamps, so it does
         // not restart when the row is drawn again.
-        assertEquals(REQUESTED_AT, card.request.requestedAt)
-        assertEquals(REQUESTED_AT + TIMEOUT_SECONDS * 1_000L, card.request.expiresAt)
+        assertEquals(REQUESTED_AT, restored.request.requestedAt)
+        assertEquals(REQUESTED_AT + TIMEOUT_SECONDS * 1_000L, restored.request.expiresAt)
     }
 
     @Test
@@ -293,14 +297,17 @@ class ApprovalStateMachineTest {
             controller.state.value.notice.orEmpty().contains(ApprovalNotices.EXPIRED),
             "超时必须如实提示：${controller.state.value.notice}",
         )
-        assertTrue(cardRow(controller)?.approval is ApprovalCardState.Waiting)
+        assertTrue(
+            cardRow(controller)?.approval is ApprovalCardState.Waiting,
+            "本地倒计时不得把卡片写成终态，只有网关的超时事件可以",
+        )
 
         // The Gateway's own timeout is what settles it.
         repository.events.emit(resolved(outcome = ApprovalOutcome.TIMED_OUT))
         advanceUntilIdle()
-        val card = cardRow(controller)?.approval
-        assertTrue(card is ApprovalCardState.Resolved)
-        assertEquals(ApprovalOutcome.TIMED_OUT, card.outcome)
+        val timedOut = cardRow(controller)!!.approval
+        assertTrue(timedOut is ApprovalCardState.Resolved, "网关的超时事件必须落定卡片：$timedOut")
+        assertEquals(ApprovalOutcome.TIMED_OUT, (timedOut as ApprovalCardState.Resolved).outcome)
     }
 
     @Test
@@ -317,9 +324,9 @@ class ApprovalStateMachineTest {
         controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
         advanceUntilIdle()
 
-        val card = cardRow(controller)?.approval
-        assertTrue(card is ApprovalCardState.Resolved, "他处已决的卡片必须显示 Gateway 记录的结果：$card")
-        assertEquals(ApprovalOutcome.DENIED, card.outcome)
+        val answered = cardRow(controller)!!.approval
+        assertTrue(answered is ApprovalCardState.Resolved, "他处已决的卡片必须显示 Gateway 记录的结果：$answered")
+        assertEquals(ApprovalOutcome.DENIED, (answered as ApprovalCardState.Resolved).outcome)
     }
 
     @Test
@@ -333,6 +340,10 @@ class ApprovalStateMachineTest {
         controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
         advanceUntilIdle()
 
+        assertNull(
+            cardRow(controller),
+            "不支持卡片的网关不得画出卡片：一张按钮点不动的卡片等于伪造了一个不存在的能力",
+        )
         assertTrue(repository.decisions.isEmpty(), "没有决策端点的 Gateway 不得被假装提交")
         assertTrue(
             controller.state.value.notice.orEmpty().contains(ApprovalNotices.UNSUPPORTED),
@@ -341,11 +352,78 @@ class ApprovalStateMachineTest {
         assertFalse(controller.state.value.approvalCardsSupported)
     }
 
+    @Test
+    fun anApprovalTheGatewayDoesNotKnowIsNotClaimedAsWithdrawn() = runWorkbench {
+        val repository = FakeRepository().apply { submissionOutcome = ApprovalSubmissionOutcome.NOT_FOUND }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested())
+        advanceUntilIdle()
+
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+
+        val answered = cardRow(controller)!!.approval
+        assertTrue(answered is ApprovalCardState.Resolved, "无论如何这张卡片不能继续可点：$answered")
+        assertEquals(
+            "网关不认识这个审批时，命令的下场是本机未知的，不得替它宣称已撤回",
+            ApprovalOutcome.UNKNOWN,
+            (answered as ApprovalCardState.Resolved).outcome,
+        )
+    }
+
+    @Test
+    fun aSettledVerdictTheGatewayNamesIsShownInsteadOfUnknown() = runWorkbench {
+        val repository = FakeRepository().apply {
+            submissionOutcome = ApprovalSubmissionOutcome.ALREADY_RESOLVED
+            recordedChoice = null
+            recordedOutcome = ApprovalOutcome.TIMED_OUT
+        }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested())
+        advanceUntilIdle()
+
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+
+        val answered = cardRow(controller)!!.approval
+        assertTrue(answered is ApprovalCardState.Resolved, "网关给出的终态必须直接落到卡片上：$answered")
+        assertEquals(ApprovalOutcome.TIMED_OUT, (answered as ApprovalCardState.Resolved).outcome)
+    }
+
+    @Test
+    fun anUnknownVerdictIsCorrectedByTheGatewaysOwnEvent() = runWorkbench {
+        val repository = FakeRepository().apply {
+            submissionOutcome = ApprovalSubmissionOutcome.ALREADY_RESOLVED
+            recordedChoice = null
+        }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested())
+        advanceUntilIdle()
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+        assertEquals(ApprovalOutcome.UNKNOWN, (cardRow(controller)?.approval as ApprovalCardState.Resolved).outcome)
+
+        repository.events.emit(resolved(outcome = ApprovalOutcome.TIMED_OUT))
+        advanceUntilIdle()
+
+        assertEquals(
+            "「未知」不是终态：网关随后给出的事实必须能落到卡片上",
+            ApprovalOutcome.TIMED_OUT,
+            (cardRow(controller)?.approval as ApprovalCardState.Resolved).outcome,
+        )
+    }
+
     private class FakeRepository : ConversationRepository {
         val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 16)
         val decisions = mutableListOf<Pair<String, ApprovalChoice>>()
         var submissionOutcome: ApprovalSubmissionOutcome = ApprovalSubmissionOutcome.SUBMITTED
         var recordedChoice: ApprovalChoice? = ApprovalChoice.ONCE
+
+        /** The terminal verdict the Gateway already had, when it names one. */
+        var recordedOutcome: ApprovalOutcome? = null
 
         override suspend fun listConversations(
             scope: ConversationScope,
@@ -394,6 +472,7 @@ class ApprovalStateMachineTest {
             return ApprovalSubmissionResult(
                 outcome = submissionOutcome,
                 choice = if (submissionOutcome == ApprovalSubmissionOutcome.SUBMITTED) choice else recordedChoice,
+                settledOutcome = recordedOutcome,
             )
         }
     }

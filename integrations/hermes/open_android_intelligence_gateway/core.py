@@ -67,6 +67,9 @@ APPROVAL_CHOICES = ("once", "session", "always", "deny")
 # nobody could be given the chance to answer.
 APPROVAL_TERMINAL_DECISIONS = ("timeout", "withdrawn")
 APPROVAL_DECISIONS = APPROVAL_CHOICES + APPROVAL_TERMINAL_DECISIONS
+# The shared fixture fixes the option list at 1..4 entries; a host that offered
+# more would publish a payload the phone cannot validate.
+APPROVAL_MAX_OPTIONS = 4
 APPROVAL_EVENT_REQUESTED = "conversation.approval.requested"
 APPROVAL_EVENT_RESOLVED = "conversation.approval.resolved"
 # Only a fallback for a payload that omits it: the host's own `approvals.timeout`
@@ -3461,7 +3464,10 @@ class GatewayCore:
                         "approvalId": approval["approvalId"],
                         "conversationId": approval["conversationId"],
                         "decision": "timeout",
-                        "decidedAt": _epoch_millis(current),
+                        # The window's own end, not the moment someone happened
+                        # to look: a lazy sweep must not date the timeout to
+                        # whenever the phone reconnected.
+                        "decidedAt": int(approval.get("expiresAt") or 0),
                     }, current,
                 )
                 account.audit.append(
@@ -3501,17 +3507,20 @@ class GatewayCore:
         if not resolved:
             # The Agent is no longer waiting for this approval, so no decision
             # can release it. Recording the press as `allowed` would claim a
-            # command ran that nobody is going to run.
+            # command ran that nobody is going to run. The settlement and its
+            # event share one transaction, so no interruption can leave the
+            # approval terminal without the event that says why.
             self._settle_expired_approvals(account, now)
-            if account.approvals.settle(approval_id, "withdrawn", now=now):
-                account.events.append(
-                    APPROVAL_EVENT_RESOLVED, context["correlationId"], {
-                        "approvalId": approval_id,
-                        "conversationId": approval.get("conversationId"),
-                        "decision": "withdrawn",
-                        "decidedAt": _epoch_millis(now),
-                    }, now,
-                )
+            with account.store.transaction():
+                if account.approvals.settle(approval_id, "withdrawn", now=now):
+                    account.events.append(
+                        APPROVAL_EVENT_RESOLVED, context["correlationId"], {
+                            "approvalId": approval_id,
+                            "conversationId": approval.get("conversationId"),
+                            "decision": "withdrawn",
+                            "decidedAt": _epoch_millis(now),
+                        }, now,
+                    )
             raise GatewayError("APPROVAL_EXPIRED", {"approvalId": approval_id, "decision": "withdrawn"})
         with account.store.transaction():
             account.approvals.settle(approval_id, decision, device_id=context["deviceId"], now=now)

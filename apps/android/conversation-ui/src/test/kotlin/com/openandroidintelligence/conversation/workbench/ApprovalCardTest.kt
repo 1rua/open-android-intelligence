@@ -75,6 +75,9 @@ class ApprovalCardTest {
     @Test
     fun theCountdownBadgeCountsDownFromTheGatewayWindow() {
         virtualNow = REQUESTED_AT
+        // The clock is driven by hand so "one second later" is exactly one tick
+        // of the card's own timer, never a race with the test's own idle waiting.
+        compose.mainClock.autoAdvance = false
         setCard(ApprovalCardState.Waiting(request()))
 
         compose.onNodeWithTag(ApprovalCardTags.COUNTDOWN).assertIsDisplayed()
@@ -141,6 +144,7 @@ class ApprovalCardTest {
     @Test
     fun anExpiredWindowGreysEveryButtonAndSaysSo() {
         virtualNow = REQUESTED_AT
+        compose.mainClock.autoAdvance = false
         setCard(ApprovalCardState.Waiting(request()))
         compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ONCE)).assertIsEnabled()
 
@@ -151,6 +155,20 @@ class ApprovalCardTest {
         compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.DENY)).assertIsNotEnabled()
         compose.onNodeWithText("已超时").assertIsDisplayed()
         compose.onNodeWithText("审批已超时，命令不会再执行").assertIsDisplayed()
+    }
+
+    @Test
+    fun aPressInFlightPastTheWindowSaysTheWindowIsOver() {
+        virtualNow = REQUESTED_AT + TIMEOUT_SECONDS * 1_000L + 1L
+        setCard(
+            ApprovalCardState.Submitting(
+                request = request(),
+                choice = ApprovalChoice.ONCE,
+            ),
+        )
+
+        compose.onNodeWithText("审批已超时，命令不会再执行").assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.DENY)).assertIsNotEnabled()
     }
 
     @Test
@@ -172,12 +190,16 @@ class ApprovalCardTest {
 
     @Test
     fun aGatewayWithoutTheCapabilityGetsAHintInsteadOfACard() {
+        var dismissed = false
         compose.setContent {
-            MaterialTheme { ApprovalUnsupportedHint() }
+            MaterialTheme { ApprovalUnsupportedHint(onDismiss = { dismissed = true }) }
         }
 
         compose.onNodeWithTag(ApprovalCardTags.UNSUPPORTED_HINT).assertIsDisplayed()
         compose.onNodeWithText("该网关不支持审批卡片，请用 /approve 文本命令回复。").assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.UNSUPPORTED_HINT_DISMISS).performClick()
+
+        kotlin.test.assertTrue(dismissed, "提示条必须可以被读过的用户收起")
     }
 
     private companion object {

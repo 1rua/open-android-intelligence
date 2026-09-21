@@ -32,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,6 +66,7 @@ object ApprovalCardTags {
     const val COUNTDOWN = "approval_countdown"
     const val OUTCOME = "approval_outcome"
     const val UNSUPPORTED_HINT = "approval_unsupported_hint"
+    const val UNSUPPORTED_HINT_DISMISS = "approval_unsupported_hint_dismiss"
     fun button(choice: ApprovalChoice): String = "approval_button_${choice.name}"
 }
 
@@ -165,12 +167,22 @@ fun ApprovalCard(
                         }
                     }
 
-                    is ApprovalCardState.Submitting -> OptionGroup(
-                        options = request.options,
-                        submitting = current.choice,
-                        enabled = false,
-                        onDecide = {},
-                    )
+                    is ApprovalCardState.Submitting -> Column(
+                        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                    ) {
+                        // The press is with the Gateway, which may take as long as
+                        // the link does. Saying the window is over keeps a spinner
+                        // from reading as "still waiting" when it is not.
+                        if (countdown.expired) {
+                            OutcomeRow(ApprovalOutcome.TIMED_OUT, awaitingGateway = true)
+                        }
+                        OptionGroup(
+                            options = request.options,
+                            submitting = current.choice,
+                            enabled = false,
+                            onDecide = {},
+                        )
+                    }
 
                     is ApprovalCardState.Resolved -> OutcomeRow(current.outcome, awaitingGateway = false)
                 }
@@ -400,7 +412,7 @@ private fun OutcomeRow(outcome: ApprovalOutcome, awaitingGateway: Boolean) {
  * stays the honest way to reply.
  */
 @Composable
-fun ApprovalUnsupportedHint(modifier: Modifier = Modifier) {
+fun ApprovalUnsupportedHint(onDismiss: (() -> Unit)? = null, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -411,7 +423,7 @@ fun ApprovalUnsupportedHint(modifier: Modifier = Modifier) {
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
+            modifier = Modifier.padding(start = Dimensions.SpaceSmall, top = Dimensions.SpaceTiny, bottom = Dimensions.SpaceTiny),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
         ) {
@@ -423,7 +435,16 @@ fun ApprovalUnsupportedHint(modifier: Modifier = Modifier) {
             Text(
                 text = "该网关不支持审批卡片，请用 /approve 文本命令回复。",
                 style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
             )
+            if (onDismiss != null) {
+                // A permanent banner about a Gateway that simply has no such
+                // feature would be noise; the user dismisses it once and the
+                // convention is theirs from then on.
+                TextButton(onClick = onDismiss, modifier = Modifier.testTag(ApprovalCardTags.UNSUPPORTED_HINT_DISMISS)) {
+                    Text("知道了", style = MaterialTheme.typography.labelLarge)
+                }
+            }
         }
     }
 }

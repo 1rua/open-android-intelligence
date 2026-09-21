@@ -75,6 +75,9 @@ fun WorkbenchScreen(
     var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameDraft by remember { mutableStateOf("") }
+    // The "no approval cards here" hint explains a Gateway without the feature;
+    // once read, it would only be noise on every screen for the whole session.
+    var approvalHintDismissed by remember { mutableStateOf(false) }
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
     val isThinking = (state.generation == GenerationState.QUEUED ||
@@ -342,8 +345,8 @@ fun WorkbenchScreen(
                                 // Honest degradation: a Gateway that cannot take
                                 // a decision gets no card at all, and the user is
                                 // told the text command is the way to answer.
-                                if (!state.approvalCardsSupported) {
-                                    ApprovalUnsupportedHint()
+                                if (!state.approvalCardsSupported && !approvalHintDismissed) {
+                                    ApprovalUnsupportedHint(onDismiss = { approvalHintDismissed = true })
                                 }
                                 ComposerBar(
                                     draft = state.draft,

@@ -46,10 +46,19 @@ enum class ApprovalDecisionOutcome {
 
 data class ApprovalDecisionResult(
     val outcome: ApprovalDecisionOutcome,
-    /** The decision the Gateway recorded, when it answered with one. */
+    /** The tier the Gateway recorded, when it recorded one of the four tiers. */
     val decision: ApprovalDecision?,
     val httpStatus: Int,
     val errorCode: String? = null,
+    /**
+     * The decision exactly as the Gateway named it, including the two terminal
+     * outcomes a client can never submit (`timeout`, `withdrawn`).
+     *
+     * Kept verbatim because a settled approval may have ended in a tier the
+     * phone did not press: translating it into "unknown" would hide a fact the
+     * Gateway stated plainly.
+     */
+    val rawDecision: String? = null,
 ) {
     val isSettled: Boolean get() = outcome == ApprovalDecisionOutcome.SUBMITTED ||
         outcome == ApprovalDecisionOutcome.ALREADY_RESOLVED ||
@@ -105,42 +114,35 @@ class ApprovalClient(private val http: GatewayHttpClient) {
                 httpStatus = 404,
                 errorCode = errorCodeOf(response),
             )
-            response.status == 409 -> when (errorCodeOf(response)) {
-                "APPROVAL_ALREADY_RESOLVED" -> ApprovalDecisionResult(
-                    outcome = ApprovalDecisionOutcome.ALREADY_RESOLVED,
-                    // The Gateway names the decision it already recorded, so the
-                    // card can show what won instead of leaving the user guessing.
-                    decision = ApprovalDecision.of(
-                        JsonFields.string(
-                            JsonFields.obj(
-                                JsonFields.field(
-                                    JsonFields.obj(JsonFields.field(bodyOf(response), "error")),
-                                    "details",
-                                ),
-                            ),
-                            "decision",
-                        ) ?: JsonFields.string(
-                            JsonFields.obj(JsonFields.field(bodyOf(response), "error")),
-                            "decision",
-                        ),
-                    ),
-                    httpStatus = 409,
-                    errorCode = "APPROVAL_ALREADY_RESOLVED",
-                )
-                "APPROVAL_EXPIRED" -> ApprovalDecisionResult(
-                    outcome = ApprovalDecisionOutcome.EXPIRED,
-                    decision = null,
-                    httpStatus = 409,
-                    errorCode = "APPROVAL_EXPIRED",
-                )
-                else -> ApprovalDecisionResult(
-                    outcome = ApprovalDecisionOutcome.FAILED,
-                    decision = null,
-                    httpStatus = 409,
-                    errorCode = errorCodeOf(response),
-                )
+            response.status == 409 -> {
+                val code = errorCodeOf(response)
+                // The Gateway names the decision it already recorded, so the card
+                // can show what won instead of leaving the user guessing.
+                val recorded = recordedDecisionOf(response)
+                when (code) {
+                    "APPROVAL_ALREADY_RESOLVED" -> ApprovalDecisionResult(
+                        outcome = ApprovalDecisionOutcome.ALREADY_RESOLVED,
+                        decision = ApprovalDecision.of(recorded),
+                        httpStatus = 409,
+                        errorCode = "APPROVAL_ALREADY_RESOLVED",
+                        rawDecision = recorded,
+                    )
+                    "APPROVAL_EXPIRED" -> ApprovalDecisionResult(
+                        outcome = ApprovalDecisionOutcome.EXPIRED,
+                        decision = ApprovalDecision.of(recorded),
+                        httpStatus = 409,
+                        errorCode = "APPROVAL_EXPIRED",
+                        rawDecision = recorded,
+                    )
+                    else -> ApprovalDecisionResult(
+                        outcome = ApprovalDecisionOutcome.FAILED,
+                        decision = null,
+                        httpStatus = 409,
+                        errorCode = code,
+                    )
+                }
             }
-            response.status == 400, response.status == 406 -> ApprovalDecisionResult(
+            response.status == 400 || response.status == 406 -> ApprovalDecisionResult(
                 outcome = ApprovalDecisionOutcome.UNSUPPORTED,
                 decision = null,
                 httpStatus = response.status,
@@ -180,4 +182,17 @@ class ApprovalClient(private val http: GatewayHttpClient) {
             JsonFields.obj(JsonFields.field(bodyOf(response), "error")),
             "code",
         )
+
+    /**
+     * The decision the Gateway says it already recorded.
+     *
+     * It lives in `error.details.decision`; the top-level `error.decision` is
+     * accepted too because the contract only fixes the field name, not the depth
+     * a host chooses for its own error details.
+     */
+    private fun recordedDecisionOf(response: GatewayResponse): String? {
+        val error = JsonFields.obj(JsonFields.field(bodyOf(response), "error"))
+        val details = JsonFields.obj(JsonFields.field(error, "details"))
+        return JsonFields.string(details, "decision") ?: JsonFields.string(error, "decision")
+    }
 }

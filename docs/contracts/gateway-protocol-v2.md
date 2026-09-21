@@ -540,7 +540,8 @@ POST /approvals/{approvalId}/decisions
 - `options` 由 Gateway 下发，客户端**不得**硬编码档位或自行补齐缺省档位。`choice` 闭集为 `once | session | always | deny`；宿主判定为「仅本次可决」（例如 owner 强制拒绝覆盖）时可以只下发其中一部分，客户端必须按下发的集合渲染，没有下发的档位不得出现在界面上。
 - `style` 闭集为 `primary | secondary | danger | neutral`，只是呈现提示；`label` 缺省时客户端按 `choice` 映射到本地文案。
 - `requestedAt`、`expiresAt`、`decidedAt` 是 epoch 毫秒整数。`timeoutSeconds` 缺省值 300 只是客户端兜底，真正生效的是 Gateway 下发的 `timeoutSeconds`。
-- **超时由 Gateway 权威**：倒计时归零而无人决策时，Gateway 必须追加 `conversation.approval.resolved`（`decision = "timeout"`）。客户端可以基于 `expiresAt` 提前把卡片画成「已超时」并禁用按钮，但终态只能由该事件落定，客户端不得本地生成权威结论。无人可答（例如已连接设备都无法渲染卡片）时 Gateway 必须以 `withdrawn` 撤销，不得让卡片悬空等待。
+- **超时由 Gateway 权威**：审批窗口结束而无人决策时，Gateway 必须把该审批结算为 `timeout` 并追加 `conversation.approval.resolved`（`decision = "timeout"`），其中 `decidedAt` 取**窗口结束时刻**而不是结算发生的时刻。结算允许与客户端动作同时发生（客户端订阅事件流、读取事件或提交决策时立即结算），但结算结果必须落库并在任何后续读取中可见——终态不得只存在于客户端的倒计时里。客户端可以基于 `expiresAt` 提前把卡片画成「已超时」并禁用按钮，但终态只能由该事件落定，客户端不得本地生成权威结论。
+- **无法再被回答的审批必须撤销**：决策到达时宿主已不再等待该审批（命令已由其它路径解除阻塞、宿主重启后等待已消失、会话已重置）时，Gateway 必须在同一事务内把该审批结算为 `withdrawn` 并追加事件，不得把用户按下的档位记成已允许。客户端对 `withdrawn` 必须如实显示「命令没有执行」。
 - 决策成功后 Gateway 追加：
 
 ```json

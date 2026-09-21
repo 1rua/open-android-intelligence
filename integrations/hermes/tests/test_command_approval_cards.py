@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -101,7 +102,23 @@ def _decide(core, approval_id: str, decision: str, request_id: str = "req_decisi
     })
 
 
-def _publish_card(core, conversation_id: str, actions=None, metadata=None, timeout: int = 300) -> str:
+def _expire(approval_id: str, core) -> None:
+    """Move one approval's window into the past.
+
+    A fixture shortcut, not a stub: the settlement sweep and its event still run
+    through the real code path, only the clock is pushed.
+    """
+    account = core.open_gateway_account(ACCOUNT_ID)
+    try:
+        account.store.database.execute(
+            "UPDATE approvals SET expires_at = ? WHERE approval_id = ?",
+            ("2020-01-01T00:00:00.000Z", approval_id),
+        )
+    finally:
+        account.close()
+
+
+def _publish_card(core, conversation_id: str, actions=None, metadata=None) -> str:
     adapter = _adapter(core)
     prompt = _Prompt(
         chat_id=conversation_id,
@@ -250,15 +267,8 @@ def test_an_approval_nobody_answered_settles_as_timeout(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     conversation_id = _seed_conversation(core)
     core.approval_resolver = lambda session_key, choice, request_id: 1
-    approval_id = _publish_card(core, conversation_id, timeout=1)
-    account = core.open_gateway_account(ACCOUNT_ID)
-    try:
-        account.store.database.execute(
-            "UPDATE approvals SET expires_at = ? WHERE approval_id = ?",
-            ("2020-01-01T00:00:00.000Z", approval_id),
-        )
-    finally:
-        account.close()
+    approval_id = _publish_card(core, conversation_id)
+    _expire(approval_id, core)
 
     response = _decide(core, approval_id, "once")
 
@@ -272,15 +282,8 @@ def test_a_timeout_is_settled_without_waiting_for_a_device_to_ask(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     conversation_id = _seed_conversation(core)
     core.approval_resolver = lambda session_key, choice, request_id: 1
-    approval_id = _publish_card(core, conversation_id, timeout=1)
-    account = core.open_gateway_account(ACCOUNT_ID)
-    try:
-        account.store.database.execute(
-            "UPDATE approvals SET expires_at = ? WHERE approval_id = ?",
-            ("2020-01-01T00:00:00.000Z", approval_id),
-        )
-    finally:
-        account.close()
+    approval_id = _publish_card(core, conversation_id)
+    _expire(approval_id, core)
 
     core.handle({
         "method": "GET",
@@ -309,6 +312,56 @@ def test_a_decision_the_host_is_no_longer_waiting_for_is_not_claimed_as_allowed(
     assert [event["payload"]["decision"] for event in resolved] == ["withdrawn"], (
         "宿主已不再等待时不得把按钮按下的档位记成已允许"
     )
+
+
+def test_the_decision_endpoint_carries_the_statuses_the_phone_maps(tmp_path):
+    """Android maps these statuses to `EXPIRED`/`ALREADY_RESOLVED`/`NOT_FOUND`."""
+    from open_android_intelligence_gateway.http import _status
+
+    core = create_gateway_core(storage_root=tmp_path)
+    exposure = create_gateway_exposure(
+        "host-route", core=core, host_version="1.0.0", host_api=TEST_HOST_API,
+    )
+    assert any(route.path == "/open-android-intelligence/v2/approvals/" for route in exposure.routes)
+
+    assert _status({"error": {"code": "APPROVAL_NOT_FOUND"}}) == 404
+    assert _status({"error": {"code": "APPROVAL_EXPIRED"}}) == 409
+    assert _status({"error": {"code": "APPROVAL_ALREADY_RESOLVED"}}) == 409
+    assert _status({"error": {"code": "APPROVAL_DECISION_INVALID"}}) == 400
+
+
+def test_a_timeout_is_dated_to_the_end_of_the_window_not_to_the_sweep(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    conversation_id = _seed_conversation(core)
+    core.approval_resolver = lambda session_key, choice, request_id: 1
+    approval_id = _publish_card(core, conversation_id)
+    _expire(approval_id, core)
+
+    _decide(core, approval_id, "once")
+
+    resolved = _events(core, "conversation.approval.resolved")[0]["payload"]
+    assert resolved["decision"] == "timeout"
+    assert resolved["decidedAt"] == int(
+        datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp() * 1000
+    )
+
+
+def test_duplicate_or_excess_tiers_are_normalised_to_the_contracts_shape(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    conversation_id = _seed_conversation(core)
+
+    _publish_card(core, conversation_id, actions=[
+        ("Allow Once", "once", "primary"),
+        ("Allow Once Again", "once", "primary"),
+        ("Session", "session", ""),
+        ("Always", "always", ""),
+        ("Deny", "deny", "danger"),
+        ("Unknown tier", "allow-always", ""),
+    ])
+
+    payload = _events(core, "conversation.approval.requested")[0]["payload"]
+    choices = [option["choice"] for option in payload["options"]]
+    assert choices == ["once", "session", "always", "deny"]
 
 
 def test_approval_cards_are_only_advertised_when_a_decision_can_reach_the_agent(tmp_path):

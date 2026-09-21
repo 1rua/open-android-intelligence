@@ -130,6 +130,25 @@ class ApprovalClientTest {
 
         assertEquals(ApprovalDecisionOutcome.EXPIRED, result.outcome)
         assertTrue(result.isSettled)
+        // `timeout` is not a tier a client may press, so it stays out of
+        // `decision` — but it is still what the Gateway recorded, verbatim.
+        assertNull(result.decision)
+        assertEquals("timeout", result.rawDecision)
+    }
+
+    @Test
+    fun aWithdrawnApprovalKeepsTheVerdictTheGatewayNamed() = runBlocking {
+        val transport = RecordingTransport().apply {
+            responseToReturn = json(
+                409,
+                """{"protocol":"2.0","error":{"code":"APPROVAL_EXPIRED","message":"expired","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"withdrawn"}}}""",
+            )
+        }
+
+        val result = client(transport).submitDecision("apr_1", ApprovalDecision.ONCE)
+
+        assertEquals(ApprovalDecisionOutcome.EXPIRED, result.outcome)
+        assertEquals("withdrawn", result.rawDecision)
     }
 
     @Test

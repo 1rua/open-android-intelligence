@@ -88,10 +88,15 @@ data class ApprovalRequest(
     val options: List<ApprovalOption>,
     val timeoutSeconds: Long,
     val requestedAt: Long,
+    /**
+     * When the Gateway stops counting.
+     *
+     * The Gateway's own `expiresAt` is authoritative when it sends one; the
+     * derived value only covers a payload that omits it, so the phone never
+     * counts down to a deadline the Gateway does not share.
+     */
+    val expiresAt: Long = requestedAt + timeoutSeconds.coerceAtLeast(0L) * 1_000L,
 ) {
-    /** When the Gateway stops counting. The Gateway's own clock still decides. */
-    val expiresAt: Long get() = requestedAt + timeoutSeconds.coerceAtLeast(0L) * 1_000L
-
     fun optionFor(choice: ApprovalChoice): ApprovalOption? = options.firstOrNull { it.choice == choice }
 }
 
@@ -116,4 +121,14 @@ data class ApprovalSubmissionResult(
     /** The tier the Gateway recorded, when it answered with one. */
     val choice: ApprovalChoice? = null,
     val errorCode: String? = null,
+    /**
+     * The terminal outcome the Gateway already recorded, when the press arrived
+     * after the approval was settled by [ApprovalOutcome.TIMED_OUT] or
+     * [ApprovalOutcome.WITHDRAWN].
+     *
+     * Those two are not tiers a client may submit, so they cannot be expressed
+     * as a [choice]; without this the card would be left reading "unknown" even
+     * though the Gateway told the phone exactly what happened.
+     */
+    val settledOutcome: ApprovalOutcome? = null,
 )

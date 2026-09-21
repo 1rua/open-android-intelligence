@@ -6,6 +6,7 @@ import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.gateway.events.SseParser
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -322,6 +323,23 @@ class GatewayEventDecoderTest {
             "未知档位不得被改写成看起来能点的按钮",
             GatewayEventDecoder.decode(events.first()),
         )
+    }
+
+    @Test
+    fun theGatewaysOwnDeadlineWinsOverLocallyDerivedArithmetic() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_apr_deadline",
+                event = "conversation.approval.requested",
+                data = """{"payload":{"approvalId":"apr_1","conversationId":"conv_1","command":"ls","reason":"只读","options":[{"choice":"once"}],"timeoutSeconds":300,"requestedAt":1780000000000,"expiresAt":1780000060000}}""",
+            ),
+        )
+        val request = (GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.ApprovalRequested).request
+        assertEquals(1780000060000L, request.expiresAt)
+        // 300s would have been a whole minute later: counting to it while the
+        // Gateway already refuses answers would offer a press that cannot land.
+        assertNotEquals(request.requestedAt + request.timeoutSeconds * 1_000L, request.expiresAt)
     }
 
     @Test

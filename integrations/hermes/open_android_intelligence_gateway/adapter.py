@@ -19,6 +19,7 @@ from .local_keys import master_key_unavailable_reason
 from .core import (
     APPROVAL_CHOICES,
     APPROVAL_DEFAULT_TIMEOUT_SECONDS,
+    APPROVAL_MAX_OPTIONS,
     NEW_CONVERSATION_COMMAND,
     AgentSessionBindings,
     VerifiedGatewayRequest,
@@ -1047,18 +1048,26 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
         The host decides which tiers exist: a smart deny offers only `once` and
         `deny`, so the phone must never invent a tier the host would refuse.
+
+        The list is normalised to the contract's shape — one entry per tier, at
+        most four — because a host that repeated a tier would otherwise publish a
+        payload the phone cannot validate and a card with two identical buttons.
         """
         options: list = []
+        seen: set = set()
         for action in getattr(prompt, "actions", ()) or ():
             values = list(action) + ["", "", ""]
             label, choice, style = str(values[0]), str(values[1]), str(values[2])
-            if choice not in APPROVAL_CHOICES:
+            if choice not in APPROVAL_CHOICES or choice in seen:
                 continue
+            seen.add(choice)
             options.append({
                 "choice": choice,
                 "style": self._approval_style(choice, style),
                 **({"label": label} if label else {}),
             })
+            if len(options) >= APPROVAL_MAX_OPTIONS:
+                break
         return options
 
     async def _send_exec_approval_prompt(self, prompt: Any) -> SendResult:

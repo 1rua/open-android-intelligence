@@ -197,7 +197,10 @@ class WorkbenchController(
         /** Off for a caller driving the controller with a virtual clock. */
         val enabled: Boolean = true,
     )
-    private val _state = MutableStateFlow(WorkbenchUiState())
+    // The capability is written in from the start: before the first update the
+    // screen would otherwise read the data class default and claim a Gateway
+    // supports cards that never negotiated them.
+    private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards))
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
 
     /** Server-mirrored messages for the active thread, by message id. */
@@ -728,6 +731,10 @@ class WorkbenchController(
     private fun rememberApprovalRequest(
         event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalRequested,
     ) {
+        // A Gateway that cannot take a decision gets no card at all: drawing one
+        // would put live buttons under a command whose answer has nowhere to go
+        // (contract §4 — never fake a card that cannot be submitted).
+        if (!supportsApprovalCards) return
         val existing = approvalCards[event.request.approvalId.value]
         if (existing != null) return
         approvalCards[event.request.approvalId.value] = ApprovalCardState.Waiting(event.request)
@@ -750,7 +757,11 @@ class WorkbenchController(
     ) {
         val key = event.approvalId.value
         val card = approvalCards[key] ?: return
-        if (card is ApprovalCardState.Resolved) return
+        if (card is ApprovalCardState.Resolved &&
+            card.outcome != com.openandroidintelligence.conversation.model.ApprovalOutcome.UNKNOWN
+        ) {
+            return
+        }
         approvalCards[key] = ApprovalCardState.Resolved(
             request = card.request,
             outcome = event.outcome,
@@ -828,21 +839,11 @@ class WorkbenchController(
                 return
             }
             com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.ALREADY_RESOLVED -> {
-                val recorded = result.choice
                 approvalCards[approvalId] = ApprovalCardState.Resolved(
                     request = card.request,
-                    outcome = when (recorded) {
-                        com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE ->
-                            com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ONCE
-                        com.openandroidintelligence.conversation.model.ApprovalChoice.SESSION ->
-                            com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_SESSION
-                        com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS ->
-                            com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ALWAYS
-                        com.openandroidintelligence.conversation.model.ApprovalChoice.DENY ->
-                            com.openandroidintelligence.conversation.model.ApprovalOutcome.DENIED
-                        null, com.openandroidintelligence.conversation.model.ApprovalChoice.UNKNOWN ->
-                            com.openandroidintelligence.conversation.model.ApprovalOutcome.UNKNOWN
-                    },
+                    // A settled verdict the Gateway named (`timeout`/`withdrawn`)
+                    // is shown as it is; only a tier becomes a tier outcome.
+                    outcome = result.settledOutcome ?: outcomeOfChoice(result.choice),
                     decidedAt = clock(),
                 )
                 reRenderApprovalRows()
@@ -850,18 +851,20 @@ class WorkbenchController(
             com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.EXPIRED -> {
                 approvalCards[approvalId] = ApprovalCardState.Resolved(
                     request = card.request,
-                    outcome = com.openandroidintelligence.conversation.model.ApprovalOutcome.TIMED_OUT,
+                    outcome = result.settledOutcome
+                        ?: com.openandroidintelligence.conversation.model.ApprovalOutcome.TIMED_OUT,
                     decidedAt = clock(),
                 )
                 reRenderApprovalRows()
             }
             com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.NOT_FOUND -> {
                 // The Gateway does not know this approval, so nothing can answer
-                // it any more. Leaving a live button would be a promise the
-                // Gateway cannot keep.
+                // it any more. What became of the command is unknown to this
+                // phone — claiming "withdrawn" would state that it did not run,
+                // which the Gateway never said.
                 approvalCards[approvalId] = ApprovalCardState.Resolved(
                     request = card.request,
-                    outcome = com.openandroidintelligence.conversation.model.ApprovalOutcome.WITHDRAWN,
+                    outcome = com.openandroidintelligence.conversation.model.ApprovalOutcome.UNKNOWN,
                     decidedAt = clock(),
                 )
                 reRenderApprovalRows()
@@ -878,6 +881,23 @@ class WorkbenchController(
             }
         }
     }
+
+    /** The outcome a recorded tier means; an absent tier stays unknown. */
+    private fun outcomeOfChoice(
+        choice: com.openandroidintelligence.conversation.model.ApprovalChoice?,
+    ): com.openandroidintelligence.conversation.model.ApprovalOutcome =
+        when (choice) {
+            com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE ->
+                com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ONCE
+            com.openandroidintelligence.conversation.model.ApprovalChoice.SESSION ->
+                com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_SESSION
+            com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS ->
+                com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ALWAYS
+            com.openandroidintelligence.conversation.model.ApprovalChoice.DENY ->
+                com.openandroidintelligence.conversation.model.ApprovalOutcome.DENIED
+            null, com.openandroidintelligence.conversation.model.ApprovalChoice.UNKNOWN ->
+                com.openandroidintelligence.conversation.model.ApprovalOutcome.UNKNOWN
+        }
 
     /** The rows the active thread's approval cards contribute, oldest first. */
     private fun approvalRowsForActiveThread(): List<TimelineEntry> {
