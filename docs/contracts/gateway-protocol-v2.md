@@ -576,6 +576,7 @@ V2 事件类型：
 
 - `conversation.message.delta`
 - `conversation.message.completed`
+- `conversation.command.result`
 - `conversation.title.updated`
 - `device.requested`
 - `device.request.cancel.requested`
@@ -844,7 +845,7 @@ gateway-contract/vectors/dispatched-schema-fixtures.json
 }
 ```
 
-每个 `catalogEntries` 元素只允许 `fixtureId`、完整 `GatewaySubschemaKey`（含 `schemaSha256`）和 `schema`；每个 `bindingSets` 元素只允许 `id`、`bindings`；每个 binding 只允许不含 digest 的 `GatewayLogicalSubschemaKey` 和单独的 `schemaSha256`。所有对象拒绝未知字段。format `1.0.0` registry 必须恰好包含下列四个 catalog entry、按下列顺序排列，并且恰好包含一个 `id = "gateway-core-fixtures-v1"` 的 binding set；该 binding set 的四个 binding 按同一顺序将 logical key 绑定到对应 digest。
+每个 `catalogEntries` 元素只允许 `fixtureId`、完整 `GatewaySubschemaKey`（含 `schemaSha256`）和 `schema`；每个 `bindingSets` 元素只允许 `id`、`bindings`；每个 binding 只允许不含 digest 的 `GatewayLogicalSubschemaKey` 和单独的 `schemaSha256`。所有对象拒绝未知字段。format `1.0.0` registry 必须恰好包含下列五个 catalog entry、按下列顺序排列，并且恰好包含一个 `id = "gateway-core-fixtures-v1"` 的 binding set；该 binding set 的五个 binding 按同一顺序将 logical key 绑定到对应 digest。
 
 ```ts
 type DispatchedSchemaFixtureCatalogEntry = Readonly<{
@@ -919,6 +920,22 @@ Logical key：`{ kind:"response.failure", errorCode:"CURSOR_EXPIRED" }`
 ```text
 sha256:7cb06a94b19b83c6aba2ed82832bcfd3c103345f4fb6b5f106739cfe40d5fce9
 ```
+
+#### `event.conversation-command-result.v1`
+
+Logical key：`{ kind:"event", eventType:"conversation.command.result" }`
+
+规范 JCS bytes：
+
+```json
+{"additionalProperties":false,"oneOf":[{"additionalProperties":false,"properties":{"command":{"const":"new"},"commandId":{"const":"new"},"conversationId":{"minLength":1,"type":"string"},"outcome":{"const":"created-conversation"},"sourceConversationId":{"minLength":1,"type":"string"},"sourceMessageId":{"minLength":1,"type":"string"}},"required":["command","commandId","outcome","sourceConversationId","sourceMessageId","conversationId"],"type":"object"},{"additionalProperties":false,"properties":{"command":{"const":"new"},"commandId":{"const":"new"},"outcome":{"enum":["rejected","unsupported","outcome-unknown"]},"sourceConversationId":{"minLength":1,"type":"string"},"sourceMessageId":{"minLength":1,"type":"string"}},"required":["command","commandId","outcome","sourceConversationId","sourceMessageId"],"type":"object"}],"properties":{"command":{"const":"new"},"commandId":{"const":"new"},"conversationId":{"minLength":1,"type":"string"},"outcome":{"enum":["created-conversation","rejected","unsupported","outcome-unknown"]},"sourceConversationId":{"minLength":1,"type":"string"},"sourceMessageId":{"minLength":1,"type":"string"}},"required":["command","commandId","outcome","sourceConversationId","sourceMessageId"],"type":"object"}
+```
+
+```text
+sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce
+```
+
+该 Schema 用 `oneOf` 双分支表达第 7.1 节的规则：`outcome` 为 `created-conversation` 时必须携带 `conversationId`，其他 outcome 不得携带。共享 dispatched-schema 子集禁用 `if`/`then`/`else`/`not`，因此条件只能这样写。
 
 每个 catalog entry 的完整 key 等于相应 logical key 加上该段 `schemaSha256`。registry 构造器仍必须独立执行第 4.1 节的 JCS digest 核对、logical key 唯一性、binding/catalog 完整性和 Schema subset 检查，不能只信任文件内 digest。`schema.validate_dispatched` vector 只能引用 `gateway-core-fixtures-v1`；所有 runner 必须从共享 `dispatched-schema-fixtures.json` 构造 catalog 和 bindings，禁止内联、复制或本地替换 Schema/digest/binding。该 registry 只属于一致性测试资产，不进入 runtime 请求，也不改变“请求不可注入 Schema、digest 或 binding”的规则。
 

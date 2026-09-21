@@ -81,6 +81,13 @@ data class WorkbenchUiState(
      * flight rather than a conversation that already exists.
      */
     val creatingThread: Boolean = false,
+    /**
+     * The thread a `/new` in flight was sent from, when there is one.
+     *
+     * The wait belongs to that thread: switching away must not make the newly
+     * opened conversation look like it is waiting for something of its own.
+     */
+    val creationSourceThreadId: String? = null,
     /** Whether the inbound reply channel is alive; a dead one explains silence. */
     val streamHealth: com.openandroidintelligence.conversation.model.StreamHealth =
         com.openandroidintelligence.conversation.model.StreamHealth.IDLE,
@@ -561,7 +568,7 @@ class WorkbenchController(
         settledCreations.removeAll { it.sourceThreadId == sourceThreadId }
         val clientMessageId = ClientMessageId("cmd_" + UUID.randomUUID().toString().replace("-", ""))
         pendingCreation = PendingCreation(sourceThreadId = sourceThreadId, clientMessageId = clientMessageId)
-        update { it.copy(creatingThread = true, notice = null) }
+        update { it.copy(creatingThread = true, creationSourceThreadId = sourceThreadId, notice = null) }
         armCreationWatchdog()
         observeThreadEvents()
         creationSendJob?.cancel()
@@ -590,8 +597,8 @@ class WorkbenchController(
     /**
      * Stops waiting for the Agent's answer to `/new`.
      *
-     * A request that was already sent cannot be taken back, so this is a decision
-     * about the phone: the user chose to stop waiting, and the answer is then
+     * The in-flight request is cancelled, so the Agent may never create anything
+     * from it at all. If it did create something before noticing, that answer is
      * treated like any other abandoned one — it may still enrich the thread list,
      * but it must not move the screen after the wait was reported over.
      */
@@ -624,7 +631,7 @@ class WorkbenchController(
         return TimelineEntry(
             key = "system_new_created_${receipt.threadId}",
             sender = "system",
-            text = "已创建新对话",
+            text = NEW_CONVERSATION_NOTICE,
             isUser = false,
             timestamp = receipt.createdAt,
             pendingAcceptance = false,
@@ -672,7 +679,7 @@ class WorkbenchController(
         // user has already been told ended, so it must not still move them.
         rememberSettledCreation(waiting)
         disarmCreationWatchdog()
-        update { it.copy(creatingThread = false, notice = notice) }
+        update { it.copy(creatingThread = false, creationSourceThreadId = null, notice = notice) }
     }
 
     private fun rememberSettledCreation(waiting: PendingCreation) {
@@ -720,7 +727,7 @@ class WorkbenchController(
                 pendingCreation = null
                 disarmCreationWatchdog()
                 if (activeThreadId != waiting.sourceThreadId) {
-                    update { it.copy(creatingThread = false, notice = "已创建新对话") }
+                    update { it.copy(creatingThread = false, creationSourceThreadId = null, notice = NEW_CONVERSATION_NOTICE) }
                     refreshThreads()
                     return
                 }
@@ -774,7 +781,13 @@ class WorkbenchController(
     private fun switchToAgentCreatedThread(newThreadId: String) {
         openThread(newThreadId)
         syncThreadMetadata(newThreadId)
-        update { it.copy(creatingThread = false, notice = "已创建新对话") }
+        update {
+            it.copy(
+                creatingThread = false,
+                creationSourceThreadId = null,
+                notice = NEW_CONVERSATION_NOTICE,
+            )
+        }
     }
 
     /**
@@ -1396,7 +1409,14 @@ class WorkbenchController(
                                             switchToAgentCreatedThread(created.value)
                                         }
                                     } else {
-                                        update { it.copy(notice = "已创建新对话") }
+                                        // Not switching is not the same as not
+                                        // knowing: the source thread still gets its
+                                        // receipt, so the new conversation is
+                                        // reachable from where it was asked for.
+                                        event.conversationId?.let { created ->
+                                            rememberCreationReceipt(source, created.value)
+                                        }
+                                        update { it.copy(notice = NEW_CONVERSATION_NOTICE) }
                                         refreshThreads()
                                     }
                                 }
@@ -1777,6 +1797,14 @@ class WorkbenchController(
          * between "the Agent has to create a thread" and "leave the text alone".
          */
         const val NEW_CONVERSATION_COMMAND = "/new"
+
+        /**
+         * The one sentence this phone uses when the Agent created a conversation.
+         *
+         * It is both the notice and the label of the source thread's receipt, so
+         * the two can never drift into two different stories about one event.
+         */
+        const val NEW_CONVERSATION_NOTICE = "已创建新对话"
 
         /** The default wait for the Agent's answer to `/new`. */
         const val NEW_CONVERSATION_TIMEOUT_MILLIS = 60_000L

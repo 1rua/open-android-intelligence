@@ -129,9 +129,9 @@ def test_stream_replays_backlog_is_account_scoped_and_has_no_wildcard_cors(tmp_p
                     assert "event: gateway.notice" in replayed
                     assert _data_of(replayed)["payload"] == {"noticeCode": "maintenance"}
 
-                    # An event published for another account must not appear on
+                    # An event delivered for another account must not appear on
                     # this stream: delivery is scoped by account, not broadcast.
-                    await adapter._broadcast_sse("acct_other", b"id: evt_leak\nevent: gateway.notice\ndata: {}\n\n")
+                    adapter._enqueue_frame("acct_other", b"id: evt_leak\nevent: gateway.notice\ndata: {}\n\n")
 
                     await adapter.complete_message("conv_1", "msg_1", "hello phone")
                     delivered = await _read_event_frame(response)
@@ -252,6 +252,24 @@ def test_conversation_patch_updates_title_and_appends_event(tmp_path):
     asyncio.run(scenario())
 
 
+class _SessionStoreDouble:
+    """The host session store, reduced to the one call the binding makes."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, bool]] = []
+        self.sessions: dict[str, str] = {}
+
+    def get_or_create_session(self, source, force_new: bool = False):
+        chat_id = str(getattr(source, "chat_id", ""))
+        self.calls.append((chat_id, bool(force_new)))
+        if force_new or chat_id not in self.sessions:
+            self.sessions[chat_id] = f"sess_{len(self.sessions) + 1}"
+        entry = type("_Entry", (), {})()
+        entry.session_key = f"agent:main:open_android:dm:{chat_id}"
+        entry.session_id = self.sessions[chat_id]
+        return entry
+
+
 def test_a_committed_core_event_reaches_the_live_stream(tmp_path):
     """Contract §9: a committed event is delivered, not merely stored.
 
@@ -275,6 +293,8 @@ def test_a_committed_core_event_reaches_the_live_stream(tmp_path):
         )
         services = GatewayServices(core, services.admin, exposure)
         adapter = OpenAndroidPlatformAdapter(_Config(0), services)
+        store = _SessionStoreDouble()
+        adapter.set_session_store(store)
         assert await adapter.connect() is True
         try:
             async with aiohttp.ClientSession() as session:
@@ -303,10 +323,40 @@ def test_a_committed_core_event_reaches_the_live_stream(tmp_path):
                     assert payload["outcome"] == "created-conversation"
                     assert payload["sourceConversationId"] == source
                     assert payload["conversationId"] != source
+
+                    # The same commit also gives the new conversation its own Agent
+                    # session: the command entry decides that a conversation exists,
+                    # the host decides which session owns it.
+                    created = payload["conversationId"]
+                    binding = await _await_binding(core, created)
+                    assert binding is not None
+                    assert binding["createdVia"] == "new-command"
+                    assert binding["agentSessionId"] == store.sessions[created]
+                    assert store.calls == [(created, True)]
+                    assert binding["agentSessionId"] != store.sessions.get(source)
         finally:
             await adapter.disconnect()
 
     asyncio.run(scenario())
+
+
+def _binding(core, conversation_id: str):
+    account = core.open_gateway_account(ACCOUNT_ID)
+    try:
+        return account.agent_sessions.lookup(conversation_id)
+    finally:
+        account.close()
+
+
+async def _await_binding(core, conversation_id: str, timeout: float = 5.0):
+    """The binding is written off the delivery path; wait instead of racing it."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        binding = _binding(core, conversation_id)
+        if binding is not None:
+            return binding
+        await asyncio.sleep(0.05)
+    return None
 
 
 def test_committed_events_for_another_account_stay_off_this_stream(tmp_path):

@@ -1100,7 +1100,11 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                     "[open_android] Agent session lookup failed for %s: %s", conversation_id, exc
                 )
                 entry = None
-        self._record_agent_session_binding(account_id, conversation_id, entry, created_via)
+        # The binding write touches SQLite, so it is offloaded like the lookup: a
+        # per-message path must not block the loop that serves the event stream.
+        await asyncio.to_thread(
+            self._record_agent_session_binding, account_id, conversation_id, entry, created_via,
+        )
         return getattr(entry, "session_id", None) if entry is not None else None
 
     def _record_agent_session_binding(
@@ -1475,9 +1479,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                     "[open_android] Event subscriber queue is full; client will resume from cursor"
                 )
 
-    async def _broadcast_event(self, account_id: str, frame: bytes) -> None:
-        """Async wrapper over [self._enqueue_frame] for callers already on the loop."""
-        self._enqueue_frame(account_id, frame)
+    # There is deliberately no second delivery entry point: every frame a
+    # subscriber sees went through [self._enqueue_frame], so the account scoping
+    # and the queue-full policy exist in exactly one place.
 
-    _broadcast_sse = _broadcast_event
 

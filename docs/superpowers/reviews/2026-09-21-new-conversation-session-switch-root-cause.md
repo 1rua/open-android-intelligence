@@ -66,7 +66,7 @@ Hermes 侧唯一向在线 SSE/WebSocket 订阅者投递帧的路径是 `adapters
 - `AccountStore.transaction()` 在 **COMMIT 成功之后**刷新本次事务累积的事件通知；回滚与「提交结果未知」两条路径都丢弃，绝不投递未落库的事实（`core.py:1154-1185`）。
 - `EventStore.append()` 只把事件登记到待通知集合（O(1)，无额外 I/O）；非事务内追加立即投递。
 - `create_gateway_core` / `GatewayCore` 支持注册与注销事件接收器（`core.py:2644-2676`），`adapter.connect()` 注册、`disconnect()` 与启动失败路径注销（`adapter.py:723 / 757 / 766`）。
-- 适配器按账号把帧投递给在线订阅者；跨线程提交时经 `loop.call_soon_threadsafe` 转交，队列满时跳过并由游标重放补偿（`adapter.py:1414-1480`）。**旧的显式广播被删除**，一个事件只有一条通往在线订阅者的路径。
+- 适配器按账号把帧投递给在线订阅者；跨线程提交时经 `loop.call_soon_threadsafe` 转交，队列满时跳过并由游标重放补偿（`adapter.py:1414-1480`）。投递入口刻意只有 `_enqueue_frame` 一个：旧的 `_broadcast_event` / `_broadcast_sse` 已删除（测试改为直接调用 `_enqueue_frame`），账号隔离与队列策略不再有第二份实现。
 
 契约 §9 增补了对应义务，并明确「只以游标文档提供事件读取、不提供长连接的宿主不承担该义务」。
 
@@ -78,7 +78,10 @@ Hermes 侧唯一向在线 SSE/WebSocket 订阅者投递帧的路径是 `adapters
 
 ### 3. 会话 ↔ agent 会话的持久绑定与「切换即路由」
 
-- 账户库新增 `conversation_agent_sessions`（`core.py:967`），提供 `AgentSessionBindings.record/attach/lookup/list`（`core.py:1328-1406`）。
+分层要点：**路由始终由宿主自己的 session store 按 `conversationId` 决定**（它与 Hermes 的 `build_session_key` 是同一函数），绑定表是这次路由结果的**持久记录**（ADR 0043 要求「保存绑定」）与不变量护栏，不是第二套路由器。
+
+- 账户库新增 `conversation_agent_sessions`（`core.py:967`），提供 `AgentSessionBindings.record/attach/lookup/list`（`core.py:1328-1417`）。
+- `attach` 是**首次即定**：已经绑定过的会话不会被更慢的 ensure（消息/读取与命令入口竞争）改绑到第二个 agent 会话；宿主报告了不同会话时按「分歧」记日志而不是静默改写（契约 §7.1「不得因重连、重放或切换而更换」）。
 - `/new` 在**同一事务**内写入绑定（`core.py:3123`），履行 ADR 0043 的「保存绑定」。
 - 入站消息派发前先 `ensure`（`created_via=inbound-message`）；**打开会话或读取其时间线**成功后也 `ensure`（`created_via=conversation-read`，`adapter.py:1005-1020`）。手动切换因此真的切过去：读哪个会话，后续消息就路由到哪个会话的 agent 会话，而重复打开只会复用既有绑定，不会被强制新建。
 
@@ -111,7 +114,7 @@ Hermes 侧唯一向在线 SSE/WebSocket 订阅者投递帧的路径是 `adapters
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Hermes 全量 | `$HOME/.venvs/oai-gateway/bin/python -m pytest tests/ -q` | **172 passed**（基线 157 + 新增 15） |
+| Hermes 全量 | `$HOME/.venvs/oai-gateway/bin/python -m pytest tests/ -q` | **173 passed**（基线 157 + 新增 16） |
 | 契约一致性（双宿主 + 跨宿主） | `./tools/run-node24 npm run gateway:v2:conformance` | 全通过（含新增 4 条用例） |
 | 契约/OpenClaw vitest | `./tools/run-node24 npx vitest run gateway-contract integrations/openclaw` | **217 passed** |
 | 根 vitest | `./tools/run-node24 npm test` | 仅 `plugin-tooling` 的既有 `FIXTURE_ALP_SHA256` 红灯（与本改动无关，基线即有） |
@@ -125,9 +128,32 @@ Android 侧：本机按仓库规则不执行 Gradle，`conversation-ui` 的最�
 
 ---
 
-## 五、已接受偏差与未完成
+## 五、独立复审（两轴）与返修
 
-1. **`clientConversationId` 字段（ADR 0043 字面项）本次未做。** 现状是「客户端 `clientMessageId` 派生 + 既有 `Idempotency-Key` 重放」保证同一请求不会产生第二个会话，行为上满足 ADR 0043 的意图；改动它需要动 `conversation.schema.json#messageCreate`，从而变更 core schema 摘要并在 Android `SchemaContractHash.CORE`、OpenClaw `plugin-manifest.json#capabilitySchemaHash`、共享向量与 Android/宿主两端联动。它不影响本次三个缺陷的行为，故按计划「收益不足可整项跳过」处理，作为独立契约变更跟进。
-2. `agentSessionId` 仍不下发客户端（契约明确要求），前端也无法据此判断绑定是否建立；宿主侧的缺失以「绑定行为空 + 日志」如实呈现，未做客户端可见状态。
-3. 既有游标竞态：SSE/WS 订阅时「读 backlog」与「注册队列」之间仍有微秒级窗口，落在窗口里的事件要等下一次重连才可见（既有行为，本次未改；重连后由游标补齐）。
-4. 真机验证（Hermes 宿主 + 真机 App 的新建对话/切换会话端到端）未在本机完成，依赖 CI 产物与用户真机复核。
+提交 `83bf7b7` 推送后启动了两个互不共享上下文的审查子 Agent：**标准轴**（AGENTS.md + Fowler 坏味道基线）与**规格轴**（契约 §4/§7.1/§9、ADR 0043、UI 规格 §14.2）。判为阻塞并已修复的项：
+
+| 复审发现 | 处理 |
+| --- | --- |
+| `attach` 无条件覆盖绑定，`/new` 的 force_new 绑定与「首条消息/首次读取」的绑定存在竞态，同一会话可能换 agent 会话（违反新写进契约的「不得更换」） | **已修**：`attach` 改为首次即定（`AND agent_session_id IS NULL`），分歧只记日志；新增用例 `test_a_bound_conversation_never_changes_its_agent_session` 证明更慢的 force_new ensure 不会改写绑定 |
+| 契约 §16 仍写「恰好四个 catalog entry / 四个 binding」，与已改为 5 的 registry 不一致；新 fixture 缺 JCS+digest 段 | **已修**：§16 改为五个并补 `event.conversation-command-result.v1` 的规范 JCS bytes 与 digest，附 `oneOf` 的成因说明 |
+| 契约 §9 的事件类型枚举缺 `conversation.command.result` | **已修**：加入枚举 |
+| 旧广播 API（`_broadcast_event` / `_broadcast_sse`）无生产调用者却与新接缝并存，与报告「旧广播已删除」不符 | **已修**：删除两个别名，测试改为直接调用 `_enqueue_frame`，投递入口只剩一个 |
+| 绑定写入在事件循环线程里同步开库（含建表迁移），每次派发/读会话都阻塞循环 | **已修**：`_ensure_agent_session` 用 `asyncio.to_thread` 卸载绑定写入 |
+| `creatingThread` 是全局态：等待期切走后，新会话仍渲染「正在创建 + 取消」 | **已修**：状态新增 `creationSourceThreadId`，UI 只在「等待所属会话 == 当前会话」时渲染该行；用例断言切换后仍指向来源会话、结束后清空 |
+| 手输 `/new` 且已切走/已放弃时只提示不记收据，新会话在该路径不可达 | **已修**：该分支同样记收据 |
+| 端到端用例只直调 `_bind_created_conversation`，绕开了事件接缝，证明力弱 | **已修**：`test_a_committed_core_event_reaches_the_live_stream` 现在注入 session store，断言同一笔提交既让在线连接收到命令结果、又让新会话拿到自己的 agent 会话 |
+
+被判为**不成立或刻意保留**的项（附理由）：
+
+- 「生产路径没有 `set_session_store` 调用者，绑定在真机上是空实现」：审查子 Agent 只看到了 import 兜底桩。真实宿主在 `gateway/platforms/base.py:3415` 定义该方法，`gateway/run.py:11257 / 12640 / 13609` 为每个平台适配器注入 `self.session_store`（本机 `~/.hermes/hermes-agent` 源码核对）。**但测试环境未安装 `gateway` 包，因此走的是兜底桩** —— 这是真实的验证缺口，见 §六。
+- fixture 数量在 5 处手写：那些常量本身就是「锁死形状」的断言（少了它们，registry 被悄悄改小也能过），保留。
+- `noticeText` 前缀+后缀双映射、`StateViews` 拆分、取消入口、收据上限：属于本次「等待不得静默 / 提示必须可读」的范围（用户现象即「界面完全没反应」），均有用例覆盖；上限是长会话内存有界所必需。
+- 契约 §9 事件枚举仍不完整（缺 `conversation.message.accepted`、`conversation.timeline.*` 等解码器已支持的类型）：既有文档缺口，本次只补入改动引入的 `conversation.command.result`，其余留给独立文档修正。
+
+## 六、已接受偏差与未完成
+
+1. **真实 `BasePlatformAdapter` 路径没有自动化覆盖（验证缺口）。** Hermes 测试环境未安装 `gateway` 包，适配器单测走的是 `import` 兜底桩；桩里镜像了 `set_session_store` / `Source` / `MessageEvent`，与真实签名逐项核对过（`gateway/platforms/base.py` 的 `build_source` 形参、`set_session_store`、`_session_store`，`gateway/session.py` 的 `get_or_create_session(source, force_new)` 与 DM 的 `build_session_key` 规则），但「真宿主 + 真 session store」的组合只能靠真机回归。未在 `integrations/hermes` 引入对 `gateway` 的硬依赖是正确的（独立运行仍需可用），代价就是这一层无法在本机自动化。
+2. **`clientConversationId` 字段（ADR 0043 字面项）本次未做。** 现状是「客户端 `clientMessageId` 派生 + 既有 `Idempotency-Key` 重放」保证同一请求不会产生第二个会话，行为上满足 ADR 0043 的意图；改动它需要动 `conversation.schema.json#messageCreate`，从而变更 core schema 摘要并在 Android `SchemaContractHash.CORE`、OpenClaw `plugin-manifest.json#capabilitySchemaHash`、共享向量与 Android/宿主两端联动。它不影响本次三个缺陷的行为，故按计划「收益不足可整项跳过」处理，作为独立契约变更跟进。
+3. `agentSessionId` 仍不下发客户端（契约明确要求），前端也无法据此判断绑定是否建立；宿主侧的缺失以「绑定行为空 + 日志」如实呈现，未做客户端可见状态。
+4. 既有游标竞态：SSE/WS 订阅时「读 backlog」与「注册队列」之间仍有微秒级窗口，落在窗口里的事件要等下一次重连才可见（既有行为，本次未改；重连后由游标补齐）。
+5. 真机验证（Hermes 宿主 + 真机 App 的新建对话/切换会话端到端）未在本机完成，依赖 CI 产物与用户真机复核。

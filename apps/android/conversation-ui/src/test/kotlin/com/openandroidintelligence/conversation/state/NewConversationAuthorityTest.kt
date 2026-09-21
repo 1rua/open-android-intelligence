@@ -378,13 +378,21 @@ class NewConversationAuthorityTest {
         controller.createThread()
         advanceUntilIdle()
 
+        assertEquals(SOURCE_ID, controller.state.value.creationSourceThreadId)
+
         controller.openThread("conv_other")
         advanceUntilIdle()
+        assertEquals(
+            "等待属于发出请求的那个会话，切换不得把它挂到新会话上",
+            SOURCE_ID,
+            controller.state.value.creationSourceThreadId,
+        )
         repository.events.emit(commandResult())
         advanceUntilIdle()
 
         assertEquals("conv_other", controller.state.value.activeThreadId)
         assertFalse(controller.state.value.creatingThread)
+        assertEquals(null, controller.state.value.creationSourceThreadId)
         assertTrue(controller.state.value.notice.orEmpty().contains("已创建新对话"))
     }
 
@@ -434,11 +442,13 @@ class NewConversationAuthorityTest {
         controller.createThread()
         advanceUntilIdle()
         assertTrue(controller.state.value.creatingThread)
+        assertEquals(SOURCE_ID, controller.state.value.creationSourceThreadId)
 
         controller.cancelThreadCreation()
         advanceUntilIdle()
 
         assertFalse("取消后必须退出等待态", controller.state.value.creatingThread)
+        assertEquals(null, controller.state.value.creationSourceThreadId)
         assertEquals(SOURCE_ID, controller.state.value.activeThreadId)
         assertTrue("不得本地创建会话", repository.createCalls.isEmpty())
         assertTrue(

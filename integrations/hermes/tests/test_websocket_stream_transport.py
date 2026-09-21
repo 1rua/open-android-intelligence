@@ -137,8 +137,8 @@ def test_ws_stream_replays_backlog_is_account_scoped_and_broadcasts_realtime(tmp
                     replayed_data = json.loads(replayed["data"])
                     assert replayed_data["payload"] == {"noticeCode": "maintenance"}
 
-                    # Event broadcast for another account must not leak to this stream
-                    await adapter._broadcast_sse("acct_other", b"id: evt_leak\nevent: gateway.notice\ndata: {}\n\n")
+                    # An event delivered for another account must not leak to this stream
+                    adapter._enqueue_frame("acct_other", b"id: evt_leak\nevent: gateway.notice\ndata: {}\n\n")
 
                     # Real-time event for this account
                     await adapter.complete_message("conv_1", "msg_1", "hello phone")

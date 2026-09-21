@@ -1380,9 +1380,31 @@ class AgentSessionBindings:
     def attach(
         self, conversation_id: str, agent_session_id: str, session_key: str | None = None,
     ) -> bool:
-        """Fill in the host's session id for a conversation that already has a row."""
+        """Fill in the host's session id for a conversation that already has a row.
+
+        The first session a conversation is bound to is kept: contract §7.1 makes
+        the binding a fact about the account, so a later, slower ensure (a message
+        or a read that raced the command entry) must not re-point a conversation
+        to a second Agent session. A host that reports a *different* session for an
+        already-bound conversation is recorded as the divergence it is, rather
+        than silently rewriting the row.
+        """
+        existing = self.lookup(conversation_id)
+        if existing is None:
+            return False
+        bound = existing["agentSessionId"]
+        if isinstance(bound, str) and bound:
+            if bound != agent_session_id:
+                logger.warning(
+                    "[open_android] Conversation %s is bound to Agent session %s but the host reported %s",
+                    conversation_id, bound, agent_session_id,
+                )
+            return False
         cursor = self.store.database.execute(
-            "UPDATE conversation_agent_sessions SET agent_session_id = ?, session_key = ? WHERE conversation_id = ?",
+            """
+            UPDATE conversation_agent_sessions SET agent_session_id = ?, session_key = ?
+            WHERE conversation_id = ? AND agent_session_id IS NULL
+            """,
             (agent_session_id, session_key, conversation_id),
         )
         return cursor.rowcount > 0

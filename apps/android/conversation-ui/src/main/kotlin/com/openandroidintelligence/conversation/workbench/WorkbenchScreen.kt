@@ -289,10 +289,14 @@ fun WorkbenchScreen(
                                                         MessageTimeline(listOf(entry))
                                                     }
                                                 }
-                                                if (state.creatingThread) {
+                                                if (state.creatingThread &&
+                                                    state.creationSourceThreadId == state.activeThreadId
+                                                ) {
                                                     // Waiting is a state the user must be able to see
                                                     // and leave: silence here is exactly what made the
-                                                    // button look like it did nothing.
+                                                    // button look like it did nothing. Scoped to the
+                                                    // thread it was sent from — the conversation the user
+                                                    // switched to is not the one waiting.
                                                     item(key = "creating_thread") {
                                                         CreatingThreadRow(
                                                             onCancel = controller::cancelThreadCreation,

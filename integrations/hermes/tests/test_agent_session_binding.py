@@ -207,6 +207,29 @@ def test_reopening_a_conversation_reuses_the_session_it_already_has(tmp_path):
     asyncio.run(scenario())
 
 
+def test_a_bound_conversation_never_changes_its_agent_session(tmp_path):
+    """Contract §7.1: switching, reconnecting or replaying must not rebind it."""
+    async def scenario():
+        store = _SessionStoreDouble()
+        core = _make_core(tmp_path)
+        conversation = _seed_conversation(core, "cconv_stable")
+        adapter = _adapter(core, store)
+
+        first = await adapter._ensure_agent_session(
+            conversation, ACCOUNT_ID, force_new=False, created_via="conversation-read",
+        )
+        # A slower ensure reports a different session for the same conversation;
+        # the binding written first is the one that stays.
+        second = await adapter._ensure_agent_session(
+            conversation, ACCOUNT_ID, force_new=True, created_via="new-command",
+        )
+
+        assert second is not None and second != first
+        assert _binding(core, conversation)["agentSessionId"] == first
+        assert store.calls[0] == (conversation, False)
+    asyncio.run(scenario())
+
+
 def test_a_created_conversation_gets_a_brand_new_agent_session(tmp_path):
     """`/new` means "inherit nothing", so the host session is forced new."""
     async def scenario():
