@@ -157,6 +157,16 @@ class WorkbenchController(
          * user is still looking at it.
          */
         val timeoutMillis: Long = NEW_CONVERSATION_TIMEOUT_MILLIS,
+        /**
+         * How long a result may still be in flight after the Agent already
+         * answered in the thread `/new` was sent from.
+         *
+         * The Agent's own turn is over at that point, so the command result is
+         * either already on its way or will never arrive. Long enough to absorb
+         * the gap between two frames of the same turn on a slow link, short
+         * enough that "creating" does not outlive the reply the user is reading.
+         */
+        val commandResultGraceMillis: Long = COMMAND_RESULT_GRACE_MILLIS,
         /** Off for a caller driving the controller with a virtual clock. */
         val enabled: Boolean = true,
     )
@@ -232,6 +242,8 @@ class WorkbenchController(
     private var pendingCreation: PendingCreation? = null
     private var creationSendJob: Job? = null
     private var creationWatchdog: Job? = null
+    /** Armed once the Agent answers in the source thread while a result is pending. */
+    private var creationGraceJob: Job? = null
 
     /**
      * A `/new` request this phone stopped waiting for.
@@ -344,6 +356,8 @@ class WorkbenchController(
         bootstrapJob?.cancel()
         creationSendJob?.cancel()
         creationWatchdog?.cancel()
+        creationGraceJob?.cancel()
+        creationGraceJob = null
         pendingCreation = null
         settledCreations.clear()
         eventJob?.cancel()
@@ -659,6 +673,10 @@ class WorkbenchController(
     private fun armCreationWatchdog() {
         if (!newConversationTimeouts.enabled) return
         val waiting = pendingCreation ?: return
+        // A new request starts a new wait: a grace armed for the previous one
+        // must not end it.
+        creationGraceJob?.cancel()
+        creationGraceJob = null
         creationWatchdog?.cancel()
         creationWatchdog = scope.launch {
             delay(newConversationTimeouts.timeoutMillis)
@@ -670,6 +688,45 @@ class WorkbenchController(
     private fun disarmCreationWatchdog() {
         creationWatchdog?.cancel()
         creationWatchdog = null
+        creationGraceJob?.cancel()
+        creationGraceJob = null
+    }
+
+    /**
+     * Stops trusting that a command result is still on its way.
+     *
+     * The Agent finished a turn in the thread `/new` was sent from and nothing
+     * arrived that names a created conversation. A host that owns the command
+     * entry answers with `conversation.command.result`; one that merely passed
+     * `/new` on to the Agent never will. Waiting the full timeout after the Agent
+     * has visibly answered is exactly the "creating forever" spinner, so the wait
+     * ends here — honestly, without inventing a conversation.
+     */
+    private fun armCreationGrace() {
+        if (!newConversationTimeouts.enabled) return
+        if (creationGraceJob?.isActive == true) return
+        val waiting = pendingCreation ?: return
+        creationGraceJob = scope.launch {
+            delay(newConversationTimeouts.commandResultGraceMillis)
+            if (pendingCreation !== waiting) return@launch
+            abandonAgentThreadCreation("CONVERSATION_CREATE_NO_RESULT:AGENT_REPLIED_WITHOUT_RESULT")
+        }
+    }
+
+    /**
+     * Whether one event is evidence that the `/new` turn is over.
+     *
+     * Only traffic this phone has never seen counts: a reconnect replays the
+     * account backlog, and an old reply is not evidence about this request. The
+     * reply also has to belong to the thread the command was sent from — an
+     * answer in some other conversation says nothing about this one.
+     */
+    private fun maybeArmCreationGrace(conversationId: String?, message: TimelineMessage, unseen: Boolean) {
+        if (!unseen) return
+        val waiting = pendingCreation ?: return
+        if (conversationId != waiting.sourceThreadId) return
+        if (message.sender != "assistant" || message.state != "CONFIRMED") return
+        armCreationGrace()
     }
 
     private fun abandonAgentThreadCreation(notice: String) {
@@ -1273,6 +1330,9 @@ class WorkbenchController(
                                 return@collect
                             }
                             val previousRevision = mirroredRevisions[message.id]
+                            // A reply this phone has never seen, in the thread the
+                            // command was sent from, is the Agent's turn ending.
+                            maybeArmCreationGrace(eventConvId, message, previousRevision == null)
                             if (previousRevision != null && event.revision < previousRevision) {
                                 return@collect
                             }
@@ -1504,7 +1564,13 @@ class WorkbenchController(
     /**
      * Integrates a confirmed assistant message by:
      * 1. Removing duplicate confirmed assistant messages in [mirrored] (same normalized key or identical content within the SAME turn).
-     * 2. Pruning in-flight streaming drafts that this confirmed message supersedes (same normalized key, or within turn window where confirmed text covers streaming text).
+     * 2. Pruning in-flight streaming drafts that this confirmed message supersedes (same normalized key, or in the same turn where confirmed text covers streaming text).
+     *
+     * A turn is bounded by user messages, not by a clock: one Agent turn can
+     * easily outlive any window a phone might pick (tool calls alone can take
+     * minutes), and a window that expires leaves the same reply in the timeline
+     * once per publish. The user message is the only boundary that means
+     * something to both sides.
      *
      * Returns true if this confirmed message superseded an active streaming draft or
      * belongs to the active turn (its timestamp is at or after the active question, with no intervening user question).
@@ -1520,8 +1586,7 @@ class WorkbenchController(
                 v.sender == "assistant" &&
                 v.state == "CONFIRMED" &&
                 ((normalizeEntryKey(k).isNotBlank() && normalizeEntryKey(k) == normalizeEntryKey(message.id)) ||
-                    (Math.abs(v.timestamp - message.timestamp) <= 60_000L &&
-                        !hasUserMessageBetween(v.timestamp, message.timestamp) &&
+                    (!hasUserMessageBetween(v.timestamp, message.timestamp) &&
                         ((messageText.isNotBlank() && messageTextOf(v) == messageText) ||
                             (message.parts.isNotEmpty() && v.parts == message.parts))))
         }.map { it.key }
@@ -1541,9 +1606,8 @@ class WorkbenchController(
             val sameNormalizedKey = normalizeEntryKey(s.id).isNotBlank() &&
                 normalizeEntryKey(s.id) == normalizeEntryKey(message.id)
             val sText = messageTextOf(s)
-            val isTurnWindow = !hasUserMessageBetween(s.timestamp, message.timestamp) &&
+            val isSameTurn = !hasUserMessageBetween(s.timestamp, message.timestamp) &&
                 message.timestamp >= s.timestamp - 5_000L &&
-                Math.abs(message.timestamp - s.timestamp) <= 120_000L &&
                 (latestUserTimestamp == 0L || message.timestamp >= latestUserTimestamp - 10_000L)
             val isCoveredContent = (messageText.isNotBlank() && (messageText == sText || messageText.startsWith(sText))) ||
                 (s.parts.isNotEmpty() && s.parts == message.parts)
@@ -1551,7 +1615,7 @@ class WorkbenchController(
                 s.parts.none { it is com.openandroidintelligence.conversation.model.MessagePart.Attachment } &&
                 message.timestamp >= s.timestamp
 
-            if (sameNormalizedKey || (isTurnWindow && (isCoveredContent || isStaleEmpty))) {
+            if (sameNormalizedKey || (isSameTurn && (isCoveredContent || isStaleEmpty))) {
                 mirrored.remove(k)
                 mirroredRevisions.remove(k)
                 supersededActiveStreaming = true
@@ -1682,8 +1746,10 @@ class WorkbenchController(
                 confirmed.none { c ->
                     val sameNormalizedKey = normalizeEntryKey(s.key).isNotBlank() &&
                         normalizeEntryKey(s.key) == normalizeEntryKey(c.key)
+                    // Same group means no user message between them, so this is
+                    // the same turn by construction: no clock window needed.
                     val timeDiff = c.timestamp - s.timestamp
-                    val isSameTurn = timeDiff >= -5_000L && Math.abs(timeDiff) <= 120_000L
+                    val isSameTurn = timeDiff >= -5_000L
                     val isCoveredByConfirmed = (s.text.isNotBlank() && (c.text == s.text || c.text.startsWith(s.text))) ||
                         (s.attachments.isNotEmpty() && s.attachments == c.attachments)
                     val isStaleEmpty = s.text.isBlank() && s.attachments.isEmpty() && c.timestamp >= s.timestamp
@@ -1695,8 +1761,7 @@ class WorkbenchController(
             for (s in streaming) {
                 val duplicateIndex = deduplicatedStreaming.indexOfFirst { existing ->
                     (normalizeEntryKey(s.key).isNotBlank() && normalizeEntryKey(s.key) == normalizeEntryKey(existing.key)) ||
-                    (Math.abs(s.timestamp - existing.timestamp) <= 60_000L &&
-                        (existing.text.startsWith(s.text) || s.text.startsWith(existing.text)))
+                    (existing.text.startsWith(s.text) || s.text.startsWith(existing.text))
                 }
                 if (duplicateIndex != -1) {
                     val existing = deduplicatedStreaming[duplicateIndex]
@@ -1712,11 +1777,15 @@ class WorkbenchController(
 
         val keptConfirmed = mutableListOf<TimelineEntry>()
         for (c in confirmed) {
+            // Within one group there is no user message between the entries, so
+            // identical content is the same reply published twice — which is what
+            // a host that mints a new message id per publish produces. The turn
+            // boundary, not a time window, decides whether two identical replies
+            // are one message or two.
             val isDuplicate = keptConfirmed.any { existing ->
                 (normalizeEntryKey(c.key).isNotBlank() && normalizeEntryKey(c.key) == normalizeEntryKey(existing.key)) ||
                 ((c.text.isNotEmpty() || c.attachments.isNotEmpty()) &&
-                 c.text == existing.text && c.attachments == existing.attachments &&
-                 Math.abs(c.timestamp - existing.timestamp) <= 60_000L)
+                 c.text == existing.text && c.attachments == existing.attachments)
             }
             if (!isDuplicate) {
                 keptConfirmed.add(c)
@@ -1808,6 +1877,15 @@ class WorkbenchController(
 
         /** The default wait for the Agent's answer to `/new`. */
         const val NEW_CONVERSATION_TIMEOUT_MILLIS = 60_000L
+
+        /**
+         * The default grace after the Agent answered in the source thread.
+         *
+         * Two frames of one turn can be seconds apart on a slow link, and the
+         * user is already reading the reply by then; this is long enough for the
+         * result to still win, short enough that the wait does not outlive it.
+         */
+        const val COMMAND_RESULT_GRACE_MILLIS = 5_000L
 
         /**
          * How many abandoned `/new` requests stay remembered.

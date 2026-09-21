@@ -57,6 +57,15 @@ class NewConversationAuthorityTest {
      */
     private val opened = mutableListOf<WorkbenchController>()
 
+    /**
+     * The shipped grace, read from the public configuration type.
+     *
+     * Reading it instead of restating the number keeps these tests honest when
+     * the default moves: they always wait exactly as long as production does.
+     */
+    private val defaultGraceMillis =
+        WorkbenchController.NewConversationTimeouts().commandResultGraceMillis
+
     private fun runWorkbench(body: suspend TestScope.() -> Unit) = runTest {
         try {
             body()
@@ -435,6 +444,101 @@ class NewConversationAuthorityTest {
         )
     }
 
+    /**
+     * One assistant message arriving as a timeline event.
+     *
+     * The Agent's own reply lands in the thread `/new` was sent from, which is
+     * what makes it evidence that this turn is over.
+     */
+    private fun assistantReply(
+        conversationId: String = SOURCE_ID,
+        messageId: String = "msg_reply_1",
+        text: String = "✨ Session reset! Starting fresh.",
+        state: String = "CONFIRMED",
+        timestamp: Long = 2L,
+    ): VerifiedConversationEvent.TimelineUpsert = VerifiedConversationEvent.TimelineUpsert(
+        eventId = "evt_reply_$messageId",
+        occurredAt = timestamp,
+        revision = 1L,
+        message = TimelineMessage(
+            id = messageId,
+            sender = "assistant",
+            parts = listOf(MessagePart.Text(text)),
+            timestamp = timestamp,
+            state = state,
+            conversationId = ConversationId(conversationId),
+        ),
+    )
+
+    @Test
+    fun anAgentReplyWithoutACommandResultEndsTheWaitHonestly() = runWorkbench {
+        // The watchdog is on: this test is about a wait that must not last.
+        val repository = FakeRepository()
+        val controller = controller(repository, watchdogEnabled = true)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceTimeBy(1L)
+
+        // The host passed `/new` to the Agent instead of answering it itself.
+        repository.events.emit(assistantReply())
+        advanceTimeBy(defaultGraceMillis + 1L)
+
+        assertFalse("Agent 已经回话，等待必须结束", controller.state.value.creatingThread)
+        assertEquals("仍然停在来源会话", SOURCE_ID, controller.state.value.activeThreadId)
+        assertTrue(
+            "必须如实说明没有拿到新建会话结果：${controller.state.value.notice}",
+            controller.state.value.notice.orEmpty().contains("CONVERSATION_CREATE_NO_RESULT"),
+        )
+        assertTrue("不得本地创建会话", repository.createCalls.isEmpty())
+    }
+
+    @Test
+    fun aCommandResultArrivingInsideTheGraceStillSwitches() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository, watchdogEnabled = true)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceTimeBy(1L)
+        repository.events.emit(assistantReply())
+        advanceTimeBy(defaultGraceMillis - 1_000L)
+
+        repository.events.emit(commandResult())
+        advanceUntilIdle()
+
+        assertEquals(CREATED_ID, controller.state.value.activeThreadId)
+        assertFalse(controller.state.value.creatingThread)
+    }
+
+    @Test
+    fun aReplayedAgentReplyIsNotEvidenceThatTheTurnEnded() = runWorkbench {
+        // The thread already holds this reply: it is a reconnect replay, not the
+        // answer to the `/new` this phone is waiting for.
+        val repository = FakeRepository().apply {
+            sourceHistory = listOf(
+                TimelineMessage(
+                    id = "msg_seen_before",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("上一轮的回复")),
+                    timestamp = 1L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId(SOURCE_ID),
+                ),
+            )
+        }
+        val controller = controller(repository, watchdogEnabled = true)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceTimeBy(1L)
+
+        repository.events.emit(
+            assistantReply(messageId = "msg_seen_before", text = "上一轮的回复"),
+        )
+        advanceTimeBy(defaultGraceMillis + 1L)
+
+        assertTrue("重放不是本轮结束的证据，必须继续等待", controller.state.value.creatingThread)
+        assertEquals(SOURCE_ID, controller.state.value.activeThreadId)
+    }
+
     @Test
     fun cancellingTheWaitStopsItWithoutFakingAConversation() = runWorkbench {
         val repository = FakeRepository()
@@ -585,6 +689,8 @@ class NewConversationAuthorityTest {
         var failSend = false
         /** Makes the next timeline reads fail, so only a switch's own cleanup shows. */
         var failTimeline = false
+        /** What the source thread already holds, for replay-vs-new-traffic tests. */
+        var sourceHistory: List<TimelineMessage> = emptyList()
         /**
          * Holds the send reply back so a test can let the event stream win the
          * race — the Gateway pushes results and answers on separate channels.
@@ -625,6 +731,8 @@ class NewConversationAuthorityTest {
                     ),
                     null,
                 )
+            } else if (conversationId == SOURCE_ID) {
+                TimelinePage(sourceHistory, null)
             } else {
                 TimelinePage(emptyList(), null)
             }

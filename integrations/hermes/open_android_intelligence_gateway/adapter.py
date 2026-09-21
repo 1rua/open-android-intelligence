@@ -417,6 +417,9 @@ EVENT_STREAM_WS_PATH = "/open-android-intelligence/v2/events/ws"
 SSE_HEARTBEAT = b": ping\n\n"
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_QUEUE_SIZE = 100
+# How many conversations keep "which id did this turn's reply get" in memory. One
+# entry per conversation that published something since its last user message.
+MAX_REMEMBERED_TURNS = 256
 
 
 def _sse_frame(event: Mapping[str, Any]) -> bytes:
@@ -683,6 +686,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         self._event_sink = self._deliver_committed_event
         # Background work this adapter started and must not lose to collection.
         self._background_tasks: Set[asyncio.Task] = set()
+        # Per conversation: the reply text already published in the current turn,
+        # and the message id it was published under.
+        self._turn_replies: Dict[str, tuple[str, str]] = {}
 
     @property
     def _active_sse_queues(self) -> Dict[str, Set[asyncio.Queue]]:
@@ -793,7 +799,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="ACCOUNT_NOT_CONFIGURED", retryable=False)
         try:
             now_iso = iso_millis()
-            message_id = f"msg_{uuid.uuid4().hex[:12]}"
+            named = reply_to
+            if named is None and isinstance(metadata, dict):
+                named = metadata.get("messageId") or metadata.get("message_id")
+            message_id = self._published_reply_id(chat_id, content, named)
             if isinstance(metadata, dict) and metadata.get("expect_edits"):
                 await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
             else:
@@ -802,6 +811,41 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[open_android] Failed to deliver message to %s: %s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=False)
+
+    def _published_reply_id(self, chat_id: str, text: str, proposed: Optional[str]) -> str:
+        """The message id one logical reply is published under.
+
+        A host can publish the same reply more than once in a turn — a finalize
+        plus a final send, a retried delivery. That is one message, not two:
+        minting a second id would put the reply in the account's timeline twice,
+        and nothing downstream could collapse the copies because the ids really
+        do differ. The first id of a turn's reply is therefore kept, and a new
+        user message is what starts a new turn.
+        """
+        remembered = self._turn_replies.get(chat_id)
+        if remembered is not None and remembered[0] == text:
+            if proposed is not None and proposed != remembered[1]:
+                logger.info(
+                    "[open_android] %s published the same reply again as %s; keeping %s",
+                    chat_id, proposed, remembered[1],
+                )
+            return remembered[1]
+        identity = proposed or f"msg_{uuid.uuid4().hex[:12]}"
+        self._remember_turn_reply(chat_id, text, identity)
+        return identity
+
+    def _remember_turn_reply(self, chat_id: str, text: str, message_id: str) -> None:
+        self._turn_replies.pop(chat_id, None)
+        self._turn_replies[chat_id] = (text, message_id)
+        while len(self._turn_replies) > MAX_REMEMBERED_TURNS:
+            eldest = next(iter(self._turn_replies), None)
+            if eldest is None:
+                break
+            self._turn_replies.pop(eldest, None)
+
+    def _forget_turn_reply(self, chat_id: str) -> None:
+        """A new user message starts a new turn: the same text is a new reply."""
+        self._turn_replies.pop(chat_id, None)
 
     async def edit_message(
         self,
@@ -826,6 +870,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             return False
         now_iso = iso_millis()
         if finalize:
+            message_id = self._published_reply_id(chat_id, content, message_id)
             await self.complete_message(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
         else:
             await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
@@ -1141,6 +1186,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         try:
             conv_id = _conversation_id_of(path) or "default"
             self._conv_to_account[conv_id] = source_account
+            # A user turn boundary: whatever the Agent answered before belongs to
+            # the previous turn, so the same text from now on is a new message.
+            self._forget_turn_reply(conv_id)
 
             data = json.loads(body_bytes.decode("utf-8"))
             user_text = data.get("text") or data.get("content") or ""
