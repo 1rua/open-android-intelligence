@@ -170,7 +170,7 @@ class ApprovalStateMachineTest {
         assertTrue(pressed is ApprovalCardState.Submitting, "按下后必须立刻进入受理态：$pressed")
         val submitting = pressed as ApprovalCardState.Submitting
         assertEquals(ApprovalChoice.ONCE, submitting.choice)
-        assertFalse("受理态不是结果，不得显示为已允许", submitting.isSettled)
+        assertFalse(submitting.isSettled, "受理态不是结果，不得显示为已允许")
         assertEquals(listOf(APPROVAL_ID to ApprovalChoice.ONCE), repository.decisions)
 
         // A second press while the first is in flight is not a second decision.
@@ -366,9 +366,9 @@ class ApprovalStateMachineTest {
         val answered = cardRow(controller)!!.approval
         assertTrue(answered is ApprovalCardState.Resolved, "无论如何这张卡片不能继续可点：$answered")
         assertEquals(
-            "网关不认识这个审批时，命令的下场是本机未知的，不得替它宣称已撤回",
             ApprovalOutcome.UNKNOWN,
             (answered as ApprovalCardState.Resolved).outcome,
+            "网关不认识这个审批时，命令的下场是本机未知的，不得替它宣称已撤回",
         )
     }
 
@@ -410,9 +410,9 @@ class ApprovalStateMachineTest {
         advanceUntilIdle()
 
         assertEquals(
-            "「未知」不是终态：网关随后给出的事实必须能落到卡片上",
             ApprovalOutcome.TIMED_OUT,
-            (cardRow(controller)?.approval as ApprovalCardState.Resolved).outcome,
+            (cardRow(controller)!!.approval as ApprovalCardState.Resolved).outcome,
+            "「未知」不是终态：网关随后给出的事实必须能落到卡片上",
         )
     }
 
