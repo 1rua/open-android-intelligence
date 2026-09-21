@@ -131,6 +131,19 @@ class ApprovalStateMachineTest {
     }
 
     @Test
+    fun theCountdownIsDerivedFromTheGatewaysOwnDeadline() {
+        // The card ticks this once a second; the number it shows is a function of
+        // the Gateway's timestamps, which is what makes leaving the thread and
+        // coming back resume the same remaining time.
+        val request = requested().request
+        assertEquals(TIMEOUT_SECONDS, request.countdownAt(REQUESTED_AT).remainingSeconds)
+        assertEquals(TIMEOUT_SECONDS - 15L, request.countdownAt(REQUESTED_AT + 15_000L).remainingSeconds)
+        assertFalse(request.countdownAt(REQUESTED_AT + (TIMEOUT_SECONDS - 1L) * 1_000L).expired)
+        assertTrue(request.countdownAt(REQUESTED_AT + TIMEOUT_SECONDS * 1_000L).expired)
+        assertEquals(0L, request.countdownAt(REQUESTED_AT + 10 * TIMEOUT_SECONDS * 1_000L).remainingSeconds)
+    }
+
+    @Test
     fun anApprovalRequestBecomesACardInTheConversation() = runWorkbench {
         val repository = FakeRepository()
         val controller = controller(repository)
@@ -430,8 +443,12 @@ class ApprovalStateMachineTest {
             page: PageRequest,
         ): ConversationPage = ConversationPage(
             listOf(
-                ConversationSummary(ConversationId(THREAD_ID), "审批会话", 1L),
-                ConversationSummary(ConversationId(OTHER_THREAD_ID), "另一个会话", 2L),
+                // `updatedAt` decides which thread the workbench opens by itself,
+                // so the approval's own conversation has to be the most recent
+                // one — otherwise every card below is filtered out as belonging
+                // to a thread the user is not looking at.
+                ConversationSummary(ConversationId(THREAD_ID), "审批会话", 2L),
+                ConversationSummary(ConversationId(OTHER_THREAD_ID), "另一个会话", 1L),
             ),
             null,
         )

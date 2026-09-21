@@ -780,12 +780,15 @@ class WorkbenchController(
      */
     fun decideApproval(approvalId: String, choice: com.openandroidintelligence.conversation.model.ApprovalChoice) {
         if (closed) return
-        val card = approvalCards[approvalId]
-        if (card !is ApprovalCardState.Waiting) return
+        // Checked before anything else: on a Gateway without the decision
+        // endpoint there is no card to press, so a decision must be refused as
+        // an unavailable capability rather than by finding no card.
         if (!supportsApprovalCards) {
             update { it.copy(notice = ApprovalNotices.UNSUPPORTED) }
             return
         }
+        val card = approvalCards[approvalId]
+        if (card !is ApprovalCardState.Waiting) return
         if (card.request.countdownAt(clock()).expired) {
             // The window the Gateway gave is over: the buttons are already grey,
             // and sending a decision the Gateway will refuse would only look

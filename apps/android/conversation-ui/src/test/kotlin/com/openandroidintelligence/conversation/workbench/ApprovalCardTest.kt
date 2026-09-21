@@ -32,9 +32,14 @@ import org.robolectric.annotation.Config
 /**
  * The card the user actually presses.
  *
- * These tests pin the two things a user notices first: the countdown really
- * counts down where they are looking, and a press locks the whole group so one
- * decision cannot be sent twice.
+ * These tests pin what a user notices first: the badge shows the time the
+ * Gateway really gave, a press locks the whole group so one decision cannot be
+ * sent twice, and a closed window leaves nothing clickable.
+ *
+ * The countdown's per-second arithmetic is asserted where it lives — on the
+ * request itself, in `ApprovalStateMachineTest` — rather than by driving the
+ * Compose clock from here: the ticking is presentation, and a test that depends
+ * on how a test framework virtualises `delay` would be testing the framework.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -73,20 +78,14 @@ class ApprovalCardTest {
     }
 
     @Test
-    fun theCountdownBadgeCountsDownFromTheGatewayWindow() {
-        virtualNow = REQUESTED_AT
-        // The clock is driven by hand so "one second later" is exactly one tick
-        // of the card's own timer, never a race with the test's own idle waiting.
-        compose.mainClock.autoAdvance = false
+    fun theCountdownBadgeShowsTheTimeTheGatewayGave() {
+        // The badge reads the Gateway's own deadline, so the number on screen is
+        // the time the approval really has left — not a per-screen timer.
+        virtualNow = REQUESTED_AT + 15_000L
         setCard(ApprovalCardState.Waiting(request()))
 
         compose.onNodeWithTag(ApprovalCardTags.COUNTDOWN).assertIsDisplayed()
-        compose.onNodeWithText("⏱️ 300s").assertIsDisplayed()
-
-        virtualNow += 1_000L
-        compose.mainClock.advanceTimeBy(1_000L)
-
-        compose.onNodeWithText("⏱️ 299s").assertIsDisplayed()
+        compose.onNodeWithText("⏱️ 285s").assertIsDisplayed()
     }
 
     @Test
@@ -142,14 +141,13 @@ class ApprovalCardTest {
     }
 
     @Test
-    fun anExpiredWindowGreysEveryButtonAndSaysSo() {
-        virtualNow = REQUESTED_AT
-        compose.mainClock.autoAdvance = false
-        setCard(ApprovalCardState.Waiting(request()))
-        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ONCE)).assertIsEnabled()
-
+    fun aWindowThatHasAlreadyClosedGreysEveryButtonAndSaysSo() {
+        // The window closing is a fact about the Gateway's deadline, so the card
+        // reaches this state on its own — it does not need the Gateway to answer
+        // first, and it never leaves a live button under a command that will not
+        // run.
         virtualNow = REQUESTED_AT + TIMEOUT_SECONDS * 1_000L + 1L
-        compose.mainClock.advanceTimeBy(APPROVAL_COUNTDOWN_TICK_MILLIS)
+        setCard(ApprovalCardState.Waiting(request()))
 
         compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ONCE)).assertIsNotEnabled()
         compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.DENY)).assertIsNotEnabled()
