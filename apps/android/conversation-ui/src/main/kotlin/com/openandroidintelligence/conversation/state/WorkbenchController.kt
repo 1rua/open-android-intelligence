@@ -48,6 +48,16 @@ data class TimelineEntry(
     val batchGroupId: String?,
     val attachments: List<com.openandroidintelligence.conversation.model.TimelineAttachment> = emptyList(),
     val isStreaming: Boolean = false,
+    /**
+     * The conversation this row navigates to, when it is a system row rather
+     * than a message.
+     *
+     * The thread a `/new` was sent from keeps a receipt for what that command
+     * created, so the new conversation stays reachable after the phone has moved
+     * — including when the user had already left the source thread when the
+     * answer arrived. A receipt is local navigation, never Gateway content.
+     */
+    val systemThreadId: String? = null,
 )
 
 data class WorkbenchUiState(
@@ -237,6 +247,17 @@ class WorkbenchController(
      * the thread list, never to move the screen.
      */
     private val settledCreations = ArrayDeque<SettledCreation>()
+
+    /**
+     * What each `/new` this phone sent from a thread actually created.
+     *
+     * The conversation the user was reading keeps a compact receipt for it, so
+     * "the new conversation" is reachable by one tap instead of being lost the
+     * moment the phone switches away.
+     */
+    private data class CreationReceipt(val threadId: String, val createdAt: Long)
+
+    private val creationReceipts = LinkedHashMap<String, CreationReceipt>()
 
     /**
      * The zero-conversation bootstrap still talks to the Gateway directly.
@@ -443,6 +464,10 @@ class WorkbenchController(
         onActiveThreadChanged(threadId)
         mirrored.clear()
         mirroredRevisions.clear()
+        // Rendering cache of the conversation being left: without this, a message
+        // of the newly opened thread could be rendered with an attachment's
+        // filename from another one.
+        historicalAttachments.clear()
         timelineJob?.cancel()
         disarmReplyWatchdog()
         update {
@@ -451,6 +476,12 @@ class WorkbenchController(
                 activeThreadTitle = threadTitleOf(threadId),
                 timeline = Loadable.Loading,
                 pendingBatch = emptyList(),
+                // Generation, composer and notice describe the conversation being
+                // left: a turn it was still running, or the failure that turn
+                // produced, must not read as the state of the one being opened.
+                generation = GenerationState.IDLE,
+                composer = ComposerState.EDITING,
+                notice = null,
             )
         }
 
@@ -476,7 +507,7 @@ class WorkbenchController(
                     update { state ->
                         if (!isActive || state.activeThreadId != threadId) state
                         else state.copy(
-                            timeline = if (mirrored.isEmpty()) {
+                            timeline = if (mirrored.isEmpty() && creationReceiptRow(threadId) == null) {
                                 Loadable.Empty
                             } else {
                                 Loadable.Ready(renderTimeline(state.pendingBatch))
@@ -554,6 +585,52 @@ class WorkbenchController(
                     mirrorCommandInSourceThread(sourceThreadId, clientMessageId.value, acceptance.messageId)
                 }
         }
+    }
+
+    /**
+     * Stops waiting for the Agent's answer to `/new`.
+     *
+     * A request that was already sent cannot be taken back, so this is a decision
+     * about the phone: the user chose to stop waiting, and the answer is then
+     * treated like any other abandoned one — it may still enrich the thread list,
+     * but it must not move the screen after the wait was reported over.
+     */
+    fun cancelThreadCreation() {
+        if (pendingCreation == null) return
+        creationSendJob?.cancel()
+        abandonAgentThreadCreation("CONVERSATION_CREATE_CANCELLED:USER_CANCELLED")
+    }
+
+    /**
+     * Remembers where a `/new` sent from one thread ended up.
+     *
+     * The phone does not author conversations, so the only honest receipt is one
+     * for a thread this phone actually sent the command from; without a source
+     * there is nothing to attach the receipt to.
+     */
+    private fun rememberCreationReceipt(sourceThreadId: String?, createdThreadId: String) {
+        if (sourceThreadId == null || sourceThreadId == createdThreadId) return
+        creationReceipts.remove(sourceThreadId)
+        creationReceipts[sourceThreadId] = CreationReceipt(createdThreadId, System.currentTimeMillis())
+        while (creationReceipts.size > MAX_CREATION_RECEIPTS) {
+            val eldest = creationReceipts.keys.firstOrNull() ?: break
+            creationReceipts.remove(eldest)
+        }
+    }
+
+    /** The navigation row a thread shows when a `/new` sent from it succeeded. */
+    private fun creationReceiptRow(threadId: String): TimelineEntry? {
+        val receipt = creationReceipts[threadId] ?: return null
+        return TimelineEntry(
+            key = "system_new_created_${receipt.threadId}",
+            sender = "system",
+            text = "已创建新对话",
+            isUser = false,
+            timestamp = receipt.createdAt,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            systemThreadId = receipt.threadId,
+        )
     }
 
     private fun mirrorCommandInSourceThread(sourceThreadId: String, clientMessageId: String, messageId: String) {
@@ -636,6 +713,10 @@ class WorkbenchController(
                     abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:MISSING_CONVERSATION_ID")
                     return
                 }
+                // The receipt is kept either way: the user may already have
+                // moved on, and the conversation that was created must stay
+                // reachable from the thread that asked for it.
+                rememberCreationReceipt(waiting.sourceThreadId, newThreadId)
                 pendingCreation = null
                 disarmCreationWatchdog()
                 if (activeThreadId != waiting.sourceThreadId) {
@@ -1311,6 +1392,7 @@ class WorkbenchController(
                                     if (abandoned != null) settledCreations.remove(abandoned)
                                     if (abandoned == null && (source == null || source == activeThreadId)) {
                                         event.conversationId?.let { created ->
+                                            rememberCreationReceipt(source, created.value)
                                             switchToAgentCreatedThread(created.value)
                                         }
                                     } else {
@@ -1361,7 +1443,11 @@ class WorkbenchController(
                     else {
                         val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
                         state.copy(
-                            timeline = if (mirrored.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(state.pendingBatch)),
+                            timeline = if (mirrored.isEmpty() && creationReceiptRow(threadId) == null) {
+                                Loadable.Empty
+                            } else {
+                                Loadable.Ready(renderTimeline(state.pendingBatch))
+                            },
                             generation = if (hasStreaming) {
                                 GenerationState.RUNNING
                             } else if (receivedConfirmedAssistantForCurrentTurn && (state.generation == GenerationState.RUNNING || state.generation == GenerationState.QUEUED)) {
@@ -1518,7 +1604,11 @@ class WorkbenchController(
                 if (entry.isStreaming) 0 else 1
             },
         )
-        return deduplicateTimelineEntries(rawList)
+        val rendered = deduplicateTimelineEntries(rawList)
+        // Appended after the message rules: a receipt is navigation, not content,
+        // so it must never be folded into a message by the deduplication above.
+        val receiptRow = activeThreadId?.let(::creationReceiptRow) ?: return rendered
+        return rendered + receiptRow
     }
 
     private fun normalizeEntryKey(key: String): String =
@@ -1706,5 +1796,14 @@ class WorkbenchController(
          * floods the stream cannot grow the wait without bound.
          */
         const val MAX_PARKED_CREATION_RESULTS = 8
+
+        /**
+         * How many `/new` receipts stay navigable.
+         *
+         * A receipt is a one-tap way back to a conversation this phone created;
+         * only the most recent ones are worth keeping, and the cap keeps a long
+         * session bounded.
+         */
+        const val MAX_CREATION_RECEIPTS = 8
     }
 }

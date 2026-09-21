@@ -36,8 +36,18 @@ fun <T> LoadableRegion(state: Loadable<T>, emptyHint: String, onRetry: () -> Uni
     }
 }
 
-/** 展示可采取的动作，不把可能含地址、服务端正文的原始异常当文案。 */
-fun readableFailure(code: String): String {
+/**
+ * 展示可采取的动作，不把可能含地址、服务端正文的原始异常当文案。
+ *
+ * 没有已知指引时退回统一的兜底说明；[specificFailureText] 让调用方能区分
+ * 「这条错误码有专门说明」与「只能给兜底」。
+ */
+fun readableFailure(code: String): String =
+    specificFailureText(code)
+        ?: "暂时无法取得内容。请检查连接后重试；若持续失败，请检查 Gateway 服务。"
+
+/** 已知错误码对应的说明；未知码返回 null，由调用方决定兜底文案。 */
+fun specificFailureText(code: String): String? {
     val value = code.uppercase()
     return when {
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
@@ -48,6 +58,8 @@ fun readableFailure(code: String): String {
         value.contains("CONVERSATION_CREATE_UNAVAILABLE") -> "还没有可承接新对话的会话，请先发送一条消息。"
         value.contains("CONVERSATION_CREATE_TIMEOUT") ->
             "Agent 迟迟没有返回新建的会话，已停在原会话。请确认 Gateway 与 Agent 正在运行后重试。"
+        value.contains("CONVERSATION_CREATE_CANCELLED") || value.contains("USER_CANCELLED") ->
+            "已停止等待新建对话，仍停留在原会话。可以重新点击「新建对话」。"
         value.contains("CONVERSATION_CREATE_FAILED") ->
             "新建对话失败，已停留在原会话，本地没有留下与 Gateway 不一致的会话。请检查连接后重试。"
         value.contains("RENAME") || value.contains("TITLE_UPDATE") -> "网关没有保存这次重命名，已恢复原标题。请确认网关版本支持会话重命名。"
@@ -68,7 +80,7 @@ fun readableFailure(code: String): String {
             "与 Gateway 的实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务后重试。"
         value.contains("TIMEOUT") || value.contains("TIMED OUT") -> "连接超时，请检查网络后重试。"
         value.contains("CONNECT") || value.contains("NETWORK") || value.contains("IOEXCEPTION") || value.contains("UNKNOWNHOST") -> "暂时无法连接 Gateway，请检查网络和服务地址后重试。"
-        else -> "暂时无法取得内容。请检查连接后重试；若持续失败，请检查 Gateway 服务。"
+        else -> null
     }
 }
 
@@ -97,9 +109,18 @@ fun streamHealthText(health: com.openandroidintelligence.conversation.model.Stre
  * leaving already human-readable notices untouched.
  */
 fun noticeText(notice: String): String {
-    val code = notice.substringAfter(':', notice)
-    val looksLikeCode = notice.contains(':') && Regex("[A-Z0-9_]{3,}").containsMatchIn(code)
-    return if (looksLikeCode) readableFailure(code) else notice
+    if (!notice.contains(':')) return notice
+    // Both halves are candidates: "SEND_FAILED:MASTER_KEY_UNAVAILABLE" carries its
+    // cause on the right, while "CONVERSATION_CREATE_TIMEOUT:NO_COMMAND_RESULT"
+    // carries the actionable code on the left. Asking the halves in order is what
+    // keeps the user from reading a generic sentence when a specific one exists.
+    val candidates = listOf(notice.substringBefore(':'), notice.substringAfter(':'))
+    for (candidate in candidates) {
+        val code = candidate.trim()
+        if (code.isEmpty() || !Regex("[A-Z0-9_]{3,}").containsMatchIn(code)) continue
+        specificFailureText(code)?.let { return it }
+    }
+    return notice
 }
 
 @Composable

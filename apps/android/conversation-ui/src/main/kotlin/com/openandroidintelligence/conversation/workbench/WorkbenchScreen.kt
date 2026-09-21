@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,6 +37,7 @@ import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -277,7 +279,26 @@ fun WorkbenchScreen(
                                                 verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceLarge),
                                             ) {
                                                 items(rows, key = { it.key }) { entry ->
-                                                    MessageTimeline(listOf(entry))
+                                                    val jumpTarget = entry.systemThreadId
+                                                    if (jumpTarget != null) {
+                                                        CreatedThreadJumpRow(
+                                                            label = entry.text,
+                                                            onClick = { controller.openThread(jumpTarget) },
+                                                        )
+                                                    } else {
+                                                        MessageTimeline(listOf(entry))
+                                                    }
+                                                }
+                                                if (state.creatingThread) {
+                                                    // Waiting is a state the user must be able to see
+                                                    // and leave: silence here is exactly what made the
+                                                    // button look like it did nothing.
+                                                    item(key = "creating_thread") {
+                                                        CreatingThreadRow(
+                                                            onCancel = controller::cancelThreadCreation,
+                                                            modifier = Modifier.padding(vertical = Dimensions.SpaceSmall),
+                                                        )
+                                                    }
                                                 }
                                                 if (isThinking) {
                                                     item(key = "thinking_indicator") {
@@ -459,6 +480,87 @@ private fun ConversationWelcome(onCreate: (() -> Unit)?) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+/**
+ * 来源线程里的「已创建新对话」跳转项。
+ *
+ * 这是本机导航的收据，不是 Gateway 正文：`/new` 之后用户随时能回到 Agent 真正
+ * 创建的那个会话，即使指令返回时他已经离开了来源线程。
+ */
+@Composable
+private fun CreatedThreadJumpRow(label: String, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(AppRadius.Medium),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                horizontal = Dimensions.SpaceMedium,
+                vertical = Dimensions.SpaceMedium,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+        }
+    }
+}
+
+/**
+ * 等待 Agent 创建新会话时的可见状态。
+ *
+ * 等待本身必须看得见，也必须能退出：静默的等待正是「点了按钮没反应」的来源。
+ * 取消只停止等待，不伪造会话、也不把用户挪出原会话。
+ */
+@Composable
+private fun CreatingThreadRow(onCancel: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(AppRadius.Medium),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                horizontal = Dimensions.SpaceMedium,
+                vertical = Dimensions.SpaceCompact,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
+        ) {
+            CircularProgressIndicator(
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+            Text(
+                text = "正在由 Agent 创建新对话…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onCancel) { Text("取消") }
         }
     }
 }

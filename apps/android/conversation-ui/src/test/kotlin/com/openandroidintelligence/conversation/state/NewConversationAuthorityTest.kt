@@ -1,7 +1,9 @@
 package com.openandroidintelligence.conversation.state
 
 import com.openandroidintelligence.conversation.model.CatalogVersion
+import com.openandroidintelligence.conversation.model.ComposerState
 import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository
@@ -425,6 +427,130 @@ class NewConversationAuthorityTest {
     }
 
     @Test
+    fun cancellingTheWaitStopsItWithoutFakingAConversation() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceUntilIdle()
+        assertTrue(controller.state.value.creatingThread)
+
+        controller.cancelThreadCreation()
+        advanceUntilIdle()
+
+        assertFalse("取消后必须退出等待态", controller.state.value.creatingThread)
+        assertEquals(SOURCE_ID, controller.state.value.activeThreadId)
+        assertTrue("不得本地创建会话", repository.createCalls.isEmpty())
+        assertTrue(
+            controller.state.value.notice.orEmpty().contains("CONVERSATION_CREATE_CANCELLED"),
+        )
+
+        // 用户已经被告知等待结束，迟到的答案不得反过来把他挪走。
+        repository.events.emit(commandResult())
+        advanceUntilIdle()
+        assertEquals(SOURCE_ID, controller.state.value.activeThreadId)
+    }
+
+    @Test
+    fun switchingThreadsDropsTheStateThatBelongedToTheThreadBeingLeft() = runWorkbench {
+        val repository = FakeRepository().apply { failSend = true }
+        val controller = controller(repository)
+        advanceUntilIdle()
+
+        // 来源会话里正在跑的一轮生成。
+        repository.events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_streaming",
+                occurredAt = 1L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_streaming",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("正在回答")),
+                    timestamp = 1L,
+                    state = "STREAMING",
+                    conversationId = ConversationId(SOURCE_ID),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+
+        controller.editDraft("这条会失败")
+        controller.sendDraft()
+        advanceUntilIdle()
+        assertTrue(controller.state.value.notice.orEmpty().contains("SEND_FAILED"))
+
+        // 新会话的时间线读取失败：此时只有切换本身的清理能纠正界面状态。
+        repository.failTimeline = true
+        controller.openThread("conv_other")
+        advanceUntilIdle()
+
+        assertEquals(
+            "上一会话运行中的 generation 不得跟着切过去",
+            GenerationState.IDLE,
+            controller.state.value.generation,
+        )
+        assertEquals("上一会话的失败提示不得出现在新会话", null, controller.state.value.notice)
+        assertEquals(
+            "上一会话的输入框失败态不得挡住新会话",
+            ComposerState.EDITING,
+            controller.state.value.composer,
+        )
+    }
+
+    @Test
+    fun theSourceThreadKeepsAReceiptForWhatTheCommandCreated() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceUntilIdle()
+        repository.events.emit(commandResult())
+        advanceUntilIdle()
+        assertEquals(CREATED_ID, controller.state.value.activeThreadId)
+
+        controller.openThread(SOURCE_ID)
+        advanceUntilIdle()
+
+        val rows = (controller.state.value.timeline as Loadable.Ready).value
+        val receipt = rows.singleOrNull { it.systemThreadId != null }
+        assertEquals("来源会话必须留下跳转项", CREATED_ID, receipt?.systemThreadId)
+        assertEquals("已创建新对话", receipt?.text)
+        assertEquals("跳转项必须排在消息之后", receipt?.key, rows.last().key)
+
+        // 跳转项就是回去的入口。
+        controller.openThread(CREATED_ID)
+        advanceUntilIdle()
+        assertEquals(CREATED_ID, controller.state.value.activeThreadId)
+    }
+
+    @Test
+    fun aConversationCreatedWhileTheUserWasElsewhereStaysReachable() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+        controller.createThread()
+        advanceUntilIdle()
+
+        controller.openThread("conv_other")
+        advanceUntilIdle()
+        repository.events.emit(commandResult())
+        advanceUntilIdle()
+        assertEquals("用户已离开来源会话时不得劫持页面", "conv_other", controller.state.value.activeThreadId)
+
+        controller.openThread(SOURCE_ID)
+        advanceUntilIdle()
+
+        val rows = (controller.state.value.timeline as Loadable.Ready).value
+        assertEquals(
+            "新会话必须仍能从来源会话进入",
+            CREATED_ID,
+            rows.singleOrNull { it.systemThreadId != null }?.systemThreadId,
+        )
+    }
+
+    @Test
     fun failedCommandDeliveryRollsBackWithTheSameHonestyAsARefusal() = runWorkbench {
         val repository = FakeRepository().apply { failSend = true }
         val controller = controller(repository)
@@ -446,6 +572,8 @@ class NewConversationAuthorityTest {
         val timelineRequests = mutableListOf<String>()
         val createCalls = mutableListOf<String>()
         var failSend = false
+        /** Makes the next timeline reads fail, so only a switch's own cleanup shows. */
+        var failTimeline = false
         /**
          * Holds the send reply back so a test can let the event stream win the
          * race — the Gateway pushes results and answers on separate channels.
@@ -472,6 +600,7 @@ class NewConversationAuthorityTest {
 
         override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
             timelineRequests += conversationId
+            if (failTimeline) error("TIMELINE_FAILED:offline")
             return if (conversationId == CREATED_ID) {
                 TimelinePage(
                     listOf(

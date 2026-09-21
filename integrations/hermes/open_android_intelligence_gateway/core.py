@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import re
 import secrets
 import shutil
@@ -18,7 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 from urllib.parse import urlsplit
 
 from .account_paths import (
@@ -29,6 +30,13 @@ from .account_paths import (
 )
 from .audit import AuditStore
 from .credentials import hash_password, verify_password
+
+
+logger = logging.getLogger("open_android_intelligence_gateway.core")
+
+# One transport that wants committed events as they happen. The account id is
+# the account the event belongs to, so a stream never has to guess it.
+EventSink = Callable[[str, Mapping[str, Any]], None]
 
 
 # Contract section 4 core schema digest: a domain-separated, name-sorted listing
@@ -452,6 +460,7 @@ class ContractRegistry:
         "device.sms-query.v1",
         "response.conversation-create.v1",
         "error.cursor-expired.v1",
+        "event.conversation-command-result.v1",
     )
 
     schema_definitions = {
@@ -881,11 +890,15 @@ class AccountStore:
     def __init__(
         self, paths: AccountPaths, master_key_ref: str | None = None,
         commit_hook: Any = None, aead: Any = None,
+        account_id: str | None = None, event_sink: EventSink | None = None,
     ):
         self.paths = paths
         self.master_key_ref = str(master_key_ref or "")
         self.commit_hook = commit_hook
         self.aead = aead
+        self.account_id = str(account_id or "")
+        self.event_sink = event_sink
+        self._pending_events: list[dict[str, Any]] = []
         self.fail_next_commit = False
         ensure_account_directories(paths)
         self.database = sqlite3.connect(str(paths.database), isolation_level=None, check_same_thread=False)
@@ -949,6 +962,13 @@ class AccountStore:
               text TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL, attachment_ids_json TEXT NOT NULL,
               state TEXT NOT NULL DEFAULT 'CONFIRMED',
+              FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
+            );
+            CREATE TABLE IF NOT EXISTS conversation_agent_sessions (
+              conversation_id TEXT PRIMARY KEY NOT NULL,
+              agent_session_id TEXT, session_key TEXT,
+              created_at TEXT NOT NULL, created_via TEXT NOT NULL,
+              request_id TEXT,
               FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
             );
             CREATE TABLE IF NOT EXISTS device_requests (
@@ -1100,6 +1120,9 @@ class AccountStore:
                 except sqlite3.Error:
                     pass
                 self._transaction_depth = 0
+                # Rolled back: these events never happened, so nothing may be
+                # delivered for them.
+                self._pending_events.clear()
                 if isinstance(exc, TransactionOutcomeUnknown):
                     self._reopen_after_unknown()
                     self._persist_uncertain_marker(unknown_marker)
@@ -1118,10 +1141,46 @@ class AccountStore:
             self.database.execute("COMMIT")
         except BaseException as exc:
             self._transaction_depth = 0
+            # The commit outcome is unknown, so whether these events are durable
+            # is unknown too: claiming delivery would tell the phone about a fact
+            # it might not be able to read back.
+            self._pending_events.clear()
             self._reopen_after_unknown()
             self._persist_uncertain_marker(unknown_marker)
             raise TransactionOutcomeUnknown({"reason": "transaction commit outcome unknown"}) from exc
         self._transaction_depth = 0
+        self._flush_events()
+
+    def record_event(self, event: Mapping[str, Any]) -> None:
+        """Hand one appended event to the stream that owns this store.
+
+        Inside a transaction the delivery waits for `COMMIT`: an event must never
+        reach a live subscriber before it is durable, or a reconnect would replay
+        a fact the phone was already told and could not re-read. Outside one the
+        write is already committed, so there is nothing to wait for.
+        """
+        if self._transaction_depth == 0:
+            self._deliver_events([dict(event)])
+            return
+        self._pending_events.append(dict(event))
+
+    recordEvent = record_event
+
+    def _flush_events(self) -> None:
+        pending = self._pending_events
+        self._pending_events = []
+        self._deliver_events(pending)
+
+    def _deliver_events(self, events: list[dict[str, Any]]) -> None:
+        """Deliver committed events; a stream failure never fails the write."""
+        sink = self.event_sink
+        if sink is None or not events:
+            return
+        for event in events:
+            try:
+                sink(self.account_id, event)
+            except Exception as exc:  # noqa: BLE001 - delivery is best effort
+                logger.warning("[open_android] Event delivery failed: %s", exc)
 
     def close(self) -> None:
         self.database.close()
@@ -1135,7 +1194,10 @@ class AccountStore:
             self.database.close()
         except sqlite3.Error:
             pass
-        replacement = AccountStore(self.paths, self.master_key_ref, self.commit_hook, self.aead)
+        replacement = AccountStore(
+            self.paths, self.master_key_ref, self.commit_hook, self.aead,
+            account_id=self.account_id, event_sink=self.event_sink,
+        )
         self.database = replacement.database
         self._transaction_depth = 0
 
@@ -1222,6 +1284,10 @@ class EventStore:
                 self.store.seal_json(payload, f"event:{event['eventId']}:payload"), event["expiresAt"],
             ),
         )
+        # Live delivery is decided by the store, not by whichever caller appended
+        # the event: a durable event that only reaches the phone on reconnect is
+        # how a command result the Agent already produced stays invisible.
+        self.store.record_event(event)
         return event
 
     def read_after(self, cursor: str | None, now: datetime | str | None = None) -> list[dict[str, Any]]:
@@ -1257,6 +1323,91 @@ class EventStore:
         }
 
     readAfter = read_after
+
+
+class AgentSessionBindings:
+    """Which Agent session owns one conversation's memory (ADR 0043).
+
+    The Agent host holds the long-lived conversation, so the binding between a
+    Gateway conversation and the host's own session is a fact about this account
+    rather than a per-connection guess. Recording it is what makes "switch the
+    conversation" mean "switch the memory": a conversation created by `/new` owns
+    a session of its own, and a conversation someone opens again lands back on the
+    session it already had.
+
+    `agent_session_id` stays NULL until the host reports one. A placeholder would
+    be an invented fact, and the phone would then be routed to a session that does
+    not exist.
+    """
+
+    # Where a binding row came from. The command entry is the only path that also
+    # creates the Agent session up front; the others reuse or create lazily.
+    CREATED_VIA_NEW_COMMAND = "new-command"
+    CREATED_VIA_CONVERSATION_READ = "conversation-read"
+    CREATED_VIA_INBOUND_MESSAGE = "inbound-message"
+
+    def __init__(self, store: AccountStore):
+        self.store = store
+
+    def record(
+        self, conversation_id: str, created_via: str,
+        request_id: str | None = None, now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Record that this conversation exists and owes the host a session.
+
+        Idempotent by primary key: re-recording the same conversation never
+        replaces the session it already has.
+        """
+        current = iso_millis(_now(now))
+        self.store.database.execute(
+            """
+            INSERT INTO conversation_agent_sessions(
+              conversation_id, agent_session_id, session_key, created_at, created_via, request_id
+            ) VALUES (?, NULL, NULL, ?, ?, ?)
+            ON CONFLICT(conversation_id) DO NOTHING
+            """,
+            (conversation_id, current, created_via, request_id),
+        )
+        binding = self.lookup(conversation_id)
+        return binding if binding is not None else {
+            "conversationId": conversation_id, "agentSessionId": None,
+            "sessionKey": None, "createdAt": current, "createdVia": created_via,
+            "requestId": request_id,
+        }
+
+    record_binding = record
+
+    def attach(
+        self, conversation_id: str, agent_session_id: str, session_key: str | None = None,
+    ) -> bool:
+        """Fill in the host's session id for a conversation that already has a row."""
+        cursor = self.store.database.execute(
+            "UPDATE conversation_agent_sessions SET agent_session_id = ?, session_key = ? WHERE conversation_id = ?",
+            (agent_session_id, session_key, conversation_id),
+        )
+        return cursor.rowcount > 0
+
+    def lookup(self, conversation_id: str) -> dict[str, Any] | None:
+        row = self.store.database.execute(
+            "SELECT * FROM conversation_agent_sessions WHERE conversation_id = ?", (conversation_id,)
+        ).fetchone()
+        return None if row is None else self._map(row)
+
+    def list(self) -> list[dict[str, Any]]:
+        rows = self.store.database.execute(
+            "SELECT * FROM conversation_agent_sessions ORDER BY created_at, conversation_id"
+        ).fetchall()
+        return [self._map(row) for row in rows]
+
+    def _map(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "conversationId": row["conversation_id"],
+            "agentSessionId": row["agent_session_id"],
+            "sessionKey": row["session_key"],
+            "createdAt": row["created_at"],
+            "createdVia": row["created_via"],
+            "requestId": row["request_id"],
+        }
 
 
 class AttachmentStore:
@@ -2110,9 +2261,11 @@ class GatewayAccount:
         )
         self.device_requests = DeviceRequestStore(account_id, store, self.audit, self.events, contracts)
         self.conversations = ConversationPort(account_id, store, self.attachments, self.audit, self.attachment_policy)
+        self.agent_sessions = AgentSessionBindings(store)
         self.credentials = CredentialStore(store)
         self.sessions = SessionService(account_id, store, self.audit, credential_verifier)
         self.deviceRequests = self.device_requests
+        self.agentSessions = self.agent_sessions
         self.masterKeyRef = self.master_key_ref
         self._closed = False
 
@@ -2469,6 +2622,7 @@ class GatewayCore:
         attachment_policy: AttachmentPolicy | None = None,
         credential_verifier: Any = None,
         command_catalog: Any = None,
+        event_sink: EventSink | None = None,
     ):
         self.storage_root = Path(storage_root or default_hermes_gateway_root()).resolve()
         self.secret_store = secret_store
@@ -2479,12 +2633,45 @@ class GatewayCore:
         self.attachment_policy = attachment_policy or DEFAULT_ATTACHMENT_POLICY
         self.credential_verifier = credential_verifier
         self.command_catalog = tuple(command_catalog) if command_catalog is not None else DEFAULT_COMMAND_CATALOG
+        self._event_sinks: list[EventSink] = [event_sink] if event_sink is not None else []
 
     @property
     def contracts(self) -> ContractRegistry:
         if self._contracts is None:
             self._contracts = ContractRegistry(self.contract_root)
         return self._contracts
+
+    def register_event_sink(self, sink: EventSink) -> None:
+        """Register one transport that wants committed events as they happen.
+
+        Registration is separate from construction because the transport starts
+        after the accounts exist: an account opened before the first stream is
+        still served, because delivery reads this list at call time.
+        """
+        if sink not in self._event_sinks:
+            self._event_sinks.append(sink)
+
+    registerEventSink = register_event_sink
+
+    def unregister_event_sink(self, sink: EventSink) -> None:
+        self._event_sinks = [item for item in self._event_sinks if item is not sink]
+
+    unregisterEventSink = unregister_event_sink
+
+    def deliver_event(self, account_id: str, event: Mapping[str, Any]) -> None:
+        """Hand one committed event to every registered transport.
+
+        A transport that is gone or failing must not fail the write that produced
+        the event: the event is durable either way and the phone's cursor recovers
+        it on the next subscription.
+        """
+        for sink in list(self._event_sinks):
+            try:
+                sink(account_id, event)
+            except Exception as exc:  # noqa: BLE001 - delivery is best effort
+                logger.warning("[open_android] Event sink failed: %s", exc)
+
+    deliverEvent = deliver_event
 
     def account_exists(self, account_id: str) -> bool:
         """Whether this account was registered on this host.
@@ -2591,7 +2778,10 @@ class GatewayCore:
         # Resolve and validate the opaque account ID before constructing SQLite.
         paths = account_paths(self.storage_root, account_id)
         master_key_ref, aead = self._resolve_key_binding(account_id)
-        store = AccountStore(paths, master_key_ref, self.commit_hook, aead)
+        store = AccountStore(
+            paths, master_key_ref, self.commit_hook, aead,
+            account_id=account_id, event_sink=self.deliver_event,
+        )
         return GatewayAccount(
             account_id, paths, store, self.contracts, self.attachment_policy,
             self.credential_verifier,
@@ -2923,10 +3113,19 @@ class GatewayCore:
                 },
                 current,
             )
-            # The binding this adapter knows how to record: the request that
-            # asked for a new thread and the thread it got. No `agentSessionId`
-            # is minted here — there is no Agent runtime behind this adapter,
-            # and inventing one would be a fabricated fact.
+            # The binding the command entry owns: this request asked for a new
+            # thread and this thread is what it got. `agentSessionId` stays NULL
+            # here — only the host runtime can name the session it created, and
+            # it fills that column in through this same row rather than through an
+            # id invented by the protocol layer. The row exists from this
+            # transaction on, so the conversation can never be routed to a session
+            # nobody recorded.
+            account.agent_sessions.record(
+                created["conversationId"],
+                AgentSessionBindings.CREATED_VIA_NEW_COMMAND,
+                request_id,
+                current,
+            )
             account.audit.append(
                 "conversation.command.new",
                 {"accountId": account.account_id, "deviceId": device_id},

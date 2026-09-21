@@ -105,6 +105,124 @@
           }
         }
       }
+    },
+    {
+      "fixtureId": "event.conversation-command-result.v1",
+      "key": {
+        "kind": "event",
+        "eventType": "conversation.command.result",
+        "schemaSha256": "sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce"
+      },
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "commandId",
+          "outcome",
+          "sourceConversationId",
+          "sourceMessageId"
+        ],
+        "properties": {
+          "command": {
+            "const": "new"
+          },
+          "commandId": {
+            "const": "new"
+          },
+          "outcome": {
+            "enum": [
+              "created-conversation",
+              "rejected",
+              "unsupported",
+              "outcome-unknown"
+            ]
+          },
+          "sourceConversationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceMessageId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversationId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "command",
+              "commandId",
+              "outcome",
+              "sourceConversationId",
+              "sourceMessageId",
+              "conversationId"
+            ],
+            "properties": {
+              "command": {
+                "const": "new"
+              },
+              "commandId": {
+                "const": "new"
+              },
+              "sourceConversationId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sourceMessageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "conversationId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "outcome": {
+                "const": "created-conversation"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "command",
+              "commandId",
+              "outcome",
+              "sourceConversationId",
+              "sourceMessageId"
+            ],
+            "properties": {
+              "command": {
+                "const": "new"
+              },
+              "commandId": {
+                "const": "new"
+              },
+              "sourceConversationId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sourceMessageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "outcome": {
+                "enum": [
+                  "rejected",
+                  "unsupported",
+                  "outcome-unknown"
+                ]
+              }
+            }
+          }
+        ]
+      }
     }
   ],
   "bindingSets": [
@@ -142,6 +260,13 @@
             "errorCode": "CURSOR_EXPIRED"
           },
           "schemaSha256": "sha256:7cb06a94b19b83c6aba2ed82832bcfd3c103345f4fb6b5f106739cfe40d5fce9"
+        },
+        {
+          "key": {
+            "kind": "event",
+            "eventType": "conversation.command.result"
+          },
+          "schemaSha256": "sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce"
         }
       ]
     }

@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .local_keys import master_key_unavailable_reason
 from .core import (
+    NEW_CONVERSATION_COMMAND,
+    AgentSessionBindings,
     VerifiedGatewayRequest,
     VerifiedRequestContext,
     canonicalize_target,
@@ -88,9 +90,16 @@ except ImportError:
             self.platform = platform
             self._message_handler: Any = None
             self._running: bool = False
+            # Standalone runs have no host session store; the real host injects one
+            # through `set_session_store`, and a binding without it stays honestly
+            # incomplete instead of naming a session nobody created.
+            self._session_store: Any = None
 
         def set_message_handler(self, handler: Any) -> None:
             self._message_handler = handler
+
+        def set_session_store(self, session_store: Any) -> None:
+            self._session_store = session_store
 
         def set_fatal_error_handler(self, handler: Any) -> None:
             pass
@@ -573,6 +582,38 @@ def _ws_message_from_queue_item(item: Any) -> Optional[str]:
     return text
 
 
+def _header_value(headers: Mapping[str, Any], name: str) -> Optional[str]:
+    """One header, matched case-insensitively and never guessed."""
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == wanted:
+            text = str(value).strip()
+            return text or None
+    return None
+
+
+def _conversation_id_of(path: str) -> Optional[str]:
+    """The conversation a route reads or writes, if any.
+
+    Opening a conversation and reading its timeline are the same act for this
+    contract: the phone switches by reading, so both `…/conversations/{id}` and
+    `…/conversations/{id}/messages` name the conversation the user moved to.
+    Sub-resources that are about something else (`generations`, `attachments`)
+    name nothing here, because treating them as an opened conversation would bind
+    sessions nobody opened.
+    """
+    parts = [part for part in path.split("/") if part]
+    if "conversations" not in parts:
+        return None
+    index = parts.index("conversations") + 1
+    if index >= len(parts):
+        return None
+    tail = parts[index + 1:]
+    if tail and tail != ["messages"]:
+        return None
+    return parts[index]
+
+
 def _raw_body(input: Mapping[str, Any]) -> bytes:
     body = input.get("body")
     if body is None:
@@ -635,6 +676,13 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         # stream of the account that produced it.
         self._event_subscribers: Dict[str, Set[asyncio.Queue]] = {}
         self._conv_to_account: Dict[str, str] = {}
+        # The loop that owns the subscriber queues, and the one delivery hook the
+        # core holds. The hook is stored as an attribute so registering and
+        # unregistering it name the very same object.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._event_sink = self._deliver_committed_event
+        # Background work this adapter started and must not lose to collection.
+        self._background_tasks: Set[asyncio.Task] = set()
 
     @property
     def _active_sse_queues(self) -> Dict[str, Set[asyncio.Queue]]:
@@ -664,6 +712,15 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 retryable=False,
             )
             return False
+
+        # Every committed event is pushed to this account's live subscribers
+        # through this one hook. Registering before the socket is opened means no
+        # event produced between "server up" and "first subscriber" is only
+        # reachable through a reconnect.
+        self._loop = asyncio.get_running_loop()
+        register_sink = getattr(getattr(self.services, "core", None), "register_event_sink", None)
+        if callable(register_sink):
+            register_sink(self._event_sink)
 
         try:
             max_bytes = 10485760
@@ -695,11 +752,19 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[open_android] Failed to start HTTP gateway: %s", exc, exc_info=True)
             self._set_fatal_error("CONNECT_FAILED", f"Gateway startup failed: {exc}", retryable=True)
+            unregister_sink = getattr(getattr(self.services, "core", None), "unregister_event_sink", None)
+            if callable(unregister_sink):
+                unregister_sink(self._event_sink)
+            self._loop = None
             return False
 
     async def disconnect(self) -> None:
         """Stop the Gateway Protocol v2 server."""
         self._running = False
+        unregister_sink = getattr(getattr(self.services, "core", None), "unregister_event_sink", None)
+        if callable(unregister_sink):
+            unregister_sink(self._event_sink)
+        self._loop = None
         if self._runner:
             try:
                 await self._runner.cleanup()
@@ -809,11 +874,13 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         occurred_at: Optional[str] = None,
         account_id: Optional[str] = None,
     ) -> None:
-        """Persist one assistant event, then hand its frame to the stream.
+        """Persist one assistant event; the committed event delivers itself.
 
         Persisting first is what makes the SSE `id:` a real cursor: after a
         disconnect the phone replays the event from the account store instead of
-        depending on this process still holding it in memory.
+        depending on this process still holding it in memory. Delivery is not
+        done here: the store hands every committed event to the registered sink,
+        so an event only ever has one path to a live subscriber.
         """
         target_account = account_id or self._conv_to_account.get(chat_id) or self._account_id
         if not target_account:
@@ -827,10 +894,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                     account.conversations.record_assistant_message(chat_id, message_id, text, occurred_at)
                 except Exception as rec_err:
                     logger.warning("[open_android] Failed to record completed message: %s", rec_err)
-            event = account.events.append(event_type, message_id, payload, occurred_at)
+            account.events.append(event_type, message_id, payload, occurred_at)
         finally:
             account.close()
-        await self._broadcast_event(target_account, _sse_frame(event))
 
     def _message_payload(
         self,
@@ -937,16 +1003,128 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         headers = result.get("headers", {})
         body = result.get("body", {})
 
+        account_header = _header_value(raw_req["headers"], "x-open-android-intelligence-account")
+
         # If this was an inbound message POST, trigger Hermes agent turn
         if method == "POST" and "/conversations/" in path and path.endswith("/messages") and status in (200, 201):
             asyncio.create_task(self._notify_agent_inbound(
-                path, body_bytes, body,
-                (raw_req["headers"].get("X-Open-Android-Intelligence-Account")
-                 or raw_req["headers"].get("x-open-android-intelligence-account")),
+                path, body_bytes, body, account_header,
             ))
+
+        # Opening one conversation is the switch itself (ADR 0043): the reply that
+        # follows must land in that conversation's own Agent session, so the
+        # binding is ensured here instead of being left to whichever message
+        # happens to arrive next.
+        opened_conversation = _conversation_id_of(path) if method == "GET" else None
+        if opened_conversation is not None and status in (200, 201):
+            self._schedule_agent_session(
+                opened_conversation, account_header or self._account_id,
+                force_new=False, created_via=AgentSessionBindings.CREATED_VIA_CONVERSATION_READ,
+            )
 
         clean_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
         return web.json_response(body, status=status, headers=clean_headers)
+
+    def _agent_source(self, conversation_id: str, account_id: str) -> Any:
+        """The host source that names one Gateway conversation as one Agent chat.
+
+        The Gateway conversation id *is* the chat id: the host keys its session
+        from it, which is what makes two conversations two memories rather than
+        one shared transcript.
+        """
+        return self.build_source(
+            chat_id=conversation_id,
+            chat_name="Android Client",
+            chat_type="dm",
+            user_id=account_id,
+            user_name=account_id,
+        )
+
+    def _schedule_agent_session(
+        self, conversation_id: str, account_id: Optional[str], *,
+        force_new: bool, created_via: str,
+    ) -> None:
+        """Ensure one conversation's Agent session without blocking the response."""
+        if not conversation_id or not account_id:
+            logger.warning(
+                "[open_android] No account identity for conversation %s; its Agent session was not bound",
+                conversation_id,
+            )
+            return
+
+        def _start() -> None:
+            task = asyncio.ensure_future(self._ensure_agent_session(
+                conversation_id, account_id, force_new=force_new, created_via=created_via,
+            ))
+            # Held until done: a task nobody references can be collected mid-flight.
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            running: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            _start()
+            return
+        try:
+            loop.call_soon_threadsafe(_start)
+        except RuntimeError:
+            return
+
+    async def _ensure_agent_session(
+        self, conversation_id: str, account_id: str, *, force_new: bool, created_via: str,
+    ) -> Optional[str]:
+        """Bind one conversation to the Agent session that owns its memory.
+
+        `force_new` is only ever true for a conversation the `/new` command entry
+        just created: that conversation owes the user an empty context, while
+        every other conversation must land back on the session it already has.
+
+        Returns the host's session id, or None when this host cannot name one —
+        an absent binding is recorded as absent rather than filled with an
+        invented id.
+        """
+        store = getattr(self, "_session_store", None)
+        entry: Any = None
+        if store is not None:
+            try:
+                entry = await asyncio.to_thread(
+                    store.get_or_create_session, self._agent_source(conversation_id, account_id), force_new,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[open_android] Agent session lookup failed for %s: %s", conversation_id, exc
+                )
+                entry = None
+        self._record_agent_session_binding(account_id, conversation_id, entry, created_via)
+        return getattr(entry, "session_id", None) if entry is not None else None
+
+    def _record_agent_session_binding(
+        self, account_id: str, conversation_id: str, entry: Any, created_via: str,
+    ) -> None:
+        """Persist the binding, including the honest case where there is none yet."""
+        agent_session_id = getattr(entry, "session_id", None) if entry is not None else None
+        session_key = getattr(entry, "session_key", None) if entry is not None else None
+        try:
+            account = self.services.core.open_gateway_account(account_id)
+        except Exception as exc:
+            logger.warning("[open_android] Account %s is unavailable for binding: %s", account_id, exc)
+            return
+        try:
+            with account.store.transaction():
+                account.agent_sessions.record(conversation_id, created_via)
+                if isinstance(agent_session_id, str) and agent_session_id:
+                    account.agent_sessions.attach(conversation_id, agent_session_id, session_key)
+        except Exception as exc:
+            logger.warning(
+                "[open_android] Agent session binding failed for %s: %s", conversation_id, exc
+            )
+        finally:
+            account.close()
 
     async def _notify_agent_inbound(
         self, path: str, body_bytes: bytes, response_body: Any, account_id: str | None = None,
@@ -957,29 +1135,30 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             logger.warning("[open_android] Inbound message carries no account identity; not dispatching")
             return
         try:
-            parts = path.split("/")
-            # /open-android-intelligence/v2/conversations/{conv_id}/messages
-            conv_id = "default"
-            for i, p in enumerate(parts):
-                if p == "conversations" and i + 1 < len(parts):
-                    conv_id = parts[i + 1]
-                    break
+            conv_id = _conversation_id_of(path) or "default"
             self._conv_to_account[conv_id] = source_account
 
             data = json.loads(body_bytes.decode("utf-8"))
             user_text = data.get("text") or data.get("content") or ""
             client_turn = data.get("clientTurnId") or str(uuid.uuid4())
 
-            source = self.build_source(
-                chat_id=conv_id,
-                chat_name="Android Client",
-                chat_type="dm",
-                user_id=source_account,
-                user_name=source_account,
+            if user_text.strip() == NEW_CONVERSATION_COMMAND:
+                # The Gateway's own command entry owns `/new` (contract §7.1): it
+                # has already created the conversation and answered with its id.
+                # Handing the same text to the Agent would make the host run its
+                # own new-session command on the *source* conversation, wiping the
+                # memory the user is still reading.
+                logger.info("[open_android] Reserved /new stays a command entry; not dispatched to the agent")
+                return
+
+            await self._ensure_agent_session(
+                conv_id, source_account, force_new=False,
+                created_via=AgentSessionBindings.CREATED_VIA_INBOUND_MESSAGE,
             )
+
             event = MessageEvent(
                 text=user_text,
-                source=source,
+                source=self._agent_source(conv_id, source_account),
                 message_type=MessageType.TEXT,
                 message_id=client_turn,
             )
@@ -1232,7 +1411,56 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
         return ws
 
-    async def _broadcast_event(self, account_id: str, frame: bytes) -> None:
+    def _deliver_committed_event(self, account_id: str, event: Mapping[str, Any]) -> None:
+        """Immediate delivery hook for every event a committed write produced.
+
+        The core calls this from whatever thread committed the write, which is not
+        necessarily the loop that owns the subscriber queues, so the frame is
+        handed to that loop rather than mutating its queues from the wrong
+        thread. A boundary that never started the server has no subscribers to
+        serve: the event stays durable and the phone's cursor recovers it.
+        """
+        frame = _sse_frame(event)
+        if event.get("eventType") == "conversation.command.result":
+            self._bind_created_conversation(account_id, event.get("payload"))
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            running: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self._enqueue_frame(account_id, frame)
+            return
+        try:
+            loop.call_soon_threadsafe(self._enqueue_frame, account_id, frame)
+        except RuntimeError:
+            # The loop stopped between the check and the hand-off; the event is
+            # still durable and readable through its cursor.
+            return
+
+    def _bind_created_conversation(self, account_id: str, payload: Any) -> None:
+        """Give a conversation the `/new` entry created an Agent session of its own.
+
+        This is the "Agent host generates the agent session" half of ADR 0043: the
+        command entry decides *that* a new conversation exists, and the host decides
+        *which* session owns it. It is forced new because the whole point of `/new`
+        is a context that inherits nothing from the conversation it was sent from.
+        """
+        if not isinstance(payload, Mapping):
+            return
+        if payload.get("outcome") != "created-conversation":
+            return
+        conversation_id = payload.get("conversationId")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            return
+        self._schedule_agent_session(
+            conversation_id, account_id,
+            force_new=True, created_via=AgentSessionBindings.CREATED_VIA_NEW_COMMAND,
+        )
+
+    def _enqueue_frame(self, account_id: str, frame: bytes) -> None:
         """Hand one persisted frame to the subscribers of that account.
 
         A subscriber whose queue is full is skipped rather than blocking the
@@ -1246,6 +1474,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[open_android] Event subscriber queue is full; client will resume from cursor"
                 )
+
+    async def _broadcast_event(self, account_id: str, frame: bytes) -> None:
+        """Async wrapper over [self._enqueue_frame] for callers already on the loop."""
+        self._enqueue_frame(account_id, frame)
 
     _broadcast_sse = _broadcast_event
 

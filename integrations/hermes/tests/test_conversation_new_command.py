@@ -148,6 +148,61 @@ def test_replayed_request_answers_with_the_same_conversation(tmp_path):
     assert len(_events(core, "conversation.command.result")) == 1
 
 
+def _bindings(core) -> list[dict]:
+    account = core.open_gateway_account(ACCOUNT_ID)
+    try:
+        return account.agent_sessions.list()
+    finally:
+        account.close()
+
+
+def test_new_command_records_the_binding_the_host_fills_in(tmp_path):
+    """ADR 0043: the command entry saves the binding in the same transaction."""
+    core = create_gateway_core(storage_root=tmp_path)
+    source = _seed(core)
+
+    _send(core, source, "/new")
+    created_id = _events(core, "conversation.command.result")[0]["payload"]["conversationId"]
+
+    bindings = _bindings(core)
+    assert [row["conversationId"] for row in bindings] == [created_id]
+    # The protocol layer never invents the host's session id: it records that the
+    # conversation owes one, and the host runtime names it when it creates it.
+    assert bindings[0]["agentSessionId"] is None
+    assert bindings[0]["sessionKey"] is None
+    assert bindings[0]["createdVia"] == "new-command"
+    assert bindings[0]["requestId"] == NEW_COMMAND_REQUEST_ID
+
+
+def test_the_source_conversation_is_never_rebound(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    source = _seed(core)
+
+    _send(core, source, "/new")
+
+    assert source not in [row["conversationId"] for row in _bindings(core)]
+
+
+def test_replaying_the_command_does_not_add_a_second_binding(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    source = _seed(core)
+
+    _send(core, source, "/new")
+    _send(core, source, "/new")
+
+    assert len(_bindings(core)) == 1
+
+
+def test_plain_messages_add_no_binding_in_the_protocol_layer(tmp_path):
+    """A binding is an authority statement, not a side effect of any message."""
+    core = create_gateway_core(storage_root=tmp_path)
+    source = _seed(core)
+
+    _send(core, source, "普通消息", request_id="req_plain")
+
+    assert _bindings(core) == []
+
+
 def test_new_with_arguments_is_plain_text_the_agent_interprets(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     source = _seed(core)

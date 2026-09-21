@@ -252,6 +252,113 @@ def test_conversation_patch_updates_title_and_appends_event(tmp_path):
     asyncio.run(scenario())
 
 
+def test_a_committed_core_event_reaches_the_live_stream(tmp_path):
+    """Contract §9: a committed event is delivered, not merely stored.
+
+    `/new` is answered by the Core, so its `conversation.command.result` is
+    appended by a write the adapter never performs. The phone is waiting for
+    exactly that frame on the connection it already holds, so delivery has to
+    come from the commit itself: a frame that only appears on the next
+    subscription is a command result the user never sees.
+    """
+    async def scenario():
+        services, core = _services(tmp_path, None)
+        account = core.open_gateway_account(ACCOUNT_ID)
+        try:
+            source = account.conversations.create("cconv_source", "来源会话", "cor_source")["conversationId"]
+        finally:
+            account.close()
+
+        exposure = create_gateway_exposure(
+            "host-route", core=core, host_version="1.0.0", host_api=TEST_HOST_API,
+            verify_request=_verifier(EVENT_STREAM_PATH, now="2026-09-13T00:00:00.000Z"),
+        )
+        services = GatewayServices(core, services.admin, exposure)
+        adapter = OpenAndroidPlatformAdapter(_Config(0), services)
+        assert await adapter.connect() is True
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{_port(adapter)}{EVENT_STREAM_PATH}",
+                    headers={"Accept": "text/event-stream"},
+                ) as response:
+                    assert response.status == 200
+
+                    accepted = core.handle(make_verified_request({
+                        "context": {
+                            "accountId": ACCOUNT_ID, "deviceId": "dev_1", "sessionId": "sess_1",
+                            "requestId": "req_new_command", "correlationId": "cor_new_command",
+                            "pairingGeneration": 1, "grantRevision": 1,
+                        },
+                        "idempotencyKey": "req_new_command",
+                        "method": "POST",
+                        "target": f"/open-android-intelligence/v2/conversations/{source}/messages",
+                        "body": {"clientMessageId": "msg_new_command", "text": "/new", "attachments": []},
+                    }))
+                    assert accepted["data"]["message"]["status"] == "accepted"
+
+                    frame = await _read_event_frame(response)
+                    assert "event: conversation.command.result" in frame
+                    payload = _data_of(frame)["payload"]
+                    assert payload["outcome"] == "created-conversation"
+                    assert payload["sourceConversationId"] == source
+                    assert payload["conversationId"] != source
+        finally:
+            await adapter.disconnect()
+
+    asyncio.run(scenario())
+
+
+def test_committed_events_for_another_account_stay_off_this_stream(tmp_path):
+    """The delivery seam keeps the per-account scoping the subscription had."""
+    async def scenario():
+        services, core = _services(tmp_path, None)
+        account = core.open_gateway_account(ACCOUNT_ID)
+        try:
+            account.conversations.create("cconv_alice", "Alice", "cor_alice")
+        finally:
+            account.close()
+        other = core.open_gateway_account("acct_bob")
+        try:
+            other.conversations.create("cconv_bob", "Bob", "cor_bob")
+        finally:
+            other.close()
+
+        exposure = create_gateway_exposure(
+            "host-route", core=core, host_version="1.0.0", host_api=TEST_HOST_API,
+            verify_request=_verifier(EVENT_STREAM_PATH, now="2026-09-13T00:00:00.000Z"),
+        )
+        services = GatewayServices(core, services.admin, exposure)
+        adapter = OpenAndroidPlatformAdapter(_Config(0), services)
+        assert await adapter.connect() is True
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{_port(adapter)}{EVENT_STREAM_PATH}",
+                    headers={"Accept": "text/event-stream"},
+                ) as response:
+                    assert response.status == 200
+
+                    bob = core.open_gateway_account("acct_bob")
+                    try:
+                        bob.events.append("gateway.notice", "cor_bob_notice", {"noticeCode": "bob"})
+                    finally:
+                        bob.close()
+
+                    alice = core.open_gateway_account(ACCOUNT_ID)
+                    try:
+                        alice.events.append("gateway.notice", "cor_alice_notice", {"noticeCode": "alice"})
+                    finally:
+                        alice.close()
+
+                    frame = await _read_event_frame(response)
+                    assert _data_of(frame)["payload"] == {"noticeCode": "alice"}
+        finally:
+            await adapter.disconnect()
+
+    asyncio.run(scenario())
+
+
 def test_command_catalog_includes_all_standard_commands(tmp_path):
     services, core = _services(tmp_path, None)
     res = core.command_catalog_response("zh-CN")

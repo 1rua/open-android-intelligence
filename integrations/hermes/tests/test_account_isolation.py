@@ -182,9 +182,12 @@ def test_consumes_the_shared_schema_and_vector_registry(tmp_path):
     # closed `schemaName` set; the conversation-UI document is a local suite.
     assert contract_files <= discovered
     assert discovered - contract_files == {"conversation-ui.json"}
-    assert len(cases) == 24
-    assert len({case["id"] for case in cases}) == 24
-    assert len(results) == 24
+    # 24 base cases plus the `/new` pair in protocol-negotiation.json and
+    # sse-events.json: the command-entry capability bit and the command-result
+    # payload shape are now shared facts rather than one host's private detail.
+    assert len(cases) == 28
+    assert len({case["id"] for case in cases}) == 28
+    assert len(results) == 28
     assert {result["status"] for result in results} == {"pass"}
     assert {result["implementation"] for result in results} == {"hermes-python"}
 

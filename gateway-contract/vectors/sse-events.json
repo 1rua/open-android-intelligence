@@ -42,6 +42,59 @@
         "outcome": "error",
         "code": "SCHEMA_INVALID"
       }
+    },
+    {
+      "id": "sse-event-conversation-command-result-valid",
+      "operation": "schema.validate_dispatched",
+      "input": {
+        "fixtureBindingSetId": "gateway-core-fixtures-v1",
+        "dispatch": {
+          "kind": "event",
+          "eventType": "conversation.command.result"
+        },
+        "value": {
+          "correlationId": "correlation_1",
+          "occurredAt": "2026-08-27T00:00:00.000Z",
+          "payload": {
+            "command": "new",
+            "commandId": "new",
+            "outcome": "created-conversation",
+            "sourceConversationId": "conv_source",
+            "sourceMessageId": "msg_command",
+            "conversationId": "conv_created"
+          }
+        }
+      },
+      "expected": {
+        "outcome": "value",
+        "value": { "valid": true }
+      }
+    },
+    {
+      "id": "sse-event-conversation-command-result-without-new-conversation-is-rejected",
+      "operation": "schema.validate_dispatched",
+      "input": {
+        "fixtureBindingSetId": "gateway-core-fixtures-v1",
+        "dispatch": {
+          "kind": "event",
+          "eventType": "conversation.command.result"
+        },
+        "value": {
+          "correlationId": "correlation_1",
+          "occurredAt": "2026-08-27T00:00:00.000Z",
+          "payload": {
+            "command": "new",
+            "commandId": "new",
+            "outcome": "created-conversation",
+            "sourceConversationId": "conv_source",
+            "sourceMessageId": "msg_command"
+          }
+        }
+      },
+      "expected": {
+        "outcome": "error",
+        "code": "SCHEMA_INVALID"
+      }
     }
   ]
 }
