@@ -17,6 +17,15 @@ import com.openandroidintelligence.gateway.schema.JsonValue
  */
 object GatewayEventDecoder {
 
+    /**
+     * The documented fallback window when a Gateway omits `timeoutSeconds`.
+     *
+     * Public so a test can read the same number the decoder uses: the phone
+     * never treats its own clock as the authority, it only needs a number to
+     * count down from until the Gateway says otherwise.
+     */
+    const val DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300L
+
     fun decode(event: GatewayEvent): VerifiedConversationEvent? {
         val name = event.event ?: return null
         val body = runCatching { Json.parse(event.data) }
@@ -91,6 +100,25 @@ object GatewayEventDecoder {
                 )
             }
 
+            "conversation.approval.requested" -> approvalRequested(eventId, occurredAt, payload, body)
+
+            "conversation.approval.resolved" -> {
+                val approvalId = JsonFields.string(payload, "approvalId")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { runCatching { com.openandroidintelligence.conversation.model.ApprovalId(it) }.getOrNull() }
+                    ?: return null
+                VerifiedConversationEvent.ApprovalResolved(
+                    eventId = eventId,
+                    occurredAt = occurredAt,
+                    approvalId = approvalId,
+                    outcome = com.openandroidintelligence.conversation.model.ApprovalOutcome.of(
+                        JsonFields.string(payload, "decision"),
+                    ),
+                    decidedAt = JsonFields.long(payload, "decidedAt")?.takeIf { it > 0L },
+                    conversationId = conversationIdOf(payload, body),
+                )
+            }
+
             "conversation.snapshot.invalidated" -> VerifiedConversationEvent.SnapshotInvalidated(
                 eventId = eventId,
                 occurredAt = occurredAt,
@@ -115,6 +143,69 @@ object GatewayEventDecoder {
             ?: return null
         val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: body
         return JsonFields.string(payload, "generationId")?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * One command-execution approval card (contract §7.2).
+     *
+     * The tiers come from the Gateway and nowhere else: an empty or unreadable
+     * option list yields no card at all, because a card with no button would ask
+     * the user to decide something the Gateway never offered.
+     */
+    private fun approvalRequested(
+        eventId: String,
+        occurredAt: Long,
+        payload: JsonValue.JObject?,
+        body: JsonValue.JObject?,
+    ): VerifiedConversationEvent.ApprovalRequested? {
+        val approvalId = JsonFields.string(payload, "approvalId")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { com.openandroidintelligence.conversation.model.ApprovalId(it) }.getOrNull() }
+            ?: return null
+        val options = readApprovalOptions(payload)
+        if (options.isEmpty()) return null
+        val timeoutSeconds = JsonFields.long(payload, "timeoutSeconds")?.takeIf { it > 0L }
+            ?: DEFAULT_APPROVAL_TIMEOUT_SECONDS
+        val requestedAt = JsonFields.long(payload, "requestedAt")?.takeIf { it > 0L }
+            ?: occurredAt.takeIf { it > 0L }
+            ?: System.currentTimeMillis()
+        return VerifiedConversationEvent.ApprovalRequested(
+            eventId = eventId,
+            occurredAt = occurredAt,
+            request = com.openandroidintelligence.conversation.model.ApprovalRequest(
+                approvalId = approvalId,
+                conversationId = conversationIdOf(payload, body),
+                command = JsonFields.string(payload, "command").orEmpty(),
+                reason = JsonFields.string(payload, "reason").orEmpty(),
+                severity = JsonFields.string(payload, "severity")?.takeIf { it.isNotBlank() },
+                options = options,
+                timeoutSeconds = timeoutSeconds,
+                requestedAt = requestedAt,
+            ),
+            conversationId = conversationIdOf(payload, body),
+        )
+    }
+
+    private fun readApprovalOptions(payload: JsonValue.JObject?): List<com.openandroidintelligence.conversation.model.ApprovalOption> {
+        val items = JsonFields.array(JsonFields.field(payload, "options"))?.items ?: return emptyList()
+        return items.mapNotNull { raw ->
+            val option = JsonFields.obj(raw) ?: return@mapNotNull null
+            val choice = com.openandroidintelligence.conversation.model.ApprovalChoice.of(
+                JsonFields.string(option, "choice"),
+            )
+            // An unknown tier is dropped rather than coerced: drawing a button
+            // the Gateway would refuse is worse than drawing one fewer.
+            if (choice == com.openandroidintelligence.conversation.model.ApprovalChoice.UNKNOWN) {
+                return@mapNotNull null
+            }
+            com.openandroidintelligence.conversation.model.ApprovalOption(
+                choice = choice,
+                label = JsonFields.string(option, "label")?.takeIf { it.isNotBlank() },
+                style = com.openandroidintelligence.conversation.model.ApprovalOptionStyle.of(
+                    JsonFields.string(option, "style"),
+                ),
+            )
+        }
     }
 
     private fun timelineUpsert(

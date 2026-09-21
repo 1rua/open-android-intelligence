@@ -112,6 +112,9 @@ _ERROR_STATUS = {
     "IDEMPOTENCY_CONFLICT": 409,
     "CURSOR_CONFLICT": 409,
     "CURSOR_EXPIRED": 410,
+    "APPROVAL_NOT_FOUND": 404,
+    "APPROVAL_EXPIRED": 409,
+    "APPROVAL_ALREADY_RESOLVED": 409,
     "REQUEST_BODY_TOO_LARGE": 413,
     "RATE_LIMITED": 429,
 }
@@ -499,6 +502,9 @@ def create_gateway_routes(
         ("/open-android-intelligence/v2/conversations", "exact"), ("/open-android-intelligence/v2/conversations/", "prefix"),
         ("/open-android-intelligence/v2/attachments", "exact"), ("/open-android-intelligence/v2/attachments/", "prefix"),
         ("/open-android-intelligence/v2/device-requests/", "prefix"),
+        # Contract §7.2: one decision per approval. The id is in the path, so the
+        # route matches by prefix and the core validates the exact shape.
+        ("/open-android-intelligence/v2/approvals/", "prefix"),
     )
     return [GatewayHttpRoute(path, match, services) for path, match in definitions]
 

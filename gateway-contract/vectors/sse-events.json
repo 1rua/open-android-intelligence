@@ -95,6 +95,120 @@
         "outcome": "error",
         "code": "SCHEMA_INVALID"
       }
+    },
+    {
+      "id": "sse-event-conversation-approval-requested-valid",
+      "operation": "schema.validate_dispatched",
+      "input": {
+        "fixtureBindingSetId": "gateway-core-fixtures-v1",
+        "dispatch": {
+          "kind": "event",
+          "eventType": "conversation.approval.requested"
+        },
+        "value": {
+          "correlationId": "correlation_1",
+          "occurredAt": "2026-09-22T00:00:00.000Z",
+          "payload": {
+            "approvalId": "apr_approval_1",
+            "conversationId": "conv_source",
+            "command": "python3 -c \"print(1)\"",
+            "reason": "内联解释器执行",
+            "severity": "elevated",
+            "options": [
+              { "choice": "once", "label": "允许一次", "style": "primary" },
+              { "choice": "always", "label": "始终允许", "style": "secondary" },
+              { "choice": "deny", "label": "拒绝", "style": "danger" }
+            ],
+            "timeoutSeconds": 300,
+            "requestedAt": 1780000000000,
+            "expiresAt": 1780000300000
+          }
+        }
+      },
+      "expected": {
+        "outcome": "value",
+        "value": { "valid": true }
+      }
+    },
+    {
+      "id": "sse-event-conversation-approval-requested-unknown-choice-is-rejected",
+      "operation": "schema.validate_dispatched",
+      "input": {
+        "fixtureBindingSetId": "gateway-core-fixtures-v1",
+        "dispatch": {
+          "kind": "event",
+          "eventType": "conversation.approval.requested"
+        },
+        "value": {
+          "correlationId": "correlation_1",
+          "occurredAt": "2026-09-22T00:00:00.000Z",
+          "payload": {
+            "approvalId": "apr_approval_1",
+            "conversationId": "conv_source",
+            "command": "rm -rf /tmp/example",
+            "reason": "递归删除",
+            "options": [
+              { "choice": "allow-once", "style": "primary" }
+            ],
+            "timeoutSeconds": 300,
+            "requestedAt": 1780000000000
+          }
+        }
+      },
+      "expected": {
+        "outcome": "error",
+        "code": "SCHEMA_INVALID"
+      }
+    },
+    {
+      "id": "sse-event-conversation-approval-resolved-valid",
+      "operation": "schema.validate_dispatched",
+      "input": {
+        "fixtureBindingSetId": "gateway-core-fixtures-v1",
+        "dispatch": {
+          "kind": "event",
+          "eventType": "conversation.approval.resolved"
+        },
+        "value": {
+          "correlationId": "correlation_1",
+          "occurredAt": "2026-09-22T00:00:05.000Z",
+          "payload": {
+            "approvalId": "apr_approval_1",
+            "conversationId": "conv_source",
+            "decision": "once",
+            "decidedAt": 1780000005000
+          }
+        }
+      },
+      "expected": {
+        "outcome": "value",
+        "value": { "valid": true }
+      }
+    },
+    {
+      "id": "sse-event-conversation-approval-resolved-unknown-decision-is-rejected",
+      "operation": "schema.validate_dispatched",
+      "input": {
+        "fixtureBindingSetId": "gateway-core-fixtures-v1",
+        "dispatch": {
+          "kind": "event",
+          "eventType": "conversation.approval.resolved"
+        },
+        "value": {
+          "correlationId": "correlation_1",
+          "occurredAt": "2026-09-22T00:05:00.000Z",
+          "payload": {
+            "approvalId": "apr_approval_1",
+            "conversationId": "conv_source",
+            "decision": "approved",
+            "decidedAt": 1780000300000
+          }
+        }
+      },
+      "expected": {
+        "outcome": "error",
+        "code": "SCHEMA_INVALID"
+      }
     }
   ]
 }

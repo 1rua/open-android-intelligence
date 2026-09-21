@@ -59,6 +59,40 @@ CORE_SCHEMA_FILE_NAMES = (
 # command; `/new <anything>` stays ordinary text the Agent has to interpret.
 NEW_CONVERSATION_COMMAND = "/new"
 
+# ── Interactive command approval (contract §7.2) ────────────────────────────
+# The choice vocabulary is the host's own: `tools.approval.resolve_gateway_approval`
+# understands exactly these four, so the protocol never invents a second set.
+APPROVAL_CHOICES = ("once", "session", "always", "deny")
+# Terminal outcomes only the Gateway may produce: nobody answered in time, or
+# nobody could be given the chance to answer.
+APPROVAL_TERMINAL_DECISIONS = ("timeout", "withdrawn")
+APPROVAL_DECISIONS = APPROVAL_CHOICES + APPROVAL_TERMINAL_DECISIONS
+APPROVAL_EVENT_REQUESTED = "conversation.approval.requested"
+APPROVAL_EVENT_RESOLVED = "conversation.approval.resolved"
+# Only a fallback for a payload that omits it: the host's own `approvals.timeout`
+# is what actually decides, and the Gateway always sends the number it used.
+APPROVAL_DEFAULT_TIMEOUT_SECONDS = 300
+APPROVAL_CAPABILITY = "agent-approval-cards-v1"
+
+
+def resolve_host_approval(session_key: str, choice: str, request_id: str | None = None) -> int | None:
+    """Unblock the Agent thread waiting on one approval.
+
+    Returns the number of host waits this call released, or `None` when this
+    process cannot reach the host approval runtime at all. `None` is a fact the
+    caller must surface: it is never the same as "resolved", and a Gateway that
+    cannot reach the runtime must not advertise approval cards.
+    """
+    try:
+        from tools.approval import resolve_gateway_approval
+    except Exception:
+        return None
+    try:
+        return int(resolve_gateway_approval(session_key, choice, request_id=request_id))
+    except Exception as exc:  # pragma: no cover - host runtime detail
+        logger.warning("[open_android] Host approval resolution failed: %s", exc)
+        return None
+
 # The exact six shared vector documents of contract section 16. The enumeration
 # is closed: its `schemaName` set does not include the conversation-UI schemas,
 # so `conversation-ui.json` stays a local suite and is not a conformance input.
@@ -461,6 +495,8 @@ class ContractRegistry:
         "response.conversation-create.v1",
         "error.cursor-expired.v1",
         "event.conversation-command-result.v1",
+        "event.conversation-approval-requested.v1",
+        "event.conversation-approval-resolved.v1",
     )
 
     schema_definitions = {
@@ -1019,6 +1055,17 @@ class AccountStore:
               expires_at TEXT NOT NULL,
               PRIMARY KEY (device_id, request_id)
             );
+            CREATE TABLE IF NOT EXISTS approvals (
+              approval_id TEXT PRIMARY KEY NOT NULL,
+              conversation_id TEXT NOT NULL,
+              session_key TEXT, host_request_id TEXT,
+              command TEXT NOT NULL, reason TEXT NOT NULL, severity TEXT,
+              options_json TEXT NOT NULL,
+              timeout_seconds INTEGER NOT NULL,
+              requested_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+              decision TEXT, decided_at TEXT, decided_by_device_id TEXT,
+              created_at TEXT NOT NULL
+            );
             """
         )
         existing_cols = {row[1] for row in self.database.execute("PRAGMA table_info(messages)").fetchall()}
@@ -1429,6 +1476,137 @@ class AgentSessionBindings:
             "createdAt": row["created_at"],
             "createdVia": row["created_via"],
             "requestId": row["request_id"],
+        }
+
+
+class ApprovalRequests:
+    """One pending command-execution approval and the outcome it ended with.
+
+    An approval is a fact about the account, not about a connection: the phone
+    may go away and come back, the host may restart, and the decision still has
+    to land on the Agent thread that is blocked waiting for it. That is why the
+    host's own identifiers (`session_key`, its `request_id`) are persisted here
+    instead of being handed to the client: contract §7.2 gives the phone only the
+    opaque `approvalId`, so no client can name — or resolve — a session of its
+    choosing.
+
+    `decision` stays NULL until something authoritative settles it, and the
+    first writer wins: a second, different decision is a conflict, not an update.
+    """
+
+    def __init__(self, store: AccountStore):
+        self.store = store
+
+    def record(
+        self,
+        approval_id: str,
+        conversation_id: str,
+        command: str,
+        reason: str,
+        options: list[dict[str, Any]],
+        timeout_seconds: int,
+        *,
+        session_key: str | None = None,
+        host_request_id: str | None = None,
+        severity: str | None = None,
+        requested_at: datetime | str | None = None,
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Persist one approval request. Idempotent by primary key."""
+        current = _now(now or requested_at)
+        requested = _now(requested_at)
+        timeout = max(1, int(timeout_seconds))
+        self.store.database.execute(
+            """
+            INSERT INTO approvals(
+              approval_id, conversation_id, session_key, host_request_id,
+              command, reason, severity, options_json,
+              timeout_seconds, requested_at, expires_at,
+              decision, decided_at, decided_by_device_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+            ON CONFLICT(approval_id) DO NOTHING
+            """,
+            (
+                approval_id, conversation_id, session_key, host_request_id,
+                str(command or ""), str(reason or ""), severity,
+                _json(list(options)), timeout,
+                iso_millis(requested),
+                iso_millis(requested + timedelta(seconds=timeout)),
+                iso_millis(current),
+            ),
+        )
+        return self.lookup(approval_id) or {
+            "approvalId": approval_id, "conversationId": conversation_id,
+            "decision": None,
+        }
+
+    def lookup(self, approval_id: str) -> dict[str, Any] | None:
+        row = self.store.database.execute(
+            "SELECT * FROM approvals WHERE approval_id = ?", (approval_id,)
+        ).fetchone()
+        return None if row is None else self._map(row)
+
+    def settle(
+        self,
+        approval_id: str,
+        decision: str,
+        *,
+        device_id: str | None = None,
+        now: datetime | str | None = None,
+    ) -> bool:
+        """Write the first decision for one approval. False when already settled.
+
+        A settled approval never changes its mind: a second decision that differs
+        is reported as the conflict it is, and only an identical replay is
+        accepted as the idempotent retry it is.
+        """
+        row = self.store.database.execute(
+            "SELECT decision FROM approvals WHERE approval_id = ?", (approval_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["decision"] is not None:
+            return False
+        current = iso_millis(_now(now))
+        cursor = self.store.database.execute(
+            """
+            UPDATE approvals SET decision = ?, decided_at = ?, decided_by_device_id = ?
+            WHERE approval_id = ? AND decision IS NULL
+            """,
+            (decision, current, device_id, approval_id),
+        )
+        return cursor.rowcount > 0
+
+    def pending_expired(self, now: datetime | str | None = None) -> list[dict[str, Any]]:
+        """Approvals whose window closed without an answer (contract §7.2)."""
+        rows = self.store.database.execute(
+            "SELECT * FROM approvals WHERE decision IS NULL AND expires_at <= ? ORDER BY expires_at, approval_id",
+            (iso_millis(_now(now)),),
+        ).fetchall()
+        return [self._map(row) for row in rows]
+
+    def _map(self, row: sqlite3.Row) -> dict[str, Any]:
+        options: Any = []
+        try:
+            options = json.loads(str(row["options_json"]))
+        except Exception:
+            options = []
+        return {
+            "approvalId": row["approval_id"],
+            "conversationId": row["conversation_id"],
+            "sessionKey": row["session_key"],
+            "hostRequestId": row["host_request_id"],
+            "command": row["command"],
+            "reason": row["reason"],
+            "severity": row["severity"],
+            "options": options if isinstance(options, list) else [],
+            "timeoutSeconds": row["timeout_seconds"],
+            "requestedAt": _epoch_millis(row["requested_at"]),
+            "expiresAt": _epoch_millis(row["expires_at"]),
+            "decision": row["decision"],
+            "decidedAt": _epoch_millis(row["decided_at"]) if row["decided_at"] else None,
+            "decidedByDeviceId": row["decided_by_device_id"],
+            "createdAt": row["created_at"],
         }
 
 
@@ -2285,10 +2463,12 @@ class GatewayAccount:
         self.device_requests = DeviceRequestStore(account_id, store, self.audit, self.events, contracts)
         self.conversations = ConversationPort(account_id, store, self.attachments, self.audit, self.attachment_policy)
         self.agent_sessions = AgentSessionBindings(store)
+        self.approvals = ApprovalRequests(store)
         self.credentials = CredentialStore(store)
         self.sessions = SessionService(account_id, store, self.audit, credential_verifier)
         self.deviceRequests = self.device_requests
         self.agentSessions = self.agent_sessions
+        self.approvalRequests = self.approvals
         self.masterKeyRef = self.master_key_ref
         self._closed = False
 
@@ -2563,6 +2743,12 @@ _PERSISTABLE_ERRORS = {
     "ATTACHMENT_LIMIT_EXCEEDED",
     "ATTACHMENT_EXPIRED", "MASTER_KEY_UNAVAILABLE", "MASTER_KEY_REFERENCE_MISMATCH",
     "ENCRYPTION_FAILED", "DECRYPTION_FAILED", "CURSOR_CONFLICT", "CURSOR_EXPIRED",
+    # Contract §7.2: an approval answer is a deterministic fact about the
+    # approval, so a refused decision is remembered rather than retried blind —
+    # and the `timeout`/`withdrawn` event written alongside it stays durable
+    # instead of being rolled back with the request that discovered it.
+    "APPROVAL_NOT_FOUND", "APPROVAL_EXPIRED", "APPROVAL_ALREADY_RESOLVED",
+    "APPROVAL_DECISION_INVALID",
 }
 
 
@@ -2646,6 +2832,7 @@ class GatewayCore:
         credential_verifier: Any = None,
         command_catalog: Any = None,
         event_sink: EventSink | None = None,
+        approval_resolver: Any = None,
     ):
         self.storage_root = Path(storage_root or default_hermes_gateway_root()).resolve()
         self.secret_store = secret_store
@@ -2657,6 +2844,30 @@ class GatewayCore:
         self.credential_verifier = credential_verifier
         self.command_catalog = tuple(command_catalog) if command_catalog is not None else DEFAULT_COMMAND_CATALOG
         self._event_sinks: list[EventSink] = [event_sink] if event_sink is not None else []
+        # How a decision reaches the Agent thread blocked on it. Injected by the
+        # transport that owns the host runtime; without one, approval cards are
+        # not a service this Gateway can actually deliver.
+        self.approval_resolver = approval_resolver if callable(approval_resolver) else None
+
+    @property
+    def approval_cards_available(self) -> bool:
+        """Whether interactive approval cards are a real service here (§7.2).
+
+        A Gateway that cannot reach the host approval runtime would paint a card
+        whose buttons release nothing, so the capability is advertised only when
+        the resolver is present.
+        """
+        return self.approval_resolver is not None
+
+    def _resolve_host_approval(self, session_key: str, choice: str, request_id: str | None) -> int | None:
+        if self.approval_resolver is not None:
+            try:
+                resolved = self.approval_resolver(session_key, choice, request_id)
+            except Exception as exc:
+                logger.warning("[open_android] Approval resolver failed: %s", exc)
+                return None
+            return resolved if isinstance(resolved, int) else None
+        return resolve_host_approval(session_key, choice, request_id)
 
     @property
     def contracts(self) -> ContractRegistry:
@@ -2853,6 +3064,10 @@ class GatewayCore:
         # conversation and answers with the authoritative id. Advertising it
         # without that entry would make the agreement a claim, not a fact.
         supported_conversation_ui = {"agent-command-catalog-v1", "agent-command-new-v1"}
+        if self.approval_cards_available:
+            # Contract §7.2: only a Gateway that can actually release the blocked
+            # Agent thread may promise the phone a card whose buttons do something.
+            supported_conversation_ui = supported_conversation_ui | {APPROVAL_CAPABILITY}
         conversation_ui = [
             item for item in requested.get("conversationUi", [])
             if item in supported_conversation_ui
@@ -3164,6 +3379,158 @@ class GatewayCore:
             )
         return {"message": accepted}
 
+    def request_command_approval(
+        self,
+        account: GatewayAccount,
+        approval_id: str,
+        conversation_id: str,
+        command: str,
+        reason: str,
+        options: list[dict[str, Any]],
+        timeout_seconds: int,
+        *,
+        session_key: str | None = None,
+        host_request_id: str | None = None,
+        severity: str | None = None,
+        correlation_id: str = "",
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Publish one command-execution approval as a structured card (§7.2).
+
+        Writing the approval and its event in one transaction is what makes the
+        card real: the event is only delivered after `COMMIT`, so a phone that
+        sees the card can always read back the approval it is deciding on.
+
+        `session_key` and the host's `request_id` are persisted but never leave
+        this process: the phone is given `approvalId` and nothing else.
+        """
+        current = _now(now)
+        with account.store.transaction():
+            approval = account.approvals.record(
+                approval_id, conversation_id, command, reason, options, timeout_seconds,
+                session_key=session_key, host_request_id=host_request_id, severity=severity,
+                requested_at=current, now=current,
+            )
+            account.events.append(
+                APPROVAL_EVENT_REQUESTED, correlation_id or approval_id, {
+                    "approvalId": approval_id,
+                    "conversationId": conversation_id,
+                    "command": str(command or ""),
+                    "reason": str(reason or ""),
+                    **({"severity": severity} if severity else {}),
+                    "options": [
+                        {
+                            "choice": str(option.get("choice", "")),
+                            **({"label": str(option["label"])} if option.get("label") else {}),
+                            **({"style": str(option["style"])} if option.get("style") else {}),
+                        }
+                        for option in options
+                    ],
+                    "timeoutSeconds": int(approval["timeoutSeconds"]),
+                    "requestedAt": int(approval["requestedAt"]),
+                    "expiresAt": int(approval["expiresAt"]),
+                }, current,
+            )
+            account.audit.append(
+                "conversation.approval.requested",
+                {"accountId": account.account_id, "conversationId": conversation_id},
+                {"approvalId": approval_id, "timeoutSeconds": int(approval["timeoutSeconds"])},
+                correlation_id or approval_id, current,
+            )
+        return account.approvals.lookup(approval_id) or approval
+
+    def _settle_expired_approvals(self, account: GatewayAccount, now: datetime | str | None = None) -> int:
+        """Turn every unanswered approval past its window into `timeout`.
+
+        The Gateway — not the phone's countdown — decides that an approval is
+        over, and it has to say so: contract §7.2 makes `timeout` the outcome the
+        phone may trust, and a card left pending forever would tell the user a
+        command is still waiting when nothing is.
+        """
+        current = _now(now)
+        expired = account.approvals.pending_expired(current)
+        if not expired:
+            return 0
+        settled = 0
+        with account.store.transaction():
+            for approval in expired:
+                if not account.approvals.settle(approval["approvalId"], "timeout", now=current):
+                    continue
+                account.events.append(
+                    APPROVAL_EVENT_RESOLVED, approval["approvalId"], {
+                        "approvalId": approval["approvalId"],
+                        "conversationId": approval["conversationId"],
+                        "decision": "timeout",
+                        "decidedAt": _epoch_millis(current),
+                    }, current,
+                )
+                account.audit.append(
+                    "conversation.approval.timeout",
+                    {"accountId": account.account_id, "conversationId": approval["conversationId"]},
+                    {"approvalId": approval["approvalId"], "decision": "timeout"},
+                    approval["approvalId"], current,
+                )
+                settled += 1
+        return settled
+
+    def _handle_approval_decision(
+        self, account: GatewayAccount, context: Mapping[str, Any], approval_id: str,
+        body: Any, now: datetime,
+    ) -> GatewayResponse:
+        """One button press: release the Agent thread and publish the outcome."""
+        body_map = body if isinstance(body, Mapping) else None
+        decision = body_map.get("decision") if body_map is not None else None
+        if not isinstance(decision, str) or decision not in APPROVAL_CHOICES:
+            raise GatewayError("APPROVAL_DECISION_INVALID", {"approvalId": approval_id})
+        approval = account.approvals.lookup(approval_id)
+        if approval is None:
+            raise GatewayError("APPROVAL_NOT_FOUND", {"approvalId": approval_id})
+        settled = approval.get("decision")
+        if settled is not None:
+            # The same decision replayed is the retry it looks like; a different
+            # one is a second opinion on a question that is already answered.
+            if settled == decision:
+                return _success(context, {"approval": approval})
+            raise GatewayError("APPROVAL_ALREADY_RESOLVED", {"approvalId": approval_id, "decision": settled})
+        if int(approval.get("expiresAt") or 0) <= _epoch_millis(now):
+            self._settle_expired_approvals(account, now)
+            raise GatewayError("APPROVAL_EXPIRED", {"approvalId": approval_id, "decision": "timeout"})
+        resolved = self._resolve_host_approval(
+            str(approval.get("sessionKey") or ""), decision, approval.get("hostRequestId"),
+        )
+        if not resolved:
+            # The Agent is no longer waiting for this approval, so no decision
+            # can release it. Recording the press as `allowed` would claim a
+            # command ran that nobody is going to run.
+            self._settle_expired_approvals(account, now)
+            if account.approvals.settle(approval_id, "withdrawn", now=now):
+                account.events.append(
+                    APPROVAL_EVENT_RESOLVED, context["correlationId"], {
+                        "approvalId": approval_id,
+                        "conversationId": approval.get("conversationId"),
+                        "decision": "withdrawn",
+                        "decidedAt": _epoch_millis(now),
+                    }, now,
+                )
+            raise GatewayError("APPROVAL_EXPIRED", {"approvalId": approval_id, "decision": "withdrawn"})
+        with account.store.transaction():
+            account.approvals.settle(approval_id, decision, device_id=context["deviceId"], now=now)
+            account.events.append(
+                APPROVAL_EVENT_RESOLVED, context["correlationId"], {
+                    "approvalId": approval_id,
+                    "conversationId": approval.get("conversationId"),
+                    "decision": decision,
+                    "decidedAt": _epoch_millis(now),
+                }, now,
+            )
+            account.audit.append(
+                "conversation.approval.decision",
+                {"accountId": account.account_id, "deviceId": context["deviceId"]},
+                {"approvalId": approval_id, "decision": decision, "requestId": context["requestId"]},
+                context["correlationId"], now,
+            )
+        return _success(context, {"approval": account.approvals.lookup(approval_id) or approval})
+
     def handle(self, request: VerifiedGatewayRequest) -> GatewayResponse:
         try:
             method = _value(request, "method")
@@ -3189,6 +3556,11 @@ class GatewayCore:
                 if _contains_identity_override(body):
                     return _failure(context, "IDENTITY_OVERRIDE_REJECTED")
                 if method == "GET" and isinstance(target, str) and target.startswith("/open-android-intelligence/v2/events"):
+                    # The window closes on the Gateway's clock, not on a device
+                    # that happens to be connected: sweeping here is what turns an
+                    # unanswered approval into the authoritative `timeout` the
+                    # contract promises, even when nobody ever reconnects.
+                    self._settle_expired_approvals(account, _request_now(request))
                     query = urlsplit(target).query
                     cursor = None
                     for part in query.split("&") if query else []:
@@ -3344,6 +3716,11 @@ class GatewayCore:
                     device_get = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)", target_path)
                     if method == "GET" and device_get:
                         return _success(context, {"deviceRequest": account.device_requests.get(device_get.group(1))})
+                    decision_match = re.fullmatch(r"/open-android-intelligence/v2/approvals/([^/]+)/decisions", target_path)
+                    if method == "POST" and decision_match:
+                        return self._handle_approval_decision(
+                            account, context, decision_match.group(1), body, _request_now(request),
+                        )
                     return _failure(context, "SCHEMA_INVALID")
 
                 replay_check = None

@@ -39,6 +39,8 @@ const expectedFixtureIds = [
   "response.conversation-create.v1",
   "error.cursor-expired.v1",
   "event.conversation-command-result.v1",
+  "event.conversation-approval-requested.v1",
+  "event.conversation-approval-resolved.v1",
 ] as const;
 
 const expectedFixtureDigests = [
@@ -47,6 +49,8 @@ const expectedFixtureDigests = [
   "sha256:2719284ed50fba05b945c58eb5146dd53becdcc48b0a57228d8e97a407a0b87e",
   "sha256:7cb06a94b19b83c6aba2ed82832bcfd3c103345f4fb6b5f106739cfe40d5fce9",
   "sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce",
+  "sha256:bce36a217163c4626595ffef4b0ac4456ae95bee57646b0a586ea4413b59d663",
+  "sha256:2f455f22f1e50d730a80e22a2e9f93e1259a6920747f527041942451bd377916",
 ] as const;
 
 const expectedFixtureLogicalKeys: GatewayLogicalSubschemaKey[] = [
@@ -61,6 +65,8 @@ const expectedFixtureLogicalKeys: GatewayLogicalSubschemaKey[] = [
   { kind: "response.success", operation: "conversation.create", status: 201 },
   { kind: "response.failure", errorCode: "CURSOR_EXPIRED" },
   { kind: "event", eventType: "conversation.command.result" },
+  { kind: "event", eventType: "conversation.approval.requested" },
+  { kind: "event", eventType: "conversation.approval.resolved" },
 ];
 
 const loadSharedFixtureRegistry = (
@@ -200,12 +206,12 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
     expect(validate(withUnknownBindingField)).toBe(false);
   });
 
-  it("loads the single shared fixture registry and its five canonical schemas", () => {
+  it("loads the single shared fixture registry and its seven canonical schemas", () => {
     expect(registry.formatVersion).toBe("1.0.0");
-    expect(registry.catalogEntries).toHaveLength(5);
+    expect(registry.catalogEntries).toHaveLength(7);
     expect(registry.bindingSets).toHaveLength(1);
     expect(bindingSet?.id).toBe(bindingSetId);
-    expect(bindings).toHaveLength(5);
+    expect(bindings).toHaveLength(7);
 
     expect(fixtureCatalogEntries.map((entry) => entry.fixtureId)).toEqual([
       "event.gateway-notice.v1",
@@ -213,6 +219,8 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       "response.conversation-create.v1",
       "error.cursor-expired.v1",
       "event.conversation-command-result.v1",
+      "event.conversation-approval-requested.v1",
+      "event.conversation-approval-resolved.v1",
     ]);
     expect(bindings.map((binding) => binding.key)).toEqual([
       { kind: "event", eventType: "gateway.notice" },
@@ -226,6 +234,8 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       { kind: "response.success", operation: "conversation.create", status: 201 },
       { kind: "response.failure", errorCode: "CURSOR_EXPIRED" },
       { kind: "event", eventType: "conversation.command.result" },
+      { kind: "event", eventType: "conversation.approval.requested" },
+      { kind: "event", eventType: "conversation.approval.resolved" },
     ]);
 
     for (const entry of fixtureCatalogEntries) {

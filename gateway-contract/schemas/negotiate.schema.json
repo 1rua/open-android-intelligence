@@ -72,6 +72,7 @@
                 "enum": [
                   "agent-command-catalog-v1",
                   "agent-command-new-v1",
+                  "agent-approval-cards-v1",
                   "message-batches-v1",
                   "newline-v1",
                   "generation-cancel-v1",
@@ -123,6 +124,7 @@
                 "enum": [
                   "agent-command-catalog-v1",
                   "agent-command-new-v1",
+                  "agent-approval-cards-v1",
                   "message-batches-v1",
                   "newline-v1",
                   "generation-cancel-v1",

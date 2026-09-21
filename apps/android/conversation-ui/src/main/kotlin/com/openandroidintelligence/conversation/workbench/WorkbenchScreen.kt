@@ -287,7 +287,15 @@ fun WorkbenchScreen(
                                                             onClick = { controller.openThread(jumpTarget) },
                                                         )
                                                     } else {
-                                                        MessageTimeline(listOf(entry))
+                                                        val approvalId = entry.approval?.request?.approvalId?.value
+                                                        MessageTimeline(
+                                                            entries = listOf(entry),
+                                                            onDecide = { choice ->
+                                                                if (approvalId != null) {
+                                                                    controller.decideApproval(approvalId, choice)
+                                                                }
+                                                            },
+                                                        )
                                                     }
                                                 }
                                                 if (state.creatingThread &&
@@ -331,6 +339,12 @@ fun WorkbenchScreen(
                                     },
                             ) {
                                 PendingBatchStrip(state.pendingBatch)
+                                // Honest degradation: a Gateway that cannot take
+                                // a decision gets no card at all, and the user is
+                                // told the text command is the way to answer.
+                                if (!state.approvalCardsSupported) {
+                                    ApprovalUnsupportedHint()
+                                }
                                 ComposerBar(
                                     draft = state.draft,
                                     onDraftChange = { newDraft ->

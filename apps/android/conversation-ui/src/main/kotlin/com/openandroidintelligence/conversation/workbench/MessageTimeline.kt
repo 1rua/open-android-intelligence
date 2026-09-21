@@ -60,14 +60,31 @@ import java.time.format.DateTimeFormatter
  * 3. Markdown 代码块：深色圆角容器、语言标签、独立复制代码按钮、横向自由滚动与等宽字体；
  * 4. 时间戳与状态指示点：技术元数据使用 Roboto Mono/等宽字体，状态点如实反映接收与发送就绪状态。
  */
+/**
+ * @param onDecide submits one approval decision through its own endpoint; the
+ *   card never answers by typing a command into the conversation (§7.2).
+ */
 @Composable
-fun MessageTimeline(entries: List<TimelineEntry>, modifier: Modifier = Modifier) {
+fun MessageTimeline(
+    entries: List<TimelineEntry>,
+    onDecide: (com.openandroidintelligence.conversation.model.ApprovalChoice) -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
     ) {
         entries.forEach { entry ->
-            if (entry.isUser) {
+            val approval = entry.approval
+            if (approval != null) {
+                // A request the Gateway made, not something anyone said: it owns
+                // a row of its own so message folding never touches it.
+                ApprovalCard(
+                    state = approval,
+                    onDecide = onDecide,
+                    modifier = Modifier.fillMaxWidth(0.85f),
+                )
+            } else if (entry.isUser) {
                 UserMessageBubble(entry = entry)
             } else {
                 AssistantMessageRow(entry = entry)

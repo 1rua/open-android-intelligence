@@ -37,6 +37,14 @@ class GatewayConversationRepository(
     private val streamStatus: com.openandroidintelligence.gateway.events.EventStreamStatusSink? = null,
     /** The thread cancellation and event scope act on; owned by the screen holder. */
     private val activeConversationId: () -> String? = { null },
+    /**
+     * The approval decision endpoint, when this Gateway negotiated §7.2 cards.
+     *
+     * Absent means the Gateway cannot take a decision at all, which is a fact
+     * the UI has to show: a card without this client would accept a press and
+     * then leave the command blocked.
+     */
+    private val approvals: com.openandroidintelligence.gateway.approvals.ApprovalClient? = null,
 ) : ConversationRepository,
     com.openandroidintelligence.conversation.ports.GenerationTracker,
     com.openandroidintelligence.conversation.model.StreamHealthSource {
@@ -209,6 +217,66 @@ class GatewayConversationRepository(
             id = ConversationId(detail.conversationId),
             title = detail.title?.takeIf { it.isNotBlank() } ?: "新对话",
             createdAt = parseMillis(detail.createdAt),
+        )
+    }
+
+    override suspend fun submitApprovalDecision(
+        approvalId: com.openandroidintelligence.conversation.model.ApprovalId,
+        choice: com.openandroidintelligence.conversation.model.ApprovalChoice,
+    ): com.openandroidintelligence.conversation.model.ApprovalSubmissionResult {
+        val client = approvals ?: return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
+            outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED,
+        )
+        val decision = when (choice) {
+            com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE ->
+                com.openandroidintelligence.gateway.approvals.ApprovalDecision.ONCE
+            com.openandroidintelligence.conversation.model.ApprovalChoice.SESSION ->
+                com.openandroidintelligence.gateway.approvals.ApprovalDecision.SESSION
+            com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS ->
+                com.openandroidintelligence.gateway.approvals.ApprovalDecision.ALWAYS
+            com.openandroidintelligence.conversation.model.ApprovalChoice.DENY ->
+                com.openandroidintelligence.gateway.approvals.ApprovalDecision.DENY
+            // UNKNOWN is not a tier the Gateway accepts: sending it would be a
+            // guess dressed up as a decision.
+            com.openandroidintelligence.conversation.model.ApprovalChoice.UNKNOWN ->
+                return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
+                    outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED,
+                )
+        }
+        val result = runCatching { client.submitDecision(approvalId.value, decision) }
+            .getOrElse {
+                return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
+                    outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED,
+                )
+            }
+        return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
+            outcome = when (result.outcome) {
+                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.SUBMITTED ->
+                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.SUBMITTED
+                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.ALREADY_RESOLVED ->
+                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.ALREADY_RESOLVED
+                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.EXPIRED ->
+                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.EXPIRED
+                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.NOT_FOUND ->
+                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.NOT_FOUND
+                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.UNSUPPORTED ->
+                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED
+                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.FAILED ->
+                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED
+            },
+            choice = result.decision?.let { wire ->
+                when (wire) {
+                    com.openandroidintelligence.gateway.approvals.ApprovalDecision.ONCE ->
+                        com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE
+                    com.openandroidintelligence.gateway.approvals.ApprovalDecision.SESSION ->
+                        com.openandroidintelligence.conversation.model.ApprovalChoice.SESSION
+                    com.openandroidintelligence.gateway.approvals.ApprovalDecision.ALWAYS ->
+                        com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS
+                    com.openandroidintelligence.gateway.approvals.ApprovalDecision.DENY ->
+                        com.openandroidintelligence.conversation.model.ApprovalChoice.DENY
+                }
+            },
+            errorCode = result.errorCode,
         )
     }
 

@@ -52,6 +52,12 @@ fun specificFailureText(code: String): String? {
     return when {
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
         value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请联系网关部署者执行 ./hermes-account.py init-key 并重启网关。"
+        value.contains("APPROVAL_UNSUPPORTED") ->
+            "该 Gateway 不支持审批卡片，App 不会伪造一张无法提交的卡片。请升级 Gateway，或用 /approve 文本命令回复。"
+        value.contains("APPROVAL_EXPIRED") ->
+            "审批已超时，命令没有执行。卡片恢复为不可点击，如需执行请让 Agent 重新发起。"
+        value.contains("APPROVAL_FAILED") ->
+            "审批决策没有送达 Gateway，卡片已恢复为可点击，请重试。"
         value.contains("CONVERSATION_CREATING") -> "正在等待 Agent 返回新会话，请稍候。"
         value.contains("CONVERSATION_CREATE_NO_RESULT") ->
             "Agent 已经回话了，但没有返回新建会话的结果，无法确认新会话的标识，因此仍停留在原会话。通常意味着当前 Gateway/宿主未实现该命令入口，请重启或升级后重试。"

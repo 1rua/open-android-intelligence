@@ -35,8 +35,8 @@ npm run gateway:v2:conformance
 每个 runner 在构造校验器**之前**必须：
 
 1. 用 meta schema 验证 registry；
-2. 校验 `formatVersion`、`catalogEntries` 数量（5）、`bindingSets` 数量（1）与 binding set ID；
-3. **重算五个规范 JCS digest**并与登记值比对；
+2. 校验 `formatVersion`、`catalogEntries` 数量（7）、`bindingSets` 数量（1）与 binding set ID；
+3. **重算七个规范 JCS digest**并与登记值比对；
 4. 校验每个 binding 都指向 catalog 中 digest 匹配的条目。
 
 任一步不满足即抛 `INVALID_FIXTURE_REGISTRY`，进程失败关闭。请求侧不允许携带 `schema`、`schemaSha256`、`binding`、`resolver` 或 `validator` 字段。

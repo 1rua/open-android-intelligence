@@ -19,6 +19,10 @@
           "enum": [
             "conversation.message.delta",
             "conversation.message.completed",
+            "conversation.command.result",
+            "conversation.approval.requested",
+            "conversation.approval.resolved",
+            "conversation.title.updated",
             "device.requested",
             "device.request.cancel.requested",
             "pairing.grant.changed",

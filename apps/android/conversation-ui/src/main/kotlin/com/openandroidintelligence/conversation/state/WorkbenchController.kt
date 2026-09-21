@@ -58,6 +58,14 @@ data class TimelineEntry(
      * answer arrived. A receipt is local navigation, never Gateway content.
      */
     val systemThreadId: String? = null,
+    /**
+     * The approval card this row is, when it is not a message at all.
+     *
+     * An approval is a request the Gateway made, not something the user or the
+     * Agent said, so it rides as a row of its own: message folding and
+     * duplicate-pruning never see it, and the card keeps its own state.
+     */
+    val approval: ApprovalCardState? = null,
 )
 
 data class WorkbenchUiState(
@@ -91,6 +99,15 @@ data class WorkbenchUiState(
     /** Whether the inbound reply channel is alive; a dead one explains silence. */
     val streamHealth: com.openandroidintelligence.conversation.model.StreamHealth =
         com.openandroidintelligence.conversation.model.StreamHealth.IDLE,
+    /**
+     * Whether an approval card can be answered on this Gateway at all.
+     *
+     * False is a fact the screen has to show: the text command remains the way
+     * to answer, and no card is drawn that would pretend otherwise. It is
+     * re-asserted by every [WorkbenchController] update, so it can never drift
+     * away from the capability the Gateway actually negotiated.
+     */
+    val approvalCardsSupported: Boolean = true,
 ) {
     val canSend: Boolean get() = (draft.isNotBlank() || attachments.isNotEmpty()) &&
         composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
@@ -128,6 +145,16 @@ class WorkbenchController(
     private val streamHealthSource: com.openandroidintelligence.conversation.model.StreamHealthSource? = null,
     /** Injectable wall clock and sleeper so the reply watchdog is testable. */
     private val replyTimeouts: ReplyTimeouts = ReplyTimeouts(),
+    /**
+     * Whether this Gateway serves interactive approval cards (contract §7.2).
+     *
+     * Without it the screen must say cards are unavailable rather than draw one:
+     * a card whose press cannot be delivered would leave the command blocked
+     * while the UI shows a decision the Gateway never received.
+     */
+    private val supportsApprovalCards: Boolean = false,
+    /** Wall clock, injectable so a countdown can be advanced by a test. */
+    private val clock: () -> Long = { System.currentTimeMillis() },
 ) : AutoCloseable {
 
     /**
@@ -369,6 +396,7 @@ class WorkbenchController(
         creationGraceJob = null
         pendingCreation = null
         settledCreations.clear()
+        approvalCards.clear()
         eventJob?.cancel()
         healthJob?.cancel()
         disarmReplyWatchdog()
@@ -498,6 +526,11 @@ class WorkbenchController(
         // of the newly opened thread could be rendered with an attachment's
         // filename from another one.
         historicalAttachments.clear()
+        // Approval cards are deliberately NOT cleared here: they belong to the
+        // account, not to the open thread. Coming back must show the same card
+        // with the countdown it had, never a fresh one — and a card the Gateway
+        // already settled must not come back as a question.
+        // (mirrored/mirroredRevisions are message state and are cleared above.)
         timelineJob?.cancel()
         disarmReplyWatchdog()
         update {
@@ -538,7 +571,11 @@ class WorkbenchController(
                     update { state ->
                         if (!isActive || state.activeThreadId != threadId) state
                         else state.copy(
-                            timeline = if (mirrored.isEmpty() && creationReceiptRow(threadId) == null) {
+                            timeline = if (
+                                mirrored.isEmpty() &&
+                                creationReceiptRow(threadId) == null &&
+                                approvalRowsForActiveThread().isEmpty()
+                            ) {
                                 Loadable.Empty
                             } else {
                                 Loadable.Ready(renderTimeline(state.pendingBatch))
@@ -668,6 +705,208 @@ class WorkbenchController(
             batchGroupId = null,
             systemThreadId = receipt.threadId,
         )
+    }
+
+    /**
+     * Every approval card this phone has been shown, keyed by approval id.
+     *
+     * The cards deliberately outlive the thread they arrived in: leaving a
+     * conversation and coming back must show the same card with the same
+     * countdown and the same outcome, and a settled card must never come back as
+     * a question. The map is bounded so a long session cannot grow without end.
+     */
+    private val approvalCards = LinkedHashMap<String, ApprovalCardState>()
+
+    /**
+     * Records one approval the Gateway asked for (contract §7.2).
+     *
+     * A replay of an event the phone already applied changes nothing, and a
+     * second `requested` for a card that is already settled is ignored: the
+     * Gateway has had its say, and re-opening the question locally would put a
+     * live button under a command that is no longer waiting.
+     */
+    private fun rememberApprovalRequest(
+        event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalRequested,
+    ) {
+        val existing = approvalCards[event.request.approvalId.value]
+        if (existing != null) return
+        approvalCards[event.request.approvalId.value] = ApprovalCardState.Waiting(event.request)
+        while (approvalCards.size > MAX_APPROVAL_CARDS) {
+            val eldest = approvalCards.keys.firstOrNull() ?: break
+            approvalCards.remove(eldest)
+        }
+        reRenderApprovalRows()
+    }
+
+    /**
+     * Applies how one approval ended.
+     *
+     * Only the Gateway may settle a card. Its answer also wins over a press that
+     * is still in flight: the user sees the outcome the Gateway recorded rather
+     * than the one the phone was hoping for.
+     */
+    private fun applyApprovalResolution(
+        event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalResolved,
+    ) {
+        val key = event.approvalId.value
+        val card = approvalCards[key] ?: return
+        if (card is ApprovalCardState.Resolved) return
+        approvalCards[key] = ApprovalCardState.Resolved(
+            request = card.request,
+            outcome = event.outcome,
+            decidedAt = event.decidedAt,
+        )
+        reRenderApprovalRows()
+    }
+
+    /**
+     * One button press, sent through the approval's own endpoint.
+     *
+     * The whole group locks before anything is sent: two presses for one card
+     * would be two decisions, and the Gateway is the only thing allowed to say
+     * which one counted. A failed press becomes a live card again with a
+     * structured notice — it is never painted as the decision the user asked for.
+     */
+    fun decideApproval(approvalId: String, choice: com.openandroidintelligence.conversation.model.ApprovalChoice) {
+        if (closed) return
+        val card = approvalCards[approvalId]
+        if (card !is ApprovalCardState.Waiting) return
+        if (!supportsApprovalCards) {
+            update { it.copy(notice = ApprovalNotices.UNSUPPORTED) }
+            return
+        }
+        if (card.request.countdownAt(clock()).expired) {
+            // The window the Gateway gave is over: the buttons are already grey,
+            // and sending a decision the Gateway will refuse would only look
+            // like a failure of the app.
+            update { it.copy(notice = ApprovalNotices.EXPIRED) }
+            return
+        }
+        approvalCards[approvalId] = ApprovalCardState.Submitting(card.request, choice)
+        reRenderApprovalRows()
+        scope.launch {
+            val result = submitApprovalDecision(approvalId, choice)
+            applyApprovalSubmission(approvalId, result)
+        }
+    }
+
+    private suspend fun submitApprovalDecision(
+        approvalId: String,
+        choice: com.openandroidintelligence.conversation.model.ApprovalChoice,
+    ): com.openandroidintelligence.conversation.model.ApprovalSubmissionResult {
+        val id = runCatching { com.openandroidintelligence.conversation.model.ApprovalId(approvalId) }
+            .getOrNull()
+            ?: return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
+                outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED,
+            )
+        return Result.runCatching { repository.submitApprovalDecision(id, choice) }
+            .getOrDefault(
+                com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
+                    outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED,
+                ),
+            )
+    }
+
+    /**
+     * Turns the Gateway's answer to one press into the card's state.
+     *
+     * `SUBMITTED` does not settle the card on its own: the phone has been told
+     * the decision is with the Gateway, not that the Gateway granted it, so the
+     * `resolved` event is what ends the wait. A refusal the Gateway explains —
+     * already answered elsewhere, or expired — is a fact it did record, so that
+     * one is final too.
+     */
+    private fun applyApprovalSubmission(
+        approvalId: String,
+        result: com.openandroidintelligence.conversation.model.ApprovalSubmissionResult,
+    ) {
+        val card = approvalCards[approvalId] ?: return
+        if (card !is ApprovalCardState.Submitting) return
+        when (result.outcome) {
+            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.SUBMITTED -> {
+                // Stay in flight: only the Gateway's own event may close it.
+                return
+            }
+            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.ALREADY_RESOLVED -> {
+                val recorded = result.choice
+                approvalCards[approvalId] = ApprovalCardState.Resolved(
+                    request = card.request,
+                    outcome = when (recorded) {
+                        com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE ->
+                            com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ONCE
+                        com.openandroidintelligence.conversation.model.ApprovalChoice.SESSION ->
+                            com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_SESSION
+                        com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS ->
+                            com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ALWAYS
+                        com.openandroidintelligence.conversation.model.ApprovalChoice.DENY ->
+                            com.openandroidintelligence.conversation.model.ApprovalOutcome.DENIED
+                        null, com.openandroidintelligence.conversation.model.ApprovalChoice.UNKNOWN ->
+                            com.openandroidintelligence.conversation.model.ApprovalOutcome.UNKNOWN
+                    },
+                    decidedAt = clock(),
+                )
+                reRenderApprovalRows()
+            }
+            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.EXPIRED -> {
+                approvalCards[approvalId] = ApprovalCardState.Resolved(
+                    request = card.request,
+                    outcome = com.openandroidintelligence.conversation.model.ApprovalOutcome.TIMED_OUT,
+                    decidedAt = clock(),
+                )
+                reRenderApprovalRows()
+            }
+            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.NOT_FOUND -> {
+                // The Gateway does not know this approval, so nothing can answer
+                // it any more. Leaving a live button would be a promise the
+                // Gateway cannot keep.
+                approvalCards[approvalId] = ApprovalCardState.Resolved(
+                    request = card.request,
+                    outcome = com.openandroidintelligence.conversation.model.ApprovalOutcome.WITHDRAWN,
+                    decidedAt = clock(),
+                )
+                reRenderApprovalRows()
+            }
+            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED -> {
+                approvalCards[approvalId] = ApprovalCardState.Waiting(card.request)
+                reRenderApprovalRows()
+                update { it.copy(notice = ApprovalNotices.UNSUPPORTED) }
+            }
+            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED -> {
+                approvalCards[approvalId] = ApprovalCardState.Waiting(card.request)
+                reRenderApprovalRows()
+                update { it.copy(notice = ApprovalNotices.FAILED) }
+            }
+        }
+    }
+
+    /** The rows the active thread's approval cards contribute, oldest first. */
+    private fun approvalRowsForActiveThread(): List<TimelineEntry> {
+        val threadId = activeThreadId ?: return emptyList()
+        return approvalCards.values
+            .filter { card -> card.request.conversationId?.value == threadId }
+            .map { card ->
+                TimelineEntry(
+                    key = approvalTimelineKey(card.request.approvalId.value),
+                    sender = "system",
+                    text = card.request.command,
+                    isUser = false,
+                    timestamp = card.request.requestedAt,
+                    pendingAcceptance = false,
+                    batchGroupId = null,
+                    approval = card,
+                )
+            }
+            .sortedBy { it.timestamp }
+    }
+
+    private fun reRenderApprovalRows() {
+        update { state ->
+            if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
+                state.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch)))
+            } else {
+                state
+            }
+        }
     }
 
     private fun mirrorCommandInSourceThread(sourceThreadId: String, clientMessageId: String, messageId: String) {
@@ -1467,6 +1706,14 @@ class WorkbenchController(
                             }
                         }
 
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalRequested -> {
+                            rememberApprovalRequest(event)
+                        }
+
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalResolved -> {
+                            applyApprovalResolution(event)
+                        }
+
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult -> {
                             if (isNewConversationCommand(event.command)) {
                                 if (pendingCreation != null) {
@@ -1553,7 +1800,11 @@ class WorkbenchController(
                     else {
                         val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
                         state.copy(
-                            timeline = if (mirrored.isEmpty() && creationReceiptRow(threadId) == null) {
+                            timeline = if (
+                                mirrored.isEmpty() &&
+                                creationReceiptRow(threadId) == null &&
+                                approvalRowsForActiveThread().isEmpty()
+                            ) {
                                 Loadable.Empty
                             } else {
                                 Loadable.Ready(renderTimeline(state.pendingBatch))
@@ -1738,10 +1989,36 @@ class WorkbenchController(
             },
         )
         val rendered = deduplicateTimelineEntries(rawList)
-        // Appended after the message rules: a receipt is navigation, not content,
-        // so it must never be folded into a message by the deduplication above.
-        val receiptRow = activeThreadId?.let(::creationReceiptRow) ?: return rendered
-        return rendered + receiptRow
+        // Inserted after the message rules: an approval is a request, not
+        // content, so the folding and pruning above must never touch it. Each
+        // card still takes the place its own timestamp earned, so it reads where
+        // it happened rather than trailing the whole conversation.
+        val withCards = insertApprovalRows(rendered, approvalRowsForActiveThread())
+        // A receipt is navigation, not content, for the same reason.
+        val receiptRow = activeThreadId?.let(::creationReceiptRow) ?: return withCards
+        return withCards + receiptRow
+    }
+
+    /**
+     * Places approval rows among the messages without reordering the messages.
+     *
+     * Sorting the whole list again would let a card change the order the message
+     * rules just decided, so cards are dropped into the gap their own timestamp
+     * falls in and everything else keeps its place.
+     */
+    private fun insertApprovalRows(
+        rendered: List<TimelineEntry>,
+        cards: List<TimelineEntry>,
+    ): List<TimelineEntry> {
+        if (cards.isEmpty()) return rendered
+        val result = rendered.toMutableList()
+        for (card in cards) {
+            val index = result.indexOfFirst { existing ->
+                existing.timestamp > 0L && existing.timestamp > card.timestamp
+            }
+            if (index < 0) result.add(card) else result.add(index, card)
+        }
+        return result
     }
 
     private fun normalizeEntryKey(key: String): String =
@@ -1891,7 +2168,11 @@ class WorkbenchController(
     }
 
     private fun update(transform: (WorkbenchUiState) -> WorkbenchUiState) {
-        _state.update(transform)
+        _state.update { current ->
+            // The capability is a fact about the Gateway, not about a screen: it
+            // is re-asserted on every update so no caller can drop it.
+            transform(current).copy(approvalCardsSupported = supportsApprovalCards)
+        }
     }
 
     private fun isNewConversationCommand(command: String): Boolean =
@@ -1960,5 +2241,14 @@ class WorkbenchController(
          * session bounded.
          */
         const val MAX_CREATION_RECEIPTS = 8
+
+        /**
+         * How many approval cards stay on screen.
+         *
+         * A settled card is part of the record of what happened, so it has to
+         * survive leaving the thread; the cap only exists so a session that sees
+         * many approvals cannot grow without bound.
+         */
+        const val MAX_APPROVAL_CARDS = 32
     }
 }

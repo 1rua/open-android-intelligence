@@ -172,6 +172,36 @@ sealed interface VerifiedConversationEvent {
         val snapshotRevision: Long,
         val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
+
+    /**
+     * The Gateway asked the phone to decide one command execution (§7.2).
+     *
+     * This is a request, not a message: it never becomes a chat bubble and no
+     * user turn is spent on it. [request] carries the tiers the Gateway offers,
+     * which is the only set the UI may draw.
+     */
+    data class ApprovalRequested(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val request: com.openandroidintelligence.conversation.model.ApprovalRequest,
+        val conversationId: ConversationId? = null,
+    ) : VerifiedConversationEvent
+
+    /**
+     * How one approval ended (§7.2).
+     *
+     * The Gateway owns every terminal outcome, including `timeout` and
+     * `withdrawn`: a card may grey itself out on its own countdown, but only
+     * this event is allowed to say what actually happened.
+     */
+    data class ApprovalResolved(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val approvalId: com.openandroidintelligence.conversation.model.ApprovalId,
+        val outcome: com.openandroidintelligence.conversation.model.ApprovalOutcome,
+        val decidedAt: Long? = null,
+        val conversationId: ConversationId? = null,
+    ) : VerifiedConversationEvent
 }
 
 data class MirrorScope(
@@ -213,6 +243,21 @@ interface ConversationRepository {
      * title or a creation time locally.
      */
     suspend fun readConversation(conversationId: String): Conversation? = null
+
+    /**
+     * One approval decision, sent through its own endpoint rather than as text.
+     *
+     * The default answers `UNSUPPORTED` on purpose: a repository that cannot
+     * reach the decision endpoint must say so, because a card that pretends to
+     * submit would leave the command blocked while the UI shows it as allowed.
+     */
+    suspend fun submitApprovalDecision(
+        approvalId: com.openandroidintelligence.conversation.model.ApprovalId,
+        choice: com.openandroidintelligence.conversation.model.ApprovalChoice,
+    ): com.openandroidintelligence.conversation.model.ApprovalSubmissionResult =
+        com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
+            outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED,
+        )
 }
 
 /**

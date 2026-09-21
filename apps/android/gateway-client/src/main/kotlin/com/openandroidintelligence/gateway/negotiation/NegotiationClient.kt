@@ -134,10 +134,17 @@ class NegotiationClient(
          * and `agent-command-new-v1` is served by the workbench: creating a new
          * conversation means sending `/new` to the Agent and waiting for the
          * authoritative id it answers with.
+         *
+         * `agent-approval-cards-v1` (contract §7.2) is offered because the card
+         * and its own decision endpoint are implemented: the approval is rendered
+         * as a card in the conversation and answered through
+         * [com.openandroidintelligence.gateway.approvals.ApprovalClient], never by
+         * typing a command into the conversation.
          */
         val CONVERSATION_UI_FEATURES = listOf(
             "agent-command-catalog-v1",
             "agent-command-new-v1",
+            "agent-approval-cards-v1",
             "message-batches-v1",
             "generation-cancel-v1",
         )

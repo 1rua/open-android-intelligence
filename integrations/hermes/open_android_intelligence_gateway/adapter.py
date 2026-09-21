@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .local_keys import master_key_unavailable_reason
 from .core import (
+    APPROVAL_CHOICES,
+    APPROVAL_DEFAULT_TIMEOUT_SECONDS,
     NEW_CONVERSATION_COMMAND,
     AgentSessionBindings,
     VerifiedGatewayRequest,
@@ -724,7 +726,12 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         # event produced between "server up" and "first subscriber" is only
         # reachable through a reconnect.
         self._loop = asyncio.get_running_loop()
-        register_sink = getattr(getattr(self.services, "core", None), "register_event_sink", None)
+        core = getattr(self.services, "core", None)
+        # Approval cards are only a service this Gateway can deliver when a
+        # decision can actually reach the Agent thread waiting on it (§7.2).
+        if core is not None:
+            core.approval_resolver = self._host_approval_resolver()
+        register_sink = getattr(core, "register_event_sink", None)
         if callable(register_sink):
             register_sink(self._event_sink)
 
@@ -981,6 +988,145 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             "type": "dm",
             "chat_id": chat_id,
         }
+
+    # ── Command-execution approval (contract §7.2) ─────────────────────────
+    # Overriding `_send_exec_approval_prompt` is what tells the host this surface
+    # renders approvals natively: the runner then stops sending the plain-text
+    # `/approve` prompt and hands the prompt here instead.
+
+    def _host_approval_resolver(self) -> Optional[Callable[..., Optional[int]]]:
+        """How a decision reaches the Agent thread blocked on it, when there is one.
+
+        `None` means this process cannot reach the host approval runtime, and the
+        Gateway then must not advertise approval cards at all: a card whose
+        buttons release nothing is worse than the honest text prompt.
+        """
+        try:
+            from tools.approval import resolve_gateway_approval
+        except Exception:
+            logger.info(
+                "[open_android] No host approval runtime reachable; approval cards stay unavailable"
+            )
+            return None
+
+        def _resolve(session_key: str, choice: str, request_id: Optional[str]) -> Optional[int]:
+            try:
+                return int(resolve_gateway_approval(session_key, choice, request_id=request_id))
+            except Exception as exc:
+                logger.warning("[open_android] Host approval resolution failed: %s", exc)
+                return None
+
+        return _resolve
+
+    @staticmethod
+    def _approval_timeout_seconds() -> int:
+        """The host's configured `approvals.timeout`; 300s when it cannot be read."""
+        try:
+            from gateway.platforms.base_exec_approval import approval_timeout_seconds
+        except Exception:
+            return APPROVAL_DEFAULT_TIMEOUT_SECONDS
+        try:
+            value = int(approval_timeout_seconds())
+        except Exception:
+            return APPROVAL_DEFAULT_TIMEOUT_SECONDS
+        return value if value > 0 else APPROVAL_DEFAULT_TIMEOUT_SECONDS
+
+    @staticmethod
+    def _approval_style(choice: str, host_style: str) -> str:
+        """One presentation hint per tier: allow-once leads, deny warns."""
+        if host_style in {"primary", "secondary", "danger", "neutral"}:
+            return host_style
+        if choice == "deny":
+            return "danger"
+        if choice == "once":
+            return "primary"
+        return "secondary"
+
+    def _approval_options(self, prompt: Any) -> list:
+        """The tiers this prompt actually offers, in the protocol's closed set.
+
+        The host decides which tiers exist: a smart deny offers only `once` and
+        `deny`, so the phone must never invent a tier the host would refuse.
+        """
+        options: list = []
+        for action in getattr(prompt, "actions", ()) or ():
+            values = list(action) + ["", "", ""]
+            label, choice, style = str(values[0]), str(values[1]), str(values[2])
+            if choice not in APPROVAL_CHOICES:
+                continue
+            options.append({
+                "choice": choice,
+                "style": self._approval_style(choice, style),
+                **({"label": label} if label else {}),
+            })
+        return options
+
+    async def _send_exec_approval_prompt(self, prompt: Any) -> SendResult:
+        """Publish one approval as a structured card instead of an `/approve` text.
+
+        The card carries `approvalId` and nothing else about the host: the session
+        key and the host's request id are persisted on the Gateway side, so a
+        phone can answer the approval it was shown but cannot name — or resolve —
+        a session of its own choosing.
+        """
+        chat_id = str(getattr(prompt, "chat_id", "") or "")
+        metadata = getattr(prompt, "metadata", None)
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        account_id = (
+            metadata.get("account_id")
+            or self._conv_to_account.get(chat_id)
+            or self._account_id
+        )
+        if not account_id:
+            logger.warning("[open_android] No account identity; approval for %s was not published", chat_id)
+            return SendResult(success=False, error="ACCOUNT_NOT_CONFIGURED", retryable=False)
+        if not chat_id:
+            return SendResult(success=False, error="CONVERSATION_REQUIRED", retryable=False)
+
+        options = self._approval_options(prompt)
+        if not options:
+            # No tier the protocol can express: falling through to the text
+            # prompt is honest, while a card with no button would not be.
+            logger.warning("[open_android] Approval prompt offers no known tier; not publishing a card")
+            return SendResult(success=False, error="APPROVAL_OPTIONS_UNSUPPORTED", retryable=False)
+
+        core = getattr(self.services, "core", None)
+        if core is None:
+            return SendResult(success=False, error="GATEWAY_CORE_UNAVAILABLE", retryable=False)
+
+        approval_id = "apr_" + uuid.uuid4().hex
+        timeout_seconds = self._approval_timeout_seconds()
+        severity = metadata.get("severity")
+        severity = str(severity) if severity in {"info", "elevated", "critical"} else None
+
+        def _publish() -> Any:
+            account = core.open_gateway_account(str(account_id))
+            try:
+                return core.request_command_approval(
+                    account,
+                    approval_id=approval_id,
+                    conversation_id=chat_id,
+                    command=str(getattr(prompt, "command", "") or ""),
+                    reason=str(getattr(prompt, "description", "") or ""),
+                    options=options,
+                    timeout_seconds=timeout_seconds,
+                    session_key=str(getattr(prompt, "session_key", "") or "") or None,
+                    host_request_id=(
+                        str(metadata.get("request_id")) if metadata.get("request_id") else None
+                    ),
+                    severity=severity,
+                    correlation_id=approval_id,
+                )
+            finally:
+                account.close()
+
+        try:
+            await asyncio.to_thread(_publish)
+        except Exception as exc:
+            logger.error("[open_android] Failed to publish approval %s: %s", approval_id, exc)
+            return SendResult(success=False, error="APPROVAL_PUBLISH_FAILED", retryable=True)
+        logger.info("[open_android] Approval card %s published for %s", approval_id, chat_id)
+        return SendResult(success=True, message_id=approval_id)
 
     # Host-adapter naming aliases.
     streamDelta = stream_delta

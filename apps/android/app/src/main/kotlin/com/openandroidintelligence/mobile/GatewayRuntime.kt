@@ -322,10 +322,19 @@ class GatewayRuntime(
             statusSink = eventStreamStatus,
         )
         val conversationClient = ConversationClient(http)
+        // Contract §7.2: approval cards are only wired when the Gateway said it
+        // serves them. Without the endpoint there is nothing to press, so the
+        // workbench says so instead of drawing a card that cannot be answered.
+        val approvalClient = if ("agent-approval-cards-v1" in conversationUi) {
+            com.openandroidintelligence.gateway.approvals.ApprovalClient(http)
+        } else {
+            null
+        }
         val repository = GatewayConversationRepository(
             client = conversationClient,
             activeConversationId = { activeThread.get() },
             streamStatus = eventStreamStatus,
+            approvals = approvalClient,
         )
         val catalogRepository = GatewayCommandCatalogRepository(CommandCatalogClient(http))
         accessTokenHolder = session.accessToken
@@ -362,6 +371,7 @@ class GatewayRuntime(
             // the workbench refuses to create a thread at all rather than
             // building one only the phone knows about.
             supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
+            supportsApprovalCards = approvalClient != null,
             onActiveThreadChanged = { threadId -> activeThread.set(threadId) },
             streamHealthSource = repository,
         )

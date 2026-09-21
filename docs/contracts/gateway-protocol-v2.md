@@ -133,11 +133,13 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 
 协议主版本不同、核心 Schema 不兼容、未知安全字段或未知高风险能力时返回 `PROTOCOL_INCOMPATIBLE`。次版本差异只启用双方声明的交集。协商结果由 `negotiationId` 绑定后续认证会话，客户端不能在单次请求中自行扩大功能。
 
-`messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
+`messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`agent-approval-cards-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
 
 `agent-command-new-v1` 表示该 Gateway 服务 `/new` 命令入口：能接收以普通文本形式送达的 `/new`，由宿主命令层原子创建新会话、保存绑定，并通过 `conversation.command.result` 返回权威 `conversationId`（第 7 节）。未实现该入口的 Gateway **不得**声明该能力，也不得以任何本地构造的会话标识冒充已知会话；客户端在能力缺失时必须明示不可用，而不是退化为自建会话。
 
 声明该能力同时意味着承担第 7.1 节的全部义务：命令入口独占 `/new`（不得再把同一文本作为普通用户回合交给 Agent 运行时的命令解析器）、在创建新会话时为新会话创建宿主自己的 agent 会话并持久化绑定、以及在打开既有会话时复用该会话已绑定的 agent 会话。绑定是账号级事实：同一 `conversationId` 在任何时刻只能绑定一个 agent 会话，且不得因客户端切换、重连或重放而改变。
+
+`agent-approval-cards-v1` 表示该 Gateway 以结构化卡片下发命令执行审批，并提供独立的决策端点（第 7.2 节）。未实现该能力的 Gateway 不得声明它；此时审批只能表现为宿主自己的文本提示，客户端必须明示卡片不可用，不得本地伪造一张无法提交的卡片。
 
 `schemaHashes.core` 是具名 Schema 文档集合的摘要，算法固定为：
 
@@ -410,6 +412,7 @@ POST /conversations/{conversationId}/generations/{generationId}/cancel
 GET  /attachments/{attachmentId}
 DELETE /attachments/{attachmentId}
 GET  /conversations/{conversationId}/messages?clientMessageId=<id>
+POST /approvals/{approvalId}/decisions
 GET  /conversations
 POST /conversations
 GET  /conversations/{conversationId}
@@ -489,6 +492,77 @@ created-conversation | rejected | unsupported | outcome-unknown
 - **新会话必须拥有自己的 agent 会话**：宿主在创建新会话时，为其创建一个不继承任何旧上下文的 agent 会话，并把「`conversationId` ↔ agent 会话」绑定持久化；`agentSessionId` 仍为宿主内部概念，不下发客户端。宿主没有 Agent 运行时能力时，绑定行必须保留为空并如实标注来源，不得编造标识。
 - **切换即路由**：客户端打开某个会话、读取其时间线或投递消息时，宿主必须确保该会话已有绑定并复用既有绑定；只有 `/new` 创建的新会话允许获得一个全新的 agent 会话。同一 `conversationId` 不得因重连、重放或切换而更换 agent 会话。
 - `conversation.command.result` 的 `payload` 是封闭对象：`outcome` 为 `created-conversation` 时必须携带非空 `conversationId`，其他 `outcome` 不得携带 `conversationId`（共享向量 `sse-events.json` 锁定该形状）。
+
+### 7.2 命令执行审批卡片 (`agent-approval-cards-v1`)
+
+Agent 运行时要执行一条被判定为危险的宿主命令时，宿主通过该 Gateway 向手机下发一张结构化审批卡片，用户点击卡片上的按钮提交决策。审批**不是**会话消息：它既不是用户回合，也不得被改写成 `/approve`、`/deny` 之类的普通文本消息冒充用户输入。
+
+声明 `agent-approval-cards-v1` 的 Gateway 必须在检测到待审批命令后追加事件：
+
+```json
+{
+  "protocol": "2.0",
+  "event": "conversation.approval.requested",
+  "eventId": "evt_01...",
+  "occurredAt": "2026-09-22T09:00:00.000Z",
+  "payload": {
+    "approvalId": "apr_01...",
+    "conversationId": "conv_01...",
+    "command": "python3 -c \"print(1)\"",
+    "reason": "内联解释器执行",
+    "severity": "elevated",
+    "options": [
+      { "choice": "once", "label": "允许一次", "style": "primary" },
+      { "choice": "session", "label": "本次会话允许", "style": "secondary" },
+      { "choice": "always", "label": "始终允许", "style": "secondary" },
+      { "choice": "deny", "label": "拒绝", "style": "danger" }
+    ],
+    "timeoutSeconds": 300,
+    "requestedAt": 1780000000000,
+    "expiresAt": 1780000300000
+  }
+}
+```
+
+用户决策通过独立端点提交，**不经过消息通道**：
+
+```text
+POST /approvals/{approvalId}/decisions
+```
+
+```json
+{ "decision": "once" }
+```
+
+规则：
+
+- `approvalId` 是唯一的交互句柄。宿主的会话键（`sessionKey`）、请求标识等内部概念**一律不下发客户端**，也不得由客户端提交；Gateway 必须自己持久化 `approvalId → 宿主内部标识` 的映射，使宿主重启后迟到的决策仍可解析。客户端不得借决策接口操作任意宿主会话。
+- `options` 由 Gateway 下发，客户端**不得**硬编码档位或自行补齐缺省档位。`choice` 闭集为 `once | session | always | deny`；宿主判定为「仅本次可决」（例如 owner 强制拒绝覆盖）时可以只下发其中一部分，客户端必须按下发的集合渲染，没有下发的档位不得出现在界面上。
+- `style` 闭集为 `primary | secondary | danger | neutral`，只是呈现提示；`label` 缺省时客户端按 `choice` 映射到本地文案。
+- `requestedAt`、`expiresAt`、`decidedAt` 是 epoch 毫秒整数。`timeoutSeconds` 缺省值 300 只是客户端兜底，真正生效的是 Gateway 下发的 `timeoutSeconds`。
+- **超时由 Gateway 权威**：倒计时归零而无人决策时，Gateway 必须追加 `conversation.approval.resolved`（`decision = "timeout"`）。客户端可以基于 `expiresAt` 提前把卡片画成「已超时」并禁用按钮，但终态只能由该事件落定，客户端不得本地生成权威结论。无人可答（例如已连接设备都无法渲染卡片）时 Gateway 必须以 `withdrawn` 撤销，不得让卡片悬空等待。
+- 决策成功后 Gateway 追加：
+
+```json
+{
+  "protocol": "2.0",
+  "event": "conversation.approval.resolved",
+  "eventId": "evt_02...",
+  "occurredAt": "2026-09-22T09:00:05.000Z",
+  "payload": {
+    "approvalId": "apr_01...",
+    "conversationId": "conv_01...",
+    "decision": "once",
+    "decidedAt": 1780000005000
+  }
+}
+```
+
+  `decision` 闭集为 `once | session | always | deny | timeout | withdrawn`；后两项只能由 Gateway 产生，客户端只能提交前四项。
+- 幂等按第 6.5 节绑定：同一 `Idempotency-Key` 重放必须回到同一个决策终态，不得重复解析宿主侧等待中的请求。对一个已落定的 `approvalId` 再次提交不同决策返回 `APPROVAL_ALREADY_RESOLVED`，提交相同决策返回原成功终态。
+- 第 9 节的「提交后即时投递」义务同样适用于本节的事件：决策一旦落库，必须立即投递给该账号全部在线订阅者，使同一账号的其它设备同时看到卡片落定。
+- 客户端在收到 `resolved` 之前不得把卡片画成「已允许」；提交请求失败时必须如实回到可重试的等待态并给出结构化提示，不得把失败标记为成功。
+- 未声明该能力的 Gateway 不得产生本节事件，也不得接受决策端点；此时审批只表现为宿主的文本提示，客户端必须明示卡片不可用。
 
 宿主拥有长期对话与 Agent 记忆。Gateway 只保存完成可靠交付所需映射、幂等结果和短期暂存，不复制长期对话正文。宿主自身的会话绑定属于「完成可靠交付所需映射」，必须持久化，不得只存在于进程内存。
 
@@ -577,6 +651,8 @@ V2 事件类型：
 - `conversation.message.delta`
 - `conversation.message.completed`
 - `conversation.command.result`
+- `conversation.approval.requested`
+- `conversation.approval.resolved`
 - `conversation.title.updated`
 - `device.requested`
 - `device.request.cancel.requested`
@@ -746,6 +822,10 @@ ATTACHMENT_DIGEST_MISMATCH
 ATTACHMENT_EXPIRED
 CURSOR_CONFLICT
 CURSOR_EXPIRED
+APPROVAL_NOT_FOUND
+APPROVAL_EXPIRED
+APPROVAL_ALREADY_RESOLVED
+APPROVAL_DECISION_INVALID
 RATE_LIMITED
 HOST_INCOMPATIBLE
 ACCOUNT_DELETING
@@ -773,6 +853,7 @@ Android、Hermes 和 OpenClaw 实现必须共同通过语言无关向量：
 - 对话严格账号隔离与多线程路由；
 - 附件长度/摘要、TTL、ACK 和崩溃清理；
 - SSE 有序游标、断线恢复、过期重建和重复事件幂等；
+- 审批卡片的结构化下发、独立决策端点、档位闭集与超时/撤回终态（第 7.2 节）；
 - 三档离线队列期限与执行前重新授权；
 - 提供者切换、授权 revision 和 Companion 故障关闭；
 - 多账号文件级隔离、备份不含活动身份、账号删除；
@@ -845,7 +926,7 @@ gateway-contract/vectors/dispatched-schema-fixtures.json
 }
 ```
 
-每个 `catalogEntries` 元素只允许 `fixtureId`、完整 `GatewaySubschemaKey`（含 `schemaSha256`）和 `schema`；每个 `bindingSets` 元素只允许 `id`、`bindings`；每个 binding 只允许不含 digest 的 `GatewayLogicalSubschemaKey` 和单独的 `schemaSha256`。所有对象拒绝未知字段。format `1.0.0` registry 必须恰好包含下列五个 catalog entry、按下列顺序排列，并且恰好包含一个 `id = "gateway-core-fixtures-v1"` 的 binding set；该 binding set 的五个 binding 按同一顺序将 logical key 绑定到对应 digest。
+每个 `catalogEntries` 元素只允许 `fixtureId`、完整 `GatewaySubschemaKey`（含 `schemaSha256`）和 `schema`；每个 `bindingSets` 元素只允许 `id`、`bindings`；每个 binding 只允许不含 digest 的 `GatewayLogicalSubschemaKey` 和单独的 `schemaSha256`。所有对象拒绝未知字段。format `1.0.0` registry 必须恰好包含下列七个 catalog entry、按下列顺序排列，并且恰好包含一个 `id = "gateway-core-fixtures-v1"` 的 binding set；该 binding set 的七个 binding 按同一顺序将 logical key 绑定到对应 digest。
 
 ```ts
 type DispatchedSchemaFixtureCatalogEntry = Readonly<{
@@ -936,6 +1017,36 @@ sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce
 ```
 
 该 Schema 用 `oneOf` 双分支表达第 7.1 节的规则：`outcome` 为 `created-conversation` 时必须携带 `conversationId`，其他 outcome 不得携带。共享 dispatched-schema 子集禁用 `if`/`then`/`else`/`not`，因此条件只能这样写。
+
+#### `event.conversation-approval-requested.v1`
+
+Logical key：`{ kind:"event", eventType:"conversation.approval.requested" }`
+
+规范 JCS bytes：
+
+```json
+{"additionalProperties":false,"properties":{"approvalId":{"minLength":1,"type":"string"},"command":{"type":"string"},"conversationId":{"minLength":1,"type":"string"},"expiresAt":{"minimum":0,"type":"integer"},"options":{"items":{"additionalProperties":false,"properties":{"choice":{"enum":["once","session","always","deny"]},"label":{"minLength":1,"type":"string"},"style":{"enum":["primary","secondary","danger","neutral"]}},"required":["choice"],"type":"object"},"maxItems":4,"minItems":1,"type":"array"},"reason":{"type":"string"},"requestedAt":{"minimum":0,"type":"integer"},"severity":{"enum":["info","elevated","critical"]},"timeoutSeconds":{"minimum":1,"type":"integer"}},"required":["approvalId","conversationId","command","reason","options","timeoutSeconds","requestedAt"],"type":"object"}
+```
+
+```text
+sha256:bce36a217163c4626595ffef4b0ac4456ae95bee57646b0a586ea4413b59d663
+```
+
+#### `event.conversation-approval-resolved.v1`
+
+Logical key：`{ kind:"event", eventType:"conversation.approval.resolved" }`
+
+规范 JCS bytes：
+
+```json
+{"additionalProperties":false,"properties":{"approvalId":{"minLength":1,"type":"string"},"conversationId":{"minLength":1,"type":"string"},"decidedAt":{"minimum":0,"type":"integer"},"decision":{"enum":["once","session","always","deny","timeout","withdrawn"]}},"required":["approvalId","conversationId","decision"],"type":"object"}
+```
+
+```text
+sha256:2f455f22f1e50d730a80e22a2e9f93e1259a6920747f527041942451bd377916
+```
+
+两个形状共同锁定第 7.2 节：档位闭集只有 `once | session | always | deny`，终态闭集追加 `timeout | withdrawn`，且 `approvalId` 是唯一交互句柄——宿主内部会话标识不出现在任何事件载荷里。
 
 每个 catalog entry 的完整 key 等于相应 logical key 加上该段 `schemaSha256`。registry 构造器仍必须独立执行第 4.1 节的 JCS digest 核对、logical key 唯一性、binding/catalog 完整性和 Schema subset 检查，不能只信任文件内 digest。`schema.validate_dispatched` vector 只能引用 `gateway-core-fixtures-v1`；所有 runner 必须从共享 `dispatched-schema-fixtures.json` 构造 catalog 和 bindings，禁止内联、复制或本地替换 Schema/digest/binding。该 registry 只属于一致性测试资产，不进入 runtime 请求，也不改变“请求不可注入 Schema、digest 或 binding”的规则。
 

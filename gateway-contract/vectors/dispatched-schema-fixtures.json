@@ -223,6 +223,137 @@
           }
         ]
       }
+    },
+    {
+      "fixtureId": "event.conversation-approval-requested.v1",
+      "key": {
+        "kind": "event",
+        "eventType": "conversation.approval.requested",
+        "schemaSha256": "sha256:bce36a217163c4626595ffef4b0ac4456ae95bee57646b0a586ea4413b59d663"
+      },
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "approvalId",
+          "conversationId",
+          "command",
+          "reason",
+          "options",
+          "timeoutSeconds",
+          "requestedAt"
+        ],
+        "properties": {
+          "approvalId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "command": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "elevated",
+              "critical"
+            ]
+          },
+          "options": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "choice"
+              ],
+              "properties": {
+                "choice": {
+                  "enum": [
+                    "once",
+                    "session",
+                    "always",
+                    "deny"
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "style": {
+                  "enum": [
+                    "primary",
+                    "secondary",
+                    "danger",
+                    "neutral"
+                  ]
+                }
+              }
+            }
+          },
+          "timeoutSeconds": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "requestedAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expiresAt": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "fixtureId": "event.conversation-approval-resolved.v1",
+      "key": {
+        "kind": "event",
+        "eventType": "conversation.approval.resolved",
+        "schemaSha256": "sha256:2f455f22f1e50d730a80e22a2e9f93e1259a6920747f527041942451bd377916"
+      },
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "approvalId",
+          "conversationId",
+          "decision"
+        ],
+        "properties": {
+          "approvalId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "decision": {
+            "enum": [
+              "once",
+              "session",
+              "always",
+              "deny",
+              "timeout",
+              "withdrawn"
+            ]
+          },
+          "decidedAt": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
     }
   ],
   "bindingSets": [
@@ -267,6 +398,20 @@
             "eventType": "conversation.command.result"
           },
           "schemaSha256": "sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce"
+        },
+        {
+          "key": {
+            "kind": "event",
+            "eventType": "conversation.approval.requested"
+          },
+          "schemaSha256": "sha256:bce36a217163c4626595ffef4b0ac4456ae95bee57646b0a586ea4413b59d663"
+        },
+        {
+          "key": {
+            "kind": "event",
+            "eventType": "conversation.approval.resolved"
+          },
+          "schemaSha256": "sha256:2f455f22f1e50d730a80e22a2e9f93e1259a6920747f527041942451bd377916"
         }
       ]
     }

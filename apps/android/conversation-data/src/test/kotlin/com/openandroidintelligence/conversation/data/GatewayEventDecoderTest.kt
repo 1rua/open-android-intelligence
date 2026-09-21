@@ -1,5 +1,8 @@
 package com.openandroidintelligence.conversation.data
 
+import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
+import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.gateway.events.SseParser
 import org.junit.Assert.assertEquals
@@ -274,5 +277,108 @@ class GatewayEventDecoderTest {
         val snapDecoded = GatewayEventDecoder.decode(snapEvents.first()) as VerifiedConversationEvent.SnapshotInvalidated
         assertEquals("conv_snap", snapDecoded.conversationId?.value)
         assertEquals(10L, snapDecoded.snapshotRevision)
+    }
+
+    @Test
+    fun decodesApprovalRequestWithTheTiersTheGatewayOffered() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_apr_1",
+                event = "conversation.approval.requested",
+                data = """{"payload":{"approvalId":"apr_1","conversationId":"conv_1","command":"python3 -c \"print(1)\"","reason":"内联解释器执行","severity":"elevated","options":[{"choice":"once","style":"primary"},{"choice":"always","style":"secondary"},{"choice":"deny","style":"danger"}],"timeoutSeconds":300,"requestedAt":1780000000000,"expiresAt":1780000300000}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first())
+        assertTrue(decoded is VerifiedConversationEvent.ApprovalRequested)
+        val request = (decoded as VerifiedConversationEvent.ApprovalRequested).request
+        assertEquals("apr_1", request.approvalId.value)
+        assertEquals("conv_1", request.conversationId?.value)
+        assertEquals("内联解释器执行", request.reason)
+        assertEquals("elevated", request.severity)
+        assertEquals(300L, request.timeoutSeconds)
+        assertEquals(1780000000000L, request.requestedAt)
+        assertEquals(1780000300000L, request.expiresAt)
+        // The tiers are the Gateway's own list: nothing is added, nothing reordered.
+        assertEquals(
+            listOf(ApprovalChoice.ONCE, ApprovalChoice.ALWAYS, ApprovalChoice.DENY),
+            request.options.map { it.choice },
+        )
+        assertEquals(ApprovalOptionStyle.PRIMARY, request.options[0].style)
+        assertEquals(ApprovalOptionStyle.DANGER, request.options[2].style)
+    }
+
+    @Test
+    fun approvalRequestWithoutAUsableTierIsNotACard() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_apr_2",
+                event = "conversation.approval.requested",
+                data = """{"payload":{"approvalId":"apr_2","conversationId":"conv_1","command":"rm -rf /tmp/x","reason":"递归删除","options":[{"choice":"allow-once"}],"timeoutSeconds":300,"requestedAt":1780000000000}}""",
+            ),
+        )
+        assertNull(
+            "未知档位不得被改写成看起来能点的按钮",
+            GatewayEventDecoder.decode(events.first()),
+        )
+    }
+
+    @Test
+    fun approvalRequestFallsBackToTheDocumentedTimeoutOnlyWhenTheGatewayOmitsIt() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_apr_3",
+                event = "conversation.approval.requested",
+                data = """{"payload":{"approvalId":"apr_3","conversationId":"conv_1","command":"ls","reason":"只读","options":[{"choice":"once"}],"requestedAt":1780000000000}}""",
+            ),
+        )
+        val request = (GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.ApprovalRequested).request
+        assertEquals(GatewayEventDecoder.DEFAULT_APPROVAL_TIMEOUT_SECONDS, request.timeoutSeconds)
+    }
+
+    @Test
+    fun decodesApprovalResolvedIncludingTheOutcomesTheGatewayOwns() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_apr_4",
+                event = "conversation.approval.resolved",
+                data = """{"payload":{"approvalId":"apr_1","conversationId":"conv_1","decision":"timeout","decidedAt":1780000300000}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.ApprovalResolved
+        assertEquals("apr_1", decoded.approvalId.value)
+        assertEquals(ApprovalOutcome.TIMED_OUT, decoded.outcome)
+        assertEquals(1780000300000L, decoded.decidedAt)
+        assertEquals("conv_1", decoded.conversationId?.value)
+    }
+
+    @Test
+    fun approvalResolvedWithoutAnApprovalIdIsNotAnAnswer() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_apr_5",
+                event = "conversation.approval.resolved",
+                data = """{"payload":{"conversationId":"conv_1","decision":"once"}}""",
+            ),
+        )
+        assertNull(GatewayEventDecoder.decode(events.first()))
+    }
+
+    @Test
+    fun approvalResolvedWithAnUnknownDecisionStaysUnknownInsteadOfBecomingAnAllow() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_apr_6",
+                event = "conversation.approval.resolved",
+                data = """{"payload":{"approvalId":"apr_1","conversationId":"conv_1","decision":"approved"}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decode(events.first()) as VerifiedConversationEvent.ApprovalResolved
+        assertEquals(ApprovalOutcome.UNKNOWN, decoded.outcome)
     }
 }
