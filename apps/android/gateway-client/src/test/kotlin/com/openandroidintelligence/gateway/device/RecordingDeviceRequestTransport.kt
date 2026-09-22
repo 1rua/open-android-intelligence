@@ -10,7 +10,7 @@ class RecordingDeviceRequestTransport : DeviceRequestTransport {
 
     private val claimIds = LinkedHashMap<String, String>()
 
-    override fun claim(requestId: String, grantRevision: Int): ClaimReceipt {
+    override suspend fun claim(requestId: String, grantRevision: Int): ClaimReceipt {
         calls += "claim"
         // Idempotent: the same requestId always yields the same claimId.
         val claimId = claimIds.getOrPut(requestId) { "claim-${claimIds.size + 1}" }
@@ -24,7 +24,7 @@ class RecordingDeviceRequestTransport : DeviceRequestTransport {
         )
     }
 
-    override fun submitResult(requestId: String, body: Map<String, Any?>) {
+    override suspend fun submitResult(requestId: String, body: Map<String, Any?>) {
         calls += "submitResult"
         lastResultBody = body
     }
