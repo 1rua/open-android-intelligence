@@ -9,6 +9,7 @@ disagreeing with the phone in production.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -250,6 +251,40 @@ def test_negotiation_still_requires_the_real_schema_digest(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     response = _negotiate(core, "sha256:" + "0" * 64)
     assert response["error"]["code"] == "PROTOCOL_INCOMPATIBLE", response
+
+
+def test_refused_negotiation_names_both_digests_for_the_operator(tmp_path, caplog):
+    """A digest mismatch is a destructive upgrade, and nothing else records it.
+
+    The refusal happens before authentication, so no session, audit row or event
+    survives it: this log line is the only thing that can tell an operator which
+    side is stale, and only prefixes of the two public digests are logged.
+    """
+    from open_android_intelligence_gateway.core import ContractRegistry
+
+    core = create_gateway_core(storage_root=tmp_path)
+    with caplog.at_level(logging.WARNING, logger="open_android_intelligence_gateway.core"):
+        response = _negotiate(core, "sha256:" + "0" * 64)
+
+    assert response["error"]["code"] == "PROTOCOL_INCOMPATIBLE", response
+    refused = [record.getMessage() for record in caplog.records if "Refused negotiation" in record.getMessage()]
+    assert len(refused) == 1, refused
+    assert "installationId=install_new_command" in refused[0]
+    assert "appVersion=2.0.0" in refused[0]
+    assert "clientCore=sha256:0000000" in refused[0]
+    assert f"gatewayCore={ContractRegistry().core_schema_hash[:15]}" in refused[0]
+
+
+def test_accepted_negotiation_logs_no_refusal(tmp_path, caplog):
+    """Only real refusals may warn: a noisy handshake would hide the signal."""
+    from open_android_intelligence_gateway.core import ContractRegistry
+
+    core = create_gateway_core(storage_root=tmp_path)
+    with caplog.at_level(logging.WARNING, logger="open_android_intelligence_gateway.core"):
+        response = _negotiate(core, ContractRegistry().core_schema_hash)
+
+    assert response["data"], response
+    assert [record.getMessage() for record in caplog.records if "Refused negotiation" in record.getMessage()] == []
 
 
 def test_negotiation_advertises_the_command_entry_it_really_serves(tmp_path):

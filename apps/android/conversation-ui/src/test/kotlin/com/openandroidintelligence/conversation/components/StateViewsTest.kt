@@ -50,6 +50,50 @@ class StateViewsTest {
     }
 
     @Test
+    fun versionMismatchIsNamedAsSuchInsteadOfBeingReportedAsANetworkProblem() {
+        // 2026-09-22 真机故障：App 与插件各算出的核心 Schema 摘要不同，Gateway 按契约 §4
+        // 拒绝协商（406），而旧文案只给了兜底句，用户以为是自己网络不通。
+        val mismatch = readableFailure("PROTOCOL_INCOMPATIBLE:406")
+        assertTrue("版本不一致必须指向两端版本", mismatch.contains("版本"))
+        assertTrue("必须给出可执行的下一步", mismatch.contains("升级") || mismatch.contains("重新登录"))
+
+        val hostMismatch = readableFailure("HOST_INCOMPATIBLE:503")
+        assertTrue("宿主不兼容必须指向 Agent 端", hostMismatch.contains("宿主") || hostMismatch.contains("插件"))
+
+        val incompleteHandshake = readableFailure("NEGOTIATION_FAILED:400")
+        assertTrue("协商失败必须点名协商", incompleteHandshake.contains("协商"))
+    }
+
+    @Test
+    fun moreSpecificCodesWinOverTheNegotiationFailedPrefix() {
+        // `NEGOTIATION_FAILED:` 前缀会包着更具体的原因：TLS 身份缺失必须命中它自己的说明，
+        // 否则安全要求会被说成笼统的「协商失败」，用户会去重试而不是检查证书。
+        val missingIdentity = readableFailure("NEGOTIATION_FAILED:missing-tls-identity")
+        assertTrue("必须命中 TLS 身份说明", missingIdentity.contains("TLS") || missingIdentity.contains("身份"))
+        assertTrue("不能被泛化的协商失败说明覆盖", !missingIdentity.contains("没有完成协议协商"))
+    }
+
+    @Test
+    fun callersCanSupplyTheirOwnFallbackWithoutLosingKnownCodes() {
+        val connectionFallback = "无法连接 Gateway。请检查地址与网络后重试。"
+        assertEquals(
+            "未知码必须使用调用方给的兜底文案",
+            connectionFallback,
+            readableFailure("SOME_UNKNOWN_GATEWAY_INTERNAL_ERROR", connectionFallback),
+        )
+        assertEquals(
+            "已知码不受自定义兜底影响",
+            readableFailure("CURSOR_EXPIRED"),
+            readableFailure("CURSOR_EXPIRED", connectionFallback),
+        )
+        assertEquals(
+            "默认兜底仍是内容加载场景的说明",
+            CONTENT_FAILURE_FALLBACK,
+            readableFailure("SOME_UNKNOWN_GATEWAY_INTERNAL_ERROR"),
+        )
+    }
+
+    @Test
     fun allNineAttachmentStatesHaveExplicitDistinctLabels() {
         val states = AttachmentState.values()
         assertEquals(9, states.size)

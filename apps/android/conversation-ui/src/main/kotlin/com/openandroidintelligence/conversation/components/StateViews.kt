@@ -37,14 +37,22 @@ fun <T> LoadableRegion(state: Loadable<T>, emptyHint: String, onRetry: () -> Uni
 }
 
 /**
+ * 内容加载场景的兜底说明。
+ *
+ * 连接与登录场景必须传入自己的兜底文案：那里的失败可能来自地址、网络或两端版本，
+ * 把它说成「无法取得内容」会把用户引向错误的排查方向（见 [readableFailure] 的 `fallback`）。
+ */
+const val CONTENT_FAILURE_FALLBACK: String =
+    "暂时无法取得内容。请检查连接后重试；若持续失败，请检查 Gateway 服务。"
+
+/**
  * 展示可采取的动作，不把可能含地址、服务端正文的原始异常当文案。
  *
- * 没有已知指引时退回统一的兜底说明；[specificFailureText] 让调用方能区分
- * 「这条错误码有专门说明」与「只能给兜底」。
+ * 没有已知指引时退回 `fallback`（默认是内容加载场景的说明）；[specificFailureText]
+ * 让调用方能区分「这条错误码有专门说明」与「只能给兜底」。
  */
-fun readableFailure(code: String): String =
-    specificFailureText(code)
-        ?: "暂时无法取得内容。请检查连接后重试；若持续失败，请检查 Gateway 服务。"
+fun readableFailure(code: String, fallback: String = CONTENT_FAILURE_FALLBACK): String =
+    specificFailureText(code) ?: fallback
 
 /** 已知错误码对应的说明；未知码返回 null，由调用方决定兜底文案。 */
 fun specificFailureText(code: String): String? {
@@ -75,6 +83,18 @@ fun specificFailureText(code: String): String? {
         value.contains("CURSOR_EXPIRED") -> "会话进度已过期，请刷新以重新同步内容。"
         value.contains("URL-SCHEME") -> "网关地址不受支持，请使用 http:// 或 https:// 开头的地址。"
         value.contains("MISSING-TLS-IDENTITY") -> "Gateway 未提供可核验的 TLS 身份，已按安全要求拒绝连接。"
+        // 核心 Schema 摘要不一致是唯一一种「两端都对却连不上」的失败：两端各自算出的
+        // 契约版本不同，Gateway 按契约 §4 直接拒绝协商。文案必须指向升级，否则用户会
+        // 去修网络。`AUTHENTICATION_FAILED:PROTOCOL_INCOMPATIBLE`（协商绑定失效）也走
+        // 这条，所以两种成因都要涵盖。
+        value.contains("PROTOCOL_INCOMPATIBLE") ->
+            "App 与 Gateway 的契约版本不一致（或本次协商已失效），连接被拒绝。请把 App 与插件升级到同一版本后重试；若刚升级过，重新登录一次即可。"
+        value.contains("HOST_INCOMPATIBLE") ->
+            "Gateway 与当前 Agent 宿主版本不兼容，请在 Agent 端升级插件或宿主后重试。"
+        // 必须排在 `MISSING-TLS-IDENTITY` 之后：`NEGOTIATION_FAILED:missing-tls-identity`
+        // 这种「前缀 + 更具体原因」的组合要命中更具体的那条说明。
+        value.contains("NEGOTIATION_FAILED") ->
+            "Gateway 没有完成协议协商。请确认地址指向的是 Gateway v2 服务，并检查 Gateway 版本与运行日志。"
         value.contains("OUTCOME_UNKNOWN") -> "操作结果尚未确认。请刷新核实，避免重复提交。"
         value.contains("IDEMPOTENCY") || value.contains("409") -> "这次请求与已有操作冲突，请刷新会话核实结果。"
         value.contains("UNAUTHORIZED") || value.contains("401") || value.contains("CREDENTIAL") || value.contains("SESSION_EXPIRED") -> "登录凭据已失效，请前往账号与 Gateway 重新登录。"

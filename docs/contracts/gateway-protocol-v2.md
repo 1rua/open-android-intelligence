@@ -153,6 +153,13 @@ domain = "open-android-intelligence/v2/core-schema-hash"
 
 客户端与 Gateway 各自从本地契约资产计算该值；不相等即为 `PROTOCOL_INCOMPATIBLE`。任何一方都不得使用占位值，也不得省略该字段。
 
+摘要不匹配是**破坏性升级**，不是可重试的瞬时故障：被拒的客户端在重新构建到同一份 Schema 之前完全无法连接，而这次拒绝发生在认证之前，因此不会留下会话、审计或事件记录。两端都必须让这次拒绝本身可诊断：
+
+- 客户端必须给出「两端版本不一致」的专门说明，并指向升级动作；不得退化成通用连接失败文案——那会把用户引向排查网络。
+- Gateway 必须记录一条警告，包含发起方 `installationId`、客户端 `appVersion` 以及两侧摘要（摘要本身是公开的契约哈希，不是秘密；只记录 `sha256:` 加前八位十六进制即可）。
+
+因此，任何改变核心 Schema 摘要的版本都必须与客户端构建同步发布：只升级一端，会让另一端从「可用」直接变成「完全无法登录」，且手机侧只能看到一次被拒的协商。
+
 ### 4.1 动态 Schema catalog 与可信分派
 
 `schemaFor` 和 `validateGatewayValue` 保留 outer-only 兼容语义：它们只验证固定协议外壳，不把动态 `payload`、`parameters`、成功 `data` 或失败 `details` 误报为已经完成子 Schema 验证。完整验证必须使用一个原子的 dispatched validator：构造时接收并冻结 catalog；运行时依次完成外壳验证、可信 key 解析、catalog lookup 和子值验证，调用方不能观察或绕过中间的半验证状态。

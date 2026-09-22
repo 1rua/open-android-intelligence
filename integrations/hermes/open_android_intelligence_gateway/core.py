@@ -820,6 +820,34 @@ def _hash_input(method: str, target: str, body: Any) -> str:
     return hashlib.sha256(_json({"method": method, "target": target, "body": body}).encode("utf-8")).hexdigest()
 
 
+def _digest_prefix(value: Any) -> str:
+    """Log-safe form of a `sha256:` digest: the algorithm tag plus eight hex digits."""
+    if not isinstance(value, str) or not value:
+        return "<missing>"
+    return value[:15]
+
+
+def _negotiation_client_hint(body: Any, expected_core: str) -> str:
+    """Names the client build and both core digests of one refused negotiation.
+
+    A refused negotiation stops before authentication, so no session, audit row
+    or event ever records it: this string is the only trace a version mismatch
+    leaves behind. It must therefore answer "which side is stale?" on its own.
+    Digests are public contract hashes, never secrets, and only prefixes are
+    reported. Nothing here may raise: it runs on the failure path.
+    """
+    client = body.get("client") if isinstance(body, Mapping) else None
+    client = client if isinstance(client, Mapping) else {}
+    hashes = body.get("schemaHashes") if isinstance(body, Mapping) else None
+    hashes = hashes if isinstance(hashes, Mapping) else {}
+    return (
+        f"installationId={client.get('installationId', '<missing>')} "
+        f"appVersion={client.get('appVersion', '<missing>')} "
+        f"clientCore={_digest_prefix(hashes.get('core'))} "
+        f"gatewayCore={_digest_prefix(expected_core)}"
+    )
+
+
 def _value(value: Any, *names: str, default: Any = None) -> Any:
     for name in names:
         if isinstance(value, Mapping) and name in value:
@@ -3055,6 +3083,14 @@ class GatewayCore:
         if not isinstance(body, Mapping) or not self.contracts.validate("negotiate.request", body):
             raise GatewayError("SCHEMA_INVALID")
         if body["schemaHashes"]["core"] != self.contracts.core_schema_hash:
+            # Contract §4: a digest mismatch is a destructive upgrade, not a
+            # transient failure — the client cannot connect at all until it is
+            # rebuilt against these Schema documents. Without this line the
+            # rejection is invisible to the operator (nothing is persisted yet).
+            logger.warning(
+                "[open_android] Refused negotiation: core Schema digest mismatch (%s)",
+                _negotiation_client_hint(body, self.contracts.core_schema_hash),
+            )
             raise GatewayError("PROTOCOL_INCOMPATIBLE")
         requested = body["features"]
         # Only what this Gateway implements is ever advertised: an
@@ -3079,7 +3115,13 @@ class GatewayCore:
             "messages": "chat-v1", "attachments": "staged-sha256-v1",
             "events": "sse-cursor-v1", "deviceRequests": "risk-queue-v1",
         }
-        if any(required[key] not in requested[key] for key in required):
+        missing = [key for key in required if required[key] not in requested[key]]
+        if missing:
+            logger.warning(
+                "[open_android] Refused negotiation: client does not offer %s (%s)",
+                ", ".join(sorted(missing)),
+                _negotiation_client_hint(body, self.contracts.core_schema_hash),
+            )
             raise GatewayError("PROTOCOL_INCOMPATIBLE")
         if account is None:
             deployment_id = "deploy_" + hashlib.sha256(str(self.storage_root).encode("utf-8")).hexdigest()[:16]
@@ -3125,6 +3167,11 @@ class GatewayCore:
             existing = self._pending_negotiations.get(negotiation_id)
             if existing is not None:
                 if existing["inputHash"] != input_hash:
+                    logger.warning(
+                        "[open_android] Refused negotiation: %s was already started with a different body (%s)",
+                        negotiation_id,
+                        _negotiation_client_hint(body, self.contracts.core_schema_hash),
+                    )
                     raise GatewayError("PROTOCOL_INCOMPATIBLE")
             else:
                 self._pending_negotiations[negotiation_id] = {

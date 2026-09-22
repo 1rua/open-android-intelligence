@@ -493,7 +493,11 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     StatusDot(color = MaterialTheme.colorScheme.error)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = readableFailure(phase.code), style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
+                    Text(
+                        text = readableFailure(phase.code, CONNECTION_FAILURE_FALLBACK),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 12.sp,
+                    )
                 }
                 TextButton(onClick = onRetry) {
                     Text("重试", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 11.sp)
@@ -502,6 +506,16 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
         }
     }
 }
+
+/**
+ * 登录阶段的兜底文案。
+ *
+ * 这里的失败可能来自地址、网络、凭据或两端版本，而 `errorCode()` 取的是异常的 message
+ * （可能带地址与对端正文），所以既不能把原始文本当文案，也不能套用「无法取得内容」——
+ * 那会把用户引向检查内容，而不是检查连接与两端版本。
+ */
+private const val CONNECTION_FAILURE_FALLBACK: String =
+    "无法连接 Gateway。请检查地址与网络，并确认 App 与插件版本一致后重试；若持续失败，请查看 Gateway 服务与日志。"
 
 @Composable
 private fun StatusDot(color: androidx.compose.ui.graphics.Color) {
