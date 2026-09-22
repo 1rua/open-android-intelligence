@@ -46,7 +46,8 @@ class AuditSinkTest {
             )
 
             assertEquals(listOf(event), reloaded.events())
-            assertTrue(file.readText().startsWith("v1|"))
+            // 防篡改格式升级后，新记录一律是带哈希链的 v2 行；正文仍不得落盘。
+            assertTrue(file.readText().startsWith("v2|"))
             assertTrue(file.readText().contains("emergency.stop").not())
         } finally {
             directory.deleteRecursively()

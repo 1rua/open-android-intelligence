@@ -3,14 +3,10 @@ package com.openandroidintelligence.kernel
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.util.Base64
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -61,11 +57,20 @@ class InMemoryAuditSink : ObservableAuditSink {
 }
 
 /**
- * Private, metadata-only audit storage for the Android host.
+ * Private, metadata-only, tamper-evident audit storage for the Android host.
  *
  * The sink stores encoded fields rather than rendered text so a future UI can
  * still render through [AndroidAuditStore]. Invalid lines are ignored during
- * recovery; a damaged audit file must not make the host fail to start.
+ * recovery (a damaged audit file must not make the host fail to start), but they
+ * are not forgiven by [verifyChain]: the file is append-only and every chained
+ * record carries its predecessor's digest ([AuditLineCodec]), so editing or
+ * removing a record is detectable instead of silently overwritten away — the
+ * old implementation rewrote the whole file on every write, which made exactly
+ * the tampering the settings page claims to resist undetectable.
+ *
+ * Records written by older builds (`v1`, no chain fields) stay readable, and
+ * [verifyChain] reports them as unverifiable rather than pretending they are
+ * protected.
  */
 class PersistentAuditSink(
     private val file: File,
@@ -73,94 +78,98 @@ class PersistentAuditSink(
     private val retention: Duration = Duration.ofDays(30),
 ) : ObservableAuditSink {
 
+    private class Recovered(val visibleEvents: List<AuditEvent>, val headHash: String)
+
     private val lock = Any()
-    private val _events = MutableStateFlow(load())
+    private var recovered: Recovered = load()
+    private val _events = MutableStateFlow(recovered.visibleEvents)
     override val eventsFlow: StateFlow<List<AuditEvent>> = _events.asStateFlow()
 
     override fun write(event: AuditEvent) {
         synchronized(lock) {
             val cutoff = clock().minus(retention)
-            val next = (_events.value + event).filterNot { isExpired(it, cutoff) }
-            persist(next)
-            _events.value = next
+            val line = AuditLineCodec.encodeChained(event, recovered.headHash)
+            append(line)
+            recovered = Recovered(
+                visibleEvents = (recovered.visibleEvents + event).filterNot { isExpired(it, cutoff) },
+                headHash = AuditLineCodec.hashOf(line) ?: recovered.headHash,
+            )
+            _events.value = recovered.visibleEvents
         }
     }
 
     override fun events(): List<AuditEvent> = eventsFlow.value
 
-    private fun load(): List<AuditEvent> {
-        if (!file.isFile) return emptyList()
-        val cutoff = clock().minus(retention)
-        return runCatching {
-            file.readLines(StandardCharsets.UTF_8)
-                .mapNotNull(AuditEventCodec::decode)
-                .filterNot { isExpired(it, cutoff) }
-        }.getOrDefault(emptyList())
+    /**
+     * Walks the file as it exists on disk right now — not the in-memory view —
+     * so the answer reflects what an attacker with file access would find, not
+     * what this process last wrote. A file that cannot be parsed is reported,
+     * never silently passed off as intact.
+     */
+    fun verifyChain(): AuditChainVerification = synchronized(lock) {
+        if (!file.isFile) {
+            return AuditChainVerification(
+                status = AuditChainStatus.INTACT,
+                verifiedRecords = 0,
+                legacyRecords = 0,
+                unreadableRecords = 0,
+                firstBrokenRecord = null,
+                reason = null,
+                headHash = AuditLineCodec.GENESIS,
+            )
+        }
+        runCatching { AuditLineCodec.verify(file.readLines(StandardCharsets.UTF_8)) }.getOrElse {
+            AuditChainVerification(
+                status = AuditChainStatus.BROKEN,
+                verifiedRecords = 0,
+                legacyRecords = 0,
+                unreadableRecords = 0,
+                firstBrokenRecord = 1,
+                reason = "file-unreadable",
+                headHash = null,
+            )
+        }
     }
 
-    private fun persist(events: List<AuditEvent>) {
+    /**
+     * Append-only: the record is added at the end of the existing file and
+     * synced. Records are never rewritten or removed in place, so a digest once
+     * written cannot be quietly re-anchored.
+     */
+    private fun append(line: String) {
         file.parentFile?.mkdirs()
-        val bytes = events.joinToString(
-            separator = "\n",
-            postfix = if (events.isEmpty()) "" else "\n",
-        ) { event -> AuditEventCodec.encode(event) }
-            .toByteArray(StandardCharsets.UTF_8)
-        val temporary = File.createTempFile("audit", ".tmp", file.parentFile)
-        FileOutputStream(temporary).use { output ->
-            output.write(bytes)
+        FileOutputStream(file, true).use { output ->
+            output.write((line + "\n").toByteArray(StandardCharsets.UTF_8))
             output.fd.sync()
         }
-        try {
-            Files.move(
-                temporary.toPath(),
-                file.toPath(),
-                StandardCopyOption.ATOMIC_MOVE,
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    private fun load(): Recovered {
+        if (!file.isFile) return Recovered(emptyList(), AuditLineCodec.GENESIS)
+        val cutoff = clock().minus(retention)
+        val lines = runCatching { file.readLines(StandardCharsets.UTF_8) }.getOrDefault(emptyList())
+        var head = AuditLineCodec.GENESIS
+        val events = mutableListOf<AuditEvent>()
+        for (line in lines) {
+            if (line.isBlank()) continue
+            // 无法解析的行不进入内存视图（旧规则：损坏的文件不能让宿主无法
+            // 启动），但它在磁盘上原样保留，verifyChain 会如实报告断链。
+            when (val decoded = AuditLineCodec.decode(line)) {
+                is AuditLineCodec.Decoded.Chained -> {
+                    events += decoded.event
+                    head = decoded.hash
+                }
+
+                is AuditLineCodec.Decoded.Legacy -> events += decoded.event
+
+                AuditLineCodec.Decoded.Unreadable -> Unit
+            }
         }
+        return Recovered(events.filterNot { isExpired(it, cutoff) }, head)
     }
 
     private fun isExpired(event: AuditEvent, cutoff: Instant): Boolean =
         runCatching { Instant.parse(event.timestampUtc).isBefore(cutoff) }.getOrDefault(true)
-}
-
-private object AuditEventCodec {
-    private const val VERSION = "v1"
-    private val encoder = Base64.getUrlEncoder().withoutPadding()
-    private val decoder = Base64.getUrlDecoder()
-
-    fun encode(event: AuditEvent): String = VERSION + "|" + listOf(
-        event.pluginId,
-        event.accountId,
-        event.pairingId,
-        event.action,
-        event.outcome.name,
-        event.correlationId,
-        event.timestampUtc,
-    ).joinToString("|") { value -> encoder.encodeToString(value.toByteArray(StandardCharsets.UTF_8)) }
-
-    fun decode(line: String): AuditEvent? {
-        val fields = line.split('|')
-        if (fields.size != 8) return null
-        if (fields[0] != VERSION) return null
-        val values = fields.drop(1).map { field ->
-            runCatching { String(decoder.decode(field), StandardCharsets.UTF_8) }.getOrNull()
-        }
-        if (values.any { it == null }) return null
-        val decoded = values.filterNotNull()
-        val outcome = runCatching { AuditOutcome.valueOf(decoded[4]) }.getOrNull() ?: return null
-        return AuditEvent(
-            pluginId = decoded[0],
-            accountId = decoded[1],
-            pairingId = decoded[2],
-            action = decoded[3],
-            outcome = outcome,
-            correlationId = decoded[5],
-            timestampUtc = decoded[6],
-        )
-    }
 }
 
 /**
