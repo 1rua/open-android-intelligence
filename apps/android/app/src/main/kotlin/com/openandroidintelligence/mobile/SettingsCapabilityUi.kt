@@ -32,14 +32,19 @@ const val NOTICE_DISMISS_LABEL = "关闭操作提示"
 /**
  * 宿主是否接入了真实的屏幕截图来源。
  *
- * 现状：宿主没有任何 Assist 截图供给（浮动助理的圈选层 [com.openandroidintelligence.conversation.selection.ScreenSelectionOverlay]
- * 只能以 `screenshot = null` 渲染不可用态）。这里用常量如实表达「未接入」，
- * 而不是让设置页把一个不存在的来源描述成可用；接入截图来源时改这一处。
+ * 现状：已接入（Wave 1 装配 [com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource]，
+ * 经系统授权对话框显式授予后可采集；来源缺失/未授权/采集失败时圈选层
+ * [com.openandroidintelligence.conversation.selection.ScreenSelectionOverlay] 仍渲染不可用态）。
+ * 若未来撤下来源，把这里改回 false 即恢复如实降级。
  */
 const val SCREENSHOT_SOURCE_WIRED = true
 
 /**
- * 宿主是否装配了推送采集通道。现状：没有任何采集器在运行，常量如实降级。
+ * 宿主是否装配了通知采集通道。
+ *
+ * 现状：已装配（Wave 1 按 D6 注入 `:notification-control`/`:notification-host`，
+ * 监听服务在 Manifest 声明、经系统「通知使用权」显式授予；registry 未装配时
+ * 端口 deny-first，设置子页如实呈现「未装配」）。
  */
 const val PUSH_CHANNEL_WIRED = true
 

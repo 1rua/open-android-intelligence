@@ -363,6 +363,15 @@ A0 在 Wave 0 内产出下列裁决。每项裁决的产出物固定为：**契�
 - **语义约束**：`pairing.grant.changed` 只做**通知**；裁决仍走请求路径，携带旧 revision 的请求照旧返回 `GRANT_STALE`（`:782`、`:826`）。**事件不得扩大 Android 本地权威记录**。
 - **副本漂移防护**：`event.schema.json` 的 def 与 fixtures 的 catalog schema 是两份文本，摘要只锁后者 ⇒ 需在 `golden-vectors.test.ts` 加一条深比较断言。
 
+#### D8 修订记录（2026-09-23，最终复审后）
+
+最终独立复审确认：两个新事件的生产者已完成且 payload 逐字符合 Wave 0 规范副本，但 D8 列为 Wave 1 义务的四项只完成了生产者一项。裁决如下：
+
+- **fixtures catalog/binding 7→9 与全部计数常量同步**：**二次推迟到 Wave 2**，并入「为其余 8 个裸奔事件 type 补子 Schema」的整体批次一次性完成。理由：`EventStore.append` 的失败关闭一旦开启，`device.requested`、`device.request.cancel.requested`、`conversation.title.updated`、`attachment.acknowledged` 等无 binding 的 type 会立即全部被拒；只扩 2 个 binding 而不开校验，等于把「契约要求」与「运行时执行」继续错开。一次把 12 个 type 的子 Schema、fixtures 与失败关闭校验作为同一事务落地，才是 D8「先补子 Schema 再开校验」的本意。
+- **`EventStore.append` 失败关闭校验**：同上推迟，与 fixtures 同批。
+- **补偿性约束（本波已生效）**：两个新事件的 payload 已由最终复审逐字核对符合 `event.schema.json` 规范副本，且双宿主各自的单元测试以 `ContractRegistry.validate` / `validateGatewayValue` 锁定形状；宿主管理面 `grant.bump` 与 `session.revoked` 的审计仍照写，审计链（Wave 1 A2 交付的哈希链）承载防篡改。
+- **客户端消费方**：Android 侧当前不消费这两个事件（会话失效仍由下一次请求的 401 驱动），符合 D8「事件仅为通知」语义；消费方随 Wave 2 的失败关闭校验一并接线，避免留下无消费方的半实现。
+
 #### 裁决连带约束
 
 1. **所有 Schema 改动必须合并为一次发布**：D1/D2/D3/D4/D5 的改动都会改变 core 摘要（现值 `sha256:665df516…cacb`），分次发布会让中间版本的对端 `PROTOCOL_INCOMPATIBLE`(406) 完全无法登录。

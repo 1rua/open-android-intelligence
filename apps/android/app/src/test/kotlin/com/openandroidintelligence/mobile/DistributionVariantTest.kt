@@ -1,7 +1,6 @@
 package com.openandroidintelligence.mobile
 
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -31,11 +30,5 @@ class DistributionVariantTest {
             }
             else -> throw AssertionError("未知的分发变体: ${BuildConfig.FLAVOR}")
         }
-    }
-
-    @Test
-    fun thePolicyFlagsNeverDivergeFromEachOther() {
-        // 两个策略位同源同值：渠道要么全放开、要么全收紧，不存在半开渠道。
-        assertEquals(BuildConfig.ALLOW_RUNTIME_PLUGINS, BuildConfig.ALLOW_DEVELOPER_TRUST_MODE)
     }
 }

@@ -21,11 +21,12 @@ import android.os.IBinder
  * 宿主装配顺序（也写在 README 与回执里）：
  * 1. 宿主 Activity 用 [MediaProjectionScreenCaptureSource.createAuthorizationIntent]
  *    发起系统授权对话框；
- * 2. 授权返回 `RESULT_OK` 后，先 [start] 本服务（startForegroundService），
- *    再把结果转交 [MediaProjectionScreenCaptureSource.onAuthorizationResult]
- *    ——getMediaProjection 要求 mediaProjection 型前台服务已在运行；
- * 3. 调用 [ScreenCaptureSource.release] 或会话被系统回收后，用 [stop] 撤销
- *    前台状态。
+ * 2. 授权返回 `RESULT_OK` 后调用 [start]（startForegroundService），**并等待
+ *    [start] 传入的就绪回调**——`startForegroundService` 只是排队请求，
+ *    `getMediaProjection` 要求服务已经完成 `startForeground()`，在回调到来前
+ *    转交授权结果必然以 SecurityException 失败（targetSdk 34+ 硬性要求）；
+ * 3. 授权被拒或会话建立失败时，宿主必须用 [stop] 撤销前台状态；
+ *    调用 [ScreenCaptureSource.release] 或会话被系统回收后同理。
  *
  * Manifest 声明（service 全类名 + foregroundServiceType + 所需权限）由宿主
  * 的 AndroidManifest 合并，见回执中的精确片段。
@@ -39,6 +40,13 @@ class MediaProjectionCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        // startForegroundService 只是排队请求；getMediaProjection 要求
+        // mediaProjection 型前台服务**已经完成** startForeground。所以这里
+        // 必须在本方法内同步通知等待者「服务就绪」，宿主才能转交授权结果，
+        // 否则授权必然以 SecurityException 失败（targetSdk 34+ 硬性要求）。
+        val notifyReady = foregroundReadyListener
+        foregroundReadyListener = null
+        notifyReady?.invoke()
         // 投影会话的生命周期由 ScreenCaptureSource 管理；这里没有任何
         // 逻辑需要重建服务，被系统回收即随会话一起结束。
         return START_NOT_STICKY
@@ -67,13 +75,22 @@ class MediaProjectionCaptureService : Service() {
         private const val CHANNEL_ID = "screen_capture_projection"
         private const val NOTIFICATION_ID = 1001
 
-        /** 宿主在授权对话框返回 RESULT_OK 之后、转交授权结果之前调用。 */
-        fun start(context: Context) {
+        /** 服务完成 startForeground 后在主线程回调一次；仅同进程内有效。 */
+        @Volatile
+        private var foregroundReadyListener: (() -> Unit)? = null
+
+        /**
+         * 宿主在授权对话框返回 RESULT_OK 之后调用；[onForegroundReady] 会在
+         * 服务真正进入前台状态后的主线程被回调，届时转交授权结果才是安全的。
+         */
+        fun start(context: Context, onForegroundReady: (() -> Unit)? = null) {
+            foregroundReadyListener = onForegroundReady
             context.startForegroundService(Intent(context, MediaProjectionCaptureService::class.java))
         }
 
         /** 采集源 release 或会话被系统回收之后调用，撤销前台状态。 */
         fun stop(context: Context) {
+            foregroundReadyListener = null
             context.stopService(Intent(context, MediaProjectionCaptureService::class.java))
         }
     }

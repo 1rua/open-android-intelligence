@@ -174,17 +174,43 @@ class MainActivity : ComponentActivity() {
                     contract = ActivityResultContracts.StartActivityForResult()
                 ) { result ->
                     if (result.resultCode == android.app.Activity.RESULT_OK) {
-                        MediaProjectionCaptureService.start(this@MainActivity)
+                        // getMediaProjection 要求 mediaProjection 型前台服务已经
+                        // 完成 startForeground：必须等服务就绪回调后再转交授权
+                        // 结果，否则 targetSdk 34+ 下确定性 SecurityException。
+                        MediaProjectionCaptureService.start(this@MainActivity) {
+                            val granted = screenCaptureSource.onAuthorizationResult(
+                                result.resultCode, result.data,
+                            )
+                            if (!granted) {
+                                // 会话建立失败也要撤掉前台状态，常驻通知不得悬挂。
+                                MediaProjectionCaptureService.stop(this@MainActivity)
+                            }
+                            Toast.makeText(
+                                this@MainActivity,
+                                if (granted) "已获得屏幕采集授权，请再次点击圈选开始截取"
+                                else "屏幕采集会话建立失败，圈选暂不可用",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    } else {
+                        val granted = screenCaptureSource.onAuthorizationResult(
+                            result.resultCode, result.data,
+                        )
+                        MediaProjectionCaptureService.stop(this@MainActivity)
+                        Toast.makeText(
+                            this@MainActivity,
+                            if (granted) "已获得屏幕采集授权，请再次点击圈选开始截取"
+                            else "未获得屏幕采集授权，圈选暂不可用",
+                            Toast.LENGTH_LONG,
+                        ).show()
                     }
-                    val granted = screenCaptureSource.onAuthorizationResult(
-                        result.resultCode, result.data,
-                    )
-                    Toast.makeText(
-                        this@MainActivity,
-                        if (granted) "已获得屏幕采集授权，请再次点击圈选开始截取"
-                        else "未获得屏幕采集授权，圈选暂不可用",
-                        Toast.LENGTH_LONG,
-                    ).show()
+                }
+                // 面板关闭即结束采集会话：常驻通知与投屏会话不得跨出使用场景存活。
+                LaunchedEffect(showAssistant) {
+                    if (!showAssistant) {
+                        screenCaptureSource.release()
+                        MediaProjectionCaptureService.stop(this@MainActivity)
+                    }
                 }
 
                 Surface(
