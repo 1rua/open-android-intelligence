@@ -180,6 +180,46 @@ class AdminService:
             return _failure(operation, False, "ACCOUNT_NOT_FOUND")
         return _success(operation, False, {"accountId": account_id, "deleted": True})
 
+    def pairing_revoke(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
+        """Pairing-level revocation: contract section 13's five items, one device.
+
+        A sibling of `delete_account` and nothing more: that one is
+        account-level (the last bullet of §13), this one is pairing-level, and
+        both share the `HOST_INCOMPATIBLE` gate and the local-confirmation rule
+        of this host's own management surface. The wire endpoint
+        `DELETE /pairings/current` is deliberately *not* confirmed this way —
+        a flag a client can forge is not a confirmation (D1), so the wire route
+        authenticates with the device's own signature instead.
+        """
+        operation = "pairing.revoke"
+        if self.read_only:
+            return _failure(operation, True, "HOST_INCOMPATIBLE")
+        if _input(input, "local_confirmation", "localConfirmation", False) is not True:
+            return _failure(operation, False, "LOCAL_CONFIRMATION_REQUIRED")
+        account_id = _input(input, "account_id", "accountId")
+        if not isinstance(account_id, str) or WIRE_ID_PATTERN.fullmatch(account_id) is None:
+            return _failure(operation, False, "SCHEMA_INVALID")
+        device_id = _input(input, "device_id", "deviceId")
+        if not isinstance(device_id, str) or WIRE_ID_PATTERN.fullmatch(device_id) is None:
+            return _failure(operation, False, "SCHEMA_INVALID")
+        correlation_id = _input(input, "correlation_id", "correlationId")
+        try:
+            account = self.core.open_gateway_account(account_id)
+            try:
+                result = account.revoke_pairing(
+                    device_id,
+                    str(correlation_id) if correlation_id else f"pairing.revoke:{device_id}",
+                )
+            finally:
+                account.close()
+        except GatewayError as exc:
+            return _failure(operation, False, exc.code)
+        except Exception:
+            return _failure(operation, False, "INTERNAL_ERROR")
+        return _success(operation, False, dict(result))
+
+    pairingRevoke = pairing_revoke
+
     def status(self) -> dict[str, Any]:
         return _success("admin.status", self.read_only, {
             "hostVersion": self.host_version,
@@ -197,6 +237,8 @@ class AdminService:
             return self.create_account(_input(command, "input", "input", {}))
         if name == "account.delete":
             return self.delete_account(command)
+        if name == "pairing.revoke":
+            return self.pairing_revoke(command)
         if self.read_only:
             return _failure(str(name), True, "HOST_INCOMPATIBLE")
         if _input(command, "local_confirmation", "localConfirmation", False) is not True:
@@ -244,6 +286,11 @@ class AdminPanel:
         return self.service.delete_account(input)
 
     deleteAccount = delete_account
+
+    def pairing_revoke(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
+        return self.service.pairing_revoke(input)
+
+    pairingRevoke = pairing_revoke
 
     def status(self) -> dict[str, Any]:
         return self.service.status()
@@ -303,6 +350,14 @@ def _parse_command(args: list[str], service: AdminService) -> Mapping[str, Any] 
             "accountId": args[1], "password": flags["password"],
             "localConfirmation": flags["confirmed"],
         }}
+    if args[:2] == ["pairing", "revoke"] and len(args) >= 4:
+        flags = _parse_flags(list(args[4:]))
+        if flags is None:
+            return _invalid_arguments(service)
+        return {
+            "command": "pairing.revoke", "accountId": args[2], "deviceId": args[3],
+            "localConfirmation": flags["confirmed"],
+        }
     if args in (["status"], ["account", "status"]):
         return {"command": "admin.status"}
     if args[:2] == ["account", "delete"] and len(args) >= 3:
@@ -338,6 +393,15 @@ def create_admin_cli_registrar(service: AdminService) -> Callable[..., Any]:
             },
         }))
         account.command("status").description("Show Gateway account status").action(lambda: service.status())
+        pairing = root.command("pairing").description("Manage Open Android Intelligence Gateway pairings")
+        pairing.command("revoke <accountId> <deviceId>").description(
+            "Revoke one device pairing: keys, credentials, grants, queue and unconfirmed attachments"
+        ).option(
+            "--confirm-local", "Confirm this write on the local host"
+        ).action(lambda account_id, device_id, options=None: service.execute({
+            "command": "pairing.revoke", "accountId": str(account_id), "deviceId": str(device_id),
+            "localConfirmation": bool(isinstance(options, Mapping) and options.get("confirmLocal") is True),
+        }))
         account.command("delete <accountId>").description("Delete a Gateway account and all of its data").option(
             "--confirm-local", "Confirm this write on the local host"
         ).action(lambda account_id, options=None: service.execute({

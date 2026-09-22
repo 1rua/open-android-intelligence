@@ -386,7 +386,7 @@ def test_current_head_session_routes_register_device_keys_and_rotate_or_revoke(t
     negotiation_id_2 = "neg-session-2"
     _negotiate_for_session(routes, negotiation_id_2, installation_id)
     session_2 = _password_login(routes, negotiation_id_2, installation_id)
-    unpair = routes["/open-android-intelligence/v2/sessions/current"].handle({
+    logout = routes["/open-android-intelligence/v2/sessions/current"].handle({
         "method": "DELETE",
         "target": "/open-android-intelligence/v2/sessions/current?revokeRefresh=true",
         "headers": {
@@ -396,15 +396,18 @@ def test_current_head_session_routes_register_device_keys_and_rotate_or_revoke(t
             "x-open-android-intelligence-session": session_2["sessionId"],
         },
     })
-    assert unpair["statusCode"] == 200
-    assert unpair["body"]["data"]["refreshRevoked"] is True
+    assert logout["statusCode"] == 200
+    assert logout["body"]["data"]["refreshRevoked"] is True
 
+    # Contract §13 (`:796`): logging out revokes the refresh credential and does
+    # NOT delete the pairing. `device_keys` has to survive here — deleting it is
+    # unpairing (`:798`), which is `DELETE /pairings/current`, not this route.
     account = core.open_gateway_account("alice")
     try:
         assert account.sessions.active_refresh_credential_count(session_2["deviceId"]) == 0
         assert account.store.database.execute(
-            "SELECT 1 FROM device_keys WHERE device_id = ?",
+            "SELECT public_key FROM device_keys WHERE device_id = ?",
             (session_2["deviceId"],),
-        ).fetchone() is None
+        ).fetchone()[0] == "device-public-key"
     finally:
         account.close()

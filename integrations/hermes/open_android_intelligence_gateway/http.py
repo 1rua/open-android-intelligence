@@ -497,6 +497,10 @@ def create_gateway_routes(
         ("/open-android-intelligence/v2/sessions/password", "exact"),
         ("/open-android-intelligence/v2/sessions/refresh", "exact"),
         ("/open-android-intelligence/v2/sessions/current", "exact"),
+        # Contract §5.6 / Wave 0 decision D1: unpairing is its own management
+        # endpoint and is fully signed — it never joins the pre-auth exemptions
+        # that let `sessions/current` arrive without a verified context.
+        ("/open-android-intelligence/v2/pairings/current", "exact"),
         ("/open-android-intelligence/v2/commands", "exact"),
         ("/open-android-intelligence/v2/events", "exact"),
         ("/open-android-intelligence/v2/conversations", "exact"), ("/open-android-intelligence/v2/conversations/", "prefix"),

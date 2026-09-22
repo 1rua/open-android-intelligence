@@ -1965,6 +1965,47 @@ class AttachmentStore:
                 deleted += 1
         return deleted
 
+    def revoke_unconfirmed(self, correlation_id: str, now: datetime | str | None = None) -> int:
+        """Destroys the bytes of every attachment no host has acknowledged.
+
+        Contract section 13 (`:798`) revokes "unconfirmed attachments" when a
+        pairing ends. Unconfirmed means the host never acknowledged it: the
+        bytes are still staged for delivery and nothing else keeps them alive.
+
+        The row itself is kept as the audit trail of what existed and is moved
+        straight to `deleted` — revocation is a deletion, not one of the
+        lifecycle transitions of `_ATTACHMENT_TRANSITIONS`.
+
+        Known limitation, stated rather than papered over: `attachments` carries
+        no device column in this schema, so the sweep is account-wide. A device
+        attribution column belongs to the storage change that adds one; until
+        then an unpair also destroys another device's in-flight bytes.
+        """
+        current = _now(now)
+        paths: list[Path] = []
+        with self.store.transaction():
+            rows = self.store.database.execute(
+                "SELECT attachment_id, content_path, cas_path FROM attachments "
+                "WHERE acknowledged_at IS NULL AND state != 'deleted'"
+            ).fetchall()
+            for row in rows:
+                for key in ("content_path", "cas_path"):
+                    if row[key]:
+                        paths.append(Path(row[key]))
+                self.store.database.execute(
+                    "UPDATE attachments SET state = 'deleted', content_path = NULL, cas_path = NULL WHERE attachment_id = ?",
+                    (row["attachment_id"],),
+                )
+                self.audit.append(
+                    "attachment.revoked", {"accountId": self.account_id},
+                    {"attachmentId": row["attachment_id"]}, correlation_id, current,
+                )
+        for path in set(paths):
+            self._move_to_trash(path)
+        return len(rows)
+
+    revokeUnconfirmed = revoke_unconfirmed
+
     def _expire_if_due(self, attachment_id: str, current: datetime) -> tuple[sqlite3.Row, bool]:
         paths: list[Path] = []
         expired = False
@@ -2274,6 +2315,40 @@ class DeviceRequestStore:
             raise GatewayError("OUTCOME_UNKNOWN")
         return record
 
+    def revoke_for_device(
+        self, device_id: str, correlation_id: str, now: datetime | str | None = None,
+    ) -> int:
+        """Takes every live request of one device out of the queue (§13).
+
+        Only the documented `cancel` transition is used, so a request that the
+        device had already claimed becomes `cancel_requested` rather than a
+        fabricated outcome. What finishes the job is the caller's
+        `pairingGeneration` bump: every row left behind is then bound to a
+        generation the device can no longer present, so it can never be claimed
+        or answered (contract §12, `PAIRING_GENERATION_STALE`).
+        """
+        current = _now(now)
+        revoked = 0
+        with self.store.transaction():
+            rows = self.store.database.execute(
+                "SELECT request_id, state FROM device_requests "
+                "WHERE device_id = ? AND state IN ('pending', 'claimed', 'cancel_requested')",
+                (device_id,),
+            ).fetchall()
+            for row in rows:
+                self.store.database.execute(
+                    "UPDATE device_requests SET state = ? WHERE request_id = ?",
+                    (next_device_request_state(row["state"], "cancel"), row["request_id"]),
+                )
+                self.events.append(
+                    "device.request.cancel.requested", correlation_id,
+                    {"requestId": row["request_id"]}, current,
+                )
+                revoked += 1
+        return revoked
+
+    revokeForDevice = revoke_for_device
+
     def get(self, request_id: str) -> dict[str, Any]:
         row = self._row(request_id)
         return self._map(row)
@@ -2561,6 +2636,92 @@ class GatewayAccount:
         self.masterKeyRef = self.master_key_ref
         self._closed = False
 
+    def pairing_generation(self) -> int:
+        row = self.store.database.execute(
+            "SELECT value FROM account_metadata WHERE key = 'pairing_generation'"
+        ).fetchone()
+        return int(row[0]) if row is not None else 1
+
+    pairingGeneration = pairing_generation
+
+    def revoke_pairing(
+        self, device_id: str, correlation_id: str, now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Ends one device pairing: contract section 13 (`:798`) plus D1.
+
+        Revokes the five items the contract names — device key, refresh
+        credential, grants, queue, unconfirmed attachments — and every access
+        session of the device, then raises `pairingGeneration` so every record
+        still bound to the old one is fenced.
+
+        Each boolean in the answer is a post-condition measured after the write,
+        not a claim that work was attempted: `True` means this category holds
+        nothing live for the device any more. A replay therefore answers the
+        same terminal state instead of re-running a destructive sweep.
+
+        `PAIRING_REQUIRED` is raised when the device has no registered key: an
+        endpoint that destroys a pairing must refuse rather than report success
+        for a pairing that does not exist.
+        """
+        current = _now(now)
+        with self.store.transaction():
+            paired = self.store.database.execute(
+                "SELECT 1 FROM device_keys WHERE device_id = ?", (device_id,)
+            ).fetchone()
+            if paired is None:
+                raise GatewayError("PAIRING_REQUIRED", {"deviceId": device_id})
+            self.sessions.revoke_device_keys(device_id, correlation_id, current)
+            self.sessions.revoke_refresh_credentials(device_id, correlation_id, current)
+            self.sessions.revoke_device_sessions(device_id, correlation_id, current)
+            self.device_requests.revoke_for_device(device_id, correlation_id, current)
+            self.attachments.revoke_unconfirmed(correlation_id, current)
+            next_generation = self.pairing_generation() + 1
+            self.store.database.execute(
+                "UPDATE account_metadata SET value = ? WHERE key = 'pairing_generation'",
+                (str(next_generation),),
+            )
+            self.audit.append(
+                "pairing.revoked",
+                {"accountId": self.account_id, "deviceId": device_id},
+                {"pairingGeneration": next_generation}, correlation_id, current,
+            )
+        return {
+            "deviceId": device_id,
+            # No key row survives, so nothing can sign as this device and no
+            # grant can be presented: this schema's per-device grant state is
+            # the `grant_revision` carried by that row (see 3-6 for the store
+            # that gives grants a table of their own).
+            "deviceKeysRevoked": self._device_key_count(device_id) == 0,
+            "refreshRevoked": self.sessions.active_refresh_credential_count(device_id) == 0,
+            "grantsRevoked": self._device_key_count(device_id) == 0,
+            "deviceRequestsRevoked": self._live_device_request_count(device_id) == 0,
+            "unconfirmedAttachmentsRevoked": self._unconfirmed_attachment_count() == 0,
+            "sessionsRevoked": self._active_session_count(device_id) == 0,
+        }
+
+    revokePairing = revoke_pairing
+
+    def _device_key_count(self, device_id: str) -> int:
+        return int(self.store.database.execute(
+            "SELECT COUNT(*) FROM device_keys WHERE device_id = ?", (device_id,)
+        ).fetchone()[0])
+
+    def _active_session_count(self, device_id: str) -> int:
+        return int(self.store.database.execute(
+            "SELECT COUNT(*) FROM access_sessions WHERE device_id = ? AND status = 'active'", (device_id,)
+        ).fetchone()[0])
+
+    def _live_device_request_count(self, device_id: str) -> int:
+        return int(self.store.database.execute(
+            "SELECT COUNT(*) FROM device_requests WHERE device_id = ? "
+            "AND state IN ('pending', 'claimed', 'cancel_requested')", (device_id,)
+        ).fetchone()[0])
+
+    def _unconfirmed_attachment_count(self) -> int:
+        return int(self.store.database.execute(
+            "SELECT COUNT(*) FROM attachments WHERE acknowledged_at IS NULL AND state != 'deleted'"
+        ).fetchone()[0])
+
     def close(self) -> None:
         if not self._closed:
             self.store.close()
@@ -2710,19 +2871,84 @@ class SessionService:
 
     def revoke_refresh_credentials(
         self, device_id: str, correlation_id: str, now: datetime | str | None = None,
-    ) -> None:
-        """Ends the pairing: no refresh credential, and no key left to sign with."""
+    ) -> int:
+        """Ends the login: the device can no longer mint a session without a password.
+
+        Contract section 13 (`docs/contracts/gateway-protocol-v2.md:796`) is
+        explicit that logging out revokes the refresh credential and does *not*
+        delete the pairing. The device key stays registered so the pairing it
+        proves survives the logout; deleting `device_keys` here would silently
+        turn a logout into an unpair, which is a separate act with its own
+        endpoint (`:798`, `DELETE /pairings/current`).
+
+        Returns how many credentials this call moved out of the active state.
+        """
         current = _now(now)
         with self.store.transaction():
-            self.store.database.execute(
+            revoked = self.store.database.execute(
                 "UPDATE refresh_credentials SET status = 'revoked' WHERE device_id = ? AND status = 'active'",
                 (device_id,),
-            )
-            self.store.database.execute("DELETE FROM device_keys WHERE device_id = ?", (device_id,))
+            ).rowcount
             self.audit.append(
                 "session.refresh.revoked",
-                {"accountId": self.account_id, "deviceId": device_id}, {}, correlation_id, current,
+                {"accountId": self.account_id, "deviceId": device_id},
+                {"revokedCount": int(revoked)}, correlation_id, current,
             )
+            return int(revoked)
+
+    revokeRefreshCredentials = revoke_refresh_credentials
+
+    def revoke_device_keys(
+        self, device_id: str, correlation_id: str, now: datetime | str | None = None,
+    ) -> bool:
+        """Deletes the device key of one pairing. True when a key was registered.
+
+        Unpairing only: nothing else in the Gateway may drop the row that makes
+        a device's signature checkable, because a logout that dropped it would
+        be indistinguishable from destroying the pairing.
+        """
+        current = _now(now)
+        with self.store.transaction():
+            existing = self.store.database.execute(
+                "SELECT 1 FROM device_keys WHERE device_id = ?", (device_id,)
+            ).fetchone()
+            self.store.database.execute("DELETE FROM device_keys WHERE device_id = ?", (device_id,))
+            self.audit.append(
+                "pairing.device_key.revoked",
+                {"accountId": self.account_id, "deviceId": device_id},
+                {"removed": existing is not None}, correlation_id, current,
+            )
+            return existing is not None
+
+    revokeDeviceKeys = revoke_device_keys
+
+    def revoke_device_sessions(
+        self, device_id: str, correlation_id: str, now: datetime | str | None = None,
+    ) -> int:
+        """Ends every still-active access session of one device, not just one.
+
+        One device holds several sessions whenever it refreshed: ending the
+        pairing has to end all of them, because a session left alive would keep
+        authenticating with a key the pairing no longer vouches for.
+        """
+        current = _now(now)
+        with self.store.transaction():
+            rows = self.store.database.execute(
+                "SELECT session_id FROM access_sessions WHERE device_id = ? AND status = 'active'",
+                (device_id,),
+            ).fetchall()
+            self.store.database.execute(
+                "UPDATE access_sessions SET status = 'revoked' WHERE device_id = ? AND status = 'active'",
+                (device_id,),
+            )
+            for row in rows:
+                self.audit.append(
+                    "session.revoked", {"accountId": self.account_id},
+                    {"sessionId": row["session_id"]}, correlation_id, current,
+                )
+            return len(rows)
+
+    revokeDeviceSessions = revoke_device_sessions
 
     def active_refresh_credential_count(self, device_id: str) -> int:
         row = self.store.database.execute(
@@ -2828,6 +3054,9 @@ def maximum_device_request_queue_seconds(risk: str) -> int:
 
 _PERSISTABLE_ERRORS = {
     "SCHEMA_INVALID", "IDENTITY_OVERRIDE_REJECTED", "PAIRING_GENERATION_STALE",
+    # D1: a refusal to unpair is a fact about the pairing, not a transient
+    # failure, so a replay answers the refusal instead of sweeping again.
+    "PAIRING_REQUIRED",
     "GRANT_STALE", "IDEMPOTENCY_CONFLICT", "OUTCOME_UNKNOWN", "ATTACHMENT_DIGEST_MISMATCH",
     "ATTACHMENT_LIMIT_EXCEEDED",
     "ATTACHMENT_EXPIRED", "MASTER_KEY_UNAVAILABLE", "MASTER_KEY_REFERENCE_MISMATCH",
@@ -3309,6 +3538,26 @@ class GatewayCore:
         except GatewayError as exc:
             code = "SCHEMA_INVALID" if exc.code == "INVALID_STATE_TRANSITION" else exc.code
             return _failure(context, code, exc.details)
+
+    def _handle_unpair(
+        self, account: GatewayAccount, context: Mapping[str, Any], now: datetime,
+    ) -> GatewayResponse:
+        """`DELETE /pairings/current`: destroy the calling device's pairing.
+
+        Reached only through the authenticated branch of `handle`, so the nine
+        headers of contract §6.1 and the `Idempotency-Key` of §6.5 were already
+        enforced upstream. That is deliberate and is the strength split D1
+        asks for: ending your own session is an exempt route, destroying a
+        pairing is a fully signed one.
+
+        The device is taken from the verified context and from nowhere else —
+        the route has no path parameter, so a body or query cannot retarget it
+        at another device.
+        """
+        result = account.revoke_pairing(context["deviceId"], context["correlationId"], now)
+        if not self.contracts.validate("session.unpair", result):
+            raise GatewayError("SCHEMA_INVALID")
+        return _success(context, result)
 
     def bind_negotiation(
         self, negotiation_id: str, account_id: str, installation_id: str,
@@ -3868,6 +4117,8 @@ class GatewayCore:
                 approval_handoff: dict[str, Any] = {}
 
                 def work() -> dict[str, Any]:
+                    if method == "DELETE" and target_path == "/open-android-intelligence/v2/pairings/current":
+                        return self._handle_unpair(account, context, _request_now(request))
                     if method == "GET" and target_path == "/open-android-intelligence/v2/commands":
                         language_code = query_params.get("languageCode") or "en"
                         return _success(context, self.command_catalog_response(language_code))

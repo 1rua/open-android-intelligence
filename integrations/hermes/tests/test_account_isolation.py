@@ -185,9 +185,9 @@ def test_consumes_the_shared_schema_and_vector_registry(tmp_path):
     # 24 base cases plus the `/new` pair in protocol-negotiation.json and
     # sse-events.json: the command-entry capability bit and the command-result
     # payload shape are now shared facts rather than one host's private detail.
-    assert len(cases) == 32
-    assert len({case["id"] for case in cases}) == 32
-    assert len(results) == 32
+    assert len(cases) == 49
+    assert len({case["id"] for case in cases}) == 49
+    assert len(results) == 49
     assert {result["status"] for result in results} == {"pass"}
     assert {result["implementation"] for result in results} == {"hermes-python"}
 
