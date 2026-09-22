@@ -1,4 +1,4 @@
-# 根因分析与修复：App 从后台返回前台后事件流不再更新
+# 根因分析与修复：应用从后台返回前台后事件流不再更新
 
 日期：2026-09-22
 范围：Android `app` · `conversation-ui` · Hermes 插件宿主事件投递 · Gateway Protocol v2 §9
@@ -20,14 +20,14 @@
 ### 2. 订阅只有一个入口，且不会在回前台时被重开
 
 ```text
-private fun observeThreadEvents() {
+private fun observeThreadEvents() {                 // 修复前：WorkbenchController.kt
     if (closed) return
-    if (eventJob?.isActive == true) return        // ← 只要订阅还活着，再调用就是空转
+    if (eventJob?.isActive == true) return          // ← 只要订阅还活着，再调用就是空转
     eventJob = scope.launch { repository.observeEvents(scopeFactory()) ... }
 }
 ```
 
-第一道判断就是 `if (eventJob?.isActive == true) return`：只要订阅还活着，再调用也是空转。`GatewayRuntime.teardown()` 只在登出时取消会话作用域，因此回到前台没有任何路径去关掉并重开这条订阅（修复后这个入口多了一个 `windingDown: Job?` 参数用于串行交接，见第三节）。
+`GatewayRuntime.teardown()` 只在登出时取消会话作用域，因此回到前台没有任何路径去关掉并重开这条订阅（修复后这个入口多了一个 `windingDown: Job?` 参数用于串行交接，见第三节）。
 
 ### 3. App 侧唯一的「可能漏事件」补偿只在健康度跃迁时触发
 
@@ -84,47 +84,60 @@ private fun observeStreamHealth() {                 // WorkbenchController.kt:43
 
 **把「回到前台」当作一次与「健康度从 LIVE 掉下来」等价的、可检测的缺口事件**，执行与既有补偿完全同构的两个动作：
 
-1. 重新拉取当前会话的权威时间线快照（沿用既有 `reloadTimeline`）；
-2. 重开账号级事件订阅，让宿主按游标重放后台期间遗漏的帧。
+1. 从游标重开账号级事件订阅，让宿主重放后台期间遗漏的帧；
+2. 重新拉取当前会话的权威时间线快照（沿用既有 `retryTimeline()`）。
 
-顺序与契约 §9 一致（「客户端先重建资源快照，再使用响应给出的新游标恢复流」）。不新增机制、不改协议 schema、不改宿主、不改 UI 结构与去重规则。
+**通道先于快照**：快照在替代订阅已被请求之后才发起，是两次读取里更晚的那一次，因此也覆盖「交接本身丢了一帧」的情形。不新增机制、不改协议 schema、不改宿主、不改 UI 结构与去重规则。
 
 ## 三、代码改动点
 
 | 文件 | 改动 | 理由 |
 | --- | --- | --- |
-| `apps/android/conversation-ui/.../state/WorkbenchController.kt` | 新增 `onForegrounded()`（1604）与 `restartEventStream()`（1617）；`observeThreadEvents(windingDown: Job?)`（1642）在开新订阅前 `cancelAndJoin` 被替换的订阅 | 重新同步入口；串行交接守住既有约束「同一账号同一时刻只有一个订阅」，避免旧流与新流重叠 |
-| 同上 | `observeStreamHealth()` 在 `health == LIVE` 时清除以 `EVENTS_FAILED:` 开头的提示（452） | 恢复后不得继续谎报「实时通道已断开」；只退休通道自己的提示，重命名失败等提示不受影响 |
+| `apps/android/conversation-ui/.../state/WorkbenchController.kt` | 新增 `onForegrounded()`（1597）：先 `restartEventStream()`，再复用既有 `retryTimeline()`（494） | 重新同步入口；不新造第二条快照拉取路径 |
+| 同上 | 新增 `restartEventStream()`（1610）与 `observeThreadEvents(windingDown: Job?)`（1638）：开新订阅前取消并等待被替换的订阅 | 守住既有约束「同一账号同一时刻只有一个订阅」（旧流与新流重叠曾是重复事件来源） |
+| 同上 | 常量 `HANDOVER_TIMEOUT_MILLIS = 2_000L`（2269）：交接等待**有界** | 取消经 flow 自身的完成回调关 socket，实测等待是毫秒级；万一传输层未遵守取消，也不能因此永久失去通道（超时后的短暂重叠由传输层与会话层去重覆盖） |
 | `apps/android/app/.../GatewayRuntime.kt` | 新增 `onAppForegrounded()`（94）：仅在 `_controller` 存在时转发 | 没有会话的工作台不存在，不伪造状态 |
-| `apps/android/app/.../OpenAndroidIntelligenceApplication.kt` | `onCreate` 注册 `ProcessLifecycleOwner` 的 `DefaultLifecycleObserver`，`onStart` 转发（107） | 可见性是进程事实，不是单个 Activity 的事实；冷启动的 `ON_START` 到达时 `controller` 仍为 `null`，天然 no-op |
+| `apps/android/app/.../OpenAndroidIntelligenceApplication.kt` | `onCreate` 注册 `ProcessLifecycleOwner` 的 `DefaultLifecycleObserver`，`onStart` 转发（107） | 可见性是进程事实，不是单个 Activity 的事实；冷启动的 `ON_START` 派发发生在 Activity 启动阶段，早于 `LaunchedEffect(Unit)` 触发的会话恢复，因此那时 `_controller` 必为 `null`，天然 no-op |
 | `apps/android/app/build.gradle.kts` | 新增 `androidx.lifecycle:lifecycle-process:2.8.7`（72） | 平台标准「应用可见性」原语，与既有 lifecycle 2.8.7 同版本 |
-| `apps/android/conversation-ui/src/test/.../WorkbenchForegroundResumeTest.kt` | 新增 8 个用例 | 锁住重开订阅、串行交接、权威时间线补齐、重放不重复上屏、恢复后的提示语义、关闭后 no-op |
+| `apps/android/conversation-ui/src/test/.../WorkbenchForegroundResumeTest.kt` | 新增 6 个用例 | 锁住重开订阅、串行交接（永不重叠）、权威时间线补齐、重放不重复上屏、无活动会话时的退化路径、关闭后 no-op |
 
 重开订阅会重放游标之后的帧，但**不会重复上屏**：传输层 `GatewayHttpClient.deliveredEventIds` 在网络边缘丢弃重放帧，会话层 `WorkbenchController.handledEventIds` 再按 event id 只应用一次，流式/确认消息另有 `mirroredRevisions` 单调规则。
 
 ## 四、验证
 
-### 本机最小必要测试（全部通过）
+### 已执行：本机最小必要测试（全部通过）
 
 ```text
 :conversation-ui:testDebugUnitTest
-  WorkbenchForegroundResumeTest       tests=8  failures=0
+  WorkbenchForegroundResumeTest       tests=6  failures=0   # 本次新增
   WorkbenchSendRegressionTest         tests=36 failures=0
   WorkbenchTitleRegressionTest        tests=6  failures=0
-:app:compileFullDebugKotlin           BUILD SUCCESSFUL   # 新增依赖与 app 层改动可编译
-:app:testFullDebugUnitTest            BUILD SUCCESSFUL   # 架构边界守卫仍通过
+:app:compileFullDebugKotlin           BUILD SUCCESSFUL      # 新增依赖与 app 层改动可编译
+:app:testFullDebugUnitTest            BUILD SUCCESSFUL      # 架构边界守卫仍通过
 ```
 
-### 真机闭环（R52X909R9QT + Hermes）
+### 待执行：真机回归清单（**尚未执行**，需真机 + Hermes 才能完成）
 
 1. 前台发一条会触发多帧回复的消息，确认回复正常到达；
 2. 切到后台停留 ≥2 分钟，期间让 Agent 产出回复；
 3. 回到前台**不杀进程**，时间线应在数秒内自动补齐；
 4. logcat 过滤 `GatewayEvents` / `GatewayWs` / `GatewaySse`：应看到回前台时的重连与 `event stream live`；宿主的 `queue is full` warning 仍会出现（那是宿主侧的正常日志），但界面不再停滞；
-5. 回归：正常前后台切换不产生重复消息。
+5. 回归：连续多次前后台切换不产生重复消息。
 
-## 五、影响面与未纳入本次的观察
+> 以下两条本次也**没有**自动化覆盖，只做了代码审查与编译验证：`ProcessLifecycleOwner` 的观察者注册（Android 框架行为，app 模块没有对应的 JVM 测试）；`HANDOVER_TIMEOUT_MILLIS` 的超时分支（需要模拟一个不响应取消的传输层）。
 
-- 不改任何 `gateway-contract/schemas/*.schema.json`，core schema 摘要不变，不需要 App 与插件同步升级。
+## 五、未纳入本次的观察与已知限制
+
+- **交接窗口（毫秒级、可自愈）**：传输层先推进游标再 emit（`GatewayHttpClient.kt` 的 `cursorStore.save` → `markEventDelivered` → `emit`），其 KDoc 明说取消发生在 emit 中途会丢该帧。本修复把快照排在重开之后以缩小该窗口，但没有彻底消除：一个恰在取消瞬间提交、且此前已推进游标的事件，只能靠下一次快照补齐。
+- **游标过期（`CURSOR_EXPIRED`）路径未改动**：若后台间隔超过宿主的事件保留期，重开的流会拿到 410，现有行为（6 次重试后 `FAILED` + 1s 重试循环）保持不变；此时用户仍能通过快照看到权威内容，但实时通道不会自动重建。契约 §9 要求「先重建资源快照，再使用响应给出的新游标恢复流」，这条完整链路属独立课题。
+- **宿主侧的静默丢帧仍是零信号**：队列溢出对客户端完全不可见（既没有 gap 通知，也没有事件间隔信号）。本修复是客户端承认这一事实并主动补齐，而不是改变宿主的投递语义。
+- **不改任何 `gateway-contract/schemas/*.schema.json`**：core schema 摘要不变，不需要 App 与插件同步升级。
 - 成本 = 每次回前台一次握手 + 一次游标重放（重放帧基本被去重丢弃）+ 一次时间线拉取；不引入轮询、定时器、常驻服务或 wake lock，符合「后台可靠性尽力而为、不维持常驻前台服务」的既有边界。
-- 宿主侧仍是一个可以单独评估的观察：队列溢出对客户端**完全不可见**（既没有 gap 通知，也没有事件间隔信号），本修复是在客户端承认这一事实并主动补齐，而不是改变宿主的投递语义。
+
+## 六、两轴复审后的修订
+
+本改动在首次提交（`39ac4af`）后跑了一次独立的两轴复审（标准轴 = 仓库规范 + smell 基线；规格轴 = 用户需求 + 契约 §9）：
+
+- **采纳**：`onForegrounded()` 改为复用既有 `retryTimeline()`（消除与它逐字重复的快照拉取表达式）；重开订阅排在快照之前（缩小交接窗口）；交接等待加上 `HANDOVER_TIMEOUT_MILLIS` 上界（原实现无界等待，若传输层不遵守取消会永久失去通道）；去掉 `eventJob = null` 的中间态，避免出现「无 `windingDown` 的第二订阅窗口」。
+- **撤销**：先前在 `observeStreamHealth()` 中新增的「健康度回到 `LIVE` 时清除 `EVENTS_FAILED:` 提示」被整体撤回。提示在界面上本就是一次性消费（`WorkbenchScreen` 的 `LaunchedEffect(state.notice)` 会 `dismissNotice()` 并转成 snackbar），而 `streamHealth` 本身在恢复时就会被刷新，因此该改动既非本 bug 必需，又改变了既有提示语义，与用户要求 3「不改变现有功能设计」相抵。
+- **保留为已知限制**：游标过期路径、交接窗口的残余竞态、超时分支与 app 层装配的无自动化覆盖，已如实写进第五节与第四节的「待执行」说明。

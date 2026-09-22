@@ -109,52 +109,6 @@ class WorkbenchForegroundResumeTest {
         controller.cancel()
     }
 
-    @Test fun aRecoveredChannelRetiresItsOwnFailureNotice() = runTest {
-        val health = MutableStateFlow(StreamHealth.IDLE)
-        val repository = RecordingRepository(health = health)
-        val controller = controller(repository)
-        runCurrent()
-        controller.openThread("conv_1")
-        advanceUntilIdle()
-
-        health.value = StreamHealth.FAILED
-        advanceUntilIdle()
-        assertTrue(
-            "通道失败必须如实写进提示",
-            controller.state.value.notice.orEmpty().startsWith("EVENTS_FAILED:"),
-        )
-
-        health.value = StreamHealth.LIVE
-        advanceUntilIdle()
-
-        assertNull("通道恢复后不得继续谎报实时通道已断开", controller.state.value.notice)
-        controller.cancel()
-    }
-
-    @Test fun aRecoveredChannelKeepsANoticeThatIsNotAboutTheStream() = runTest {
-        val health = MutableStateFlow(StreamHealth.IDLE)
-        val repository = RecordingRepository(health = health)
-        val controller = controller(repository)
-        runCurrent()
-        controller.openThread("conv_1")
-        advanceUntilIdle()
-
-        health.value = StreamHealth.FAILED
-        advanceUntilIdle()
-        // A notice the stream owns nothing about: renaming failed, which is a
-        // fact about the Gateway, not about the event channel.
-        controller.renameActiveThread("重命名不成功")
-        advanceUntilIdle()
-        val renameNotice = "CONVERSATION_RENAME_FAILED:CONVERSATION_RENAME_REJECTED"
-        assertEquals(renameNotice, controller.state.value.notice)
-
-        health.value = StreamHealth.LIVE
-        advanceUntilIdle()
-
-        assertEquals("恢复只退休实时通道自己的提示", renameNotice, controller.state.value.notice)
-        controller.cancel()
-    }
-
     @Test fun foregroundReturnAfterCloseIsIgnored() = runTest {
         val repository = RecordingRepository()
         val controller = controller(repository)
@@ -183,7 +137,6 @@ class WorkbenchForegroundResumeTest {
         // A virtual clock would run the reply watchdog's real minutes instantly,
         // so the watchdog is off here: it has tests of its own.
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
-        streamHealthSource = repository,
     )
 
     private fun assistantReply(eventId: String, conversationId: String = "conv_1") =
@@ -212,8 +165,7 @@ class WorkbenchForegroundResumeTest {
     private class RecordingRepository(
         /** The frames one subscription offers; attempt numbers start at 1. */
         private val eventsFor: (attempt: Int) -> Flow<VerifiedConversationEvent> = { flow { awaitCancellation() } },
-        private val health: MutableStateFlow<StreamHealth> = MutableStateFlow(StreamHealth.IDLE),
-    ) : ConversationRepository, GenerationTracker, StreamHealthSource {
+    ) : ConversationRepository, GenerationTracker {
 
         var subscriptions = 0
         var maxConcurrentSubscriptions = 0
@@ -223,7 +175,6 @@ class WorkbenchForegroundResumeTest {
         private var liveSubscriptions = 0
 
         override val generationId = MutableStateFlow<String?>(null)
-        override val streamHealth: Flow<StreamHealth> = health
 
         override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = flow {
             subscriptions++

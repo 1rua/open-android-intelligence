@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 /**
@@ -445,18 +446,6 @@ class WorkbenchController(
                 }
                 if (health == com.openandroidintelligence.conversation.model.StreamHealth.FAILED) {
                     update { it.copy(notice = "EVENTS_FAILED:EVENT_STREAM_FAILED") }
-                }
-                // Recovery retires the stream's own failure notice and nothing
-                // else: leaving it up would keep telling the user replies cannot
-                // arrive while the channel is demonstrably delivering again.
-                if (health == com.openandroidintelligence.conversation.model.StreamHealth.LIVE) {
-                    update { state ->
-                        if (state.notice?.startsWith("EVENTS_FAILED:") == true) {
-                            state.copy(notice = null)
-                        } else {
-                            state
-                        }
-                    }
                 }
             }
         }
@@ -1597,14 +1586,18 @@ class WorkbenchController(
      * per-subscriber queue drops frames, and a drop is only ever compensated
      * by a cursor replay. Nothing on this side can tell a healthy stream from
      * a silently incomplete one, so coming back to the foreground does what a
-     * break the phone did notice already does: re-read the authoritative
-     * timeline, then re-open the subscription from the stored cursor so the
-     * Gateway replays the gap (contract §9).
+     * break the phone did notice already does: re-open the subscription from
+     * the stored cursor so the Gateway replays the gap, and re-read the
+     * authoritative timeline (contract §9).
+     *
+     * The channel goes first: the snapshot is taken after the replacement has
+     * been asked for, so it is the later of the two reads and the one that can
+     * also cover a frame the handover itself dropped.
      */
     fun onForegrounded() {
         if (closed) return
-        activeThreadId?.let(::reloadTimeline) ?: refreshThreads()
         restartEventStream()
+        retryTimeline()
     }
 
     /**
@@ -1621,7 +1614,6 @@ class WorkbenchController(
             observeThreadEvents()
             return
         }
-        eventJob = null
         observeThreadEvents(windingDown = running)
     }
 
@@ -1633,17 +1625,23 @@ class WorkbenchController(
      * subscription per thread switch left the dying stream and the new one
      * overlapping — the window in which one event could be applied twice.
      *
-     * [windingDown] is a subscription this one replaces: it is cancelled and
-     * waited out before a single event is collected, so the rule above holds
-     * across a restart too. The transport closes its socket through the
-     * cancelled flow's own completion handler, so the wait ends immediately
-     * rather than lasting as long as a stalled read.
+     * [windingDown] is the subscription this call replaces, and handing one
+     * over is itself the reason the guard above must not apply: it is cancelled
+     * and waited out before a single event is collected, so the rule holds
+     * across a replacement too. The transport closes its socket through the
+     * cancelled flow's own completion handler, so the wait ends in milliseconds
+     * rather than lasting as long as a stalled read — and it is bounded anyway,
+     * because a cancellation the transport failed to honour must not cost the
+     * phone its channel. The overlap such a timeout would leave behind is what
+     * the delivery dedup already covers.
      */
     private fun observeThreadEvents(windingDown: Job? = null) {
         if (closed) return
-        if (eventJob?.isActive == true) return
+        if (windingDown == null && eventJob?.isActive == true) return
         eventJob = scope.launch {
-            windingDown?.cancelAndJoin()
+            windingDown?.let { replaced ->
+                withTimeoutOrNull(HANDOVER_TIMEOUT_MILLIS) { replaced.cancelAndJoin() }
+            }
             if (!isActive) return@launch
             repository.observeEvents(scopeFactory())
                 .retryWhen { cause, _ ->
@@ -2259,6 +2257,17 @@ class WorkbenchController(
         command.trim().trimStart('/').equals(NEW_CONVERSATION_COMMAND.trimStart('/'), ignoreCase = true)
 
     private companion object {
+        /**
+         * How long a replacement subscription waits for the one it replaces.
+         *
+         * Cancelling closes the socket through the flow's own completion
+         * handler, so the real wait is milliseconds. This bound exists only so
+         * a cancellation the transport failed to honour cannot cost the phone
+         * its channel; the overlap a timeout leaves behind is deduplicated at
+         * the transport and again at the port.
+         */
+        const val HANDOVER_TIMEOUT_MILLIS = 2_000L
+
         /**
          * How many event ids stay remembered.
          *
