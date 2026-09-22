@@ -6,19 +6,28 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import com.openandroidintelligence.capability.ScreenCaptureSource
 import com.openandroidintelligence.conversation.assistant.AssistantSurface
 import com.openandroidintelligence.conversation.model.GenerationState
-import com.openandroidintelligence.conversation.selection.ScreenSelectionOverlay
+import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.Dimensions
 
-/** App 内浮动对话；复用当前账号的真实状态，不宣称跨 App 默认助理或截图权限。 */
+/**
+ * App 内浮动对话；复用当前账号的真实状态。
+ *
+ * 圈选的截图来自外部真实采集源 [screenCaptureSource]（宿主装配的
+ * MediaProjection 来源，经系统授权对话框显式授予）：来源可用时先采集
+ * 再把截图交给圈选层；来源缺失、未授权或采集失败时，圈选层渲染明确的
+ * 不可用态，绝不以松手冒充提交。默认 null 时行为与未接入来源完全一致。
+ */
 @Composable
 fun FloatingConversationPanel(
     controller: WorkbenchController, onClose: () -> Unit,
     onPickCamera: () -> Unit, onPickGallery: () -> Unit, onPickDocument: () -> Unit,
     onVoiceInput: () -> Unit, modifier: Modifier = Modifier,
+    screenCaptureSource: ScreenCaptureSource? = null,
 ) {
     val state by controller.state.collectAsState()
     var expanded by rememberSaveable { mutableStateOf(true) }
@@ -67,11 +76,23 @@ fun FloatingConversationPanel(
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = Dimensions.SpaceSmall))
         }
         if (explainSelection) {
-            // No Assist screenshot has been supplied by the platform. The overlay
-            // renders its unavailable state and cannot invoke this crop callback.
-            ScreenSelectionOverlay(
-                onCropConfirmed = { _, _, _, _ -> error("SCREENSHOT_SOURCE_UNAVAILABLE") },
-                onCancel = { explainSelection = false }, screenshot = null,
+            ScreenSelectionOverlayHost(
+                screenCaptureSource = screenCaptureSource,
+                onCancel = { explainSelection = false },
+                onConfirmCrop = { crop ->
+                    // 确认先于回调（规格：确认后才能回调，不以松手冒充提交）。
+                    // 圈选产物走与本地附件同一条真实三步上传链路，让「确认」
+                    // 有真实下文；无活动对话时 addAttachment 的 coordinator
+                    // 缺失分支会给出明确的 notice，而不是静默丢弃。
+                    controller.addAttachment(
+                        LocalAttachmentSelection(
+                            filename = "screen-crop-${System.currentTimeMillis()}.png",
+                            mediaType = "image/png",
+                            bytes = crop.pngBytes(),
+                        ),
+                    )
+                    explainSelection = false
+                },
             )
         }
     }

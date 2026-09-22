@@ -23,6 +23,9 @@ android {
 dependencies {
     implementation(project(":conversation-domain"))
     implementation(project(":gateway-client"))
+    // 圈选层的截图来自能力端口（ScreenCaptureSource），UI 只依赖接口，
+    // MediaProjection 实现与装配留在 capability-ports/宿主侧。
+    implementation(project(":capability-ports"))
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
