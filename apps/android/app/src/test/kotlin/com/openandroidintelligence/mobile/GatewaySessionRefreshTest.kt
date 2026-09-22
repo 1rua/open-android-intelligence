@@ -80,6 +80,13 @@ class GatewaySessionRefreshTest {
             "第一次续期必须落盘轮换后的凭据",
             awaitCondition(AWAIT_MILLIS) { credentialStore.loadRefresh(profileId())?.decodeToString() == "refresh_2" },
         )
+        // 生产语义：续期进行中「刷新网关凭据」是禁用的（防重入）。测试也必须
+        // 等这个窗口结束再点第二次，否则第二次调用会被静默吞掉——CI 的慢机
+        // 上凭据落盘与防重入复位之间有毫秒级时差，不能拿落盘当完成信号。
+        assertTrue(
+            "第一次续期结束后防重入必须复位",
+            awaitCondition(AWAIT_MILLIS) { !runtime.isRefreshingSession.value },
+        )
 
         runtime.refreshSession()
         assertTrue(
