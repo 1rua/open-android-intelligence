@@ -103,6 +103,11 @@ class GatewayRuntime(
     private val scope: CoroutineScope,
     private val pairingGrants: PairingGrantStateHolder,
     /**
+     * 审计落点（条目 2-9）：提供时，被 Gateway 接受的审批卡决策（用户确认）
+     * 会经 [ApprovalAuditBridge] 写入平台审计链；null 时行为与从前一致。
+     */
+    private val auditStore: com.openandroidintelligence.kernel.AndroidAuditStore? = null,
+    /**
      * 刷新凭据的保管面。生产实现走 Android Keystore；单测注入内存实现，
      * 因为 Keystore 只在设备上存在，而「刷新凭据」这条路径必须可被验证。
      */
@@ -499,7 +504,14 @@ class GatewayRuntime(
         // serves them. Without the endpoint there is nothing to press, so the
         // workbench says so instead of drawing a card that cannot be answered.
         val approvalClient = if ("agent-approval-cards-v1" in conversationUi) {
-            com.openandroidintelligence.gateway.approvals.ApprovalClient(http)
+            val decisionAudit = auditStore?.let { store ->
+                ApprovalAuditBridge(
+                    audit = store,
+                    accountId = { session.accountId },
+                    pairingId = { pairingGrants.state.value?.pairingId.orEmpty() },
+                )
+            }
+            com.openandroidintelligence.gateway.approvals.ApprovalClient(http, audit = decisionAudit)
         } else {
             null
         }
