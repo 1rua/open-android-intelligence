@@ -48,7 +48,7 @@ enum class UiActionId(val id: String) {
 }
 
 /** Actions each component kind is allowed to carry. */
-private val ALLOWED_ACTIONS: Map<UiComponentKind, Set<UiActionId>> = mapOf(
+internal val ALLOWED_ACTIONS: Map<UiComponentKind, Set<UiActionId>> = mapOf(
     UiComponentKind.SECTION to emptySet(),
     UiComponentKind.TEXT to setOf(UiActionId.REFRESH_CARD),
     UiComponentKind.STATUS to setOf(UiActionId.REFRESH_CARD),
@@ -152,16 +152,16 @@ data class UiContribution(
 )
 
 object DeclarativeUiSchema {
-    private const val MAX_COMPONENTS = 256
-    private const val MAX_DEPTH = 8
-    private const val MAX_TEXT_LENGTH = 4_096
-    private const val MAX_CAPABILITY_LENGTH = 256
+    internal const val MAX_COMPONENTS = 256
+    internal const val MAX_DEPTH = 8
+    internal const val MAX_TEXT_LENGTH = 4_096
+    internal const val MAX_CAPABILITY_LENGTH = 256
 
     /**
      * Content that would smuggle markup, script, a navigation target or a host
      * type through a field the whitelist does not otherwise describe.
      */
-    private val FORBIDDEN_FRAGMENTS = listOf(
+    internal val FORBIDDEN_FRAGMENTS = listOf(
         "<script",
         "<html",
         "javascript:",
@@ -329,7 +329,7 @@ object DeclarativeUiSchema {
         UiComponentKind.CAPABILITY_PICKER to setOf("type", "id", "label", "capability", "action"),
     )
 
-    private fun checkText(value: String, field: String) {
+    internal fun checkText(value: String, field: String) {
         if (value.length > MAX_TEXT_LENGTH) throw UiRejected("UI_TEXT_TOO_LONG:$field")
         val lowered = value.lowercase()
         val fragment = FORBIDDEN_FRAGMENTS.firstOrNull { it in lowered }
@@ -340,7 +340,7 @@ object DeclarativeUiSchema {
      * Capability identifiers are reverse-domain names with an optional version
      * suffix; anything else is not addressable by the kernel's grant store.
      */
-    private fun checkCapability(value: String) {
+    internal fun checkCapability(value: String) {
         if (value.length > MAX_CAPABILITY_LENGTH) throw UiRejected("UI_CAPABILITY_TOO_LONG")
         if (!CAPABILITY_PATTERN.matches(value)) throw UiRejected("UI_BAD_CAPABILITY:$value")
         val lowered = value.lowercase()
