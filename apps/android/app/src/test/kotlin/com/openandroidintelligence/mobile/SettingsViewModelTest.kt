@@ -336,6 +336,47 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun aFailedRefreshSurfacesAsADismissableNoticeInTheUiState() {
+        val gateway = LoopbackGatewayStub()
+        try {
+            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_ALL_FIVE_BODY)
+            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
+            gateway.respond(
+                "/open-android-intelligence/v2/sessions/refresh",
+                """{"error":{"code":"REFRESH_REUSED"}}""",
+                status = 401,
+            )
+            val credentialStore = InMemoryCredentialStore()
+            val runtime = GatewayRuntime(
+                context = ApplicationProvider.getApplicationContext(),
+                scope = testScope,
+                pairingGrants = pairingGrants,
+                credentialStore = credentialStore,
+                deviceKeys = InMemoryDeviceKeySource(),
+            )
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            awaitConnected(runtime)
+            val viewModel = viewModelFor(runtime)
+
+            runtime.refreshSession()
+            val deadline = System.currentTimeMillis() + 10_000L
+            while (System.currentTimeMillis() < deadline && viewModel.uiState.value.operationNotice == null) {
+                Thread.sleep(20L)
+            }
+            val notice = viewModel.uiState.value.operationNotice
+            assertTrue(
+                "续期被拒必须经 ViewModel 透传到设置界面，而不是静默：$notice",
+                notice?.contains("重新登录") == true,
+            )
+
+            viewModel.dismissOperationNotice()
+            assertNull("提示必须可被界面关闭", viewModel.uiState.value.operationNotice)
+        } finally {
+            gateway.closed()
+        }
+    }
+
+    @Test
     fun negotiatedDeviceRequestsReachTheSettingsUiState() {
         val gateway = LoopbackGatewayStub()
         try {
