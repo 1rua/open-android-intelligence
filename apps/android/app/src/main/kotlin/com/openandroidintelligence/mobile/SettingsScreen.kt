@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -66,6 +67,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -135,15 +137,16 @@ fun SettingsScreen(
     var showUnpairDialog by remember { mutableStateOf(false) }
     var showThemeDialog by remember { mutableStateOf(false) }
 
-    NavHost(
-        navController = navController,
-        startDestination = SettingsRoutes.OVERVIEW,
-        modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
-        enterTransition = { AppTransitions.navEnter(uiState.appearance.reduceMotion) },
-        exitTransition = { AppTransitions.navExit(uiState.appearance.reduceMotion) },
-        popEnterTransition = { AppTransitions.navPopEnter(uiState.appearance.reduceMotion) },
-        popExitTransition = { AppTransitions.navPopExit(uiState.appearance.reduceMotion) },
-    ) {
+    Box(modifier = modifier.fillMaxSize()) {
+        NavHost(
+            navController = navController,
+            startDestination = SettingsRoutes.OVERVIEW,
+            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
+            enterTransition = { AppTransitions.navEnter(uiState.appearance.reduceMotion) },
+            exitTransition = { AppTransitions.navExit(uiState.appearance.reduceMotion) },
+            popEnterTransition = { AppTransitions.navPopEnter(uiState.appearance.reduceMotion) },
+            popExitTransition = { AppTransitions.navPopExit(uiState.appearance.reduceMotion) },
+        ) {
         composable(SettingsRoutes.OVERVIEW) {
             SettingsOverviewScreen(
                 uiState = uiState,
@@ -213,6 +216,23 @@ fun SettingsScreen(
             AuditLogSubScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
+            )
+        }
+        }
+
+        // 会话级操作提示：登出/续期这类落网结果覆盖在内容上方，必须可见、可关。
+        uiState.operationNotice?.let { notice ->
+            OperationNoticeBanner(
+                text = notice,
+                onDismiss = viewModel::dismissOperationNotice,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = Dimensions.ScreenHorizontal,
+                        vertical = Dimensions.SpaceSmall,
+                    )
+                    .zIndex(1f),
             )
         }
     }
@@ -517,20 +537,22 @@ private fun SettingsOverviewScreen(
                         onCheckedChange = onSetSmsGrant,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "屏幕上下文分析与圈选",
-                        supporting = "支持数字助理 Assist 选区截图",
+                    ScreenSelectionCapabilityItem(
                         checked = uiState.isScreenSelectionGranted,
-                        enabled = uiState.pairingGrants != null,
+                        presentation = screenSelectionCapabilityPresentation(
+                            grantsBound = uiState.pairingGrants != null,
+                            attachmentStatusAgreed = uiState.conversationUi["attachment-status-v1"],
+                        ),
                         icon = Icons.Default.Fullscreen,
                         onCheckedChange = onSetScreenSelectionGrant,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "系统通知推送",
-                        supporting = "后台低功耗推送服务",
+                    NotificationPushCapabilityItem(
                         checked = uiState.isNotificationsGranted,
-                        enabled = uiState.pairingGrants != null,
+                        presentation = notificationPushCapabilityPresentation(
+                            grantsBound = uiState.pairingGrants != null,
+                            mirrorAgreed = uiState.conversationUi["conversation-mirror-v1"],
+                        ),
                         icon = Icons.Default.Notifications,
                         onCheckedChange = onSetNotificationsGrant,
                     )
@@ -799,13 +821,23 @@ private fun GatewaySubScreen(
             }
 
             if (uiState.isGatewayConnected) {
+                SectionLabel("协商能力")
+                NegotiatedCapabilitiesGroup(conversationUi = uiState.conversationUi)
+            }
+
+            if (uiState.isGatewayConnected) {
                 SectionLabel("凭据与会话管理")
                 SettingsSectionCard {
                     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                         SettingsListItem(
                             headline = "刷新网关凭据",
-                            supporting = "向 Gateway 请求刷新短期访问令牌",
+                            supporting = if (uiState.isRefreshingSession) {
+                                "正在向 Gateway 请求新凭据…"
+                            } else {
+                                "向 Gateway 请求刷新短期访问令牌"
+                            },
                             icon = Icons.Default.Refresh,
+                            enabled = !uiState.isRefreshingSession,
                             onClick = onRefreshSession,
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -887,20 +919,22 @@ private fun PairingSubScreen(
                         onCheckedChange = onSetSmsGrant,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "屏幕上下文分析与圈选",
-                        supporting = "允许数字助理获取当前屏幕快照并进行多模态分析",
+                    ScreenSelectionCapabilityItem(
                         checked = uiState.isScreenSelectionGranted,
-                        enabled = uiState.pairingGrants != null,
+                        presentation = screenSelectionCapabilityPresentation(
+                            grantsBound = uiState.pairingGrants != null,
+                            attachmentStatusAgreed = uiState.conversationUi["attachment-status-v1"],
+                        ),
                         icon = Icons.Default.Fullscreen,
                         onCheckedChange = onSetScreenSelectionGrant,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "系统通知推送",
-                        supporting = "org.openandroidintelligence.notifications.query@1.0.0 (后台通道)",
+                    NotificationPushCapabilityItem(
                         checked = uiState.isNotificationsGranted,
-                        enabled = uiState.pairingGrants != null,
+                        presentation = notificationPushCapabilityPresentation(
+                            grantsBound = uiState.pairingGrants != null,
+                            mirrorAgreed = uiState.conversationUi["conversation-mirror-v1"],
+                        ),
                         icon = Icons.Default.Notifications,
                         onCheckedChange = onSetNotificationsGrant,
                     )

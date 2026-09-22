@@ -10,8 +10,8 @@ import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.gateway.attachments.AttachmentUploader
 import com.openandroidintelligence.gateway.attachments.HttpAttachmentTransport
 import com.openandroidintelligence.gateway.auth.AndroidKeystoreGatewayCredentialStore
-import com.openandroidintelligence.gateway.auth.Ed25519DeviceKeyStore
 import com.openandroidintelligence.gateway.auth.GatewayAuthClient
+import com.openandroidintelligence.gateway.auth.GatewayCredentialStore
 import com.openandroidintelligence.gateway.auth.SessionCredentials
 import com.openandroidintelligence.gateway.commands.CommandCatalogClient
 import com.openandroidintelligence.gateway.conversations.ConversationClient
@@ -50,6 +50,22 @@ import java.util.Base64
  * `http://` Gateway is accepted as an explicitly reported degraded connection
  * (ADR 0047) and never reported as a verified identity.
  */
+/**
+ * 本客户端在 `features.conversationUi` 里声明过的能力全集。
+ *
+ * 这份列表必须与 [com.openandroidintelligence.gateway.negotiation.NegotiationClient]
+ * 发出的 offer 保持一致（那边是模块私有常量，无法直接引用）；漂移的代价是
+ * 设置页会把一个从未请求过的能力标成「本网关不支持」。列表里有而 NegotiationClient
+ * 没有的键永远不会被网关同意，也就永远不会离开「未声明」态。
+ */
+val CLIENT_CONVERSATION_UI_OFFER: Set<String> = setOf(
+    "agent-command-catalog-v1",
+    "agent-command-new-v1",
+    "agent-approval-cards-v1",
+    "message-batches-v1",
+    "generation-cancel-v1",
+)
+
 sealed interface ConnectionPhase {
     data object Disconnected : ConnectionPhase
 
@@ -65,6 +81,13 @@ sealed interface ConnectionPhase {
         /** The pinned TLS identity, or null on a plaintext connection. */
         val tlsSpkiSha256: String?,
         val transportSecurity: TransportSecurity,
+        /**
+         * 协商交集：网关同意且客户端声明过并实现的对话界面能力。
+         * 只放真正兑现得了的键——网关单方面同意一个客户端没有的键，照样无法兑现。
+         */
+        val conversationUi: Set<String> = emptySet(),
+        /** 客户端 offer：本端声明过的能力全集（协议层请求原文）。 */
+        val requestedConversationUi: Set<String> = CLIENT_CONVERSATION_UI_OFFER,
     ) : ConnectionPhase
 
     data class Failed(val code: String) : ConnectionPhase
@@ -74,6 +97,17 @@ class GatewayRuntime(
     private val context: Context,
     private val scope: CoroutineScope,
     private val pairingGrants: PairingGrantStateHolder,
+    /**
+     * 刷新凭据的保管面。生产实现走 Android Keystore；单测注入内存实现，
+     * 因为 Keystore 只在设备上存在，而「刷新凭据」这条路径必须可被验证。
+     */
+    private val credentialStore: GatewayCredentialStore = AndroidKeystoreGatewayCredentialStore(
+        File(context.filesDir, "keystore-credentials").also { it.mkdirs() },
+    ),
+    /** 设备密钥签名面，理由同 [credentialStore]。 */
+    private val deviceKeys: DeviceKeySource = KeystoreDeviceKeySource(
+        File(context.filesDir, "gateway-credentials"),
+    ),
 ) {
     private val _phase = MutableStateFlow<ConnectionPhase>(ConnectionPhase.Disconnected)
     val phase: StateFlow<ConnectionPhase> = _phase.asStateFlow()
@@ -84,6 +118,10 @@ class GatewayRuntime(
     private val _operationNotice = MutableStateFlow<String?>(null)
     val operationNotice: StateFlow<String?> = _operationNotice.asStateFlow()
     fun dismissOperationNotice() { _operationNotice.value = null }
+
+    /** 是否正在向 Gateway 轮换凭据；界面据此展示进行中并阻止重复点击。 */
+    private val _isRefreshingSession = MutableStateFlow(false)
+    val isRefreshingSession: StateFlow<Boolean> = _isRefreshingSession.asStateFlow()
 
     /**
      * The app is visible again after having been in the background.
@@ -145,7 +183,7 @@ class GatewayRuntime(
                     val refreshCred = session.refreshCredential
                     if (refreshCred.isNotEmpty()) {
                         runCatching {
-                            keystoreCredentials.saveRefresh(profileId, refreshCred)
+                            credentialStore.saveRefresh(profileId, refreshCred)
                             saveLastProfile(normalized, username, profileId, session)
                         }.onFailure { _operationNotice.value = "自动登录凭据未能保存，下次启动需要重新登录。" }
                     }
@@ -192,13 +230,118 @@ class GatewayRuntime(
                 return@launch
             }
             runCatching {
-                keystoreCredentials.clearRefresh(profileId)
+                credentialStore.clearRefresh(profileId)
                 clearLastProfile()
             }.onFailure { _operationNotice.value = "Gateway 已登出，但本机凭据清理失败，请检查设备存储。" }
             if (revokeRefresh) {
                 pairingGrants.clearCurrent()
             }
             teardown()
+        }
+    }
+
+    /**
+     * 设置页「刷新网关凭据」条目的动作：在**已连接**的会话上执行
+     * `POST /sessions/refresh`，把短期访问令牌与刷新凭据一起轮换。
+     *
+     * 与冷启动恢复是两条不同的路径：`restoreSessionIfAvailable` 只在
+     * Disconnected 成立，因此它无法承担在线续期（在已连接时它必然直接返回，
+     * 这正是此前「点击无反应」的原因）。
+     *
+     * 续期成功后用新凭据重建工作台：只把新令牌写进存储而继续用旧令牌发请求，
+     * 不叫续期。若本机没有可用的刷新凭据，则如实说明并保持当前连接不变，
+     * 而不是假装成功。
+     */
+    fun refreshSession() {
+        if (connectionJob?.isActive == true || _isRefreshingSession.value) return
+        val current = _phase.value as? ConnectionPhase.Connected ?: return
+        val endpoint = GatewayEndpoint.parse(current.gatewayUrl)
+        if (endpoint == null) {
+            _operationNotice.value = "刷新网关凭据失败：当前 Gateway 地址无法解析，请重新登录。"
+            return
+        }
+        val profileId = profileIdFor(current.gatewayUrl, current.username)
+        val accountId = lastAccountId
+        val deviceId = lastDeviceId
+        if (accountId.isNullOrBlank() || deviceId.isNullOrBlank()) {
+            _operationNotice.value = "刷新网关凭据失败：本机没有当前会话的账号/设备标识，请重新登录后重试。"
+            return
+        }
+        val refreshBytes = runCatching { credentialStore.loadRefresh(profileId) }.getOrNull()
+        if (refreshBytes == null || refreshBytes.isEmpty()) {
+            _operationNotice.value =
+                "本机没有为当前账号保存刷新凭据，无法向 Gateway 续期；请重新登录以获取新的自动登录凭据。"
+            return
+        }
+
+        _isRefreshingSession.value = true
+        connectionJob = scope.launch {
+            try {
+                val negotiated = runCatching {
+                    authClientFor(current.gatewayUrl, setOfNotNull(current.tlsSpkiSha256))
+                        .negotiate("neg_" + newToken())
+                }.getOrElse { cause ->
+                    _operationNotice.value = refreshFailureNotice(cause)
+                    return@launch
+                }
+                val tlsPin = negotiatedPin(endpoint, negotiated.tlsSpkiSha256)
+                if (endpoint.isTls && tlsPin == null) {
+                    _operationNotice.value =
+                        "刷新网关凭据失败：Gateway 没有返回可核验的 TLS 身份，已按安全要求中止。"
+                    return@launch
+                }
+                val session = runCatching {
+                    authClientFor(current.gatewayUrl, setOfNotNull(tlsPin)).refresh(
+                        accountId = accountId,
+                        deviceId = deviceId,
+                        negotiationId = negotiated.negotiationId,
+                        refreshCredential = refreshBytes,
+                    )
+                }.getOrElse { cause ->
+                    // 只有 Gateway 明确拒绝才销毁本机凭据：404/5xx/网络中断
+                    // 说明不了凭据是否还有效，清掉会把一次可恢复的中断变成永久登出。
+                    if (com.openandroidintelligence.gateway.auth.GatewayAuthException.credentialRefused(cause)) {
+                        runCatching { credentialStore.clearRefresh(profileId) }
+                        _operationNotice.value =
+                            "Gateway 拒绝续期：刷新凭据已失效，本机自动登录凭据已清除，请重新登录。"
+                    } else {
+                        _operationNotice.value = refreshFailureNotice(cause)
+                    }
+                    return@launch
+                }
+
+                val rotated = session.refreshCredential
+                val saveFailure = if (rotated.isNotEmpty()) {
+                    runCatching {
+                        credentialStore.saveRefresh(profileId, rotated)
+                        saveLastProfile(endpoint.baseUrl, current.username, profileId, session)
+                    }.exceptionOrNull()
+                } else {
+                    null
+                }
+
+                establish(
+                    endpoint = endpoint,
+                    username = current.username,
+                    profileId = profileId,
+                    session = session,
+                    limits = negotiated.limits,
+                    tlsSpkiSha256 = tlsPin,
+                    conversationUi = negotiated.conversationUi,
+                )
+                _operationNotice.value = if (saveFailure == null) {
+                    "已向 Gateway 续期会话凭据，新的访问令牌已生效。"
+                } else {
+                    "已向 Gateway 续期，但新的自动登录凭据未能保存，下次启动可能需要重新登录。"
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                _operationNotice.value = refreshFailureNotice(cause)
+            } finally {
+                refreshBytes.fill(0)
+                _isRefreshingSession.value = false
+            }
         }
     }
 
@@ -228,7 +371,7 @@ class GatewayRuntime(
             return
         }
 
-        val refreshBytes = runCatching { keystoreCredentials.loadRefresh(lastProfileId) }.getOrNull() ?: return
+        val refreshBytes = runCatching { credentialStore.loadRefresh(lastProfileId) }.getOrNull() ?: return
         if (refreshBytes.isEmpty()) return
 
         _phase.value = ConnectionPhase.Negotiating
@@ -259,8 +402,8 @@ class GatewayRuntime(
                 // network drop says nothing about whether the stored refresh
                 // credential is still valid: wiping it here would turn a
                 // recoverable outage into a permanent logout.
-                if (credentialRevoked(cause)) {
-                    keystoreCredentials.clearRefresh(lastProfileId)
+                if (com.openandroidintelligence.gateway.auth.GatewayAuthException.credentialRefused(cause)) {
+                    credentialStore.clearRefresh(lastProfileId)
                     clearLastProfile()
                 }
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
@@ -270,7 +413,7 @@ class GatewayRuntime(
             val newRefresh = session.refreshCredential
             if (newRefresh.isNotEmpty()) {
                 runCatching {
-                    keystoreCredentials.saveRefresh(lastProfileId, newRefresh)
+                    credentialStore.saveRefresh(lastProfileId, newRefresh)
                     saveLastProfile(endpoint.baseUrl, lastUser, lastProfileId, session)
                 }.onFailure { _operationNotice.value = "轮换后的自动登录凭据未能保存，下次启动可能需要重新登录。" }
             }
@@ -283,18 +426,6 @@ class GatewayRuntime(
                 refreshBytes.fill(0)
             }
         }
-    }
-
-    /**
-     * Whether the Gateway explicitly refused the credential.
-     *
-     * `GatewayAuthClient` surfaces `AUTHENTICATION_FAILED:<code-or-status>`, so
-     * the decisive part is what follows the last colon.
-     */
-    private fun credentialRevoked(cause: Throwable): Boolean {
-        val text = cause.message ?: return false
-        if (text.contains("REFRESH_REUSED")) return true
-        return text.substringAfterLast(':').trim().toIntOrNull() in setOf(401, 403)
     }
 
     private fun establish(
@@ -392,6 +523,10 @@ class GatewayRuntime(
             pairingSummary = session.pairingSummary,
             tlsSpkiSha256 = tlsSpkiSha256,
             transportSecurity = endpoint.securityFor(pins),
+            // 协商交集：只保留客户端真的声明过并实现的能力。网关回了一个
+            // 客户端没有的键，客户端无法兑现，不能让它以「已同意」的面目出现。
+            conversationUi = CLIENT_CONVERSATION_UI_OFFER intersect conversationUi.toSet(),
+            requestedConversationUi = CLIENT_CONVERSATION_UI_OFFER,
         )
     }
 
@@ -422,14 +557,6 @@ class GatewayRuntime(
         appVersion = BuildConfig.VERSION_NAME.ifBlank { "unversioned" },
         platformApi = Build.VERSION.SDK_INT,
     )
-
-    private val deviceKeys: Ed25519DeviceKeyStore by lazy {
-        Ed25519DeviceKeyStore(File(context.filesDir, "gateway-credentials"))
-    }
-
-    private val keystoreCredentials: AndroidKeystoreGatewayCredentialStore by lazy {
-        AndroidKeystoreGatewayCredentialStore(File(context.filesDir, "keystore-credentials").also { it.mkdirs() })
-    }
 
     private var accessTokenHolder: String? = null
 
@@ -512,5 +639,30 @@ class GatewayRuntime(
         const val KEY_LAST_SESSION = "last_session_id"
         const val KEY_DEVICE_KEY_ENCODING = "device_key_encoding_version"
         const val DEVICE_KEY_ENCODING_VERSION = 1
+    }
+}
+
+/**
+ * 把续期失败翻译成用户能照做的说明，且不回显原始异常文本。
+ *
+ * 原始 message 可能带服务端正文或网络地址，对用户没有可执行意义；界面需要的
+ * 是「现在该怎么办」，而不是再一次把内部字符串摊给用户。分类只认关键字，
+ * 认不出来时给最保守的一条，而不是编造一个更具体的理由。
+ */
+internal fun refreshFailureNotice(cause: Throwable): String {
+    val text = (cause.message ?: cause::class.java.simpleName).uppercase()
+    return when {
+        text.contains("REFRESH_REUSED") ->
+            "Gateway 拒绝续期：刷新凭据已被使用过，请重新登录以取得新的会话凭据。"
+        text.contains("PROTOCOL_INCOMPATIBLE") || text.contains(":406") ->
+            "Gateway 拒绝续期：App 与 Gateway 的契约版本不一致，请把两端升级到同一版本后重试。"
+        text.contains("401") || text.contains("403") ||
+            text.contains("REVOKED") || text.contains("UNAUTHORIZED") ->
+            "Gateway 拒绝续期：当前凭据已失效或被撤销，请重新登录。"
+        text.contains("TIMEOUT") || text.contains("TIMED OUT") ->
+            "刷新网关凭据失败：连接超时，当前连接仍然有效，请检查网络后重试。"
+        text.contains("CONNECT") || text.contains("UNKNOWNHOST") || text.contains("IOEXCEPTION") ->
+            "刷新网关凭据失败：无法连接 Gateway，当前连接仍然有效，请检查网络后重试。"
+        else -> "刷新网关凭据失败，当前连接仍然有效，请稍后重试。"
     }
 }

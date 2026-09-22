@@ -17,9 +17,11 @@ import com.openandroidintelligence.kernel.PluginKernel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -263,5 +265,130 @@ class SettingsViewModelTest {
             SettingsRoutes.AUDIT_LOG,
         )
         assertEquals(routes.size, routes.distinct().size)
+    }
+
+    // ------------------------------------------------------------------
+    // 协商能力位透传（条目 3-15）：协商结果必须以三态如实抵达设置界面。
+    // 走真实的回环 Gateway 协商 → 登录 → 落盘 → ViewModel 投影全链路。
+    // ------------------------------------------------------------------
+
+    @Test
+    fun negotiatedConversationUiReachesTheSettingsUiState() {
+        val gateway = LoopbackGatewayStub()
+        try {
+            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_ALL_FIVE_BODY)
+            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
+            val runtime = runtimeFor(gateway)
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            awaitConnected(runtime)
+
+            val state = viewModelFor(runtime).uiState.value
+
+            assertTrue(state.isGatewayConnected)
+            // 闭集 8 键一个不少
+            assertEquals(ConversationUiFeature.CLOSED_SET.size, state.conversationUi.size)
+            // 网关同意且客户端声明过：已启用
+            assertEquals(true, state.conversationUi["agent-command-catalog-v1"])
+            assertEquals(true, state.conversationUi["message-batches-v1"])
+            assertEquals(true, state.conversationUi["generation-cancel-v1"])
+            // 客户端从未声明：双方未声明，而不是「不支持」
+            assertNull("未声明的能力不得写成 false", state.conversationUi["newline-v1"])
+            assertNull(state.conversationUi["conversation-mirror-v1"])
+            assertNull(state.conversationUi["attachment-status-v1"])
+
+            assertTrue(state.isMessageBatchesAvailable)
+            assertTrue(state.isGenerationCancelAvailable)
+            assertFalse("未声明即不可用：客户端没有实现它", state.isNewlineAvailable)
+            assertFalse(state.isMirrorAvailable)
+            assertFalse(state.isAttachmentStatusAvailable)
+        } finally {
+            gateway.closed()
+        }
+    }
+
+    @Test
+    fun aCapabilityTheGatewayRefusedReadsAsUnsupportedInUiState() {
+        val gateway = LoopbackGatewayStub()
+        try {
+            // 网关只同意 catalog 与 generation-cancel，明确没回 message-batches
+            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_REFUSED_BODY)
+            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
+            val runtime = runtimeFor(gateway)
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            awaitConnected(runtime)
+
+            val state = viewModelFor(runtime).uiState.value
+
+            assertEquals(true, state.conversationUi["generation-cancel-v1"])
+            assertEquals(
+                "客户端声明了但网关没同意，必须如实标成不支持",
+                false,
+                state.conversationUi["message-batches-v1"],
+            )
+            assertFalse(state.isMessageBatchesAvailable)
+            assertTrue(state.isGenerationCancelAvailable)
+        } finally {
+            gateway.closed()
+        }
+    }
+
+    private fun runtimeFor(gateway: LoopbackGatewayStub): GatewayRuntime = GatewayRuntime(
+        context = ApplicationProvider.getApplicationContext(),
+        scope = testScope,
+        pairingGrants = pairingGrants,
+        credentialStore = InMemoryCredentialStore(),
+        deviceKeys = InMemoryDeviceKeySource(),
+    )
+
+    private fun viewModelFor(runtime: GatewayRuntime): SettingsViewModel = SettingsViewModel(
+        environment = environment,
+        runtime = runtime,
+        externalScope = testScope,
+    )
+
+    private fun awaitConnected(runtime: GatewayRuntime) {
+        val deadline = System.currentTimeMillis() + 10_000L
+        while (System.currentTimeMillis() < deadline) {
+            if (runtime.phase.value is ConnectionPhase.Connected) return
+            Thread.sleep(20L)
+        }
+        error("登录没有在超时前完成，最后阶段是 ${runtime.phase.value}")
+    }
+
+    private companion object {
+        const val NEGOTIATE_PATH = "/open-android-intelligence/v2/negotiate"
+        const val PASSWORD_PATH = "/open-android-intelligence/v2/sessions/password"
+
+        val PASSWORD_BODY = """
+            {"data":{"accountId":"acc_stub","deviceId":"dev_stub","sessionId":"sess_1",
+            "accessToken":"token_1","refreshCredential":"refresh_1","pairingSummary":"stub pairing"}}
+        """.trimIndent()
+
+        /** 网关同意全部五项客户端声明过的能力。 */
+        val NEGOTIATE_ALL_FIVE_BODY = """
+            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":0},
+            "features":{"auth":["password","refresh"],"messages":"chat-v1",
+            "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
+            "deviceRequests":"risk-queue-v1",
+            "conversationUi":["agent-command-catalog-v1","agent-command-new-v1",
+            "agent-approval-cards-v1","message-batches-v1","generation-cancel-v1"]},
+            "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
+            "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
+            "eventRetentionSeconds":86400},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+        """.trimIndent()
+
+        /** 网关只同意 catalog 与 generation-cancel；message-batches 被略去。 */
+        val NEGOTIATE_REFUSED_BODY = """
+            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":0},
+            "features":{"auth":["password","refresh"],"messages":"chat-v1",
+            "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
+            "deviceRequests":"risk-queue-v1",
+            "conversationUi":["agent-command-catalog-v1","generation-cancel-v1"]},
+            "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
+            "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
+            "eventRetentionSeconds":86400},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+        """.trimIndent()
     }
 }

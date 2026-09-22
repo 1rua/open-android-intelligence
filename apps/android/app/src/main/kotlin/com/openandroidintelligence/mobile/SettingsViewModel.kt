@@ -28,6 +28,10 @@ data class SettingsUiState(
     val emergencyStoppedCount: Int = 0,
     val auditEvents: List<AuditEvent> = emptyList(),
     val auditLines: List<String> = emptyList(),
+    /** 会话级操作提示（续期/登出结果等）；null 表示没有要展示的提示。 */
+    val operationNotice: String? = null,
+    /** 「刷新网关凭据」是否正在进行，界面据此阻止重复触发。 */
+    val isRefreshingSession: Boolean = false,
 ) {
     val isGatewayConnected: Boolean
         get() = connectionPhase is ConnectionPhase.Connected
@@ -55,6 +59,35 @@ data class SettingsUiState(
 
     val isNotificationsGranted: Boolean
         get() = pairingGrants?.granted?.contains(PairingGrantCapabilities.NOTIFICATIONS) == true
+
+    /**
+     * 对话界面协商能力的三态投影：`true`=双方同意、`false`=客户端声明但
+     * 网关未同意、`null`=双方未声明。键是契约 §4 的 8 项闭集，与网关是否
+     * 返回无关——界面按闭集渲染，缺键即「未声明」。
+     */
+    val conversationUi: Map<String, Boolean?>
+        get() {
+            val phase = connectionPhase as? ConnectionPhase.Connected
+            return negotiatedConversationUi(
+                agreed = phase?.conversationUi ?: emptySet(),
+                requested = phase?.requestedConversationUi ?: emptySet(),
+            )
+        }
+
+    val isMessageBatchesAvailable: Boolean
+        get() = conversationUi["message-batches-v1"] == true
+
+    val isGenerationCancelAvailable: Boolean
+        get() = conversationUi["generation-cancel-v1"] == true
+
+    val isNewlineAvailable: Boolean
+        get() = conversationUi["newline-v1"] == true
+
+    val isMirrorAvailable: Boolean
+        get() = conversationUi["conversation-mirror-v1"] == true
+
+    val isAttachmentStatusAvailable: Boolean
+        get() = conversationUi["attachment-status-v1"] == true
 }
 
 private data class BaseSettings(
@@ -117,10 +150,19 @@ class SettingsViewModel(
         ControlSettings(trustEnabled, emergencyStopped, stoppedCount)
     }
 
+    /** 会话级操作提示与续期进行中状态；runtime 缺席时保持空态。 */
+    private val operationSettingsFlow = combine(
+        runtime?.operationNotice ?: MutableStateFlow<String?>(null),
+        runtime?.isRefreshingSession ?: MutableStateFlow(false),
+    ) { notice, refreshing ->
+        notice to refreshing
+    }
+
     val uiState: StateFlow<SettingsUiState> = combine(
         baseSettingsFlow,
         controlSettingsFlow,
-    ) { base, control ->
+        operationSettingsFlow,
+    ) { base, control, operations ->
         SettingsUiState(
             appearance = base.appearance,
             connectionPhase = base.phase,
@@ -131,6 +173,8 @@ class SettingsViewModel(
             emergencyStoppedCount = control.stoppedCount,
             auditEvents = base.auditEvents,
             auditLines = base.auditEvents.map { environment.audit.render(it) },
+            operationNotice = operations.first,
+            isRefreshingSession = operations.second,
         )
     }.stateIn(
         scope = scope,
@@ -145,6 +189,8 @@ class SettingsViewModel(
             emergencyStoppedCount = 0,
             auditEvents = environment.auditSink.eventsFlow.value,
             auditLines = environment.auditSink.eventsFlow.value.map { environment.audit.render(it) },
+            operationNotice = runtime?.operationNotice?.value,
+            isRefreshingSession = runtime?.isRefreshingSession?.value ?: false,
         ),
     )
 
@@ -196,7 +242,12 @@ class SettingsViewModel(
     }
 
     fun refreshSession() {
-        runtime?.restoreSessionIfAvailable()
+        runtime?.refreshSession()
+    }
+
+    /** 关闭当前展示的操作提示；无 runtime 时提示本就不存在。 */
+    fun dismissOperationNotice() {
+        runtime?.dismissOperationNotice()
     }
 
     fun logout(revokeRefresh: Boolean) {
