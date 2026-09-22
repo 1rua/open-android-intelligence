@@ -67,6 +67,9 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    // Process-wide visibility: the app has to act on coming back to the
+    // foreground, not on one Activity's lifecycle.
+    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation("junit:junit:4.13.2")

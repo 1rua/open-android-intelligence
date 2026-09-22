@@ -1,6 +1,9 @@
 package com.openandroidintelligence.mobile
 
 import android.app.Application
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
@@ -94,6 +97,19 @@ class OpenAndroidIntelligenceApplication : Application() {
             nativeLoader = NativePluginLoader(trustMode),
             providerSelector = providerSelector,
             grants = { pairingId -> pairingGrants.currentKernelGrant(pairingId) },
+        )
+
+        // Visibility is a process fact, not an Activity one: a background gap
+        // can leave the event stream nominally alive while the Gateway dropped
+        // frames into a queue nobody was draining, so the app re-synchronizes
+        // the moment it can be seen again. A cold start reaches this with no
+        // workbench yet, which is honestly nothing to fix.
+        ProcessLifecycleOwner.get().lifecycle.addObserver(
+            object : DefaultLifecycleObserver {
+                override fun onStart(owner: LifecycleOwner) {
+                    gatewayRuntime.onAppForegrounded()
+                }
+            },
         )
     }
 }

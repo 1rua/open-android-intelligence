@@ -85,6 +85,16 @@ class GatewayRuntime(
     val operationNotice: StateFlow<String?> = _operationNotice.asStateFlow()
     fun dismissOperationNotice() { _operationNotice.value = null }
 
+    /**
+     * The app is visible again after having been in the background.
+     *
+     * Only a session that really exists has a channel to re-synchronize, so a
+     * missing workbench is a no-op rather than something to invent.
+     */
+    fun onAppForegrounded() {
+        _controller.value?.onForegrounded()
+    }
+
     private var connectionJob: Job? = null
     private var sessionJob: Job? = null
 

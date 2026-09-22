@@ -23,6 +23,7 @@ import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -444,6 +445,18 @@ class WorkbenchController(
                 }
                 if (health == com.openandroidintelligence.conversation.model.StreamHealth.FAILED) {
                     update { it.copy(notice = "EVENTS_FAILED:EVENT_STREAM_FAILED") }
+                }
+                // Recovery retires the stream's own failure notice and nothing
+                // else: leaving it up would keep telling the user replies cannot
+                // arrive while the channel is demonstrably delivering again.
+                if (health == com.openandroidintelligence.conversation.model.StreamHealth.LIVE) {
+                    update { state ->
+                        if (state.notice?.startsWith("EVENTS_FAILED:") == true) {
+                            state.copy(notice = null)
+                        } else {
+                            state
+                        }
+                    }
                 }
             }
         }
@@ -1577,17 +1590,61 @@ class WorkbenchController(
     }
 
     /**
+     * Re-synchronizes after the app became visible again.
+     *
+     * A background gap is invisible to the channel itself: the Gateway keeps
+     * heartbeating, so the stream stays "live" while its bounded
+     * per-subscriber queue drops frames, and a drop is only ever compensated
+     * by a cursor replay. Nothing on this side can tell a healthy stream from
+     * a silently incomplete one, so coming back to the foreground does what a
+     * break the phone did notice already does: re-read the authoritative
+     * timeline, then re-open the subscription from the stored cursor so the
+     * Gateway replays the gap (contract §9).
+     */
+    fun onForegrounded() {
+        if (closed) return
+        activeThreadId?.let(::reloadTimeline) ?: refreshThreads()
+        restartEventStream()
+    }
+
+    /**
+     * Re-opens the account's subscription from the stored cursor.
+     *
+     * Unlike a thread switch, this is not a reason to invent a second
+     * subscription: the running one is handed over as the one being wound
+     * down, so the account still has exactly one.
+     */
+    private fun restartEventStream() {
+        if (closed) return
+        val running = eventJob
+        if (running == null || !running.isActive) {
+            observeThreadEvents()
+            return
+        }
+        eventJob = null
+        observeThreadEvents(windingDown = running)
+    }
+
+    /**
      * Subscribes to the account's event stream, once.
      *
      * The stream carries every conversation of the account, so switching
      * threads has no reason to restart it. Cancelling and re-opening the
      * subscription per thread switch left the dying stream and the new one
      * overlapping — the window in which one event could be applied twice.
+     *
+     * [windingDown] is a subscription this one replaces: it is cancelled and
+     * waited out before a single event is collected, so the rule above holds
+     * across a restart too. The transport closes its socket through the
+     * cancelled flow's own completion handler, so the wait ends immediately
+     * rather than lasting as long as a stalled read.
      */
-    private fun observeThreadEvents() {
+    private fun observeThreadEvents(windingDown: Job? = null) {
         if (closed) return
         if (eventJob?.isActive == true) return
         eventJob = scope.launch {
+            windingDown?.cancelAndJoin()
+            if (!isActive) return@launch
             repository.observeEvents(scopeFactory())
                 .retryWhen { cause, _ ->
                     if (cause is CancellationException) {
