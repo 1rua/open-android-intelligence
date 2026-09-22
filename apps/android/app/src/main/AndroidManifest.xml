@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!--
@@ -36,5 +37,18 @@
             android:name="com.openandroidintelligence.capability.MediaProjectionCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <!--
+            仅供 JVM 单元测试（Robolectric + Compose createComposeRule）解析的
+            宿主 Activity。androidx.compose.ui:ui-test-manifest 的清单只在 debug
+            变体的单元测试合并中出现（release/play 变体拿不到，导致
+            "Unable to resolve activity for Intent ... ComponentActivity"）；
+            显式声明使 full/play × debug/release 四个变体的单元测试行为一致。
+            exported=false 且生产代码从不启动它，不构成额外攻击面。
+        -->
+        <activity
+            android:name="androidx.activity.ComponentActivity"
+            android:exported="false"
+            tools:replace="android:exported" />
     </application>
 </manifest>
