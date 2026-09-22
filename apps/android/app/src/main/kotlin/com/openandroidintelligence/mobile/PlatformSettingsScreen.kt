@@ -9,12 +9,6 @@ import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.PluginKernel
 import kotlinx.coroutines.flow.MutableStateFlow
 
-/** Distribution policy from the build flavor; the Play build cannot unlock trust mode. */
-data class DistributionPolicy(
-    val allowRuntimePlugins: Boolean,
-    val allowDeveloperTrustMode: Boolean,
-)
-
 /** Everything the settings screen reads, wired from the composition root. */
 data class PlatformSettingsEnvironment(
     val trustMode: DeveloperTrustMode,
