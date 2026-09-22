@@ -231,15 +231,15 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    AnimatedVisibility(
-                        visible = showSettingsSheet,
-                        enter = AppTransitions.modalEnter(reduceMotion),
-                        exit = AppTransitions.modalExit(reduceMotion),
-                    ) {
-                        SettingsScreen(
+                    // 设置呈现形式：标准 M3 ModalBottomSheet（规格
+                    // specs/2026-09-12-app-material-ui-and-motion.md），替代此前
+                    // 的全屏 AnimatedVisibility。关闭走 onDismissRequest，
+                    // 进出场动画由组件自身按 M3 规范承担。
+                    if (showSettingsSheet) {
+                        PlatformSettingsBottomSheet(
                             environment = app.platformSettingsEnvironment(),
                             runtime = runtime,
-                            onBack = { showSettingsSheet = false },
+                            onDismissRequest = { showSettingsSheet = false },
                         )
                     }
                 }

@@ -516,8 +516,10 @@ private fun SettingsOverviewScreen(
             SectionLabel("设备能力与配对授权")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
+                    // 裁决 D5：授权版本是本机自增的变更序号，Gateway 不下发
+                    // 权威版本——措辞不得让本地序号冒充网关权威值。
                     val grantSummary = if (uiState.isGatewayConnected) {
-                        "本机授权版本 r${uiState.grantRevision} · 手机随时可撤销"
+                        "授权状态本机保管（本机序号 r${uiState.grantRevision}，Gateway 未提供权威版本） · 手机随时可撤销"
                     } else {
                         "未连接 Gateway，授权暂不可用"
                     }
@@ -814,7 +816,9 @@ private fun GatewaySubScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsListItem(
                         headline = "配对摘要",
-                        supporting = uiState.pairingSummary ?: "未返回配对摘要",
+                        // 裁决 D5：摘要只来自 Gateway 登录响应；两端都未下发时
+                        // 如实说明，不得用本地合成值顶替。
+                        supporting = uiState.pairingSummary ?: "Gateway 未提供配对摘要",
                         icon = Icons.Default.Key,
                     )
                 }
@@ -958,14 +962,17 @@ private fun PairingSubScreen(
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     SettingsListItem(
-                        headline = "本机授权版本",
-                        supporting = "r${uiState.grantRevision}",
+                        headline = "授权变更序号（本机）",
+                        // 裁决 D5：r{N} 是本机授权状态的自增序号，不是 Gateway
+                        // 的权威版本；Gateway 未提供版本信息，措辞如实区分。
+                        supporting = "本机序号 r${uiState.grantRevision} · Gateway 未提供权威版本",
                         icon = Icons.Default.Key,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsListItem(
-                        headline = "配对身份标识",
-                        supporting = uiState.pairingGrants?.pairingId ?: "未绑定活动配对",
+                        headline = "配对身份标识（本机合成）",
+                        supporting = uiState.pairingGrants?.pairingId?.let { "$it · 由本机对配对范围合成，非 Gateway 下发" }
+                            ?: "未绑定活动配对",
                         icon = Icons.Default.Security,
                     )
                 }
@@ -1038,19 +1045,30 @@ private fun SecuritySubScreen(
                 }
             }
 
-            SectionLabel("内核安全原语监控")
+            // 裁决（条目 2-10）：这两项是设计说明，不是运行时数据——不用
+            // ListItem 的「条目」造型伪装成可监控的指标，只以说明文本呈现。
+            SectionLabel("内核隔离说明")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    SettingsListItem(
-                        headline = "平台内核隔离原语",
-                        supporting = "受保护模式强制执行资源配额与内存墙隔离，插件无法越权接管界面。",
-                        icon = Icons.Default.Shield,
+                    Text(
+                        text = "隔离机制说明",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsListItem(
-                        headline = "安全原语硬上限",
-                        supporting = "由底座 PluginKernel 固化定义并裁决，插件无法单方面篡改权限。",
-                        icon = Icons.Default.Security,
+                    Text(
+                        text = "受保护模式下，平台内核对插件强制执行资源配额与内存墙隔离：插件运行在独立运行时中，无法越权接管界面或越过宿主调用系统能力。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "权限边界说明",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "插件可用的原语集合与上限由底座 PluginKernel 固化定义并在调用时裁决，插件无法单方面篡改自身权限；每一次授权与调用都会写入审计日志。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }

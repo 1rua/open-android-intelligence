@@ -47,6 +47,16 @@ class OpenAndroidIntelligenceApplication : Application() {
 
     private lateinit var auditSink: PersistentAuditSink
 
+    /**
+     * 紧急熔断后隔离插件数的进程级持有者。
+     *
+     * 设置面板是 AnimatedVisibility 子树，每次打开都是新的 ViewModel；
+     * 计数若只存在 ViewModel 里，面板一关一开就会把真实发生过的熔断归零。
+     * 这里保存在 Application 上，与内核的熔断状态同生命周期（进程重启即清，
+     * 与「唯一恢复路径是重启」的内核语义一致）。
+     */
+    val emergencyStoppedCount = kotlinx.coroutines.flow.MutableStateFlow(0)
+
     /** 进程级连接运行时：登录、协商、会话建立与工作台装配。 */
     val gatewayRuntime: GatewayRuntime by lazy {
         GatewayRuntime(
@@ -64,6 +74,7 @@ class OpenAndroidIntelligenceApplication : Application() {
         kernel = kernel,
         pairingGrants = pairingGrants,
         appearance = appearancePreferences,
+        emergencyStoppedCount = emergencyStoppedCount,
     )
 
     override fun onCreate() {

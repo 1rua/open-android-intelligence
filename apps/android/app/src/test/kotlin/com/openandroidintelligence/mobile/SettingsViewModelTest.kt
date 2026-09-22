@@ -16,6 +16,7 @@ import com.openandroidintelligence.kernel.PhoneLimits
 import com.openandroidintelligence.kernel.PluginKernel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -187,6 +188,34 @@ class SettingsViewModelTest {
         assertTrue(viewModel.uiState.value.isEmergencyStopped)
         assertFalse(viewModel.uiState.value.isTrustModeEnabled)
         assertTrue(kernel.isEmergencyStopped())
+    }
+
+    @Test
+    fun emergencyStopCountSurvivesViewModelRecreation() = runBlocking {
+        // Application 级持有者：设置面板（AnimatedVisibility 子树）销毁后依然存活
+        val recorder = MutableStateFlow(3)
+
+        // 面板关闭再打开：新的 ViewModel 必须从持有者恢复计数，而不是从 0 开始
+        val recreated = SettingsViewModel(
+            environment = environment.copy(emergencyStoppedCount = recorder),
+            runtime = null,
+            externalScope = testScope,
+        )
+        assertEquals(
+            "熔断计数必须有比设置面板更长的持有者，面板重建不得归零",
+            3,
+            recreated.uiState.value.emergencyStoppedCount,
+        )
+
+        // 本界面再次触发熔断时，把真实的隔离数写回持有者
+        val active = SettingsViewModel(
+            environment = environment.copy(emergencyStoppedCount = recorder),
+            runtime = null,
+            externalScope = testScope,
+        )
+        active.enableTrustMode(DeveloperTrustMode.Acknowledgement.REQUIRED_TEXT)
+        active.emergencyStop()
+        assertEquals("触发熔断后持有者必须收到新的隔离数", 0, recorder.value)
     }
 
     @Test

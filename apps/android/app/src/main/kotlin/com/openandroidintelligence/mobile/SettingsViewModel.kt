@@ -129,7 +129,9 @@ class SettingsViewModel(
 
     private val _trustModeEnabled = MutableStateFlow(environment.trustMode.isEnabled())
     private val _emergencyStopped = MutableStateFlow(environment.kernel.isEmergencyStopped())
-    private val _stoppedCount = MutableStateFlow(0)
+    // 计数的持久来源：Application 级持有者。面板销毁重建后从这里恢复，
+    // 而不是从 0 起步把一次真实熔断说成没有发生。
+    private val _stoppedCount = MutableStateFlow(environment.emergencyStoppedCount.value)
 
     init {
         environment.trustMode.onChange { enabled ->
@@ -243,6 +245,7 @@ class SettingsViewModel(
     fun emergencyStop(): Int {
         val count = environment.kernel.emergencyStop("emergency-" + System.currentTimeMillis())
         _stoppedCount.value = count
+        environment.emergencyStoppedCount.value = count
         _emergencyStopped.value = true
         _trustModeEnabled.value = false
         return count
