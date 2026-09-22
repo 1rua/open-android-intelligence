@@ -283,6 +283,91 @@ A0 在 Wave 0 内产出下列裁决。每项裁决的产出物固定为：**契�
 - **所有 Schema 改动必须在 Wave 0 内一次性完成**，Wave 0 结束后**冻结**（§7.1）；
 - 若某项裁决在本仓库层面无法定案（如需要产品决策），A0 必须输出「暂缓 + 影响条目转入 P2 + 界面如实呈现不可用」，不得留空。
 
+### 3.6 裁决结论（Wave 0 产出，2026-09-22）
+
+> 以下为主 Agent 对 D1–D8 的最终裁决。三份独立分析提案的证据已复核，**裁决结论即为后续所有 Agent 的唯一口径**；执行期不得再就这八项自行发挥。
+
+#### D1 解除配对的独立管理端点 —— 采纳 `DELETE /pairings/current`
+
+- **路径与方法**：`DELETE /pairings/current`，**无路径参数**（身份只从已验证上下文取，符合契约 `:324` 的 `IDENTITY_OVERRIDE_REJECTED` 约束），因此不被 D5 阻塞。理由：契约已有 `/pairings` 资源族（`:268`），而 `/admin` 前缀在契约与双宿主中零先例。
+- **撤销范围**：严格等于契约 `:798` 五类（设备密钥、refresh credential、授权、队列、未确认附件）**+ 该设备全部 access session**，并须 bump `pairingGeneration`。
+- **签名强度**：要求**完整 §6.1 九 header 签名 + `Idempotency-Key`**（与 D4 的豁免路由形成强度分层：终止自己=豁免，销毁配对=全签名）。
+- **错误码闭集**（不新增，全部取自 §14）：`PAIRING_REQUIRED`、`AUTHENTICATION_REQUIRED`、`AUTHENTICATION_FAILED`、`SESSION_EXPIRED`、`SESSION_REVOKED`、`SCHEMA_INVALID`、`IDEMPOTENCY_CONFLICT`、`ACCOUNT_DELETING`、`HOST_INCOMPATIBLE`、`OUTCOME_UNKNOWN`、`RATE_LIMITED`、`INTERNAL_ERROR`。
+- **粒度与并列关系**：是「设备配对解除」而非「账号删除」，与 `account.delete`（`integrations/openclaw/src/admin/service.ts:95`）**并列同级**；`AdminCommand` 新增 `pairing.revoke`，Hermes `admin.py` 增加同名操作，二者共用 `HOST_INCOMPATIBLE` 门禁。**wire 端不使用 `localConfirmation`**（客户端可伪造，本机确认由 UI 对话框承担，`SettingsScreen.kt:262-284`）。
+- **连带修正（3-1 的真正修法）**：`revokeRefresh=true` **收窄**为「退出登录」——仅结束 access session + 撤销该设备 refresh credential，**不得删 `device_keys`**。需修改 Hermes `core.py:2713` 与 OpenClaw `session-service.ts:222`（两者 docstring 自述 "Ends the pairing"，与契约 `:796` 相反）。语义收窄后必须同步修改设置页文案（`SettingsScreen.kt:268`/`:500`），否则制造新的文案—行为不符。
+- **落点**：契约 `:280` 后新增 §5.6；`session.schema.json` 增 `$defs/unpair`（响应 = `deviceId`/`deviceKeysRevoked`/`refreshRevoked`/`grantsRevoked`/`deviceRequestsRevoked`/`unconfirmedAttachmentsRevoked`/`sessionsRevoked`）；向量 `auth-sessions.json` 一正一负。
+
+#### D2 `pairingSummary` —— 保留，定义为结构化对象
+
+- **结论**：保留该字段，定义为对象而非自由字符串；键名 `$defs.pairingSummary`；同时补 `$defs.sessionResult`（`session.schema.json` 当前**完全没有响应 def**）。
+- **字段**：必填 `deviceId`、`pairingGeneration`、`pairedAt`；可选 `deviceDisplayName`、`pairedDeviceCount`。
+- **双宿主填充来源（已核实）**：两端 `device_keys` 表均含 `pairing_generation` / `grant_revision` / `registered_at`（Hermes `core.py:1043-1049`、OpenClaw `account-store.ts:47-53`），会话建立事务内各加一条 SELECT 即可填满必填三项。**不需新增列的本波即可落地**。
+- **必须写死的语义陷阱**：两端为 `ON CONFLICT DO UPDATE SET registered_at = excluded.registered_at`（Hermes `core.py:2668`、OpenClaw `session-service.ts:258-259`）⇒ `pairedAt` 是「**最近一次密钥注册时间**」而非首次配对时间。契约必须明文写死；若要真正的首次配对时间须新增 `first_registered_at` 列（**本波不做**）。违反此条即复制 2-6/2-7 那类「本地合成值冒充网关事实」。
+- `deviceDisplayName` 需两端 DB 迁移 ⇒ 本波保持可选。
+- **不删除的理由**：契约 `:262` 明文承诺返回配对摘要；且本波 core 摘要必然变化（D1/D3/D4 同批），D2 的增量成本≈0。
+
+#### D3 device `result` body —— 统一为 `{ outcome, data? }`
+
+- **形状**：`result` 的值定为对象 `{ outcome, data? }`，字段名保持契约 `:709` 已固定的 `result`。Android 现发的「字符串 + 同级 `payload`」是错的，必须废止。
+- **`outcome` 闭集**：`succeeded | failed | denied | cancelled | outcome_unknown`（与两端状态机后缀一致：Hermes `core.py:3982`、OpenClaw `device-request-store.ts:32`）。
+- **`data`**：可选，出现时必须是 object；**`outcome_unknown` 不得携带 `data`**。
+- **事件名保持 `result_{outcome}` 下划线形式**，不改成 `result.succeeded` —— 后者需改 7 处（状态机、meta-schema、契约转移表、Hermes 转移表键、Android、既有向量），收益为零。
+- **落点**：`device-request.schema.json` 增 `$defs/result` 与 `$defs/resultRequest`（`claimId` + `grantRevision` + `result`，`additionalProperties:false`）；注册新 `GatewaySchemaName` `device.request.result`（`gateway-contract/src/schema-registry.ts` 与 Hermes `core.py` 的 `schema_definitions` **必须双写**，漏一端则 `npm run gateway:v2:conformance` 双端 resultHash 不等）。
+- **三端改动**：Android `DeviceRequestClient.kt:65-73` 改发三项并删除 `payload`，`:87-93` `resultName`→`outcomeName`（去 `result_` 前缀），`:95-101` `payloadOf`→`dataOf`；Hermes `:3981-3983` 由「只查白名单」改为完整 Schema 校验；OpenClaw `gateway-core.ts:781` 去掉裸强转。OpenClaw `device-request-store.ts:200` 与 Hermes `:2182-2183` **不用改**。
+
+#### D4 `DELETE /sessions/current` —— 响应照收事实标准，签名**裁定豁免**
+
+- **响应**：照收三端事实标准 `{ sessionId, refreshRevoked }`（Hermes `core.py:3300`、OpenClaw `gateway-core.ts:578` 完全一致），落 `$defs/logout`。
+- **错误码闭集**：`AUTHENTICATION_REQUIRED`、`AUTHENTICATION_FAILED`、`SESSION_EXPIRED`、`SESSION_REVOKED`、`SCHEMA_INVALID`、`ACCOUNT_DELETING`、`HOST_INCOMPATIBLE`、`OUTCOME_UNKNOWN`、`RATE_LIMITED`、`INTERNAL_ERROR`。`revokeRefresh` 非 `true`/`false` 字面量 ⇒ `SCHEMA_INVALID`。
+- **签名裁定：豁免**（U2 结论）。豁免清单写成**逐路由白名单**，**禁止按方法或路径前缀泛化**（否则 §6.1 被掏空）：豁免 `Timestamp`/`Nonce`/`Signature`/`Request-Id`/`Idempotency-Key`，保留 `Authorization` + 五身份 header。
+- **豁免的决定性理由**：D1 落地后「密钥已丢失 / Keystore 被清 / 密钥已轮换」的设备仍可能持有有效 bearer —— 若要求签名，这类设备**永远无法登出自己**。且该路由无 body、无资源创建，滥用上限是终止自身会话。
+- **豁免必须附带的修复**：豁免路由无 `Request-Id`，当前响应 `requestId`/`correlationId` 落成占位字面量（Hermes `core.py:3203-3207`、OpenClaw `gateway-core.ts:133-135`），**违反 §2 `:41-45` 与 `:154`「不得使用占位值」** ⇒ 契约须明文：由服务端生成 wire ID。
+- **不得留死 Schema**：客户端须让登出路径读 `refreshRevoked` 驱动文案，否则 `$defs/logout` 无生产消费者。
+
+#### D5 `grantRevision` / `pairingId` —— 网关权威 + 客户端如实显示不可用
+
+- **权威拆分（精确口径）**：`grantRevision` **版本**网关权威（签发、单调递增、服务端校验）；授权**内容**本机权威（契约 `:782` 明令 Gateway 不得扩大 Android 本地权威记录）⇒ 二者不冲突。
+- **`pairingId`** 是网关生成并下发的封闭 wire ID（`:238`/`:241`/`:34`），本地合成的 `pairing_<sha256>`（`PairingGrantState.kt:42`，注释自述非 wire identity）**禁止占用该名**。
+- **下发要求**：会话建立响应增量下发 `pairingId`、`pairingGeneration`、`grantRevision`（落 `$defs/pairing`，`grantRevision` 的 `minimum: 0` 对齐 `device-request.schema.json:50`）。
+- **降级呈现**：网关未下发 ⇒ UI 显示「Gateway 未提供 / 不可用」，**禁止回落到本地合成 ID 或本地自增**（依据 `:138`/`:142` 的既有原则）。
+- **过渡路径**（仅当本波服务端无法新增 `pairingId` 存储时）：先下发 `pairingGeneration` + `grantRevision`，`pairingId` 在契约中显式标为「本次不下发」，UI 显示不可用。**不得用 `pairing_<sha256>` 顶替。**
+- **内核一致性硬要求**：`PairingGrantState.kt:57-61` 把本地 `revision` 当内核 grant revision 用。只改 UI 不改内核会产生「UI 显示网关值、内核用本地值」的新不一致 ⇒ **A2 必须一并接线**。
+
+#### D6 app 与采集模块的依赖边界 —— **不放宽断言**，走接口模块注入
+
+- **结论**：`ArchitectureBoundaryTest.kt:22-29` **保持不放宽**。该断言是 `docs/mvp/plugin-architecture-migration-evidence.md:22` 验收证据 #3 的机器可检证据；且 ADR 0040 已定「通知/短信/通话记录以独立签名受保护插件发布，不随 App 自动启用」。
+- **注入路径**（关键事实：断言只对 `app/build.gradle.kts` 做 6 个精确字符串包含检查，`:policy-engine` 与任何新建模块名**都不在列表内** ⇒ 新增模块无需改断言）：
+  1. 新增 **`:notification-control`**（纯接口，无采集、无权限）：`NotificationPolicyPort`（`snapshot`/`observe`/`update`，快照含 `packageIds`、`fieldAccess`、`mode`、`granted`、`revision`）、`NotificationBindingPort`（`isListenerBound` / `openSystemListenerSettings`）、`NotificationControlRegistry`（deny-first，与 `NotificationRuntime.kt:151-162` 同构）。
+  2. 新增 **`:notification-host`**（实现装配）：依赖 `:notification-collector` + `:policy-engine`；**新建 `apps/android/notification-collector/src/main/AndroidManifest.xml`** 声明 `OpenAndroidIntelligenceNotificationListenerService`（`AndroidNotificationCollector.kt:219`）+ `BIND_NOTIFICATION_LISTENER_SERVICE`，直接消除「全仓 XML 零命中」。
+  3. app 侧只加两行：`implementation(project(":capability-ports"))` + `runtimeOnly(project(":notification-host"))`，均不在禁止列表；`implementation` 不传递 ⇒ collector 类型对 app 编译期不可见。
+- **对 1-4 / 2-4**：包名白名单、元数据与内容访问、ON_DEMAND 与 AUTO_SEND、打开系统监听设置全部从 `NotificationPolicyPort` 读；registry 未装配时整组渲染「未装配」而非假开关。2-4 的开关改由 `snapshot().granted` 单一权威驱动，与 `NotificationAgentQueryGateway.kt:122` 的 `LOCAL_GRANT_REQUIRED` 同源 ⇒ 消除「两套授权无同步」。
+
+#### D7 能力位闭集补齐口径 —— 分组裁定，**不改闭集**
+
+| 能力位 | 裁定 | 理由 |
+|---|---|---|
+| `generation-cancel-v1` | **保留客户端声明 + 必须补门控** | 客户端实现真实且已有 Schema，但零门控，违反 `:136`。撤销声明不解决问题，且 `:142` 约束的是 Gateway 侧声明而非客户端 offer |
+| `message-batches-v1` | 本波**不补宿主实现、不撤销客户端声明**；Schema+向量推迟到独立波次 | ADR 0045 自述「待补充协商、Schema 与一致性向量」；双宿主无端点 |
+| `newline-v1` / `conversation-mirror-v1` / `attachment-status-v1` | **维持三端不声明**，契约显式标注为「闭集内未落地位」 | 无端点即不得声明（`:142`）；ADR 0044/0046 的义务主体不在 Gateway |
+
+- **不改 `negotiate.schema.json:72-81` 的闭集**（改闭集会动 core 摘要，且等于废弃 ADR 0044/0045/0046）。
+- 新增契约条款（`:142` 之后）：任一端声明某能力位前，必须同时具备 ① Schema def ② 一致性向量 ③ 端点；客户端因闭集存在而假定可用即违反 `:136`。
+- **3-15 透传字段约定**：`ConnectionPhase.Connected`（`GatewayRuntime.kt:60-68`）增 `conversationUi: Set<String>`（协商交集，冻结）与 `requestedConversationUi: Set<String>`（客户端 offer，用于区分「未声明」与「声明未获同意」）；`SettingsUiState` 增 `conversationUi: Map<String, Boolean?>`（8 项全量：`true`=双方同意、`false`=声明未获同意、`null`=双方未声明）+ 五个派生 getter。派生布尔**不进** Phase，避免字段膨胀。渲染：`true`→已启用、`false`→本网关不支持、`null`→折叠进「高级」。
+
+#### D8 事件子 Schema —— 只锁形状，生产者与失败关闭归 Wave 1
+
+- **派发机制核实结论**：子 Schema **不在** `event.schema.json`，而在 `gateway-contract/vectors/dispatched-schema-fixtures.json`；**派发键是 `eventType` 字符串本身**，不是 `$defs` 键名（`dispatched-schema-validator.ts:572-602`）。现有 7 条 catalog 条目中只有 4 个事件 type 有子 Schema ⇒ 12 个事件 type 里 **8 个裸奔**。
+- **本波落地**：契约条款 + `event.schema.json` 的两个**规范副本** `$defs/sessionRevokedPayload`（必填 `sessionId`，可选 `deviceId`，`additionalProperties:false`）与 `$defs/pairingGrantChangedPayload`（必填 `grantRevision`，可选 `pluginId`/`authorKeyId`/`capabilityId`/`capabilityVersion`/`grantDigest`）。
+- **推迟到 Wave 1（A3/A4）**：fixtures catalog/binding 的 7→9 及其 **6 处计数常量同步**、两个事件的生产者、`EventStore.append` 的失败关闭校验。
+- **推迟理由（关键）**：`event.schema.json:35` 的「缺子 Schema 必须失败关闭」一旦真正接线，`device.requested`、`device.request.cancel.requested` 等 8 个无 binding 的事件 type 会**立即变红**。故裁定：**先补子 Schema，再开校验** —— 本波只锁形状，不锁上线顺序。
+- **语义约束**：`pairing.grant.changed` 只做**通知**；裁决仍走请求路径，携带旧 revision 的请求照旧返回 `GRANT_STALE`（`:782`、`:826`）。**事件不得扩大 Android 本地权威记录**。
+- **副本漂移防护**：`event.schema.json` 的 def 与 fixtures 的 catalog schema 是两份文本，摘要只锁后者 ⇒ 需在 `golden-vectors.test.ts` 加一条深比较断言。
+
+#### 裁决连带约束
+
+1. **所有 Schema 改动必须合并为一次发布**：D1/D2/D3/D4/D5 的改动都会改变 core 摘要（现值 `sha256:665df516…cacb`），分次发布会让中间版本的对端 `PROTOCOL_INCOMPATIBLE`(406) 完全无法登录。
+2. **D6 可选补 ADR 0050**（`docs/adr/` 现最大编号 0049）记录「采集能力经接口模块 + `runtimeOnly` 宿主装配进入 App」这一口径，防止后人直接把 collector 写进 app。
+
 ---
 
 ## 4. 依赖关系与并行执行策略
