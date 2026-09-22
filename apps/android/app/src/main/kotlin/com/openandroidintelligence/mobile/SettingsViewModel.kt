@@ -24,6 +24,10 @@ data class SettingsUiState(
     val pairingGrants: PairingGrantState? = null,
     val isTrustModeEnabled: Boolean = false,
     val allowDeveloperTrustMode: Boolean = true,
+    /** 渠道策略（ALLOW_RUNTIME_PLUGINS）：插件安装入口的可用性。 */
+    val allowRuntimePlugins: Boolean = true,
+    /** 宿主是否装配了插件运行时；false 时插件管理区域如实声明不可执行。 */
+    val pluginRuntimesWired: Boolean = false,
     val isEmergencyStopped: Boolean = false,
     val emergencyStoppedCount: Int = 0,
     val auditEvents: List<AuditEvent> = emptyList(),
@@ -178,6 +182,8 @@ class SettingsViewModel(
             pairingGrants = base.grants,
             isTrustModeEnabled = control.trustEnabled,
             allowDeveloperTrustMode = environment.allowDeveloperTrustMode,
+            allowRuntimePlugins = environment.allowRuntimePlugins,
+            pluginRuntimesWired = environment.pluginRuntimesWired,
             isEmergencyStopped = control.emergencyStopped,
             emergencyStoppedCount = control.stoppedCount,
             auditEvents = base.auditEvents,
@@ -194,6 +200,8 @@ class SettingsViewModel(
             pairingGrants = environment.pairingGrants.state.value,
             isTrustModeEnabled = environment.trustMode.isEnabled(),
             allowDeveloperTrustMode = environment.allowDeveloperTrustMode,
+            allowRuntimePlugins = environment.allowRuntimePlugins,
+            pluginRuntimesWired = environment.pluginRuntimesWired,
             isEmergencyStopped = environment.kernel.isEmergencyStopped(),
             emergencyStoppedCount = 0,
             auditEvents = environment.auditSink.eventsFlow.value,

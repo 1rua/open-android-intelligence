@@ -63,8 +63,21 @@ class OpenAndroidIntelligenceApplication : Application() {
             context = this,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             pairingGrants = pairingGrants,
+            auditStore = auditStore,
         )
     }
+
+    /**
+     * 进程装配的插件运行时（供 [PluginKernel] 执行裁决）。
+     *
+     * 当前生产装配为空：还没有任何插件运行时接入。运行时装配的真实状态通过
+     * [pluginRuntimesWired] 进入设置面，插件管理区域据此如实声明
+     * 「已安装插件不会运行、启用不可用」，而不是把不存在的执行能力说成可用。
+     * 接入运行时（如 plugin-runtime-wasm）时更新这份装配即可，界面自动跟随。
+     */
+    private val pluginRuntimes: Map<String, com.openandroidintelligence.kernel.PluginRuntime> = emptyMap()
+
+    val pluginRuntimesWired: Boolean get() = pluginRuntimes.isNotEmpty()
 
     fun platformSettingsEnvironment(): PlatformSettingsEnvironment = PlatformSettingsEnvironment(
         trustMode = trustMode,
@@ -74,6 +87,8 @@ class OpenAndroidIntelligenceApplication : Application() {
         kernel = kernel,
         pairingGrants = pairingGrants,
         appearance = appearancePreferences,
+        allowRuntimePlugins = BuildConfig.ALLOW_RUNTIME_PLUGINS,
+        pluginRuntimesWired = pluginRuntimesWired,
         emergencyStoppedCount = emergencyStoppedCount,
     )
 
@@ -84,7 +99,7 @@ class OpenAndroidIntelligenceApplication : Application() {
         com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { tag, message ->
             android.util.Log.d(tag, message)
         }
-        trustMode = DeveloperTrustMode()
+        trustMode = DeveloperTrustMode(SharedPreferencesTrustModePersistence.from(this))
         auditSink = PersistentAuditSink(File(filesDir, "platform-kernel/audit-events.log"))
         auditStore = AndroidAuditStore(sink = auditSink)
         pairingGrants = PairingGrantStateHolder(
@@ -102,7 +117,7 @@ class OpenAndroidIntelligenceApplication : Application() {
                 ),
             ),
             phoneLimits = PhoneLimits(primitives = emptySet()),
-            runtimes = emptyMap(),
+            runtimes = pluginRuntimes,
             audit = auditStore,
             trustMode = trustMode,
             nativeLoader = NativePluginLoader(trustMode),

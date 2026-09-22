@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Key
@@ -83,6 +84,7 @@ import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.plugins.PluginManagementScreen
 import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.kernel.DeveloperTrustMode
 
@@ -94,6 +96,7 @@ object SettingsRoutes {
     const val PAIRING = "settings/pairing"
     const val SECURITY = "settings/security"
     const val AUDIT_LOG = "settings/audit"
+    const val PLUGINS = "settings/plugins"
 }
 
 /**
@@ -215,6 +218,14 @@ fun SettingsScreen(
         composable(SettingsRoutes.AUDIT_LOG) {
             AuditLogSubScreen(
                 uiState = uiState,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(SettingsRoutes.PLUGINS) {
+            PluginManagementScreen(
+                allowRuntimePlugins = uiState.allowRuntimePlugins,
+                pluginRuntimesWired = uiState.pluginRuntimesWired,
                 onBack = { navController.popBackStack() },
             )
         }
@@ -532,7 +543,9 @@ private fun SettingsOverviewScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsSwitchItem(
                         headline = "读取与发送短信",
-                        supporting = "限制：每次交互须经手机确认",
+                        // 裁决 D5：这是本机授权（内核裁决用）；当前 Gateway 契约
+                        // 没有授权上行同步端点，不得宣称「每次交互须经手机确认」。
+                        supporting = "本机授权（内核裁决用），授权变更不经 Gateway 同步",
                         checked = uiState.isSmsGranted,
                         enabled = uiState.pairingGrants != null,
                         icon = Icons.Default.Sms,
@@ -584,6 +597,13 @@ private fun SettingsOverviewScreen(
                         supporting = "强制 WASM 沙箱隔离与资源限额，不可越权接管原生 UI",
                         icon = Icons.Default.Shield,
                         onClick = { onNavigate(SettingsRoutes.SECURITY) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    SettingsNavigationItem(
+                        headline = "插件管理",
+                        supporting = "已安装插件、声明式设置项与 .alp 安装入口",
+                        icon = Icons.Default.Extension,
+                        onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
                 }
             }
@@ -929,7 +949,8 @@ private fun PairingSubScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsSwitchItem(
                         headline = "读取与发送短信",
-                        supporting = "org.openandroidintelligence.sms.query@1.0.0 (交互须经本地确认)",
+                        // 裁决 D5：本机授权；授权变更不经 Gateway 同步。
+                        supporting = "org.openandroidintelligence.sms.query@1.0.0 (本机授权，不经 Gateway 同步)",
                         checked = uiState.isSmsGranted,
                         enabled = uiState.pairingGrants != null,
                         icon = Icons.Default.Sms,
