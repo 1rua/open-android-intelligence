@@ -4,6 +4,7 @@ import com.openandroidintelligence.gateway.http.GatewayResponse
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NegotiationClientTest {
@@ -60,4 +61,49 @@ class NegotiationClientTest {
         assertEquals(26214400L, result.limits.maxSingleAttachmentBytes)
         assertEquals(listOf("image/png"), result.limits.allowedMediaTypes)
     }
+
+    @Test
+    fun theCancelGateReflectsDeclarationAndAgreementNotEitherAlone() {
+        // ① 网关同意 + 客户端声明过：门禁开。
+        val agreed = result(conversationUi = listOf("generation-cancel-v1"))
+        assertTrue("双方同意的能力位必须放行", agreed.generationCancelAgreed)
+        assertTrue("generation-cancel-v1" in agreed.agreedConversationUi)
+
+        // ② 网关同意但客户端从未声明（如 conversation-mirror-v1）：不得使用。
+        val undeclared = result(conversationUi = listOf("conversation-mirror-v1", "generation-cancel-v1"))
+        assertTrue("客户端从未声明的能力不得进入同意集合", "conversation-mirror-v1" !in undeclared.agreedConversationUi)
+
+        // ③ 客户端声明了但网关没同意：门禁关。
+        val refused = result(conversationUi = emptyList())
+        assertTrue("网关没同意的能力位不得放行", !refused.generationCancelAgreed)
+    }
+
+    @Test
+    fun theClientDeclarationStaysTheSingleSourceOfTruth() {
+        // 协商请求携带的声明与门禁用的声明必须是同一份，否则门禁会放行
+        // 客户端根本没实现的能力。
+        assertTrue(
+            DECLARED_CONVERSATION_UI_FEATURES.contains("generation-cancel-v1"),
+        )
+    }
+
+    private fun result(conversationUi: List<String>): NegotiationResult = NegotiationResult(
+        negotiationId = "neg-1",
+        protocolMajor = 2,
+        protocolMinor = 0,
+        deploymentId = null,
+        tlsSpkiSha256 = null,
+        messages = "chat-v1",
+        attachments = "staged-sha256-v1",
+        events = "sse-cursor-v1",
+        deviceRequests = "risk-queue-v1",
+        limits = NegotiatedLimits(
+            maxSingleAttachmentBytes = null,
+            maxMessageAttachmentBytes = null,
+            allowedMediaTypes = emptyList(),
+            attachmentTtlSeconds = null,
+            eventRetentionSeconds = null,
+        ),
+        conversationUi = conversationUi,
+    )
 }

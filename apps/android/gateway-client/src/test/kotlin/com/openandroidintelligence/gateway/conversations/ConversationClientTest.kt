@@ -8,11 +8,13 @@ import com.openandroidintelligence.gateway.http.GatewayProfile
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.WireRequest
 import com.openandroidintelligence.gateway.http.WireResponse
+import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -173,5 +175,50 @@ class ConversationClientTest {
         val assistantMsg = page.messages[1]
         assertEquals("msg_assistant_1", assistantMsg.messageId)
         assertEquals(1789920005000L, assistantMsg.timestamp)
+    }
+
+    @Test
+    fun cancelWithoutTheAgreedCapabilityReturnsUnsupportedAndSendsNothing() = runBlocking {
+        val transport = RecordingTransport()
+        val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")
+        val client = ConversationClient(GatewayHttpClient(profile, transport, { ByteArray(64) }, MemoryCursorStore()))
+
+        // 契约 §4：客户端只能使用双方声明且对端确实实现了的能力。
+        // 缺省（没有任何协商结果）时门是关着的。
+        val outcome = client.cancelGeneration("conv_123", "gen_1", "req_1")
+
+        assertEquals(ConversationClient.CANCEL_UNAVAILABLE, outcome)
+        assertNull("未协商到 generation-cancel-v1 时绝不能发 HTTP 请求", transport.lastRequest)
+    }
+
+    @Test
+    fun cancelWithTheAgreedCapabilitySendsTheCancelRequestAsBefore() = runBlocking {
+        val transport = RecordingTransport().apply {
+            responseToReturn = WireResponse(
+                status = 200,
+                headers = listOf(RawHeader("content-type", "application/json")),
+                body = """{"protocol":"2.0","data":{"outcome":"CANCELLED"}}""".toByteArray(Charsets.UTF_8),
+            )
+        }
+        val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")
+        val client = ConversationClient(GatewayHttpClient(profile, transport, { ByteArray(64) }, MemoryCursorStore()))
+
+        val outcome = client.cancelGeneration(
+            "conv_123",
+            "gen_1",
+            "req_1",
+            capability = GenerationCancelCapability(agreed = true),
+        )
+
+        // 现状行为（发请求、解析闭集 outcome）被锁定为「仅在同意时」。
+        assertEquals("CANCELLED", outcome)
+        val recorded = transport.lastRequest
+        assertNotNull(recorded)
+        assertEquals("POST", recorded?.method)
+        assertEquals(
+            "/open-android-intelligence/v2/conversations/conv_123/generations/gen_1/cancel",
+            recorded?.target,
+        )
+        assertTrue(String(recorded!!.body, Charsets.UTF_8).contains("req_1"))
     }
 }

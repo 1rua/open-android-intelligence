@@ -5,6 +5,7 @@ import com.openandroidintelligence.gateway.http.GatewayResponse
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.http.requireData
+import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -111,6 +112,15 @@ data class BatchAcceptance(
  * reference cannot be constructed here even by mistake.
  */
 class ConversationClient(private val http: GatewayHttpClient) {
+
+    companion object {
+        /**
+         * 未协商到 generation-cancel-v1 时 [cancelGeneration] 的明确结果：
+         * 请求没有发出、服务端没有任何写入。它与契约的 outcome 闭集不同，
+         * 只可能来自本地能力门禁；下游把它映射为「不支持」事实。
+         */
+        const val CANCEL_UNAVAILABLE = "UNSUPPORTED"
+    }
 
     /** The unfiltered Gateway event stream, framed and cursor-tracked. */
     fun rawEvents(): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = http.events()
@@ -365,12 +375,19 @@ class ConversationClient(private val http: GatewayHttpClient) {
      * Cancellation is a distinct endpoint with its own request id, and the
      * outcome stays a closed set: the UI must not claim "stopped" until the
      * server says which of the terminal outcomes actually happened.
+     *
+     * 受 generation-cancel-v1 协商门禁约束（契约 §4：客户端只能使用双方声明
+     * 且对端确实实现了的能力）：未同意该能力位时返回 [CANCEL_UNAVAILABLE]
+     * 并且不发任何请求。宿主从 [com.openandroidintelligence.gateway.negotiation.NegotiationResult]
+     * 派生门禁传入；缺省（没有协商结果）时门是关着的。
      */
     suspend fun cancelGeneration(
         conversationId: String,
         generationId: String,
         requestId: String,
+        capability: GenerationCancelCapability = GenerationCancelCapability.NotNegotiated,
     ): String {
+        if (!capability.agreed) return CANCEL_UNAVAILABLE
         val response = execute(
             method = "POST",
             target = "/open-android-intelligence/v2/conversations/$conversationId/generations/$generationId/cancel",
