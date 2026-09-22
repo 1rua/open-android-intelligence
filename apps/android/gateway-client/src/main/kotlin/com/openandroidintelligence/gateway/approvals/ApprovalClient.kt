@@ -1,5 +1,6 @@
 package com.openandroidintelligence.gateway.approvals
 
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayResponse
 import com.openandroidintelligence.gateway.http.RawHeader
@@ -62,6 +63,24 @@ data class ApprovalDecisionResult(
 )
 
 /**
+ * 「用户确认」动作的审计出口。
+ *
+ * 审计落盘接口（AuditSink）住在 platform-kernel，而本模块比它更底层、不得
+ * 反向依赖，因此这里只暴露一个宿主可装配的回调：宿主在装配时把它桥接到
+ * 平台审计（如 PersistentAuditSink），把「用户确认了某张审批卡」这一事实
+ * 写入审计链。
+ */
+interface ApprovalDecisionAudit {
+    /**
+     * @param approvalId 被应答的审批卡
+     * @param decision   用户按下的那一档（wire 值：once/session/always/deny）
+     * @param outcome    本次提交的终态；当前仅 SUBMITTED 会被报告——它是唯一
+     *                   表示 Gateway 确实收下了决策的结果
+     */
+    fun onDecisionSubmitted(approvalId: String, decision: String, outcome: String)
+}
+
+/**
  * `POST /approvals/{approvalId}/decisions` — one button press, one request.
  *
  * The approval id is the whole authority a client holds: the host's session key
@@ -70,8 +89,15 @@ data class ApprovalDecisionResult(
  * its request id, so one press is one write; a caller that fires two presses for
  * the same card without waiting is still protected by the Gateway's closed
  * decision, never by a local guess about which one arrived first.
+ *
+ * 提供 [ApprovalDecisionAudit] 时，凡决策被 Gateway 真正接受（SUBMITTED），
+ * 用户确认动作都会如实上报；其余终态（已落定/过期/不存在/失败）只是 UI 要
+ * 展示的事实，不是新的用户确认，不进审计。不提供回调时行为与从前完全一致。
  */
-class ApprovalClient(private val http: GatewayHttpClient) {
+class ApprovalClient(
+    private val http: GatewayHttpClient,
+    private val audit: ApprovalDecisionAudit? = null,
+) {
 
     suspend fun submitDecision(
         approvalId: String,
@@ -100,11 +126,15 @@ class ApprovalClient(private val http: GatewayHttpClient) {
                         httpStatus = response.status,
                     )
                 } else {
-                    ApprovalDecisionResult(
+                    val result = ApprovalDecisionResult(
                         outcome = ApprovalDecisionOutcome.SUBMITTED,
                         decision = recorded,
                         httpStatus = response.status,
                     )
+                    // 决策已被 Gateway 收下：把用户确认动作如实交给审计。回调
+                    // 的失败不得改写这次已经成功的决策，只留诊断痕迹。
+                    audit?.let { reportSubmission(it, approvalId, decision, result) }
+                    result
                 }
             }
             response.status == 404 -> ApprovalDecisionResult(
@@ -167,6 +197,23 @@ class ApprovalClient(private val http: GatewayHttpClient) {
             ),
         ),
     )
+
+    /**
+     * 上报一次被 Gateway 接受的用户确认动作。审计写入失败不参与决策结果：
+     * 决策已经生效，审计侧的故障只应被记录，不应被伪装成决策失败。
+     */
+    private fun reportSubmission(
+        audit: ApprovalDecisionAudit,
+        approvalId: String,
+        decision: ApprovalDecision,
+        result: ApprovalDecisionResult,
+    ) {
+        runCatching {
+            audit.onDecisionSubmitted(approvalId, decision.wireValue, result.outcome.name)
+        }.onFailure {
+            GatewayLog.w("ApprovalClient", "决策审计上报失败 approvalId=$approvalId: ${it.message}")
+        }
+    }
 
     private fun bodyOf(response: GatewayResponse): JsonValue.JObject? =
         runCatching { Json.parse(response.body.toString(Charsets.UTF_8)) }

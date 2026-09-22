@@ -48,11 +48,20 @@ class ApprovalClientTest {
         override fun clear(accountId: String) { map.remove(accountId) }
     }
 
-    private fun client(transport: RecordingTransport): ApprovalClient {
+    private fun client(transport: RecordingTransport, audit: ApprovalDecisionAudit? = null): ApprovalClient {
         val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")
         return ApprovalClient(
             GatewayHttpClient(profile, transport, { ByteArray(64) }, MemoryCursorStore()),
+            audit,
         )
+    }
+
+    /** 记录型审计回调：捕获每次「用户确认动作」的入参。 */
+    private class RecordingAudit : ApprovalDecisionAudit {
+        val calls = mutableListOf<Triple<String, String, String>>()
+        override fun onDecisionSubmitted(approvalId: String, decision: String, outcome: String) {
+            calls += Triple(approvalId, decision, outcome)
+        }
     }
 
     private fun json(status: Int, body: String): WireResponse = WireResponse(
@@ -179,5 +188,58 @@ class ApprovalClientTest {
         // The two outcomes the Gateway owns can never be submitted.
         assertNull(ApprovalDecision.of("timeout"))
         assertNull(ApprovalDecision.of("withdrawn"))
+    }
+
+    @Test
+    fun aSubmittedDecisionReachesTheAuditHookWithItsExactVocabulary() = runBlocking {
+        val transport = RecordingTransport()
+        val audit = RecordingAudit()
+
+        val result = client(transport, audit).submitDecision("apr_1", ApprovalDecision.ALWAYS)
+
+        // 审计宣称记录「用户确认」，就必须在确认真正被 Gateway 接受时如实写入。
+        assertEquals(ApprovalDecisionOutcome.SUBMITTED, result.outcome)
+        assertEquals(listOf(Triple("apr_1", "always", "SUBMITTED")), audit.calls)
+    }
+
+    @Test
+    fun aDecisionThatNeverLandedIsNeverAudited() = runBlocking {
+        val audit = RecordingAudit()
+
+        val alreadyResolved = RecordingTransport().apply {
+            responseToReturn = json(
+                409,
+                """{"protocol":"2.0","error":{"code":"APPROVAL_ALREADY_RESOLVED","message":"already","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"deny"}}}""",
+            )
+        }
+        client(alreadyResolved, audit).submitDecision("apr_1", ApprovalDecision.ONCE)
+
+        val notFound = RecordingTransport().apply {
+            responseToReturn = json(404, """{"protocol":"2.0","error":{"code":"APPROVAL_NOT_FOUND","message":"missing","retryable":false,"retryAfterSeconds":null,"details":{}}}""")
+        }
+        client(notFound, audit).submitDecision("apr_2", ApprovalDecision.DENY)
+
+        val failed = RecordingTransport().apply {
+            responseToReturn = json(500, """{"protocol":"2.0","error":{"code":"INTERNAL","message":"boom","retryable":false,"retryAfterSeconds":null,"details":{}}}""")
+        }
+        client(failed, audit).submitDecision("apr_3", ApprovalDecision.SESSION)
+
+        assertTrue("失败/取消的决策没有成为 Gateway 的写入，不得进审计", audit.calls.isEmpty())
+    }
+
+    @Test
+    fun withoutAnAuditHookTheDecisionPathIsUnchanged() = runBlocking {
+        val transport = RecordingTransport().apply {
+            responseToReturn = json(
+                200,
+                """{"protocol":"2.0","data":{"approval":{"approvalId":"apr_1","conversationId":"conv_1","decision":"session"}}}""",
+            )
+        }
+
+        val result = client(transport, audit = null).submitDecision("apr_1", ApprovalDecision.SESSION)
+
+        assertEquals(ApprovalDecisionOutcome.SUBMITTED, result.outcome)
+        assertEquals(ApprovalDecision.SESSION, result.decision)
+        assertEquals("POST", transport.lastRequest?.method)
     }
 }
