@@ -22,6 +22,10 @@ export type GatewaySchemaName =
   | "session.password"
   | "session.refresh"
   | "session.device"
+  | "session.logout"
+  | "session.unpair"
+  | "session.pairing"
+  | "session.pairingSummary"
   | "conversation.create"
   | "conversation.commandCatalog"
   | "conversation.generationCancel"
@@ -30,7 +34,11 @@ export type GatewaySchemaName =
   | "attachment.create"
   | "attachment.status"
   | "event"
+  | "event.sessionRevokedPayload"
+  | "event.pairingGrantChangedPayload"
   | "device.request"
+  | "device.request.result"
+  | "device.request.resultRequest"
   | "response.success"
   | "response.failure";
 
@@ -66,6 +74,10 @@ const definitions: Record<GatewaySchemaName, readonly [SchemaDocument, string]> 
   "session.password": [sessionDocument as SchemaDocument, "password"],
   "session.refresh": [sessionDocument as SchemaDocument, "refresh"],
   "session.device": [sessionDocument as SchemaDocument, "device"],
+  "session.logout": [sessionDocument as SchemaDocument, "logout"],
+  "session.unpair": [sessionDocument as SchemaDocument, "unpair"],
+  "session.pairing": [sessionDocument as SchemaDocument, "pairing"],
+  "session.pairingSummary": [sessionDocument as SchemaDocument, "pairingSummary"],
   "conversation.create": [conversationDocument as SchemaDocument, "create"],
   // The catalog and mirror-sync request shapes live in conversation.schema.json.
   // command-catalog.schema.json and conversation-snapshot.schema.json describe the
@@ -79,7 +91,14 @@ const definitions: Record<GatewaySchemaName, readonly [SchemaDocument, string]> 
   "attachment.create": [attachmentDocument as SchemaDocument, "create"],
   "attachment.status": [attachmentDocument as SchemaDocument, "status"],
   event: [eventDocument as SchemaDocument, "event"],
+  "event.sessionRevokedPayload": [eventDocument as SchemaDocument, "sessionRevokedPayload"],
+  "event.pairingGrantChangedPayload": [
+    eventDocument as SchemaDocument,
+    "pairingGrantChangedPayload",
+  ],
   "device.request": [deviceRequestDocument as SchemaDocument, "request"],
+  "device.request.result": [deviceRequestDocument as SchemaDocument, "result"],
+  "device.request.resultRequest": [deviceRequestDocument as SchemaDocument, "resultRequest"],
   "response.success": [envelopeDocument as SchemaDocument, "success"],
   "response.failure": [envelopeDocument as SchemaDocument, "failure"],
 };

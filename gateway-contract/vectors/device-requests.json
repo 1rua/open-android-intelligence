@@ -4,6 +4,69 @@
   "vectorSet": "device-requests",
   "cases": [
     {
+      "id": "device-result-valid-succeeded-with-data",
+      "operation": "schema.validate",
+      "input": {
+        "schemaName": "device.request.result",
+        "value": { "outcome": "succeeded", "data": { "threads": 2 } }
+      },
+      "expected": { "outcome": "value", "value": { "valid": true } }
+    },
+    {
+      "id": "device-result-valid-outcome-unknown-without-data",
+      "operation": "schema.validate",
+      "input": {
+        "schemaName": "device.request.result",
+        "value": { "outcome": "outcome_unknown" }
+      },
+      "expected": { "outcome": "value", "value": { "valid": true } }
+    },
+    {
+      "id": "device-result-unknown-outcome",
+      "operation": "schema.validate",
+      "input": {
+        "schemaName": "device.request.result",
+        "value": { "outcome": "ok" }
+      },
+      "expected": { "outcome": "error", "code": "SCHEMA_INVALID" }
+    },
+    {
+      "id": "device-result-outcome-unknown-with-data",
+      "operation": "schema.validate",
+      "input": {
+        "schemaName": "device.request.result",
+        "value": { "outcome": "outcome_unknown", "data": {} }
+      },
+      "expected": { "outcome": "error", "code": "SCHEMA_INVALID" }
+    },
+    {
+      "id": "device-result-request-valid",
+      "operation": "schema.validate",
+      "input": {
+        "schemaName": "device.request.resultRequest",
+        "value": {
+          "claimId": "claim_1",
+          "grantRevision": 7,
+          "result": { "outcome": "succeeded" }
+        }
+      },
+      "expected": { "outcome": "value", "value": { "valid": true } }
+    },
+    {
+      "id": "device-result-request-unknown-field",
+      "operation": "schema.validate",
+      "input": {
+        "schemaName": "device.request.resultRequest",
+        "value": {
+          "claimId": "claim_1",
+          "grantRevision": 7,
+          "result": { "outcome": "succeeded" },
+          "deviceId": "device_1"
+        }
+      },
+      "expected": { "outcome": "error", "code": "SCHEMA_INVALID" }
+    },
+    {
       "id": "device-dispatch-sms-query-valid",
       "operation": "schema.validate_dispatched",
       "input": {

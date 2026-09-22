@@ -142,6 +142,7 @@ const vectorFiles: readonly VectorFile[] = [
     fileName: "device-requests.json",
     vectorSet: "device-requests",
     allowedOperations: [
+      "schema.validate",
       "schema.validate_dispatched",
       "device.transition",
       "device.maximum_queue_seconds",

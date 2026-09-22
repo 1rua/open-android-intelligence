@@ -89,6 +89,71 @@
           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/base64urlEd25519Signature"
         }
       }
+    },
+    "logout": {
+      "$comment": "DELETE /sessions/current response data. Contract §5.5; error code closure in §14.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "refreshRevoked"],
+      "properties": {
+        "sessionId": {
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+        },
+        "refreshRevoked": { "type": "boolean" }
+      }
+    },
+    "unpair": {
+      "$comment": "DELETE /pairings/current response data. Contract §5.6: revokes the five items of §13 plus every access session of the device.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deviceId",
+        "deviceKeysRevoked",
+        "refreshRevoked",
+        "grantsRevoked",
+        "deviceRequestsRevoked",
+        "unconfirmedAttachmentsRevoked",
+        "sessionsRevoked"
+      ],
+      "properties": {
+        "deviceId": {
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+        },
+        "deviceKeysRevoked": { "type": "boolean" },
+        "refreshRevoked": { "type": "boolean" },
+        "grantsRevoked": { "type": "boolean" },
+        "deviceRequestsRevoked": { "type": "boolean" },
+        "unconfirmedAttachmentsRevoked": { "type": "boolean" },
+        "sessionsRevoked": { "type": "boolean" }
+      }
+    },
+    "pairing": {
+      "$comment": "Gateway-authoritative pairing identity. pairingId is a Gateway-issued closed wire ID (contract §5.1); clients must never synthesize it locally.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pairingId", "pairingGeneration", "grantRevision"],
+      "properties": {
+        "pairingId": {
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+        },
+        "pairingGeneration": { "type": "integer", "minimum": 1 },
+        "grantRevision": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "pairingSummary": {
+      "$comment": "Contract §5.2. pairedAt is the most recent device-key registration time: both hosts overwrite it on conflict, so it is NOT the first-pairing time.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deviceId", "pairingGeneration", "pairedAt"],
+      "properties": {
+        "deviceId": {
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+        },
+        "pairingGeneration": { "type": "integer", "minimum": 1 },
+        "pairedAt": { "type": "string", "minLength": 1 },
+        "deviceDisplayName": { "type": "string", "minLength": 1 },
+        "pairedDeviceCount": { "type": "integer", "minimum": 1 }
+      }
     }
   }
 }

@@ -522,7 +522,7 @@ cd integrations/hermes && python3 -m pytest -q
 
 ### 5.4 契约摘要三方同步门禁（最高危门禁）
 
-核心摘要现值：`sha256:665df51661c11f9f770c11abb10b9be5fc343ffd41507e12625f3a011072cacb`。
+核心摘要现值：`sha256:6654ec19d57eeb53591a7bd58f7e6f67f6487d14071db833dd276970e306659b`（Wave 0 冻结窗口后；旧值 `sha256:665df516…cacb`）。
 
 **任何 `gateway-contract/schemas/*.schema.json` 的改动都会改变该摘要**，未同步升级的一端会被 `PROTOCOL_INCOMPATIBLE`(406) 拒绝、在重新构建前**完全无法登录**。
 

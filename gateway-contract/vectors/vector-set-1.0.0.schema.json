@@ -116,6 +116,7 @@
             "type": "array",
             "items": {
               "oneOf": [
+                { "$ref": "#/$defs/schemaValidateCase" },
                 { "$ref": "#/$defs/schemaValidateDispatchedCase" },
                 { "$ref": "#/$defs/deviceTransitionCase" },
                 { "$ref": "#/$defs/deviceMaximumQueueCase" }
@@ -155,11 +156,19 @@
         "session.password",
         "session.refresh",
         "session.device",
+        "session.logout",
+        "session.unpair",
+        "session.pairing",
+        "session.pairingSummary",
         "conversation.create",
         "message.create",
         "attachment.create",
         "event",
+        "event.sessionRevokedPayload",
+        "event.pairingGrantChangedPayload",
         "device.request",
+        "device.request.result",
+        "device.request.resultRequest",
         "response.success",
         "response.failure"
       ]

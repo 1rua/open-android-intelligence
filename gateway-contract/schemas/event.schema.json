@@ -32,8 +32,40 @@
           ]
         },
         "payload": {
-          "$comment": "Dispatch by the validated SSE event type and validate again with its event-specific sub-Schema; missing sub-Schema must fail closed.",
+          "$comment": "Dispatch by the validated SSE event type (the dispatch key is the eventType string in dispatched-schema-fixtures.json, NOT a $defs key) and validate again with its event-specific sub-Schema; missing sub-Schema must fail closed. Normative copies of the payload shapes live in $defs.sessionRevokedPayload and $defs.pairingGrantChangedPayload.",
           "type": "object"
+        }
+      }
+    },
+    "sessionRevokedPayload": {
+      "$comment": "Normative copy for eventType 'session.revoked' (contract §9). Notification only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId"],
+      "properties": {
+        "sessionId": {
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+        },
+        "deviceId": {
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+        }
+      }
+    },
+    "pairingGrantChangedPayload": {
+      "$comment": "Normative copy for eventType 'pairing.grant.changed' (contract §9/§11). Notification only: the event must never widen the Android-local authoritative grant record; decisions still travel the request path and stale revisions still return GRANT_STALE.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantRevision"],
+      "properties": {
+        "grantRevision": { "type": "integer", "minimum": 0 },
+        "pluginId": { "type": "string", "minLength": 1 },
+        "authorKeyId": {
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256"
+        },
+        "capabilityId": { "type": "string", "minLength": 1 },
+        "capabilityVersion": { "type": "string", "minLength": 1 },
+        "grantDigest": {
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256"
         }
       }
     }
