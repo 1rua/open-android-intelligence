@@ -2629,7 +2629,7 @@ class GatewayAccount:
         self.agent_sessions = AgentSessionBindings(store)
         self.approvals = ApprovalRequests(store)
         self.credentials = CredentialStore(store)
-        self.sessions = SessionService(account_id, store, self.audit, credential_verifier)
+        self.sessions = SessionService(account_id, store, self.audit, self.events, credential_verifier)
         self.deviceRequests = self.device_requests
         self.agentSessions = self.agent_sessions
         self.approvalRequests = self.approvals
@@ -2701,6 +2701,48 @@ class GatewayAccount:
 
     revokePairing = revoke_pairing
 
+    def bump_grant_revision(
+        self, device_id: str, correlation_id: str, now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Raises one pairing's `grantRevision` by one (contract section 11).
+
+        The revision is the monotone counter a device presents with every
+        device request (`:702`), so after the Android-local grant has changed
+        the Gateway must move the device's revision before any request bound to
+        the old one can still be claimed or answered (`:782`, `GRANT_STALE`).
+
+        One commit carries all three facts: the new revision on the device key
+        row, the audit entry, and the `pairing.grant.changed` event on the
+        stream. The event is a notification only — its payload is exactly
+        `$defs/pairingGrantChangedPayload`, and this host has no signed-grant
+        mechanism, so the optional `grantDigest` (the signed-grant digest of
+        `:782`) and the plugin-identity fields are omitted rather than invented.
+        """
+        current = _now(now)
+        with self.store.transaction():
+            row = self.store.database.execute(
+                "SELECT grant_revision FROM device_keys WHERE device_id = ?", (device_id,)
+            ).fetchone()
+            if row is None:
+                raise GatewayError("PAIRING_REQUIRED", {"deviceId": device_id})
+            next_revision = int(row["grant_revision"]) + 1
+            self.store.database.execute(
+                "UPDATE device_keys SET grant_revision = ? WHERE device_id = ?",
+                (next_revision, device_id),
+            )
+            self.events.append(
+                "pairing.grant.changed", correlation_id, {"grantRevision": next_revision}, current,
+            )
+            self.audit.append(
+                "pairing.grant.changed",
+                {"accountId": self.account_id, "deviceId": device_id},
+                {"deviceId": device_id, "grantRevision": next_revision},
+                correlation_id, current,
+            )
+        return {"deviceId": device_id, "grantRevision": next_revision}
+
+    bumpGrantRevision = bump_grant_revision
+
     def _device_key_count(self, device_id: str) -> int:
         return int(self.store.database.execute(
             "SELECT COUNT(*) FROM device_keys WHERE device_id = ?", (device_id,)
@@ -2729,10 +2771,17 @@ class GatewayAccount:
 
 
 class SessionService:
-    def __init__(self, account_id: str, store: AccountStore, audit: AuditStore, credential_verifier: Any = None):
+    def __init__(
+        self, account_id: str, store: AccountStore, audit: AuditStore,
+        events: EventStore, credential_verifier: Any = None,
+    ):
         self.account_id = account_id
         self.store = store
         self.audit = audit
+        # Injected like DeviceRequestStore's `events`: revocation is a fact the
+        # event stream must carry (contract section 9), so the session service
+        # cannot rely on its caller to forward one.
+        self.events = events
         self.credential_verifier = credential_verifier
 
     @staticmethod
@@ -2970,10 +3019,19 @@ class SessionService:
     def revoke_session(self, session_id: str, correlation_id: str, now: datetime | str | None = None) -> None:
         current = _now(now)
         with self.store.transaction():
+            row = self.store.database.execute(
+                "SELECT device_id FROM access_sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
             self.store.database.execute("UPDATE access_sessions SET status = 'revoked' WHERE session_id = ?", (session_id,))
             self.audit.append(
                 "session.revoked", {"accountId": self.account_id}, {"sessionId": session_id}, correlation_id, current,
             )
+            if row is None:
+                # Nothing was revoked, so the stream must not carry a fabricated
+                # revocation; the audit line keeps its pre-existing behavior.
+                return
+            payload = {"sessionId": session_id, "deviceId": row["device_id"]}
+            self.events.append("session.revoked", correlation_id, payload, current)
 
     def _issue(self, installation_id: str, device_id: str, current: datetime) -> dict[str, Any]:
         session_id = f"sess_{uuid.uuid4()}"

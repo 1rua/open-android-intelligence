@@ -220,6 +220,45 @@ class AdminService:
 
     pairingRevoke = pairing_revoke
 
+    def grant_bump(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
+        """Raise one pairing's `grantRevision` by one (contract section 11).
+
+        The management-plane sibling of `pairing.revoke`: after the Android
+        local grant has changed, the Gateway moves the device's revision so any
+        request still carrying the old one answers `GRANT_STALE` (`:782`). The
+        same `HOST_INCOMPATIBLE` gate and local-confirmation rule apply — a
+        grant change is a device-local decision, and the Gateway only records
+        the revision that confirmation produced.
+        """
+        operation = "grant.bump"
+        if self.read_only:
+            return _failure(operation, True, "HOST_INCOMPATIBLE")
+        if _input(input, "local_confirmation", "localConfirmation", False) is not True:
+            return _failure(operation, False, "LOCAL_CONFIRMATION_REQUIRED")
+        account_id = _input(input, "account_id", "accountId")
+        if not isinstance(account_id, str) or WIRE_ID_PATTERN.fullmatch(account_id) is None:
+            return _failure(operation, False, "SCHEMA_INVALID")
+        device_id = _input(input, "device_id", "deviceId")
+        if not isinstance(device_id, str) or WIRE_ID_PATTERN.fullmatch(device_id) is None:
+            return _failure(operation, False, "SCHEMA_INVALID")
+        correlation_id = _input(input, "correlation_id", "correlationId")
+        try:
+            account = self.core.open_gateway_account(account_id)
+            try:
+                result = account.bump_grant_revision(
+                    device_id,
+                    str(correlation_id) if correlation_id else f"grant.bump:{device_id}",
+                )
+            finally:
+                account.close()
+        except GatewayError as exc:
+            return _failure(operation, False, exc.code)
+        except Exception:
+            return _failure(operation, False, "INTERNAL_ERROR")
+        return _success(operation, False, dict(result))
+
+    grantBump = grant_bump
+
     def status(self) -> dict[str, Any]:
         return _success("admin.status", self.read_only, {
             "hostVersion": self.host_version,
@@ -239,6 +278,8 @@ class AdminService:
             return self.delete_account(command)
         if name == "pairing.revoke":
             return self.pairing_revoke(command)
+        if name == "grant.bump":
+            return self.grant_bump(command)
         if self.read_only:
             return _failure(str(name), True, "HOST_INCOMPATIBLE")
         if _input(command, "local_confirmation", "localConfirmation", False) is not True:
@@ -291,6 +332,11 @@ class AdminPanel:
         return self.service.pairing_revoke(input)
 
     pairingRevoke = pairing_revoke
+
+    def grant_bump(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
+        return self.service.grant_bump(input)
+
+    grantBump = grant_bump
 
     def status(self) -> dict[str, Any]:
         return self.service.status()
@@ -358,6 +404,14 @@ def _parse_command(args: list[str], service: AdminService) -> Mapping[str, Any] 
             "command": "pairing.revoke", "accountId": args[2], "deviceId": args[3],
             "localConfirmation": flags["confirmed"],
         }
+    if args[:2] == ["grant", "bump"] and len(args) >= 4:
+        flags = _parse_flags(list(args[4:]))
+        if flags is None:
+            return _invalid_arguments(service)
+        return {
+            "command": "grant.bump", "accountId": args[2], "deviceId": args[3],
+            "localConfirmation": flags["confirmed"],
+        }
     if args in (["status"], ["account", "status"]):
         return {"command": "admin.status"}
     if args[:2] == ["account", "delete"] and len(args) >= 3:
@@ -400,6 +454,15 @@ def create_admin_cli_registrar(service: AdminService) -> Callable[..., Any]:
             "--confirm-local", "Confirm this write on the local host"
         ).action(lambda account_id, device_id, options=None: service.execute({
             "command": "pairing.revoke", "accountId": str(account_id), "deviceId": str(device_id),
+            "localConfirmation": bool(isinstance(options, Mapping) and options.get("confirmLocal") is True),
+        }))
+        grant = root.command("grant").description("Manage Open Android Intelligence Gateway pairing grants")
+        grant.command("bump <accountId> <deviceId>").description(
+            "Raise one pairing's grantRevision after the Android-local grant changed"
+        ).option(
+            "--confirm-local", "Confirm this write on the local host"
+        ).action(lambda account_id, device_id, options=None: service.execute({
+            "command": "grant.bump", "accountId": str(account_id), "deviceId": str(device_id),
             "localConfirmation": bool(isinstance(options, Mapping) and options.get("confirmLocal") is True),
         }))
         account.command("delete <accountId>").description("Delete a Gateway account and all of its data").option(
