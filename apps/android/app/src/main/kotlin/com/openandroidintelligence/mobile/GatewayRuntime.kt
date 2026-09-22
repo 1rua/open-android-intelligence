@@ -15,6 +15,8 @@ import com.openandroidintelligence.gateway.auth.GatewayCredentialStore
 import com.openandroidintelligence.gateway.auth.SessionCredentials
 import com.openandroidintelligence.gateway.commands.CommandCatalogClient
 import com.openandroidintelligence.gateway.conversations.ConversationClient
+import com.openandroidintelligence.gateway.device.DeviceRequestClient
+import com.openandroidintelligence.gateway.device.HttpDeviceRequestTransport
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
@@ -88,6 +90,8 @@ sealed interface ConnectionPhase {
         val conversationUi: Set<String> = emptySet(),
         /** 客户端 offer：本端声明过的能力全集（协议层请求原文）。 */
         val requestedConversationUi: Set<String> = CLIENT_CONVERSATION_UI_OFFER,
+        /** 网关声明的设备请求能力档（契约 §10）；null 表示网关未提供。 */
+        val deviceRequests: String? = null,
     ) : ConnectionPhase
 
     data class Failed(val code: String) : ConnectionPhase
@@ -187,7 +191,16 @@ class GatewayRuntime(
                             saveLastProfile(normalized, username, profileId, session)
                         }.onFailure { _operationNotice.value = "自动登录凭据未能保存，下次启动需要重新登录。" }
                     }
-                    establish(endpoint, username, profileId, session, negotiated.limits, tlsPin, negotiated.conversationUi)
+                    establish(
+                        endpoint = endpoint,
+                        username = username,
+                        profileId = profileId,
+                        session = session,
+                        limits = negotiated.limits,
+                        tlsSpkiSha256 = tlsPin,
+                        conversationUi = negotiated.conversationUi,
+                        deviceRequests = negotiated.deviceRequests,
+                    )
                 },
                 onFailure = { cause -> _phase.value = ConnectionPhase.Failed(errorCode(cause)) },
             )
@@ -328,6 +341,7 @@ class GatewayRuntime(
                     limits = negotiated.limits,
                     tlsSpkiSha256 = tlsPin,
                     conversationUi = negotiated.conversationUi,
+                    deviceRequests = negotiated.deviceRequests,
                 )
                 _operationNotice.value = if (saveFailure == null) {
                     "已向 Gateway 续期会话凭据，新的访问令牌已生效。"
@@ -417,7 +431,16 @@ class GatewayRuntime(
                     saveLastProfile(endpoint.baseUrl, lastUser, lastProfileId, session)
                 }.onFailure { _operationNotice.value = "轮换后的自动登录凭据未能保存，下次启动可能需要重新登录。" }
             }
-            establish(endpoint, lastUser, lastProfileId, session, negotiated.limits, tlsPin, negotiated.conversationUi)
+            establish(
+                endpoint = endpoint,
+                username = lastUser,
+                profileId = lastProfileId,
+                session = session,
+                limits = negotiated.limits,
+                tlsSpkiSha256 = tlsPin,
+                conversationUi = negotiated.conversationUi,
+                deviceRequests = negotiated.deviceRequests,
+            )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (cause: Exception) {
@@ -436,6 +459,7 @@ class GatewayRuntime(
         limits: NegotiatedLimits?,
         tlsSpkiSha256: String?,
         conversationUi: List<String>,
+        deviceRequests: String?,
     ) {
         val pins = setOfNotNull(tlsSpkiSha256)
         val profile = GatewayProfile(
@@ -478,6 +502,14 @@ class GatewayRuntime(
             approvals = approvalClient,
         )
         val catalogRepository = GatewayCommandCatalogRepository(CommandCatalogClient(http))
+        // 契约 §10 设备请求执行通路：网关协商通过了 deviceRequests 才装配。
+        // 触发源是网关下发 device.request.* 事件（条目 3-6），本机不自发产生
+        // 请求；通路在此接好，收到请求即按 claim → result 两步执行。
+        deviceRequestClient = if (deviceRequests != null) {
+            DeviceRequestClient(HttpDeviceRequestTransport(http))
+        } else {
+            null
+        }
         accessTokenHolder = session.accessToken
         lastAccountId = session.accountId
         lastDeviceId = session.deviceId
@@ -527,6 +559,7 @@ class GatewayRuntime(
             // 客户端没有的键，客户端无法兑现，不能让它以「已同意」的面目出现。
             conversationUi = CLIENT_CONVERSATION_UI_OFFER intersect conversationUi.toSet(),
             requestedConversationUi = CLIENT_CONVERSATION_UI_OFFER,
+            deviceRequests = deviceRequests,
         )
     }
 
@@ -535,6 +568,7 @@ class GatewayRuntime(
         sessionJob = null
         _controller.value = null
         accessTokenHolder = null
+        deviceRequestClient = null
         activeThread.set(null)
         pairingGrants.unbind()
         _phase.value = ConnectionPhase.Disconnected
@@ -559,6 +593,15 @@ class GatewayRuntime(
     )
 
     private var accessTokenHolder: String? = null
+
+    /**
+     * 当前会话的设备请求执行通路（契约 §10 claim/result）。
+     *
+     * 仅当网关协商通过了 `deviceRequests` 才存在；触发由网关下发
+     * `device.request.*` 事件（条目 3-6），本机不会也没有理由自发产生请求。
+     */
+    var deviceRequestClient: com.openandroidintelligence.gateway.device.DeviceRequestClient? = null
+        private set
 
     /** The session identity of the last successful login, for refresh/logout. */
     private var lastAccountId: String? = null

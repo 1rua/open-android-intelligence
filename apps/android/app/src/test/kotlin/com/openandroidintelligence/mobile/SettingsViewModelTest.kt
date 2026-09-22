@@ -307,6 +307,42 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun negotiatedDeviceRequestsReachTheSettingsUiState() {
+        val gateway = LoopbackGatewayStub()
+        try {
+            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_ALL_FIVE_BODY)
+            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
+            val runtime = runtimeFor(gateway)
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            awaitConnected(runtime)
+
+            val state = viewModelFor(runtime).uiState.value
+
+            assertEquals("risk-queue-v1", state.deviceRequestChannel)
+        } finally {
+            gateway.closed()
+        }
+    }
+
+    @Test
+    fun aGatewayWithoutDeviceRequestsReadsAsUnavailableInUiState() {
+        val gateway = LoopbackGatewayStub()
+        try {
+            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_WITHOUT_DEVICE_REQUESTS_BODY)
+            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
+            val runtime = runtimeFor(gateway)
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            awaitConnected(runtime)
+
+            val state = viewModelFor(runtime).uiState.value
+
+            assertNull("网关未提供设备请求时不得编造通路", state.deviceRequestChannel)
+        } finally {
+            gateway.closed()
+        }
+    }
+
+    @Test
     fun aCapabilityTheGatewayRefusedReadsAsUnsupportedInUiState() {
         val gateway = LoopbackGatewayStub()
         try {
@@ -385,6 +421,18 @@ class SettingsViewModelTest {
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":["agent-command-catalog-v1","generation-cancel-v1"]},
+            "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
+            "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
+            "eventRetentionSeconds":86400},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+        """.trimIndent()
+
+        /** 网关没有声明 deviceRequests 能力。 */
+        val NEGOTIATE_WITHOUT_DEVICE_REQUESTS_BODY = """
+            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":0},
+            "features":{"auth":["password","refresh"],"messages":"chat-v1",
+            "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
+            "conversationUi":["agent-command-catalog-v1"]},
             "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
             "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
             "eventRetentionSeconds":86400},

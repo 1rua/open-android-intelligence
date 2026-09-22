@@ -88,6 +88,13 @@ data class SettingsUiState(
 
     val isAttachmentStatusAvailable: Boolean
         get() = conversationUi["attachment-status-v1"] == true
+
+    /**
+     * 设备请求通路的协商档（契约 §10）；null = 网关未提供。
+     * 通路存在只说明执行能力就绪，触发源始终是网关下发的请求。
+     */
+    val deviceRequestChannel: String?
+        get() = (connectionPhase as? ConnectionPhase.Connected)?.deviceRequests
 }
 
 private data class BaseSettings(

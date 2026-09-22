@@ -823,6 +823,19 @@ private fun GatewaySubScreen(
             if (uiState.isGatewayConnected) {
                 SectionLabel("协商能力")
                 NegotiatedCapabilitiesGroup(conversationUi = uiState.conversationUi)
+                SettingsSectionCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                        SettingsListItem(
+                            headline = "设备请求执行通路",
+                            supporting = if (uiState.deviceRequestChannel != null) {
+                                "契约 §10 通路已就绪（${uiState.deviceRequestChannel}），等待网关下发请求后执行"
+                            } else {
+                                "Gateway 未提供设备请求"
+                            },
+                            icon = Icons.Default.Security,
+                        )
+                    }
+                }
             }
 
             if (uiState.isGatewayConnected) {
