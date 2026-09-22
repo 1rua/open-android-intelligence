@@ -24,6 +24,7 @@ import com.openandroidintelligence.gateway.http.GatewayProfile
 import com.openandroidintelligence.gateway.http.GatewayTransport
 import com.openandroidintelligence.gateway.http.SpkiPinning
 import com.openandroidintelligence.gateway.http.TransportSecurity
+import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
 import com.openandroidintelligence.gateway.negotiation.NegotiatedLimits
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
@@ -200,6 +201,8 @@ class GatewayRuntime(
                         tlsSpkiSha256 = tlsPin,
                         conversationUi = negotiated.conversationUi,
                         deviceRequests = negotiated.deviceRequests,
+                        generationCancelCapability =
+                            GenerationCancelCapability.fromNegotiation(negotiated),
                     )
                 },
                 onFailure = { cause -> _phase.value = ConnectionPhase.Failed(errorCode(cause)) },
@@ -342,6 +345,8 @@ class GatewayRuntime(
                     tlsSpkiSha256 = tlsPin,
                     conversationUi = negotiated.conversationUi,
                     deviceRequests = negotiated.deviceRequests,
+                    generationCancelCapability =
+                        GenerationCancelCapability.fromNegotiation(negotiated),
                 )
                 _operationNotice.value = if (saveFailure == null) {
                     "已向 Gateway 续期会话凭据，新的访问令牌已生效。"
@@ -440,6 +445,8 @@ class GatewayRuntime(
                 tlsSpkiSha256 = tlsPin,
                 conversationUi = negotiated.conversationUi,
                 deviceRequests = negotiated.deviceRequests,
+                generationCancelCapability =
+                    GenerationCancelCapability.fromNegotiation(negotiated),
             )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -460,6 +467,7 @@ class GatewayRuntime(
         tlsSpkiSha256: String?,
         conversationUi: List<String>,
         deviceRequests: String?,
+        generationCancelCapability: GenerationCancelCapability = GenerationCancelCapability.NotNegotiated,
     ) {
         val pins = setOfNotNull(tlsSpkiSha256)
         val profile = GatewayProfile(
@@ -501,6 +509,14 @@ class GatewayRuntime(
             streamStatus = eventStreamStatus,
             approvals = approvalClient,
         )
+        // generation-cancel-v1 门禁接线：工作台的「停止生成」经由这层仓储
+        // 才会带上协商门禁转发给真实客户端；未协商时保持 fail-closed。
+        val workbenchRepository = CapabilityGatedConversationRepository(
+            upstream = repository,
+            client = conversationClient,
+            capability = generationCancelCapability,
+            activeConversationId = { activeThread.get() },
+        )
         val catalogRepository = GatewayCommandCatalogRepository(CommandCatalogClient(http))
         // 契约 §10 设备请求执行通路：网关协商通过了 deviceRequests 才装配。
         // 触发源是网关下发 device.request.* 事件（条目 3-6），本机不自发产生
@@ -535,7 +551,7 @@ class GatewayRuntime(
 
         _controller.value = WorkbenchController(
             scope = sessionScope,
-            repository = repository,
+            repository = workbenchRepository,
             catalogRepository = catalogRepository,
             scopeFactory = { conversationScope },
             attachmentCoordinator = attachmentCoordinator,
@@ -546,7 +562,7 @@ class GatewayRuntime(
             supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
             supportsApprovalCards = approvalClient != null,
             onActiveThreadChanged = { threadId -> activeThread.set(threadId) },
-            streamHealthSource = repository,
+            streamHealthSource = workbenchRepository,
         )
         _phase.value = ConnectionPhase.Connected(
             gatewayUrl = endpoint.baseUrl,

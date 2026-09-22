@@ -42,9 +42,9 @@ internal class LoopbackGatewayStub {
         }
     }
 
-    /** 注册一个路径的响应；未注册的路径返回 404。 */
-    fun respond(path: String, body: String, status: Int = 200) {
-        routes[path] = StubResponse(status, body)
+    /** 注册一个路径的响应；未注册的路径返回 404。SSE 路径需自定义 Content-Type。 */
+    fun respond(path: String, body: String, status: Int = 200, contentType: String = "application/json") {
+        routes[path] = StubResponse(status, body, contentType)
     }
 
     fun targetsOf(method: String): List<String> =
@@ -73,7 +73,7 @@ internal class LoopbackGatewayStub {
             recorded += RecordedGatewayRequest(method, target, String(body, 0, read))
 
             val path = target.substringBefore('?')
-            val response = routes[path] ?: StubResponse(404, """{"error":{"code":"NOT_FOUND"}}""")
+            val response = routes[path] ?: StubResponse(404, """{"error":{"code":"NOT_FOUND"}}""", "application/json")
             write(open, response)
         }
     }
@@ -83,7 +83,7 @@ internal class LoopbackGatewayStub {
         val reason = if (response.status in 200..299) "OK" else "Error"
         val header = buildString {
             append("HTTP/1.1 ${response.status} $reason\r\n")
-            append("Content-Type: application/json\r\n")
+            append("Content-Type: ${response.contentType}\r\n")
             append("Content-Length: ${payload.size}\r\n")
             append("Connection: close\r\n\r\n")
         }
@@ -94,5 +94,5 @@ internal class LoopbackGatewayStub {
         }
     }
 
-    private data class StubResponse(val status: Int, val body: String)
+    private data class StubResponse(val status: Int, val body: String, val contentType: String)
 }
