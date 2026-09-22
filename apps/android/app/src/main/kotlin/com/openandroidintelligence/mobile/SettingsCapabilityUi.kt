@@ -36,7 +36,7 @@ const val NOTICE_DISMISS_LABEL = "关闭操作提示"
  * 只能以 `screenshot = null` 渲染不可用态）。这里用常量如实表达「未接入」，
  * 而不是让设置页把一个不存在的来源描述成可用；接入截图来源时改这一处。
  */
-const val SCREENSHOT_SOURCE_WIRED = false
+const val SCREENSHOT_SOURCE_WIRED = true
 
 /**
  * 宿主是否装配了推送采集通道。现状：没有任何采集器在运行，常量如实降级。
@@ -51,13 +51,14 @@ const val PUSH_CHANNEL_WIRED = false
 fun screenSelectionCapabilityPresentation(
     grantsBound: Boolean,
     attachmentStatusAgreed: Boolean?,
+    screenshotSourceWired: Boolean = SCREENSHOT_SOURCE_WIRED,
 ): CapabilityPresentation = when {
     !grantsBound -> CapabilityPresentation(
         enabled = false,
         supporting = "未绑定活动配对，授权暂不可用",
     )
     else -> screenSelectionPresentation(
-        screenshotSourceWired = SCREENSHOT_SOURCE_WIRED,
+        screenshotSourceWired = screenshotSourceWired,
         attachmentStatusAgreed = attachmentStatusAgreed,
     )
 }

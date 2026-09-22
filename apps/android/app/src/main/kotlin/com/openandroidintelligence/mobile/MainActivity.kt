@@ -23,6 +23,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.capability.MediaProjectionCaptureService
+import com.openandroidintelligence.capability.MediaProjectionRuntime
+import com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
@@ -160,6 +163,30 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // 真实系统能力契约：屏幕圈选的截图来源（MediaProjection）。
+                // 授权必须由前台 Activity 发起系统对话框；授权结果先启动
+                // mediaProjection 型前台服务（Android 14+ 硬性要求），再交给
+                // 来源建立会话。拒绝/失败一律如实提示，圈选保持不可用降级。
+                val screenCaptureSource = remember {
+                    MediaProjectionScreenCaptureSource(MediaProjectionRuntime(applicationContext))
+                }
+                val screenCaptureAuthLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    if (result.resultCode == android.app.Activity.RESULT_OK) {
+                        MediaProjectionCaptureService.start(this@MainActivity)
+                    }
+                    val granted = screenCaptureSource.onAuthorizationResult(
+                        result.resultCode, result.data,
+                    )
+                    Toast.makeText(
+                        this@MainActivity,
+                        if (granted) "已获得屏幕采集授权，请再次点击圈选开始截取"
+                        else "未获得屏幕采集授权，圈选暂不可用",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.surfaceContainerLowest,
@@ -227,6 +254,19 @@ class MainActivity : ComponentActivity() {
                                     openDocumentLauncher.launch(arrayOf("*/*"))
                                 },
                                 onVoiceInput = startVoiceInput,
+                                screenCaptureSource = screenCaptureSource,
+                                onNeedScreenCaptureAuthorization = {
+                                    val intent = screenCaptureSource.createAuthorizationIntent()
+                                    if (intent == null) {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "此设备不支持屏幕采集，圈选不可用",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    } else {
+                                        screenCaptureAuthLauncher.launch(intent)
+                                    }
+                                },
                             )
                         }
                     }

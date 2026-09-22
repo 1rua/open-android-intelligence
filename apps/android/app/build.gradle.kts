@@ -44,6 +44,7 @@ android {
 
 dependencies {
     implementation(project(":core-model"))
+    implementation(project(":capability-ports"))
     implementation(project(":gateway-client"))
     implementation(project(":platform-kernel"))
     implementation(project(":plugin-package"))

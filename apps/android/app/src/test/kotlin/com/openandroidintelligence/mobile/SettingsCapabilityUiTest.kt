@@ -99,13 +99,22 @@ class SettingsCapabilityUiTest {
 
     @Test
     fun screenSelectionPresentationCombinesWiringGrantsAndNegotiation() {
-        // 宿主从未接入截图来源：无论协商结果如何都不可用
+        // 宿主未接入截图来源（显式注入，与全局装配状态解耦）：不可用
         val unwired = screenSelectionCapabilityPresentation(
             grantsBound = true,
             attachmentStatusAgreed = true,
+            screenshotSourceWired = false,
         )
         assertFalse(unwired.enabled)
         assertTrue(unwired.supporting.contains("截图"))
+
+        // 来源已接入（Wave 1 起宿主装配了 MediaProjection 来源）且协商同意：可用
+        val wired = screenSelectionCapabilityPresentation(
+            grantsBound = true,
+            attachmentStatusAgreed = true,
+            screenshotSourceWired = true,
+        )
+        assertTrue(wired.enabled)
 
         // 没有活动配对：授权本身不可用
         val unbound = screenSelectionCapabilityPresentation(

@@ -28,6 +28,7 @@ fun FloatingConversationPanel(
     onPickCamera: () -> Unit, onPickGallery: () -> Unit, onPickDocument: () -> Unit,
     onVoiceInput: () -> Unit, modifier: Modifier = Modifier,
     screenCaptureSource: ScreenCaptureSource? = null,
+    onNeedScreenCaptureAuthorization: (() -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
     var expanded by rememberSaveable { mutableStateOf(true) }
@@ -40,7 +41,18 @@ fun FloatingConversationPanel(
         }
     }
     Box(modifier.fillMaxSize()) {
-        AssistantSurface(expanded, { expanded = it }, onClose, { explainSelection = true }) {
+        AssistantSurface(expanded, { expanded = it }, onClose, {
+            val source = screenCaptureSource
+            if (source == null || source.isAvailable) {
+                explainSelection = true
+            } else {
+                // 来源已装配但尚未经用户显式授权：先走系统授权对话框，
+                // 而不是把「未授权」静默渲染成不可用态。宿主未提供授权
+                // 入口时保持既有降级（overlay 自己渲染不可用）。
+                val requestAuthorization = onNeedScreenCaptureAuthorization
+                if (requestAuthorization != null) requestAuthorization() else explainSelection = true
+            }
+        }) {
             Text(state.activeThreadTitle.ifBlank { "浮动对话" }, style = MaterialTheme.typography.titleMedium)
             val last = (state.timeline as? Loadable.Ready)?.value?.takeLast(1).orEmpty()
             if (last.isNotEmpty()) {

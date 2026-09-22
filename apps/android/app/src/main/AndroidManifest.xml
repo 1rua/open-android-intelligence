@@ -1,6 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+        屏幕圈选的截图来源（MediaProjection）：Android 14+ 要求投影会话跑在
+        foregroundServiceType="mediaProjection" 的前台服务里，且必须由用户经
+        系统授权对话框显式授予；未授权时圈选明确降级为不可用，绝无静默采集。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
         usesCleartextTraffic 允许用户显式输入的 http:// 明文 Gateway（ADR 0047）。
@@ -24,5 +32,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name="com.openandroidintelligence.capability.MediaProjectionCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>
