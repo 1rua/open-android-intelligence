@@ -84,7 +84,9 @@ import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.notifications.NotificationCollectionScreen
 import com.openandroidintelligence.mobile.plugins.PluginManagementScreen
+import com.openandroidintelligence.notification.control.NotificationControlRegistry
 import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.kernel.DeveloperTrustMode
 
@@ -97,6 +99,7 @@ object SettingsRoutes {
     const val SECURITY = "settings/security"
     const val AUDIT_LOG = "settings/audit"
     const val PLUGINS = "settings/plugins"
+    const val NOTIFICATIONS = "settings/notifications"
 }
 
 /**
@@ -226,6 +229,16 @@ fun SettingsScreen(
             PluginManagementScreen(
                 allowRuntimePlugins = uiState.allowRuntimePlugins,
                 pluginRuntimesWired = uiState.pluginRuntimesWired,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(SettingsRoutes.NOTIFICATIONS) {
+            // 通知采集的端口由 :notification-host 经 ContentProvider 自注册；
+            // registry 未装配时端口本身 deny-first，子页如实渲染「未装配」。
+            NotificationCollectionScreen(
+                policy = NotificationControlRegistry.policyPort(),
+                binding = NotificationControlRegistry.bindingPort(),
                 onBack = { navController.popBackStack() },
             )
         }
@@ -570,6 +583,16 @@ private fun SettingsOverviewScreen(
                         ),
                         icon = Icons.Default.Notifications,
                         onCheckedChange = onSetNotificationsGrant,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    SettingsNavigationItem(
+                        headline = "通知采集设置",
+                        onClick = { onNavigate(SettingsRoutes.NOTIFICATIONS) },
+                        supporting = if (NotificationControlRegistry.policyPort().snapshot().installed) {
+                            "包名白名单、元数据与内容访问、投递模式与系统授权"
+                        } else {
+                            "通知采集未装配"
+                        },
                     )
                 }
             }

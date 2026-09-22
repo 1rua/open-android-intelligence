@@ -54,6 +54,16 @@ val absenceAuditFiles = setOf(
 )
 
 /**
+ * 仅存在于 JVM 单元测试里的回环测试夹具：它在 127.0.0.1 上临时开一个
+ * ServerSocket 充当契约形状的网关替身，用来断言「请求真的发到了契约地址、
+ * 响应真的从那里回来」。这是测试技术，不是产品监听面——进程退出即关闭，
+ * 不发布端口、不对外提供服务。按路径窄豁免，其余任何文件仍受禁令约束。
+ */
+val testOnlyLoopbackFixtures = setOf(
+    "app/src/test/kotlin/com/openandroidintelligence/mobile/LoopbackGatewayStub.kt",
+)
+
+/**
  * 剥除代码中的单行/多行注释，将注释内容替换为空格并保留换行符，
  * 确保既过滤掉注释中的无关关键字，又精确保留原文件的行号与代码结构。
  */
@@ -200,6 +210,7 @@ fun sourceFilesUnder(root: File): List<File> =
         .onEnter { it.name !in generatedDirectoryNames }
         .filter { it.isFile && it.extension in setOf("kt", "java", "xml") }
         .filter { it.relativeTo(rootDir).path !in absenceAuditFiles }
+        .filter { it.relativeTo(rootDir).path !in testOnlyLoopbackFixtures }
         .toList()
 
 tasks.register("noVpnSurfaceCheck") {

@@ -45,6 +45,7 @@ android {
 dependencies {
     implementation(project(":core-model"))
     implementation(project(":capability-ports"))
+    implementation(project(":notification-control"))
     implementation(project(":gateway-client"))
     implementation(project(":platform-kernel"))
     implementation(project(":plugin-package"))
@@ -55,6 +56,9 @@ dependencies {
     implementation(project(":conversation-domain"))
     implementation(project(":conversation-data"))
     implementation(project(":conversation-ui"))
+    // 通知采集宿主装配：ContentProvider 自注册 + Manifest 合并只需运行期在场，
+    // app 代码不得 import host 符号（裁决 D6：采集器不进 app 编译期可见面）。
+    runtimeOnly(project(":notification-host"))
 
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")

@@ -1,5 +1,7 @@
 package com.openandroidintelligence.mobile
 
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -11,13 +13,29 @@ import org.junit.Test
  * （full 允许 / play 禁止——入口可用性与禁用说明由
  * PluginManagementScreenTest 的两个门控用例锁定）。
  *
- * 单元测试运行在 full 变体上，只能锁定本变体可观察的事实。
+ * 同一份测试源集会在 full 与 play 两个变体上各跑一遍，因此按当前变体
+ * 锁定各自的既定事实，而不是只写 full 一侧。
  */
 class DistributionVariantTest {
 
     @Test
-    fun theFullVariantBuildAllowsRuntimePluginsAndTrustMode() {
-        assertTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
-        assertTrue(BuildConfig.ALLOW_DEVELOPER_TRUST_MODE)
+    fun theChannelPolicyMatchesTheDeclaredVariant() {
+        when (BuildConfig.FLAVOR) {
+            "full" -> {
+                assertTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+                assertTrue(BuildConfig.ALLOW_DEVELOPER_TRUST_MODE)
+            }
+            "play" -> {
+                assertFalse(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+                assertFalse(BuildConfig.ALLOW_DEVELOPER_TRUST_MODE)
+            }
+            else -> throw AssertionError("未知的分发变体: ${BuildConfig.FLAVOR}")
+        }
+    }
+
+    @Test
+    fun thePolicyFlagsNeverDivergeFromEachOther() {
+        // 两个策略位同源同值：渠道要么全放开、要么全收紧，不存在半开渠道。
+        assertEquals(BuildConfig.ALLOW_RUNTIME_PLUGINS, BuildConfig.ALLOW_DEVELOPER_TRUST_MODE)
     }
 }

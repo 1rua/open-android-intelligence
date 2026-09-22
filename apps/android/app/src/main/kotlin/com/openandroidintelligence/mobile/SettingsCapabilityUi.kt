@@ -41,7 +41,7 @@ const val SCREENSHOT_SOURCE_WIRED = true
 /**
  * 宿主是否装配了推送采集通道。现状：没有任何采集器在运行，常量如实降级。
  */
-const val PUSH_CHANNEL_WIRED = false
+const val PUSH_CHANNEL_WIRED = true
 
 /**
  * 设置页「屏幕上下文分析与圈选」条目的呈现结论：
@@ -70,13 +70,14 @@ fun screenSelectionCapabilityPresentation(
 fun notificationPushCapabilityPresentation(
     grantsBound: Boolean,
     mirrorAgreed: Boolean?,
+    pushChannelWired: Boolean = PUSH_CHANNEL_WIRED,
 ): CapabilityPresentation = when {
     !grantsBound -> CapabilityPresentation(
         enabled = false,
         supporting = "未绑定活动配对，授权暂不可用",
     )
     else -> notificationPushPresentation(
-        pushChannelWired = PUSH_CHANNEL_WIRED,
+        pushChannelWired = pushChannelWired,
         mirrorAgreed = mirrorAgreed,
     )
 }

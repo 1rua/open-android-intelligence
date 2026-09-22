@@ -130,9 +130,17 @@ class SettingsCapabilityUiTest {
         val unwired = notificationPushCapabilityPresentation(
             grantsBound = true,
             mirrorAgreed = true,
+            pushChannelWired = false,
         )
         assertFalse(unwired.enabled)
         assertTrue(unwired.supporting.contains("推送"))
+
+        val wired = notificationPushCapabilityPresentation(
+            grantsBound = true,
+            mirrorAgreed = true,
+            pushChannelWired = true,
+        )
+        assertTrue(wired.enabled)
 
         val unbound = notificationPushCapabilityPresentation(
             grantsBound = false,
