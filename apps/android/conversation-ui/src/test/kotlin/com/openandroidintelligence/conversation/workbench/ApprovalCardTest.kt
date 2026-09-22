@@ -19,6 +19,7 @@ import com.openandroidintelligence.conversation.model.ApprovalOption
 import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
 import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.model.ApprovalRequest
+import com.openandroidintelligence.conversation.model.ApprovalSeverity
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.state.ApprovalCardState
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
@@ -58,7 +59,7 @@ class ApprovalCardTest {
         conversationId = ConversationId("conv_1"),
         command = "python3 -c \"print(1)\"",
         reason = "内联解释器执行",
-        severity = "elevated",
+        severity = ApprovalSeverity.ELEVATED,
         options = options,
         timeoutSeconds = timeoutSeconds,
         requestedAt = REQUESTED_AT,
@@ -138,6 +139,38 @@ class ApprovalCardTest {
         compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ALWAYS)).assertIsNotEnabled()
         compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.DENY)).assertIsNotEnabled()
         compose.onNodeWithText("允许一次").assertDoesNotExist()
+    }
+
+    @Test
+    fun aPressedTierTurnsIntoTheSpinnerInPlace() {
+        // 受理态不是「换一组按钮」：被按下的那枚还在原来的槽位上，只是内容从文字变成
+        // spinner，其余按钮在原地变灰。这条用例把「槽位不被替换」写成可测形式：受理态
+        // 下每个档位的 tag 都必须仍在同一枚按钮上，而不是随整组一起消失再重新出现。
+        compose.setContent {
+            var state by remember { mutableStateOf<ApprovalCardState>(ApprovalCardState.Waiting(request())) }
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = true)) {
+                MaterialTheme {
+                    ApprovalCard(
+                        state = state,
+                        onDecide = { choice -> state = ApprovalCardState.Submitting(state.request, choice) },
+                        clock = { virtualNow },
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ONCE)).performClick()
+        compose.waitForIdle()
+
+        // 被按下的档位仍在原位、仍可见（原地形变），只是整组已被锁定。
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ONCE)).assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ONCE)).assertIsNotEnabled()
+        compose.onNodeWithText("允许一次").assertDoesNotExist()
+        // 其余档位也没有被替换：它们还在，只是不可再按。
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ALWAYS)).assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ALWAYS)).assertIsNotEnabled()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.DENY)).assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.DENY)).assertIsNotEnabled()
     }
 
     @Test

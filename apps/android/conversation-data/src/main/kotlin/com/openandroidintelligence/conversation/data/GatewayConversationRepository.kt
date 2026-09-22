@@ -1,26 +1,48 @@
 package com.openandroidintelligence.conversation.data
 
+import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.ApprovalId
+import com.openandroidintelligence.conversation.model.ApprovalOutcome
+import com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome
+import com.openandroidintelligence.conversation.model.ApprovalSubmissionResult
+import com.openandroidintelligence.conversation.model.AttachmentDraftId
 import com.openandroidintelligence.conversation.model.CatalogVersion
 import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.MessagePart
+import com.openandroidintelligence.conversation.model.StreamHealth
+import com.openandroidintelligence.conversation.model.StreamHealthSource
+import com.openandroidintelligence.conversation.ports.AgentCommand
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository
 import com.openandroidintelligence.conversation.ports.BatchAcceptance
+import com.openandroidintelligence.conversation.ports.CancelGenerationOutcome
+import com.openandroidintelligence.conversation.ports.CancelGenerationResult
 import com.openandroidintelligence.conversation.ports.Conversation
 import com.openandroidintelligence.conversation.ports.ConversationPage
 import com.openandroidintelligence.conversation.ports.ConversationRepository
 import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.ConversationSummary
+import com.openandroidintelligence.conversation.ports.GenerationTracker
 import com.openandroidintelligence.conversation.ports.MessageAcceptance
 import com.openandroidintelligence.conversation.ports.MessageBatch
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
 import com.openandroidintelligence.conversation.ports.PageRequest
+import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.TimelinePage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
+import com.openandroidintelligence.gateway.approvals.ApprovalClient
+import com.openandroidintelligence.gateway.approvals.ApprovalDecision
+import com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome
 import com.openandroidintelligence.gateway.commands.CommandCatalogClient
 import com.openandroidintelligence.gateway.conversations.BatchAcceptance as WireBatchAcceptance
 import com.openandroidintelligence.gateway.conversations.ConversationClient
 import com.openandroidintelligence.gateway.conversations.MessageBatchRequest
+import com.openandroidintelligence.gateway.conversations.MessagePart as WireMessagePart
+import com.openandroidintelligence.gateway.events.EventStreamStatusSink
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.mapNotNull
 
 /**
@@ -34,7 +56,7 @@ class GatewayConversationRepository(
     private val client: ConversationClient,
     private val decoder: GatewayEventDecoder = GatewayEventDecoder,
     /** Where the transport reports whether the reply channel is actually alive. */
-    private val streamStatus: com.openandroidintelligence.gateway.events.EventStreamStatusSink? = null,
+    private val streamStatus: EventStreamStatusSink? = null,
     /**
      * The approval decision endpoint, when this Gateway negotiated §7.2 cards.
      *
@@ -42,15 +64,15 @@ class GatewayConversationRepository(
      * the UI has to show: a card without this client would accept a press and
      * then leave the command blocked.
      */
-    private val approvals: com.openandroidintelligence.gateway.approvals.ApprovalClient? = null,
+    private val approvals: ApprovalClient? = null,
     /** The thread cancellation and event scope act on; owned by the screen holder. */
     private val activeConversationId: () -> String? = { null },
 ) : ConversationRepository,
-    com.openandroidintelligence.conversation.ports.GenerationTracker,
-    com.openandroidintelligence.conversation.model.StreamHealthSource {
+    GenerationTracker,
+    StreamHealthSource {
 
-    private val _generationId = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
-    override val generationId: kotlinx.coroutines.flow.StateFlow<String?> = _generationId
+    private val _generationId = MutableStateFlow<String?>(null)
+    override val generationId: StateFlow<String?> = _generationId
 
     /**
      * The transport's own status, in the domain's vocabulary.
@@ -58,8 +80,7 @@ class GatewayConversationRepository(
      * Without this a screen could only infer health from silence, which is
      * exactly how a dropped reply used to look like an app that never answered.
      */
-    override val streamHealth: kotlinx.coroutines.flow.Flow<com.openandroidintelligence.conversation.model.StreamHealth> =
-        com.openandroidintelligence.conversation.data.StreamHealthBridge.of(streamStatus)
+    override val streamHealth: Flow<StreamHealth> = StreamHealthBridge.of(streamStatus)
 
 
     override suspend fun listConversations(
@@ -113,16 +134,16 @@ class GatewayConversationRepository(
                     val fallbackBase = System.currentTimeMillis() - ((result.messages.size - index) * 1000L)
                     fallbackBase.coerceAtLeast(1L)
                 }
-                com.openandroidintelligence.conversation.ports.TimelineMessage(
+                TimelineMessage(
                     id = message.messageId,
                     sender = message.sender,
                     parts = message.parts.map { part ->
                         when (part) {
-                            is com.openandroidintelligence.gateway.conversations.MessagePart.Text ->
-                                com.openandroidintelligence.conversation.model.MessagePart.Text(part.text)
-                            is com.openandroidintelligence.gateway.conversations.MessagePart.AttachmentRef ->
-                                com.openandroidintelligence.conversation.model.MessagePart.Attachment(
-                                    draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(part.attachmentId),
+                            is WireMessagePart.Text ->
+                                MessagePart.Text(part.text)
+                            is WireMessagePart.AttachmentRef ->
+                                MessagePart.Attachment(
+                                    draftId = AttachmentDraftId(part.attachmentId),
                                     filename = part.filename,
                                     mediaType = part.mediaType,
                                 )
@@ -183,19 +204,19 @@ class GatewayConversationRepository(
     override suspend fun cancelGeneration(
         generationId: String,
         requestId: String,
-    ): com.openandroidintelligence.conversation.ports.CancelGenerationResult {
+    ): CancelGenerationResult {
         val conversationId = activeConversationId()
-            ?: return com.openandroidintelligence.conversation.ports.CancelGenerationResult(
-                outcome = com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.UNSUPPORTED,
+            ?: return CancelGenerationResult(
+                outcome = CancelGenerationOutcome.UNSUPPORTED,
                 message = "NO_ACTIVE_CONVERSATION",
             )
         val outcome = client.cancelGeneration(conversationId, generationId, requestId)
-        return com.openandroidintelligence.conversation.ports.CancelGenerationResult(
+        return CancelGenerationResult(
             outcome = when (outcome) {
-                "CANCELLED" -> com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED
-                "ALREADY_COMPLETED" -> com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.ALREADY_COMPLETED
-                "UNSUPPORTED" -> com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.UNSUPPORTED
-                else -> com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.OUTCOME_UNKNOWN
+                "CANCELLED" -> CancelGenerationOutcome.CANCELLED
+                "ALREADY_COMPLETED" -> CancelGenerationOutcome.ALREADY_COMPLETED
+                "UNSUPPORTED" -> CancelGenerationOutcome.UNSUPPORTED
+                else -> CancelGenerationOutcome.OUTCOME_UNKNOWN
             },
             message = outcome,
         )
@@ -221,68 +242,54 @@ class GatewayConversationRepository(
     }
 
     override suspend fun submitApprovalDecision(
-        approvalId: com.openandroidintelligence.conversation.model.ApprovalId,
-        choice: com.openandroidintelligence.conversation.model.ApprovalChoice,
-    ): com.openandroidintelligence.conversation.model.ApprovalSubmissionResult {
-        val client = approvals ?: return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
-            outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED,
+        approvalId: ApprovalId,
+        choice: ApprovalChoice,
+    ): ApprovalSubmissionResult {
+        val client = approvals ?: return ApprovalSubmissionResult(
+            outcome = ApprovalSubmissionOutcome.UNSUPPORTED,
         )
-        val decision = when (choice) {
-            com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE ->
-                com.openandroidintelligence.gateway.approvals.ApprovalDecision.ONCE
-            com.openandroidintelligence.conversation.model.ApprovalChoice.SESSION ->
-                com.openandroidintelligence.gateway.approvals.ApprovalDecision.SESSION
-            com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS ->
-                com.openandroidintelligence.gateway.approvals.ApprovalDecision.ALWAYS
-            com.openandroidintelligence.conversation.model.ApprovalChoice.DENY ->
-                com.openandroidintelligence.gateway.approvals.ApprovalDecision.DENY
-            // UNKNOWN is not a tier the Gateway accepts: sending it would be a
-            // guess dressed up as a decision.
-            com.openandroidintelligence.conversation.model.ApprovalChoice.UNKNOWN ->
-                return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
-                    outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED,
-                )
+        // The four tiers a card can draw share one wire vocabulary with the
+        // Gateway's own enum, so this is a translation of the same token rather
+        // than a second table kept in step by hand. `UNKNOWN` is no tier at all:
+        // sending it would be a guess dressed up as a decision.
+        val decision = ApprovalDecision.of(choice.wireValue)
+            ?: return ApprovalSubmissionResult(outcome = ApprovalSubmissionOutcome.UNSUPPORTED)
+        val result = try {
+            client.submitDecision(approvalId.value, decision)
+        } catch (cancellation: CancellationException) {
+            // A cancelled coroutine is not a failed submission: counting it as
+            // one would paint a Gateway refusal over a scope that was simply
+            // torn down, and hide the cancellation from the caller.
+            throw cancellation
+        } catch (_: Throwable) {
+            return ApprovalSubmissionResult(outcome = ApprovalSubmissionOutcome.FAILED)
         }
-        val result = runCatching { client.submitDecision(approvalId.value, decision) }
-            .getOrElse {
-                return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
-                    outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED,
-                )
-            }
-        return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
+        return ApprovalSubmissionResult(
             outcome = when (result.outcome) {
-                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.SUBMITTED ->
-                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.SUBMITTED
-                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.ALREADY_RESOLVED ->
-                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.ALREADY_RESOLVED
-                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.EXPIRED ->
-                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.EXPIRED
-                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.NOT_FOUND ->
-                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.NOT_FOUND
-                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.UNSUPPORTED ->
-                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED
-                com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.FAILED ->
-                    com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED
+                ApprovalDecisionOutcome.SUBMITTED ->
+                    ApprovalSubmissionOutcome.SUBMITTED
+                ApprovalDecisionOutcome.ALREADY_RESOLVED ->
+                    ApprovalSubmissionOutcome.ALREADY_RESOLVED
+                ApprovalDecisionOutcome.EXPIRED ->
+                    ApprovalSubmissionOutcome.EXPIRED
+                ApprovalDecisionOutcome.NOT_FOUND ->
+                    ApprovalSubmissionOutcome.NOT_FOUND
+                ApprovalDecisionOutcome.UNSUPPORTED ->
+                    ApprovalSubmissionOutcome.UNSUPPORTED
+                ApprovalDecisionOutcome.FAILED ->
+                    ApprovalSubmissionOutcome.FAILED
             },
-            choice = result.decision?.let { wire ->
-                when (wire) {
-                    com.openandroidintelligence.gateway.approvals.ApprovalDecision.ONCE ->
-                        com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE
-                    com.openandroidintelligence.gateway.approvals.ApprovalDecision.SESSION ->
-                        com.openandroidintelligence.conversation.model.ApprovalChoice.SESSION
-                    com.openandroidintelligence.gateway.approvals.ApprovalDecision.ALWAYS ->
-                        com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS
-                    com.openandroidintelligence.gateway.approvals.ApprovalDecision.DENY ->
-                        com.openandroidintelligence.conversation.model.ApprovalChoice.DENY
-                }
-            },
+            // The Gateway names the tier it recorded with the same token the
+            // pressed option carried, so the answer reads back through the one
+            // closed set instead of a second translation written by hand.
+            choice = result.decision?.let { recorded -> ApprovalChoice.of(recorded.wireValue) },
             errorCode = result.errorCode,
             // `timeout` and `withdrawn` are outcomes the Gateway owns, not tiers
             // a phone may press: mapping them onto a choice would invent a press
             // that never happened.
             settledOutcome = when (result.rawDecision) {
-                "timeout" -> com.openandroidintelligence.conversation.model.ApprovalOutcome.TIMED_OUT
-                "withdrawn" -> com.openandroidintelligence.conversation.model.ApprovalOutcome.WITHDRAWN
+                "timeout" -> ApprovalOutcome.TIMED_OUT
+                "withdrawn" -> ApprovalOutcome.WITHDRAWN
                 else -> null
             },
         )
@@ -290,8 +297,13 @@ class GatewayConversationRepository(
 
     override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> =
         client.rawEvents().mapNotNull { event ->
-            decoder.generationIdOf(event)?.let { _generationId.value = it }
-            decoder.decode(event)
+            // One parse per frame, and the generation id is published before the
+            // event, exactly as when the two readers ran in sequence: a frame
+            // that starts a generation has to be cancellable by the time its
+            // event reaches the UI.
+            val decoded = decoder.decodeWithGenerationId(event)
+            decoded.generationId?.let { _generationId.value = it }
+            decoded.event
         }
 
     private fun parseMillis(value: String?): Long =
@@ -314,7 +326,7 @@ class GatewayCommandCatalogRepository(
         return AgentCommandCatalog(
             version = CatalogVersion(version),
             commands = catalog.commands.map { entry ->
-                com.openandroidintelligence.conversation.ports.AgentCommand(
+                AgentCommand(
                     command = entry.invocation,
                     description = entry.description.ifBlank { entry.title },
                     argumentHint = entry.title.takeIf { entry.acceptsArguments },

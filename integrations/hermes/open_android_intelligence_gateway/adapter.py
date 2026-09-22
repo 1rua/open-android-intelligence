@@ -27,6 +27,7 @@ from .core import (
     canonicalize_target,
     iso_millis,
     request_signature_preimage,
+    resolve_host_approval,
 )
 
 try:
@@ -1000,24 +1001,22 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
         `None` means this process cannot reach the host approval runtime, and the
         Gateway then must not advertise approval cards at all: a card whose
-        buttons release nothing is worse than the honest text prompt.
+        buttons release nothing is worse than the honest text prompt. The probe
+        below answers exactly that question, and nothing else.
+
+        The call itself is `core.resolve_host_approval`: the one implementation of
+        the hand-off, its logging and its "not reachable / nothing released"
+        answers. Reimplementing it here would let the two surfaces drift into two
+        different meanings of the same failure.
         """
         try:
-            from tools.approval import resolve_gateway_approval
+            from tools.approval import resolve_gateway_approval  # noqa: F401
         except Exception:
             logger.info(
                 "[open_android] No host approval runtime reachable; approval cards stay unavailable"
             )
             return None
-
-        def _resolve(session_key: str, choice: str, request_id: Optional[str]) -> Optional[int]:
-            try:
-                return int(resolve_gateway_approval(session_key, choice, request_id=request_id))
-            except Exception as exc:
-                logger.warning("[open_android] Host approval resolution failed: %s", exc)
-                return None
-
-        return _resolve
+        return resolve_host_approval
 
     @staticmethod
     def _approval_timeout_seconds() -> int:
@@ -1077,6 +1076,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         key and the host's request id are persisted on the Gateway side, so a
         phone can answer the approval it was shown but cannot name — or resolve —
         a session of its own choosing.
+
+        A Gateway that did not advertise the capability refuses here instead: the
+        host's own text prompt stays the surface then, because a card nobody can
+        answer is worse than no card at all.
         """
         chat_id = str(getattr(prompt, "chat_id", "") or "")
         metadata = getattr(prompt, "metadata", None)
@@ -1102,6 +1105,17 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         core = getattr(self.services, "core", None)
         if core is None:
             return SendResult(success=False, error="GATEWAY_CORE_UNAVAILABLE", retryable=False)
+        if not core.approval_cards_available:
+            # Contract §7.2: a Gateway that never advertised the capability must
+            # not produce this event either. Answering success here would suppress
+            # the host's own text prompt while the phone — which negotiated no
+            # cards — draws nothing, so the user would see no way to answer and
+            # the command would sit blocked until its window closed.
+            logger.info(
+                "[open_android] Approval cards unavailable; leaving the text prompt for %s",
+                chat_id,
+            )
+            return SendResult(success=False, error="APPROVAL_CARDS_UNAVAILABLE", retryable=False)
 
         approval_id = "apr_" + uuid.uuid4().hex
         timeout_seconds = self._approval_timeout_seconds()

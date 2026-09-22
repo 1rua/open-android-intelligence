@@ -38,11 +38,11 @@ fun FloatingConversationPanel(
                 // The panel shows the newest row, which is often an approval
                 // card. Its buttons must reach the same decision path as the full
                 // screen: a card whose press goes nowhere is a dead control, and
-                // the command behind it stays blocked.
-                val approvalId = last.last().approval?.request?.approvalId?.value
+                // the command behind it stays blocked. Sharing the screen's
+                // method reference keeps that path single.
                 MessageTimeline(
                     entries = last,
-                    onDecide = { choice -> approvalId?.let { controller.decideApproval(it, choice) } },
+                    onDecide = controller::decideApproval,
                 )
             } else {
                 Text("与当前 Gateway 继续对话", style = MaterialTheme.typography.bodyMedium)

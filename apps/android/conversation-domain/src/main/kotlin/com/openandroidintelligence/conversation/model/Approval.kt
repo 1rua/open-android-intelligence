@@ -64,12 +64,48 @@ enum class ApprovalOutcome(val wireValue: String) {
     }
 }
 
+/**
+ * The outcome a press on this tier means, in the Gateway's own vocabulary.
+ *
+ * The four tiers a client may press share one `wireValue` set across both enums,
+ * so this is a translation of the same token rather than a second table that has
+ * to be kept in step by hand.
+ */
+fun ApprovalChoice.toOutcome(): ApprovalOutcome = ApprovalOutcome.of(wireValue)
+
+/**
+ * The tier this outcome names, or `null` when only the Gateway could have
+ * produced it: `timeout`, `withdrawn` and an unrecognised value are not tiers a
+ * phone ever pressed.
+ */
+val ApprovalOutcome.asChoice: ApprovalChoice?
+    get() = ApprovalChoice.of(wireValue).takeIf { it != ApprovalChoice.UNKNOWN }
+
 data class ApprovalOption(
     val choice: ApprovalChoice,
     /** The Gateway's own wording when it sends one; otherwise the phone localises. */
     val label: String? = null,
     val style: ApprovalOptionStyle = ApprovalOptionStyle.NEUTRAL,
 )
+
+/**
+ * How urgent the host considers the command it is asking about.
+ *
+ * A closed set the shared fixture fixes at `info | elevated | critical`: a value
+ * outside it is not a fifth tier this phone may invent, so [of] answers `null`
+ * and the card simply draws no severity line.
+ */
+enum class ApprovalSeverity(val wireValue: String) {
+    INFO("info"),
+    ELEVATED("elevated"),
+    CRITICAL("critical"),
+    ;
+
+    companion object {
+        fun of(value: String?): ApprovalSeverity? =
+            entries.firstOrNull { it.wireValue == value?.trim() }
+    }
+}
 
 /**
  * One command-execution approval the Gateway asked the phone to decide.
@@ -84,7 +120,7 @@ data class ApprovalRequest(
     val conversationId: ConversationId?,
     val command: String,
     val reason: String,
-    val severity: String? = null,
+    val severity: ApprovalSeverity? = null,
     val options: List<ApprovalOption>,
     val timeoutSeconds: Long,
     val requestedAt: Long,
@@ -96,9 +132,7 @@ data class ApprovalRequest(
      * counts down to a deadline the Gateway does not share.
      */
     val expiresAt: Long = requestedAt + timeoutSeconds.coerceAtLeast(0L) * 1_000L,
-) {
-    fun optionFor(choice: ApprovalChoice): ApprovalOption? = options.firstOrNull { it.choice == choice }
-}
+)
 
 /**
  * The answer to one decision submission, as a closed set.

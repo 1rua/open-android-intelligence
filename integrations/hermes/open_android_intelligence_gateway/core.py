@@ -96,6 +96,27 @@ def resolve_host_approval(session_key: str, choice: str, request_id: str | None 
         logger.warning("[open_android] Host approval resolution failed: %s", exc)
         return None
 
+
+def _public_approval(approval: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of one approval a client may be told (contract §7.2).
+
+    `sessionKey` and the host's request id are persisted so a decision that
+    arrives late — even after a host restart — can still be resolved, but they
+    are the Gateway's own bookkeeping and never leave this process. Returning the
+    stored row as-is would hand a client the identifiers it is explicitly not
+    allowed to name, so the answer is projected rather than forwarded.
+
+    Only fields the contract already publishes in the event payload are included:
+    a client can act on the verdict without learning anything new about the host.
+    """
+    public: dict[str, Any] = {}
+    for key in ("approvalId", "conversationId", "decision", "decidedAt"):
+        value = approval.get(key)
+        if value is not None:
+            public[key] = value
+    return public
+
+
 # The exact six shared vector documents of contract section 16. The enumeration
 # is closed: its `schemaName` set does not include the conversation-UI schemas,
 # so `conversation-ui.json` stays a local suite and is not a conformance input.
@@ -852,6 +873,29 @@ def _negotiation_client_hint(body: Any, expected_core: str) -> str:
         f"clientCore={_digest_prefix(hashes.get('core'))} "
         f"gatewayCore={_digest_prefix(expected_core)}"
     )
+
+
+def _negotiation_binding_reason(
+    row: Any, context: Mapping[str, Any], installation_id: str,
+) -> str:
+    """Why one negotiation binding was refused, in the operator's words.
+
+    `no binding recorded` is the answer for a negotiation the pre-auth step never
+    completed, or one whose row was reaped. The others name the single field that
+    disagrees, which is the difference between a phone that needs to negotiate
+    again and an id being replayed from somewhere else.
+
+    Callers only reach this once they have already decided the binding is unusable,
+    so a row that matches on every field it can name is the expired one; no clock
+    is passed in because nothing here has to re-judge the window.
+    """
+    if row is None:
+        return "no binding recorded"
+    if row["account_id"] != context["accountId"]:
+        return "bound to another account"
+    if row["installation_id"] != installation_id:
+        return "bound to another installation"
+    return "expired"
 
 
 def _value(value: Any, *names: str, default: Any = None) -> Any:
@@ -2785,7 +2829,7 @@ _PERSISTABLE_ERRORS = {
     # and the `timeout`/`withdrawn` event written alongside it stays durable
     # instead of being rolled back with the request that discovered it.
     "APPROVAL_NOT_FOUND", "APPROVAL_EXPIRED", "APPROVAL_ALREADY_RESOLVED",
-    "APPROVAL_DECISION_INVALID",
+    "APPROVAL_DECISION_INVALID", "APPROVAL_UNSUPPORTED",
 }
 
 
@@ -3288,15 +3332,89 @@ class GatewayCore:
             return
         installation_id = context.get("installationId")
         if installation_id is None:
+            # Every other refusal on this path names the client it refused; a
+            # rejection that leaves no trace is the one an operator cannot act
+            # on, because nothing about it is persisted either.
+            logger.warning(
+                "[open_android] Refused request: negotiation %s arrived without an installation identity",
+                negotiation_id,
+            )
             raise GatewayError("PROTOCOL_INCOMPATIBLE")
         row = account.store.database.execute(
             "SELECT account_id, installation_id, expires_at FROM negotiation_bindings WHERE negotiation_id = ?",
             (negotiation_id,),
         ).fetchone()
         if row is None or row["account_id"] != context["accountId"] or row["installation_id"] != installation_id or _now(row["expires_at"]) <= now:
+            logger.warning(
+                "[open_android] Refused request: negotiation %s is not usable by installation %s (%s)",
+                negotiation_id,
+                installation_id,
+                _negotiation_binding_reason(row, context, installation_id),
+            )
             raise GatewayError("PROTOCOL_INCOMPATIBLE")
 
-    def _run_idempotent(self, account: GatewayAccount, request: Any, context: Mapping[str, Any], work: Any, replay_check: Any = None) -> dict[str, Any]:
+    def _idempotent_replay(
+        self,
+        account: GatewayAccount,
+        context: Mapping[str, Any],
+        now: datetime,
+        input_hash: str,
+        replay_check: Any,
+    ) -> dict[str, Any] | None:
+        """The answer already on record for this request, when there is one.
+
+        Read-only, so it can run before any write lock is taken: a request whose
+        outcome is known is answered from the ledger without reaching anything
+        that has a side effect. `_run_idempotent` also calls it inside the
+        transaction, where it is the authoritative check.
+        """
+        database = account.store.database
+        uncertain = database.execute(
+            "SELECT 1 FROM uncertain_outcomes WHERE device_id = ? AND request_id = ?",
+            (context["deviceId"], context["requestId"]),
+        ).fetchone()
+        if uncertain is not None:
+            return _failure(context, "OUTCOME_UNKNOWN")
+        existing = database.execute(
+            "SELECT input_hash, outcome_json, expires_at FROM idempotency_ledger WHERE device_id = ? AND request_id = ?",
+            (context["deviceId"], context["requestId"]),
+        ).fetchone()
+        if existing is None:
+            return None
+        if existing["input_hash"] != input_hash:
+            return _failure(context, "IDEMPOTENCY_CONFLICT")
+        if _now(existing["expires_at"]) <= now:
+            return _failure(context, "OUTCOME_UNKNOWN")
+        if replay_check is not None:
+            replay_error = replay_check()
+            if replay_error is not None:
+                return _failure(context, replay_error)
+        return GatewayResponse(account.store.open_json(
+            existing["outcome_json"],
+            f"idempotency:{context['deviceId']}:{context['requestId']}",
+        ))
+
+    def _run_idempotent(
+        self,
+        account: GatewayAccount,
+        request: Any,
+        context: Mapping[str, Any],
+        work: Any,
+        replay_check: Any = None,
+        preflight: Any = None,
+    ) -> dict[str, Any]:
+        """Run one mutating request once, with its outcome recorded.
+
+        `preflight` is work that must not run while this request holds the write
+        lock. Releasing the Agent thread blocked on an approval is a call into
+        another runtime: anything that runtime does back onto this database would
+        wait for a lock this request is holding until that call returns, so the
+        hand-off has to happen first and the settlement it belongs to still has to
+        land afterwards, in one transaction.
+
+        Everything else on this path is unchanged, and a caller that passes no
+        `preflight` gets exactly the behaviour it had before.
+        """
         method = _value(request, "method")
         if method == "GET":
             return work()
@@ -3306,6 +3424,23 @@ class GatewayCore:
             return _failure(context, "IDEMPOTENCY_CONFLICT")
         now = _request_now(request)
         input_hash = _hash_input(method, _value(request, "target"), _request_body(request))
+        if preflight is not None:
+            # A replay is answered from what was recorded and nothing else: the
+            # work below is what the hook exists for, so letting it run again
+            # would hand the host a second copy of a decision it already took.
+            replayed = self._idempotent_replay(account, context, now, input_hash, replay_check)
+            if replayed is not None:
+                return replayed
+            # The hook releases the host thread before the settlement below is
+            # written, so the two are only inseparable for as long as they cannot be
+            # interleaved — and they cannot be: decisions are dispatched synchronously
+            # on the host event loop (see `GatewayHttpRoute.handle`) and nothing under
+            # `handle` awaits, so a second request for this idempotency key, and a
+            # second decision for this approval under another key, both wait until
+            # this one has settled it. An embedding that lets two threads call
+            # `handle` for one approval at once would have to gate this hook and the
+            # settlement it belongs to together.
+            preflight()
         with account.store.transaction(unknown_marker={
             "deviceId": context["deviceId"],
             "requestId": request_id,
@@ -3313,29 +3448,9 @@ class GatewayCore:
             "createdAt": iso_millis(now),
             "expiresAt": iso_millis(now + timedelta(days=30)),
         }):
-            uncertain = account.store.database.execute(
-                "SELECT 1 FROM uncertain_outcomes WHERE device_id = ? AND request_id = ?",
-                (context["deviceId"], request_id),
-            ).fetchone()
-            if uncertain is not None:
-                return _failure(context, "OUTCOME_UNKNOWN")
-            existing = account.store.database.execute(
-                "SELECT input_hash, outcome_json, expires_at FROM idempotency_ledger WHERE device_id = ? AND request_id = ?",
-                (context["deviceId"], request_id),
-            ).fetchone()
-            if existing is not None:
-                if existing["input_hash"] != input_hash:
-                    return _failure(context, "IDEMPOTENCY_CONFLICT")
-                if _now(existing["expires_at"]) <= now:
-                    return _failure(context, "OUTCOME_UNKNOWN")
-                if replay_check is not None:
-                    replay_error = replay_check()
-                    if replay_error is not None:
-                        return _failure(context, replay_error)
-                return GatewayResponse(account.store.open_json(
-                    existing["outcome_json"],
-                    f"idempotency:{context['deviceId']}:{request_id}",
-                ))
+            replayed = self._idempotent_replay(account, context, now, input_hash, replay_check)
+            if replayed is not None:
+                return replayed
             try:
                 response = work()
             except GatewayError as exc:
@@ -3532,40 +3647,119 @@ class GatewayCore:
                 settled += 1
         return settled
 
-    def _handle_approval_decision(
-        self, account: GatewayAccount, context: Mapping[str, Any], approval_id: str,
-        body: Any, now: datetime,
-    ) -> GatewayResponse:
-        """One button press: release the Agent thread and publish the outcome."""
+    def _prepare_approval_decision(
+        self,
+        account: GatewayAccount,
+        approval_id: str,
+        body: Any,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Everything one decision needs before the Gateway writes anything.
+
+        Deliberately read-only apart from the hand-off itself: this runs with no
+        write lock held, so releasing the Agent thread blocked on the approval
+        cannot leave another writer — the host runtime included — waiting on a
+        lock this request owns until that call returns.
+
+        A refusal is *returned* rather than raised. It still has to be recorded and
+        answered from inside the request's transaction, so the closure that owns
+        the transaction raises it: the code is persisted with the request, and the
+        sweep a closed window needs is written in that same transaction rather than
+        before it.
+        """
+        if not self.approval_cards_available:
+            # Contract §7.2: a Gateway that never advertised the capability must
+            # not accept this endpoint either. `APPROVAL_UNSUPPORTED` is absent
+            # from the HTTP status table, so it answers 400 — the status the phone
+            # already reads as "this Gateway cannot take a decision".
+            return {"error": GatewayError("APPROVAL_UNSUPPORTED", {"approvalId": approval_id})}
         body_map = body if isinstance(body, Mapping) else None
         decision = body_map.get("decision") if body_map is not None else None
         if not isinstance(decision, str) or decision not in APPROVAL_CHOICES:
-            raise GatewayError("APPROVAL_DECISION_INVALID", {"approvalId": approval_id})
+            return {"error": GatewayError("APPROVAL_DECISION_INVALID", {"approvalId": approval_id})}
         approval = account.approvals.lookup(approval_id)
         if approval is None:
-            raise GatewayError("APPROVAL_NOT_FOUND", {"approvalId": approval_id})
+            return {"error": GatewayError("APPROVAL_NOT_FOUND", {"approvalId": approval_id})}
         settled = approval.get("decision")
         if settled is not None:
             # The same decision replayed is the retry it looks like; a different
             # one is a second opinion on a question that is already answered.
             if settled == decision:
-                return _success(context, {"approval": approval})
-            raise GatewayError("APPROVAL_ALREADY_RESOLVED", {"approvalId": approval_id, "decision": settled})
+                return {"replayed": approval}
+            return {"error": GatewayError(
+                "APPROVAL_ALREADY_RESOLVED", {"approvalId": approval_id, "decision": settled},
+            )}
         if int(approval.get("expiresAt") or 0) <= _epoch_millis(now):
-            self._settle_expired_approvals(account, now)
-            raise GatewayError("APPROVAL_EXPIRED", {"approvalId": approval_id, "decision": "timeout"})
-        resolved = self._resolve_host_approval(
-            str(approval.get("sessionKey") or ""), decision, approval.get("hostRequestId"),
+            # Settling the closed window is a write, so it belongs to the
+            # transaction below; only the answer it publishes is decided here.
+            return {
+                "error": GatewayError(
+                    "APPROVAL_EXPIRED", {"approvalId": approval_id, "decision": "timeout"},
+                ),
+                "sweep": True,
+            }
+        return {
+            "approval": approval,
+            "decision": decision,
+            "resolved": self._resolve_host_approval(
+                str(approval.get("sessionKey") or ""), decision, approval.get("hostRequestId"),
+            ),
+        }
+
+    def _already_settled_response(
+        self,
+        account: GatewayAccount,
+        context: Mapping[str, Any],
+        approval_id: str,
+        decision: str,
+    ) -> GatewayResponse:
+        """The answer when this request did not win the write.
+
+        The record is the authority: a settlement this request did not make is
+        either the same decision arriving twice — the success it looks like — or a
+        different one, which is a conflict rather than an update. Publishing the
+        event regardless would tell the phone about a decision the database does
+        not hold.
+        """
+        terminal = account.approvals.lookup(approval_id) or {}
+        recorded = terminal.get("decision")
+        if recorded == decision:
+            return _success(context, {"approval": _public_approval(terminal)})
+        raise GatewayError(
+            "APPROVAL_ALREADY_RESOLVED", {"approvalId": approval_id, "decision": recorded},
         )
-        if not resolved:
+
+    def _handle_approval_decision(
+        self, account: GatewayAccount, context: Mapping[str, Any], approval_id: str,
+        body: Any, now: datetime, prepared: Mapping[str, Any] | None = None,
+    ) -> GatewayResponse:
+        """One button press: release the Agent thread and publish the outcome.
+
+        `prepared` is what `_prepare_approval_decision` found with no write lock
+        held. The fallback keeps this method usable on its own; every request path
+        goes through the prepared one.
+        """
+        if prepared is None:
+            prepared = self._prepare_approval_decision(account, approval_id, body, now)
+        if prepared.get("sweep"):
+            self._settle_expired_approvals(account, now)
+        error = prepared.get("error")
+        if error is not None:
+            raise error
+        replayed = prepared.get("replayed")
+        if replayed is not None:
+            return _success(context, {"approval": _public_approval(replayed)})
+        approval = prepared.get("approval") or {}
+        decision = str(prepared.get("decision") or "")
+        if not prepared.get("resolved"):
             # The Agent is no longer waiting for this approval, so no decision
             # can release it. Recording the press as `allowed` would claim a
             # command ran that nobody is going to run. The settlement and its
             # event share one transaction, so no interruption can leave the
             # approval terminal without the event that says why.
-            self._settle_expired_approvals(account, now)
             with account.store.transaction():
-                if account.approvals.settle(approval_id, "withdrawn", now=now):
+                withdrawn = account.approvals.settle(approval_id, "withdrawn", now=now)
+                if withdrawn:
                     account.events.append(
                         APPROVAL_EVENT_RESOLVED, context["correlationId"], {
                             "approvalId": approval_id,
@@ -3574,24 +3768,36 @@ class GatewayCore:
                             "decidedAt": _epoch_millis(now),
                         }, now,
                     )
+            if not withdrawn:
+                return self._already_settled_response(account, context, approval_id, decision)
             raise GatewayError("APPROVAL_EXPIRED", {"approvalId": approval_id, "decision": "withdrawn"})
         with account.store.transaction():
-            account.approvals.settle(approval_id, decision, device_id=context["deviceId"], now=now)
-            account.events.append(
-                APPROVAL_EVENT_RESOLVED, context["correlationId"], {
-                    "approvalId": approval_id,
-                    "conversationId": approval.get("conversationId"),
-                    "decision": decision,
-                    "decidedAt": _epoch_millis(now),
-                }, now,
+            # The atomic update decides whether there is an outcome to publish:
+            # a settlement somebody else made is theirs, and an event claiming
+            # this press won it would contradict the row it just failed to write.
+            recorded = account.approvals.settle(
+                approval_id, decision, device_id=context["deviceId"], now=now,
             )
-            account.audit.append(
-                "conversation.approval.decision",
-                {"accountId": account.account_id, "deviceId": context["deviceId"]},
-                {"approvalId": approval_id, "decision": decision, "requestId": context["requestId"]},
-                context["correlationId"], now,
-            )
-        return _success(context, {"approval": account.approvals.lookup(approval_id) or approval})
+            if recorded:
+                account.events.append(
+                    APPROVAL_EVENT_RESOLVED, context["correlationId"], {
+                        "approvalId": approval_id,
+                        "conversationId": approval.get("conversationId"),
+                        "decision": decision,
+                        "decidedAt": _epoch_millis(now),
+                    }, now,
+                )
+                account.audit.append(
+                    "conversation.approval.decision",
+                    {"accountId": account.account_id, "deviceId": context["deviceId"]},
+                    {"approvalId": approval_id, "decision": decision, "requestId": context["requestId"]},
+                    context["correlationId"], now,
+                )
+        if not recorded:
+            return self._already_settled_response(account, context, approval_id, decision)
+        return _success(context, {
+            "approval": _public_approval(account.approvals.lookup(approval_id) or approval),
+        })
 
     def handle(self, request: VerifiedGatewayRequest) -> GatewayResponse:
         try:
@@ -3646,6 +3852,12 @@ class GatewayCore:
                         if "=" in item:
                             k, v = item.split("=", 1)
                             query_params[k] = v
+
+                # Filled by the decision preflight below and read by `work`'s
+                # approval branch: the hand-off to the host has to happen with no
+                # write lock held, while the settlement it belongs to still lands
+                # inside this request's transaction.
+                approval_handoff: dict[str, Any] = {}
 
                 def work() -> dict[str, Any]:
                     if method == "GET" and target_path == "/open-android-intelligence/v2/commands":
@@ -3782,6 +3994,7 @@ class GatewayCore:
                     if method == "POST" and decision_match:
                         return self._handle_approval_decision(
                             account, context, decision_match.group(1), body, _request_now(request),
+                            approval_handoff.get("prepared"),
                         )
                     return _failure(context, "SCHEMA_INVALID")
 
@@ -3798,7 +4011,21 @@ class GatewayCore:
                         result_match.group(1), context["deviceId"], int(context["pairingGeneration"]),
                         int(context["grantRevision"]), str(body.get("claimId")), _request_now(request),
                     )
-                return self._run_idempotent(account, request, context, work, replay_check)
+                decision_route = re.fullmatch(r"/open-android-intelligence/v2/approvals/([^/]+)/decisions", target_path)
+                decision_preflight = None
+                if method == "POST" and decision_route:
+                    # Resolved outside the write transaction on purpose: the host
+                    # hand-off below must not run while this request owns the
+                    # database's write lock.
+                    decision_approval_id = decision_route.group(1)
+                    decision_now = _request_now(request)
+
+                    def decision_preflight() -> None:
+                        approval_handoff["prepared"] = self._prepare_approval_decision(
+                            account, decision_approval_id, body, decision_now,
+                        )
+
+                return self._run_idempotent(account, request, context, work, replay_check, decision_preflight)
             finally:
                 account.close()
         except GatewayError as exc:

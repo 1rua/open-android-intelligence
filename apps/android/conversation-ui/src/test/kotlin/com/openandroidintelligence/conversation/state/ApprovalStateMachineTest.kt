@@ -6,6 +6,7 @@ import com.openandroidintelligence.conversation.model.ApprovalOption
 import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
 import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.model.ApprovalRequest
+import com.openandroidintelligence.conversation.model.ApprovalSeverity
 import com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome
 import com.openandroidintelligence.conversation.model.ApprovalSubmissionResult
 import com.openandroidintelligence.conversation.model.CatalogVersion
@@ -101,7 +102,7 @@ class ApprovalStateMachineTest {
             conversationId = ConversationId(THREAD_ID),
             command = "python3 -c \"print(1)\"",
             reason = "内联解释器执行",
-            severity = "elevated",
+            severity = ApprovalSeverity.ELEVATED,
             options = options,
             timeoutSeconds = TIMEOUT_SECONDS,
             requestedAt = requestedAt,

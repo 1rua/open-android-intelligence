@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.SignalStitch
+import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -54,20 +55,19 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * 消息时间线：严格遵循设计系统与交互规范（设计规格 §4.4、§6.1）：
+ * 消息时间线的列表容器。渲染规范严格遵循设计系统与交互规范（设计规格 §4.4、§6.1）：
  * 1. 助手消息：开放式正文，左侧信号缝线（Signal Stitch），适合长文本、Markdown 与代码块；
  * 2. 用户消息：右侧 tonal surface 气泡，最大宽度 82–85%，使用右下较小圆角提供方向感；
  * 3. Markdown 代码块：深色圆角容器、语言标签、独立复制代码按钮、横向自由滚动与等宽字体；
  * 4. 时间戳与状态指示点：技术元数据使用 Roboto Mono/等宽字体，状态点如实反映接收与发送就绪状态。
- */
-/**
- * @param onDecide submits one approval decision through its own endpoint; the
- *   card never answers by typing a command into the conversation (§7.2).
+ *
+ * @param onDecide 提交一次审批决策，走它自己的端点；卡片永不用「在会话里打字」的方式作答
+ *   （§7.2）。决策与被按下卡片的标识一起传递，因此一组行可以共用同一个回调而不丢失回答的是哪张审批。
  */
 @Composable
 fun MessageTimeline(
     entries: List<TimelineEntry>,
-    onDecide: (com.openandroidintelligence.conversation.model.ApprovalChoice) -> Unit = {},
+    onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -75,28 +75,43 @@ fun MessageTimeline(
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
     ) {
         entries.forEach { entry ->
-            val approval = entry.approval
-            if (approval != null) {
-                // A request the Gateway made, not something anyone said: it owns
-                // a row of its own so message folding never touches it.
-                ApprovalCard(
-                    state = approval,
-                    onDecide = onDecide,
-                    modifier = Modifier.fillMaxWidth(0.85f),
-                )
-            } else if (entry.isUser) {
-                UserMessageBubble(entry = entry)
-            } else {
-                AssistantMessageRow(entry = entry)
-            }
+            TimelineRow(entry = entry, onDecide = onDecide)
         }
     }
 }
 
+/**
+ * 时间线中的一行：审批请求独占一行渲染卡片，其余条目按消息方向分派。
+ *
+ * 卡片把自身的 approvalId 绑定进 [onDecide]，容器因此不必再解构条目：
+ * 被按下的那张卡片就是被回答的那张审批（§7.2）。
+ */
 @Composable
-private fun UserMessageBubble(entry: TimelineEntry) {
+fun TimelineRow(
+    entry: TimelineEntry,
+    onDecide: (String, ApprovalChoice) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val approval = entry.approval
+    if (approval != null) {
+        // A request the Gateway made, not something anyone said: it owns
+        // a row of its own so message folding never touches it.
+        ApprovalCard(
+            state = approval,
+            onDecide = { choice -> onDecide(approval.request.approvalId.value, choice) },
+            modifier = modifier.fillMaxWidth(0.85f),
+        )
+    } else if (entry.isUser) {
+        UserMessageBubble(entry = entry, modifier = modifier)
+    } else {
+        AssistantMessageRow(entry = entry, modifier = modifier)
+    }
+}
+
+@Composable
+private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
     ) {
         Surface(
@@ -251,9 +266,9 @@ private fun AttachmentFallbackChip(filename: String, isImage: Boolean) {
 }
 
 @Composable
-private fun AssistantMessageRow(entry: TimelineEntry) {
+private fun AssistantMessageRow(entry: TimelineEntry, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.Top,
     ) {

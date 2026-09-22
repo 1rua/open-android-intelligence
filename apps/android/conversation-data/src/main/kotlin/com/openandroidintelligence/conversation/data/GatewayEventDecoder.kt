@@ -1,6 +1,17 @@
 package com.openandroidintelligence.conversation.data
 
+import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.ApprovalId
+import com.openandroidintelligence.conversation.model.ApprovalOption
+import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
+import com.openandroidintelligence.conversation.model.ApprovalOutcome
+import com.openandroidintelligence.conversation.model.ApprovalRequest
+import com.openandroidintelligence.conversation.model.ApprovalSeverity
+import com.openandroidintelligence.conversation.model.AttachmentDraftId
 import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.MessagePart
+import com.openandroidintelligence.conversation.ports.CommandOutcome
+import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.schema.Json
@@ -26,12 +37,37 @@ object GatewayEventDecoder {
      */
     const val DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300L
 
-    fun decode(event: GatewayEvent): VerifiedConversationEvent? {
+    /**
+     * One frame's JSON read once: the event the domain models for it, if it
+     * models that name at all, and the generation id the Gateway issued.
+     *
+     * The stream needs both readings of every frame, so parsing the same bytes
+     * twice per frame was the only cost this shape had to remove.
+     */
+    data class DecodedFrame(val event: VerifiedConversationEvent?, val generationId: String?)
+
+    fun decode(event: GatewayEvent): VerifiedConversationEvent? = decodedEventOf(event, parse(event))
+
+    /**
+     * Both readings of one frame, out of a single parse.
+     *
+     * [DecodedFrame.generationId] is answered even for an event name the domain
+     * does not model: cancellation only ever needs the id the Gateway issued,
+     * and dropping it because the event was unfamiliar would leave a running
+     * generation uncancellable.
+     */
+    fun decodeWithGenerationId(event: GatewayEvent): DecodedFrame {
+        val frame = parse(event)
+        return DecodedFrame(
+            event = decodedEventOf(event, frame),
+            generationId = generationIdOf(frame),
+        )
+    }
+
+    private fun decodedEventOf(event: GatewayEvent, frame: ParsedFrame): VerifiedConversationEvent? {
         val name = event.event ?: return null
-        val body = runCatching { Json.parse(event.data) }
-            .getOrNull()
-            ?.let { JsonFields.obj(it) }
-        val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: body
+        val body = frame.body
+        val payload = frame.payload
         val occurredAt = parseOccurredAt(JsonFields.string(body, "occurredAt"))
         val eventId = event.id.orEmpty()
 
@@ -105,13 +141,13 @@ object GatewayEventDecoder {
             "conversation.approval.resolved" -> {
                 val approvalId = JsonFields.string(payload, "approvalId")
                     ?.takeIf { it.isNotBlank() }
-                    ?.let { runCatching { com.openandroidintelligence.conversation.model.ApprovalId(it) }.getOrNull() }
+                    ?.let { runCatching { ApprovalId(it) }.getOrNull() }
                     ?: return null
                 VerifiedConversationEvent.ApprovalResolved(
                     eventId = eventId,
                     occurredAt = occurredAt,
                     approvalId = approvalId,
-                    outcome = com.openandroidintelligence.conversation.model.ApprovalOutcome.of(
+                    outcome = ApprovalOutcome.of(
                         JsonFields.string(payload, "decision"),
                     ),
                     decidedAt = JsonFields.long(payload, "decidedAt")?.takeIf { it > 0L },
@@ -136,13 +172,29 @@ object GatewayEventDecoder {
      * Only a server-issued id may be used to cancel, so this reads the payload
      * and never falls back to a local counter.
      */
-    fun generationIdOf(event: GatewayEvent): String? {
+    fun generationIdOf(event: GatewayEvent): String? = generationIdOf(parse(event))
+
+    private fun generationIdOf(frame: ParsedFrame): String? =
+        JsonFields.string(frame.payload, "generationId")?.takeIf { it.isNotBlank() }
+
+    /**
+     * One SSE frame's JSON, read once for every reader that needs it.
+     *
+     * `payload` is the nested object when the Gateway sent one and the body
+     * itself otherwise, because legacy frames carry their fields at the top
+     * level. The two are the same reference in that case, which is what lets a
+     * reader tell "no nested payload" from "a nested one missing the field".
+     */
+    private class ParsedFrame(val body: JsonValue.JObject?, val payload: JsonValue.JObject?)
+
+    private fun parse(event: GatewayEvent): ParsedFrame {
         val body = runCatching { Json.parse(event.data) }
             .getOrNull()
             ?.let { JsonFields.obj(it) }
-            ?: return null
-        val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: body
-        return JsonFields.string(payload, "generationId")?.takeIf { it.isNotBlank() }
+        return ParsedFrame(
+            body = body,
+            payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: body,
+        )
     }
 
     /**
@@ -160,7 +212,7 @@ object GatewayEventDecoder {
     ): VerifiedConversationEvent.ApprovalRequested? {
         val approvalId = JsonFields.string(payload, "approvalId")
             ?.takeIf { it.isNotBlank() }
-            ?.let { runCatching { com.openandroidintelligence.conversation.model.ApprovalId(it) }.getOrNull() }
+            ?.let { runCatching { ApprovalId(it) }.getOrNull() }
             ?: return null
         val options = readApprovalOptions(payload)
         if (options.isEmpty()) return null
@@ -177,12 +229,15 @@ object GatewayEventDecoder {
         return VerifiedConversationEvent.ApprovalRequested(
             eventId = eventId,
             occurredAt = occurredAt,
-            request = com.openandroidintelligence.conversation.model.ApprovalRequest(
+            request = ApprovalRequest(
                 approvalId = approvalId,
                 conversationId = conversationIdOf(payload, body),
                 command = JsonFields.string(payload, "command").orEmpty(),
                 reason = JsonFields.string(payload, "reason").orEmpty(),
-                severity = JsonFields.string(payload, "severity")?.takeIf { it.isNotBlank() },
+                // The contract fixes severity at `info | elevated | critical`: a
+                // value outside that closed set is not a fourth tier this phone
+                // may invent, so it becomes no severity line at all.
+                severity = ApprovalSeverity.of(JsonFields.string(payload, "severity")),
                 options = options,
                 timeoutSeconds = timeoutSeconds,
                 requestedAt = requestedAt,
@@ -192,22 +247,22 @@ object GatewayEventDecoder {
         )
     }
 
-    private fun readApprovalOptions(payload: JsonValue.JObject?): List<com.openandroidintelligence.conversation.model.ApprovalOption> {
+    private fun readApprovalOptions(payload: JsonValue.JObject?): List<ApprovalOption> {
         val items = JsonFields.array(JsonFields.field(payload, "options"))?.items ?: return emptyList()
         return items.mapNotNull { raw ->
             val option = JsonFields.obj(raw) ?: return@mapNotNull null
-            val choice = com.openandroidintelligence.conversation.model.ApprovalChoice.of(
+            val choice = ApprovalChoice.of(
                 JsonFields.string(option, "choice"),
             )
             // An unknown tier is dropped rather than coerced: drawing a button
             // the Gateway would refuse is worse than drawing one fewer.
-            if (choice == com.openandroidintelligence.conversation.model.ApprovalChoice.UNKNOWN) {
+            if (choice == ApprovalChoice.UNKNOWN) {
                 return@mapNotNull null
             }
-            com.openandroidintelligence.conversation.model.ApprovalOption(
+            ApprovalOption(
                 choice = choice,
                 label = JsonFields.string(option, "label")?.takeIf { it.isNotBlank() },
-                style = com.openandroidintelligence.conversation.model.ApprovalOptionStyle.of(
+                style = ApprovalOptionStyle.of(
                     JsonFields.string(option, "style"),
                 ),
             )
@@ -226,7 +281,7 @@ object GatewayEventDecoder {
             eventId = eventId,
             occurredAt = occurredAt,
             revision = JsonFields.long(payload, "revision") ?: 0L,
-            message = com.openandroidintelligence.conversation.ports.TimelineMessage(
+            message = TimelineMessage(
                 id = messageId,
                 sender = JsonFields.string(payload, "sender") ?: "assistant",
                 parts = readParts(payload),
@@ -248,12 +303,12 @@ object GatewayEventDecoder {
      * the UI has to be able to tell "the Agent created something" from "we do
      * not know what happened", because only the first one permits a switch.
      */
-    private fun commandOutcomeOf(value: String?): com.openandroidintelligence.conversation.ports.CommandOutcome =
+    private fun commandOutcomeOf(value: String?): CommandOutcome =
         when (value?.trim()) {
-            "created-conversation" -> com.openandroidintelligence.conversation.ports.CommandOutcome.CREATED_CONVERSATION
-            "rejected" -> com.openandroidintelligence.conversation.ports.CommandOutcome.REJECTED
-            "unsupported" -> com.openandroidintelligence.conversation.ports.CommandOutcome.UNSUPPORTED
-            else -> com.openandroidintelligence.conversation.ports.CommandOutcome.OUTCOME_UNKNOWN
+            "created-conversation" -> CommandOutcome.CREATED_CONVERSATION
+            "rejected" -> CommandOutcome.REJECTED
+            "unsupported" -> CommandOutcome.UNSUPPORTED
+            else -> CommandOutcome.OUTCOME_UNKNOWN
         }
 
     private fun conversationIdOfKey(payload: JsonValue.JObject?, key: String): ConversationId? {
@@ -280,16 +335,16 @@ object GatewayEventDecoder {
         return null
     }
 
-    private fun readParts(payload: JsonValue.JObject?): List<com.openandroidintelligence.conversation.model.MessagePart> {
+    private fun readParts(payload: JsonValue.JObject?): List<MessagePart> {
         val items = JsonFields.array(JsonFields.field(payload, "parts"))?.items
         if (items.isNullOrEmpty()) {
             val text = JsonFields.string(payload, "text") ?: return emptyList()
-            return listOf(com.openandroidintelligence.conversation.model.MessagePart.Text(text))
+            return listOf(MessagePart.Text(text))
         }
         return items.mapNotNull { raw ->
             val part = JsonFields.obj(raw) ?: return@mapNotNull null
             when (JsonFields.string(part, "type")) {
-                "text" -> com.openandroidintelligence.conversation.model.MessagePart.Text(
+                "text" -> MessagePart.Text(
                     JsonFields.string(part, "text").orEmpty(),
                 )
                 "attachment" -> {
@@ -297,15 +352,15 @@ object GatewayEventDecoder {
                     val filename = JsonFields.string(part, "filename").orEmpty()
                     val mediaType = JsonFields.string(part, "mediaType").orEmpty()
                     draftId?.let {
-                        com.openandroidintelligence.conversation.model.MessagePart.Attachment(
-                            draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(it),
+                        MessagePart.Attachment(
+                            draftId = AttachmentDraftId(it),
                             filename = filename,
                             mediaType = mediaType,
                         )
                     }
                 }
                 "command" -> JsonFields.string(part, "rawText")
-                    ?.let { com.openandroidintelligence.conversation.model.MessagePart.Command(it) }
+                    ?.let { MessagePart.Command(it) }
                 else -> null
             }
         }

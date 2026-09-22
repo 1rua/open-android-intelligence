@@ -3,6 +3,7 @@ package com.openandroidintelligence.conversation.state
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.model.ApprovalRequest
+import com.openandroidintelligence.conversation.model.asChoice
 
 /**
  * One command-execution approval card's lifecycle (contract §7.2).
@@ -49,23 +50,15 @@ sealed interface ApprovalCardState {
 /** Whether the Gateway has had its say. */
 val ApprovalCardState.isSettled: Boolean get() = this is ApprovalCardState.Resolved
 
-/** Whether one press is in flight: the whole group must be locked meanwhile. */
-val ApprovalCardState.isSubmitting: Boolean get() = this is ApprovalCardState.Submitting
-
-/** Whether this card can still be answered at all. */
-val ApprovalCardState.isAnswerable: Boolean get() = this is ApprovalCardState.Waiting
-
-/** The tier this card ended on, when the Gateway named one. */
+/**
+ * The tier this card ended on, when the Gateway named one.
+ *
+ * Both vocabularies carry the same four tiers as their wire tokens, so the
+ * translation lives in one place ([asChoice]) instead of a `when` here that has
+ * to be kept in step with the enum by hand.
+ */
 val ApprovalCardState.settledChoice: ApprovalChoice?
-    get() = (this as? ApprovalCardState.Resolved)?.let { resolved ->
-        when (resolved.outcome) {
-            ApprovalOutcome.ALLOWED_ONCE -> ApprovalChoice.ONCE
-            ApprovalOutcome.ALLOWED_SESSION -> ApprovalChoice.SESSION
-            ApprovalOutcome.ALLOWED_ALWAYS -> ApprovalChoice.ALWAYS
-            ApprovalOutcome.DENIED -> ApprovalChoice.DENY
-            ApprovalOutcome.TIMED_OUT, ApprovalOutcome.WITHDRAWN, ApprovalOutcome.UNKNOWN -> null
-        }
-    }
+    get() = (this as? ApprovalCardState.Resolved)?.outcome?.asChoice
 
 /**
  * How much of the Gateway's window is left, as the phone reads it.

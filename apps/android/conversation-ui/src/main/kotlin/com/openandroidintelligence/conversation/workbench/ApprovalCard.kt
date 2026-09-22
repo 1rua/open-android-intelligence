@@ -1,9 +1,9 @@
 package com.openandroidintelligence.conversation.workbench
 
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -35,24 +35,24 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalOption
 import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
 import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.model.ApprovalRequest
+import com.openandroidintelligence.conversation.model.ApprovalSeverity
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.state.ApprovalCardState
+import com.openandroidintelligence.conversation.state.ApprovalCountdown
 import com.openandroidintelligence.conversation.state.countdownAt
 import com.openandroidintelligence.conversation.state.isSettled
 import com.openandroidintelligence.conversation.theme.AppRadius
@@ -85,10 +85,16 @@ private const val MAX_BUTTONS_PER_ROW = 2
  * spinner on the tier that was pressed — the "已受理" feedback — and the card
  * never reads "已允许" until the Gateway itself settled it.
  *
+ * A state change replaces one part of the card, never the card: the button group
+ * is the same group while the press travels, so the tier that was pressed turns
+ * into the spinner in place, and only the settled conclusion fades in.
+ *
  * The countdown lives inside this composable: it ticks on its own so the rest of
  * the timeline is not recomposed every second, and it is derived from the
  * Gateway's `requestedAt`/`timeoutSeconds` rather than from when the row was
  * first drawn, so leaving the thread and coming back resumes the same number.
+ * Inside the card the tick is isolated once more: the badge is the only reader of
+ * the clock, and the body watches the single fact that the window has closed.
  */
 @Composable
 fun ApprovalCard(
@@ -99,19 +105,34 @@ fun ApprovalCard(
     clock: () -> Long = { System.currentTimeMillis() },
 ) {
     val request = state.request
-    var now by remember { mutableLongStateOf(clock()) }
+    val settled = state.isSettled
+    val waiting = state is ApprovalCardState.Waiting
+    val submitting = (state as? ApprovalCardState.Submitting)?.choice
+    val settledOutcome = (state as? ApprovalCardState.Resolved)?.outcome
+    // The ticker is the only writer of this clock, and nothing in this scope reads
+    // it: the badge reads it through the lambda handed to the header, inside the
+    // badge's own scope, so a second passing redraws that badge and not the card.
+    val now = remember { mutableLongStateOf(clock()) }
+    // "The window is closed" reaches the body as a derived boolean rather than as
+    // the clock itself: the body then recomposes once, when the window closes,
+    // instead of once per tick.
+    val windowClosed = remember(request) { derivedStateOf { request.countdownAt(now.longValue).expired } }
     LaunchedEffect(state) {
         if (state.isSettled) return@LaunchedEffect
-        while (!state.request.countdownAt(now).expired) {
-            now = clock()
+        while (true) {
+            val tick = clock()
+            now.longValue = tick
             // Nothing is left to count once the window closed: the card keeps
             // showing that fact instead of ticking at a number that cannot move.
-            if (state.request.countdownAt(now).expired) return@LaunchedEffect
+            if (request.countdownAt(tick).expired) return@LaunchedEffect
             delay(APPROVAL_COUNTDOWN_TICK_MILLIS)
         }
     }
-    val countdown = remember(state, now) { request.countdownAt(now) }
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    // A card that already carried its answer when it was first drawn (re-entering
+    // a thread past the fact) is shown as it is; only a card watched until the
+    // Gateway answered earns the conclusion's fade.
+    val settledWhenFirstDrawn = remember(request) { state.isSettled }
 
     Surface(
         modifier = modifier
@@ -128,9 +149,8 @@ fun ApprovalCard(
         ) {
             CardHeader(
                 request = request,
-                countdownExpired = countdown.expired,
-                remainingSeconds = countdown.remainingSeconds,
-                settled = state.isSettled,
+                settled = settled,
+                countdown = { request.countdownAt(now.longValue) },
             )
             CommandPreview(request.command)
             if (request.reason.isNotBlank()) {
@@ -142,49 +162,45 @@ fun ApprovalCard(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            AnimatedContent(
-                targetState = state,
-                transitionSpec = {
-                    fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith fadeOut(MotionSpecs.fade(reduceMotion))
-                },
-                label = "approval_card_state",
-            ) { current ->
-                when (current) {
-                    is ApprovalCardState.Waiting -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                            // Silence is a safe no by contract: the Gateway promises
-                            // an unanswered command never runs, so this line is a
-                            // fact the Gateway published, not a local guess.
-                            if (countdown.expired) {
-                                OutcomeRow(ApprovalOutcome.TIMED_OUT, awaitingGateway = true)
-                            }
-                            OptionGroup(
-                                options = request.options,
-                                submitting = null,
-                                enabled = !countdown.expired,
-                                onDecide = onDecide,
-                            )
-                        }
+            if (!settled) {
+                // Read once, ahead of the `waiting &&` shortcut below: a press in
+                // flight has to notice the window closing too, or the card would
+                // keep a spinner over a command that can no longer run.
+                val windowIsClosed = windowClosed.value
+                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                    // Silence is a safe no by contract: the Gateway promises an
+                    // unanswered command never runs, so this line is a fact the
+                    // Gateway published, not a local guess. A press already with the
+                    // Gateway is no different — it may take as long as the link does
+                    // — and saying the window is over keeps a spinner from reading as
+                    // "still waiting" when it is not.
+                    if (windowIsClosed) {
+                        OutcomeRow(ApprovalOutcome.TIMED_OUT, awaitingGateway = true)
                     }
-
-                    is ApprovalCardState.Submitting -> Column(
-                        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-                    ) {
-                        // The press is with the Gateway, which may take as long as
-                        // the link does. Saying the window is over keeps a spinner
-                        // from reading as "still waiting" when it is not.
-                        if (countdown.expired) {
-                            OutcomeRow(ApprovalOutcome.TIMED_OUT, awaitingGateway = true)
-                        }
-                        OptionGroup(
-                            options = request.options,
-                            submitting = current.choice,
-                            enabled = false,
-                            onDecide = {},
-                        )
-                    }
-
-                    is ApprovalCardState.Resolved -> OutcomeRow(current.outcome, awaitingGateway = false)
+                    // One group serves the answering card and the in-flight one, and
+                    // it sits outside every animation scope: the tier that was pressed
+                    // keeps its slot and its identity, so it becomes the spinner in
+                    // place while the rest of the group goes inert around it, instead
+                    // of the whole row being swapped for another one.
+                    OptionGroup(
+                        options = request.options,
+                        submitting = submitting,
+                        enabled = waiting && !windowIsClosed,
+                        // Already with the Gateway: the group goes inert around the
+                        // spinner rather than listening for a second press.
+                        onDecide = if (waiting) onDecide else { _: ApprovalChoice -> },
+                    )
+                }
+            }
+            if (settledOutcome != null) {
+                // The conclusion is the only part that fades in, and it does so at
+                // the moment the Gateway settles the card.
+                AnimatedVisibility(
+                    visibleState = remember { MutableTransitionState(settledWhenFirstDrawn).apply { targetState = true } },
+                    enter = fadeIn(MotionSpecs.fade(reduceMotion)),
+                    exit = fadeOut(MotionSpecs.fade(reduceMotion)),
+                ) {
+                    OutcomeRow(settledOutcome, awaitingGateway = false)
                 }
             }
         }
@@ -194,9 +210,12 @@ fun ApprovalCard(
 @Composable
 private fun CardHeader(
     request: ApprovalRequest,
-    countdownExpired: Boolean,
-    remainingSeconds: Long,
     settled: Boolean,
+    /**
+     * Deferred read: the countdown is evaluated inside [CountdownBadge], so the tick
+     * redraws the badge rather than this header, the card, or the timeline.
+     */
+    countdown: () -> ApprovalCountdown,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -217,10 +236,10 @@ private fun CardHeader(
         )
         Spacer(Modifier.width(Dimensions.SpaceSmall))
         if (!settled) {
-            CountdownBadge(expired = countdownExpired, remainingSeconds = remainingSeconds)
+            CountdownBadge(countdown)
         }
     }
-    if (request.severity == "critical") {
+    if (request.severity == ApprovalSeverity.CRITICAL) {
         Text(
             text = "高危操作",
             style = MaterialTheme.typography.labelMedium,
@@ -230,15 +249,18 @@ private fun CardHeader(
 }
 
 @Composable
-private fun CountdownBadge(expired: Boolean, remainingSeconds: Long) {
+private fun CountdownBadge(countdown: () -> ApprovalCountdown) {
+    // The only read the clock gets every second, taken in this composable's own
+    // scope: a tick rebuilds this badge and nothing above it.
+    val current = countdown()
     Surface(
         shape = RoundedCornerShape(AppRadius.Small),
-        color = if (expired) {
+        color = if (current.expired) {
             MaterialTheme.colorScheme.surfaceVariant
         } else {
             MaterialTheme.colorScheme.secondaryContainer
         },
-        contentColor = if (expired) {
+        contentColor = if (current.expired) {
             MaterialTheme.colorScheme.onSurfaceVariant
         } else {
             MaterialTheme.colorScheme.onSecondaryContainer
@@ -247,7 +269,7 @@ private fun CountdownBadge(expired: Boolean, remainingSeconds: Long) {
     ) {
         Text(
             // Monospace keeps the badge from twitching as the number shrinks.
-            text = if (expired) "已超时" else "⏱️ ${remainingSeconds}s",
+            text = if (current.expired) "已超时" else "⏱️ ${current.remainingSeconds}s",
             style = MaterialTheme.typography.labelLarge.copy(fontFamily = FontFamily.Monospace),
             modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
             maxLines = 1,
@@ -289,7 +311,9 @@ private fun OptionGroup(
     onDecide: (ApprovalChoice) -> Unit,
 ) {
     if (options.isEmpty()) return
-    val rows = options.chunked(if (options.size <= MAX_BUTTONS_PER_ROW) options.size else MAX_BUTTONS_PER_ROW)
+    // `chunked` already leaves a short tail as its own row, so the cap alone is the
+    // whole rule: a group smaller than a row is simply one row of that size.
+    val rows = options.chunked(MAX_BUTTONS_PER_ROW)
     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
         rows.forEach { row ->
             Row(
@@ -323,7 +347,7 @@ private fun ApprovalButton(
         if (submitting) {
             CircularProgressIndicator(
                 modifier = Modifier.size(Dimensions.SmallIcon),
-                strokeWidth = 2.dp,
+                strokeWidth = Dimensions.StrokeStitch,
             )
         } else {
             Text(text = label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)

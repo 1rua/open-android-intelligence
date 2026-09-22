@@ -570,9 +570,10 @@ POST /approvals/{approvalId}/decisions
 
   `decision` 闭集为 `once | session | always | deny | timeout | withdrawn`；后两项只能由 Gateway 产生，客户端只能提交前四项。
 - 幂等按第 6.5 节绑定：同一 `Idempotency-Key` 重放必须回到同一个决策终态，不得重复解析宿主侧等待中的请求。对一个已落定的 `approvalId` 再次提交不同决策返回 `APPROVAL_ALREADY_RESOLVED`，提交相同决策返回原成功终态。
+- 决策成功响应的 `data.approval` 是封闭对象：只回传 `approvalId`、`conversationId`、`decision`、`decidedAt`（epoch 毫秒，落定时必有）。宿主的 `sessionKey`、宿主请求标识、决策设备标识等内部概念**一律不得**出现在响应体中；同一 `Idempotency-Key` 的重放必须返回同一公开体，不得因重放而多回或少回字段。
 - 第 9 节的「提交后即时投递」义务同样适用于本节的事件：决策一旦落库，必须立即投递给该账号全部在线订阅者，使同一账号的其它设备同时看到卡片落定。
 - 客户端在收到 `resolved` 之前不得把卡片画成「已允许」；提交请求失败时必须如实回到可重试的等待态并给出结构化提示，不得把失败标记为成功。
-- 未声明该能力的 Gateway 不得产生本节事件，也不得接受决策端点；此时审批只表现为宿主的文本提示，客户端必须明示卡片不可用。
+- 未声明该能力的 Gateway 不得产生本节事件，也不得接受决策端点：决策请求必须以「不可用」类状态响应拒绝，不得落定任何审批，也不得追加 `conversation.approval.resolved`；此时审批只表现为宿主的文本提示，客户端必须明示卡片不可用。
 
 宿主拥有长期对话与 Agent 记忆。Gateway 只保存完成可靠交付所需映射、幂等结果和短期暂存，不复制长期对话正文。宿主自身的会话绑定属于「完成可靠交付所需映射」，必须持久化，不得只存在于进程内存。
 

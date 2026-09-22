@@ -3,6 +3,7 @@ package com.openandroidintelligence.conversation.data
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
 import com.openandroidintelligence.conversation.model.ApprovalOutcome
+import com.openandroidintelligence.conversation.model.ApprovalSeverity
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.gateway.events.SseParser
 import org.junit.Assert.assertEquals
@@ -98,6 +99,47 @@ class GatewayEventDecoderTest {
             ),
         )
         assertEquals("gen_77", GatewayEventDecoder.generationIdOf(events.first()))
+    }
+
+    @Test
+    fun oneFrameYieldsItsEventAndItsGenerationIdFromASingleRead() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_gen_1",
+                event = "conversation.message.delta",
+                data = """
+                    {"payload":{"messageId":"msg_gen","generationId":"gen_42","sender":"assistant","text":"流式"},"occurredAt":"2026-09-01T08:00:00.000Z"}
+                """.trimIndent(),
+            ),
+        )
+        val decoded = GatewayEventDecoder.decodeWithGenerationId(events.first())
+        // 热路径每帧只读一次，两半必须同时给出；且各自要与它取代的单用途读取器逐字一致。
+        assertTrue(decoded.event is VerifiedConversationEvent.TimelineUpsert)
+        val upsert = decoded.event as VerifiedConversationEvent.TimelineUpsert
+        assertEquals("msg_gen", upsert.message.id)
+        assertEquals("STREAMING", upsert.message.state)
+        assertEquals("gen_42", decoded.generationId)
+        assertEquals(GatewayEventDecoder.decode(events.first()), decoded.event)
+        assertEquals(GatewayEventDecoder.generationIdOf(events.first()), decoded.generationId)
+    }
+
+    @Test
+    fun anUnmodelledEventNameStillCarriesItsGenerationIdOutOfThatSameRead() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_gen_2",
+                event = "future.unknown.thing",
+                data = """{"payload":{"generationId":"gen_43"}}""",
+            ),
+        )
+        val decoded = GatewayEventDecoder.decodeWithGenerationId(events.first())
+        assertNull(
+            "未建模的事件名不得被改写成事件，但它携带的 generationId 不能随之一并丢掉",
+            decoded.event,
+        )
+        assertEquals("gen_43", decoded.generationId)
     }
 
     @Test
@@ -296,7 +338,7 @@ class GatewayEventDecoderTest {
         assertEquals("apr_1", request.approvalId.value)
         assertEquals("conv_1", request.conversationId?.value)
         assertEquals("内联解释器执行", request.reason)
-        assertEquals("elevated", request.severity)
+        assertEquals(ApprovalSeverity.ELEVATED, request.severity)
         assertEquals(300L, request.timeoutSeconds)
         assertEquals(1780000000000L, request.requestedAt)
         assertEquals(1780000300000L, request.expiresAt)

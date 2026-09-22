@@ -114,7 +114,9 @@ class ApprovalClientTest {
         assertEquals(ApprovalDecisionOutcome.ALREADY_RESOLVED, result.outcome)
         assertEquals("APPROVAL_ALREADY_RESOLVED", result.errorCode)
         assertEquals(ApprovalDecision.DENY, result.decision)
-        assertTrue("已落定的卡片不得再回到可点击", result.isSettled)
+        // 不再借道派生属性 isSettled（它与会话层 ApprovalCardState.isSettled 同名
+        // 反义，还会把 SUBMITTED 也算作落定）：直接断言该分支的终态本身。
+        assertTrue("已落定的卡片不得再回到可点击", result.outcome == ApprovalDecisionOutcome.ALREADY_RESOLVED)
     }
 
     @Test
@@ -129,7 +131,8 @@ class ApprovalClientTest {
         val result = client(transport).submitDecision("apr_1", ApprovalDecision.ONCE)
 
         assertEquals(ApprovalDecisionOutcome.EXPIRED, result.outcome)
-        assertTrue(result.isSettled)
+        // 与上例同理：过期就是终态，直接断言它，不依赖已删除的派生属性。
+        assertTrue("过期是终态事实，不是可重试的失败", result.outcome == ApprovalDecisionOutcome.EXPIRED)
         // `timeout` is not a tier a client may press, so it stays out of
         // `decision` — but it is still what the Gateway recorded, verbatim.
         assertNull(result.decision)

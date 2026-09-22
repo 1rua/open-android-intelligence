@@ -59,11 +59,7 @@ data class ApprovalDecisionResult(
      * Gateway stated plainly.
      */
     val rawDecision: String? = null,
-) {
-    val isSettled: Boolean get() = outcome == ApprovalDecisionOutcome.SUBMITTED ||
-        outcome == ApprovalDecisionOutcome.ALREADY_RESOLVED ||
-        outcome == ApprovalDecisionOutcome.EXPIRED
-}
+)
 
 /**
  * `POST /approvals/{approvalId}/decisions` — one button press, one request.
@@ -86,10 +82,13 @@ class ApprovalClient(private val http: GatewayHttpClient) {
             approvalId = approvalId,
             body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
         )
+        // 同一份响应体只反序列化一次：此前 409 分支里 errorCodeOf 与
+        // recordedDecisionOf 会各自重读 response.body，同一次响应最多被解析三次。
+        val body = bodyOf(response)
         return when {
             response.status in 200..299 -> {
                 val approval = JsonFields.obj(
-                    JsonFields.field(dataOf(response), "approval"),
+                    JsonFields.field(dataOf(body), "approval"),
                 )
                 val recorded = ApprovalDecision.of(JsonFields.string(approval, "decision"))
                 // A 2xx without the decision it recorded is not a success the UI
@@ -112,13 +111,13 @@ class ApprovalClient(private val http: GatewayHttpClient) {
                 outcome = ApprovalDecisionOutcome.NOT_FOUND,
                 decision = null,
                 httpStatus = 404,
-                errorCode = errorCodeOf(response),
+                errorCode = errorCodeOf(body),
             )
             response.status == 409 -> {
-                val code = errorCodeOf(response)
+                val code = errorCodeOf(body)
                 // The Gateway names the decision it already recorded, so the card
                 // can show what won instead of leaving the user guessing.
-                val recorded = recordedDecisionOf(response)
+                val recorded = recordedDecisionOf(body)
                 when (code) {
                     "APPROVAL_ALREADY_RESOLVED" -> ApprovalDecisionResult(
                         outcome = ApprovalDecisionOutcome.ALREADY_RESOLVED,
@@ -146,13 +145,13 @@ class ApprovalClient(private val http: GatewayHttpClient) {
                 outcome = ApprovalDecisionOutcome.UNSUPPORTED,
                 decision = null,
                 httpStatus = response.status,
-                errorCode = errorCodeOf(response),
+                errorCode = errorCodeOf(body),
             )
             else -> ApprovalDecisionResult(
                 outcome = ApprovalDecisionOutcome.FAILED,
                 decision = null,
                 httpStatus = response.status,
-                errorCode = errorCodeOf(response),
+                errorCode = errorCodeOf(body),
             )
         }
     }
@@ -174,12 +173,12 @@ class ApprovalClient(private val http: GatewayHttpClient) {
             .getOrNull()
             ?.let { JsonFields.obj(it) }
 
-    private fun dataOf(response: GatewayResponse): JsonValue.JObject? =
-        JsonFields.obj(JsonFields.field(bodyOf(response), "data"))
+    private fun dataOf(body: JsonValue.JObject?): JsonValue.JObject? =
+        JsonFields.obj(JsonFields.field(body, "data"))
 
-    private fun errorCodeOf(response: GatewayResponse): String? =
+    private fun errorCodeOf(body: JsonValue.JObject?): String? =
         JsonFields.string(
-            JsonFields.obj(JsonFields.field(bodyOf(response), "error")),
+            JsonFields.obj(JsonFields.field(body, "error")),
             "code",
         )
 
@@ -190,8 +189,8 @@ class ApprovalClient(private val http: GatewayHttpClient) {
      * accepted too because the contract only fixes the field name, not the depth
      * a host chooses for its own error details.
      */
-    private fun recordedDecisionOf(response: GatewayResponse): String? {
-        val error = JsonFields.obj(JsonFields.field(bodyOf(response), "error"))
+    private fun recordedDecisionOf(body: JsonValue.JObject?): String? {
+        val error = JsonFields.obj(JsonFields.field(body, "error"))
         val details = JsonFields.obj(JsonFields.field(error, "details"))
         return JsonFields.string(details, "decision") ?: JsonFields.string(error, "decision")
     }

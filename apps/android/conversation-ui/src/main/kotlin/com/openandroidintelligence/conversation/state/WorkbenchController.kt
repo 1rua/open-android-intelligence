@@ -2,6 +2,11 @@ package com.openandroidintelligence.conversation.state
 
 import com.openandroidintelligence.conversation.batch.DebounceBatcher
 import com.openandroidintelligence.conversation.batch.DebouncePolicy
+import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.ApprovalId
+import com.openandroidintelligence.conversation.model.ApprovalOutcome
+import com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome
+import com.openandroidintelligence.conversation.model.ApprovalSubmissionResult
 import com.openandroidintelligence.conversation.model.ClientMessageId
 import com.openandroidintelligence.conversation.model.ComposerState
 import com.openandroidintelligence.conversation.model.AttachmentState
@@ -13,6 +18,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.toOutcome
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository
 import com.openandroidintelligence.conversation.ports.ConversationRepository
@@ -108,8 +114,13 @@ data class WorkbenchUiState(
      * to answer, and no card is drawn that would pretend otherwise. It is
      * re-asserted by every [WorkbenchController] update, so it can never drift
      * away from the capability the Gateway actually negotiated.
+     *
+     * The default is false because this is a statement about the Gateway rather
+     * than about the screen: with no negotiated capability in hand, "unsupported"
+     * is the only answer a phone is entitled to give, and drawing a card on a
+     * guess would put live buttons over a decision that has nowhere to go.
      */
-    val approvalCardsSupported: Boolean = true,
+    val approvalCardsSupported: Boolean = false,
 ) {
     val canSend: Boolean get() = (draft.isNotBlank() || attachments.isNotEmpty()) &&
         composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
@@ -199,9 +210,9 @@ class WorkbenchController(
         /** Off for a caller driving the controller with a virtual clock. */
         val enabled: Boolean = true,
     )
-    // The capability is written in from the start: before the first update the
-    // screen would otherwise read the data class default and claim a Gateway
-    // supports cards that never negotiated them.
+    // The capability is written in from the start: the data class default only
+    // says "no negotiated fact yet", so a Gateway that did offer cards would
+    // otherwise read as one that never offered them until the first update ran.
     private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards))
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
 
@@ -759,9 +770,7 @@ class WorkbenchController(
     ) {
         val key = event.approvalId.value
         val card = approvalCards[key] ?: return
-        if (card is ApprovalCardState.Resolved &&
-            card.outcome != com.openandroidintelligence.conversation.model.ApprovalOutcome.UNKNOWN
-        ) {
+        if (card is ApprovalCardState.Resolved && card.outcome != ApprovalOutcome.UNKNOWN) {
             return
         }
         approvalCards[key] = ApprovalCardState.Resolved(
@@ -780,7 +789,7 @@ class WorkbenchController(
      * which one counted. A failed press becomes a live card again with a
      * structured notice — it is never painted as the decision the user asked for.
      */
-    fun decideApproval(approvalId: String, choice: com.openandroidintelligence.conversation.model.ApprovalChoice) {
+    fun decideApproval(approvalId: String, choice: ApprovalChoice) {
         if (closed) return
         // Checked before anything else: on a Gateway without the decision
         // endpoint there is no card to press, so a decision must be refused as
@@ -808,19 +817,23 @@ class WorkbenchController(
 
     private suspend fun submitApprovalDecision(
         approvalId: String,
-        choice: com.openandroidintelligence.conversation.model.ApprovalChoice,
-    ): com.openandroidintelligence.conversation.model.ApprovalSubmissionResult {
-        val id = runCatching { com.openandroidintelligence.conversation.model.ApprovalId(approvalId) }
-            .getOrNull()
-            ?: return com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
-                outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED,
-            )
-        return Result.runCatching { repository.submitApprovalDecision(id, choice) }
-            .getOrDefault(
-                com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
-                    outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED,
-                ),
-            )
+        choice: ApprovalChoice,
+    ): ApprovalSubmissionResult {
+        // An id the wire format cannot carry is refused here rather than sent:
+        // the press still comes back as a live card, with the refusal stated.
+        val id = try {
+            ApprovalId(approvalId)
+        } catch (cause: Exception) {
+            // Cancellation is never a refusal: it keeps travelling.
+            if (cause is CancellationException) throw cause
+            return ApprovalSubmissionResult(outcome = ApprovalSubmissionOutcome.FAILED)
+        }
+        return try {
+            repository.submitApprovalDecision(id, choice)
+        } catch (cause: Exception) {
+            if (cause is CancellationException) throw cause
+            ApprovalSubmissionResult(outcome = ApprovalSubmissionOutcome.FAILED)
+        }
     }
 
     /**
@@ -834,75 +847,59 @@ class WorkbenchController(
      */
     private fun applyApprovalSubmission(
         approvalId: String,
-        result: com.openandroidintelligence.conversation.model.ApprovalSubmissionResult,
+        result: ApprovalSubmissionResult,
     ) {
         val card = approvalCards[approvalId] ?: return
         if (card !is ApprovalCardState.Submitting) return
         when (result.outcome) {
-            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.SUBMITTED -> {
+            ApprovalSubmissionOutcome.SUBMITTED -> {
                 // Stay in flight: only the Gateway's own event may close it.
                 return
             }
-            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.ALREADY_RESOLVED -> {
+            ApprovalSubmissionOutcome.ALREADY_RESOLVED -> {
                 approvalCards[approvalId] = ApprovalCardState.Resolved(
                     request = card.request,
                     // A settled verdict the Gateway named (`timeout`/`withdrawn`)
-                    // is shown as it is; only a tier becomes a tier outcome.
-                    outcome = result.settledOutcome ?: outcomeOfChoice(result.choice),
+                    // is shown as it is; a tier translates through the shared
+                    // token table, and a missing one stays unknown.
+                    outcome = result.settledOutcome
+                        ?: (result.choice?.toOutcome() ?: ApprovalOutcome.UNKNOWN),
                     decidedAt = clock(),
                 )
                 reRenderApprovalRows()
             }
-            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.EXPIRED -> {
+            ApprovalSubmissionOutcome.EXPIRED -> {
                 approvalCards[approvalId] = ApprovalCardState.Resolved(
                     request = card.request,
-                    outcome = result.settledOutcome
-                        ?: com.openandroidintelligence.conversation.model.ApprovalOutcome.TIMED_OUT,
+                    outcome = result.settledOutcome ?: ApprovalOutcome.TIMED_OUT,
                     decidedAt = clock(),
                 )
                 reRenderApprovalRows()
             }
-            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.NOT_FOUND -> {
+            ApprovalSubmissionOutcome.NOT_FOUND -> {
                 // The Gateway does not know this approval, so nothing can answer
                 // it any more. What became of the command is unknown to this
                 // phone — claiming "withdrawn" would state that it did not run,
                 // which the Gateway never said.
                 approvalCards[approvalId] = ApprovalCardState.Resolved(
                     request = card.request,
-                    outcome = com.openandroidintelligence.conversation.model.ApprovalOutcome.UNKNOWN,
+                    outcome = ApprovalOutcome.UNKNOWN,
                     decidedAt = clock(),
                 )
                 reRenderApprovalRows()
             }
-            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED -> {
+            ApprovalSubmissionOutcome.UNSUPPORTED -> {
                 approvalCards[approvalId] = ApprovalCardState.Waiting(card.request)
                 reRenderApprovalRows()
                 update { it.copy(notice = ApprovalNotices.UNSUPPORTED) }
             }
-            com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.FAILED -> {
+            ApprovalSubmissionOutcome.FAILED -> {
                 approvalCards[approvalId] = ApprovalCardState.Waiting(card.request)
                 reRenderApprovalRows()
                 update { it.copy(notice = ApprovalNotices.FAILED) }
             }
         }
     }
-
-    /** The outcome a recorded tier means; an absent tier stays unknown. */
-    private fun outcomeOfChoice(
-        choice: com.openandroidintelligence.conversation.model.ApprovalChoice?,
-    ): com.openandroidintelligence.conversation.model.ApprovalOutcome =
-        when (choice) {
-            com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE ->
-                com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ONCE
-            com.openandroidintelligence.conversation.model.ApprovalChoice.SESSION ->
-                com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_SESSION
-            com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS ->
-                com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ALWAYS
-            com.openandroidintelligence.conversation.model.ApprovalChoice.DENY ->
-                com.openandroidintelligence.conversation.model.ApprovalOutcome.DENIED
-            null, com.openandroidintelligence.conversation.model.ApprovalChoice.UNKNOWN ->
-                com.openandroidintelligence.conversation.model.ApprovalOutcome.UNKNOWN
-        }
 
     /** The rows the active thread's approval cards contribute, oldest first. */
     private fun approvalRowsForActiveThread(): List<TimelineEntry> {
@@ -2248,8 +2245,16 @@ class WorkbenchController(
     private fun update(transform: (WorkbenchUiState) -> WorkbenchUiState) {
         _state.update { current ->
             // The capability is a fact about the Gateway, not about a screen: it
-            // is re-asserted on every update so no caller can drop it.
-            transform(current).copy(approvalCardsSupported = supportsApprovalCards)
+            // is re-asserted on every update so no caller can drop it. The copy
+            // only happens when the transform did not already carry that value,
+            // which keeps the common path — one keystroke, one transform — free
+            // of a second allocation.
+            val next = transform(current)
+            if (next.approvalCardsSupported == supportsApprovalCards) {
+                next
+            } else {
+                next.copy(approvalCardsSupported = supportsApprovalCards)
+            }
         }
     }
 

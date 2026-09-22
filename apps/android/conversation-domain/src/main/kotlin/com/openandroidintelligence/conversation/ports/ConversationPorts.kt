@@ -183,7 +183,7 @@ sealed interface VerifiedConversationEvent {
     data class ApprovalRequested(
         override val eventId: String,
         override val occurredAt: Long,
-        val request: com.openandroidintelligence.conversation.model.ApprovalRequest,
+        val request: ApprovalRequest,
         val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
 
@@ -197,8 +197,8 @@ sealed interface VerifiedConversationEvent {
     data class ApprovalResolved(
         override val eventId: String,
         override val occurredAt: Long,
-        val approvalId: com.openandroidintelligence.conversation.model.ApprovalId,
-        val outcome: com.openandroidintelligence.conversation.model.ApprovalOutcome,
+        val approvalId: ApprovalId,
+        val outcome: ApprovalOutcome,
         val decidedAt: Long? = null,
         val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
@@ -252,11 +252,11 @@ interface ConversationRepository {
      * submit would leave the command blocked while the UI shows it as allowed.
      */
     suspend fun submitApprovalDecision(
-        approvalId: com.openandroidintelligence.conversation.model.ApprovalId,
-        choice: com.openandroidintelligence.conversation.model.ApprovalChoice,
-    ): com.openandroidintelligence.conversation.model.ApprovalSubmissionResult =
-        com.openandroidintelligence.conversation.model.ApprovalSubmissionResult(
-            outcome = com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED,
+        approvalId: ApprovalId,
+        choice: ApprovalChoice,
+    ): ApprovalSubmissionResult =
+        ApprovalSubmissionResult(
+            outcome = ApprovalSubmissionOutcome.UNSUPPORTED,
         )
 }
 

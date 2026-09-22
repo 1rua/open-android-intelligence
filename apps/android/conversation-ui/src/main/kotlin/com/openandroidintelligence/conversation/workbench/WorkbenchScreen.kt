@@ -290,15 +290,7 @@ fun WorkbenchScreen(
                                                             onClick = { controller.openThread(jumpTarget) },
                                                         )
                                                     } else {
-                                                        val approvalId = entry.approval?.request?.approvalId?.value
-                                                        MessageTimeline(
-                                                            entries = listOf(entry),
-                                                            onDecide = { choice ->
-                                                                if (approvalId != null) {
-                                                                    controller.decideApproval(approvalId, choice)
-                                                                }
-                                                            },
-                                                        )
+                                                        TimelineRow(entry = entry, onDecide = controller::decideApproval)
                                                     }
                                                 }
                                                 if (state.creatingThread &&
