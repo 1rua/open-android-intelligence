@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.openandroidintelligence.conversation.components.CONNECTION_FAILURE_FALLBACK
 import com.openandroidintelligence.conversation.components.SettingsCardHeader
 import com.openandroidintelligence.conversation.components.SettingsIconBadge
 import com.openandroidintelligence.conversation.components.SettingsListItem
@@ -76,6 +77,7 @@ import com.openandroidintelligence.conversation.components.SettingsNavigationIte
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.SettingsSwitchItem
 import com.openandroidintelligence.conversation.components.SettingsTone
+import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -436,7 +438,10 @@ private fun SettingsOverviewScreen(
                         ConnectionPhase.Disconnected -> "未连接 Gateway"
                         ConnectionPhase.Negotiating -> "正在协商协议…"
                         ConnectionPhase.Authenticating -> "正在验证凭据…"
-                        is ConnectionPhase.Failed -> "连接失败: " + phase.code
+                        // 这里绝不直接打印 `phase.code`：它是异常的 message，可能带地址与对端正文，
+                        // 而且对用户没有可执行意义。与登录页共用同一套「码 → 可操作说明」。
+                        is ConnectionPhase.Failed ->
+                            "连接失败：" + readableFailure(phase.code, CONNECTION_FAILURE_FALLBACK)
                     }
                     SettingsNavigationItem(
                         headline = "Gateway 连接管理",

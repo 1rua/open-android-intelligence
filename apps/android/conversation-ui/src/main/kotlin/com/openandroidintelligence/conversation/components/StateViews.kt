@@ -46,6 +46,16 @@ const val CONTENT_FAILURE_FALLBACK: String =
     "暂时无法取得内容。请检查连接后重试；若持续失败，请检查 Gateway 服务。"
 
 /**
+ * 连接与登录阶段的兜底说明。
+ *
+ * 与 [CONTENT_FAILURE_FALLBACK] 分开是有意的：这里失败的原因可能是地址、网络、凭据或
+ * 两端版本，说成「无法取得内容」会把用户引向检查内容。凡是展示 `ConnectionPhase.Failed.code`
+ * 的界面都必须显式选一个兜底，不得直接打印错误码——那可能是含地址的异常原文。
+ */
+const val CONNECTION_FAILURE_FALLBACK: String =
+    "无法连接 Gateway。请检查地址与网络，并确认 App 与插件版本一致后重试；若持续失败，请查看 Gateway 服务与日志。"
+
+/**
  * 展示可采取的动作，不把可能含地址、服务端正文的原始异常当文案。
  *
  * 没有已知指引时退回 `fallback`（默认是内容加载场景的说明）；[specificFailureText]
@@ -53,6 +63,15 @@ const val CONTENT_FAILURE_FALLBACK: String =
  */
 fun readableFailure(code: String, fallback: String = CONTENT_FAILURE_FALLBACK): String =
     specificFailureText(code) ?: fallback
+
+/**
+ * 契约把 406 专属给 `PROTOCOL_INCOMPATIBLE`（见错误码与状态码的对应表）。
+ *
+ * 只认「独立的状态码」：`:406` 或整体就是 `406`。这样既能兜住客户端只能拿到状态码的
+ * 路径，又不会把 `SEND_FAILED:406001` 这类恰好含这三个数字的标识误判成版本问题——
+ * 那会给用户一条错误的「请升级」指引。
+ */
+private val STATUS_406 = Regex("(:|^)406\\b")
 
 /** 已知错误码对应的说明；未知码返回 null，由调用方决定兜底文案。 */
 fun specificFailureText(code: String): String? {
@@ -85,9 +104,10 @@ fun specificFailureText(code: String): String? {
         value.contains("MISSING-TLS-IDENTITY") -> "Gateway 未提供可核验的 TLS 身份，已按安全要求拒绝连接。"
         // 核心 Schema 摘要不一致是唯一一种「两端都对却连不上」的失败：两端各自算出的
         // 契约版本不同，Gateway 按契约 §4 直接拒绝协商。文案必须指向升级，否则用户会
-        // 去修网络。`AUTHENTICATION_FAILED:PROTOCOL_INCOMPATIBLE`（协商绑定失效）也走
-        // 这条，所以两种成因都要涵盖。
-        value.contains("PROTOCOL_INCOMPATIBLE") ->
+        // 去修网络。除了明文错误码，还要兜住只带状态码的形态：登录时协商已失效会拿到
+        // `AUTHENTICATION_FAILED:406`（`GatewayAuthClient` 在非 2xx 时只能回落到状态码），
+        // 而契约把 406 专属给 `PROTOCOL_INCOMPATIBLE`。
+        value.contains("PROTOCOL_INCOMPATIBLE") || STATUS_406.containsMatchIn(value) ->
             "App 与 Gateway 的契约版本不一致（或本次协商已失效），连接被拒绝。请把 App 与插件升级到同一版本后重试；若刚升级过，重新登录一次即可。"
         value.contains("HOST_INCOMPATIBLE") ->
             "Gateway 与当前 Agent 宿主版本不兼容，请在 Agent 端升级插件或宿主后重试。"

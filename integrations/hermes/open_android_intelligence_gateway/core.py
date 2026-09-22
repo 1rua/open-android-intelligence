@@ -821,7 +821,13 @@ def _hash_input(method: str, target: str, body: Any) -> str:
 
 
 def _digest_prefix(value: Any) -> str:
-    """Log-safe form of a `sha256:` digest: the algorithm tag plus eight hex digits."""
+    """`sha256:` plus the first eight hex digits, or a marker when it is absent.
+
+    Truncating is safe without a shape re-check: every caller runs after
+    `negotiate.request` validation, which already pins this field to `sha256:`
+    plus 64 lowercase hex digits. A missing value still has to be named, because
+    "the client sent nothing" is exactly what an operator needs to see.
+    """
     if not isinstance(value, str) or not value:
         return "<missing>"
     return value[:15]

@@ -271,7 +271,7 @@ def test_refused_negotiation_names_both_digests_for_the_operator(tmp_path, caplo
     assert len(refused) == 1, refused
     assert "installationId=install_new_command" in refused[0]
     assert "appVersion=2.0.0" in refused[0]
-    assert "clientCore=sha256:0000000" in refused[0]
+    assert "clientCore=sha256:00000000" in refused[0]
     assert f"gatewayCore={ContractRegistry().core_schema_hash[:15]}" in refused[0]
 
 

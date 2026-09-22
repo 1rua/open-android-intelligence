@@ -32,6 +32,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.components.CONNECTION_FAILURE_FALLBACK
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.MotionSpecs
@@ -506,16 +507,6 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
         }
     }
 }
-
-/**
- * 登录阶段的兜底文案。
- *
- * 这里的失败可能来自地址、网络、凭据或两端版本，而 `errorCode()` 取的是异常的 message
- * （可能带地址与对端正文），所以既不能把原始文本当文案，也不能套用「无法取得内容」——
- * 那会把用户引向检查内容，而不是检查连接与两端版本。
- */
-private const val CONNECTION_FAILURE_FALLBACK: String =
-    "无法连接 Gateway。请检查地址与网络，并确认 App 与插件版本一致后重试；若持续失败，请查看 Gateway 服务与日志。"
 
 @Composable
 private fun StatusDot(color: androidx.compose.ui.graphics.Color) {

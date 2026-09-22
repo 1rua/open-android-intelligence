@@ -65,6 +65,21 @@ class StateViewsTest {
     }
 
     @Test
+    fun statusOnlyRefusalIsStillReportedAsAVersionMismatchButNotEveryOccurrenceOf406() {
+        // 登录时协商已失效：`GatewayAuthClient` 在非 2xx 时只能回落到状态码，而契约把
+        // 406 专属给 PROTOCOL_INCOMPATIBLE，所以这条路径也必须指向「两端版本不一致」。
+        val loginRefusal = readableFailure("AUTHENTICATION_FAILED:406")
+        assertTrue("只带状态码的拒绝必须指向版本", loginRefusal.contains("版本"))
+
+        val bare = readableFailure("406")
+        assertTrue("裸状态码也必须被识别", bare.contains("版本"))
+
+        // 反面：恰好含这三个数字的标识不能被误判成版本问题，否则会给用户错误的升级指引。
+        val unrelated = readableFailure("SEND_FAILED:406001", "兜底说明")
+        assertEquals("兜底说明", unrelated)
+    }
+
+    @Test
     fun moreSpecificCodesWinOverTheNegotiationFailedPrefix() {
         // `NEGOTIATION_FAILED:` 前缀会包着更具体的原因：TLS 身份缺失必须命中它自己的说明，
         // 否则安全要求会被说成笼统的「协商失败」，用户会去重试而不是检查证书。
