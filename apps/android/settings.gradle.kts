@@ -35,6 +35,8 @@ include(
     ":conversation-data",
     ":conversation-ui",
     ":policy-engine",
+    ":notification-control",
+    ":notification-host",
     ":notification-collector",
     ":sms-collector",
     ":call-log-collector",
