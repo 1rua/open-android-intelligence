@@ -150,5 +150,13 @@ describe("buildPackage determinism", () => {
   });
 });
 
+/**
+ * 黄金向量（契约 §11「相同输入产生相同 .alp SHA-256」）。
+ *
+ * 历史锚点 0272109b… 生成于品牌更名提交 22fc40d 之前：该提交把签名输入前缀从
+ * "AGENT-LIFE-PLUGIN-PACKAGE-V1" 改为 "OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1"
+ * （契约 §4:79 规定的新前缀），ZIP 字节随之变化但锚点未同步重锚。
+ * 当前值锚定在现有确定性实现上。
+ */
 const FIXTURE_ALP_SHA256 =
-  "0272109bbc80d2c14e7744a9eae66c332df2ef68bf8ad79149cb412675f321a7";
+  "73e0b453af929457acd44656544465b9f3e24628daa32bab14ceda95644b1b26";

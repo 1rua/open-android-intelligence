@@ -263,8 +263,24 @@ class AlpVerifier(
         val root = Json.parse(bytes.toString(Charsets.UTF_8)) as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:manifest")
 
+        // §5: 所有对象默认拒绝未知字段（§5:156）。旧形状（manifestVersion、
+        // 顶层 kernelPrimitives 等）因此被明确拒绝，不做兼容回退：契约 §1
+        // 规定"必须"即"不满足即拒绝安装或运行"。
+        val schemaVersion = (root.get("schemaVersion") as? JsonValue.JString)?.value
+            ?: throw PackageRejected("SCHEMA_INVALID:schemaVersion")
+        if (schemaVersion != "1.0") throw PackageRejected("SCHEMA_INVALID:schemaVersion:$schemaVersion")
+        rejectUnknownFields(
+            root,
+            setOf(
+                "schemaVersion", "plugin", "author", "runtime", "compatibility",
+                "capabilities", "security", "ui", "state",
+            ),
+            "manifestField",
+        )
+
         val plugin = root.get("plugin") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:plugin")
+        rejectUnknownFields(plugin, setOf("id", "version", "name", "description"), "pluginField")
         val pluginId = (plugin.get("id") as? JsonValue.JString)?.value
             ?: throw PackageRejected("SCHEMA_INVALID:pluginId")
         if (!PLUGIN_ID_PATTERN.matches(pluginId)) throw PackageRejected("SCHEMA_INVALID:pluginIdFormat")
@@ -272,9 +288,16 @@ class AlpVerifier(
         val version = (plugin.get("version") as? JsonValue.JString)?.value
             ?: throw PackageRejected("SCHEMA_INVALID:pluginVersion")
         if (SemVer.parse(version) == null) throw PackageRejected("SCHEMA_INVALID:pluginVersionFormat")
+        if ((plugin.get("name") as? JsonValue.JString)?.value == null) {
+            throw PackageRejected("SCHEMA_INVALID:pluginName")
+        }
+        if ((plugin.get("description") as? JsonValue.JString)?.value == null) {
+            throw PackageRejected("SCHEMA_INVALID:pluginDescription")
+        }
 
         val author = root.get("author") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:author")
+        rejectUnknownFields(author, setOf("algorithm", "publicKey"), "authorField")
         val algorithm = (author.get("algorithm") as? JsonValue.JString)?.value
         if (algorithm != "Ed25519") throw PackageRejected("SCHEMA_INVALID:authorAlgorithm")
         val publicKey = (author.get("publicKey") as? JsonValue.JString)?.value
@@ -287,6 +310,16 @@ class AlpVerifier(
         if (runtimeType !in setOf("protected-wasm", "developer-native", "companion")) {
             throw PackageRejected("SCHEMA_INVALID:runtimeTypeUnknown:$runtimeType")
         }
+        // 每种运行类型允许的字段集（§5.1）；未知字段按运行类型拒绝。
+        val runtimeFields = when (runtimeType) {
+            "protected-wasm" -> setOf("type", "abiVersion", "entrypoint", "payload")
+            "developer-native" -> setOf("type", "entrypointClass", "payload")
+            else -> setOf(
+                "type", "payload", "packageName", "certificateSha256",
+                "minVersionCode", "ipcContract",
+            )
+        }
+        rejectUnknownFields(runtimeObj, runtimeFields, "runtimeField")
         val runtime = RuntimeDeclaration(
             type = runtimeType,
             abiVersion = (runtimeObj.get("abiVersion") as? JsonValue.JString)?.value,
@@ -296,19 +329,43 @@ class AlpVerifier(
 
         val capabilities = root.get("capabilities") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:capabilities")
-        val provided = stringSet(capabilities, "provides", "id")
-        val primitives = stringSet(capabilities, "kernelPrimitives", "id")
+        rejectUnknownFields(capabilities, setOf("provides", "depends", "kernelPrimitives"), "capabilitiesField")
+        val provided = parseCapabilityEntries(capabilities)
+        val primitives = parseKernelPrimitiveEntries(capabilities)
+        parseDependencyEntries(capabilities)
 
         val security = root.get("security") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:security")
+        rejectUnknownFields(security, setOf("network", "background", "resources"), "securityField")
         val surface = parseSurface(security, runtimeType)
 
         val compatibility = root.get("compatibility") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:compatibility")
+        rejectUnknownFields(compatibility, setOf("androidHost", "gatewayProtocol"), "compatibilityField")
         val androidHost = (compatibility.get("androidHost") as? JsonValue.JString)?.value
             ?: throw PackageRejected("SCHEMA_INVALID:androidHost")
+        if ((compatibility.get("gatewayProtocol") as? JsonValue.JString)?.value == null) {
+            throw PackageRejected("SCHEMA_INVALID:gatewayProtocol")
+        }
         if (!hostSatisfies(hostVersion, androidHost)) {
             throw PackageRejected("INCOMPATIBLE_HOST:$androidHost")
+        }
+
+        // §5: ui 与 state 是必选节；缺失或类型不符即拒绝。
+        val ui = root.get("ui") as? JsonValue.JObject
+            ?: throw PackageRejected("SCHEMA_INVALID:ui")
+        rejectUnknownFields(ui, setOf("settings", "cards"), "uiField")
+        if (ui.get("settings") !is JsonValue.JArray) throw PackageRejected("SCHEMA_INVALID:uiSettings")
+        if (ui.get("cards") !is JsonValue.JArray) throw PackageRejected("SCHEMA_INVALID:uiCards")
+
+        val state = root.get("state") as? JsonValue.JObject
+            ?: throw PackageRejected("SCHEMA_INVALID:state")
+        rejectUnknownFields(state, setOf("schemaVersion", "portableExport"), "stateField")
+        if (state.get("schemaVersion") !is JsonValue.JNumber) {
+            throw PackageRejected("SCHEMA_INVALID:stateSchemaVersion")
+        }
+        if (state.get("portableExport") !is JsonValue.JBoolean) {
+            throw PackageRejected("SCHEMA_INVALID:statePortableExport")
         }
 
         return ParsedManifest(
@@ -322,6 +379,73 @@ class AlpVerifier(
         )
     }
 
+    /** §5:156 的未知字段拒绝；拒绝码携带首个未知字段名，便于审计定位。 */
+    private fun rejectUnknownFields(
+        obj: JsonValue.JObject,
+        allowed: Set<String>,
+        code: String,
+    ) {
+        val unknown = obj.fields.map { it.first }.firstOrNull { it !in allowed }
+        if (unknown != null) throw PackageRejected("SCHEMA_INVALID:$code:$unknown")
+    }
+
+    /** §5: capabilities.provides 必须是 {id, version, schema} 对象数组。 */
+    private fun parseCapabilityEntries(capabilities: JsonValue.JObject): Set<String> {
+        val array = capabilities.get("provides") as? JsonValue.JArray
+            ?: throw PackageRejected("SCHEMA_INVALID:provides")
+        val ids = LinkedHashSet<String>()
+        for (item in array.items) {
+            val obj = item as? JsonValue.JObject ?: throw PackageRejected("SCHEMA_INVALID:provides")
+            rejectUnknownFields(obj, setOf("id", "version", "schema"), "provides")
+            val id = (obj.get("id") as? JsonValue.JString)?.value
+                ?: throw PackageRejected("SCHEMA_INVALID:provides")
+            if ((obj.get("version") as? JsonValue.JString)?.value == null ||
+                (obj.get("schema") as? JsonValue.JString)?.value == null
+            ) {
+                throw PackageRejected("SCHEMA_INVALID:provides")
+            }
+            ids += id
+        }
+        return ids
+    }
+
+    /** §5: capabilities.kernelPrimitives 必须是 {id, version, purpose} 对象数组。 */
+    private fun parseKernelPrimitiveEntries(capabilities: JsonValue.JObject): Set<String> {
+        val array = capabilities.get("kernelPrimitives") as? JsonValue.JArray
+            ?: throw PackageRejected("SCHEMA_INVALID:kernelPrimitives")
+        val ids = LinkedHashSet<String>()
+        for (item in array.items) {
+            val obj = item as? JsonValue.JObject
+                ?: throw PackageRejected("SCHEMA_INVALID:kernelPrimitives")
+            rejectUnknownFields(obj, setOf("id", "version", "purpose"), "kernelPrimitives")
+            val id = (obj.get("id") as? JsonValue.JString)?.value
+                ?: throw PackageRejected("SCHEMA_INVALID:kernelPrimitives")
+            if ((obj.get("version") as? JsonValue.JString)?.value == null ||
+                (obj.get("purpose") as? JsonValue.JString)?.value == null
+            ) {
+                throw PackageRejected("SCHEMA_INVALID:kernelPrimitives")
+            }
+            ids += id
+        }
+        return ids
+    }
+
+    /** §6: capabilities.depends 必须是 {capability, version, required} 对象数组。 */
+    private fun parseDependencyEntries(capabilities: JsonValue.JObject) {
+        val array = capabilities.get("depends") as? JsonValue.JArray
+            ?: throw PackageRejected("SCHEMA_INVALID:depends")
+        for (item in array.items) {
+            val obj = item as? JsonValue.JObject ?: throw PackageRejected("SCHEMA_INVALID:depends")
+            rejectUnknownFields(obj, setOf("capability", "version", "required"), "depends")
+            if ((obj.get("capability") as? JsonValue.JString)?.value == null ||
+                (obj.get("version") as? JsonValue.JString)?.value == null ||
+                obj.get("required") !is JsonValue.JBoolean
+            ) {
+                throw PackageRejected("SCHEMA_INVALID:depends")
+            }
+        }
+    }
+
     private fun parseSurface(security: JsonValue.JObject, runtimeType: String): SecuritySurface {
         val network = security.get("network") as? JsonValue.JArray
             ?: throw PackageRejected("SCHEMA_INVALID:network")
@@ -332,12 +456,26 @@ class AlpVerifier(
 
         val background = security.get("background") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:background")
+        rejectUnknownFields(background, setOf("requested", "minimumIntervalSeconds"), "backgroundField")
         val backgroundRequested =
             (background.get("requested") as? JsonValue.JBoolean)?.value
                 ?: throw PackageRejected("SCHEMA_INVALID:backgroundRequested")
+        // §5: requested 为 false 时契约示例写作 null；允许数字（间隔）或 null。
+        when (background.get("minimumIntervalSeconds")) {
+            is JsonValue.JNull, is JsonValue.JNumber -> {}
+            else -> throw PackageRejected("SCHEMA_INVALID:minimumIntervalSeconds")
+        }
 
         val resources = security.get("resources") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:resources")
+        rejectUnknownFields(
+            resources,
+            setOf(
+                "maxInvocationMillis", "maxMemoryBytes", "maxStorageBytes",
+                "maxConcurrentInvocations", "maxDailyNetworkBytes",
+            ),
+            "resourcesField",
+        )
 
         fun longField(name: String): Long =
             (resources.get(name) as? JsonValue.JNumber)?.asLong()
@@ -362,15 +500,6 @@ class AlpVerifier(
             companionPackageName = companionPackageName,
             nativeAbis = emptySet(),
         )
-    }
-
-    private fun stringSet(parent: JsonValue.JObject, field: String, idField: String): Set<String> {
-        val array = parent.get(field) as? JsonValue.JArray
-            ?: throw PackageRejected("SCHEMA_INVALID:$field")
-        return array.items.mapNotNullTo(LinkedHashSet()) { item ->
-            val obj = item as? JsonValue.JObject ?: throw PackageRejected("SCHEMA_INVALID:$field:entry")
-            (obj.get(idField) as? JsonValue.JString)?.value
-        }
     }
 
     private fun decodeAuthorKey(manifest: ParsedManifest): ByteArray {

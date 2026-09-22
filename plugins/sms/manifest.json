@@ -1,25 +1,62 @@
 {
-  "manifestVersion": "1.0",
+  "schemaVersion": "1.0",
   "plugin": {
     "id": "org.openandroidintelligence.sms",
     "version": "1.0.0",
     "name": "SMS Query",
-    "description": "Official reference plugin for querying SMS messages",
-    "author": {
-      "name": "Open Android Intelligence",
-      "publicKey": "35f3b7bf83777bc35fb080ee0e94abef8e945cbb6aa82414fa9cfcb7eaee699f"
-    }
+    "description": "Official reference plugin for querying SMS messages"
+  },
+  "author": {
+    "algorithm": "Ed25519",
+    "publicKey": "yFOtDwzSthmuqSzuxP1Wok1kmdWEznklfkXP2BObYKc"
   },
   "runtime": {
-    "type": "wasm",
-    "payload": "payload/sms.wasm",
+    "type": "protected-wasm",
     "abiVersion": "1.0",
-    "entrypoint": "open_android_intelligence_plugin_main"
+    "entrypoint": "open_android_intelligence_plugin_main",
+    "payload": "payload/sms.wasm"
+  },
+  "compatibility": {
+    "androidHost": ">=2.0.0 <3.0.0",
+    "gatewayProtocol": ">=2.0 <3.0"
   },
   "capabilities": {
-    "provides": ["org.openandroidintelligence.sms.query@1.0.0"],
-    "requires": []
+    "provides": [
+      {
+        "id": "org.openandroidintelligence.sms.query",
+        "version": "1.0.0",
+        "schema": "schemas/sms.json"
+      }
+    ],
+    "depends": [],
+    "kernelPrimitives": [
+      {
+        "id": "kernel.sms.read",
+        "version": "1.0.0",
+        "purpose": "Read SMS inbox under local policy"
+      }
+    ]
   },
-  "kernelPrimitives": ["kernel.sms.read"]
+  "security": {
+    "network": [],
+    "background": {
+      "requested": false,
+      "minimumIntervalSeconds": null
+    },
+    "resources": {
+      "maxInvocationMillis": 5000,
+      "maxMemoryBytes": 16777216,
+      "maxStorageBytes": 10485760,
+      "maxConcurrentInvocations": 1,
+      "maxDailyNetworkBytes": 0
+    }
+  },
+  "ui": {
+    "settings": [],
+    "cards": []
+  },
+  "state": {
+    "schemaVersion": 1,
+    "portableExport": false
+  }
 }
-
