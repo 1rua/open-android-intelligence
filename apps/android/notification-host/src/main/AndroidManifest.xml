@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    裁决 D6：库内自注册 Provider。manifest merger 会把它并入 app 进程，
+    在任何组件初始化之前完成 NotificationControlRegistry.install(...)
+    （不依赖 OpenAndroidIntelligenceApplication.onCreate 已初始化的字段）。
+    exported="false"：仅供本进程的装配钩子，不对外提供服务。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <provider
+            android:name="com.openandroidintelligence.notification.host.NotificationControlBootstrapProvider"
+            android:authorities="${applicationId}.notification-control-bootstrap"
+            android:exported="false" />
+    </application>
+</manifest>

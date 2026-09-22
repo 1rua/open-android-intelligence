@@ -3,13 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// 裁决 D6：实现装配模块。桥接 policy-engine 的策略权威与
+// notification-collector 的采集运行时，并通过库内 ContentProvider 在
+// app 进程启动时向 NotificationControlRegistry 自注册。
 android {
-    namespace = "com.openandroidintelligence.notifications"
-    sourceSets {
-        getByName("test") {
-            kotlin.srcDir("../transport/src/testFixtures/kotlin")
-        }
-    }
+    namespace = "com.openandroidintelligence.notification.host"
     testOptions.unitTests.apply {
         isIncludeAndroidResources = true
         all {
@@ -20,15 +18,17 @@ android {
         }
     }
 }
+
 dependencies {
+    api(project(":notification-control"))
     implementation(project(":core-model"))
     implementation(project(":policy-engine"))
+    implementation(project(":notification-collector"))
+    // NotificationOutboxStore（任务书要求的真实 outbox 组合）位于 encrypted-store。
+    implementation(project(":encrypted-store"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
-    testImplementation(project(":encrypted-store"))
-    testImplementation(project(":tailnet-core"))
-    testImplementation(project(":transport"))
+
     testImplementation("junit:junit:4.13.2")
-    // Manifest 合并证据测试：Robolectric 读合并后的 Manifest 验证监听服务声明。
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
 }

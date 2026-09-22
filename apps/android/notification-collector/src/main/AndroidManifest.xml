@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    裁决 D6：声明 OpenAndroidIntelligenceNotificationListenerService，直接消除
+    「监听服务全仓 XML 零命中」。
+
+    权限红线：
+    - BIND_NOTIFICATION_LISTENER_SERVICE 是系统签名权限，只有系统进程能绑定本服务，
+      第三方应用无法借用；
+    - 通知使用权本身仍只能由用户在系统「通知使用权」设置页显式授予
+      （Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS），未授予时本服务不会被
+      系统绑定，采集保持不可用，绝无后台静默采集。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <service
+            android:name="com.openandroidintelligence.notifications.OpenAndroidIntelligenceNotificationListenerService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>
