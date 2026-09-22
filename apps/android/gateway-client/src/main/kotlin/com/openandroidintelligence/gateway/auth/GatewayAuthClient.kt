@@ -1,7 +1,7 @@
 package com.openandroidintelligence.gateway.auth
 
+import com.openandroidintelligence.gateway.http.GatewayByteTransport
 import com.openandroidintelligence.gateway.http.GatewayResponse
-import com.openandroidintelligence.gateway.http.GatewayTransport
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.http.WireRequest
@@ -30,13 +30,17 @@ data class SessionCredentials(
  * deliberately — see [com.openandroidintelligence.gateway.http.TransportSecurity]).
  *
  * These endpoints run before a signed session exists, so they ride the plain
- * [GatewayTransport]: negotiate and login carry no signature, and logout
+ * [GatewayByteTransport]: negotiate and login carry no signature, and logout
  * presents the bearer token the login already returned. The password exists
  * only inside [loginWithPassword] and is scrubbed before returning, mirroring
  * [GatewaySessionManager]'s rules.
+ *
+ * The transport is the byte-level boundary rather than the concrete socket
+ * client, so the error contract below can be pinned against a stubbed Gateway
+ * instead of only against a live one.
  */
 class GatewayAuthClient(
-    private val transport: GatewayTransport,
+    private val transport: GatewayByteTransport,
     private val installationId: String,
     private val appVersion: String,
     private val platformApi: Int,
@@ -156,10 +160,28 @@ class GatewayAuthClient(
         ) ?: throw IllegalStateException("AUTHENTICATION_FAILED:malformed")
     }
 
-    private suspend fun authError(prefix: String, response: WireResponse): IllegalStateException {
-        val body = runCatching { Json.parse(String(response.body, Charsets.UTF_8)) }.getOrNull()
-        val code = JsonFields.string(JsonFields.obj(body), "errorCode")
-        return IllegalStateException("$prefix:${code ?: response.status}")
+    /**
+     * Contract §2: the failure reason is `error.code` on the envelope, not a
+     * top-level `errorCode`.
+     *
+     * Reading the wrong field is not a cosmetic bug: it degrades every refusal
+     * to `AUTHENTICATION_FAILED:401`, so the user can no longer tell a wrong
+     * password from a revoked session, and the host loses the structured code it
+     * needs to decide whether local key material still has a future.
+     */
+    private fun authError(prefix: String, response: WireResponse): GatewayAuthException {
+        val envelope = runCatching { Json.parse(String(response.body, Charsets.UTF_8)) }.getOrNull()
+        val error = JsonFields.obj(JsonFields.field(JsonFields.obj(envelope), "error"))
+        // A code is only usable when it looks like one: the contract's codes are
+        // upper-case tokens, so anything else is a malformed response rather
+        // than a value worth branching on.
+        val code = JsonFields.string(error, "code")?.takeIf { CODE_PATTERN.matches(it) }
+        return GatewayAuthException(
+            operation = prefix,
+            code = code,
+            httpStatus = response.status,
+            retryable = JsonFields.bool(error, "retryable"),
+        )
     }
 
     private fun newNegotiationId(): String =
@@ -171,6 +193,11 @@ class GatewayAuthClient(
         headers = headers,
         body = body,
     )
+
+    private companion object {
+        /** Contract §14 codes are upper-case tokens; anything else is malformed. */
+        val CODE_PATTERN = Regex("[A-Z0-9_]+")
+    }
 }
 
 internal fun parseSessionCredentials(body: JsonValue.JObject, prefix: String): SessionCredentials {
