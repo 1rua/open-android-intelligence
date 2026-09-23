@@ -1087,7 +1087,8 @@ class AccountStore:
             CREATE TABLE IF NOT EXISTS attachments (
               attachment_id TEXT PRIMARY KEY NOT NULL,
               client_attachment_id TEXT NOT NULL, owner_device_id TEXT,
-              owner_pairing_generation INTEGER, filename TEXT NOT NULL,
+              owner_pairing_generation INTEGER, storage_revision INTEGER NOT NULL DEFAULT 0,
+              filename TEXT NOT NULL,
               media_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
               sha256 TEXT NOT NULL, state TEXT NOT NULL,
               content_path TEXT, cas_path TEXT, created_at TEXT NOT NULL,
@@ -1200,33 +1201,54 @@ class AccountStore:
         ]:
             if col_name not in existing_cols:
                 self.database.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
-        existing_attachment_cols = {
-            row[1] for row in self.database.execute("PRAGMA table_info(attachments)").fetchall()
-        }
-        for col_name, col_type in (
-            ("owner_device_id", "TEXT"),
-            ("owner_pairing_generation", "INTEGER"),
-        ):
-            if col_name not in existing_attachment_cols:
-                self.database.execute(f"ALTER TABLE attachments ADD COLUMN {col_name} {col_type}")
-        self._metadata("attachment_storage_format", "2")
-        attachment_format = self.database.execute(
-            "SELECT value FROM account_metadata WHERE key = 'attachment_storage_format'"
-        ).fetchone()
-        if attachment_format is None or str(attachment_format[0]) != "2":
+        self.database.execute("BEGIN IMMEDIATE")
+        try:
+            existing_attachment_cols = {
+                row[1] for row in self.database.execute("PRAGMA table_info(attachments)").fetchall()
+            }
+            for col_name, col_type in (
+                ("owner_device_id", "TEXT"),
+                ("owner_pairing_generation", "INTEGER"),
+                ("storage_revision", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if col_name not in existing_attachment_cols:
+                    self.database.execute(f"ALTER TABLE attachments ADD COLUMN {col_name} {col_type}")
+            self._metadata("attachment_storage_format", "2")
+            attachment_format = self.database.execute(
+                "SELECT value FROM account_metadata WHERE key = 'attachment_storage_format'"
+            ).fetchone()
+            if attachment_format is None or str(attachment_format[0]) != "2":
+                raise GatewayError("ATTACHMENT_STORAGE_VERSION_UNSUPPORTED")
+            self.database.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS attachments_require_pairing_identity
+                BEFORE INSERT ON attachments
+                WHEN (SELECT value FROM account_metadata WHERE key = 'attachment_storage_format') = '2'
+                  AND (NEW.owner_device_id IS NULL OR NEW.owner_device_id = '' OR NEW.owner_pairing_generation IS NULL)
+                BEGIN
+                  SELECT RAISE(ABORT, 'ATTACHMENT_PAIRING_BINDING_REQUIRED');
+                END
+                """
+            )
+            self.database.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS attachments_require_storage_revision
+                BEFORE UPDATE ON attachments
+                WHEN (SELECT value FROM account_metadata WHERE key = 'attachment_storage_format') = '2'
+                  AND NEW.storage_revision != OLD.storage_revision + 1
+                BEGIN
+                  SELECT RAISE(ABORT, 'ATTACHMENT_STORAGE_VERSION_UNSUPPORTED');
+                END
+                """
+            )
+            self.database.execute("COMMIT")
+        except BaseException:
+            try:
+                self.database.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             self.database.close()
-            raise GatewayError("ATTACHMENT_STORAGE_VERSION_UNSUPPORTED")
-        self.database.executescript(
-            """
-            CREATE TRIGGER IF NOT EXISTS attachments_require_pairing_identity
-            BEFORE INSERT ON attachments
-            WHEN (SELECT value FROM account_metadata WHERE key = 'attachment_storage_format') = '2'
-              AND (NEW.owner_device_id IS NULL OR NEW.owner_device_id = '' OR NEW.owner_pairing_generation IS NULL)
-            BEGIN
-              SELECT RAISE(ABORT, 'ATTACHMENT_PAIRING_BINDING_REQUIRED');
-            END;
-            """
-        )
+            raise
         if self.aead is None:
             existing_ref = self.database.execute(
                 "SELECT value FROM account_metadata WHERE key = 'master_key_ref'"
@@ -2138,7 +2160,7 @@ class AttachmentStore:
                 except OSError:
                     pass
                 self.store.database.execute(
-                    "UPDATE attachments SET state = ?, content_path = ? WHERE attachment_id = ?",
+                    "UPDATE attachments SET state = ?, content_path = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (next_state, str(stage_path), staged.attachment_id),
                 )
         except OSError as exc:
@@ -2247,7 +2269,7 @@ class AttachmentStore:
                 if exc.code != "ATTACHMENT_DIGEST_MISMATCH":
                     raise
                 self.store.database.execute(
-                    "UPDATE attachments SET state = ?, content_path = ? WHERE attachment_id = ?",
+                    "UPDATE attachments SET state = ?, content_path = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (next_attachment_state(row["state"], "fail"), str(stage_path), attachment_id),
                 )
                 mismatch = True
@@ -2260,7 +2282,7 @@ class AttachmentStore:
                     except OSError:
                         pass
                 self.store.database.execute(
-                    "UPDATE attachments SET state = ?, cas_path = ? WHERE attachment_id = ?",
+                    "UPDATE attachments SET state = ?, cas_path = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (next_attachment_state(row["state"], "verify"), str(cas_path), attachment_id),
                 )
         if mismatch:
@@ -2276,7 +2298,7 @@ class AttachmentStore:
             row = self._row(attachment_id)
             state = next_attachment_state(row["state"], "deliver")
             self.store.database.execute(
-                "UPDATE attachments SET state = ?, delivered_at = ? WHERE attachment_id = ?",
+                "UPDATE attachments SET state = ?, delivered_at = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                 (state, iso_millis(current), attachment_id),
             )
         return self.get(attachment_id, now)
@@ -2294,7 +2316,7 @@ class AttachmentStore:
                     paths.append(Path(row[key]))
             state = next_attachment_state(row["state"], "acknowledge")
             self.store.database.execute(
-                "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL, acknowledged_at = ? WHERE attachment_id = ?",
+                "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL, acknowledged_at = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                 (state, iso_millis(current), attachment_id),
             )
             self.audit.append(
@@ -2337,7 +2359,7 @@ class AttachmentStore:
                         paths.append(Path(row[key]))
                 state = next_attachment_state(row["state"], "expire")
                 self.store.database.execute(
-                    "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL WHERE attachment_id = ?",
+                    "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (state, row["attachment_id"]),
                 )
                 expired += 1
@@ -2358,7 +2380,7 @@ class AttachmentStore:
                     if row[key]:
                         paths.append(Path(row[key]))
                 self.store.database.execute(
-                    "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL WHERE attachment_id = ?",
+                    "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (next_attachment_state(row["state"], "cleanup"), row["attachment_id"]),
                 )
             referenced = {
@@ -2414,7 +2436,7 @@ class AttachmentStore:
                     if row[key]:
                         paths.append(Path(row[key]))
                 self.store.database.execute(
-                    "UPDATE attachments SET state = 'deleted', content_path = NULL, cas_path = NULL WHERE attachment_id = ?",
+                    "UPDATE attachments SET state = 'deleted', content_path = NULL, cas_path = NULL, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (row["attachment_id"],),
                 )
                 self.audit.append(
@@ -2443,7 +2465,7 @@ class AttachmentStore:
                     if row[key]:
                         paths.append(Path(row[key]))
                 self.store.database.execute(
-                    "UPDATE attachments SET state = 'expired', content_path = NULL, cas_path = NULL WHERE attachment_id = ?",
+                    "UPDATE attachments SET state = 'expired', content_path = NULL, cas_path = NULL, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (attachment_id,),
                 )
                 row = self._row(attachment_id)
@@ -2503,7 +2525,7 @@ class AttachmentStore:
                 if current["state"] not in {"uploading", "verified", "delivered"}:
                     continue
                 self.store.database.execute(
-                    "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL WHERE attachment_id = ?",
+                    "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (next_attachment_state(str(current["state"]), "fail"), row["attachment_id"]),
                 )
                 self.audit.append(
@@ -2586,7 +2608,7 @@ class AttachmentStore:
             if row["content_path"] != str(path) or row["state"] == "created":
                 try:
                     self.store.database.execute(
-                        "UPDATE attachments SET state = ?, content_path = ? WHERE attachment_id = ?",
+                        "UPDATE attachments SET state = ?, content_path = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                         ("uploading" if row["state"] == "created" else row["state"], str(path), attachment_id),
                     )
                 except sqlite3.Error:

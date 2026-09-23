@@ -80,7 +80,7 @@ def _create(account, body=b"body", *, now=None, client_id="att_client", media_ty
 
 def _expire_row(account, attachment_id):
     account.store.database.execute(
-        "UPDATE attachments SET expires_at = ? WHERE attachment_id = ?",
+        "UPDATE attachments SET expires_at = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
         ("2020-01-01T00:00:00.000Z", attachment_id),
     )
 
@@ -217,6 +217,13 @@ def test_attachment_storage_fence_rejects_legacy_unbound_inserts(tmp_path):
                   ?, 'created', NULL, NULL, '2026-09-23T00:00:00.000Z', '2026-09-24T00:00:00.000Z', NULL, NULL)
                 """,
                 ("0" * 64,),
+            )
+
+        attachment = _create(account, body=b"", client_id="att_old_writer_update")
+        with pytest.raises(sqlite3.IntegrityError, match="ATTACHMENT_STORAGE_VERSION_UNSUPPORTED"):
+            account.store.database.execute(
+                "UPDATE attachments SET state = 'uploading', content_path = ? WHERE attachment_id = ?",
+                ("old-plaintext.stage", attachment["attachmentId"]),
             )
     finally:
         account.close()
@@ -724,7 +731,7 @@ def test_legacy_one_shot_stage_is_failed_for_reupload_on_startup(tmp_path):
         encoding="ascii",
     )
     account.store.database.execute(
-        "UPDATE attachments SET state = 'uploading', content_path = ? WHERE attachment_id = ?",
+        "UPDATE attachments SET state = 'uploading', content_path = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
         (str(stage_path), attachment["attachmentId"]),
     )
     account.close()
@@ -765,7 +772,7 @@ def test_legacy_stage_recovery_retries_after_a_startup_commit_failure(tmp_path):
         encoding="ascii",
     )
     account.store.database.execute(
-        "UPDATE attachments SET state = 'uploading', content_path = ? WHERE attachment_id = ?",
+        "UPDATE attachments SET state = 'uploading', content_path = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
         (str(stage_path), attachment["attachmentId"]),
     )
     database_path = account.paths.database

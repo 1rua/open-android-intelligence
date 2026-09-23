@@ -365,7 +365,7 @@ def _attachment_input(client_id="att_policy", media_type="text/plain", size_byte
 
 def _force_attachment_expired(account, attachment_id):
     account.store.database.execute(
-        "UPDATE attachments SET expires_at = ? WHERE attachment_id = ?",
+        "UPDATE attachments SET expires_at = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
         ("2000-01-01T00:00:00.000Z", attachment_id),
     )
 
