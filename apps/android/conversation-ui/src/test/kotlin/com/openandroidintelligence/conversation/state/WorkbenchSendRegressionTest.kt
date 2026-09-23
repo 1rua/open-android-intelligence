@@ -7,6 +7,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import java.io.ByteArrayInputStream
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
@@ -14,6 +16,71 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchSendRegressionTest {
+    @Test fun acceptedHttpMessageRemainsQueuedUntilMonotonicAgentStatusArrives() = runTest {
+        val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 8)
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+        }
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("请读取这张图片")
+        controller.sendDraft()
+        advanceUntilIdle()
+
+        val clientMessageId = repository.sent.single().clientMessageId
+        var row = (controller.state.value.timeline as Loadable.Ready).value.single { it.isUser }
+        assertEquals("HTTP accepted 只能表示 Gateway 排队", AgentMessageStatus.QUEUED, row.messageStatus)
+
+        events.emit(
+            VerifiedConversationEvent.MessageStatus(
+                eventId = "evt_delivered",
+                occurredAt = 2L,
+                conversationId = ConversationId("conv_created"),
+                messageId = "msg_server",
+                clientMessageId = clientMessageId,
+                status = AgentMessageStatus.DELIVERED,
+                revision = 2L,
+                errorCode = null,
+            ),
+        )
+        runCurrent()
+        row = (controller.state.value.timeline as Loadable.Ready).value.single { it.isUser }
+        assertEquals(AgentMessageStatus.DELIVERED, row.messageStatus)
+
+        events.emit(
+            VerifiedConversationEvent.MessageStatus(
+                eventId = "evt_failed",
+                occurredAt = 3L,
+                conversationId = ConversationId("conv_created"),
+                messageId = "msg_server",
+                clientMessageId = clientMessageId,
+                status = AgentMessageStatus.FAILED,
+                revision = 3L,
+                errorCode = AgentMessageErrorCode.AGENT_MEDIA_REJECTED,
+            ),
+        )
+        runCurrent()
+        events.emit(
+            VerifiedConversationEvent.MessageStatus(
+                eventId = "evt_stale_delivered",
+                occurredAt = 4L,
+                conversationId = ConversationId("conv_created"),
+                messageId = "msg_server",
+                clientMessageId = clientMessageId,
+                status = AgentMessageStatus.DELIVERED,
+                revision = 2L,
+                errorCode = null,
+            ),
+        )
+        runCurrent()
+
+        row = (controller.state.value.timeline as Loadable.Ready).value.single { it.isUser }
+        assertEquals("旧revision不得覆盖Agent失败状态", AgentMessageStatus.FAILED, row.messageStatus)
+        assertEquals(AgentMessageErrorCode.AGENT_MEDIA_REJECTED, row.messageStatusErrorCode)
+        assertTrue(controller.state.value.notice.orEmpty().contains("AGENT_MEDIA_REJECTED"))
+        controller.cancel()
+    }
+
     @Test fun firstSendCreatesOneConversationAndSendsTheOriginalDraft() = runTest {
         val repository = RecordingRepository()
         val controller = controller(repository)
@@ -1590,7 +1657,13 @@ class WorkbenchSendRegressionTest {
         controller.openThread("conv_1")
         runCurrent()
 
-        controller.addAttachment(LocalAttachmentSelection("报告.pdf", "application/pdf", ByteArray(8)))
+        controller.addAttachment(
+            LocalAttachmentSelection(
+                "报告.pdf",
+                "application/pdf",
+                com.openandroidintelligence.conversation.ports.AttachmentContentSource { ByteArrayInputStream(ByteArray(8)) },
+            ),
+        )
         runCurrent()
         controller.editDraft("请查看附件")
         controller.sendDraft()
@@ -1625,11 +1698,12 @@ class WorkbenchSendRegressionTest {
 
         override suspend fun prepare(selection: LocalAttachmentSelection): AttachmentDraft {
             created++
+            val bytes = selection.contentSource.openStream().use { it.readBytes() }
             return AttachmentDraft(
                 id = AttachmentDraftId("draft_$created"),
                 filename = selection.filename,
                 mediaType = selection.mediaType,
-                sizeBytes = selection.bytes.size.toLong(),
+                sizeBytes = bytes.size.toLong(),
                 sha256 = "sha256:" + "0".repeat(64),
                 state = AttachmentState.VERIFIED,
             )
@@ -1646,10 +1720,12 @@ class WorkbenchSendRegressionTest {
 
         override fun observe(draftId: String): kotlinx.coroutines.flow.Flow<AttachmentDraftState> =
             kotlinx.coroutines.flow.flowOf(
-                AttachmentDraftState(AttachmentDraftId(draftId), AttachmentState.VERIFIED, 1f, null),
+                AttachmentDraftState(draftId = AttachmentDraftId(draftId), state = AttachmentState.VERIFIED, progress = 1f),
             )
 
-        override fun retry(draftId: String, selection: LocalAttachmentSelection) = Unit
+        override fun retry(draftId: String) = Unit
+        override suspend fun discard(draftId: String) = Unit
+        override suspend fun releaseAfterSubmit(draftId: String) = Unit
 
         override fun remoteAttachmentId(draftId: String): String? = "att_$draftId"
     }

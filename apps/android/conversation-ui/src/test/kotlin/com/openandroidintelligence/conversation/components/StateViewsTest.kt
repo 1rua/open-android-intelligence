@@ -33,8 +33,8 @@ class StateViewsTest {
         val ssl = readableFailure("SSLHandshakeException: TLS pin mismatch")
         assertTrue("证书错误必须提示安全连接与证书", ssl.contains("证书") || ssl.contains("安全连接"))
 
-        val tooLarge = readableFailure("ATTACHMENT_TOO_LARGE:413")
-        assertTrue("过大文件必须提示较小文件", tooLarge.contains("较小") || tooLarge.contains("限制"))
+        val storageUnavailable = readableFailure("ATTACHMENT_STORAGE_UNAVAILABLE")
+        assertTrue("附件暂存不可用必须提示服务端存储", storageUnavailable.contains("存储"))
 
         val rateLimit = readableFailure("RATE_LIMIT_EXCEEDED:429")
         assertTrue("限频必须提示稍后重试", rateLimit.contains("频繁") || rateLimit.contains("稍后"))
@@ -62,6 +62,13 @@ class StateViewsTest {
 
         val incompleteHandshake = readableFailure("NEGOTIATION_FAILED:400")
         assertTrue("协商失败必须点名协商", incompleteHandshake.contains("协商"))
+    }
+
+    @Test
+    fun agentAttachmentFailuresAreReportedAsProcessingFailures() {
+        assertTrue(readableFailure("AGENT_MESSAGE_FAILED:AGENT_MEDIA_REJECTED").contains("不支持处理"))
+        assertTrue(readableFailure("AGENT_MESSAGE_FAILED:ATTACHMENT_READ_FAILED").contains("重新选择"))
+        assertTrue(readableFailure("AGENT_MESSAGE_FAILED:MODEL_REQUEST_REJECTED").contains("模型"))
     }
 
     @Test

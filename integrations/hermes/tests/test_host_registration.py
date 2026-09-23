@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from open_android_intelligence_gateway.admin import run_admin_command
-from open_android_intelligence_gateway.plugin import register
+from open_android_intelligence_gateway.plugin import HERMES_PLUGIN_MANIFEST, register
 from test_support import PasswordVerifierDouble
 
 
@@ -40,6 +40,7 @@ def test_registers_platform_and_management_surface(tmp_path):
 
     register(context)
 
+    assert HERMES_PLUGIN_MANIFEST["version"] == "2.1.0"
     assert context.platform_ids == ["open-android-intelligence-gateway"]
     assert len(context.admin_surfaces) == 1
 

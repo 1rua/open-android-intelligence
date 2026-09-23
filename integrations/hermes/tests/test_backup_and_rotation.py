@@ -223,7 +223,7 @@ def test_identity_rotation_updates_the_tls_fingerprint_atomically(tmp_path):
     negotiation = core._build_negotiation_response(
         {
             "negotiationId": "neg_rotation_tls",
-            "protocol": {"major": 2, "minor": 0},
+            "protocol": {"major": 2, "minor": 1},
             "client": {
                 "installationId": "install_rotation_tls", "appVersion": "2.0.0",
                 "platform": "android", "platformApi": 35,

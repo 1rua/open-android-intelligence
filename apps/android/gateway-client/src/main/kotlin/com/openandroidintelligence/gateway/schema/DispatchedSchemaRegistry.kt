@@ -78,7 +78,7 @@ class DispatchedSchemaRegistry private constructor(
             setOf("schemaSha256", "schema", "binding", "resolver", "validator")
         private const val EXPECTED_FORMAT_VERSION = "1.0.0"
         private const val EXPECTED_BINDING_SET_ID = "gateway-core-fixtures-v1"
-        private const val EXPECTED_ENTRY_COUNT = 15
+        private const val EXPECTED_ENTRY_COUNT = 16
 
         fun fromContractDir(contractDir: File): DispatchedSchemaRegistry {
             val file = File(contractDir, "vectors/dispatched-schema-fixtures.json")

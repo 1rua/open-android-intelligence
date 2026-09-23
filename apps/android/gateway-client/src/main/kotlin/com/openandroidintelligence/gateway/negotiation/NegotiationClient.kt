@@ -7,15 +7,6 @@ import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.SchemaContractHash
 
-/** What one connection actually negotiated. */
-data class NegotiatedLimits(
-    val maxSingleAttachmentBytes: Long?,
-    val maxMessageAttachmentBytes: Long?,
-    val allowedMediaTypes: List<String>,
-    val attachmentTtlSeconds: Long?,
-    val eventRetentionSeconds: Long?,
-)
-
 /** generation-cancel-v1 在对话面能力闭集里的名字。 */
 const val GENERATION_CANCEL_FEATURE = "generation-cancel-v1"
 
@@ -43,7 +34,6 @@ data class NegotiationResult(
     val attachments: String?,
     val events: String?,
     val deviceRequests: String?,
-    val limits: NegotiatedLimits,
     /** Conversation-surface features this connection actually agreed on. */
     val conversationUi: List<String> = emptyList(),
 ) {
@@ -141,10 +131,13 @@ class NegotiationClient(
             runCatching { Json.parse(String(response.body, Charsets.UTF_8)) }.getOrNull(),
         ) ?: throw IllegalStateException("NEGOTIATION_FAILED:malformed")
 
+        if (JsonFields.string(body, "protocol") != PROTOCOL_HEADER) {
+            throw IllegalStateException("NEGOTIATION_FAILED:invalid-envelope")
+        }
+
         val result = JsonFields.obj(JsonFields.field(body, "data")) ?: body
         val protocol = JsonFields.obj(JsonFields.field(result, "protocol"))
         val features = JsonFields.obj(JsonFields.field(result, "features"))
-        val limits = JsonFields.obj(JsonFields.field(result, "limits"))
         val identity = JsonFields.obj(JsonFields.field(result, "gatewayIdentity"))
 
         return NegotiationResult(
@@ -157,20 +150,14 @@ class NegotiationClient(
             attachments = JsonFields.string(features, "attachments"),
             events = JsonFields.string(features, "events"),
             deviceRequests = JsonFields.string(features, "deviceRequests"),
-            limits = NegotiatedLimits(
-                maxSingleAttachmentBytes = JsonFields.long(limits, "maxSingleAttachmentBytes"),
-                maxMessageAttachmentBytes = JsonFields.long(limits, "maxMessageAttachmentBytes"),
-                allowedMediaTypes = JsonFields.strings(limits, "allowedMediaTypes"),
-                attachmentTtlSeconds = JsonFields.long(limits, "attachmentTtlSeconds"),
-                eventRetentionSeconds = JsonFields.long(limits, "eventRetentionSeconds"),
-            ),
             conversationUi = JsonFields.strings(features, "conversationUi"),
         )
     }
 
     private companion object {
         const val PROTOCOL_MAJOR = 2
-        const val PROTOCOL_MINOR = 0
+        const val PROTOCOL_MINOR = 1
+        const val PROTOCOL_HEADER = "2.1"
 
         /** Authentication flows this client implements today. */
         val AUTH_FEATURES = listOf("password", "refresh")

@@ -49,6 +49,7 @@ const expectedFixtureIds = [
   "event.pairing-grant-changed.v1",
   "event.session-revoked.v1",
   "event.attachment-acknowledged.v1",
+  "event.message-status.v1",
 ] as const;
 
 const expectedFixtureDigests = [
@@ -67,6 +68,7 @@ const expectedFixtureDigests = [
   "sha256:1fd22acb49da0b291eb528550b8d638408b837a309540eff9e6c42f44c367957",
   "sha256:533930dd454ec07392982a48ca2a64cf01c17471322c31373bd1825911e4a67a",
   "sha256:1dfc04f9fff6e8f528e29c58926bead33f735e26f1a12880d004a4431d41f7d6",
+  "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d",
 ] as const;
 
 const expectedFixtureLogicalKeys: GatewayLogicalSubschemaKey[] = [
@@ -91,6 +93,7 @@ const expectedFixtureLogicalKeys: GatewayLogicalSubschemaKey[] = [
   { kind: "event", eventType: "pairing.grant.changed" },
   { kind: "event", eventType: "session.revoked" },
   { kind: "event", eventType: "attachment.acknowledged" },
+  { kind: "event", eventType: "conversation.message.status" },
 ];
 
 const loadSharedFixtureRegistry = (
@@ -182,14 +185,14 @@ const validDeviceRequest = {
 const validSuccess = {
   requestId: "request_1",
   correlationId: "correlation_1",
-  protocol: "2.0",
+  protocol: "2.1",
   data: { conversationId: "conversation_1" },
 };
 
 const validFailure = {
   requestId: "request_1",
   correlationId: "correlation_1",
-  protocol: "2.0",
+  protocol: "2.1",
   error: {
     code: "CURSOR_EXPIRED",
     message: "expired",
@@ -202,6 +205,22 @@ const validFailure = {
 const eventDispatch: TrustedGatewayDispatch = {
   kind: "event",
   eventType: "gateway.notice",
+};
+const messageStatusDispatch: TrustedGatewayDispatch = {
+  kind: "event",
+  eventType: "conversation.message.status",
+};
+const validMessageStatus = {
+  correlationId: "correlation_status",
+  occurredAt: "2026-09-23T00:00:00.000Z",
+  payload: {
+    conversationId: "conversation_1",
+    messageId: "message_1",
+    clientMessageId: "client_message_1",
+    status: "delivered",
+    revision: 1,
+    errorCode: null,
+  },
 };
 const deviceDispatch: TrustedGatewayDispatch = { kind: "device.request" };
 const successDispatch: TrustedGatewayDispatch = {
@@ -232,10 +251,10 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
 
   it("loads the single shared fixture registry and its seven canonical schemas", () => {
     expect(registry.formatVersion).toBe("1.0.0");
-    expect(registry.catalogEntries).toHaveLength(15);
+    expect(registry.catalogEntries).toHaveLength(16);
     expect(registry.bindingSets).toHaveLength(1);
     expect(bindingSet?.id).toBe(bindingSetId);
-    expect(bindings).toHaveLength(15);
+    expect(bindings).toHaveLength(16);
 
     expect(fixtureCatalogEntries.map((entry) => entry.fixtureId)).toEqual([
       "event.gateway-notice.v1",
@@ -253,6 +272,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       "event.pairing-grant-changed.v1",
       "event.session-revoked.v1",
       "event.attachment-acknowledged.v1",
+      "event.message-status.v1",
     ]);
     expect(bindings.map((binding) => binding.key)).toEqual([
       { kind: "event", eventType: "gateway.notice" },
@@ -276,6 +296,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       { kind: "event", eventType: "pairing.grant.changed" },
       { kind: "event", eventType: "session.revoked" },
       { kind: "event", eventType: "attachment.acknowledged" },
+      { kind: "event", eventType: "conversation.message.status" },
     ]);
 
     for (const entry of fixtureCatalogEntries) {
@@ -318,9 +339,39 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
     const validator = createFixtureValidator();
 
     expect(validator.validate(eventDispatch, validEvent)).toEqual({ ok: true });
+    expect(validator.validate(messageStatusDispatch, validMessageStatus)).toEqual({ ok: true });
     expect(validator.validate(deviceDispatch, validDeviceRequest)).toEqual({ ok: true });
     expect(validator.validate(successDispatch, validSuccess)).toEqual({ ok: true });
     expect(validator.validate(failureDispatch, validFailure)).toEqual({ ok: true });
+  });
+
+  it("restricts failed message status to stable redacted error codes", () => {
+    const validator = createFixtureValidator();
+    const failed = {
+      ...validMessageStatus,
+      payload: {
+        ...validMessageStatus.payload,
+        status: "failed",
+        revision: 2,
+        errorCode: "MODEL_REQUEST_REJECTED",
+      },
+    };
+    expect(validator.validate(messageStatusDispatch, failed)).toEqual({ ok: true });
+    const { errorCode: _ignoredErrorCode, ...payloadWithoutErrorCode } = validMessageStatus.payload;
+    const missingErrorCode = { ...validMessageStatus, payload: payloadWithoutErrorCode };
+    expect(validator.validate(messageStatusDispatch, missingErrorCode)).toMatchObject({ ok: false });
+    expect(validator.validate(messageStatusDispatch, {
+      ...failed,
+      payload: { ...failed.payload, errorCode: "provider-key leaked" },
+    })).toMatchObject({ ok: false });
+    expect(validator.validate(messageStatusDispatch, {
+      ...failed,
+      payload: { ...failed.payload, status: "failed", errorCode: null },
+    })).toMatchObject({ ok: false });
+    expect(validator.validate(messageStatusDispatch, {
+      ...failed,
+      payload: { ...failed.payload, status: "delivered", errorCode: "MODEL_REQUEST_REJECTED" },
+    })).toMatchObject({ ok: false });
   });
 
   it("rejects a dynamic payload even when its outer object is valid", () => {
@@ -357,7 +408,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       payload: {
         noticeCode: "maintenance",
         type: "some-other-event",
-        digest: "sha256:" + "0".repeat(64),
+        digest: "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d",
       },
     };
 
@@ -470,11 +521,11 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
     const validator = createFixtureValidator();
     const injectedDispatch = {
       ...eventDispatch,
-      schemaSha256: "sha256:" + "0".repeat(64),
+      schemaSha256: "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d",
       schema: { type: "object", additionalProperties: true },
       resolver: () => ({ ok: true }),
       validator: () => true,
-      binding: { schemaSha256: "sha256:" + "0".repeat(64) },
+      binding: { schemaSha256: "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d" },
     } as unknown as TrustedGatewayDispatch;
 
     expect(validator.validate(injectedDispatch, validEvent)).toMatchObject({ ok: false });
@@ -504,7 +555,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
     expect(() =>
       createGatewayDispatchedValidator(
         [entryFor(entry.key.schemaSha256)],
-        { core: [bindingFor("sha256:" + "0".repeat(64))], device: [] },
+        { core: [bindingFor("sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d")], device: [] },
       ),
     ).toThrow();
 
@@ -524,7 +575,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       ),
     ).toThrow();
 
-    const mismatchedKey = { ...entry.key, schemaSha256: "sha256:" + "0".repeat(64) };
+    const mismatchedKey = { ...entry.key, schemaSha256: "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d" };
     expect(() =>
       createGatewayDispatchedValidator(
         [{ key: mismatchedKey, schema: entry.schema }],
@@ -567,7 +618,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
 
     expect(Object.isFrozen(validator)).toBe(true);
     schema.properties.value = { type: "number" };
-    binding.schemaSha256 = "sha256:" + "0".repeat(64);
+    binding.schemaSha256 = "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d";
     const eventValue = {
       correlationId: "correlation_1",
       occurredAt: "2026-08-27T00:00:00.000Z",

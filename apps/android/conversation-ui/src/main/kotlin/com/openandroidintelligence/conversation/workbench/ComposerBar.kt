@@ -320,9 +320,14 @@ fun AttachmentDraftChip(
     modifier: Modifier = Modifier,
 ) {
     val state = draft.state
-    val failed = state == AttachmentState.RETRYABLE_FAILURE || state == AttachmentState.TERMINAL_FAILURE
+    val failed = state == AttachmentState.RETRYABLE_FAILURE || state == AttachmentState.TERMINAL_FAILURE ||
+        state == AttachmentState.OUTCOME_UNKNOWN
+    val canRetry = state == AttachmentState.RETRYABLE_FAILURE || state == AttachmentState.OUTCOME_UNKNOWN
     val verifying = state == AttachmentState.VERIFYING
-    val uploading = state == AttachmentState.UPLOADING
+    val working = state == AttachmentState.LOCAL_PREPARING ||
+        state == AttachmentState.CREATE_PENDING ||
+        state == AttachmentState.UPLOADING ||
+        verifying
 
     Surface(
         shape = RoundedCornerShape(AppRadius.Medium),
@@ -353,14 +358,24 @@ fun AttachmentDraftChip(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = attachmentStateLabel(state),
+                    text = attachmentProgressLabel(draft),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 10.sp,
                 )
+                draft.errorMessage?.let { code ->
+                    Text(
+                        text = attachmentErrorLabel(code),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 10.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
 
-            if (uploading || verifying) {
+            if (working) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(14.dp),
                     strokeWidth = 2.dp,
@@ -368,11 +383,11 @@ fun AttachmentDraftChip(
                 )
             }
 
-            if (failed) {
+            if (canRetry) {
                 IconButton(onClick = onRetry, modifier = Modifier.size(20.dp)) {
                     Icon(
                         imageVector = Icons.Default.Refresh,
-                        contentDescription = "重试上传",
+                        contentDescription = if (state == AttachmentState.OUTCOME_UNKNOWN) "核实附件上传结果" else "重试上传",
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(14.dp),
                     )
@@ -392,7 +407,7 @@ fun AttachmentDraftChip(
 }
 
 fun attachmentStateLabel(state: AttachmentState): String = when (state) {
-    AttachmentState.LOCAL_PREPARING -> "正在准备文件"
+    AttachmentState.LOCAL_PREPARING -> "正在加密暂存"
     AttachmentState.CREATE_PENDING -> "正在申请上传"
     AttachmentState.UPLOADING -> "正在上传"
     AttachmentState.VERIFYING -> "正在核验完整性"
@@ -401,6 +416,24 @@ fun attachmentStateLabel(state: AttachmentState): String = when (state) {
     AttachmentState.TERMINAL_FAILURE -> "无法上传，请移除后重新选择"
     AttachmentState.OUTCOME_UNKNOWN -> "上传结果未知，请先核实"
     AttachmentState.CANCELLED -> "已取消上传"
+}
+
+private fun attachmentProgressLabel(draft: AttachmentDraft): String {
+    val totalBytes = draft.totalBytes
+    return when {
+    draft.state == AttachmentState.LOCAL_PREPARING && draft.transferredBytes > 0L ->
+        "正在加密暂存 · 已读 ${formatAttachmentSize(draft.transferredBytes)}"
+    draft.state == AttachmentState.UPLOADING && totalBytes != null ->
+        "正在上传 · ${formatAttachmentSize(draft.transferredBytes)} / ${formatAttachmentSize(totalBytes)}"
+    else -> attachmentStateLabel(draft.state)
+    }
+}
+
+private fun attachmentErrorLabel(code: String): String = when {
+    code.contains("ATTACHMENT_STORAGE_UNAVAILABLE") -> "本机存储空间不足或暂存不可用"
+    code.contains("ATTACHMENT_READ_FAILED") -> "无法读取所选文件"
+    code.contains("ATTACHMENT_DIGEST_MISMATCH") || code.contains("DIGEST_MISMATCH") -> "附件完整性校验失败"
+    else -> "错误代码：${code.take(80)}"
 }
 
 fun generationLabel(state: GenerationState): String? = when (state) {
@@ -449,4 +482,3 @@ fun PendingBatchStrip(
         }
     }
 }
-

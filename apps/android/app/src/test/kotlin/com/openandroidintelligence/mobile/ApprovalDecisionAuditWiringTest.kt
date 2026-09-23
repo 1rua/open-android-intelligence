@@ -54,7 +54,7 @@ class ApprovalDecisionAuditWiringTest {
         gateway.respond(EVENTS_PATH, APPROVAL_EVENT_SSE, contentType = "text/event-stream")
         gateway.respond(
             DECISION_PATH,
-            """{"protocol":"2.0","data":{"approval":{"approvalId":"appr_1","decision":"once"}}}""",
+            """{"protocol":"2.1","data":{"approval":{"approvalId":"appr_1","decision":"once"}}}""",
         )
     }
 
@@ -126,13 +126,12 @@ class ApprovalDecisionAuditWiringTest {
         const val APPROVAL_ID = "appr_1"
 
         val NEGOTIATE_BODY = """
-            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":0},
+            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":["agent-command-catalog-v1","agent-approval-cards-v1"]},
-            "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
-            "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
+            "limits":{            "attachmentTtlSeconds":3600,
             "eventRetentionSeconds":86400},
             "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
         """.trimIndent()
@@ -143,12 +142,12 @@ class ApprovalDecisionAuditWiringTest {
         """.trimIndent()
 
         val CONVERSATIONS_BODY = """
-            {"protocol":"2.0","data":{"conversations":[{"conversationId":"conv_1","title":"排查",
+            {"protocol":"2.1","data":{"conversations":[{"conversationId":"conv_1","title":"排查",
             "lastMessageAt":"2026-09-01T00:00:00.000Z"}]}}
         """.trimIndent()
 
         val TIMELINE_BODY =
-            """{"protocol":"2.0","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}"""
+            """{"protocol":"2.1","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}"""
 
         /** 一帧审批请求事件：请求此刻开始、五分钟后过期。data 必须单行。 */
         val APPROVAL_EVENT_SSE = run {

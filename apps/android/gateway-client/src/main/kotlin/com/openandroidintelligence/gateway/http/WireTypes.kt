@@ -7,6 +7,7 @@ data class WireRequest(
     val target: String,
     val headers: List<RawHeader> = emptyList(),
     val body: ByteArray = ByteArray(0),
+    val streamBody: GatewayRequestBody? = null,
 )
 
 data class WireResponse(

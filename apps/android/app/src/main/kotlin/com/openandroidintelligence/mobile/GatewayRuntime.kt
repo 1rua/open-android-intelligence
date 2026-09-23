@@ -6,6 +6,9 @@ import com.openandroidintelligence.conversation.data.GatewayAttachmentDraftCoord
 import com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepository
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
 import com.openandroidintelligence.conversation.ports.ConversationScope
+import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
+import com.openandroidintelligence.conversation.ports.LocalAttachmentStagingStore
+import com.openandroidintelligence.conversation.ports.StagedAttachmentContent
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.gateway.attachments.AttachmentUploader
 import com.openandroidintelligence.gateway.attachments.HttpAttachmentTransport
@@ -25,7 +28,8 @@ import com.openandroidintelligence.gateway.http.GatewayTransport
 import com.openandroidintelligence.gateway.http.SpkiPinning
 import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
-import com.openandroidintelligence.gateway.negotiation.NegotiatedLimits
+import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvider
+import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStore
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CancellationException
@@ -38,6 +42,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.InputStream
+import java.security.MessageDigest
 import java.util.Base64
 
 /**
@@ -79,7 +85,6 @@ sealed interface ConnectionPhase {
     data class Connected(
         val gatewayUrl: String,
         val username: String,
-        val limits: NegotiatedLimits?,
         val pairingSummary: String?,
         /** The pinned TLS identity, or null on a plaintext connection. */
         val tlsSpkiSha256: String?,
@@ -128,6 +133,14 @@ class GatewayRuntime(
     private val _operationNotice = MutableStateFlow<String?>(null)
     val operationNotice: StateFlow<String?> = _operationNotice.asStateFlow()
     fun dismissOperationNotice() { _operationNotice.value = null }
+
+    init {
+        val stagingRoot = File(context.noBackupFilesDir, "attachment-staging")
+        scope.launch(Dispatchers.IO) {
+            runCatching { EncryptedAttachmentStagingStore.cleanupExpiredRoot(stagingRoot) }
+                .onFailure { _operationNotice.value = "ATTACHMENT_CLEANUP_FAILED:ATTACHMENT_STORAGE_UNAVAILABLE" }
+        }
+    }
 
     /** 是否正在向 Gateway 轮换凭据；界面据此展示进行中并阻止重复点击。 */
     private val _isRefreshingSession = MutableStateFlow(false)
@@ -202,7 +215,6 @@ class GatewayRuntime(
                         username = username,
                         profileId = profileId,
                         session = session,
-                        limits = negotiated.limits,
                         tlsSpkiSha256 = tlsPin,
                         conversationUi = negotiated.conversationUi,
                         deviceRequests = negotiated.deviceRequests,
@@ -346,7 +358,6 @@ class GatewayRuntime(
                     username = current.username,
                     profileId = profileId,
                     session = session,
-                    limits = negotiated.limits,
                     tlsSpkiSha256 = tlsPin,
                     conversationUi = negotiated.conversationUi,
                     deviceRequests = negotiated.deviceRequests,
@@ -446,7 +457,6 @@ class GatewayRuntime(
                 username = lastUser,
                 profileId = lastProfileId,
                 session = session,
-                limits = negotiated.limits,
                 tlsSpkiSha256 = tlsPin,
                 conversationUi = negotiated.conversationUi,
                 deviceRequests = negotiated.deviceRequests,
@@ -468,7 +478,6 @@ class GatewayRuntime(
         username: String,
         profileId: String,
         session: SessionCredentials,
-        limits: NegotiatedLimits?,
         tlsSpkiSha256: String?,
         conversationUi: List<String>,
         deviceRequests: String?,
@@ -552,7 +561,12 @@ class GatewayRuntime(
         val gate = com.openandroidintelligence.conversation.attachment.AttachmentSubmissionGate(
             onSubmit = { error("ATTACHMENT_SUBMISSION_REQUIRES_CONVERSATION_CONTROLLER") },
         )
-        val attachmentCoordinator = GatewayAttachmentDraftCoordinator(uploader, gate, sessionScope)
+        val attachmentCoordinator = GatewayAttachmentDraftCoordinator(
+            uploader,
+            gate,
+            sessionScope,
+            attachmentStagingStore(endpoint.baseUrl, session.accountId, installationId()),
+        )
 
         val conversationScope = ConversationScope(
             profileId = profileId,
@@ -579,7 +593,6 @@ class GatewayRuntime(
         _phase.value = ConnectionPhase.Connected(
             gatewayUrl = endpoint.baseUrl,
             username = username,
-            limits = limits,
             pairingSummary = session.pairingSummary,
             tlsSpkiSha256 = tlsSpkiSha256,
             transportSecurity = endpoint.securityFor(pins),
@@ -698,6 +711,33 @@ class GatewayRuntime(
      */
     private fun negotiatedPin(endpoint: GatewayEndpoint, negotiated: String?): String? =
         if (endpoint.isTls) negotiated?.takeIf(SpkiPinning::isProtocolPin) else null
+
+    private fun attachmentStagingStore(gatewayId: String, accountId: String, installId: String): LocalAttachmentStagingStore {
+        val scopeId = "$gatewayId\n$accountId\n$installId"
+        val scopeHash = MessageDigest.getInstance("SHA-256").digest(scopeId.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        val directory = File(context.noBackupFilesDir, "attachment-staging/$scopeHash")
+        val provider = AndroidKeystoreOutboxKeyProvider("oai_attachment_${scopeHash.take(32)}")
+        val delegate by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+            EncryptedAttachmentStagingStore(directory, provider.getOrCreate(), scopeId)
+        }
+        return object : LocalAttachmentStagingStore {
+            override fun stage(
+                selection: LocalAttachmentSelection,
+                onBytesStaged: (Long) -> Unit,
+                isCancelled: () -> Boolean,
+            ): StagedAttachmentContent = delegate.stage(selection, onBytesStaged, isCancelled)
+
+            override fun openStream(stagedId: String): InputStream = delegate.openStream(stagedId)
+
+            override fun delete(stagedId: String) = delegate.delete(stagedId)
+
+            override fun cleanupExpired(nowMillis: Long, maxAgeMillis: Long) =
+                delegate.cleanupExpired(nowMillis, maxAgeMillis)
+
+            override fun cleanup() = delegate.cleanup()
+        }
+    }
 
     private companion object {
         const val PREFS_NAME = "open_android_intelligence_runtime"

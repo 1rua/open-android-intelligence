@@ -10,16 +10,18 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
 import sqlite3
+import struct
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.parse import urlsplit
 
 from .account_paths import (
@@ -33,6 +35,9 @@ from .credentials import hash_password, verify_password
 
 
 logger = logging.getLogger("open_android_intelligence_gateway.core")
+
+WIRE_PROTOCOL = "2.1"
+PROTOCOL_VERSION = {"major": 2, "minor": 1}
 
 # One transport that wants committed events as they happen. The account id is
 # the account the event belongs to, so a stream never has to guess it.
@@ -142,42 +147,28 @@ class TransactionOutcomeUnknown(GatewayError):
 
 @dataclass(frozen=True)
 class AttachmentPolicy:
-    """Immutable attachment limits shared by negotiation and every data path."""
+    """Gateway attachment retention policy, independent of payload size/MIME."""
 
-    max_single_attachment_bytes: int = 26_214_400
-    max_message_attachment_bytes: int = 52_428_800
-    allowed_media_types: tuple[str, ...] = (
-        "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif",
-        "image/heic", "image/heif", "image/bmp", "image/x-ms-bmp",
-        "image/svg+xml", "image/tiff",
-        "audio/mp4", "audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg",
-        "audio/aac", "audio/m4a", "audio/x-m4a", "audio/flac",
-        "video/mp4", "video/webm", "video/quicktime", "video/3gpp",
-        "text/plain", "text/markdown", "text/x-markdown", "text/csv",
-        "text/html", "text/xml",
-        "application/pdf", "application/json", "application/xml",
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-powerpoint",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/zip", "application/x-zip-compressed", "application/x-tar",
-        "application/gzip", "application/octet-stream",
-    )
     attachment_ttl_seconds: int = 3600
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "allowed_media_types", tuple(self.allowed_media_types))
-        if self.max_single_attachment_bytes <= 0:
-            raise ValueError("max_single_attachment_bytes must be positive")
-        if self.max_message_attachment_bytes < self.max_single_attachment_bytes:
-            raise ValueError("message attachment limit must cover one attachment")
-        if self.attachment_ttl_seconds <= 0 or not self.allowed_media_types:
-            raise ValueError("attachment policy must define positive limits and media types")
+        if self.attachment_ttl_seconds <= 0:
+            raise ValueError("attachment retention TTL must be positive")
 
 
 DEFAULT_ATTACHMENT_POLICY = AttachmentPolicy()
+MESSAGE_DISPATCH_LEASE_SECONDS = 300
+
+_ATTACHMENT_PUBLIC_STATUS = {
+    "created": "staged",
+    "uploading": "staged",
+    "verified": "uploaded",
+    "delivered": "uploaded",
+    "acknowledged": "uploaded",
+    "failed": "failed",
+    "expired": "expired",
+    "deleted": "expired",
+}
 
 
 @dataclass(frozen=True, init=False)
@@ -496,10 +487,26 @@ def request_signature_preimage(input: Mapping[str, Any]) -> bytes:
     body_hex = input.get("bodyHex")
     if not isinstance(body_hex, str) or re.fullmatch(r"(?:[0-9a-f]{2})*", body_hex) is None:
         raise GatewayError("SCHEMA_INVALID")
+    return request_signature_preimage_from_digest(
+        input, hashlib.sha256(bytes.fromhex(body_hex)).hexdigest(),
+    )
+
+
+def request_signature_preimage_from_digest(input: Mapping[str, Any], body_sha256: str) -> bytes:
+    """Build the unchanged V2 signature preimage from a streamed-body digest."""
+    method = input.get("method")
+    if method not in {"GET", "POST", "PUT", "DELETE", "PATCH"}:
+        raise GatewayError("SCHEMA_INVALID")
+    target = input.get("target")
+    canonical = canonicalize_target(target)
+    if target != canonical:
+        raise GatewayError("NON_CANONICAL_TARGET")
+    if not isinstance(body_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", body_sha256) is None:
+        raise GatewayError("SCHEMA_INVALID")
     fields = [
         "OPEN-ANDROID-INTELLIGENCE-REQUEST-V2", method, canonical, input.get("accountId"), input.get("deviceId"),
         input.get("sessionId"), input.get("requestId"), input.get("timestamp"), input.get("nonce"),
-        hashlib.sha256(bytes.fromhex(body_hex)).hexdigest(),
+        body_sha256,
     ]
     if not all(isinstance(field, str) for field in fields):
         raise GatewayError("SCHEMA_INVALID")
@@ -529,6 +536,7 @@ class ContractRegistry:
         "event.pairing-grant-changed.v1",
         "event.session-revoked.v1",
         "event.attachment-acknowledged.v1",
+        "event.message-status.v1",
     )
 
     schema_definitions = {
@@ -843,6 +851,8 @@ def _json(value: Any) -> str:
     def encode(child: Any) -> Any:
         if isinstance(child, (bytes, bytearray, memoryview)):
             return {"bytesSha256": hashlib.sha256(bytes(child)).hexdigest()}
+        if isinstance(child, StreamedAttachmentUpload):
+            return {"bytesSha256": child.sha256}
         if isinstance(child, Mapping):
             return {str(key): encode(item) for key, item in child.items()}
         if isinstance(child, (list, tuple)):
@@ -997,7 +1007,7 @@ def _success(context: Mapping[str, Any], data: Mapping[str, Any]) -> GatewayResp
     return GatewayResponse({
         "requestId": context["requestId"],
         "correlationId": context["correlationId"],
-        "protocol": "2.0",
+        "protocol": WIRE_PROTOCOL,
         "data": dict(data),
     })
 
@@ -1006,11 +1016,11 @@ def _failure(context: Mapping[str, Any], code: str, details: Mapping[str, Any] |
     return GatewayResponse({
         "requestId": context["requestId"],
         "correlationId": context["correlationId"],
-        "protocol": "2.0",
+        "protocol": WIRE_PROTOCOL,
         "error": {
             "code": code,
             "message": code,
-            "retryable": False,
+            "retryable": code == "ATTACHMENT_STORAGE_UNAVAILABLE",
             "retryAfterSeconds": None,
             "details": dict(details or {}),
         },
@@ -1097,6 +1107,22 @@ class AccountStore:
               state TEXT NOT NULL DEFAULT 'CONFIRMED',
               FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
             );
+            CREATE TABLE IF NOT EXISTS conversation_message_dispatch (
+              message_id TEXT PRIMARY KEY NOT NULL,
+              conversation_id TEXT NOT NULL,
+              client_message_id TEXT NOT NULL,
+              request_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              revision INTEGER NOT NULL,
+              error_code TEXT,
+              claim_token TEXT,
+              claim_until TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (message_id) REFERENCES messages(message_id)
+            );
+            CREATE INDEX IF NOT EXISTS conversation_message_dispatch_status_idx
+              ON conversation_message_dispatch(status, updated_at);
             CREATE TABLE IF NOT EXISTS conversation_agent_sessions (
               conversation_id TEXT PRIMARY KEY NOT NULL,
               agent_session_id TEXT, session_key TEXT,
@@ -1200,6 +1226,8 @@ class AccountStore:
             )
         self._metadata("gateway_identity_ref", "spki_initial")
         self._metadata("pairing_generation", "1")
+        if self.account_id:
+            self._metadata("gateway_account_id", self.account_id)
         self._metadata("deployment_id", f"deploy_{hashlib.sha256(str(paths.root.parent.parent).encode('utf-8')).hexdigest()[:16]}")
         self._metadata("tls_spki_sha256", "sha256:" + "0" * 64)
 
@@ -1728,6 +1756,141 @@ class ApprovalRequests:
         }
 
 
+ATTACHMENT_STREAM_CHUNK_BYTES = 64 * 1024
+_ATTACHMENT_STREAM_MAGIC = b"OAI-ATTACHMENT-AEAD-STREAM\x02\n"
+_ATTACHMENT_STREAM_FRAME = struct.Struct(">II")
+_MAX_SEALED_ATTACHMENT_CHUNK_BYTES = ATTACHMENT_STREAM_CHUNK_BYTES * 2 + 8192
+
+
+@dataclass(frozen=True)
+class StreamedAttachmentUpload:
+    """Private encrypted spool handed from the HTTP stream reader to Core."""
+
+    account_id: str
+    attachment_id: str
+    temporary_path: Path
+    size_bytes: int
+    sha256: str
+
+    def discard(self) -> None:
+        try:
+            self.temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+class _AttachmentUploadStream:
+    """Bounded-memory writer for an authenticated attachment staging file."""
+
+    def __init__(
+        self, attachments: Any, attachment_id: str, row: sqlite3.Row,
+        now: datetime | str | None,
+    ):
+        self.attachments = attachments
+        self.attachment_id = attachment_id
+        self.row = row
+        self.now = now
+        self.part_path = attachments.paths.attachments / f".{attachment_id}.{uuid.uuid4().hex}.upload"
+        try:
+            self.handle = self.part_path.open("xb")
+            self.part_path.chmod(0o600)
+            self.handle.write(_ATTACHMENT_STREAM_MAGIC)
+        except OSError as exc:
+            try:
+                self.handle.close()
+            except (AttributeError, OSError):
+                pass
+            self.part_path.unlink(missing_ok=True)
+            raise GatewayError("ATTACHMENT_STORAGE_UNAVAILABLE") from exc
+        except BaseException:
+            try:
+                self.handle.close()
+            except OSError:
+                pass
+            self.part_path.unlink(missing_ok=True)
+            raise
+        self.byte_count = 0
+        self.chunk_count = 0
+        self.digest = hashlib.sha256()
+        self.closed = False
+        self.finished = False
+
+    def _purpose(self, suffix: str) -> str:
+        return (
+            f"{self.attachments._attachment_aad(self.attachment_id, str(self.row['sha256']))}"
+            f":stream-v2:{suffix}"
+        )
+
+    def _write_frame(self, plain_length: int, sealed: str) -> None:
+        encoded = sealed.encode("ascii")
+        if len(encoded) > _MAX_SEALED_ATTACHMENT_CHUNK_BYTES:
+            raise GatewayError("ENCRYPTION_FAILED")
+        self.handle.write(_ATTACHMENT_STREAM_FRAME.pack(plain_length, len(encoded)))
+        self.handle.write(encoded)
+
+    def write(self, chunk: bytes | bytearray | memoryview) -> None:
+        if self.closed or self.finished:
+            raise GatewayError("INVALID_STATE_TRANSITION")
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise GatewayError("REQUEST_BODY_INVALID")
+        view = memoryview(chunk)
+        for offset in range(0, len(view), ATTACHMENT_STREAM_CHUNK_BYTES):
+            plain = bytes(view[offset:offset + ATTACHMENT_STREAM_CHUNK_BYTES])
+            if self.byte_count + len(plain) > int(self.row["size_bytes"]):
+                raise GatewayError("ATTACHMENT_DIGEST_MISMATCH")
+            try:
+                self.digest.update(plain)
+                sealed = self.attachments.store.seal_bytes(
+                    plain, self._purpose(f"chunk:{self.chunk_count}"),
+                )
+                self._write_frame(len(plain), sealed)
+            except OSError as exc:
+                raise GatewayError("ATTACHMENT_STORAGE_UNAVAILABLE") from exc
+            self.byte_count += len(plain)
+            self.chunk_count += 1
+
+    def finish(self) -> StreamedAttachmentUpload:
+        if self.closed or self.finished:
+            raise GatewayError("INVALID_STATE_TRANSITION")
+        actual_digest = self.digest.hexdigest()
+        if (
+            self.byte_count != int(self.row["size_bytes"])
+            or actual_digest != str(self.row["sha256"])
+        ):
+            self.abort()
+            raise GatewayError("ATTACHMENT_DIGEST_MISMATCH")
+
+        final_purpose = self._purpose(
+            f"final:{self.chunk_count}:{self.byte_count}:{actual_digest}"
+        )
+        try:
+            self._write_frame(0, self.attachments.store.seal_bytes(b"", final_purpose))
+            self.handle.flush()
+            os.fsync(self.handle.fileno())
+            self.handle.close()
+            self.closed = True
+        except OSError as exc:
+            self.abort()
+            raise GatewayError("ATTACHMENT_STORAGE_UNAVAILABLE") from exc
+        self.finished = True
+        return StreamedAttachmentUpload(
+            self.attachments.account_id,
+            self.attachment_id,
+            self.part_path,
+            self.byte_count,
+            actual_digest,
+        )
+
+    def abort(self) -> None:
+        if not self.closed:
+            self.handle.close()
+            self.closed = True
+        try:
+            self.part_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 class AttachmentStore:
     def __init__(
         self, account_id: str, paths: AccountPaths, store: AccountStore,
@@ -1747,23 +1910,23 @@ class AttachmentStore:
         except OSError:
             pass
         self._reconcile_staged_files()
+        self._recover_legacy_attachments()
 
     def create(self, **input: Any) -> dict[str, Any]:
         self.store.require_aead()
         current = _now(input.get("now"))
-        attachment_id = f"att_{uuid.uuid4()}"
         raw_media_type = input["media_type"] if "media_type" in input else input["mediaType"]
-        media_type = str(raw_media_type).split(";")[0].strip().lower()
+        media_type = str(raw_media_type)
         size_bytes = int(input["size_bytes"] if "size_bytes" in input else input["sizeBytes"])
-        if (
-            size_bytes < 0
-            or size_bytes > self.policy.max_single_attachment_bytes
-            or (
-                media_type not in self.policy.allowed_media_types
-                and not media_type.startswith(("image/", "audio/", "video/", "text/"))
-            )
-        ):
-            raise GatewayError("ATTACHMENT_LIMIT_EXCEEDED")
+        client_attachment_id = (
+            input["client_attachment_id"]
+            if "client_attachment_id" in input
+            else input["clientAttachmentId"]
+        )
+        filename = str(input["filename"])
+        sha256 = str(input["sha256"])
+        if size_bytes < 0 or size_bytes > 0x7FFF_FFFF_FFFF_FFFF or not media_type:
+            raise GatewayError("SCHEMA_INVALID")
         requested_expiry = input.get("expires_at") or input.get("expiresAt")
         if requested_expiry is None:
             expires_at = iso_millis(current + timedelta(seconds=self.policy.attachment_ttl_seconds))
@@ -1776,69 +1939,262 @@ class AttachmentStore:
             if expiry <= current or expiry > maximum_expiry:
                 raise GatewayError("SCHEMA_INVALID")
             expires_at = iso_millis(expiry)
-        self.store.database.execute(
-            """
-            INSERT INTO attachments(attachment_id, client_attachment_id, filename, media_type, size_bytes,
-              sha256, state, content_path, cas_path, created_at, expires_at, delivered_at, acknowledged_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'created', NULL, NULL, ?, ?, NULL, NULL)
-            """,
-            (
-                attachment_id,
-                input["client_attachment_id"] if "client_attachment_id" in input else input["clientAttachmentId"],
-                input["filename"], media_type, size_bytes,
-                input["sha256"], iso_millis(current), expires_at,
-            ),
+        correlation_id = (
+            input["correlation_id"] if "correlation_id" in input else input["correlationId"]
         )
-        self.audit.append(
-            "attachment.created", {"accountId": self.account_id},
-            {"attachmentId": attachment_id, "mediaType": media_type, "sizeBytes": size_bytes},
-            input["correlation_id"] if "correlation_id" in input else input["correlationId"], current,
-        )
+        with self.store.transaction():
+            existing_rows = self.store.database.execute(
+                "SELECT attachment_id, filename, media_type, size_bytes, sha256 FROM attachments "
+                "WHERE client_attachment_id = ? ORDER BY created_at DESC",
+                (client_attachment_id,),
+            ).fetchall()
+            if existing_rows:
+                for existing in existing_rows:
+                    if (
+                        str(existing["filename"]) != filename
+                        or str(existing["media_type"]) != media_type
+                        or int(existing["size_bytes"]) != size_bytes
+                        or str(existing["sha256"]) != sha256
+                    ):
+                        raise GatewayError("IDEMPOTENCY_CONFLICT")
+                attachment_id = str(existing_rows[0]["attachment_id"])
+            else:
+                attachment_id = f"att_{uuid.uuid4()}"
+                self.store.database.execute(
+                    """
+                    INSERT INTO attachments(attachment_id, client_attachment_id, filename, media_type, size_bytes,
+                      sha256, state, content_path, cas_path, created_at, expires_at, delivered_at, acknowledged_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'created', NULL, NULL, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        attachment_id, client_attachment_id, filename, media_type,
+                        size_bytes, sha256, iso_millis(current), expires_at,
+                    ),
+                )
+                self.audit.append(
+                    "attachment.created", {"accountId": self.account_id},
+                    {"attachmentId": attachment_id, "mediaType": media_type, "sizeBytes": size_bytes},
+                    correlation_id, current,
+                )
         return self.get(attachment_id, current)
 
-    def get(self, attachment_id: str, now: datetime | str | None = None) -> dict[str, Any]:
+    def get_record(self, attachment_id: str, now: datetime | str | None = None) -> dict[str, Any]:
+        """Read internal metadata, including storage state, without wire projection."""
         row, _ = self._expire_if_due(attachment_id, _now(now))
         path = row["content_path"]
         return {
             "attachmentId": row["attachment_id"], "state": row["state"],
+            "status": _ATTACHMENT_PUBLIC_STATUS.get(str(row["state"]), "failed"),
             "filename": row["filename"], "mediaType": row["media_type"],
             "sizeBytes": int(row["size_bytes"]), "sha256": row["sha256"],
             "hasStagedBytes": bool(path and Path(path).is_file()), "expiresAt": row["expires_at"],
         }
 
+    def get(self, attachment_id: str, now: datetime | str | None = None) -> dict[str, Any]:
+        """Return exactly the shared attachment status resource DTO."""
+        record = self.get_record(attachment_id, now)
+        return {
+            "attachmentId": record["attachmentId"],
+            "status": record["status"],
+            "sizeBytes": record["sizeBytes"],
+            "sha256": record["sha256"],
+        }
+
     def require_verified_for_message(self, attachment_id: str, now: datetime | str | None = None) -> None:
-        if self.get(attachment_id, now)["state"] != "verified":
+        row, expired = self._expire_if_due(attachment_id, _now(now))
+        if expired or row["state"] != "verified":
             raise GatewayError("ATTACHMENT_EXPIRED")
 
     def upload_content(
         self, attachment_id: str, content: bytes, now: datetime | str | None = None,
     ) -> dict[str, Any]:
-        stage_path = self.paths.attachments / f"{attachment_id}.stage"
+        return self.upload_content_stream(attachment_id, (content,), now=now)
+
+    def begin_content_upload_stream(
+        self,
+        attachment_id: str,
+        content_length: int,
+        content_sha256: str,
+        now: datetime | str | None = None,
+        content_type: str | None = None,
+    ) -> _AttachmentUploadStream:
+        """Start an account-scoped encrypted upload after its signed metadata matches."""
         row, expired = self._expire_if_due(attachment_id, _now(now))
         if expired or row["state"] == "expired":
             raise GatewayError("ATTACHMENT_EXPIRED")
+        if (
+            not isinstance(content_length, int)
+            or content_length != int(row["size_bytes"])
+            or content_sha256 != str(row["sha256"])
+            or (content_type is not None and content_type != str(row["media_type"]))
+        ):
+            raise GatewayError("ATTACHMENT_DIGEST_MISMATCH")
+        return _AttachmentUploadStream(self, attachment_id, row, now)
+
+    def upload_content_stream(
+        self,
+        attachment_id: str,
+        chunks: Iterable[bytes | bytearray | memoryview],
+        *,
+        now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Encrypt an iterable of body chunks without joining them in memory."""
+        record = self.get(attachment_id, now)
+        upload = self.begin_content_upload_stream(
+            attachment_id, int(record["sizeBytes"]), str(record["sha256"]), now,
+        )
+        try:
+            for chunk in chunks:
+                upload.write(chunk)
+            staged = upload.finish()
+            try:
+                return self.accept_streamed_upload(staged, now)
+            finally:
+                staged.discard()
+        except BaseException:
+            upload.abort()
+            raise
+
+    def accept_streamed_upload(
+        self, staged: StreamedAttachmentUpload, now: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Promote a finished encrypted spool to this account's attachment stage."""
+        if (
+            staged.account_id != self.account_id
+            or staged.temporary_path.parent.resolve() != self.paths.attachments.resolve()
+            or not staged.temporary_path.name.startswith(f".{staged.attachment_id}.")
+            or not staged.temporary_path.name.endswith(".upload")
+        ):
+            raise GatewayError("SCHEMA_INVALID")
+        current = _now(now)
+        row, expired = self._expire_if_due(staged.attachment_id, current)
+        if expired or row["state"] == "expired":
+            raise GatewayError("ATTACHMENT_EXPIRED")
+        if (
+            int(row["size_bytes"]) != staged.size_bytes
+            or str(row["sha256"]) != staged.sha256
+        ):
+            raise GatewayError("ATTACHMENT_DIGEST_MISMATCH")
+        if row["state"] in {"uploading", "verified", "delivered"}:
+            existing_path_value = row["cas_path"] or row["content_path"]
+            if not existing_path_value:
+                raise GatewayError("ATTACHMENT_READ_FAILED")
+            try:
+                for _chunk in self._iter_decrypted_content(row, Path(existing_path_value)):
+                    pass
+            except GatewayError as exc:
+                raise GatewayError("ATTACHMENT_READ_FAILED") from exc
+            return self.get(staged.attachment_id, now)
+        if row["state"] == "acknowledged":
+            # The original bytes have already been handed to Hermes and ACKed;
+            # the signed retry is content-identical by the metadata checks above.
+            return self.get(staged.attachment_id, now)
+        if row["state"] != "created":
+            raise GatewayError("ATTACHMENT_DIGEST_MISMATCH")
+        stage_path = self.paths.attachments / f"{staged.attachment_id}.stage"
         try:
             with self.store.transaction():
-                row = self._row(attachment_id)
-                if int(row["size_bytes"]) != len(content):
-                    raise GatewayError("ATTACHMENT_DIGEST_MISMATCH")
+                row = self._row(staged.attachment_id)
                 next_state = next_attachment_state(row["state"], "begin_upload")
-                encrypted = self.store.seal_bytes(bytes(content), self._attachment_aad(row["sha256"]))
-                stage_path.write_bytes(encrypted.encode("ascii"))
+                os.replace(staged.temporary_path, stage_path)
                 try:
                     stage_path.chmod(0o600)
                 except OSError:
                     pass
                 self.store.database.execute(
                     "UPDATE attachments SET state = ?, content_path = ? WHERE attachment_id = ?",
-                    (next_state, str(stage_path), attachment_id),
+                    (next_state, str(stage_path), staged.attachment_id),
                 )
+        except OSError as exc:
+            self._reconcile_staged_files()
+            staged.discard()
+            raise GatewayError("ATTACHMENT_STORAGE_UNAVAILABLE") from exc
         except BaseException:
-            # A filesystem write may have preceded a rolled-back database row;
-            # retain and reconcile that unique stage rather than discarding it.
             self._reconcile_staged_files()
             raise
-        return self.get(attachment_id, now)
+        return self.get(staged.attachment_id, now)
+
+    @property
+    def stream_chunk_bytes(self) -> int:
+        return ATTACHMENT_STREAM_CHUNK_BYTES
+
+    def _iter_decrypted_content(self, row: sqlite3.Row, path: Path) -> Iterator[bytes]:
+        """Yield authenticated plaintext records and verify the whole object at EOF."""
+        try:
+            with path.open("rb") as handle:
+                prefix = handle.read(len(_ATTACHMENT_STREAM_MAGIC))
+                if prefix != _ATTACHMENT_STREAM_MAGIC:
+                    # The host AEAD API authenticates one-shot byte strings. A
+                    # v1 attachment therefore cannot be safely decrypted with
+                    # bounded memory. Startup recovery marks it failed and asks
+                    # the sender to upload it again in the chunked v2 format.
+                    raise GatewayError("DECRYPTION_FAILED")
+
+                index = 0
+                total = 0
+                digest = hashlib.sha256()
+                while True:
+                    frame = handle.read(_ATTACHMENT_STREAM_FRAME.size)
+                    if len(frame) != _ATTACHMENT_STREAM_FRAME.size:
+                        raise GatewayError("DECRYPTION_FAILED")
+                    plain_length, sealed_length = _ATTACHMENT_STREAM_FRAME.unpack(frame)
+                    if sealed_length <= 0 or sealed_length > _MAX_SEALED_ATTACHMENT_CHUNK_BYTES:
+                        raise GatewayError("DECRYPTION_FAILED")
+                    sealed_bytes = handle.read(sealed_length)
+                    if len(sealed_bytes) != sealed_length:
+                        raise GatewayError("DECRYPTION_FAILED")
+                    try:
+                        sealed = sealed_bytes.decode("ascii")
+                    except UnicodeDecodeError as exc:
+                        raise GatewayError("DECRYPTION_FAILED") from exc
+                    if plain_length == 0:
+                        final_purpose = (
+                            f"{self._attachment_aad(str(row['attachment_id']), str(row['sha256']))}:stream-v2:"
+                            f"final:{index}:{total}:{digest.hexdigest()}"
+                        )
+                        if self.store.open_bytes(sealed, final_purpose) != b"" or handle.read(1):
+                            raise GatewayError("DECRYPTION_FAILED")
+                        if (
+                            total != int(row["size_bytes"])
+                            or digest.hexdigest() != str(row["sha256"])
+                        ):
+                            raise GatewayError("ATTACHMENT_DIGEST_MISMATCH")
+                        return
+                    if plain_length > ATTACHMENT_STREAM_CHUNK_BYTES:
+                        raise GatewayError("DECRYPTION_FAILED")
+                    purpose = (
+                        f"{self._attachment_aad(str(row['attachment_id']), str(row['sha256']))}:stream-v2:chunk:{index}"
+                    )
+                    plaintext = self.store.open_bytes(sealed, purpose)
+                    if len(plaintext) != plain_length:
+                        raise GatewayError("DECRYPTION_FAILED")
+                    total += len(plaintext)
+                    if total > int(row["size_bytes"]):
+                        raise GatewayError("ATTACHMENT_DIGEST_MISMATCH")
+                    digest.update(plaintext)
+                    index += 1
+                    yield plaintext
+        except GatewayError:
+            raise
+        except OSError as exc:
+            raise GatewayError("ATTACHMENT_STORAGE_UNAVAILABLE") from exc
+        except (UnicodeDecodeError, ValueError, struct.error) as exc:
+            raise GatewayError("DECRYPTION_FAILED") from exc
+
+    def open_verified_stream(
+        self, attachment_id: str, now: datetime | str | None = None,
+    ) -> Iterator[bytes]:
+        """Open a verified attachment belonging to this account as bounded chunks."""
+        row, expired = self._expire_if_due(attachment_id, _now(now))
+        if expired or row["state"] not in {"verified", "delivered"}:
+            raise GatewayError("ATTACHMENT_EXPIRED")
+        raw_path = row["cas_path"] or row["content_path"]
+        if not raw_path:
+            raise GatewayError("ATTACHMENT_EXPIRED")
+        path = Path(raw_path)
+        if not path.is_file():
+            raise GatewayError("ATTACHMENT_EXPIRED")
+        return self._iter_decrypted_content(row, path)
 
     def commit(self, attachment_id: str, now: datetime | str | None = None) -> dict[str, Any]:
         mismatch = False
@@ -1849,21 +2205,18 @@ class AttachmentStore:
             row = self._row(attachment_id)
             stage_path = self._require_content_path(row)
             try:
-                sealed = stage_path.read_bytes().decode("ascii")
-                content = self.store.open_bytes(sealed, self._attachment_aad(row["sha256"]))
-            except GatewayError:
-                raise
-            except (OSError, UnicodeDecodeError) as exc:
-                raise GatewayError("DECRYPTION_FAILED") from exc
-            digest = hashlib.sha256(content).hexdigest()
-            if digest != row["sha256"] or len(content) != int(row["size_bytes"]):
+                for _chunk in self._iter_decrypted_content(row, stage_path):
+                    pass
+            except GatewayError as exc:
+                if exc.code != "ATTACHMENT_DIGEST_MISMATCH":
+                    raise
                 self.store.database.execute(
                     "UPDATE attachments SET state = ?, content_path = ? WHERE attachment_id = ?",
                     (next_attachment_state(row["state"], "fail"), str(stage_path), attachment_id),
                 )
                 mismatch = True
             else:
-                cas_path = self.cas_dir / row["sha256"]
+                cas_path = self.cas_dir / attachment_id
                 if not cas_path.exists():
                     shutil.copyfile(stage_path, cas_path)
                     try:
@@ -2063,8 +2416,91 @@ class AttachmentStore:
             raise GatewayError("ATTACHMENT_EXPIRED")
         return row
 
-    def _attachment_aad(self, sha256: str) -> str:
+    def _legacy_attachment_aad(self, sha256: str) -> str:
         return f"open-android-intelligence:attachment:v1:{self.account_id}:{sha256}"
+
+    def _attachment_aad(self, attachment_id: str, sha256: str) -> str:
+        return f"open-android-intelligence:attachment:v2:{self.account_id}:{attachment_id}:{sha256}"
+
+    def _recover_legacy_attachments(self) -> int:
+        """Fail old one-shot stages deterministically so clients can re-upload.
+
+        This deliberately does not decrypt legacy files. The previous format
+        authenticated the whole body as one value, so migrating it would grow
+        memory with the attachment size. The state transition commits before
+        any cleanup, which makes a process interruption safe: the next startup
+        sees either the original row and retries or the failed row and leaves
+        cleanup to the normal retention path.
+        """
+        rows = self.store.database.execute(
+            "SELECT attachment_id, state, content_path, cas_path, sha256 FROM attachments "
+            "WHERE state IN ('uploading', 'verified', 'delivered')"
+        ).fetchall()
+        recovered = 0
+        for row in rows:
+            paths = [Path(row[key]) for key in ("content_path", "cas_path") if row[key]]
+            if not paths:
+                continue
+            legacy = False
+            for path in paths:
+                try:
+                    with path.open("rb") as handle:
+                        prefix = handle.read(max(len(_ATTACHMENT_STREAM_MAGIC), len(b"aead-v1:")))
+                        if prefix.startswith(b"aead-v1:"):
+                            legacy = True
+                            break
+                except FileNotFoundError:
+                    # Existing reconciliation owns missing/corrupt paths.
+                    continue
+                except OSError as exc:
+                    raise GatewayError("ATTACHMENT_STORAGE_UNAVAILABLE") from exc
+            if not legacy:
+                continue
+            with self.store.transaction():
+                current = self._row(str(row["attachment_id"]))
+                if current["state"] not in {"uploading", "verified", "delivered"}:
+                    continue
+                self.store.database.execute(
+                    "UPDATE attachments SET state = ?, content_path = NULL, cas_path = NULL WHERE attachment_id = ?",
+                    (next_attachment_state(str(current["state"]), "fail"), row["attachment_id"]),
+                )
+                self.audit.append(
+                    "attachment.legacy_format.requires_reupload",
+                    {"accountId": self.account_id},
+                    {"attachmentId": row["attachment_id"], "format": "aead-v1"},
+                    f"legacy-recovery:{row['attachment_id']}",
+                )
+            for path in paths:
+                self._move_unreferenced_path(path)
+            recovered += 1
+        return recovered
+
+    def recover_interrupted_uploads(self) -> int:
+        """Remove encrypted temp and orphan files before HTTP serving starts."""
+        referenced = {
+            Path(row[0]) for row in self.store.database.execute(
+                "SELECT content_path FROM attachments WHERE content_path IS NOT NULL"
+            ).fetchall()
+        }
+        referenced.update(
+            Path(row[0]) for row in self.store.database.execute(
+                "SELECT cas_path FROM attachments WHERE cas_path IS NOT NULL"
+            ).fetchall()
+        )
+        candidates = list(self.paths.attachments.glob(".*.upload"))
+        candidates.extend(
+            path for path in self.paths.attachments.glob("*.stage")
+            if path not in referenced
+        )
+        candidates.extend(
+            path for path in self.cas_dir.glob("*")
+            if path.is_file() and path not in referenced
+        )
+        removed = 0
+        for path in set(candidates):
+            if self._move_unreferenced_path(path):
+                removed += 1
+        return removed
 
     def _require_content_path(self, row: sqlite3.Row) -> Path:
         path = Path(row["content_path"]) if row["content_path"] else None
@@ -2440,12 +2876,13 @@ class DeviceRequestStore:
 class ConversationPort:
     def __init__(
         self, account_id: str, store: AccountStore, attachments: AttachmentStore,
-        audit: AuditStore, policy: AttachmentPolicy | None = None,
+        audit: AuditStore, events: EventStore, policy: AttachmentPolicy | None = None,
     ):
         self.account_id = account_id
         self.store = store
         self.attachments = attachments
         self.audit = audit
+        self.events = events
         self.policy = policy or DEFAULT_ATTACHMENT_POLICY
 
     def create(self, client_conversation_id: str, title: str | None, correlation_id: str, now: datetime | str | None = None) -> dict[str, Any]:
@@ -2467,16 +2904,11 @@ class ConversationPort:
         self, conversation_id: str, client_message_id: str, text: str,
         attachment_ids: list[str], device_id: str, request_id: str,
         correlation_id: str, now: datetime | str | None = None,
+        dispatch_to_agent: bool = True,
     ) -> dict[str, Any]:
         current = _now(now)
-        total_attachment_bytes = 0
         for attachment_id in attachment_ids:
-            attachment = self.attachments.get(attachment_id, current)
-            if attachment["state"] != "verified":
-                raise GatewayError("ATTACHMENT_EXPIRED")
-            total_attachment_bytes += int(attachment["sizeBytes"])
-        if total_attachment_bytes > self.policy.max_message_attachment_bytes:
-            raise GatewayError("ATTACHMENT_LIMIT_EXCEEDED")
+            self.attachments.require_verified_for_message(attachment_id, current)
         with self.store.transaction():
             row = self.store.database.execute("SELECT conversation_id FROM conversations WHERE conversation_id = ?", (conversation_id,)).fetchone()
             if row is None:
@@ -2496,7 +2928,179 @@ class ConversationPort:
                 {"conversationId": conversation_id, "messageId": message_id, "attachmentCount": len(attachment_ids)},
                 correlation_id, current,
             )
+            if dispatch_to_agent:
+                self.store.database.execute(
+                    """
+                    INSERT INTO conversation_message_dispatch(
+                      message_id, conversation_id, client_message_id, request_id,
+                      status, revision, error_code, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'queued', 0, NULL, ?, ?)
+                    """,
+                    (
+                        message_id, conversation_id, client_message_id, request_id,
+                        iso_millis(current), iso_millis(current),
+                    ),
+                )
+                self.events.append(
+                    "conversation.message.status", correlation_id,
+                    {
+                        "conversationId": conversation_id,
+                        "messageId": message_id,
+                        "clientMessageId": client_message_id,
+                        "status": "queued",
+                        "revision": 0,
+                        "errorCode": None,
+                    },
+                    current,
+                )
             return {"status": "accepted", "messageId": message_id, "conversationId": conversation_id}
+
+    def dispatch_message(self, client_message_id: str) -> dict[str, Any] | None:
+        """Read the persisted message and ordered attachment metadata for Hermes."""
+        row = self.store.database.execute(
+            """
+            SELECT m.message_id, m.conversation_id, m.client_message_id, m.text,
+                   m.created_at, m.attachment_ids_json, d.status, d.revision,
+                   d.claim_token, d.claim_until
+            FROM messages AS m
+            JOIN conversation_message_dispatch AS d ON d.message_id = m.message_id
+            WHERE m.client_message_id = ? AND m.sender = 'user'
+            ORDER BY m.created_at DESC LIMIT 1
+            """,
+            (client_message_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            attachment_ids = json.loads(str(row["attachment_ids_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise GatewayError("SCHEMA_INVALID")
+        if not isinstance(attachment_ids, list) or any(not isinstance(item, str) for item in attachment_ids):
+            raise GatewayError("SCHEMA_INVALID")
+        attachments = []
+        for attachment_id in attachment_ids:
+            attachment = self.attachments.get_record(attachment_id)
+            attachments.append({
+                "attachmentId": attachment_id,
+                "filename": attachment["filename"],
+                "mediaType": attachment["mediaType"],
+                "sizeBytes": attachment["sizeBytes"],
+                "sha256": attachment["sha256"],
+                "state": str(attachment["state"]),
+            })
+        return {
+            "messageId": str(row["message_id"]),
+            "conversationId": str(row["conversation_id"]),
+            "clientMessageId": str(row["client_message_id"]),
+            "text": str(row["text"]),
+            "createdAt": str(row["created_at"]),
+            "attachmentIds": attachment_ids,
+            "attachments": attachments,
+            "status": str(row["status"]),
+            "revision": int(row["revision"]),
+            "claimUntil": str(row["claim_until"]) if row["claim_until"] else None,
+        }
+
+    def claim_dispatch(
+        self, client_message_id: str, now: datetime | str | None = None,
+    ) -> dict[str, Any] | None:
+        """Atomically lease one queued message to a single Hermes dispatcher."""
+        current = _now(now)
+        lease_until = iso_millis(current + timedelta(seconds=MESSAGE_DISPATCH_LEASE_SECONDS))
+        token = f"dclaim_{uuid.uuid4()}"
+        with self.store.transaction():
+            row = self.store.database.execute(
+                "SELECT message_id, status, claim_token, claim_until FROM conversation_message_dispatch "
+                "WHERE client_message_id = ? ORDER BY created_at DESC LIMIT 1",
+                (client_message_id,),
+            ).fetchone()
+            if row is None or row["status"] != "queued":
+                return None
+            if row["claim_token"] and row["claim_until"] and _now(row["claim_until"]) > current:
+                return None
+            cursor = self.store.database.execute(
+                """
+                UPDATE conversation_message_dispatch
+                SET claim_token = ?, claim_until = ?
+                WHERE message_id = ? AND status = 'queued'
+                  AND (claim_token IS NULL OR claim_until IS NULL OR claim_until <= ?)
+                """,
+                (token, lease_until, row["message_id"], iso_millis(current)),
+            )
+            if cursor.rowcount != 1:
+                return None
+        dispatch = self.dispatch_message(client_message_id)
+        if dispatch is not None:
+            dispatch["claimToken"] = token
+        return dispatch
+
+    def update_dispatch_status(
+        self, message_id: str, status: str, error_code: str | None,
+        correlation_id: str, now: datetime | str | None = None,
+        *, claim_token: str | None = None, force: bool = False,
+    ) -> dict[str, Any]:
+        """Persist one monotonic Agent delivery status and its SSE event."""
+        allowed_errors = {
+            "AGENT_UNAVAILABLE", "ATTACHMENT_READ_FAILED", "AGENT_MEDIA_REJECTED",
+            "MODEL_REQUEST_REJECTED",
+        }
+        if status not in {"delivered", "completed", "failed"}:
+            raise GatewayError("SCHEMA_INVALID")
+        if (status == "failed" and error_code not in allowed_errors) or (status != "failed" and error_code is not None):
+            raise GatewayError("SCHEMA_INVALID")
+        current = _now(now)
+        with self.store.transaction():
+            row = self.store.database.execute(
+                "SELECT * FROM conversation_message_dispatch WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                raise GatewayError("SCHEMA_INVALID")
+            previous = str(row["status"])
+            if previous == status:
+                return {"status": previous, "revision": int(row["revision"]), "errorCode": row["error_code"]}
+            transitions = {
+                "queued": {"delivered", "failed"},
+                "delivered": {"completed", "failed"},
+                "completed": set(),
+                "failed": set(),
+            }
+            if status not in transitions.get(previous, set()):
+                raise GatewayError("INVALID_STATE_TRANSITION")
+            if previous == "queued" and status == "delivered":
+                if not claim_token or row["claim_token"] != claim_token:
+                    raise GatewayError("INVALID_STATE_TRANSITION")
+            if (
+                previous == "queued" and status == "failed"
+                and row["claim_token"] and row["claim_token"] != claim_token and not force
+            ):
+                raise GatewayError("INVALID_STATE_TRANSITION")
+            revision = int(row["revision"]) + 1
+            self.store.database.execute(
+                "UPDATE conversation_message_dispatch SET status = ?, revision = ?, error_code = ?, claim_token = NULL, claim_until = NULL, updated_at = ? WHERE message_id = ?",
+                (status, revision, error_code, iso_millis(current), message_id),
+            )
+            payload = {
+                "conversationId": str(row["conversation_id"]),
+                "messageId": message_id,
+                "clientMessageId": str(row["client_message_id"]),
+                "status": status,
+                "revision": revision,
+                "errorCode": error_code,
+            }
+            self.events.append("conversation.message.status", correlation_id, payload, current)
+            return {"status": status, "revision": revision, "errorCode": error_code}
+
+    def incomplete_dispatches(self) -> list[dict[str, Any]]:
+        rows = self.store.database.execute(
+            "SELECT client_message_id FROM conversation_message_dispatch WHERE status IN ('queued', 'delivered') ORDER BY created_at"
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = self.dispatch_message(str(row["client_message_id"]))
+            if item is not None:
+                result.append(item)
+        return result
 
     def record_assistant_message(
         self, conversation_id: str, message_id: str, text: str,
@@ -2563,7 +3167,7 @@ class ConversationPort:
             for aid in att_ids:
                 part_dict: dict[str, Any] = {"type": "attachment", "attachmentId": aid}
                 try:
-                    att_obj = self.attachments.get(aid)
+                    att_obj = self.attachments.get_record(aid)
                     if att_obj:
                         part_dict["filename"] = att_obj.get("filename") or ""
                         part_dict["mediaType"] = att_obj.get("mediaType") or ""
@@ -2654,7 +3258,9 @@ class GatewayAccount:
             account_id, paths, store, self.audit, self.attachment_policy, self.events
         )
         self.device_requests = DeviceRequestStore(account_id, store, self.audit, self.events, contracts)
-        self.conversations = ConversationPort(account_id, store, self.attachments, self.audit, self.attachment_policy)
+        self.conversations = ConversationPort(
+            account_id, store, self.attachments, self.audit, self.events, self.attachment_policy,
+        )
         self.agent_sessions = AgentSessionBindings(store)
         self.approvals = ApprovalRequests(store)
         self.credentials = CredentialStore(store)
@@ -3089,7 +3695,7 @@ _ATTACHMENT_TRANSITIONS: dict[str, dict[str, str]] = {
     "created": {"begin_upload": "uploading", "fail": "failed", "expire": "expired"},
     "uploading": {"verify": "verified", "fail": "failed", "expire": "expired"},
     "verified": {"deliver": "delivered", "fail": "failed", "expire": "expired"},
-    "delivered": {"acknowledge": "acknowledged", "expire": "expired"},
+    "delivered": {"acknowledge": "acknowledged", "fail": "failed", "expire": "expired"},
     "acknowledged": {"cleanup": "deleted"},
     "failed": {"cleanup": "deleted"},
     "expired": {"cleanup": "deleted"},
@@ -3145,7 +3751,6 @@ _PERSISTABLE_ERRORS = {
     # failure, so a replay answers the refusal instead of sweeping again.
     "PAIRING_REQUIRED",
     "GRANT_STALE", "IDEMPOTENCY_CONFLICT", "OUTCOME_UNKNOWN", "ATTACHMENT_DIGEST_MISMATCH",
-    "ATTACHMENT_LIMIT_EXCEEDED",
     "ATTACHMENT_EXPIRED", "MASTER_KEY_UNAVAILABLE", "MASTER_KEY_REFERENCE_MISMATCH",
     "ENCRYPTION_FAILED", "DECRYPTION_FAILED", "CURSOR_CONFLICT", "CURSOR_EXPIRED",
     # Contract §7.2: an approval answer is a deterministic fact about the
@@ -3325,6 +3930,28 @@ class GatewayCore:
         return paths.database.is_file()
 
     has_gateway_account = account_exists
+
+    def list_gateway_account_ids(self) -> list[str]:
+        """List accounts that have persisted their opaque id for recovery scans."""
+        account_ids: set[str] = set()
+        if not self.storage_root.is_dir():
+            return []
+        for database_path in self.storage_root.glob("*/gateway.sqlite"):
+            try:
+                connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+                try:
+                    row = connection.execute(
+                        "SELECT value FROM account_metadata WHERE key = 'gateway_account_id'"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                if row is not None and isinstance(row[0], str):
+                    account_ids.add(str(row[0]))
+            except sqlite3.Error:
+                logger.warning("[open_android] Unable to inspect account metadata at %s", database_path)
+        return sorted(account_ids)
+
+    listGatewayAccountIds = list_gateway_account_ids
 
     def command_catalog_response(self, language_code: str) -> dict[str, Any]:
         """The shared command catalog in one response.
@@ -3512,12 +4139,9 @@ class GatewayCore:
         if conversation_ui:
             features["conversationUi"] = conversation_ui
         return {
-            "protocol": {"major": 2, "minor": 0},
+            "protocol": dict(PROTOCOL_VERSION),
             "features": features,
             "limits": {
-                "maxSingleAttachmentBytes": self.attachment_policy.max_single_attachment_bytes,
-                "maxMessageAttachmentBytes": self.attachment_policy.max_message_attachment_bytes,
-                "allowedMediaTypes": list(self.attachment_policy.allowed_media_types),
                 "attachmentTtlSeconds": self.attachment_policy.attachment_ttl_seconds,
                 "eventRetentionSeconds": 86_400, "maxClockSkewSeconds": 120,
             },
@@ -3841,7 +4465,7 @@ class GatewayCore:
         with account.store.transaction():
             accepted = account.conversations.accept_message(
                 source_conversation_id, client_message_id, NEW_CONVERSATION_COMMAND,
-                [], device_id, request_id, correlation_id, current,
+                [], device_id, request_id, correlation_id, current, dispatch_to_agent=False,
             )
             created = account.conversations.create(
                 # Derived from the id the phone chose for the command itself, so
@@ -4297,6 +4921,12 @@ class GatewayCore:
                         )})
                     attachment_content = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)/content", target_path)
                     if method == "PUT" and attachment_content:
+                        if isinstance(body, StreamedAttachmentUpload):
+                            if body.attachment_id != attachment_content.group(1):
+                                raise GatewayError("SCHEMA_INVALID")
+                            return _success(context, {"attachment": account.attachments.accept_streamed_upload(
+                                body, _request_now(request),
+                            )})
                         if not isinstance(body, (bytes, bytearray, memoryview)):
                             raise GatewayError("SCHEMA_INVALID")
                         return _success(context, {"attachment": account.attachments.upload_content(
@@ -4309,9 +4939,13 @@ class GatewayCore:
                         )})
                     attachment_get = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)", target_path)
                     if method == "GET" and attachment_get:
-                        return _success(context, {"attachment": account.attachments.get(
+                        attachment = account.attachments.get(
                             attachment_get.group(1), _request_now(request),
-                        )})
+                        )
+                        return _success(context, {"attachment": {
+                            key: attachment[key]
+                            for key in ("attachmentId", "status", "sizeBytes", "sha256")
+                        }})
                     claim_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/claim", target_path)
                     if method == "POST" and claim_match:
                         return _success(context, {"receipt": account.device_requests.claim(

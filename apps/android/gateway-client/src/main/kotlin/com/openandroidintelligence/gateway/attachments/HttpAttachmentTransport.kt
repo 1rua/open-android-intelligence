@@ -1,6 +1,7 @@
 package com.openandroidintelligence.gateway.attachments
 
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
+import com.openandroidintelligence.gateway.http.GatewayRequestBody
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.http.requireData
@@ -60,9 +61,32 @@ class HttpAttachmentTransport(
             ?: throw IllegalStateException("ATTACHMENT_CREATE_FAILED:malformed")
     }
 
+    override suspend fun getStatus(attachmentId: String): AttachmentRemoteStatusInfo {
+        val response = http.execute(
+            SignedGatewayRequest(
+                method = "GET",
+                target = "/open-android-intelligence/v2/attachments/$attachmentId",
+            ),
+        )
+        val data = response.requireData("ATTACHMENT_STATUS_FAILED")
+        val attachment = JsonFields.obj(JsonFields.field(data, "attachment"))
+            ?: throw IllegalStateException("ATTACHMENT_STATUS_FAILED:malformed")
+        val responseAttachmentId = JsonFields.string(attachment, "attachmentId")
+        val wireStatus = JsonFields.string(attachment, "status")
+        val sizeBytes = JsonFields.long(attachment, "sizeBytes")
+        val sha256 = JsonFields.string(attachment, "sha256")
+        if (responseAttachmentId != attachmentId || sizeBytes == null || sizeBytes < 0L ||
+            sha256 == null || !LOWERCASE_SHA256.matches(sha256)) {
+            throw IllegalStateException("ATTACHMENT_STATUS_FAILED:malformed")
+        }
+        val status = AttachmentRemoteStatus.entries.firstOrNull { it.wireValue == wireStatus }
+            ?: throw IllegalStateException("ATTACHMENT_STATUS_FAILED:unknown-status")
+        return AttachmentRemoteStatusInfo(status, sizeBytes, sha256)
+    }
+
     override suspend fun uploadContent(
         attachmentId: String,
-        content: ByteArray,
+        body: GatewayRequestBody,
         headers: Map<String, String>,
     ) {
         val response = http.execute(
@@ -70,7 +94,7 @@ class HttpAttachmentTransport(
                 method = "PUT",
                 target = "/open-android-intelligence/v2/attachments/$attachmentId/content",
                 headers = headers.map { (name, value) -> RawHeader(name, value) },
-                body = content,
+                streamBody = body,
             ),
         )
         response.requireData("ATTACHMENT_UPLOAD_FAILED")
@@ -88,13 +112,14 @@ class HttpAttachmentTransport(
         val data = response.requireData("ATTACHMENT_COMMIT_FAILED")
         val attachment = JsonFields.obj(JsonFields.field(data, "attachment"))
         if (JsonFields.string(attachment, "attachmentId") != attachmentId ||
-            JsonFields.string(attachment, "state") != "verified") {
-            throw IllegalStateException("ATTACHMENT_COMMIT_FAILED:not-verified")
+            JsonFields.string(attachment, "status") != "uploaded") {
+            throw IllegalStateException("ATTACHMENT_COMMIT_FAILED:not-uploaded")
         }
     }
 
     private companion object {
         val WIRE_ID = Regex("[A-Za-z0-9._~-]{1,128}")
+        val LOWERCASE_SHA256 = Regex("[a-f0-9]{64}")
         val JSON_HEADERS = listOf(
             RawHeader("Content-Type", "application/json"),
             RawHeader("Accept", "application/json"),

@@ -1,6 +1,6 @@
 {
   "formatVersion": "1.0.0",
-  "protocolVersion": "2.0",
+  "protocolVersion": "2.1",
   "vectorSet": "protocol-negotiation",
   "cases": [
     {
@@ -10,10 +10,10 @@
         "schemaName": "negotiate.request",
         "value": {
           "negotiationId": "neg_1",
-          "protocol": { "major": 2, "minor": 0 },
+          "protocol": { "major": 2, "minor": 1 },
           "client": {
             "installationId": "install_1",
-            "appVersion": "2.0.0",
+            "appVersion": "2.1.0",
             "platform": "android",
             "platformApi": 35
           },
@@ -42,7 +42,7 @@
           "protocol": { "major": 3, "minor": 0 },
           "client": {
             "installationId": "install_1",
-            "appVersion": "2.0.0",
+            "appVersion": "2.1.0",
             "platform": "android",
             "platformApi": 35
           },
@@ -67,7 +67,7 @@
       "input": {
         "schemaName": "negotiate.response",
         "value": {
-          "protocol": { "major": 2, "minor": 0 },
+          "protocol": { "major": 2, "minor": 1 },
           "features": {
             "auth": ["password", "refresh"],
             "messages": "chat-v1",
@@ -77,9 +77,6 @@
             "conversationUi": ["agent-command-catalog-v1", "agent-command-new-v1"]
           },
           "limits": {
-            "maxSingleAttachmentBytes": 26214400,
-            "maxMessageAttachmentBytes": 52428800,
-            "allowedMediaTypes": ["image/jpeg"],
             "attachmentTtlSeconds": 86400,
             "eventRetentionSeconds": 86400,
             "maxClockSkewSeconds": 120
@@ -101,7 +98,7 @@
       "input": {
         "schemaName": "negotiate.response",
         "value": {
-          "protocol": { "major": 2, "minor": 0 },
+          "protocol": { "major": 2, "minor": 1 },
           "features": {
             "auth": ["password", "refresh"],
             "messages": "chat-v1",
@@ -111,9 +108,6 @@
             "conversationUi": ["conversation-switch-v1"]
           },
           "limits": {
-            "maxSingleAttachmentBytes": 26214400,
-            "maxMessageAttachmentBytes": 52428800,
-            "allowedMediaTypes": ["image/jpeg"],
             "attachmentTtlSeconds": 86400,
             "eventRetentionSeconds": 86400,
             "maxClockSkewSeconds": 120

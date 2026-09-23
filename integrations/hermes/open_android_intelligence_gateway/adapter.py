@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
+import mimetypes
 import os
 import re
 import uuid
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Set
@@ -22,11 +26,14 @@ from .core import (
     APPROVAL_MAX_OPTIONS,
     NEW_CONVERSATION_COMMAND,
     AgentSessionBindings,
+    GatewayError,
+    WIRE_PROTOCOL,
     VerifiedGatewayRequest,
     VerifiedRequestContext,
     canonicalize_target,
     iso_millis,
     request_signature_preimage,
+    request_signature_preimage_from_digest,
     resolve_host_approval,
 )
 
@@ -65,6 +72,9 @@ except ImportError:
 
     class MessageType:  # type: ignore
         TEXT = "text"
+        PHOTO = "photo"
+        AUDIO = "audio"
+        DOCUMENT = "document"
 
     class Source:  # type: ignore
         def __init__(self, platform: Any = "open_android", chat_id: str = "", chat_name: str = "", chat_type: str = "dm", user_id: str = "", user_name: str = "", **kwargs: Any):
@@ -81,6 +91,9 @@ except ImportError:
             self.source = source
             self.message_type = message_type
             self.message_id = message_id
+            self.media_urls = kwargs.get("media_urls", [])
+            self.media_types = kwargs.get("media_types", [])
+            self.timestamp = kwargs.get("timestamp")
 
     class BasePlatformAdapter:  # type: ignore
         supports_code_blocks: bool = True
@@ -125,7 +138,10 @@ except ImportError:
 
         async def handle_message(self, event: Any) -> None:
             if self._message_handler:
+                event._gateway_accepted = True
                 await self._message_handler(event)
+            else:
+                event._gateway_accepted = False
 
 
 logger = logging.getLogger("hermes.platforms.open_android")
@@ -204,6 +220,8 @@ _SINGLETON_REQUEST_HEADERS = frozenset({
     "idempotency-key",
     "last-event-id",
     "content-type",
+    "content-length",
+    "digest",
 })
 
 _WIRE_ID = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
@@ -236,7 +254,7 @@ def _singleton_headers(input: Mapping[str, Any]) -> dict[str, str] | None:
         # tab; treating it as an independent header would let it add a second
         # meaning to a singleton.
         value = value.strip() if value[:1] in (" ", "\t") else value
-        if key in _SINGLETON_REQUEST_HEADERS and result.get(key, value) != value:
+        if key in _SINGLETON_REQUEST_HEADERS and key in result:
             return None
         result[key] = value
     return result
@@ -289,6 +307,37 @@ def _decode_body(body: Any, headers: Mapping[str, str]) -> Any:
         return None
 
 
+@dataclass(frozen=True)
+class VerifiedStreamingHeaders:
+    """Authenticated request metadata waiting for exact streamed-body verification."""
+
+    context: VerifiedRequestContext
+    method: str
+    target: str
+    content_length: int
+    body_sha256: str
+    content_type: str | None
+    idempotency_key: str | None
+    last_event_id: str | None
+    now: datetime | str | None
+
+    def complete(self, streamed_body: Any) -> VerifiedGatewayRequest:
+        if (
+            getattr(streamed_body, "size_bytes", None) != self.content_length
+            or getattr(streamed_body, "sha256", None) != self.body_sha256
+        ):
+            raise ValueError("ATTACHMENT_DIGEST_MISMATCH")
+        return VerifiedGatewayRequest(
+            context=self.context,
+            method=self.method,
+            target=self.target,
+            body=streamed_body,
+            idempotencyKey=self.idempotency_key,
+            lastEventId=self.last_event_id,
+            now=self.now,
+        )
+
+
 class GatewayRequestVerifier:
     """Turns a raw HTTP request into the typed verified-request seam.
 
@@ -314,10 +363,55 @@ class GatewayRequestVerifier:
         except Exception:
             return None
 
+    def verify_streaming_headers(self, input: Mapping[str, Any]) -> "VerifiedStreamingHeaders | None":
+        """Authenticate a raw attachment body from its signed Digest before reading it."""
+        try:
+            if input.get("method") != "PUT":
+                return None
+            target = input.get("target")
+            if not isinstance(target, str) or re.fullmatch(
+                r"/open-android-intelligence/v2/attachments/[^/]+/content", target,
+            ) is None:
+                return None
+            headers = _singleton_headers(input)
+            if headers is None or "content-encoding" in headers:
+                return None
+            raw_length = headers.get("content-length")
+            if not isinstance(raw_length, str) or re.fullmatch(r"(?:0|[1-9][0-9]*)", raw_length) is None:
+                return None
+            content_length = int(raw_length)
+            digest_header = headers.get("digest")
+            if not isinstance(digest_header, str) or not digest_header.startswith("sha-256="):
+                return None
+            encoded_digest = digest_header[len("sha-256="):]
+            digest = base64.b64decode(encoded_digest, validate=True)
+            if len(digest) != 32 or base64.b64encode(digest).decode("ascii") != encoded_digest:
+                return None
+            body_sha256 = digest.hex()
+            verified = self._verify(input, body_sha256=body_sha256, decode_body=False)
+            if verified is None:
+                return None
+            return VerifiedStreamingHeaders(
+                context=verified.context,
+                method=verified.method,
+                target=verified.target,
+                content_length=content_length,
+                body_sha256=body_sha256,
+                content_type=headers.get("content-type"),
+                idempotency_key=verified.idempotency_key,
+                last_event_id=verified.last_event_id,
+                now=verified.now,
+            )
+        except Exception:
+            return None
+
     # Host-adapter naming alias.
     verify = __call__
 
-    def _verify(self, input: Mapping[str, Any]) -> VerifiedGatewayRequest | None:
+    def _verify(
+        self, input: Mapping[str, Any], *, body_sha256: str | None = None,
+        decode_body: bool = True,
+    ) -> VerifiedGatewayRequest | None:
         method = input.get("method")
         target = input.get("target")
         # PATCH carries the conversation title update (contract §7); leaving it out
@@ -328,7 +422,7 @@ class GatewayRequestVerifier:
         headers = _singleton_headers(input)
         if headers is None:
             return None
-        if headers.get("x-open-android-intelligence-protocol") != "2.0":
+        if headers.get("x-open-android-intelligence-protocol") != WIRE_PROTOCOL:
             return None
         access_token = self._bearer_token(headers)
         account_id = headers.get("x-open-android-intelligence-account")
@@ -362,12 +456,15 @@ class GatewayRequestVerifier:
         canonical = canonicalize_target(target)
         if canonical != target:
             return None
-        preimage = request_signature_preimage({
+        signed_fields = {
             "method": method, "target": canonical,
             "accountId": account_id, "deviceId": device_id, "sessionId": session_id,
             "requestId": request_id, "timestamp": timestamp, "nonce": nonce,
-            "bodyHex": _raw_body(input).hex(),
-        })
+        }
+        if body_sha256 is None:
+            preimage = request_signature_preimage({**signed_fields, "bodyHex": _raw_body(input).hex()})
+        else:
+            preimage = request_signature_preimage_from_digest(signed_fields, body_sha256)
         if not _ed25519_verify(session["devicePublicKey"], preimage, signature):
             return None
 
@@ -381,7 +478,7 @@ class GatewayRequestVerifier:
             ),
             method=method,
             target=canonical,
-            body=_decode_body(input.get("body"), headers),
+            body=_decode_body(input.get("body"), headers) if decode_body else None,
             idempotencyKey=headers.get("idempotency-key"),
             lastEventId=headers.get("last-event-id"),
             now=timestamp,
@@ -690,6 +787,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         self._event_sink = self._deliver_committed_event
         # Background work this adapter started and must not lose to collection.
         self._background_tasks: Set[asyncio.Task] = set()
+        self._media_cache_dir = Path(getattr(self.services.core, "storage_root", Path.home() / ".hermes"))
+        self._media_cache_dir = self._media_cache_dir / "inbound-media"
+        self._processing_media_files: Dict[tuple[str, str], list[Path]] = {}
         # Per conversation: the reply text already published in the current turn,
         # and the message id it was published under.
         self._turn_replies: Dict[str, tuple[str, str]] = {}
@@ -738,6 +838,13 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             register_sink(self._event_sink)
 
         try:
+            # Recover only before opening the listener: orphan `.upload` files
+            # are safe to discard at this point, while a live concurrent PUT
+            # must keep its private AEAD spool intact.
+            self._cleanup_inbound_media_cache()
+            for account_id in self._recovery_account_ids():
+                await self._recover_message_dispatches(account_id)
+
             max_bytes = 10485760
             if self.services and hasattr(self.services, "exposure") and self.services.exposure.routes:
                 max_bytes = getattr(self.services.exposure.routes[0]._services, "max_body_bytes", max_bytes)
@@ -1161,6 +1268,17 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
     def _raw_request(self, request: web.Request, body: bytes) -> Dict[str, Any]:
         """The origin-form target the client actually signed, query included."""
+        raw_headers = getattr(request, "raw_headers", ()) or ()
+        if raw_headers:
+            raw_header_pairs = tuple(
+                (
+                    name.decode("latin-1") if isinstance(name, bytes) else str(name),
+                    value.decode("latin-1") if isinstance(value, bytes) else str(value),
+                )
+                for name, value in raw_headers
+            )
+        else:
+            raw_header_pairs = tuple((k, v) for k, v in request.headers.items())
         return {
             "method": request.method,
             # `url` is the origin-form target the client signed: the boundary
@@ -1169,14 +1287,102 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             "url": request.path_qs,
             "target": request.path_qs,
             "headers": dict(request.headers),
-            "rawHeaders": tuple((k, v) for k, v in request.headers.items()),
+            "rawHeaders": raw_header_pairs,
             "body": body,
         }
+
+    async def _handle_attachment_content_stream(self, request: web.Request) -> web.Response:
+        """Verify the signed body digest first, then spool AEAD chunks as they arrive."""
+        target = request.path_qs
+        match = re.fullmatch(
+            r"/open-android-intelligence/v2/attachments/([^/]+)/content", request.path,
+        )
+        route = next(
+            (item for item in self.services.exposure.routes
+             if item.match == "prefix" and request.path.startswith(item.path)),
+            None,
+        )
+        if match is None or route is None:
+            return web.json_response({"errorCode": "NOT_FOUND"}, status=404)
+        verifier = getattr(route._services, "verify_request", None)
+        verify_stream = getattr(verifier, "verify_streaming_headers", None)
+        if not callable(verify_stream):
+            logger.error("[open_android] Streaming attachment verifier is unavailable")
+            failed = route.failure_response(None, None, "ATTACHMENT_STORAGE_UNAVAILABLE")
+            return web.json_response(failed["body"], status=failed["statusCode"])
+
+        raw_request = self._raw_request(request, b"")
+        raw_request["method"] = "PUT"
+        raw_request["target"] = target
+        ticket = verify_stream(raw_request)
+        if ticket is None:
+            failed = route.failure_response(None, None, "AUTHENTICATION_REQUIRED")
+            return web.json_response(failed["body"], status=failed["statusCode"])
+
+        core = getattr(self.services, "core", None)
+        if core is None:
+            failed = route.failure_response(
+                ticket.context.request_id, ticket.context.correlation_id,
+                "ATTACHMENT_STORAGE_UNAVAILABLE",
+            )
+            return web.json_response(failed["body"], status=failed["statusCode"])
+
+        account = None
+        upload = None
+        staged = None
+        try:
+            account = core.open_gateway_account(ticket.context.account_id)
+            upload = account.attachments.begin_content_upload_stream(
+                match.group(1), ticket.content_length, ticket.body_sha256,
+                now=ticket.now, content_type=ticket.content_type,
+            )
+            async for chunk in request.content.iter_chunked(account.attachments.stream_chunk_bytes):
+                upload.write(chunk)
+            staged = upload.finish()
+            verified_request = ticket.complete(staged)
+            result = route.handle_verified_request(verified_request)
+            headers = {k: v for k, v in result["headers"].items() if k.lower() != "content-type"}
+            return web.json_response(
+                result["body"], status=result["statusCode"], headers=headers,
+            )
+        except GatewayError as exc:
+            failed = route.failure_response(
+                ticket.context.request_id, ticket.context.correlation_id, exc.code,
+            )
+            return web.json_response(
+                failed["body"], status=failed["statusCode"],
+                headers={k: v for k, v in failed["headers"].items() if k.lower() != "content-type"},
+            )
+        except Exception as exc:
+            logger.warning("[open_android] Attachment stream failed: %s", exc, exc_info=True)
+            failed = route.failure_response(
+                ticket.context.request_id, ticket.context.correlation_id,
+                "ATTACHMENT_STORAGE_UNAVAILABLE" if isinstance(exc, OSError) else "INTERNAL_ERROR",
+            )
+            return web.json_response(
+                failed["body"], status=failed["statusCode"],
+                headers={k: v for k, v in failed["headers"].items() if k.lower() != "content-type"},
+            )
+        finally:
+            if upload is not None:
+                upload.abort()
+            if staged is not None:
+                staged.discard()
+            if account is not None:
+                account.close()
 
     async def _dispatch_gateway_request(self, request: web.Request) -> web.StreamResponse:
         """Route incoming HTTP request into Gateway exposure routes or SSE stream."""
         path = request.path
         method = request.method
+
+        if (
+            method == "PUT"
+            and re.fullmatch(
+                r"/open-android-intelligence/v2/attachments/[^/]+/content", path,
+            ) is not None
+        ):
+            return await self._handle_attachment_content_stream(request)
 
         try:
             body_bytes = await request.read()
@@ -1226,9 +1432,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
         # If this was an inbound message POST, trigger Hermes agent turn
         if method == "POST" and "/conversations/" in path and path.endswith("/messages") and status in (200, 201):
-            asyncio.create_task(self._notify_agent_inbound(
+            task = asyncio.create_task(self._notify_agent_inbound(
                 path, body_bytes, body, account_header,
             ))
+            self._track_background_task(task, "inbound-message")
 
         # Opening one conversation is the switch itself (ADR 0043): the reply that
         # follows must land in that conversation's own Agent session, so the
@@ -1243,6 +1450,26 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
         clean_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
         return web.json_response(body, status=status, headers=clean_headers)
+
+    def _track_background_task(self, task: asyncio.Task, operation: str) -> None:
+        """Keep accepted dispatch work alive and always observe task failures."""
+        self._background_tasks.add(task)
+
+        def _finished(done_task: asyncio.Task) -> None:
+            self._background_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            try:
+                error = done_task.exception()
+            except asyncio.CancelledError:
+                return
+            if error is not None:
+                logger.warning(
+                    "[open_android] Background task failed operation=%s errorCode=%s",
+                    operation, str(getattr(error, "code", "INTERNAL_ERROR")),
+                )
+
+        task.add_done_callback(_finished)
 
     def _agent_source(self, conversation_id: str, account_id: str) -> Any:
         """The host source that names one Gateway conversation as one Agent chat.
@@ -1357,6 +1584,13 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         if not source_account:
             logger.warning("[open_android] Inbound message carries no account identity; not dispatching")
             return
+        client_message_id: str | None = None
+        dispatch_record: dict[str, Any] | None = None
+        dispatch_claim_token: str | None = None
+        materialized_files: list[Path] = []
+        account = None
+        error_code = "AGENT_UNAVAILABLE"
+        handed_to_host = False
         try:
             conv_id = _conversation_id_of(path) or "default"
             self._conv_to_account[conv_id] = source_account
@@ -1366,7 +1600,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
             data = json.loads(body_bytes.decode("utf-8"))
             user_text = data.get("text") or data.get("content") or ""
-            client_turn = data.get("clientTurnId") or str(uuid.uuid4())
+            client_message_id = data.get("clientMessageId") or data.get("clientTurnId")
+            client_message_id = str(client_message_id) if client_message_id else str(uuid.uuid4())
 
             if user_text.strip() == NEW_CONVERSATION_COMMAND:
                 # The Gateway's own command entry owns `/new` (contract §7.1): it
@@ -1377,6 +1612,37 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 logger.info("[open_android] Reserved /new stays a command entry; not dispatched to the agent")
                 return
 
+            account = self.services.core.open_gateway_account(source_account)
+            dispatch_record = account.conversations.dispatch_message(client_message_id)
+            if dispatch_record is not None:
+                if dispatch_record["status"] != "queued":
+                    logger.info(
+                        "[open_android] Message %s is already %s; duplicate dispatch ignored",
+                        client_message_id, dispatch_record["status"],
+                    )
+                    return
+                dispatch_record = account.conversations.claim_dispatch(client_message_id)
+                if dispatch_record is None:
+                    logger.info(
+                        "[open_android] Message dispatch already claimed messageId=%s",
+                        client_message_id,
+                    )
+                    return
+                dispatch_claim_token = str(dispatch_record["claimToken"])
+                error_code = "ATTACHMENT_READ_FAILED"
+                media_urls, media_types, materialized_files = self._materialize_message_attachments(
+                    source_account, dispatch_record, account,
+                )
+                error_code = "AGENT_UNAVAILABLE"
+                user_text = str(dispatch_record["text"])
+                client_message_id = str(dispatch_record["clientMessageId"])
+                conversation_id = str(dispatch_record["conversationId"])
+                created_at = datetime.fromisoformat(str(dispatch_record["createdAt"]).replace("Z", "+00:00"))
+            else:
+                media_urls, media_types = [], []
+                conversation_id = conv_id
+                created_at = datetime.now(timezone.utc)
+
             await self._ensure_agent_session(
                 conv_id, source_account, force_new=False,
                 created_via=AgentSessionBindings.CREATED_VIA_INBOUND_MESSAGE,
@@ -1384,14 +1650,225 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
             event = MessageEvent(
                 text=user_text,
-                source=self._agent_source(conv_id, source_account),
-                message_type=MessageType.TEXT,
-                message_id=client_turn,
+                source=self._agent_source(conversation_id, source_account),
+                message_type=(
+                    MessageType.TEXT if not media_types else
+                    getattr(MessageType, "PHOTO", MessageType.DOCUMENT)
+                    if all(media_type.casefold().startswith("image/") for media_type in media_types) else
+                    getattr(MessageType, "AUDIO", MessageType.DOCUMENT)
+                    if all(media_type.casefold().startswith("audio/") for media_type in media_types) else
+                    getattr(MessageType, "DOCUMENT", MessageType.TEXT)
+                ),
+                message_id=client_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
+                timestamp=created_at,
             )
-            logger.info("[open_android] Dispatching message from Android to Hermes Agent: %r", user_text[:60])
+            if dispatch_record is not None:
+                self._processing_media_files[(source_account, client_message_id)] = list(materialized_files)
+            logger.info(
+                "[open_android] Dispatching Android message messageId=%s attachmentCount=%d",
+                dispatch_record["messageId"] if dispatch_record is not None else client_message_id,
+                len(media_urls),
+            )
             await self.handle_message(event)
+            if getattr(event, "_gateway_accepted", False) is not True:
+                raise GatewayError("AGENT_UNAVAILABLE")
+            handed_to_host = True
+            materialized_files = []
+            if dispatch_record is not None and account is not None:
+                account.conversations.update_dispatch_status(
+                    dispatch_record["messageId"], "delivered", None,
+                    f"dispatch-{dispatch_record['messageId']}",
+                    claim_token=dispatch_claim_token,
+                )
+                for attachment_id in dispatch_record["attachmentIds"]:
+                    try:
+                        account.attachments.mark_delivered(attachment_id)
+                        account.attachments.acknowledge(
+                            attachment_id, f"message-ack-{dispatch_record['messageId']}",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[open_android] Attachment ACK failed messageId=%s errorCode=INTERNAL_ERROR",
+                            dispatch_record["messageId"],
+                        )
         except Exception as exc:
-            logger.warning("[open_android] Failed to dispatch inbound message to agent: %s", exc)
+            failure_code = str(getattr(exc, "code", "AGENT_UNAVAILABLE"))
+            if failure_code not in {
+                "AGENT_UNAVAILABLE", "ATTACHMENT_READ_FAILED", "AGENT_MEDIA_REJECTED",
+                "MODEL_REQUEST_REJECTED",
+            }:
+                failure_code = "AGENT_UNAVAILABLE"
+            logger.warning(
+                "[open_android] Inbound dispatch failed messageId=%s errorCode=%s",
+                dispatch_record["messageId"] if dispatch_record is not None else client_message_id,
+                failure_code,
+            )
+            if dispatch_record is not None and account is not None:
+                # Any error while materializing verified encrypted content is a
+                # read failure; once local paths exist, a host dispatch error is
+                # classified as unavailable for a safe client retry.
+                status_error_code = (
+                    error_code if error_code == "ATTACHMENT_READ_FAILED" else failure_code
+                )
+                if status_error_code not in {
+                    "AGENT_UNAVAILABLE", "ATTACHMENT_READ_FAILED", "AGENT_MEDIA_REJECTED",
+                    "MODEL_REQUEST_REJECTED",
+                }:
+                    status_error_code = error_code
+                with suppress(Exception):
+                    account.conversations.update_dispatch_status(
+                        dispatch_record["messageId"], "failed", status_error_code,
+                        f"dispatch-failed-{dispatch_record['messageId']}",
+                        claim_token=dispatch_claim_token,
+                    )
+        finally:
+            if dispatch_claim_token is not None and not handed_to_host and client_message_id:
+                self._processing_media_files.pop((source_account, client_message_id), None)
+            for cached_file in materialized_files:
+                with suppress(OSError):
+                    cached_file.unlink(missing_ok=True)
+            if account is not None:
+                account.close()
+
+    def _materialize_message_attachments(
+        self, account_id: str, dispatch_record: Mapping[str, Any], account: Any,
+    ) -> tuple[list[str], list[str], list[Path]]:
+        """Copy verified AEAD records to a private Hermes media cache in order."""
+        media_urls: list[str] = []
+        media_types: list[str] = []
+        files: list[Path] = []
+        if not dispatch_record.get("attachments"):
+            return media_urls, media_types, files
+        cache_dir = (
+            self._media_cache_dir
+            / hashlib.sha256(account_id.encode("utf-8")).hexdigest()
+            / uuid.uuid4().hex
+        )
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for private_dir in (self._media_cache_dir, cache_dir.parent, cache_dir):
+            try:
+                private_dir.chmod(0o700)
+            except OSError:
+                pass
+        try:
+            for attachment in dispatch_record["attachments"]:
+                if attachment["state"] != "verified":
+                    raise GatewayError("ATTACHMENT_READ_FAILED")
+                media_type = str(attachment["mediaType"])
+                suffix = Path(str(attachment["filename"])).suffix.lower()
+                if not suffix or len(suffix) > 12 or any(not char.isalnum() and char != "." for char in suffix):
+                    suffix = mimetypes.guess_extension(media_type, strict=False) or ".bin"
+                attachment_id = str(attachment["attachmentId"])
+                partial = cache_dir / f"{uuid.uuid4().hex}{suffix}.part"
+                destination = cache_dir / partial.name[:-len(".part")]
+                digest = hashlib.sha256()
+                total = 0
+                try:
+                    with partial.open("xb") as output:
+                        partial.chmod(0o600)
+                        for chunk in account.attachments.open_verified_stream(attachment_id):
+                            output.write(chunk)
+                            digest.update(chunk)
+                            total += len(chunk)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    if (
+                        total != int(attachment["sizeBytes"])
+                        or digest.hexdigest() != str(attachment["sha256"])
+                    ):
+                        raise GatewayError("ATTACHMENT_READ_FAILED")
+                    os.replace(partial, destination)
+                except BaseException:
+                    with suppress(OSError):
+                        partial.unlink(missing_ok=True)
+                    raise
+                files.append(destination)
+                media_urls.append(str(destination))
+                media_types.append(media_type)
+            return media_urls, media_types, files
+        except BaseException:
+            for cached_file in files:
+                with suppress(OSError):
+                    cached_file.unlink(missing_ok=True)
+            raise
+
+    def _recovery_account_ids(self) -> list[str]:
+        core = getattr(self.services, "core", None)
+        list_ids = getattr(core, "list_gateway_account_ids", None)
+        account_ids = set(list_ids() if callable(list_ids) else [])
+        if self._account_id and callable(getattr(core, "account_exists", None)) and core.account_exists(self._account_id):
+            account_ids.add(self._account_id)
+        return sorted(account_ids)
+
+    async def _recover_message_dispatches(self, account_id: str) -> None:
+        """Fail interrupted host handoffs durably instead of replaying a turn."""
+        account = None
+        try:
+            account = self.services.core.open_gateway_account(account_id)
+            account.attachments.recover_interrupted_uploads()
+            for dispatch in account.conversations.incomplete_dispatches():
+                account.conversations.update_dispatch_status(
+                    dispatch["messageId"], "failed", "AGENT_UNAVAILABLE",
+                    f"startup-recovery-{dispatch['messageId']}",
+                    force=True,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[open_android] Message dispatch recovery failed accountId=%s errorCode=%s",
+                account_id, str(getattr(exc, "code", "INTERNAL_ERROR")),
+            )
+        finally:
+            if account is not None:
+                account.close()
+
+    def _cleanup_inbound_media_cache(self) -> None:
+        """Remove incomplete and expired private cache files after restart."""
+        if not self._media_cache_dir.is_dir():
+            return
+        cutoff = datetime.now(timezone.utc).timestamp() - max(3600, self.services.core.attachment_policy.attachment_ttl_seconds)
+        for path in self._media_cache_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                if path.name.endswith(".part") or path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("[open_android] Cached media cleanup failed errorCode=INTERNAL_ERROR")
+
+    def on_processing_complete(self, event: Any, outcome: Any) -> None:
+        """Complete the durable Gateway outbox after the Agent turn ends."""
+        source = getattr(event, "source", None)
+        account_id = str(getattr(source, "user_id", "") or "")
+        client_message_id = str(getattr(event, "message_id", "") or "")
+        if not account_id or not client_message_id:
+            return
+        name = str(getattr(outcome, "value", None) or getattr(outcome, "name", outcome)).lower()
+        status = "completed" if name in {"success", "succeeded", "completed"} else "failed"
+        error_code = None if status == "completed" else (
+            "AGENT_UNAVAILABLE" if "cancel" in name else "MODEL_REQUEST_REJECTED"
+        )
+        account = None
+        try:
+            account = self.services.core.open_gateway_account(account_id)
+            record = account.conversations.dispatch_message(client_message_id)
+            if record is not None:
+                account.conversations.update_dispatch_status(
+                    record["messageId"], status, error_code,
+                    f"agent-complete-{record['messageId']}",
+                )
+        except Exception as exc:
+            logger.warning(
+                "[open_android] Agent completion status failed messageId=%s errorCode=%s",
+                client_message_id, str(getattr(exc, "code", "INTERNAL_ERROR")),
+            )
+        finally:
+            if account is not None:
+                account.close()
+            for media_path in self._processing_media_files.pop((account_id, client_message_id), []):
+                with suppress(OSError):
+                    media_path.unlink(missing_ok=True)
 
     async def _handle_sse_stream(
         self, request: web.Request, raw_req: Mapping[str, Any],
@@ -1704,5 +2181,3 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
     # There is deliberately no second delivery entry point: every frame a
     # subscriber sees went through [self._enqueue_frame], so the account scoping
     # and the queue-full policy exist in exactly one place.
-
-

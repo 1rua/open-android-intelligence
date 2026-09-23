@@ -1,5 +1,6 @@
 import hashlib
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -23,7 +24,7 @@ def create_gateway_core(storage_root=None, **options):
 
 NEGOTIATION_BODY = {
     "negotiationId": "neg_attachment_policy",
-    "protocol": {"major": 2, "minor": 0},
+    "protocol": {"major": 2, "minor": 1},
     "client": {
         "installationId": "install_attachment_policy",
         "appVersion": "2.0.0",
@@ -52,6 +53,8 @@ def _negotiate(core):
         }
     )
     assert "data" in response
+    assert response["protocol"] == "2.1"
+    assert response["data"]["protocol"] == {"major": 2, "minor": 1}
     return response["data"]["limits"]
 
 
@@ -81,37 +84,226 @@ def _expire_row(account, attachment_id):
     )
 
 
-def test_negotiated_single_attachment_limit_rejects_oversize_create(tmp_path):
+def test_success_and_failure_envelopes_use_protocol_2_1(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    context = {
+        "accountId": "acct_protocol_21",
+        "deviceId": "dev_protocol_21",
+        "sessionId": "sess_protocol_21",
+        "requestId": "req_protocol_21",
+        "correlationId": "cor_protocol_21",
+        "pairingGeneration": 1,
+        "grantRevision": 1,
+    }
+
+    success = core.handle(make_verified_request({
+        "context": context,
+        "method": "GET",
+        "target": "/open-android-intelligence/v2/conversations",
+    }))
+    failure = core.handle(make_verified_request({
+        "context": {**context, "requestId": "req_protocol_21_error", "correlationId": "cor_protocol_21_error"},
+        "method": "GET",
+        "target": "/open-android-intelligence/v2/not-a-route",
+    }))
+
+    assert success["protocol"] == "2.1"
+    assert failure["protocol"] == "2.1"
+    assert "error" in failure
+
+
+def test_negotiation_has_no_product_size_or_media_limits(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     limits = _negotiate(core)
-    account = core.open_gateway_account("acct_attachment_policy")
-
-    with pytest.raises(GatewayError) as error:
-        account.attachments.create(
-            **_create_input(
-                limits["maxSingleAttachmentBytes"] + 1,
-                client_id="att_too_large",
-            )
-        )
-
-    assert error.value.code == "ATTACHMENT_LIMIT_EXCEEDED"
+    assert "maxSingleAttachmentBytes" not in limits
+    assert "maxMessageAttachmentBytes" not in limits
+    assert "allowedMediaTypes" not in limits
 
 
-def test_negotiated_media_types_reject_unsupported_create(tmp_path):
+def test_attachment_metadata_accepts_media_types_without_product_allowlist(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
-    limits = _negotiate(core)
     account = core.open_gateway_account("acct_attachment_media")
 
-    with pytest.raises(GatewayError) as error:
-        account.attachments.create(
-            **_create_input(
-                media_type="application/x-not-negotiated",
-                client_id="att_bad_media",
-            )
+    attachment = account.attachments.create(
+        **_create_input(
+            26_214_401,
+            media_type="application/x-archive-custom",
+            client_id="att_unbounded_metadata",
         )
+    )
 
-    assert "application/x-not-negotiated" not in limits["allowedMediaTypes"]
-    assert error.value.code == "ATTACHMENT_LIMIT_EXCEEDED"
+    assert attachment["sizeBytes"] == 26_214_401
+    assert "mediaType" not in attachment
+    assert account.attachments.get_record(attachment["attachmentId"])["mediaType"] == "application/x-archive-custom"
+
+    parameterized = account.attachments.create(
+        **_create_input(
+            26_214_401,
+            media_type="Image/PNG; charset=binary",
+            client_id="att_raw_mime",
+        )
+    )
+    assert account.attachments.get_record(parameterized["attachmentId"])["mediaType"] == "Image/PNG; charset=binary"
+
+
+def test_client_attachment_create_retry_is_metadata_idempotent_and_old_duplicates_open(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    account = core.open_gateway_account("acct_client_attachment_retry")
+    body = b"retryable attachment"
+    digest = hashlib.sha256(body).hexdigest()
+    values = {
+        "clientAttachmentId": "att_retry_same_id",
+        "filename": "retry.bin",
+        "mediaType": "application/octet-stream",
+        "sizeBytes": len(body),
+        "sha256": digest,
+        "correlationId": "cor_retry_first",
+    }
+    first = account.attachments.create(**values)
+    # Pre-2.1 storage did not enforce uniqueness, so retain a historical
+    # duplicate row to ensure startup does not need a destructive index migration.
+    account.store.database.execute(
+        """
+        INSERT INTO attachments(attachment_id, client_attachment_id, filename, media_type, size_bytes,
+          sha256, state, content_path, cas_path, created_at, expires_at, delivered_at, acknowledged_at)
+        VALUES ('att_legacy_duplicate', ?, ?, ?, ?, ?, 'created', NULL, NULL, ?, ?, NULL, NULL)
+        """,
+        (
+            values["clientAttachmentId"], values["filename"], "application/octet-stream",
+            len(body), digest, "2026-09-20T00:00:00.000Z", "2026-09-20T01:00:00.000Z",
+        ),
+    )
+    account.close()
+
+    reopened = core.open_gateway_account("acct_client_attachment_retry")
+    try:
+        before = reopened.store.database.execute(
+            "SELECT COUNT(*) FROM attachments WHERE client_attachment_id = ?",
+            (values["clientAttachmentId"],),
+        ).fetchone()[0]
+        retry = reopened.attachments.create(
+            **{**values, "correlationId": "cor_retry_new_request_id"},
+        )
+        after = reopened.store.database.execute(
+            "SELECT COUNT(*) FROM attachments WHERE client_attachment_id = ?",
+            (values["clientAttachmentId"],),
+        ).fetchone()[0]
+        assert retry["attachmentId"] in {first["attachmentId"], "att_legacy_duplicate"}
+        assert retry["status"] == "staged"
+        assert after == before == 2
+
+        with pytest.raises(GatewayError) as conflict:
+            reopened.attachments.create(
+                **{**values, "filename": "other.bin", "correlationId": "cor_retry_conflict"},
+            )
+        assert conflict.value.code == "IDEMPOTENCY_CONFLICT"
+    finally:
+        reopened.close()
+
+
+def test_streamed_attachment_stays_encrypted_and_opens_as_bounded_verified_chunks(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    account = core.open_gateway_account("acct_streamed_attachment")
+    body = bytes(range(251)) * 2_000
+    attachment = account.attachments.create(
+        clientAttachmentId="att_streamed",
+        filename="photo.bin",
+        mediaType="image/x-custom",
+        sizeBytes=len(body),
+        sha256=hashlib.sha256(body).hexdigest(),
+        correlationId="cor_streamed",
+    )
+    attachment_id = attachment["attachmentId"]
+
+    chunks = (body[offset:offset + 8192] for offset in range(0, len(body), 8192))
+    uploaded = account.attachments.upload_content_stream(attachment_id, chunks)
+    stage_path = Path(
+        account.store.database.execute(
+            "SELECT content_path FROM attachments WHERE attachment_id = ?",
+            (attachment_id,),
+        ).fetchone()[0]
+    )
+    verified = account.attachments.commit(attachment_id)
+    opened_chunks = list(account.attachments.open_verified_stream(attachment_id))
+
+    assert uploaded["status"] == "staged"
+    assert verified["status"] == "uploaded"
+    assert body not in stage_path.read_bytes()
+    assert max(map(len, opened_chunks)) <= account.attachments.stream_chunk_bytes
+    assert b"".join(opened_chunks) == body
+
+
+def _create_verified_stream(account, client_id, body):
+    attachment = account.attachments.create(
+        clientAttachmentId=client_id,
+        filename=f"{client_id}.png",
+        mediaType="image/png",
+        sizeBytes=len(body),
+        sha256=hashlib.sha256(body).hexdigest(),
+        correlationId=f"cor_{client_id}",
+    )
+    attachment_id = attachment["attachmentId"]
+    account.attachments.upload_content_stream(
+        attachment_id,
+        (body[offset:offset + account.attachments.stream_chunk_bytes]
+         for offset in range(0, len(body), account.attachments.stream_chunk_bytes)),
+    )
+    account.attachments.commit(attachment_id)
+    row = account.store.database.execute(
+        "SELECT cas_path FROM attachments WHERE attachment_id = ?", (attachment_id,),
+    ).fetchone()
+    return attachment_id, Path(row["cas_path"])
+
+
+def test_chunk_aead_rejects_reordering_and_cross_attachment_ciphertext(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    account = core.open_gateway_account("acct_chunk_binding")
+    body = bytes(range(251)) * 1_000
+    first_id, first_path = _create_verified_stream(account, "att_first", body)
+    second_id, second_path = _create_verified_stream(account, "att_second", body)
+
+    second_path.write_bytes(first_path.read_bytes())
+    with pytest.raises(GatewayError) as attachment_swap:
+        list(account.attachments.open_verified_stream(second_id))
+    assert attachment_swap.value.code == "DECRYPTION_FAILED"
+
+    stored = first_path.read_bytes()
+    magic = b"OAI-ATTACHMENT-AEAD-STREAM\x02\n"
+    assert stored.startswith(magic)
+    offset = len(magic)
+    frames = []
+    while offset < len(stored):
+        frame_start = offset
+        plain_length, sealed_length = struct.unpack(">II", stored[offset:offset + 8])
+        offset += 8 + sealed_length
+        frames.append(stored[frame_start:offset])
+        if plain_length == 0:
+            break
+    assert len(frames) >= 3
+    frames[0], frames[1] = frames[1], frames[0]
+    first_path.write_bytes(magic + b"".join(frames))
+    with pytest.raises(GatewayError) as reordered:
+        list(account.attachments.open_verified_stream(first_id))
+    assert reordered.value.code == "DECRYPTION_FAILED"
+
+
+def test_chunk_aead_rejects_ciphertext_moved_between_accounts_and_truncation(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    alice = core.open_gateway_account("acct_chunk_alice")
+    bob = core.open_gateway_account("acct_chunk_bob")
+    body = b"account-bound encrypted image" * 5_000
+    alice_id, alice_path = _create_verified_stream(alice, "att_alice", body)
+    bob_id, bob_path = _create_verified_stream(bob, "att_bob", body)
+
+    bob_path.write_bytes(alice_path.read_bytes())
+    with pytest.raises(GatewayError) as account_swap:
+        list(bob.attachments.open_verified_stream(bob_id))
+    assert account_swap.value.code == "DECRYPTION_FAILED"
+
+    alice_path.write_bytes(alice_path.read_bytes()[:-1])
+    with pytest.raises(GatewayError) as truncated:
+        list(alice.attachments.open_verified_stream(alice_id))
+    assert truncated.value.code == "DECRYPTION_FAILED"
 
 
 def test_server_owns_attachment_ttl_and_rejects_caller_expiration_override(tmp_path):
@@ -130,19 +322,39 @@ def test_server_owns_attachment_ttl_and_rejects_caller_expiration_override(tmp_p
     assert limits["attachmentTtlSeconds"] == 3600
 
 
-def test_message_attachment_total_uses_negotiated_message_limit(tmp_path):
+def test_message_accepts_verified_attachments_above_previous_total_limit(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
-    limits = _negotiate(core)
-    account = core.open_gateway_account("acct_message_attachment_limit")
-    size = limits["maxMessageAttachmentBytes"] // 3 + 1
+    account = core.open_gateway_account("acct_message_attachment_unbounded")
+    size = 26_214_401
     attachment_ids = []
+    for index, fill in enumerate((b"a", b"b")):
+        digest = hashlib.sha256()
+        block = fill * 65_536
+        remaining_for_digest = size
+        while remaining_for_digest:
+            part = block[:min(len(block), remaining_for_digest)]
+            digest.update(part)
+            remaining_for_digest -= len(part)
+        expected_sha256 = digest.hexdigest()
+        remaining = size
 
-    for index in range(3):
-        attachment = _create(account, body=b"x", client_id=f"att_message_{index}")
-        account.store.database.execute(
-            "UPDATE attachments SET size_bytes = ?, state = 'verified' WHERE attachment_id = ?",
-            (size, attachment["attachmentId"]),
+        def chunks():
+            nonlocal remaining
+            while remaining:
+                chunk = block[:min(len(block), remaining)]
+                remaining -= len(chunk)
+                yield chunk
+
+        attachment = account.attachments.create(
+            clientAttachmentId=f"att_message_{index}",
+            filename=f"large-{index}.bin",
+            mediaType="application/x-test-binary",
+            sizeBytes=size,
+            sha256=expected_sha256,
+            correlationId=f"cor_message_{index}",
         )
+        account.attachments.upload_content_stream(attachment["attachmentId"], chunks())
+        account.attachments.commit(attachment["attachmentId"])
         attachment_ids.append(attachment["attachmentId"])
 
     conversation = account.conversations.create(
@@ -151,18 +363,17 @@ def test_message_attachment_total_uses_negotiated_message_limit(tmp_path):
         correlation_id="cor_message_limit",
     )
 
-    with pytest.raises(GatewayError) as error:
-        account.conversations.accept_message(
-            conversation_id=conversation["conversationId"],
-            client_message_id="msg_message_limit",
-            text="too many bytes",
-            attachment_ids=attachment_ids,
-            device_id="dev_1",
-            request_id="req_message_limit",
-            correlation_id="cor_message_limit_send",
-        )
+    accepted = account.conversations.accept_message(
+        conversation_id=conversation["conversationId"],
+        client_message_id="msg_message_unbounded",
+        text="two individually large attachments",
+        attachment_ids=attachment_ids,
+        device_id="dev_1",
+        request_id="req_message_unbounded",
+        correlation_id="cor_message_unbounded_send",
+    )
 
-    assert error.value.code == "ATTACHMENT_LIMIT_EXCEEDED"
+    assert accepted["status"] == "accepted"
 
 
 def test_overdue_attachment_rejects_upload_and_stabilizes_expired_state(tmp_path):
@@ -178,7 +389,7 @@ def test_overdue_attachment_rejects_upload_and_stabilizes_expired_state(tmp_path
         account.attachments.upload_content(attachment["attachmentId"], b"body")
 
     assert error.value.code == "ATTACHMENT_EXPIRED"
-    assert account.attachments.get(attachment["attachmentId"])["state"] == "expired"
+    assert account.attachments.get(attachment["attachmentId"])["status"] == "expired"
 
 
 def test_expired_commit_cannot_verify_or_keep_staged_bytes(tmp_path):
@@ -193,8 +404,9 @@ def test_expired_commit_cannot_verify_or_keep_staged_bytes(tmp_path):
 
     assert error.value.code == "ATTACHMENT_EXPIRED"
     record = account.attachments.get(attachment["attachmentId"])
-    assert record["state"] == "expired"
-    assert record["hasStagedBytes"] is False
+    assert record["status"] == "expired"
+    assert set(record) == {"attachmentId", "status", "sizeBytes", "sha256"}
+    assert account.attachments.get_record(attachment["attachmentId"])["hasStagedBytes"] is False
 
 
 def test_get_expired_attachment_does_not_expose_uploading_state(tmp_path):
@@ -206,8 +418,9 @@ def test_get_expired_attachment_does_not_expose_uploading_state(tmp_path):
 
     record = account.attachments.get(attachment["attachmentId"])
 
-    assert record["state"] == "expired"
-    assert record["hasStagedBytes"] is False
+    assert record["status"] == "expired"
+    assert set(record) == {"attachmentId", "status", "sizeBytes", "sha256"}
+    assert account.attachments.get_record(attachment["attachmentId"])["hasStagedBytes"] is False
 
 
 def test_expired_attachment_cannot_be_referenced_by_a_message(tmp_path):
@@ -236,7 +449,7 @@ def test_expired_attachment_cannot_be_referenced_by_a_message(tmp_path):
         )
 
     assert error.value.code == "ATTACHMENT_EXPIRED"
-    assert account.attachments.get(attachment["attachmentId"])["state"] == "expired"
+    assert account.attachments.get(attachment["attachmentId"])["status"] == "expired"
 
 
 def test_cleanup_expires_overdue_attachment_before_deleting_references(tmp_path):
@@ -267,10 +480,10 @@ def test_expiring_one_attachment_does_not_remove_a_shared_cas_reference(tmp_path
         account.attachments.commit(attachment["attachmentId"])
 
     _expire_row(account, first["attachmentId"])
-    assert account.attachments.get(first["attachmentId"])["state"] == "expired"
+    assert account.attachments.get(first["attachmentId"])["status"] == "expired"
 
     second_record = account.attachments.get(second["attachmentId"])
-    assert second_record["state"] == "verified"
+    assert second_record["status"] == "uploaded"
     second_row = account.store.database.execute(
         "SELECT cas_path FROM attachments WHERE attachment_id = ?",
         (second["attachmentId"],),
@@ -334,9 +547,9 @@ def test_attachment_stage_and_cas_are_sealed_by_the_host_aead_provider(tmp_path)
         ).fetchone()[0]
     )
     stage_bytes = stage_path.read_bytes()
-    assert uploaded["state"] == "uploading"
+    assert uploaded["status"] == "staged"
     assert body not in stage_bytes
-    assert stage_bytes.startswith(b"aead-v1:")
+    assert stage_bytes.startswith(b"OAI-ATTACHMENT-AEAD-STREAM\x02\n")
 
     verified = account.attachments.commit(attachment["attachmentId"])
     cas_path = Path(
@@ -345,9 +558,9 @@ def test_attachment_stage_and_cas_are_sealed_by_the_host_aead_provider(tmp_path)
             (attachment["attachmentId"],),
         ).fetchone()[0]
     )
-    assert verified["state"] == "verified"
+    assert verified["status"] == "uploaded"
     assert body not in cas_path.read_bytes()
-    assert account.attachments.get(attachment["attachmentId"])["state"] == "verified"
+    assert account.attachments.get(attachment["attachmentId"])["status"] == "uploaded"
 
 
 def test_device_parameters_and_event_payload_are_sealed_at_rest(tmp_path):
@@ -460,54 +673,77 @@ class _RawCore:
         return {
             "requestId": "request-raw-attachment",
             "correlationId": "correlation-raw-attachment",
-            "protocol": "2.0",
+            "protocol": "2.1",
             "data": {"accepted": True},
         }
 
 
-def test_raw_attachment_body_limit_accepts_the_negotiated_single_attachment_size():
-    core = _RawCore()
-    seen = []
-
-    def verify(request):
-        seen.append(request)
-        return make_verified_request({
-            "context": {
-                "accountId": "acct_raw_attachment",
-                "deviceId": "dev_raw_attachment",
-                "sessionId": "sess_raw_attachment",
-                "requestId": "request-raw-attachment",
-                "correlationId": "correlation-raw-attachment",
-                "pairingGeneration": 1,
-                "grantRevision": 1,
-            },
-            "method": request["method"],
-            "target": request["target"],
-            "body": request["body"],
-            "idempotencyKey": "request-raw-attachment",
-        })
-
-    exposure = create_gateway_exposure(
-        "direct-tls",
-        core=core,
-        host_version="1.0.0",
-        host_api={
-            "minVersion": "1.0.0",
-            "maxVersion": "1.0.0",
-            "verifiedCommit": "0123456789abcdef0123456789abcdef01234567",
-        },
-        verify_request=verify,
+def test_legacy_one_shot_stage_is_failed_for_reupload_on_startup(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    account = core.open_gateway_account("acct_legacy_stage")
+    body = b"legacy attachment stage"
+    attachment = _create(account, body=body, client_id="att_legacy_stage")
+    stage_path = account.paths.attachments / f"{attachment['attachmentId']}.stage"
+    stage_path.write_text(
+        account.store.seal_bytes(
+            body, account.attachments._legacy_attachment_aad(attachment["sha256"]),
+        ),
+        encoding="ascii",
     )
-    route = next(item for item in exposure.routes if item.path == "/open-android-intelligence/v2/attachments/")
-    body = b"x" * 26_214_400
-    response = _RawResponse()
-
-    route.handler(
-        _RawRequest(body, "/open-android-intelligence/v2/attachments/att_raw/content"),
-        response,
+    account.store.database.execute(
+        "UPDATE attachments SET state = 'uploading', content_path = ? WHERE attachment_id = ?",
+        (str(stage_path), attachment["attachmentId"]),
     )
+    account.close()
 
-    assert response.status_code == 200
-    assert len(seen) == 1
-    assert seen[0]["body"] == body
-    assert len(core.requests) == 1
+    recovered = core.open_gateway_account("acct_legacy_stage")
+    try:
+        row = recovered.attachments.get_record(attachment["attachmentId"])
+        assert row["state"] == "failed"
+        assert row["status"] == "failed"
+        assert row["hasStagedBytes"] is False
+        assert recovered.attachments.open_verified_stream(attachment["attachmentId"])  # denied below
+    except GatewayError as exc:
+        assert exc.code == "ATTACHMENT_EXPIRED"
+    else:
+        raise AssertionError("A one-shot legacy stage must never be delivered")
+    finally:
+        recovered.close()
+
+
+def test_legacy_stage_recovery_retries_after_a_startup_commit_failure(tmp_path):
+    fail_once = True
+
+    def fail_first_recovery_commit():
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise RuntimeError("simulated interruption during legacy recovery")
+
+    core = create_gateway_core(storage_root=tmp_path)
+    account = core.open_gateway_account("acct_legacy_retry")
+    body = b"legacy attachment stage"
+    attachment = _create(account, body=body, client_id="att_legacy_retry")
+    stage_path = account.paths.attachments / f"{attachment['attachmentId']}.stage"
+    stage_path.write_text(
+        account.store.seal_bytes(
+            body, account.attachments._legacy_attachment_aad(attachment["sha256"]),
+        ),
+        encoding="ascii",
+    )
+    account.store.database.execute(
+        "UPDATE attachments SET state = 'uploading', content_path = ? WHERE attachment_id = ?",
+        (str(stage_path), attachment["attachmentId"]),
+    )
+    account.close()
+
+    core.commit_hook = fail_first_recovery_commit
+    with pytest.raises(GatewayError, match="OUTCOME_UNKNOWN"):
+        core.open_gateway_account("acct_legacy_retry")
+
+    core.commit_hook = None
+    recovered = core.open_gateway_account("acct_legacy_retry")
+    try:
+        assert recovered.attachments.get(attachment["attachmentId"])["status"] == "failed"
+    finally:
+        recovered.close()

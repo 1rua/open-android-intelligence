@@ -56,6 +56,8 @@ data class TimelineEntry(
     val batchGroupId: String?,
     val attachments: List<com.openandroidintelligence.conversation.model.TimelineAttachment> = emptyList(),
     val isStreaming: Boolean = false,
+    val messageStatus: com.openandroidintelligence.conversation.ports.AgentMessageStatus? = null,
+    val messageStatusErrorCode: com.openandroidintelligence.conversation.ports.AgentMessageErrorCode? = null,
     /**
      * The conversation this row navigates to, when it is a system row rather
      * than a message.
@@ -219,6 +221,14 @@ class WorkbenchController(
     /** Server-mirrored messages for the active thread, by message id. */
     private val mirrored = LinkedHashMap<String, TimelineMessage>()
     private val mirroredRevisions = LinkedHashMap<String, Long>()
+    private data class MessageStatusReceipt(
+        val status: com.openandroidintelligence.conversation.ports.AgentMessageStatus,
+        val revision: Long,
+        val errorCode: com.openandroidintelligence.conversation.ports.AgentMessageErrorCode?,
+    )
+    private val messageStatusRevisions = LinkedHashMap<String, Long>()
+    private val messageStatusesById = LinkedHashMap<String, MessageStatusReceipt>()
+    private val messageStatusesByClientId = LinkedHashMap<String, MessageStatusReceipt>()
 
     /**
      * Event ids already applied to the timeline.
@@ -235,7 +245,7 @@ class WorkbenchController(
     private val handledEventIds = LinkedHashSet<String>()
 
     private val attachmentJobs = LinkedHashMap<String, Job>()
-    private val attachmentSelections = LinkedHashMap<String, com.openandroidintelligence.conversation.ports.LocalAttachmentSelection>()
+    private val attachmentPreviews = LinkedHashMap<String, ByteArray>()
     private val historicalAttachments = object : LinkedHashMap<String, com.openandroidintelligence.conversation.model.TimelineAttachment>(32, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, com.openandroidintelligence.conversation.model.TimelineAttachment>?): Boolean {
             return size > 30
@@ -538,6 +548,9 @@ class WorkbenchController(
         onActiveThreadChanged(threadId)
         mirrored.clear()
         mirroredRevisions.clear()
+        messageStatusRevisions.clear()
+        messageStatusesById.clear()
+        messageStatusesByClientId.clear()
         // Rendering cache of the conversation being left: without this, a message
         // of the newly opened thread could be rendered with an attachment's
         // filename from another one.
@@ -1223,7 +1236,7 @@ class WorkbenchController(
         scope.launch {
             val draft = coordinator.prepare(selection)
             val draftId = draft.id.value
-            attachmentSelections[draftId] = selection
+            selection.previewBytes?.let { attachmentPreviews[draftId] = it }
             update { state ->
                 state.copy(attachments = state.attachments + draft)
             }
@@ -1234,7 +1247,13 @@ class WorkbenchController(
                         state.copy(
                             attachments = state.attachments.map { current ->
                                 if (current.id.value == draftId) {
-                                    current.copy(state = draftState.state, errorMessage = draftState.errorMessage)
+                                    current.copy(
+                                        state = draftState.state,
+                                        progress = draftState.progress,
+                                        transferredBytes = draftState.transferredBytes,
+                                        totalBytes = draftState.totalBytes,
+                                        errorMessage = draftState.errorMessage,
+                                    )
                                 } else {
                                     current
                                 }
@@ -1254,9 +1273,38 @@ class WorkbenchController(
         cancelPendingSubmission()
         draftRevision++
         attachmentJobs.remove(draftId)?.cancel()
-        attachmentSelections.remove(draftId)
+        attachmentPreviews.remove(draftId)
+        attachmentCoordinator?.let { coordinator ->
+            scope.launch {
+                try {
+                    coordinator.discard(draftId)
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Exception) {
+                    update { it.copy(notice = "ATTACHMENT_CLEANUP_FAILED:${errorCodeOf(cause)}") }
+                }
+            }
+        }
         update { state ->
             state.copy(attachments = state.attachments.filterNot { it.id.value == draftId })
+        }
+    }
+
+    /** The Gateway has accepted this message, so keep only preview metadata and release staged bytes. */
+    private fun releaseSubmittedAttachment(draftId: String) {
+        attachmentJobs.remove(draftId)?.cancel()
+        attachmentPreviews.remove(draftId)
+        update { state -> state.copy(attachments = state.attachments.filterNot { it.id.value == draftId }) }
+        attachmentCoordinator?.let { coordinator ->
+            scope.launch {
+                try {
+                    coordinator.releaseAfterSubmit(draftId)
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Exception) {
+                    update { it.copy(notice = "ATTACHMENT_CLEANUP_FAILED:${errorCodeOf(cause)}") }
+                }
+            }
         }
     }
 
@@ -1265,8 +1313,7 @@ class WorkbenchController(
      */
     fun retryAttachment(draftId: String) {
         val coordinator = attachmentCoordinator ?: return
-        val selection = attachmentSelections[draftId] ?: return
-        coordinator.retry(draftId, selection)
+        coordinator.retry(draftId)
     }
 
     /**
@@ -1321,13 +1368,12 @@ class WorkbenchController(
                     draftWasCleared = true
                 }
                 val submittedAttachments = submission.attachmentIds.map { id ->
-                    val sel = attachmentSelections[id]
                     val d = drafts[id]
                     val att = com.openandroidintelligence.conversation.model.TimelineAttachment(
                         draftId = id,
-                        filename = sel?.filename ?: d?.filename.orEmpty(),
-                        mediaType = sel?.mediaType ?: d?.mediaType.orEmpty(),
-                        imageBytes = sel?.bytes,
+                        filename = d?.filename.orEmpty(),
+                        mediaType = d?.mediaType.orEmpty(),
+                        previewBytes = attachmentPreviews[id],
                     )
                     historicalAttachments[id] = att
                     att
@@ -1381,6 +1427,7 @@ class WorkbenchController(
                 } else {
                     val acceptance = repository.submitMessage(target, message)
                     if (activeThreadId == target) {
+                        val statusReceipt = messageStatusesByClientId[message.clientMessageId.value]
                         mirrored[acceptance.messageId] = TimelineMessage(
                             id = acceptance.messageId, sender = "user",
                             parts = buildList {
@@ -1394,10 +1441,11 @@ class WorkbenchController(
                                 }
                             },
                             timestamp = entry.timestamp,
+                            state = statusReceipt?.status?.wireValue ?: "queued",
+                            errorCode = statusReceipt?.errorCode?.wireValue,
                         )
-                        if (!mirroredRevisions.containsKey(acceptance.messageId)) {
-                            mirroredRevisions[acceptance.messageId] = 0L
-                        }
+                        mirroredRevisions.putIfAbsent(acceptance.messageId, 0L)
+                        statusReceipt?.let { receipt -> messageStatusRevisions.putIfAbsent(acceptance.messageId, receipt.revision) }
                         update { state ->
                             val remainingBatch = state.pendingBatch.filterNot { row -> row.key == entry.key }
                             state.copy(
@@ -1413,7 +1461,7 @@ class WorkbenchController(
                 // Released only now: an attachment draft that was dropped
                 // before the Gateway accepted the message left a failed send
                 // with nothing to retry from.
-                submission.attachmentIds.forEach(::removeAttachment)
+                submission.attachmentIds.forEach(::releaseSubmittedAttachment)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (cause: Exception) {
@@ -1675,8 +1723,49 @@ class WorkbenchController(
                             }
                         }
 
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageStatus -> {
+                            if (event.conversationId.value != currentActiveId) {
+                                refreshThreads()
+                                return@collect
+                            }
+                            val previousRevision = messageStatusRevisions[event.messageId]
+                            if (previousRevision != null && event.revision <= previousRevision) return@collect
+                            val receipt = MessageStatusReceipt(event.status, event.revision, event.errorCode)
+                            messageStatusRevisions[event.messageId] = event.revision
+                            messageStatusesById[event.messageId] = receipt
+                            messageStatusesByClientId[event.clientMessageId.value] = receipt
+                            mirrored[event.messageId]?.let { existing ->
+                                mirrored[event.messageId] = existing.copy(
+                                    state = event.status.wireValue,
+                                    errorCode = event.errorCode?.wireValue,
+                                )
+                            }
+                            val localKey = "local_${event.clientMessageId.value}"
+                            update { state ->
+                                val pending = state.pendingBatch.map { row ->
+                                    if (row.key == localKey) {
+                                        row.copy(
+                                            messageStatus = event.status,
+                                            messageStatusErrorCode = event.errorCode,
+                                        )
+                                    } else row
+                                }
+                                state.copy(
+                                    timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
+                                        Loadable.Ready(renderTimeline(pending))
+                                    } else state.timeline,
+                                    pendingBatch = pending,
+                                    notice = if (event.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED) {
+                                        "AGENT_MESSAGE_FAILED:${event.errorCode?.wireValue}"
+                                    } else if (state.notice?.startsWith("AGENT_MESSAGE_FAILED:") == true) {
+                                        null
+                                    } else state.notice,
+                                )
+                            }
+                        }
+
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
-                            val message = event.message
+                            val message = withLatestMessageStatus(event.message)
                             val eventConvId = message.conversationId?.value
                             if (eventConvId != null && eventConvId != currentActiveId) {
                                 refreshThreads()
@@ -1743,6 +1832,8 @@ class WorkbenchController(
                             if (eventConvId == currentActiveId) {
                                 mirrored.remove(event.messageId)
                                 mirroredRevisions.remove(event.messageId)
+                                messageStatusRevisions.remove(event.messageId)
+                                messageStatusesById.remove(event.messageId)
                                 update { state ->
                                     state.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch)))
                                 }
@@ -1848,7 +1939,8 @@ class WorkbenchController(
                 var receivedConfirmedAssistantForCurrentTurn = false
                 page.messages.sortedWith(
                     compareBy<TimelineMessage> { it.timestamp }.thenBy { if (it.sender == "user") 0 else 1 }
-                ).forEach { message ->
+                ).forEach { rawMessage ->
+                    val message = withLatestMessageStatus(rawMessage)
                     val currentRevision = mirroredRevisions[message.id] ?: 0L
                     if (!mirrored.containsKey(message.id) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
                         if (message.sender == "assistant" && message.state == "CONFIRMED") {
@@ -2007,6 +2099,11 @@ class WorkbenchController(
         return !hasUserAfter && latestUserTimestamp > 0L && message.timestamp >= latestUserTimestamp - 5_000L
     }
 
+    private fun withLatestMessageStatus(message: TimelineMessage): TimelineMessage =
+        messageStatusesById[message.id]?.let { receipt ->
+            message.copy(state = receipt.status.wireValue, errorCode = receipt.errorCode?.wireValue)
+        } ?: message
+
     private fun renderTimeline(pendingBatch: List<TimelineEntry> = _state.value.pendingBatch): List<TimelineEntry> {
         val mirroredEntries = mirrored.values
             .map { message ->
@@ -2014,13 +2111,12 @@ class WorkbenchController(
                     .map { att ->
                         val id = att.draftId.value
                         historicalAttachments[id] ?: run {
-                            val sel = attachmentSelections[id]
                             val d = _state.value.attachments.firstOrNull { it.id.value == id }
                             com.openandroidintelligence.conversation.model.TimelineAttachment(
                                 draftId = id,
-                                filename = (sel?.filename ?: d?.filename).takeUnless { it.isNullOrBlank() } ?: att.filename,
-                                mediaType = (sel?.mediaType ?: d?.mediaType).takeUnless { it.isNullOrBlank() } ?: att.mediaType,
-                                imageBytes = sel?.bytes,
+                                filename = d?.filename?.takeUnless { it.isBlank() } ?: att.filename,
+                                mediaType = d?.mediaType?.takeUnless { it.isBlank() } ?: att.mediaType,
+                                previewBytes = attachmentPreviews[id],
                             )
                         }
                     }
@@ -2046,6 +2142,12 @@ class WorkbenchController(
                     batchGroupId = null,
                     attachments = messageAttachments,
                     isStreaming = message.state == "STREAMING",
+                    messageStatus = com.openandroidintelligence.conversation.ports.AgentMessageStatus.entries
+                        .firstOrNull { it.wireValue == message.state },
+                    messageStatusErrorCode = message.errorCode?.let { code ->
+                        com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.entries
+                            .firstOrNull { it.wireValue == code }
+                    },
                 )
             }
 

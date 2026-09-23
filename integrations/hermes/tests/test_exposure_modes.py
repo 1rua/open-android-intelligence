@@ -42,7 +42,7 @@ class FakeCore:
         return {
             "requestId": request_id,
             "correlationId": correlation_id,
-            "protocol": "2.0",
+            "protocol": "2.1",
             "data": {"accepted": True, "target": request["target"] if isinstance(request, dict) else request.target},
         }
 
@@ -195,7 +195,7 @@ def test_negotiate_raw_route_has_independent_pre_auth_input_without_verifier(tmp
     core = create_gateway_core(storage_root=tmp_path)
     body = {
         "negotiationId": "neg_raw",
-        "protocol": {"major": 2, "minor": 0},
+        "protocol": {"major": 2, "minor": 1},
         "client": {"installationId": "install_raw", "appVersion": "2.0.0", "platform": "android", "platformApi": 35},
         "features": {
             "auth": ["password"], "messages": ["chat-v1"], "attachments": ["staged-sha256-v1"],
@@ -215,7 +215,7 @@ def test_negotiate_raw_route_has_independent_pre_auth_input_without_verifier(tmp
     route.handler(request, response)
 
     assert response.status_code == 200
-    assert json.loads(response.body)["data"]["protocol"] == {"major": 2, "minor": 0}
+    assert json.loads(response.body)["data"]["protocol"] == {"major": 2, "minor": 1}
 
 
 def _gateway_routes_for_session_test(tmp_path):
@@ -240,7 +240,7 @@ def _negotiate_for_session(routes, negotiation_id, installation_id):
         "target": "/open-android-intelligence/v2/negotiate",
         "body": {
             "negotiationId": negotiation_id,
-            "protocol": {"major": 2, "minor": 0},
+            "protocol": {"major": 2, "minor": 1},
             "client": {
                 "installationId": installation_id,
                 "appVersion": "2.0.0",

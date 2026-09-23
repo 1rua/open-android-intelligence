@@ -201,7 +201,7 @@ class GatewayWebSocketTransportTest {
 
         // Verify 9 authentication singletons
         assertEquals("Bearer test_token", receivedHeaders["authorization"])
-        assertEquals("2.0", receivedHeaders["x-open-android-intelligence-protocol"])
+        assertEquals("2.1", receivedHeaders["x-open-android-intelligence-protocol"])
         assertEquals("acc_test", receivedHeaders["x-open-android-intelligence-account"])
         assertEquals("dev_test", receivedHeaders["x-open-android-intelligence-device"])
         assertEquals("sess_test", receivedHeaders["x-open-android-intelligence-session"])

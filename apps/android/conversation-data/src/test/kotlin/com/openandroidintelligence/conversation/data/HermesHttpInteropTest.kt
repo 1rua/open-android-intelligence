@@ -53,11 +53,13 @@ class HermesHttpInteropTest {
             val conversation = repository.createConversation(scope, "cconv_interop")
             assertEquals(conversation.id, repository.listConversations(scope, PageRequest()).conversations.single().id)
             val bytes = "真实 HTTP 附件内容\n+%\u0000".toByteArray()
-            val id = AttachmentUploader(HttpAttachmentTransport(http)).upload(SelectedAttachment("interop.txt", "text/plain", bytes))
+            val id = AttachmentUploader(HttpAttachmentTransport(http)).upload(
+                SelectedAttachment("interop.txt", "text/plain", com.openandroidintelligence.gateway.http.GatewayRequestBody.fromBytes(bytes)),
+            )
             val metadata = http.execute(SignedGatewayRequest("GET", "/open-android-intelligence/v2/attachments/$id"))
                 .requireData("READ_ATTACHMENT")
             val record = JsonFields.obj(JsonFields.field(metadata, "attachment"))
-            assertEquals("verified", JsonFields.string(record, "state"))
+            assertEquals("uploaded", JsonFields.string(record, "status"))
             assertEquals(bytes.size.toLong(), JsonFields.long(record, "sizeBytes"))
             val accepted = repository.submitMessage(conversation.id.value, OutgoingMessage(ClientMessageId("cmsg_interop"), "请读取附件", listOf(id)))
             assertTrue(accepted.messageId.startsWith("msg_"))

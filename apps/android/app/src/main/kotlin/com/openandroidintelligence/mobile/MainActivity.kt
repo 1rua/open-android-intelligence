@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.togetherWith
@@ -27,6 +28,7 @@ import com.openandroidintelligence.capability.MediaProjectionCaptureService
 import com.openandroidintelligence.capability.MediaProjectionRuntime
 import com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource
 import com.openandroidintelligence.conversation.motion.AppTransitions
+import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.workbench.FloatingConversationPanel
@@ -39,6 +41,10 @@ import com.openandroidintelligence.core.model.AssistantHandoffRequest
 import com.openandroidintelligence.core.model.DefaultAssistantHandoffGate
 import com.openandroidintelligence.mobile.util.ContentResolverExtensions
 import java.io.ByteArrayOutputStream
+import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 宿主主入口 Activity。
@@ -59,6 +65,28 @@ class MainActivity : ComponentActivity() {
         handoffGate.evaluate(request).also { lastHandoffDecision = it }
 
     fun currentAssistantHandoffDecision(): AssistantHandoffDecision = lastHandoffDecision
+
+    private fun boundedImagePreview(source: Bitmap): ByteArray? {
+        var bitmap = source
+        var owned = false
+        try {
+            while (true) {
+                val output = ByteArrayOutputStream()
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 72, output)) return null
+                val bytes = output.toByteArray()
+                if (bytes.size <= 256 * 1024) return bytes
+                val width = (bitmap.width * 3 / 4).coerceAtLeast(64)
+                val height = (bitmap.height * 3 / 4).coerceAtLeast(64)
+                if (width == bitmap.width && height == bitmap.height) return null
+                val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
+                if (owned) bitmap.recycle()
+                bitmap = scaled
+                owned = bitmap !== source
+            }
+        } finally {
+            if (owned) bitmap.recycle()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -119,18 +147,35 @@ class MainActivity : ComponentActivity() {
                     contract = ActivityResultContracts.TakePicturePreview()
                 ) { bitmap: Bitmap? ->
                     if (bitmap != null) {
-                        try {
-                            val stream = ByteArrayOutputStream()
-                            bitmap.compress(Bitmap.CompressFormat.JPEG, 92, stream)
-                            val bytes = stream.toByteArray()
-                            val selection = LocalAttachmentSelection(
-                                filename = "camera_${System.currentTimeMillis()}.jpg",
-                                mediaType = "image/jpeg",
-                                bytes = bytes,
-                            )
-                            controller?.addAttachment(selection)
-                        } catch (e: Exception) {
-                            Toast.makeText(this@MainActivity, "相机照片处理失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        val targetController = controller
+                        if (targetController == null) {
+                            Toast.makeText(this@MainActivity, "对话尚未就绪，照片未加入", Toast.LENGTH_SHORT).show()
+                        } else {
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                try {
+                                    val selection = LocalAttachmentSelection(
+                                        filename = "camera_${System.currentTimeMillis()}.jpg",
+                                        mediaType = "image/jpeg",
+                                        contentSource = AttachmentContentSource.fromWriter { output ->
+                                            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)) {
+                                                throw IOException("CAMERA_IMAGE_ENCODING_FAILED")
+                                            }
+                                        },
+                                        previewBytes = boundedImagePreview(bitmap),
+                                    )
+                                    withContext(Dispatchers.Main) {
+                                        if (runtime.controller.value === targetController) {
+                                            targetController.addAttachment(selection)
+                                        } else {
+                                            Toast.makeText(this@MainActivity, "对话已切换，照片未加入", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(this@MainActivity, "相机照片处理失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -140,11 +185,26 @@ class MainActivity : ComponentActivity() {
                     contract = ActivityResultContracts.PickVisualMedia()
                 ) { uri: Uri? ->
                     uri?.let {
-                        try {
-                            val selection = ContentResolverExtensions.resolveAttachment(contentResolver, it)
-                            controller?.addAttachment(selection)
-                        } catch (e: Exception) {
-                            Toast.makeText(this@MainActivity, "选择图片失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        val targetController = controller
+                        if (targetController == null) {
+                            Toast.makeText(this@MainActivity, "对话尚未就绪，图片未加入", Toast.LENGTH_SHORT).show()
+                        } else {
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                try {
+                                    val selection = ContentResolverExtensions.resolveAttachment(contentResolver, it)
+                                    withContext(Dispatchers.Main) {
+                                        if (runtime.controller.value === targetController) {
+                                            targetController.addAttachment(selection)
+                                        } else {
+                                            Toast.makeText(this@MainActivity, "对话已切换，图片未加入", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(this@MainActivity, "选择图片失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -154,11 +214,26 @@ class MainActivity : ComponentActivity() {
                     contract = ActivityResultContracts.OpenDocument()
                 ) { uri: Uri? ->
                     uri?.let {
-                        try {
-                            val selection = ContentResolverExtensions.resolveAttachment(contentResolver, it)
-                            controller?.addAttachment(selection)
-                        } catch (e: Exception) {
-                            Toast.makeText(this@MainActivity, "选择文档失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        val targetController = controller
+                        if (targetController == null) {
+                            Toast.makeText(this@MainActivity, "对话尚未就绪，文件未加入", Toast.LENGTH_SHORT).show()
+                        } else {
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                try {
+                                    val selection = ContentResolverExtensions.resolveAttachment(contentResolver, it)
+                                    withContext(Dispatchers.Main) {
+                                        if (runtime.controller.value === targetController) {
+                                            targetController.addAttachment(selection)
+                                        } else {
+                                            Toast.makeText(this@MainActivity, "对话已切换，文件未加入", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(this@MainActivity, "选择文档失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
                         }
                     }
                 }

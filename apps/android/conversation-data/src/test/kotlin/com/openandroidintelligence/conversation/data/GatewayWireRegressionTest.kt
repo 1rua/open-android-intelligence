@@ -39,17 +39,17 @@ class GatewayWireRegressionTest {
         assertEquals("att_server", JsonFields.string(JsonFields.objects(payload, "attachments").single(), "attachmentId"))
     }
 
-    @Test fun uploadsExactBytesThroughAllThreeSignedRequests() = runBlocking {
+    @Test fun uploadsExactBytesThroughAllFourSignedRequestsIncludingPublicStatusLookup() = runBlocking {
         val transport = ContractTransport()
         val uploader = AttachmentUploader(HttpAttachmentTransport(http(transport)))
         val bytes = byteArrayOf(0, 0x7b, 0x7d, 0x2b, 0x25, 0xff.toByte(), 0x80.toByte(), 0xc3.toByte(), 0xa9.toByte())
-        val id = uploader.upload(SelectedAttachment("图片.bin", "application/octet-stream", bytes))
+        val id = uploader.upload(SelectedAttachment("图片.bin", "application/octet-stream", GatewayRequestBody.fromBytes(bytes)))
         assertEquals("att_server", id)
-        assertEquals(listOf("POST", "PUT", "POST"), transport.requests.map { it.method })
-        assertArrayEquals(bytes, transport.requests[1].body)
-        assertEquals(bytes.size.toString(), transport.requests[1].headers.single { it.name == "Content-Length" }.value)
+        assertEquals(listOf("POST", "GET", "PUT", "POST"), transport.requests.map { it.method })
+        assertArrayEquals(bytes, transport.requests[2].streamBody!!.openStream().use { it.readBytes() })
+        assertEquals(bytes.size.toString(), transport.requests[2].headers.single { it.name == "Content-Length" }.value)
         assertEquals("/open-android-intelligence/v2/attachments/att_server/commit", transport.requests.last().target)
-        transport.requests.forEach { request ->
+        transport.requests.filter { it.method != "GET" }.forEach { request ->
             assertEquals(request.headers.single { it.name.endsWith("Request-Id") }.value,
                 request.headers.single { it.name == "Idempotency-Key" }.value)
         }
@@ -59,7 +59,7 @@ class GatewayWireRegressionTest {
         val transport = object : GatewayByteTransport {
             override suspend fun execute(request: WireRequest): WireResponse {
                 val wireData = """{"messages":[{"messageId":"msg_1","sender":"user","parts":[{"type":"text","text":"hi"}],"timestamp":0,"createdAt":null},{"messageId":"msg_2","sender":"assistant","parts":[{"type":"text","text":"hello"}],"timestamp":0,"createdAt":null}]}"""
-                return WireResponse(200, emptyList(), """{"protocol":"2.0","data":$wireData}""".toByteArray())
+                return WireResponse(200, emptyList(), """{"protocol":"2.1","data":$wireData}""".toByteArray())
             }
             override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
         }
@@ -92,13 +92,18 @@ class GatewayWireRegressionTest {
                     }
                     """{"message":{"messageId":"msg_server","conversationId":"conv_server","status":"accepted"}}"""
                 }
-                "POST" to "/attachments" -> """{"attachment":{"attachmentId":"att_server","state":"created"}}"""
-                "PUT" to "/attachments/att_server/content" -> """{"attachment":{"attachmentId":"att_server","state":"uploading"}}"""
-                "POST" to "/attachments/att_server/commit" -> """{"attachment":{"attachmentId":"att_server","state":"verified"}}"""
+                "POST" to "/attachments" -> """{"attachment":{"attachmentId":"att_server","status":"staged"}}"""
+                "GET" to "/attachments/att_server" -> """{"attachment":{"attachmentId":"att_server","status":"staged","sizeBytes":9,"sha256":"${sha256(bytesForAttachment())}"}}"""
+                "PUT" to "/attachments/att_server/content" -> """{"attachment":{"attachmentId":"att_server","status":"staged"}}"""
+                "POST" to "/attachments/att_server/commit" -> """{"attachment":{"attachmentId":"att_server","status":"uploaded","sizeBytes":9,"sha256":"${sha256(bytesForAttachment())}"}}"""
                 else -> return WireResponse(400, emptyList(), """{"error":{"code":"SCHEMA_INVALID"}}""".toByteArray())
             }
-            return WireResponse(200, emptyList(), """{"requestId":"req_server","correlationId":"cor_server","protocol":"2.0","data":$data}""".toByteArray())
+            return WireResponse(200, emptyList(), """{"requestId":"req_server","correlationId":"cor_server","protocol":"2.1","data":$data}""".toByteArray())
         }
         override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+
+        private fun bytesForAttachment() = byteArrayOf(0, 0x7b, 0x7d, 0x2b, 0x25, 0xff.toByte(), 0x80.toByte(), 0xc3.toByte(), 0xa9.toByte())
+        private fun sha256(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
     }
 }

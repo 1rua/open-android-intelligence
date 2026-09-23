@@ -2,7 +2,7 @@
 status: accepted
 date: 2026-08-24
 contract: open-android-intelligence-gateway-protocol
-version: 2.0.0
+version: 2.1.0
 ---
 
 # open-android-intelligence Gateway Protocol v2 契约
@@ -40,7 +40,7 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 {
   "requestId": "req_01...",
   "correlationId": "cor_01...",
-  "protocol": "2.0",
+  "protocol": "2.1",
   "data": {}
 }
 ```
@@ -51,7 +51,7 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 {
   "requestId": "req_01...",
   "correlationId": "cor_01...",
-  "protocol": "2.0",
+  "protocol": "2.1",
   "error": {
     "code": "AUTHENTICATION_REQUIRED",
     "message": "Human-readable localizable fallback",
@@ -82,10 +82,10 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 ```json
 {
   "negotiationId": "neg_01...",
-  "protocol": { "major": 2, "minor": 0 },
+  "protocol": { "major": 2, "minor": 1 },
   "client": {
     "installationId": "install_01...",
-    "appVersion": "2.0.0",
+    "appVersion": "2.1.0",
     "platform": "android",
     "platformApi": 35
   },
@@ -103,11 +103,11 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 }
 ```
 
-响应固定当前连接可用交集和有限值：
+响应固定当前连接可用交集、暂存期限和时钟参数；附件没有业务字节上限或 MIME allowlist：
 
 ```json
 {
-  "protocol": { "major": 2, "minor": 0 },
+  "protocol": { "major": 2, "minor": 1 },
   "features": {
     "auth": ["password", "refresh"],
     "messages": "chat-v1",
@@ -117,9 +117,6 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
     "conversationUi": ["agent-command-catalog-v1"]
   },
   "limits": {
-    "maxSingleAttachmentBytes": 26214400,
-    "maxMessageAttachmentBytes": 52428800,
-    "allowedMediaTypes": ["image/jpeg", "image/png", "image/webp", "application/pdf", "text/plain", "audio/mp4"],
     "attachmentTtlSeconds": 3600,
     "eventRetentionSeconds": 86400,
     "maxClockSkewSeconds": 120
@@ -131,7 +128,7 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 }
 ```
 
-协议主版本不同、核心 Schema 不兼容、未知安全字段或未知高风险能力时返回 `PROTOCOL_INCOMPATIBLE`。次版本差异只启用双方声明的交集。协商结果由 `negotiationId` 绑定后续认证会话，客户端不能在单次请求中自行扩大功能。
+协议主版本不同、核心 Schema 不兼容、未知安全字段或未知高风险能力时返回 `PROTOCOL_INCOMPATIBLE`。2.1 的 core Schema hash 与 2.0 不兼容，Android、Hermes 和 OpenClaw 必须同版本发布。次版本差异只启用双方声明的交集。协商结果由 `negotiationId` 绑定后续认证会话，客户端不能在单次请求中自行扩大功能。
 
 `messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`agent-approval-cards-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
 
@@ -287,7 +284,7 @@ TypeScript validation diagnostics 的唯一规范化算法为：每个 Ajv error
 
 ```http
 Authorization: Bearer <opaque-access-token>
-X-Open-Android-Intelligence-Protocol: 2.0
+X-Open-Android-Intelligence-Protocol: 2.1
 X-Open-Android-Intelligence-Account: <account-id>
 X-Open-Android-Intelligence-Device: <device-id>
 X-Open-Android-Intelligence-Session: <session-id>
@@ -444,13 +441,13 @@ GET  /conversations/{conversationId}/attachments/{attachmentId}/content
 }
 ```
 
-Gateway 返回 `accepted` 及服务端 message ID；Agent 回复通过 SSE 发送 `conversation.message.delta` 和 `conversation.message.completed`。每个 conversation 只属于当前逻辑 Gateway，服务端拒绝跨账号、跨 Gateway 或跨 conversation 附件引用。
+Gateway 返回 `accepted` 及服务端 message ID；该状态表示消息已由 Gateway 持久接收。Agent 送达、完成或失败通过 `conversation.message.status` 发出；Agent 回复正文通过 SSE 发送 `conversation.message.delta` 和 `conversation.message.completed`。每个 conversation 只属于当前逻辑 Gateway，服务端拒绝跨账号、跨 Gateway 或跨 conversation 附件引用。
 
 重命名请求体是封闭的 `{"title": "<非空显示标题>"}`，成功时返回：
 
 ```json
 {
-  "protocol": "2.0",
+  "protocol": "2.1",
   "data": {
     "conversation": {
       "conversationId": "conv_01...",
@@ -469,7 +466,7 @@ Gateway 先原子更新标题并写入审计，再追加 `conversation.title.upd
 
 ```json
 {
-  "protocol": "2.0",
+  "protocol": "2.1",
   "event": "conversation.command.result",
   "eventId": "evt_01...",
   "occurredAt": "2026-09-21T09:00:00.000Z",
@@ -510,7 +507,7 @@ Agent 运行时要执行一条被判定为危险的宿主命令时，宿主通�
 
 ```json
 {
-  "protocol": "2.0",
+  "protocol": "2.1",
   "event": "conversation.approval.requested",
   "eventId": "evt_01...",
   "occurredAt": "2026-09-22T09:00:00.000Z",
@@ -555,7 +552,7 @@ POST /approvals/{approvalId}/decisions
 
 ```json
 {
-  "protocol": "2.0",
+  "protocol": "2.1",
   "event": "conversation.approval.resolved",
   "eventId": "evt_02...",
   "occurredAt": "2026-09-22T09:00:05.000Z",
@@ -585,6 +582,8 @@ POST /approvals/{approvalId}/decisions
 2. `PUT /attachments/{attachmentId}/content` 上传字节；
 3. `POST /attachments/{attachmentId}/commit` 校验并提交。
 
+创建按逻辑 Gateway 账号内的 `clientAttachmentId` 幂等：同一标识配同一文件名、媒体类型、长度和 SHA-256 时重试返回同一附件；标识相同但元数据不同返回 `IDEMPOTENCY_CONFLICT`。遇到上传或提交的未知结果时，客户端先调用 `GET /attachments/{attachmentId}` 查询状态，再决定是否续传或结束重试，不能直接创建另一条暂存记录。
+
 创建请求：
 
 ```json
@@ -597,7 +596,9 @@ POST /approvals/{approvalId}/decisions
 }
 ```
 
-Gateway 在读取内容前检查协商限制和本账号配额。content 请求必须携带 `Content-Length` 与 `Digest: sha-256=<base64>`，不允许未协商的压缩或媒体类型。commit 只有在字节数和摘要完全匹配时成功。
+Gateway 不按文件大小或 MIME allowlist 拒绝附件。`sizeBytes` 和 `sha256` 是传输完整性元数据，不是上限；content 请求必须携带恰好一个 `Content-Length` 和 `Digest: sha-256=<base64>`，使用固定长度原始字节流，不使用 multipart、内容压缩或 HTTP chunked transfer。Gateway 先验证签名中的声明摘要，再以有界内存流式写入加密暂存，并在流结束时核对实际字节数和摘要；不一致时不得转为 `verified`。媒体类型原样透传给 Agent。
+
+`GET /attachments/{attachmentId}` 返回 `attachment.schema.json#/$defs/status`：`status` 为 `staged`（尚未核验）、`uploaded`（完整性核验已通过）、`failed` 或 `expired`。成功的 `POST /attachments/{attachmentId}/commit` 也返回该公共状态对象，必须为 `uploaded`。`sizeBytes` 和 `sha256` 必须与创建时声明相同；宿主内部的 `verified`、`delivered`、`acknowledged` 状态在线统一投影为 `uploaded`。查询只按当前账号定位，不暴露存储路径。
 
 附件状态和事件是封闭集合：
 
@@ -661,6 +662,7 @@ V2 事件类型：
 
 - `conversation.message.delta`
 - `conversation.message.completed`
+- `conversation.message.status`
 - `conversation.command.result`
 - `conversation.approval.requested`
 - `conversation.approval.resolved`
@@ -671,6 +673,21 @@ V2 事件类型：
 - `session.revoked`
 - `attachment.acknowledged`
 - `gateway.notice`
+
+`conversation.message.status` 的 `payload` 固定为：
+
+```json
+{
+  "conversationId": "conv_01...",
+  "messageId": "msg_01...",
+  "clientMessageId": "cmsg_01...",
+  "status": "delivered",
+  "revision": 1,
+  "errorCode": null
+}
+```
+
+`status` 只能为 `queued`、`delivered`、`completed` 或 `failed`；同一消息的 `revision` 严格递增。`errorCode` 必填，非失败状态必须为 `null`；`failed` 必须使用稳定错误码（`AGENT_UNAVAILABLE`、`ATTACHMENT_READ_FAILED`、`AGENT_MEDIA_REJECTED` 或 `MODEL_REQUEST_REJECTED`），不得包含 provider 凭据或附件正文。
 
 事件 ID 同时是恢复游标。Gateway 保留时间不得短于协商值；游标过旧返回 `CURSOR_EXPIRED` 以及可安全重建的资源类型，不静默跳到最新事件。客户端先重建资源快照，再使用响应给出的新游标恢复流。
 
@@ -828,8 +845,8 @@ CAPABILITY_UNAVAILABLE
 PROVIDER_CHANGED
 IDEMPOTENCY_CONFLICT
 OUTCOME_UNKNOWN
-ATTACHMENT_LIMIT_EXCEEDED
 ATTACHMENT_DIGEST_MISMATCH
+ATTACHMENT_STORAGE_UNAVAILABLE
 ATTACHMENT_EXPIRED
 CURSOR_CONFLICT
 CURSOR_EXPIRED
@@ -849,7 +866,7 @@ INTERNAL_ERROR
 
 ## 15. Gateway 暴露与宿主兼容
 
-Gateway 可以使用宿主已有路由、loopback 加反向代理或显式证书直接 TLS 监听。三种模式必须运行相同路由、认证、限制、审计和一致性测试。
+Gateway 可以使用宿主已有路由、loopback 加反向代理或显式证书直接 TLS 监听。三种模式必须运行相同路由、认证、完整性核验、审计和一致性测试；承载附件流的反向代理不能设置产品级 body 大小上限。
 
 适配器声明经过验证的宿主 API 最小与最大版本。宿主版本超出范围时 Gateway 进入 `host-incompatible`：管理入口只读、数据不迁移、外部端点返回 `HOST_INCOMPATIBLE`。
 
@@ -875,7 +892,7 @@ Android、Hermes 和 OpenClaw 实现必须共同通过语言无关向量：
 ```json
 {
   "formatVersion": "1.0.0",
-  "protocolVersion": "2.0",
+  "protocolVersion": "2.1",
   "vectorSet": "request-signatures",
   "cases": []
 }
@@ -1095,4 +1112,4 @@ type NormalizedActualResult =
 
 `status` 只有 `pass` 或 `fail`：normalized actual result 与 case expected 投影按 JCS bytes 完全相等时为 `pass`，否则为 `fail`。`resultHash = "sha256:" + lowercaseHex(SHA-256(JCS_UTF8(normalizedActualResult)))`。runner JSONL 输出 `{ vectorId, operation, implementation, status, resultHash }`；`implementation`、`status`、vendor diagnostics、堆栈、宿主 ID、时间和路径都不进入 hash。两个实现只比较相同 vector 的 normalized accepted/rejected outcome 与 `resultHash`，不比较 Ajv/Python/Kotlin 错误文本。
 
-任一实现只有在同一向量版本全部通过后才能声明 `Gateway Protocol 2.0` 兼容。
+任一实现只有在同一向量版本全部通过后才能声明 `Gateway Protocol 2.1` 兼容。

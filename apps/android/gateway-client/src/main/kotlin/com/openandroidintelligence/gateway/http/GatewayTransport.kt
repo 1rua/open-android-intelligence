@@ -11,6 +11,8 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
+import java.util.Base64
 
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 
@@ -36,17 +38,30 @@ class GatewayTransport(
     private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
         ?: error("GATEWAY_ENDPOINT_INVALID: ${profile.gatewayBaseUrl}")
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override suspend fun execute(request: WireRequest): WireResponse = kotlinx.coroutines.withContext(Dispatchers.IO) {
         val connection = open(request)
+        val job = currentCoroutineContext()[Job]
+        val cancelHandle = job?.invokeOnCompletion(onCancelling = true) {
+            runCatching { connection.disconnect() }
+        }
         try {
-            if (request.body.isNotEmpty()) {
+            val streamBody = request.streamBody
+            require(streamBody == null || request.body.isEmpty()) { "REQUEST_BODY_INVALID:multiple-bodies" }
+            if (streamBody != null) {
+                validateStreamHeaders(request.headers, streamBody)
+                connection.setFixedLengthStreamingMode(streamBody.contentLength)
+            }
+            if (request.body.isNotEmpty() || streamBody != null) {
                 connection.doOutput = true
             }
             // Establish the connection and its identity before any sensitive
             // request body is written to the socket.
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
-            if (request.body.isNotEmpty()) {
+            if (streamBody != null) {
+                writeStreamBody(connection, streamBody)
+            } else if (request.body.isNotEmpty()) {
                 connection.outputStream.use { stream ->
                     stream.write(request.body)
                 }
@@ -56,8 +71,54 @@ class GatewayTransport(
             val body = readBody(connection, status)
             WireResponse(status, headers, body)
         } finally {
+            cancelHandle?.dispose()
             connection.disconnect()
         }
+    }
+
+    private fun validateStreamHeaders(headers: List<RawHeader>, body: GatewayRequestBody) {
+        val lengths = headers.filter { it.name.equals("Content-Length", ignoreCase = true) }
+        require(lengths.size == 1 && lengths.single().value == body.contentLength.toString()) {
+            "REQUEST_BODY_INVALID:content-length"
+        }
+        val digests = headers.filter { it.name.equals("Digest", ignoreCase = true) }
+        val expectedDigest = "sha-256=" + Base64.getEncoder().encodeToString(body.sha256Hex.hexBytes())
+        require(digests.size == 1 && digests.single().value == expectedDigest) {
+            "REQUEST_BODY_INVALID:digest"
+        }
+    }
+
+    private fun writeStreamBody(connection: HttpURLConnection, body: GatewayRequestBody) {
+        val digest = MessageDigest.getInstance("SHA-256")
+        var written = 0L
+        val buffer = ByteArray(STREAM_CHUNK_BYTES)
+        connection.outputStream.use { output ->
+            body.openStream().use { input ->
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read == -1) break
+                    if (read == 0) {
+                        val single = input.read()
+                        if (single == -1) break
+                        if (written >= body.contentLength) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
+                        val singleByte = single.toByte()
+                        digest.update(singleByte)
+                        output.write(single)
+                        written++
+                        body.reportBytesWritten(written)
+                        continue
+                    }
+                    if (written > body.contentLength - read) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
+                    digest.update(buffer, 0, read)
+                    output.write(buffer, 0, read)
+                    written += read
+                    body.reportBytesWritten(written)
+                }
+            }
+        }
+        if (written != body.contentLength) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
+        val actualDigest = digest.digest().joinToString("") { "%02x".format(it) }
+        if (actualDigest != body.sha256Hex) throw IOException("REQUEST_BODY_DIGEST_MISMATCH")
     }
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
@@ -125,6 +186,7 @@ class GatewayTransport(
         connection.setRequestProperty("Accept", "application/json")
         connection.setRequestProperty("Cache-Control", "no-store")
         for (header in request.headers) {
+            if (request.streamBody != null && header.name.equals("Content-Length", ignoreCase = true)) continue
             connection.setRequestProperty(header.name, header.value)
         }
         return connection
@@ -167,6 +229,15 @@ class GatewayTransport(
         const val SSE_IDLE_TIMEOUT_MILLIS = 20_000
         const val EVENT_CHUNK_BYTES = 8 * 1024
         const val BODY_CHUNK_BYTES = 16 * 1024
+        const val STREAM_CHUNK_BYTES = 64 * 1024
+        private const val SHA256_HEX_BYTES = 64
         private const val TAG = "GatewaySse"
+
+        private fun String.hexBytes(): ByteArray {
+            require(length == SHA256_HEX_BYTES) { "REQUEST_BODY_INVALID:digest" }
+            return ByteArray(length / 2) { index ->
+                substring(index * 2, index * 2 + 2).toInt(16).toByte()
+            }
+        }
     }
 }

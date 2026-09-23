@@ -472,16 +472,6 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
             )
             Spacer(modifier = Modifier.width(6.dp))
             TransportSecurityChip(phase.transportSecurity)
-            phase.limits?.maxSingleAttachmentBytes?.let { max ->
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "附件上限 ${max / (1024 * 1024)} MB",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 10.sp,
-                )
-            }
         }
 
         is ConnectionPhase.Failed -> Surface(

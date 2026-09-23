@@ -30,7 +30,7 @@ class ApprovalClientTest {
         var responseToReturn = WireResponse(
             status = 200,
             headers = listOf(RawHeader("content-type", "application/json")),
-            body = """{"protocol":"2.0","data":{"approval":{"approvalId":"apr_1","conversationId":"conv_1","decision":"once"}}}""".toByteArray(Charsets.UTF_8),
+            body = """{"protocol":"2.1","data":{"approval":{"approvalId":"apr_1","conversationId":"conv_1","decision":"once"}}}""".toByteArray(Charsets.UTF_8),
         )
 
         override suspend fun execute(request: WireRequest): WireResponse {
@@ -100,7 +100,7 @@ class ApprovalClientTest {
     @Test
     fun aSuccessWithoutTheRecordedDecisionIsNotPaintedAsSuccess() = runBlocking {
         val transport = RecordingTransport().apply {
-            responseToReturn = json(200, """{"protocol":"2.0","data":{"approval":{"approvalId":"apr_1"}}}""")
+            responseToReturn = json(200, """{"protocol":"2.1","data":{"approval":{"approvalId":"apr_1"}}}""")
         }
 
         val result = client(transport).submitDecision("apr_1", ApprovalDecision.ALWAYS)
@@ -114,7 +114,7 @@ class ApprovalClientTest {
         val transport = RecordingTransport().apply {
             responseToReturn = json(
                 409,
-                """{"protocol":"2.0","error":{"code":"APPROVAL_ALREADY_RESOLVED","message":"already","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"deny"}}}""",
+                """{"protocol":"2.1","error":{"code":"APPROVAL_ALREADY_RESOLVED","message":"already","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"deny"}}}""",
             )
         }
 
@@ -133,7 +133,7 @@ class ApprovalClientTest {
         val transport = RecordingTransport().apply {
             responseToReturn = json(
                 409,
-                """{"protocol":"2.0","error":{"code":"APPROVAL_EXPIRED","message":"expired","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"timeout"}}}""",
+                """{"protocol":"2.1","error":{"code":"APPROVAL_EXPIRED","message":"expired","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"timeout"}}}""",
             )
         }
 
@@ -153,7 +153,7 @@ class ApprovalClientTest {
         val transport = RecordingTransport().apply {
             responseToReturn = json(
                 409,
-                """{"protocol":"2.0","error":{"code":"APPROVAL_EXPIRED","message":"expired","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"withdrawn"}}}""",
+                """{"protocol":"2.1","error":{"code":"APPROVAL_EXPIRED","message":"expired","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"withdrawn"}}}""",
             )
         }
 
@@ -168,13 +168,13 @@ class ApprovalClientTest {
         val missing = RecordingTransport().apply {
             responseToReturn = json(
                 404,
-                """{"protocol":"2.0","error":{"code":"APPROVAL_NOT_FOUND","message":"missing","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
+                """{"protocol":"2.1","error":{"code":"APPROVAL_NOT_FOUND","message":"missing","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
             )
         }
         val notFound = client(missing).submitDecision("apr_gone", ApprovalDecision.ONCE)
         assertEquals(ApprovalDecisionOutcome.NOT_FOUND, notFound.outcome)
 
-        val unsupporting = RecordingTransport().apply { responseToReturn = json(400, """{"protocol":"2.0","error":{"code":"SCHEMA_INVALID","message":"no","retryable":false,"retryAfterSeconds":null,"details":{}}}""") }
+        val unsupporting = RecordingTransport().apply { responseToReturn = json(400, """{"protocol":"2.1","error":{"code":"SCHEMA_INVALID","message":"no","retryable":false,"retryAfterSeconds":null,"details":{}}}""") }
         val unsupported = client(unsupporting).submitDecision("apr_1", ApprovalDecision.ONCE)
         assertEquals(ApprovalDecisionOutcome.UNSUPPORTED, unsupported.outcome)
     }
@@ -209,18 +209,18 @@ class ApprovalClientTest {
         val alreadyResolved = RecordingTransport().apply {
             responseToReturn = json(
                 409,
-                """{"protocol":"2.0","error":{"code":"APPROVAL_ALREADY_RESOLVED","message":"already","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"deny"}}}""",
+                """{"protocol":"2.1","error":{"code":"APPROVAL_ALREADY_RESOLVED","message":"already","retryable":false,"retryAfterSeconds":null,"details":{"approvalId":"apr_1","decision":"deny"}}}""",
             )
         }
         client(alreadyResolved, audit).submitDecision("apr_1", ApprovalDecision.ONCE)
 
         val notFound = RecordingTransport().apply {
-            responseToReturn = json(404, """{"protocol":"2.0","error":{"code":"APPROVAL_NOT_FOUND","message":"missing","retryable":false,"retryAfterSeconds":null,"details":{}}}""")
+            responseToReturn = json(404, """{"protocol":"2.1","error":{"code":"APPROVAL_NOT_FOUND","message":"missing","retryable":false,"retryAfterSeconds":null,"details":{}}}""")
         }
         client(notFound, audit).submitDecision("apr_2", ApprovalDecision.DENY)
 
         val failed = RecordingTransport().apply {
-            responseToReturn = json(500, """{"protocol":"2.0","error":{"code":"INTERNAL","message":"boom","retryable":false,"retryAfterSeconds":null,"details":{}}}""")
+            responseToReturn = json(500, """{"protocol":"2.1","error":{"code":"INTERNAL","message":"boom","retryable":false,"retryAfterSeconds":null,"details":{}}}""")
         }
         client(failed, audit).submitDecision("apr_3", ApprovalDecision.SESSION)
 
@@ -232,7 +232,7 @@ class ApprovalClientTest {
         val transport = RecordingTransport().apply {
             responseToReturn = json(
                 200,
-                """{"protocol":"2.0","data":{"approval":{"approvalId":"apr_1","conversationId":"conv_1","decision":"session"}}}""",
+                """{"protocol":"2.1","data":{"approval":{"approvalId":"apr_1","conversationId":"conv_1","decision":"session"}}}""",
             )
         }
 

@@ -1,5 +1,8 @@
 # Open Android Intelligence Android 对话与助理前端完全重构 Implementation Plan
 
+> **2026-09-23 附件策略更新：** 本计划 Task 3 中的 `ArtifactMediaType` 闭集、25/50 MiB 单文件/消息上限与协商限制已由 ADR-0051 和 [当前流式附件修复计划](./2026-09-23-agent-owned-streaming-attachments.md) 取代。Pending Submission 的快照、一次性提交和 integrity gate 仍保留；附件格式与处理大小交给 Agent。
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 从干净的 `main@732eb88` 重新建立真实、可测试、无假状态的 Android 对话与默认助理前端，视觉、共享对话领域、Gateway v2.1 能力、加密镜像、附件门控、系统 Assist、可中断物理动效、插件界面与无障碍验收。

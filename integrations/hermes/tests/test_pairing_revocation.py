@@ -66,7 +66,7 @@ def _negotiate(routes, negotiation_id, installation_id=INSTALLATION_ID):
         "target": "/open-android-intelligence/v2/negotiate",
         "body": {
             "negotiationId": negotiation_id,
-            "protocol": {"major": 2, "minor": 0},
+            "protocol": {"major": 2, "minor": 1},
             "client": {
                 "installationId": installation_id,
                 "appVersion": "2.0.0",
@@ -277,7 +277,7 @@ def test_unpair_revokes_the_five_items_and_every_access_session(tmp_path):
     account = core.open_gateway_account(ACCOUNT_ID)
     try:
         attachment_id = _unconfirmed_attachment(account)
-        assert account.attachments.get(attachment_id)["hasStagedBytes"] is True
+        assert account.attachments.get_record(attachment_id)["hasStagedBytes"] is True
         account.device_requests.enqueue(
             request_id="req_unpair_queue",
             device_id=session["deviceId"],
@@ -327,7 +327,7 @@ def test_unpair_revokes_the_five_items_and_every_access_session(tmp_path):
         queue = [item for item in account.device_requests.list()
                  if item["deviceId"] == session["deviceId"]]
         assert [item["state"] for item in queue] == ["cancelled"]
-        assert account.attachments.get(attachment_id)["hasStagedBytes"] is False
+        assert account.attachments.get_record(attachment_id)["hasStagedBytes"] is False
         # Both sessions died, not only the one that asked.
         assert account.sessions.resolve_session(
             second["accessToken"], second["sessionId"], second["deviceId"]

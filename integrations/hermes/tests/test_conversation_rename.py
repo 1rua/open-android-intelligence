@@ -10,10 +10,12 @@ drops `PATCH` fails here instead of showing up as a rename that never persists.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -27,6 +29,7 @@ from open_android_intelligence_gateway.core import (
     VerifiedGatewayRequest,
     create_gateway_core,
     request_signature_preimage,
+    request_signature_preimage_from_digest,
 )
 from open_android_intelligence_gateway.http import create_gateway_exposure
 from test_support import PasswordVerifierDouble, make_secret_store
@@ -83,7 +86,7 @@ def _signed_rename(
     })
     headers = {
         "Authorization": f"Bearer {bundle['accessToken']}",
-        "X-Open-Android-Intelligence-Protocol": "2.0",
+        "X-Open-Android-Intelligence-Protocol": "2.1",
         "X-Open-Android-Intelligence-Account": ACCOUNT_ID,
         "X-Open-Android-Intelligence-Device": bundle["deviceId"],
         "X-Open-Android-Intelligence-Session": bundle["sessionId"],
@@ -218,3 +221,77 @@ def test_signed_method_set_stays_closed_beyond_patch():
             "bodyHex": "",
         })
     assert error.value.code == "SCHEMA_INVALID"
+
+
+def test_streamed_body_digest_builds_the_unchanged_v2_signature_preimage():
+    body = b"\x00large\xff-body\x80"
+    fields = {
+        "method": "PUT",
+        "target": "/open-android-intelligence/v2/attachments/att_1/content",
+        "accountId": "alice",
+        "deviceId": "dev_1",
+        "sessionId": "sess_1",
+        "requestId": "req_stream_body",
+        "timestamp": "2026-09-23T00:00:00.000Z",
+        "nonce": _b64url(b"n" * 16),
+    }
+
+    from_bytes = request_signature_preimage({**fields, "bodyHex": body.hex()})
+    from_digest = request_signature_preimage_from_digest(
+        fields, hashlib.sha256(body).hexdigest(),
+    )
+
+    assert from_digest == from_bytes
+
+
+def test_streaming_request_authenticates_digest_before_body_is_available(tmp_path):
+    key = Ed25519PrivateKey.generate()
+    core, bundle, _conversation_id, _exposure = _gateway(tmp_path, key)
+    body = b"streamed binary payload"
+    digest = hashlib.sha256(body).digest()
+    target = "/open-android-intelligence/v2/attachments/att_signed/content"
+    timestamp = _timestamp_millis()
+    nonce = _b64url(b"s" * 16)
+    request_id = "req_signed_stream"
+    preimage = request_signature_preimage({
+        "method": "PUT",
+        "target": target,
+        "accountId": ACCOUNT_ID,
+        "deviceId": bundle["deviceId"],
+        "sessionId": bundle["sessionId"],
+        "requestId": request_id,
+        "timestamp": timestamp,
+        "nonce": nonce,
+        "bodyHex": body.hex(),
+    })
+    headers = {
+        "Authorization": f"Bearer {bundle['accessToken']}",
+        "X-Open-Android-Intelligence-Protocol": "2.1",
+        "X-Open-Android-Intelligence-Account": ACCOUNT_ID,
+        "X-Open-Android-Intelligence-Device": bundle["deviceId"],
+        "X-Open-Android-Intelligence-Session": bundle["sessionId"],
+        "X-Open-Android-Intelligence-Request-Id": request_id,
+        "X-Open-Android-Intelligence-Timestamp": timestamp,
+        "X-Open-Android-Intelligence-Nonce": nonce,
+        "X-Open-Android-Intelligence-Signature": _b64url(key.sign(preimage)),
+        "Idempotency-Key": request_id,
+        "Content-Length": str(len(body)),
+        "Digest": f"sha-256={base64.b64encode(digest).decode('ascii')}",
+        "Content-Type": "image/png",
+    }
+    verifier = create_gateway_request_verifier(core)
+
+    ticket = verifier.verify_streaming_headers({
+        "method": "PUT",
+        "target": target,
+        "headers": headers,
+        "rawHeaders": tuple(headers.items()),
+        "body": None,
+    })
+
+    assert ticket is not None
+    assert ticket.content_length == len(body)
+    assert ticket.body_sha256 == digest.hex()
+    verified = ticket.complete(SimpleNamespace(size_bytes=len(body), sha256=digest.hex()))
+    assert isinstance(verified, VerifiedGatewayRequest)
+    assert verified.target == target

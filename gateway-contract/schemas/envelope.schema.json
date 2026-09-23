@@ -44,7 +44,7 @@
       "properties": {
         "requestId": { "$ref": "#/$defs/opaqueId" },
         "correlationId": { "$ref": "#/$defs/opaqueId" },
-        "protocol": { "const": "2.0" },
+        "protocol": { "const": "2.1" },
         "data": { "type": "object" }
       }
     },
@@ -55,7 +55,7 @@
       "properties": {
         "requestId": { "$ref": "#/$defs/opaqueId" },
         "correlationId": { "$ref": "#/$defs/opaqueId" },
-        "protocol": { "const": "2.0" },
+        "protocol": { "const": "2.1" },
         "error": {
           "type": "object",
           "additionalProperties": false,

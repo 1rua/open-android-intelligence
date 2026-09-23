@@ -542,7 +542,7 @@ def test_approval_cards_are_only_advertised_when_a_decision_can_reach_the_agent(
             "target": "/open-android-intelligence/v2/negotiate",
             "body": {
                 "negotiationId": "neg_approval",
-                "protocol": {"major": 2, "minor": 0},
+                "protocol": {"major": 2, "minor": 1},
                 "client": {
                     "installationId": "install_1", "appVersion": "2.0.0",
                     "platform": "android", "platformApi": 35,

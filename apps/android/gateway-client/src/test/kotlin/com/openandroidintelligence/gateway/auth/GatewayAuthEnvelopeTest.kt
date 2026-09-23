@@ -15,7 +15,7 @@ class GatewayAuthEnvelopeTest {
             {
               "requestId":"req-1",
               "correlationId":"cor-1",
-              "protocol":"2.0",
+              "protocol":"2.1",
               "data":{
                 "accountId":"account-1",
                 "deviceId":"device-1",

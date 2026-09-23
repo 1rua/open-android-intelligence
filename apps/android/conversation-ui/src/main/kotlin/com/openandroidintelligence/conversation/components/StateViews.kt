@@ -116,11 +116,20 @@ fun specificFailureText(code: String): String? {
         value.contains("NEGOTIATION_FAILED") ->
             "Gateway 没有完成协议协商。请确认地址指向的是 Gateway v2 服务，并检查 Gateway 版本与运行日志。"
         value.contains("OUTCOME_UNKNOWN") -> "操作结果尚未确认。请刷新核实，避免重复提交。"
+        value.contains("AGENT_MESSAGE_FAILED") && value.contains("ATTACHMENT_READ_FAILED") ->
+            "Agent 无法读取附件，请重新选择文件后重试。"
+        value.contains("AGENT_MESSAGE_FAILED") && value.contains("AGENT_MEDIA_REJECTED") ->
+            "Agent 不支持处理此附件格式。"
+        value.contains("AGENT_MESSAGE_FAILED") && value.contains("MODEL_REQUEST_REJECTED") ->
+            "模型拒绝了包含附件的请求格式，请检查 Agent 端模型配置。"
+        value.contains("AGENT_MESSAGE_FAILED") && value.contains("AGENT_UNAVAILABLE") ->
+            "Agent 当前不可用，附件已由 Gateway 接收但尚未处理。"
         value.contains("IDEMPOTENCY") || value.contains("409") -> "这次请求与已有操作冲突，请刷新会话核实结果。"
         value.contains("UNAUTHORIZED") || value.contains("401") || value.contains("CREDENTIAL") || value.contains("SESSION_EXPIRED") -> "登录凭据已失效，请前往账号与 Gateway 重新登录。"
         value.contains("403") || value.contains("FORBIDDEN") || value.contains("REVOKED") -> "当前账号没有访问权限，请检查账号或联系 Gateway 管理员。"
         value.contains("SSL") || value.contains("TLS") || value.contains("CERTIFICATE") -> "无法验证 Gateway 的安全连接，请检查地址与证书配置。"
-        value.contains("413") || value.contains("TOO_LARGE") -> "内容超过了 Gateway 限制，请选择较小的文件。"
+        value.contains("ATTACHMENT_STORAGE_UNAVAILABLE") -> "Gateway 附件存储空间不可用，请检查 Agent 端磁盘空间后重试。"
+        value.contains("413") -> "Gateway 或反向代理拒绝了上传请求，请检查服务端存储与代理配置。"
         value.contains("429") || value.contains("RATE_LIMIT") -> "请求过于频繁，请稍后重试。"
         value.contains("REPLY_TIMEOUT") || value.contains("NO_REPLY") ->
             "Gateway 一直没有返回回复。已尝试重新同步会话，若仍无内容请检查 Gateway 与 Agent 是否在运行。"

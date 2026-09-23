@@ -139,22 +139,11 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "maxSingleAttachmentBytes",
-            "maxMessageAttachmentBytes",
-            "allowedMediaTypes",
             "attachmentTtlSeconds",
             "eventRetentionSeconds",
             "maxClockSkewSeconds"
           ],
           "properties": {
-            "maxSingleAttachmentBytes": { "type": "integer", "minimum": 1 },
-            "maxMessageAttachmentBytes": { "type": "integer", "minimum": 1 },
-            "allowedMediaTypes": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": { "type": "string", "minLength": 1 }
-            },
             "attachmentTtlSeconds": { "type": "integer", "minimum": 1 },
             "eventRetentionSeconds": { "type": "integer", "minimum": 1 },
             "maxClockSkewSeconds": { "type": "integer", "minimum": 0 },

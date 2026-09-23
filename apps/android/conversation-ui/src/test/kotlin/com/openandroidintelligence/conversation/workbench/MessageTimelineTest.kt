@@ -1,10 +1,23 @@
 package com.openandroidintelligence.conversation.workbench
 
+import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
+import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MessageTimelineTest {
+
+    @Test
+    fun messageStatusTextDoesNotTreatGatewayAcceptanceAsAgentCompletion() {
+        assertEquals("等待 Agent 接收", messageStatusLabel(AgentMessageStatus.QUEUED, null))
+        assertEquals("Agent 已接收", messageStatusLabel(AgentMessageStatus.DELIVERED, null))
+        assertEquals("Agent 处理完成", messageStatusLabel(AgentMessageStatus.COMPLETED, null))
+        assertEquals(
+            "Agent 处理失败：Agent 无法处理此媒体",
+            messageStatusLabel(AgentMessageStatus.FAILED, AgentMessageErrorCode.AGENT_MEDIA_REJECTED),
+        )
+    }
 
     @Test
     fun parsePlainTextReturnsSingleParagraph() {
@@ -238,5 +251,4 @@ class MessageTimelineTest {
         assertTrue(blocks[5] is TimelineBlock.Paragraph)
     }
 }
-
 

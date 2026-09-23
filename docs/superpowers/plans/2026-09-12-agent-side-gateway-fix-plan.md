@@ -1,5 +1,8 @@
 # Agent 端插件网关修复方案（Hermes / OpenClaw）
 
+> **2026-09-23 附件策略更新：** 本计划中关于单文件/单消息字节上限与 MIME allowlist 的实现建议已由 ADR-0051 和 [流式附件修复计划](./2026-09-23-agent-owned-streaming-attachments.md) 取代；其余 Hermes/OpenClaw 修复项须按当前代码状态逐项确认。
+
+
 - 日期：2026-09-12
 - 输入：`docs/superpowers/reviews/2026-09-12-agent-side-gateway-plugins-review.md`（P0 7 / P1 13 / P2 6）
 - 对齐计划：`docs/superpowers/plans/2026-08-24-modular-plugin-architecture-migration.md` 的 Task 4（OpenClaw 适配器）、Task 5（Hermes 原生插件）、Task 6（双宿主一致性门禁）

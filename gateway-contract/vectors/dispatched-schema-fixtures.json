@@ -726,6 +726,115 @@
           }
         }
       }
+    },
+    {
+      "fixtureId": "event.message-status.v1",
+      "key": {
+        "kind": "event",
+        "eventType": "conversation.message.status",
+        "schemaSha256": "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d"
+      },
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "conversationId",
+              "messageId",
+              "clientMessageId",
+              "status",
+              "revision",
+              "errorCode"
+            ],
+            "properties": {
+              "conversationId": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._~-]+$"
+              },
+              "messageId": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._~-]+$"
+              },
+              "clientMessageId": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._~-]+$"
+              },
+              "status": {
+                "const": "failed"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "errorCode": {
+                "enum": [
+                  "AGENT_UNAVAILABLE",
+                  "ATTACHMENT_READ_FAILED",
+                  "AGENT_MEDIA_REJECTED",
+                  "MODEL_REQUEST_REJECTED"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "conversationId",
+              "messageId",
+              "clientMessageId",
+              "status",
+              "revision",
+              "errorCode"
+            ],
+            "properties": {
+              "conversationId": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._~-]+$"
+              },
+              "messageId": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._~-]+$"
+              },
+              "clientMessageId": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._~-]+$"
+              },
+              "status": {
+                "enum": [
+                  "queued",
+                  "delivered",
+                  "completed"
+                ]
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "errorCode": {
+                "type": "null"
+              }
+            }
+          }
+        ],
+        "properties": {
+          "conversationId": {},
+          "messageId": {},
+          "clientMessageId": {},
+          "status": {},
+          "revision": {},
+          "errorCode": {}
+        }
+      }
     }
   ],
   "bindingSets": [
@@ -840,6 +949,13 @@
             "eventType": "attachment.acknowledged"
           },
           "schemaSha256": "sha256:1dfc04f9fff6e8f528e29c58926bead33f735e26f1a12880d004a4431d41f7d6"
+        },
+        {
+          "key": {
+            "kind": "event",
+            "eventType": "conversation.message.status"
+          },
+          "schemaSha256": "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d"
         }
       ]
     }

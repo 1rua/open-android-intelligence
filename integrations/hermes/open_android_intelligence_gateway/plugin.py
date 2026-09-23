@@ -24,15 +24,16 @@ from .adapter import (
     create_gateway_request_verifier,
 )
 from .account_paths import GATEWAY_DIRECTORY_NAME, WIRE_ID_PATTERN
-from .core import GatewayCore, create_gateway_core
+from .core import WIRE_PROTOCOL, GatewayCore, create_gateway_core
 from .http import EXPOSURE_MODES, GatewayExposure, create_gateway_exposure
 from .local_keys import resolve_local_master_key_store
 
 
 HERMES_PLUGIN_MANIFEST = {
     "id": "open-android-intelligence-gateway",
+    "version": "2.1.0",
     "backend": "hermes",
-    "protocolVersion": "gateway-protocol-v2",
+    "protocolVersion": "2.1.0",
     "hostApi": {
         "status": "unverified",
         "min": None,
@@ -92,7 +93,7 @@ class GatewayPlatform:
             request_id = str(_attr(context, "requestId", "request_id", default="open-android-intelligence-route"))
             correlation_id = str(_attr(context, "correlationId", "correlation_id", default="open-android-intelligence-route"))
             return {
-                "requestId": request_id, "correlationId": correlation_id, "protocol": "2.0",
+                "requestId": request_id, "correlationId": correlation_id, "protocol": WIRE_PROTOCOL,
                 "error": {
                     "code": "HOST_INCOMPATIBLE", "message": "HOST_INCOMPATIBLE",
                     "retryable": False, "retryAfterSeconds": None, "details": {},
@@ -506,7 +507,7 @@ def register(ctx: Any) -> None:
 
             status_res = services.admin.status()
             print("📱 Open Android Intelligence Gateway 运行状态:")
-            print("  • 协议版本: Gateway Protocol v2 (2.0)")
+            print("  • 协议版本: Gateway Protocol v2.1")
             print(f"  • 数据存储根目录: {services.core.storage_root}")
             if status_res.get("readOnly"):
                 print("  • 宿主兼容性: 未验证（管理入口只读，外部端点返回 HOST_INCOMPATIBLE）")

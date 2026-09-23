@@ -65,7 +65,7 @@ class GenerationCancelGateTest {
         gateway.respond(CONVERSATIONS_PATH, CONVERSATIONS_BODY)
         gateway.respond(TIMELINE_PATH, TIMELINE_BODY)
         gateway.respond(EVENTS_PATH, GENERATION_EVENT_SSE, contentType = "text/event-stream")
-        gateway.respond(CANCEL_PATH, """{"protocol":"2.0","data":{"outcome":"CANCELLED"}}""")
+        gateway.respond(CANCEL_PATH, """{"protocol":"2.1","data":{"outcome":"CANCELLED"}}""")
 
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
@@ -161,13 +161,12 @@ class GenerationCancelGateTest {
             if (withCancel) add("generation-cancel-v1")
         }.joinToString(",", "[", "]") { "\"$it\"" }
         return """
-            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":0},
+            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":$conversationUi},
-            "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
-            "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
+            "limits":{            "attachmentTtlSeconds":3600,
             "eventRetentionSeconds":86400},
             "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
         """.trimIndent()
@@ -188,12 +187,12 @@ class GenerationCancelGateTest {
         """.trimIndent()
 
         val CONVERSATIONS_BODY = """
-            {"protocol":"2.0","data":{"conversations":[{"conversationId":"conv_1","title":"排查",
+            {"protocol":"2.1","data":{"conversations":[{"conversationId":"conv_1","title":"排查",
             "lastMessageAt":"2026-09-01T00:00:00.000Z"}]}}
         """.trimIndent()
 
         val TIMELINE_BODY =
-            """{"protocol":"2.0","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}"""
+            """{"protocol":"2.1","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}"""
 
         /**
          * 一帧网关事件：未知事件名也会发布 payload 里的 generationId（取消只需要

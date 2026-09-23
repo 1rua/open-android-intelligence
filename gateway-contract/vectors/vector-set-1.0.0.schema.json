@@ -6,7 +6,7 @@
   "required": ["formatVersion", "protocolVersion", "vectorSet", "cases"],
   "properties": {
     "formatVersion": { "const": "1.0.0" },
-    "protocolVersion": { "const": "2.0" },
+    "protocolVersion": { "const": "2.1" },
     "vectorSet": {
       "enum": [
         "request-signatures",

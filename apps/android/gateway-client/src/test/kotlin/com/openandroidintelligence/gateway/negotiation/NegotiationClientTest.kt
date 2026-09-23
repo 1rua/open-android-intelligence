@@ -2,6 +2,9 @@ package com.openandroidintelligence.gateway.negotiation
 
 import com.openandroidintelligence.gateway.http.GatewayResponse
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
+import com.openandroidintelligence.gateway.schema.SchemaContractHash
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -11,8 +14,10 @@ class NegotiationClientTest {
 
     @Test
     fun readsNegotiationFieldsFromTheProtocolDataEnvelope() = runBlocking {
+        var sent: SignedGatewayRequest? = null
         val client = NegotiationClient(
-            execute = { _: SignedGatewayRequest ->
+            execute = { request ->
+                sent = request
                 GatewayResponse(
                     status = 200,
                     headers = emptyList(),
@@ -20,9 +25,9 @@ class NegotiationClientTest {
                         {
                           "requestId":"req-1",
                           "correlationId":"cor-1",
-                          "protocol":"2.0",
+                          "protocol":"2.1",
                           "data":{
-                            "protocol":{"major":2,"minor":0},
+                            "protocol":{"major":2,"minor":1},
                             "features":{
                               "messages":"chat-v1",
                               "attachments":"staged-sha256-v1",
@@ -30,9 +35,6 @@ class NegotiationClientTest {
                               "deviceRequests":"risk-queue-v1"
                             },
                             "limits":{
-                              "maxSingleAttachmentBytes":26214400,
-                              "maxMessageAttachmentBytes":52428800,
-                              "allowedMediaTypes":["image/png"],
                               "attachmentTtlSeconds":3600,
                               "eventRetentionSeconds":86400
                             },
@@ -46,20 +48,45 @@ class NegotiationClientTest {
                 )
             },
             installationId = "install-1",
-            appVersion = "2.0.0",
+            appVersion = "2.1.0",
             platformApi = 35,
         )
 
         val result = client.negotiate("neg-1")
 
         assertEquals(2, result.protocolMajor)
+        assertEquals(1, result.protocolMinor)
         assertEquals("deploy-1", result.deploymentId)
         assertEquals(
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             result.tlsSpkiSha256,
         )
-        assertEquals(26214400L, result.limits.maxSingleAttachmentBytes)
-        assertEquals(listOf("image/png"), result.limits.allowedMediaTypes)
+        val requestPayload = JsonFields.obj(Json.parse(checkNotNull(sent).body.decodeToString()))!!
+        val offeredProtocol = JsonFields.obj(JsonFields.field(requestPayload, "protocol"))
+        assertEquals(1, JsonFields.int(offeredProtocol, "minor"))
+        val clientInfo = JsonFields.obj(JsonFields.field(requestPayload, "client"))
+        assertEquals("2.1.0", JsonFields.string(clientInfo, "appVersion"))
+        assertEquals(SchemaContractHash.CORE, JsonFields.string(JsonFields.obj(JsonFields.field(requestPayload, "schemaHashes")), "core"))
+    }
+
+    @Test
+    fun rejectsAResponseEnvelopeFromThePreviousProtocolMinor() = runBlocking {
+        val client = NegotiationClient(
+            execute = { _ ->
+                GatewayResponse(
+                    status = 200,
+                    headers = emptyList(),
+                    body = """{"protocol":"2.0","data":{"protocol":{"major":2,"minor":1}}}""".toByteArray(),
+                )
+            },
+            installationId = "install-1",
+            appVersion = "2.1.0",
+            platformApi = 35,
+        )
+
+        val failure = runCatching { client.negotiate("neg-1") }.exceptionOrNull()
+
+        assertEquals("NEGOTIATION_FAILED:invalid-envelope", failure?.message)
     }
 
     @Test
@@ -90,20 +117,13 @@ class NegotiationClientTest {
     private fun result(conversationUi: List<String>): NegotiationResult = NegotiationResult(
         negotiationId = "neg-1",
         protocolMajor = 2,
-        protocolMinor = 0,
+        protocolMinor = 1,
         deploymentId = null,
         tlsSpkiSha256 = null,
         messages = "chat-v1",
         attachments = "staged-sha256-v1",
         events = "sse-cursor-v1",
         deviceRequests = "risk-queue-v1",
-        limits = NegotiatedLimits(
-            maxSingleAttachmentBytes = null,
-            maxMessageAttachmentBytes = null,
-            allowedMediaTypes = emptyList(),
-            attachmentTtlSeconds = null,
-            eventRetentionSeconds = null,
-        ),
         conversationUi = conversationUi,
     )
 }

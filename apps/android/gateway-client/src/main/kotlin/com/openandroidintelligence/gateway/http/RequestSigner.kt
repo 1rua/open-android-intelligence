@@ -12,6 +12,8 @@ data class SignedRequestInput(
     val timestamp: String,
     val nonce: String,
     val body: ByteArray,
+    /** SHA-256 already measured over a replayable raw stream body, if present. */
+    val bodySha256Hex: String? = null,
 )
 
 /**
@@ -41,8 +43,9 @@ object RequestSigner {
         requireCanonicalNonce(input.nonce)
 
         val target = CanonicalTarget.canonicalize(input.target)
-        val bodyDigest = MessageDigest.getInstance("SHA-256").digest(input.body)
+        val bodyDigest = input.bodySha256Hex ?: MessageDigest.getInstance("SHA-256").digest(input.body)
             .joinToString("") { "%02x".format(it) }
+        require(LOWERCASE_SHA256.matches(bodyDigest)) { "SCHEMA_INVALID:body-digest" }
 
         return listOf(
             "OPEN-ANDROID-INTELLIGENCE-REQUEST-V2",
@@ -61,6 +64,8 @@ object RequestSigner {
     private fun requireWireId(value: String, field: String) {
         if (!WIRE_ID.matches(value)) throw IllegalArgumentException("SCHEMA_INVALID:$field")
     }
+
+    private val LOWERCASE_SHA256 = Regex("[0-9a-f]{64}")
 
     /**
      * The timestamp is fixed-format with exactly three fractional digits.

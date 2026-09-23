@@ -28,6 +28,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
+import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -138,17 +140,14 @@ private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifie
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         entry.attachments.forEach { attachment ->
-                            if (attachment.isImage && attachment.imageBytes != null) {
-                                val bitmap = remember(attachment.imageBytes) {
+                            if (attachment.isImage && attachment.previewBytes != null) {
+                                val bitmap = remember(attachment.previewBytes) {
                                     runCatching {
-                                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                        BitmapFactory.decodeByteArray(attachment.imageBytes, 0, attachment.imageBytes.size, opts)
-                                        var sample = 1
-                                        while (opts.outWidth / sample > 600 || opts.outHeight / sample > 600) {
-                                            sample *= 2
-                                        }
-                                        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
-                                        BitmapFactory.decodeByteArray(attachment.imageBytes, 0, attachment.imageBytes.size, decodeOpts)?.asImageBitmap()
+                                        BitmapFactory.decodeByteArray(
+                                            attachment.previewBytes,
+                                            0,
+                                            attachment.previewBytes.size,
+                                        )?.asImageBitmap()
                                     }.getOrNull()
                                 }
                                 if (bitmap != null) {
@@ -201,7 +200,21 @@ private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifie
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    if (entry.pendingAcceptance) {
+                    if (entry.messageStatus != null) {
+                        val failedStatus = entry.messageStatus == AgentMessageStatus.FAILED
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(if (failedStatus) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary),
+                        )
+                        Text(
+                            text = messageStatusLabel(entry.messageStatus, entry.messageStatusErrorCode),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 11.sp,
+                            color = if (failedStatus) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (entry.pendingAcceptance) {
                         Box(
                             modifier = Modifier
                                 .size(6.dp)
@@ -235,6 +248,19 @@ private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifie
                 }
             }
         }
+    }
+}
+
+fun messageStatusLabel(status: AgentMessageStatus, errorCode: AgentMessageErrorCode?): String = when (status) {
+    AgentMessageStatus.QUEUED -> "等待 Agent 接收"
+    AgentMessageStatus.DELIVERED -> "Agent 已接收"
+    AgentMessageStatus.COMPLETED -> "Agent 处理完成"
+    AgentMessageStatus.FAILED -> "Agent 处理失败：" + when (errorCode) {
+        AgentMessageErrorCode.AGENT_UNAVAILABLE -> "Agent 暂不可用"
+        AgentMessageErrorCode.ATTACHMENT_READ_FAILED -> "Agent 读取附件失败"
+        AgentMessageErrorCode.AGENT_MEDIA_REJECTED -> "Agent 无法处理此媒体"
+        AgentMessageErrorCode.MODEL_REQUEST_REJECTED -> "模型请求格式不接受"
+        null -> "请重试或重新选择附件"
     }
 }
 

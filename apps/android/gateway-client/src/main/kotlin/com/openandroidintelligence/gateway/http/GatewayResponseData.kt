@@ -12,7 +12,7 @@ fun GatewayResponse.requireData(operation: String): JsonValue.JObject {
         val code = JsonFields.string(error, "code")?.takeIf { Regex("[A-Z0-9_]+").matches(it) }
         throw IllegalStateException("$operation:${code ?: status}")
     }
-    if (JsonFields.string(envelope, "protocol") != "2.0") {
+    if (JsonFields.string(envelope, "protocol") != "2.1") {
         throw IllegalStateException("$operation:invalid-envelope")
     }
     return JsonFields.obj(JsonFields.field(envelope, "data"))

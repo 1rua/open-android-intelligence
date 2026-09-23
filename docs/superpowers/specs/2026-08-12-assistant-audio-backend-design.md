@@ -1,5 +1,8 @@
 # Assistant Audio Backend Design
 
+> **2026-09-23 附件策略更新：** 本文的 10 MiB 音频、50 MiB 消息附件字节限制只保留为历史设计背景；Gateway 传输策略已由 ADR-0051 取代，格式与处理大小由 Agent 负责。Agent 自有音频处理策略不由该 ADR 改写。
+
+
 **Status:** Approved design, backend implementation pending
 
 **Date:** 2026-08-12

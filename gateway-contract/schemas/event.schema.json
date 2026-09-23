@@ -19,6 +19,7 @@
           "enum": [
             "conversation.message.delta",
             "conversation.message.completed",
+            "conversation.message.status",
             "conversation.command.result",
             "conversation.approval.requested",
             "conversation.approval.resolved",
@@ -114,6 +115,47 @@
     "messageCompletedPayload": {
       "$comment": "Normative copy for eventType 'conversation.message.completed'.",
       "$ref": "#/$defs/conversationMessagePayload"
+    },
+    "messageStatusPayload": {
+      "$comment": "Normative copy for eventType 'conversation.message.status'. Status changes are monotonic per message revision; failed contains a stable errorCode without provider secrets.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "conversationId": {},
+        "messageId": {},
+        "clientMessageId": {},
+        "status": {},
+        "revision": {},
+        "errorCode": {}
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["conversationId", "messageId", "clientMessageId", "status", "revision", "errorCode"],
+          "properties": {
+            "conversationId": { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId" },
+            "messageId": { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId" },
+            "clientMessageId": { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId" },
+            "status": { "const": "failed" },
+            "revision": { "type": "integer", "minimum": 0 },
+            "errorCode": { "enum": ["AGENT_UNAVAILABLE", "ATTACHMENT_READ_FAILED", "AGENT_MEDIA_REJECTED", "MODEL_REQUEST_REJECTED"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["conversationId", "messageId", "clientMessageId", "status", "revision", "errorCode"],
+          "properties": {
+            "conversationId": { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId" },
+            "messageId": { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId" },
+            "clientMessageId": { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId" },
+            "status": { "enum": ["queued", "delivered", "completed"] },
+            "revision": { "type": "integer", "minimum": 0 },
+            "errorCode": { "type": "null" }
+          }
+        }
+      ]
     },
     "titleUpdatedPayload": {
       "$comment": "Normative copy for eventType 'conversation.title.updated'. newTitle mirrors title; an empty title is legal (title clearing).",

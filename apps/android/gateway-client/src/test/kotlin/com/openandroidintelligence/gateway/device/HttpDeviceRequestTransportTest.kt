@@ -60,7 +60,7 @@ class HttpDeviceRequestTransportTest {
             responder = {
                 json(
                     200,
-                    """{"protocol":"2.0","data":{"claimId":"claim_1","requestId":"dev_req_1","accountId":"acct_1","deviceId":"dev_1","pairingGeneration":3,"grantRevision":7}}""",
+                    """{"protocol":"2.1","data":{"claimId":"claim_1","requestId":"dev_req_1","accountId":"acct_1","deviceId":"dev_1","pairingGeneration":3,"grantRevision":7}}""",
                 )
             }
         }
@@ -80,7 +80,7 @@ class HttpDeviceRequestTransportTest {
             responder = {
                 json(
                     200,
-                    """{"protocol":"2.0","data":{"claimId":"claim_1","requestId":"dev_req_1","accountId":"acct_1","deviceId":"dev_1","pairingGeneration":3,"grantRevision":7}}""",
+                    """{"protocol":"2.1","data":{"claimId":"claim_1","requestId":"dev_req_1","accountId":"acct_1","deviceId":"dev_1","pairingGeneration":3,"grantRevision":7}}""",
                 )
             }
         }
@@ -103,7 +103,7 @@ class HttpDeviceRequestTransportTest {
             responder = {
                 json(
                     200,
-                    """{"protocol":"2.0","data":{"claimId":"claim_1","requestId":"dev_req_other","accountId":"acct_1","deviceId":"dev_1","pairingGeneration":3,"grantRevision":7}}""",
+                    """{"protocol":"2.1","data":{"claimId":"claim_1","requestId":"dev_req_other","accountId":"acct_1","deviceId":"dev_1","pairingGeneration":3,"grantRevision":7}}""",
                 )
             }
         }
@@ -122,7 +122,7 @@ class HttpDeviceRequestTransportTest {
             responder = {
                 json(
                     200,
-                    """{"protocol":"2.0","data":{"claimId":"claim_1","requestId":"dev_req_1","accountId":"acct_1","pairingGeneration":3,"grantRevision":7}}""",
+                    """{"protocol":"2.1","data":{"claimId":"claim_1","requestId":"dev_req_1","accountId":"acct_1","pairingGeneration":3,"grantRevision":7}}""",
                 )
             }
         }
@@ -138,7 +138,7 @@ class HttpDeviceRequestTransportTest {
             responder = {
                 json(
                     409,
-                    """{"protocol":"2.0","error":{"code":"GRANT_STALE","message":"stale","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
+                    """{"protocol":"2.1","error":{"code":"GRANT_STALE","message":"stale","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
                 )
             }
         }
@@ -151,7 +151,7 @@ class HttpDeviceRequestTransportTest {
     @Test
     fun theResultIsPostedAsTheThreeFieldBody() = runBlocking {
         val recording = RecordingTransport().apply {
-            responder = { json(200, """{"protocol":"2.0","data":{"requestId":"dev_req_1"}}""") }
+            responder = { json(200, """{"protocol":"2.1","data":{"requestId":"dev_req_1"}}""") }
         }
 
         transport(recording).submitResult(
@@ -182,7 +182,7 @@ class HttpDeviceRequestTransportTest {
             responder = {
                 json(
                     409,
-                    """{"protocol":"2.0","error":{"code":"OUTCOME_UNKNOWN","message":"lost","retryable":true,"retryAfterSeconds":null,"details":{}}}""",
+                    """{"protocol":"2.1","error":{"code":"OUTCOME_UNKNOWN","message":"lost","retryable":true,"retryAfterSeconds":null,"details":{}}}""",
                 )
             }
         }

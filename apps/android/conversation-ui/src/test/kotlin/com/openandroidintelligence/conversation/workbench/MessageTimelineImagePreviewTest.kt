@@ -15,7 +15,7 @@ class MessageTimelineImagePreviewTest {
             draftId = "att_1",
             filename = "photo.jpg",
             mediaType = "image/jpeg",
-            imageBytes = byteArrayOf(1, 2, 3),
+            previewBytes = byteArrayOf(1, 2, 3),
         )
         assertTrue(jpgAttachment.isImage)
 
@@ -33,7 +33,7 @@ class MessageTimelineImagePreviewTest {
             draftId = "att_test",
             filename = "test.png",
             mediaType = "image/png",
-            imageBytes = byteArrayOf(0, 1),
+            previewBytes = byteArrayOf(0, 1),
         )
         val entry = TimelineEntry(
             key = "entry_1",

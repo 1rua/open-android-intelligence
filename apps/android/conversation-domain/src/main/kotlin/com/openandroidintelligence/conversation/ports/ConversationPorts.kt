@@ -1,6 +1,13 @@
 package com.openandroidintelligence.conversation.ports
 
 import com.openandroidintelligence.conversation.model.*
+import java.io.InputStream
+import java.io.FilterInputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.Flow
 
 data class ConversationScope(
@@ -23,6 +30,7 @@ data class TimelineMessage(
     val state: String = "CONFIRMED",
     /** The conversation carried by an SSE event, when the Gateway provides it. */
     val conversationId: ConversationId? = null,
+    val errorCode: String? = null,
 )
 
 data class MessageBatch(
@@ -82,6 +90,17 @@ enum class CommandOutcome {
     UNSUPPORTED,
     OUTCOME_UNKNOWN,
 }
+
+enum class AgentMessageStatus(val wireValue: String) {
+    QUEUED("queued"), DELIVERED("delivered"), COMPLETED("completed"), FAILED("failed"),
+}
+
+enum class AgentMessageErrorCode(val wireValue: String) {
+    AGENT_UNAVAILABLE("AGENT_UNAVAILABLE"),
+    ATTACHMENT_READ_FAILED("ATTACHMENT_READ_FAILED"),
+    AGENT_MEDIA_REJECTED("AGENT_MEDIA_REJECTED"),
+    MODEL_REQUEST_REJECTED("MODEL_REQUEST_REJECTED"),
+}
 data class CancelSubmissionResult(val success: Boolean)
 data class PendingSubmissionIntent(
     val intentId: SubmitIntentId,
@@ -91,11 +110,110 @@ data class PendingSubmissionIntent(
     val attachments: List<AttachmentDraftId> = emptyList(),
 )
 
-data class LocalAttachmentSelection(val filename: String, val mediaType: String, val bytes: ByteArray)
+fun interface AttachmentContentSource {
+    /** Returns a new stream on every call. The caller owns and closes the stream. */
+    fun openStream(): InputStream
+
+    /** Stream producers such as Bitmap.compress can bypass a complete encoded ByteArray. */
+    fun writeTo(output: OutputStream) {
+        openStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read == -1) break
+                if (read == 0) {
+                    val single = input.read()
+                    if (single == -1) break
+                    output.write(single)
+                } else {
+                    output.write(buffer, 0, read)
+                }
+            }
+        }
+    }
+
+    companion object {
+        fun fromWriter(writer: (OutputStream) -> Unit): AttachmentContentSource = object : AttachmentContentSource {
+            override fun openStream(): InputStream {
+                val input = PipedInputStream(64 * 1024)
+                val output = PipedOutputStream(input)
+                val failure = AtomicReference<Throwable?>(null)
+                val producer = Thread({
+                    try {
+                        output.use(writer)
+                    } catch (cause: Throwable) {
+                        failure.set(cause)
+                        runCatching { output.close() }
+                    }
+                }, "attachment-source-writer").apply {
+                    isDaemon = true
+                    start()
+                }
+                return object : FilterInputStream(input) {
+                    override fun read(): Int = try {
+                        super.read().also { if (it == -1) rethrowProducerFailure(failure.get()) }
+                    } catch (cause: IOException) {
+                        throwProducerFailureOr(failure.get(), cause)
+                    }
+
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = try {
+                        super.read(buffer, offset, length).also { if (it == -1) rethrowProducerFailure(failure.get()) }
+                    } catch (cause: IOException) {
+                        throwProducerFailureOr(failure.get(), cause)
+                    }
+
+                    override fun close() {
+                        super.close()
+                        producer.interrupt()
+                        try {
+                            producer.join(1_000L)
+                        } catch (cause: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            throw IOException("ATTACHMENT_SOURCE_CANCELLED", cause)
+                        }
+                    }
+                }
+            }
+        }
+
+        private fun rethrowProducerFailure(failure: Throwable?) {
+            if (failure != null) throw IOException("ATTACHMENT_READ_FAILED", failure)
+        }
+
+        private fun throwProducerFailureOr(failure: Throwable?, fallback: IOException): Nothing =
+            throw IOException("ATTACHMENT_READ_FAILED", failure ?: fallback)
+    }
+}
+
+data class LocalAttachmentSelection(
+    val filename: String,
+    val mediaType: String,
+    val contentSource: AttachmentContentSource,
+    /** Bounded, optional display preview; never the upload payload. */
+    val previewBytes: ByteArray? = null,
+)
+
+data class StagedAttachmentContent(val id: String, val sizeBytes: Long, val sha256Hex: String)
+
+interface LocalAttachmentStagingStore {
+    fun stage(
+        selection: LocalAttachmentSelection,
+        onBytesStaged: (Long) -> Unit = {},
+        isCancelled: () -> Boolean = { false },
+    ): StagedAttachmentContent
+
+    fun openStream(stagedId: String): InputStream
+    fun delete(stagedId: String)
+    fun cleanupExpired(nowMillis: Long, maxAgeMillis: Long)
+    fun cleanup()
+}
+
 data class AttachmentDraftState(
     val draftId: AttachmentDraftId,
     val state: AttachmentState,
     val progress: Float = 0f,
+    val transferredBytes: Long = 0,
+    val totalBytes: Long? = null,
     val errorMessage: String? = null,
 )
 
@@ -117,6 +235,17 @@ sealed interface VerifiedConversationEvent {
         val messageId: String,
         val correlationId: String,
         val conversationId: ConversationId? = null,
+    ) : VerifiedConversationEvent
+
+    data class MessageStatus(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val conversationId: ConversationId,
+        val messageId: String,
+        val clientMessageId: ClientMessageId,
+        val status: AgentMessageStatus,
+        val revision: Long,
+        val errorCode: AgentMessageErrorCode?,
     ) : VerifiedConversationEvent
 
     data class GenerationCancelled(
@@ -278,7 +407,10 @@ interface AttachmentDraftCoordinator {
     suspend fun armSubmission(draftId: String, revision: Long): PendingSubmissionIntent
     suspend fun cancelSubmission(intentId: String): CancelSubmissionResult
     fun observe(draftId: String): Flow<AttachmentDraftState>
-    fun retry(draftId: String, selection: LocalAttachmentSelection)
+    fun retry(draftId: String)
+    suspend fun discard(draftId: String)
+    /** Releases local ciphertext after the Gateway accepts the message. */
+    suspend fun releaseAfterSubmit(draftId: String)
     fun remoteAttachmentId(draftId: String): String?
 }
 

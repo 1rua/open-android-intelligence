@@ -1,6 +1,6 @@
 {
   "formatVersion": "1.0.0",
-  "protocolVersion": "2.0",
+  "protocolVersion": "2.1",
   "vectorSet": "request-signatures",
   "cases": [
     {

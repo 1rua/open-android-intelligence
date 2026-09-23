@@ -43,6 +43,7 @@ data class SignedGatewayRequest(
     val target: String,
     val body: ByteArray = ByteArray(0),
     val headers: List<RawHeader> = emptyList(),
+    val streamBody: GatewayRequestBody? = null,
 )
 
 data class GatewayResponse(
@@ -129,12 +130,15 @@ class GatewayHttpClient(
 
     suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
         val validatedHeaders = RawHeaders.validate(request.headers)
-        val input = signedInput(request.method, request.target, request.body)
+        require(request.streamBody == null || request.body.isEmpty()) { "REQUEST_BODY_INVALID:multiple-bodies" }
+        val input = request.streamBody?.let { body ->
+            signedInput(request.method, request.target, ByteArray(0), body.sha256Hex)
+        } ?: signedInput(request.method, request.target, request.body)
         val headers = validatedHeaders + authenticationHeaders(input, signatureOf(input), request.method)
 
         return withContext(Dispatchers.IO) {
             val response = transport.execute(
-                WireRequest(input.method, input.target, headers, request.body),
+                WireRequest(input.method, input.target, headers, request.body, request.streamBody),
             )
             GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
         }
@@ -320,8 +324,12 @@ class GatewayHttpClient(
         }
     }
 
-    internal fun signedInput(method: String, target: String, body: ByteArray): SignedRequestInput =
-        signedInput(profile, method, target, body)
+    internal fun signedInput(
+        method: String,
+        target: String,
+        body: ByteArray,
+        bodySha256Hex: String? = null,
+    ): SignedRequestInput = signedInput(profile, method, target, body, bodySha256Hex)
 
     internal fun signatureOf(input: SignedRequestInput): String =
         signatureOf(signer, input)
@@ -333,7 +341,7 @@ class GatewayHttpClient(
     ): List<RawHeader> = authenticationHeaders(profile, input, signatureBase64Url, method)
 
     companion object {
-        const val PROTOCOL_HEADER = "2.0"
+        const val PROTOCOL_HEADER = "2.1"
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
         /**
          * How many event ids stay remembered for replay suppression.
@@ -357,6 +365,7 @@ class GatewayHttpClient(
             method: String,
             target: String,
             body: ByteArray,
+            bodySha256Hex: String? = null,
         ): SignedRequestInput =
             SignedRequestInput(
                 method = method,
@@ -372,6 +381,7 @@ class GatewayHttpClient(
                 ),
                 nonce = newNonce(),
                 body = body,
+                bodySha256Hex = bodySha256Hex,
             )
 
         internal fun signatureOf(signer: (ByteArray) -> ByteArray, input: SignedRequestInput): String =

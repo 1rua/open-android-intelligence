@@ -5,6 +5,7 @@ import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
 import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.model.ApprovalSeverity
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
+import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.gateway.events.SseParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -44,6 +45,51 @@ class GatewayEventDecoderTest {
         assertEquals(3L, upsert.revision)
         assertEquals(1, upsert.message.parts.size)
         assertTrue(upsert.message.parts.first() is com.openandroidintelligence.conversation.model.MessagePart.Text)
+    }
+
+    @Test
+    fun decodesAgentMessageDeliveryStatusAndItsRevision() {
+        val parser = SseParser()
+        val events = parser.feed(
+            frame(
+                id = "evt_status_1",
+                event = "conversation.message.status",
+                data = """{"payload":{"conversationId":"conv_1","messageId":"msg_1","clientMessageId":"cmsg_1","status":"delivered","revision":4,"errorCode":null}}""",
+            ),
+        )
+
+        val decoded = GatewayEventDecoder.decode(events.single())
+
+        assertTrue(decoded is VerifiedConversationEvent.MessageStatus)
+        val status = decoded as VerifiedConversationEvent.MessageStatus
+        assertEquals("conv_1", status.conversationId.value)
+        assertEquals("msg_1", status.messageId)
+        assertEquals("cmsg_1", status.clientMessageId.value)
+        assertEquals(AgentMessageStatus.DELIVERED, status.status)
+        assertEquals(4L, status.revision)
+        assertNull(status.errorCode)
+    }
+
+    @Test
+    fun rejectsUnknownOrInconsistentAgentMessageStatusErrors() {
+        val parser = SseParser()
+        val unknownFailure = parser.feed(
+            frame(
+                id = "evt_status_bad_1",
+                event = "conversation.message.status",
+                data = """{"payload":{"conversationId":"conv_1","messageId":"msg_1","clientMessageId":"cmsg_1","status":"failed","revision":5,"errorCode":"PROVIDER_INTERNALS"}}""",
+            ),
+        ).single()
+        val queuedWithError = parser.feed(
+            frame(
+                id = "evt_status_bad_2",
+                event = "conversation.message.status",
+                data = """{"payload":{"conversationId":"conv_1","messageId":"msg_1","clientMessageId":"cmsg_1","status":"queued","revision":6,"errorCode":"AGENT_UNAVAILABLE"}}""",
+            ),
+        ).single()
+
+        assertNull(GatewayEventDecoder.decode(unknownFailure))
+        assertNull(GatewayEventDecoder.decode(queuedWithError))
     }
 
     @Test

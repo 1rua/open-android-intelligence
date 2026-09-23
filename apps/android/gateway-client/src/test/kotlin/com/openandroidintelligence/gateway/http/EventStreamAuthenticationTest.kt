@@ -33,6 +33,7 @@ class EventStreamAuthenticationTest {
             .map { if (it == "authorization") it else "x-open-android-intelligence-$it" }
         authentication.forEach { name -> assertEquals("missing or repeated $name", 1, headers[name]?.size ?: 0) }
         assertEquals("Bearer test-bearer", headers["authorization"]!!.single().value)
+        assertEquals("2.1", headers["x-open-android-intelligence-protocol"]!!.single().value)
         assertFalse(headers.containsKey("idempotency-key"))
         assertEquals(1, signed.size)
         assertTrue(signed.single().toString(Charsets.UTF_8).contains(request.target))

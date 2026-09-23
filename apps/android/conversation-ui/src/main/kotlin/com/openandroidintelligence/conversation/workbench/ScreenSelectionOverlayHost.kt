@@ -19,6 +19,7 @@ import com.openandroidintelligence.capability.ScreenCapture
 import com.openandroidintelligence.capability.ScreenCaptureSource
 import com.openandroidintelligence.conversation.selection.ScreenSelectionOverlay
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
 import kotlin.math.ceil
 import kotlin.math.floor
 
@@ -97,6 +98,9 @@ internal fun ScreenSelectionOverlayHost(
 class ScreenSelectionCrop internal constructor(private val png: ByteArray) {
     /** 每次返回新的副本；下游改写返回值不影响产物本体。 */
     fun pngBytes(): ByteArray = png.copyOf()
+
+    /** Writes the owned selection bytes without making another full-size copy. */
+    fun writePngTo(output: OutputStream) = output.write(png)
 }
 
 /**

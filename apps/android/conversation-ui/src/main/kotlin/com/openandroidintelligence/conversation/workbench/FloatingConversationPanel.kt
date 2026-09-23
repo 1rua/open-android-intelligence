@@ -10,6 +10,7 @@ import com.openandroidintelligence.capability.ScreenCaptureSource
 import com.openandroidintelligence.conversation.assistant.AssistantSurface
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
+import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -100,7 +101,7 @@ fun FloatingConversationPanel(
                         LocalAttachmentSelection(
                             filename = "screen-crop-${System.currentTimeMillis()}.png",
                             mediaType = "image/png",
-                            bytes = crop.pngBytes(),
+                            contentSource = AttachmentContentSource.fromWriter(crop::writePngTo),
                         ),
                     )
                     explainSelection = false

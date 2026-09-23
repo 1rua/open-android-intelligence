@@ -11,6 +11,7 @@ android {
     namespace = "com.openandroidintelligence.mobile"
     defaultConfig {
         applicationId = "com.openandroidintelligence.mobile"
+        versionName = "2.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

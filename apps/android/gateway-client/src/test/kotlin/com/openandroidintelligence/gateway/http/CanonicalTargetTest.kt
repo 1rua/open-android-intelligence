@@ -84,6 +84,33 @@ class CanonicalTargetTest {
     }
 
     @Test
+    fun signaturePreimageAcceptsTheDigestOfAReplayableStreamBody() {
+        val input = SignedRequestInput(
+            method = "POST",
+            target = "/open-android-intelligence/v2/conversations",
+            accountId = "acct_1",
+            deviceId = "dev_1",
+            sessionId = "sess_1",
+            requestId = "req_nonempty_body",
+            timestamp = "2026-08-27T00:00:00.000Z",
+            nonce = "AQEBAQEBAQEBAQEBAQEBAQ",
+            body = ByteArray(0),
+            bodySha256Hex = "0a460faa829b3b31fb086f8dd9a6a480745bb7b5f9055c4728d71f9f235d331b",
+        )
+
+        val actual = RequestSigner.preimage(input).decodeToString()
+
+        assertEquals(
+            "OPEN-ANDROID-INTELLIGENCE-REQUEST-V2\n" +
+                "POST\n/open-android-intelligence/v2/conversations\n" +
+                "acct_1\ndev_1\nsess_1\nreq_nonempty_body\n" +
+                "2026-08-27T00:00:00.000Z\nAQEBAQEBAQEBAQEBAQEBAQ\n" +
+                "0a460faa829b3b31fb086f8dd9a6a480745bb7b5f9055c4728d71f9f235d331b",
+            actual,
+        )
+    }
+
+    @Test
     fun signatureRejectsNonCanonicalTarget() {
         val input = SignedRequestInput(
             method = "GET",

@@ -472,39 +472,36 @@ class SettingsViewModelTest {
 
         /** 网关同意全部五项客户端声明过的能力。 */
         val NEGOTIATE_ALL_FIVE_BODY = """
-            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":0},
+            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":["agent-command-catalog-v1","agent-command-new-v1",
             "agent-approval-cards-v1","message-batches-v1","generation-cancel-v1"]},
-            "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
-            "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
+            "limits":{            "attachmentTtlSeconds":3600,
             "eventRetentionSeconds":86400},
             "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
         """.trimIndent()
 
         /** 网关只同意 catalog 与 generation-cancel；message-batches 被略去。 */
         val NEGOTIATE_REFUSED_BODY = """
-            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":0},
+            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":["agent-command-catalog-v1","generation-cancel-v1"]},
-            "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
-            "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
+            "limits":{            "attachmentTtlSeconds":3600,
             "eventRetentionSeconds":86400},
             "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
         """.trimIndent()
 
         /** 网关没有声明 deviceRequests 能力。 */
         val NEGOTIATE_WITHOUT_DEVICE_REQUESTS_BODY = """
-            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":0},
+            {"data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "conversationUi":["agent-command-catalog-v1"]},
-            "limits":{"maxSingleAttachmentBytes":1048576,"maxMessageAttachmentBytes":4194304,
-            "allowedMediaTypes":["image/png"],"attachmentTtlSeconds":3600,
+            "limits":{            "attachmentTtlSeconds":3600,
             "eventRetentionSeconds":86400},
             "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
         """.trimIndent()

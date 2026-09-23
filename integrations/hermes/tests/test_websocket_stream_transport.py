@@ -374,10 +374,10 @@ def test_ws_stream_resumes_from_cursor(tmp_path):
         account = core.open_gateway_account(ACCOUNT_ID)
         try:
             evt1 = account.events.append(
-                "gateway.notice", "cor_1", {"step": 1}, "2026-09-13T00:00:00.000Z",
+                "gateway.notice", "cor_1", {"noticeCode": "step-1"}, "2026-09-13T00:00:00.000Z",
             )
             evt2 = account.events.append(
-                "gateway.notice", "cor_2", {"step": 2}, "2026-09-13T00:00:01.000Z",
+                "gateway.notice", "cor_2", {"noticeCode": "step-2"}, "2026-09-13T00:00:01.000Z",
             )
         finally:
             account.close()
@@ -401,7 +401,7 @@ def test_ws_stream_resumes_from_cursor(tmp_path):
                     # Only evt2 should be received
                     assert replayed["id"] == evt2["eventId"]
                     replayed_data = json.loads(replayed["data"])
-                    assert replayed_data["payload"] == {"step": 2}
+                    assert replayed_data["payload"] == {"noticeCode": "step-2"}
 
                     # No more backlog events immediately pending
                     await adapter.complete_message("conv_c", "msg_c", "resumed")
@@ -413,4 +413,3 @@ def test_ws_stream_resumes_from_cursor(tmp_path):
             await adapter.disconnect()
 
     asyncio.run(scenario())
-

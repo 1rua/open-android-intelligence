@@ -218,7 +218,7 @@ def test_new_with_arguments_is_plain_text_the_agent_interprets(tmp_path):
 def _negotiation_body(schema_hash: str) -> dict:
     return {
         "negotiationId": "neg_new_command",
-        "protocol": {"major": 2, "minor": 0},
+        "protocol": {"major": 2, "minor": 1},
         "client": {
             "installationId": "install_new_command",
             "appVersion": "2.0.0",

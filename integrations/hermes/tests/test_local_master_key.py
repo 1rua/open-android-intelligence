@@ -182,11 +182,11 @@ def test_local_key_source_carries_the_full_attachment_and_message_flow(tmp_path)
     attachment_id = attachment["attachmentId"]
     account.attachments.upload_content(attachment_id, body)
     verified = account.attachments.commit(attachment_id)
-    assert verified["state"] == "verified"
+    assert verified["status"] == "uploaded"
 
     # Staged bytes are stored sealed, never as plaintext on disk.
     staged = (account.paths.attachments / f"{attachment_id}.stage").read_text()
-    assert staged.startswith("aead-v1:") and "interop.bin" not in staged
+    assert staged.startswith("OAI-ATTACHMENT-AEAD-STREAM\x02\n") and "interop.bin" not in staged
 
     conversation = account.conversations.create("cconv_local", None, "cor_local")
     accepted = account.conversations.accept_message(
@@ -271,7 +271,7 @@ def test_mobile_media_types_including_heic_and_office_are_accepted(tmp_path):
             correlation_id="cor_type",
         )
         assert att["attachmentId"].startswith("att_")
-        assert att["mediaType"] == mtype
+        assert account.attachments.get_record(att["attachmentId"])["mediaType"] == mtype
 
 
 def test_get_conversation_messages_timeline_returns_history_chronologically(tmp_path):

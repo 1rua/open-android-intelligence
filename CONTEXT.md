@@ -242,6 +242,10 @@ _Avoid_: 输入法防抖、Gateway 重试、Agent 排队策略
 Agent 为一个聚合消息、普通消息或命令执行的一次可识别生成过程，拥有独立 `generationId` 和明确终态；同一对话线程只运行一个，后续批次按顺序等待。
 _Avoid_: Agent 对话会话、助手消息、SSE 连接、配对或连接 generation
 
+**Agent 消息投递状态（Agent Message Delivery State）**:
+Gateway 对已接受消息记录其排队、送达 Agent、完成或失败状态，并通过关联消息 ID 的事件通知 Android；HTTP 接受只表示 Gateway 已保存消息，不代表 Agent 已收到媒体。
+_Avoid_: 用 HTTP accepted 代表 Agent 已接收、静默丢弃失败
+
 **待提交意图（Pending Submission Intent）**:
 用户针对当前对话草稿明确确认的一次性发送意图，绑定提交时冻结的文本和附件快照；全部附件验证后它只发送一次，取消、编辑、移除、替换或新增附件都会使它失效。
 _Avoid_: 选择附件、自动后台发送、已接受消息
@@ -306,9 +310,9 @@ _Avoid_: 私有证书信任、不安全开发连接、等同 HTTPS
 Gateway 通过 HTTPS 持续发送流式回复和设备事件的有序通道；Android 使用事件游标从断点恢复，而不是假定连接永久在线。
 _Avoid_: 永久在线、WebSocket 权威通道、无界重放
 
-**Gateway 附件限制（Gateway Attachment Limit）**:
-每个 Gateway 在配对配置中声明的有限单文件、单消息、媒体类型、超时和临时保留约束；open-android-intelligence 不设统一业务大小上限，但 Android 始终可以因本机资源与用户策略拒绝上传。
-_Avoid_: 无限上传、统一产品上限、远程资源命令
+**附件流式交付（Streamed Attachment Delivery）**:
+Android 与 Gateway 以账号隔离的加密暂存和有界缓冲流式传输用户明确选择的附件；Gateway 核对实际长度和摘要以确认字节完整性，但不设业务字节上限或 MIME allowlist，格式与可处理大小由 Agent 决定。
+_Avoid_: 整文件常驻内存、Gateway 内容判断、将底层资源故障伪装成大小上限
 
 **可迁移 Gateway 备份（Portable Gateway Backup）**:
 用户导出的 Gateway 配置、插件清单和非敏感数据集合；它不包含活动配对私钥、未执行命令或未确认队列，恢复后设备必须重新配对。

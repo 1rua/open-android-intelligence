@@ -1,6 +1,6 @@
 {
   "formatVersion": "1.0.0",
-  "protocolVersion": "2.0",
+  "protocolVersion": "2.1",
   "vectorSet": "sse-events",
   "cases": [
     {
@@ -426,6 +426,49 @@
           "correlationId": "correlation_1",
           "occurredAt": "2026-09-22T00:12:00.000Z",
           "payload": { "attachmentId": "att_1", "unexpected": true }
+        }
+      },
+      "expected": { "outcome": "error", "code": "SCHEMA_INVALID" }
+    }
+    ,{
+      "id": "sse-event-message-status-valid",
+      "operation": "schema.validate_dispatched",
+      "input": {
+        "fixtureBindingSetId": "gateway-core-fixtures-v1",
+        "dispatch": { "kind": "event", "eventType": "conversation.message.status" },
+        "value": {
+          "correlationId": "correlation_status",
+          "occurredAt": "2026-09-23T00:00:00.000Z",
+          "payload": {
+            "conversationId": "conv_1",
+            "messageId": "msg_1",
+            "clientMessageId": "client_msg_1",
+            "status": "delivered",
+            "revision": 1,
+            "errorCode": null
+          }
+        }
+      },
+      "expected": { "outcome": "value", "value": { "valid": true } }
+    },
+    {
+      "id": "sse-event-message-status-unknown-field",
+      "operation": "schema.validate_dispatched",
+      "input": {
+        "fixtureBindingSetId": "gateway-core-fixtures-v1",
+        "dispatch": { "kind": "event", "eventType": "conversation.message.status" },
+        "value": {
+          "correlationId": "correlation_status",
+          "occurredAt": "2026-09-23T00:00:00.000Z",
+          "payload": {
+            "conversationId": "conv_1",
+            "messageId": "msg_1",
+            "clientMessageId": "client_msg_1",
+            "status": "failed",
+            "revision": 2,
+            "errorCode": "AGENT_MEDIA_REJECTED",
+            "unexpected": true
+          }
         }
       },
       "expected": { "outcome": "error", "code": "SCHEMA_INVALID" }

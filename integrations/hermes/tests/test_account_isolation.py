@@ -182,12 +182,11 @@ def test_consumes_the_shared_schema_and_vector_registry(tmp_path):
     # closed `schemaName` set; the conversation-UI document is a local suite.
     assert contract_files <= discovered
     assert discovered - contract_files == {"conversation-ui.json"}
-    # 24 base cases plus the `/new` pair in protocol-negotiation.json and
-    # sse-events.json: the command-entry capability bit and the command-result
-    # payload shape are now shared facts rather than one host's private detail.
-    assert len(cases) == 62
-    assert len({case["id"] for case in cases}) == 62
-    assert len(results) == 62
+    # The shared Protocol 2.1 fixture set adds two independent message-status
+    # cases to the prior vectors, including the failed/errorCode distinction.
+    assert len(cases) == 64
+    assert len({case["id"] for case in cases}) == 64
+    assert len(results) == 64
     assert {result["status"] for result in results} == {"pass"}
     assert {result["implementation"] for result in results} == {"hermes-python"}
 
@@ -209,8 +208,8 @@ def test_attachment_staging_is_account_local_and_expires_after_ack_or_ttl(tmp_pa
     )
     alice.attachments.upload_content(attachment["attachmentId"], body)
     verified = alice.attachments.commit(attachment["attachmentId"])
-    assert verified["state"] == "verified"
-    assert verified["hasStagedBytes"] is True
+    assert verified["status"] == "uploaded"
+    assert alice.attachments.get_record(attachment["attachmentId"])["hasStagedBytes"] is True
     try:
         bob.attachments.get(attachment["attachmentId"])
     except GatewayError as exc:
@@ -220,8 +219,8 @@ def test_attachment_staging_is_account_local_and_expires_after_ack_or_ttl(tmp_pa
 
     alice.attachments.mark_delivered(attachment["attachmentId"])
     acknowledged = alice.attachments.acknowledge(attachment["attachmentId"], "cor_ack")
-    assert acknowledged["state"] == "acknowledged"
-    assert acknowledged["hasStagedBytes"] is False
+    assert acknowledged["status"] == "uploaded"
+    assert alice.attachments.get_record(attachment["attachmentId"])["hasStagedBytes"] is False
     ack_events = alice.events.read_after(None)
     assert [event["eventType"] for event in ack_events] == ["attachment.acknowledged"]
     assert ack_events[0]["payload"] == {"attachmentId": attachment["attachmentId"]}
@@ -238,11 +237,11 @@ def test_attachment_staging_is_account_local_and_expires_after_ack_or_ttl(tmp_pa
     )
     alice.attachments.upload_content(expiring["attachmentId"], body)
     assert alice.attachments.expire_due("2030-01-01T01:00:01.000Z") == 1
-    assert alice.attachments.get(expiring["attachmentId"])["state"] == "expired"
-    assert alice.attachments.get(expiring["attachmentId"])["hasStagedBytes"] is False
+    assert alice.attachments.get(expiring["attachmentId"])["status"] == "expired"
+    assert alice.attachments.get_record(expiring["attachmentId"])["hasStagedBytes"] is False
 
 
-def test_attachment_digest_failure_keeps_stage_until_explicit_cleanup(tmp_path):
+def test_attachment_digest_failure_is_rejected_before_a_stage_is_published(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_alice")
     body = b"digest failure body"
@@ -254,19 +253,21 @@ def test_attachment_digest_failure_keeps_stage_until_explicit_cleanup(tmp_path):
         sha256=hashlib.sha256(b"different").hexdigest(),
         correlation_id="cor_digest",
     )
-    account.attachments.upload_content(attachment["attachmentId"], body)
+    with pytest.raises(GatewayError) as error:
+        account.attachments.upload_content(attachment["attachmentId"], body)
+    assert error.value.code == "ATTACHMENT_DIGEST_MISMATCH"
+    failed = account.attachments.get_record(attachment["attachmentId"])
+    assert failed["status"] == "staged"
+    assert failed["hasStagedBytes"] is False
 
+    # A mismatching signed upload never reaches the persisted stage, so there is
+    # nothing for cleanup to delete and the client may retry with correct bytes.
     try:
         account.attachments.commit(attachment["attachmentId"])
     except GatewayError as exc:
-        assert exc.code == "ATTACHMENT_DIGEST_MISMATCH"
+        assert exc.code == "ATTACHMENT_EXPIRED"
     else:
-        raise AssertionError("A digest mismatch must fail closed")
-    failed = account.attachments.get(attachment["attachmentId"])
-    assert failed["state"] == "failed"
-    assert failed["hasStagedBytes"] is True
-    assert account.attachments.cleanup() == 1
-    assert account.attachments.get(attachment["attachmentId"])["state"] == "deleted"
+        raise AssertionError("A missing stage must not be treated as verified")
 
 
 def test_attachment_reconciliation_recovers_an_orphaned_stage_for_the_same_account(tmp_path):
@@ -287,10 +288,10 @@ def test_attachment_reconciliation_recovers_an_orphaned_stage_for_the_same_accou
     stage_path.write_bytes(body)
 
     assert account.attachments.cleanup() == 0
-    assert account.attachments.get(attachment["attachmentId"])["state"] == "uploading"
-    assert account.attachments.get(attachment["attachmentId"])["hasStagedBytes"] is True
+    assert account.attachments.get(attachment["attachmentId"])["status"] == "staged"
+    assert account.attachments.get_record(attachment["attachmentId"])["hasStagedBytes"] is True
     assert account.attachments.expire_due("2030-01-01T00:10:01.000Z") == 1
-    assert account.attachments.get(attachment["attachmentId"])["hasStagedBytes"] is False
+    assert account.attachments.get_record(attachment["attachmentId"])["hasStagedBytes"] is False
 
 
 def test_attachment_reconciliation_failure_protects_stage_until_next_scan(tmp_path):
@@ -321,10 +322,10 @@ def test_attachment_reconciliation_failure_protects_stage_until_next_scan(tmp_pa
 
     assert account.attachments.cleanup() == 0
     assert stage_path.exists()
-    assert account.attachments.get(attachment["attachmentId"])["state"] == "created"
+    assert account.attachments.get(attachment["attachmentId"])["status"] == "staged"
     account.store.database.execute("DROP TRIGGER fail_reconcile")
     assert account.attachments.cleanup() == 0
-    assert account.attachments.get(attachment["attachmentId"])["state"] == "uploading"
+    assert account.attachments.get(attachment["attachmentId"])["status"] == "staged"
     assert account.attachments.expire_due("2030-01-01T00:10:01.000Z") == 1
     assert not stage_path.exists()
 
@@ -347,7 +348,7 @@ def test_attachment_cas_is_not_removed_while_another_account_local_attachment_re
         account.attachments.commit(item["attachmentId"])
         account.attachments.mark_delivered(item["attachmentId"])
     account.attachments.acknowledge(first["attachmentId"], "cor_cas_ack")
-    assert account.attachments.get(second["attachmentId"])["hasStagedBytes"] is True
+    assert account.attachments.get_record(second["attachmentId"])["hasStagedBytes"] is True
 
 
 def _attachment_input(client_id="att_policy", media_type="text/plain", size_bytes=4):
@@ -369,17 +370,18 @@ def _force_attachment_expired(account, attachment_id):
     )
 
 
-def test_attachment_policy_rejects_size_media_and_ttl_bypass(tmp_path):
+def test_attachment_metadata_has_no_product_size_or_media_allowlist_but_keeps_ttl(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_policy")
 
-    with pytest.raises(GatewayError) as too_large:
-        account.attachments.create(**_attachment_input("att_too_large", size_bytes=26_214_401))
-    assert too_large.value.code == "ATTACHMENT_LIMIT_EXCEEDED"
-
-    with pytest.raises(GatewayError) as invalid_media:
-        account.attachments.create(**_attachment_input("att_invalid_media", media_type="application/x-executable"))
-    assert invalid_media.value.code == "ATTACHMENT_LIMIT_EXCEEDED"
+    large_and_custom = account.attachments.create(
+        **_attachment_input(
+            "att_large_custom", size_bytes=52_428_801,
+            media_type="application/x-executable",
+        )
+    )
+    assert large_and_custom["sizeBytes"] == 52_428_801
+    assert account.attachments.get_record(large_and_custom["attachmentId"])["mediaType"] == "application/x-executable"
 
     with pytest.raises(GatewayError) as ttl_bypass:
         account.attachments.create(
@@ -387,7 +389,7 @@ def test_attachment_policy_rejects_size_media_and_ttl_bypass(tmp_path):
             expires_at="2026-08-29T00:00:00.000Z",
         )
     assert ttl_bypass.value.code == "SCHEMA_INVALID"
-    assert DEFAULT_MAX_BODY_BYTES >= 26_214_400
+    assert DEFAULT_MAX_BODY_BYTES < 26_214_400
 
 
 def test_expired_attachment_is_rejected_at_upload_commit_read_and_message_reference(tmp_path):
@@ -401,8 +403,8 @@ def test_expired_attachment_is_rejected_at_upload_commit_read_and_message_refere
         account.attachments.upload_content(upload_late["attachmentId"], body)
     assert late_upload.value.code == "ATTACHMENT_EXPIRED"
     late_read = account.attachments.get(upload_late["attachmentId"])
-    assert late_read["state"] == "expired"
-    assert late_read["hasStagedBytes"] is False
+    assert late_read["status"] == "expired"
+    assert account.attachments.get_record(upload_late["attachmentId"])["hasStagedBytes"] is False
 
     late_commit = account.attachments.create(**_attachment_input("att_commit_late"))
     account.attachments.upload_content(late_commit["attachmentId"], body)
@@ -556,14 +558,57 @@ def test_gateway_core_handle_routes_attachment_and_device_claim_result(tmp_path)
         "idempotencyKey": "req_attachment_upload",
         "body": body,
     })
-    assert uploaded["data"]["attachment"]["state"] == "uploading"
+    assert uploaded["data"]["attachment"]["status"] == "staged"
     committed = core.handle({
         "context": _context(requestId="req_attachment_commit", correlationId="cor_attachment_commit"),
         "method": "POST",
         "target": f"/open-android-intelligence/v2/attachments/{attachment_id}/commit",
         "idempotencyKey": "req_attachment_commit",
     })
-    assert committed["data"]["attachment"]["state"] == "verified"
+    assert committed["data"]["attachment"]["status"] == "uploaded"
+
+    retried_create = core.handle({
+        "context": _context(requestId="req_attachment_create_retry", correlationId="cor_attachment_create_retry"),
+        "method": "POST",
+        "target": "/open-android-intelligence/v2/attachments",
+        "idempotencyKey": "req_attachment_create_retry",
+        "body": {
+            "clientAttachmentId": "att_client_handle",
+            "filename": "handle.txt",
+            "mediaType": "text/plain",
+            "sizeBytes": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        },
+    })
+    assert retried_create["data"]["attachment"]["attachmentId"] == attachment_id
+    assert retried_create["data"]["attachment"]["status"] == "uploaded"
+
+    conflicting_create = core.handle({
+        "context": _context(requestId="req_attachment_create_conflict", correlationId="cor_attachment_create_conflict"),
+        "method": "POST",
+        "target": "/open-android-intelligence/v2/attachments",
+        "idempotencyKey": "req_attachment_create_conflict",
+        "body": {
+            "clientAttachmentId": "att_client_handle",
+            "filename": "different.txt",
+            "mediaType": "text/plain",
+            "sizeBytes": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        },
+    })
+    assert conflicting_create["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+    recovered_status = core.handle({
+        "context": _context(requestId="req_attachment_status", correlationId="cor_attachment_status"),
+        "method": "GET",
+        "target": f"/open-android-intelligence/v2/attachments/{attachment_id}",
+    })
+    assert recovered_status["data"]["attachment"] == {
+        "attachmentId": attachment_id,
+        "status": "uploaded",
+        "sizeBytes": len(body),
+        "sha256": hashlib.sha256(body).hexdigest(),
+    }
 
     account = core.open_gateway_account("acct_alice")
     account.device_requests.enqueue(**_device_input("device_req_handle", now="2026-08-27T00:00:00.000Z"))
@@ -629,7 +674,7 @@ def test_invalid_state_transition_is_not_exposed_or_persisted_as_wire_error(tmp_
         "method": "POST", "target": f"/open-android-intelligence/v2/attachments/{attachment_id}/commit",
         "idempotencyKey": "req_invalid_state_commit",
     })
-    assert first_commit["data"]["attachment"]["state"] == "verified"
+    assert first_commit["data"]["attachment"]["status"] == "uploaded"
 
     repeated_commit = core.handle({
         "context": _context(requestId="req_invalid_state_repeat", correlationId="cor_invalid_state_repeat"),
@@ -714,7 +759,7 @@ def test_gateway_core_negotiates_the_shared_protocol_schema_and_feature_intersec
         "idempotencyKey": "req_negotiate",
         "body": {
             "negotiationId": "neg_1",
-            "protocol": {"major": 2, "minor": 0},
+            "protocol": {"major": 2, "minor": 1},
             "client": {"installationId": "install_1", "appVersion": "2.0.0", "platform": "android", "platformApi": 35},
             "features": {
                 "auth": ["password", "refresh"], "messages": ["chat-v1"],
@@ -725,7 +770,7 @@ def test_gateway_core_negotiates_the_shared_protocol_schema_and_feature_intersec
         },
     })
 
-    assert response["data"]["protocol"] == {"major": 2, "minor": 0}
+    assert response["data"]["protocol"] == {"major": 2, "minor": 1}
     assert response["data"]["features"]["auth"] == ["password", "refresh"]
     assert response["data"]["features"]["messages"] == "chat-v1"
     assert response["data"]["limits"]["attachmentTtlSeconds"] == 3600
@@ -871,7 +916,7 @@ def _negotiate_body(core, schema_hash=None):
     schema_hash = schema_hash or core_schema_hash()
     return {
         "negotiationId": "neg_pre_auth",
-        "protocol": {"major": 2, "minor": 0},
+        "protocol": {"major": 2, "minor": 1},
         "client": {"installationId": "install_pre", "appVersion": "2.0.0", "platform": "android", "platformApi": 35},
         "features": {
             "auth": ["password", "refresh"], "messages": ["chat-v1"],
@@ -895,7 +940,7 @@ def test_pre_auth_negotiate_does_not_require_account_context_and_rejects_unknown
         "body": _negotiate_body(core, "sha256:" + "f" * 64),
     })
 
-    assert valid["data"]["protocol"] == {"major": 2, "minor": 0}
+    assert valid["data"]["protocol"] == {"major": 2, "minor": 1}
     assert invalid["error"]["code"] == "PROTOCOL_INCOMPATIBLE"
 
 

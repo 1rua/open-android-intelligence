@@ -14,13 +14,13 @@ const publicKey = "A".repeat(43);
 const signature = "A".repeat(86);
 const addFormats = addFormatsImport as unknown as (ajv: Ajv2020) => Ajv2020;
 
-const validValues: Record<GatewaySchemaName, unknown> = {
+const validValues: Partial<Record<GatewaySchemaName, unknown>> = {
   "negotiate.request": {
     negotiationId: "neg_1",
-    protocol: { major: 2, minor: 0 },
+    protocol: { major: 2, minor: 1 },
     client: {
       installationId: "install_1",
-      appVersion: "2.0.0",
+      appVersion: "2.1.0",
       platform: "android",
       platformApi: 35,
     },
@@ -34,7 +34,7 @@ const validValues: Record<GatewaySchemaName, unknown> = {
     schemaHashes: { core: prefixedDigest },
   },
   "negotiate.response": {
-    protocol: { major: 2, minor: 0 },
+    protocol: { major: 2, minor: 1 },
     features: {
       auth: ["password", "account-invitation", "refresh", "device-key"],
       messages: "chat-v1",
@@ -43,9 +43,6 @@ const validValues: Record<GatewaySchemaName, unknown> = {
       deviceRequests: "risk-queue-v1",
     },
     limits: {
-      maxSingleAttachmentBytes: 26_214_400,
-      maxMessageAttachmentBytes: 52_428_800,
-      allowedMediaTypes: ["application/pdf", "audio/mp4"],
       attachmentTtlSeconds: 3_600,
       eventRetentionSeconds: 86_400,
       maxClockSkewSeconds: 120,
@@ -118,13 +115,13 @@ const validValues: Record<GatewaySchemaName, unknown> = {
   "response.success": {
     requestId: "request_1",
     correlationId: "correlation_1",
-    protocol: "2.0",
+    protocol: "2.1",
     data: { arbitrary: true },
   },
   "response.failure": {
     requestId: "request_1",
     correlationId: "correlation_1",
-    protocol: "2.0",
+    protocol: "2.1",
     error: {
       code: "CURSOR_EXPIRED",
       message: "expired",
@@ -169,6 +166,24 @@ describe("Gateway Protocol v2 Schema registry", () => {
       expect(validate(value)).toBe(true);
     },
   );
+
+  it("accepts negotiation without attachment byte or media type limits", () => {
+    const response = clone(validValues["negotiate.response"]) as {
+      limits: Record<string, unknown>;
+    };
+    expect(validateGatewayValue("negotiate.response", response)).toEqual({ ok: true });
+
+    for (const [field, value] of [
+      ["maxSingleAttachmentBytes", 1],
+      ["maxMessageAttachmentBytes", 1],
+      ["allowedMediaTypes", ["image/png"]],
+    ] as const) {
+      expect(validateGatewayValue("negotiate.response", {
+        ...response,
+        limits: { ...response.limits, [field]: value },
+      })).toMatchObject({ ok: false });
+    }
+  });
 
   it("rejects unknown fields at top-level and nested static objects", () => {
     const topLevel = {
@@ -240,7 +255,7 @@ describe("Gateway Protocol v2 Schema registry", () => {
       validateGatewayValue("response.success", {
         requestId: "request_1",
         correlationId: "correlation_1",
-        protocol: "2.0",
+        protocol: "2.1",
         data: { arbitrary: true },
       }),
     ).toEqual({ ok: true });
@@ -248,7 +263,7 @@ describe("Gateway Protocol v2 Schema registry", () => {
       validateGatewayValue("response.failure", {
         requestId: "request_1",
         correlationId: "correlation_1",
-        protocol: "2.0",
+        protocol: "2.1",
         error: {
           code: "CURSOR_EXPIRED",
           message: "expired",
@@ -263,7 +278,7 @@ describe("Gateway Protocol v2 Schema registry", () => {
       validateGatewayValue("response.success", {
         requestId: "request_1",
         correlationId: "correlation_1",
-        protocol: "2.0",
+        protocol: "2.1",
         data: {},
         unexpected: true,
       }),
@@ -272,7 +287,7 @@ describe("Gateway Protocol v2 Schema registry", () => {
       validateGatewayValue("response.failure", {
         requestId: "request_1",
         correlationId: "correlation_1",
-        protocol: "2.0",
+        protocol: "2.1",
         error: {
           code: "CURSOR_EXPIRED",
           message: "expired",

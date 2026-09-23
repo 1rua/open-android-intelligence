@@ -1,13 +1,13 @@
 package com.openandroidintelligence.conversation.model
 
 /**
- * Metadata and optional image preview payload for an attachment associated with a timeline entry.
+ * Metadata and an optional bounded preview for an attachment associated with a timeline entry.
  */
 data class TimelineAttachment(
     val draftId: String,
     val filename: String = "",
     val mediaType: String = "",
-    val imageBytes: ByteArray? = null,
+    val previewBytes: ByteArray? = null,
 ) {
     val isImage: Boolean
         get() = mediaType.startsWith("image/") ||
@@ -27,10 +27,10 @@ data class TimelineAttachment(
         if (draftId != other.draftId) return false
         if (filename != other.filename) return false
         if (mediaType != other.mediaType) return false
-        if (imageBytes != null) {
-            if (other.imageBytes == null) return false
-            if (!imageBytes.contentEquals(other.imageBytes)) return false
-        } else if (other.imageBytes != null) return false
+        if (previewBytes != null) {
+            if (other.previewBytes == null) return false
+            if (!previewBytes.contentEquals(other.previewBytes)) return false
+        } else if (other.previewBytes != null) return false
 
         return true
     }
@@ -39,7 +39,7 @@ data class TimelineAttachment(
         var result = draftId.hashCode()
         result = 31 * result + filename.hashCode()
         result = 31 * result + mediaType.hashCode()
-        result = 31 * result + (imageBytes?.contentHashCode() ?: 0)
+        result = 31 * result + (previewBytes?.contentHashCode() ?: 0)
         return result
     }
 }

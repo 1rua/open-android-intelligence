@@ -29,6 +29,9 @@ data class AttachmentDraft(
     val sizeBytes: Long,
     val sha256: String,
     val state: AttachmentState = AttachmentState.LOCAL_PREPARING,
+    val progress: Float = 0f,
+    val transferredBytes: Long = 0,
+    val totalBytes: Long? = null,
     val errorMessage: String? = null,
 )
 

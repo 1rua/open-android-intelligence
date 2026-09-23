@@ -130,7 +130,7 @@ private class LoopbackGateway {
 
     private fun respond(output: OutputStream) {
         val payload = """
-            {"protocol":"2.0","data":{"conversation":{"conversationId":"conv_rename","title":"量子计算与经典物理的核心区别"}}}
+            {"protocol":"2.1","data":{"conversation":{"conversationId":"conv_rename","title":"量子计算与经典物理的核心区别"}}}
         """.trimIndent().toByteArray(Charsets.UTF_8)
         output.write(
             (

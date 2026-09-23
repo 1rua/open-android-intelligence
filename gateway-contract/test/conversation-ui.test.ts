@@ -17,10 +17,10 @@ describe("Gateway v2.1 conversation UI contract", () => {
   it("validates negotiate.request with conversationUi features", () => {
     const validReq = {
       negotiationId: "neg_1",
-      protocol: { major: 2, minor: 0 },
+      protocol: { major: 2, minor: 1 },
       client: {
         installationId: "install_1",
-        appVersion: "2.0.0",
+        appVersion: "2.1.0",
         platform: "android",
         platformApi: 35,
       },

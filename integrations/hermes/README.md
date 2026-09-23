@@ -1,6 +1,6 @@
 # open-android-intelligence Hermes Gateway
 
-Native Python Gateway Protocol v2 plugin for Hermes.
+Native Python Gateway Protocol 2.1 plugin for Hermes.
 
 ## 运行要求
 
@@ -16,7 +16,7 @@ Native Python Gateway Protocol v2 plugin for Hermes.
 pip install -e integrations/hermes
 
 # 或直接安装打包好的 Wheel 单文件
-pip install dist/open_android_intelligence_hermes_gateway-2.0.0-py3-none-any.whl
+pip install dist/open_android_intelligence_hermes_gateway-2.1.0-py3-none-any.whl
 ```
 
 ## 向导式配置（推荐）
@@ -30,7 +30,7 @@ hermes gateway setup
 
 在平台列表中勾选：
 ```text
-[X] 📱 Open Android Intelligence (Gateway v2)
+[X] 📱 Open Android Intelligence (Gateway Protocol 2.1)
 ```
 
 向导将自动引导完成：
@@ -123,4 +123,3 @@ gateway:
 ```bash
 pytest integrations/hermes/tests/
 ```
-

@@ -22,7 +22,11 @@ import org.junit.Test
 class GatewayAuthErrorTest {
 
     private class StubTransport(private val response: WireResponse) : GatewayByteTransport {
-        override suspend fun execute(request: WireRequest): WireResponse = response
+        var lastRequest: WireRequest? = null
+        override suspend fun execute(request: WireRequest): WireResponse {
+            lastRequest = request
+            return response
+        }
 
         override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
     }
@@ -36,8 +40,8 @@ class GatewayAuthErrorTest {
     private fun client(response: WireResponse) = GatewayAuthClient(
         transport = StubTransport(response),
         installationId = "install-1",
-        appVersion = "1.0.0",
-        platformApi = 34,
+        appVersion = "2.1.0",
+        platformApi = 35,
     )
 
     private fun login(response: WireResponse): Throwable? = runBlocking {
@@ -57,7 +61,7 @@ class GatewayAuthErrorTest {
         val failure = login(
             json(
                 401,
-                """{"requestId":"req-1","correlationId":"cor-1","protocol":"2.0","error":{"code":"AUTHENTICATION_FAILED","message":"bad password","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
+                """{"requestId":"req-1","correlationId":"cor-1","protocol":"2.1","error":{"code":"AUTHENTICATION_FAILED","message":"bad password","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
             ),
         )
 
@@ -82,7 +86,7 @@ class GatewayAuthErrorTest {
         val cause = login(
             json(
                 401,
-                """{"protocol":"2.0","error":{"code":"AUTHENTICATION_FAILED","message":"no","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
+                """{"protocol":"2.1","error":{"code":"AUTHENTICATION_FAILED","message":"no","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
             ),
         )
 
@@ -98,11 +102,11 @@ class GatewayAuthErrorTest {
         val transport = StubTransport(
             json(
                 409,
-                """{"protocol":"2.0","error":{"code":"REFRESH_REUSED","message":"replay","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
+                """{"protocol":"2.1","error":{"code":"REFRESH_REUSED","message":"replay","retryable":false,"retryAfterSeconds":null,"details":{}}}""",
             ),
         )
         val cause = runCatching {
-            GatewayAuthClient(transport, "install-1", "1.0.0", 34).refresh(
+            GatewayAuthClient(transport, "install-1", "2.1.0", 35).refresh(
                 accountId = "account-1",
                 deviceId = "device-1",
                 negotiationId = "neg_1",
@@ -119,10 +123,10 @@ class GatewayAuthErrorTest {
     @Test
     fun aRefusedCredentialIsRecognisedByStatusAndByCode() {
         val statusRefusal = login(
-            json(403, """{"protocol":"2.0","error":{"code":"FORBIDDEN_BY_POLICY","retryable":false,"details":{}}}"""),
+            json(403, """{"protocol":"2.1","error":{"code":"FORBIDDEN_BY_POLICY","retryable":false,"details":{}}}"""),
         )
         val codeRefusal = login(
-            json(400, """{"protocol":"2.0","error":{"code":"SESSION_REVOKED","retryable":false,"details":{}}}"""),
+            json(400, """{"protocol":"2.1","error":{"code":"SESSION_REVOKED","retryable":false,"details":{}}}"""),
         )
 
         assertTrue(
@@ -139,9 +143,9 @@ class GatewayAuthErrorTest {
     fun anOutageMissingAccountOrWrappedFailureNeverWipesTheCredential() {
         val outage = login(WireResponse(503, emptyList(), "gateway is down".toByteArray(Charsets.UTF_8)))
         val missing = login(
-            json(404, """{"protocol":"2.0","error":{"code":"ACCOUNT_NOT_FOUND","retryable":false,"details":{}}}"""),
+            json(404, """{"protocol":"2.1","error":{"code":"ACCOUNT_NOT_FOUND","retryable":false,"details":{}}}"""),
         )
-        val wrapped = IllegalStateException("refresh path", login(json(500, """{"protocol":"2.0","error":{"code":"INTERNAL_ERROR","retryable":true,"details":{}}}""")))
+        val wrapped = IllegalStateException("refresh path", login(json(500, """{"protocol":"2.1","error":{"code":"INTERNAL_ERROR","retryable":true,"details":{}}}""")))
 
         assertFalse(GatewayAuthException.credentialRefused(outage))
         assertFalse(GatewayAuthException.credentialRefused(missing))
@@ -154,11 +158,28 @@ class GatewayAuthErrorTest {
     @Test
     fun aMalformedCodeIsNotBranchable() {
         val cause = login(
-            json(401, """{"protocol":"2.0","error":{"code":"not a code","retryable":false,"details":{}}}"""),
+            json(401, """{"protocol":"2.1","error":{"code":"not a code","retryable":false,"details":{}}}"""),
         )
 
         val failure = cause as? GatewayAuthException
         assertEquals("畸形 code 不能进入分支", null, failure?.code)
         assertEquals("AUTHENTICATION_FAILED:401", failure?.message)
+    }
+
+    @Test
+    fun logoutUsesTheCurrentProtocolHeader() = runBlocking {
+        val transport = StubTransport(json(200, "{}"))
+        GatewayAuthClient(transport, "install-1", "2.1.0", 35).logout(
+            accessToken = "token",
+            accountId = "account-1",
+            deviceId = "device-1",
+            sessionId = "session-1",
+            revokeRefresh = true,
+        )
+
+        assertEquals(
+            "2.1",
+            transport.lastRequest?.headers?.single { it.name == "X-Open-Android-Intelligence-Protocol" }?.value,
+        )
     }
 }

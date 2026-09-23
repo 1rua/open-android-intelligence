@@ -1,6 +1,7 @@
 package com.openandroidintelligence.gateway.auth
 
 import com.openandroidintelligence.gateway.http.GatewayByteTransport
+import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayResponse
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
@@ -126,7 +127,7 @@ class GatewayAuthClient(
                         // The Gateway has no way to name the session from the
                         // bearer token alone; the phone states the identity it
                         // is terminating so the server can verify it.
-                        RawHeader("X-Open-Android-Intelligence-Protocol", "2.0"),
+                        RawHeader("X-Open-Android-Intelligence-Protocol", GatewayHttpClient.PROTOCOL_HEADER),
                         RawHeader("X-Open-Android-Intelligence-Account", accountId),
                         RawHeader("X-Open-Android-Intelligence-Device", deviceId),
                         RawHeader("X-Open-Android-Intelligence-Session", sessionId),

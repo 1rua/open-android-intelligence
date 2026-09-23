@@ -1,6 +1,7 @@
 package com.openandroidintelligence.gateway.http
 
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -9,6 +10,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.IOException
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.ServerSocket
 import java.net.URL
@@ -173,6 +176,58 @@ class GatewayTransportSecurityTest {
         }
     }
 
+    @Test
+    fun aStreamedRequestUsesOneExactContentLengthAndSendsTheOriginalBytes() {
+        val bytes = byteArrayOf(0, 0x7b, 0x7d, 0x2b, 0x25, 0xff.toByte(), 0x80.toByte(), 0xc3.toByte(), 0xa9.toByte())
+        ServerSocket(0).use { server ->
+            val received = CompletableFuture<StreamReceivedRequest>()
+            thread(isDaemon = true) { serveOneStreamRequest(server, received) }
+
+            val profile = profile(gatewayBaseUrl = "http://127.0.0.1:${server.localPort}")
+            val bodyMetadata = GatewayRequestBody.fromBytes(bytes)
+            var progressBytes = 0L
+            runBlocking {
+                GatewayTransport(profile).execute(
+                    WireRequest(
+                        method = "PUT",
+                        target = "/open-android-intelligence/v2/attachments/att_1/content",
+                        headers = listOf(
+                            RawHeader("Content-Length", bytes.size.toString()),
+                            RawHeader("Digest", "sha-256=CkYPqoKbOzH7CG+N2aakgHRbt7X5BVxHKNcfnyNdMxs="),
+                        ),
+                        streamBody = GatewayRequestBody(
+                            contentLength = bodyMetadata.contentLength,
+                            sha256Hex = bodyMetadata.sha256Hex,
+                            openStream = {
+                                object : InputStream() {
+                                    private val delegate = bytes.inputStream()
+                                    private var returnZeroOnce = true
+                                    override fun read(): Int = delegate.read()
+                                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                                        if (returnZeroOnce) {
+                                            returnZeroOnce = false
+                                            return 0
+                                        }
+                                        return delegate.read(buffer, offset, length)
+                                    }
+                                    override fun close() = delegate.close()
+                                }
+                            },
+                            onBytesWritten = { progressBytes = it },
+                        ),
+                    ),
+                )
+            }
+
+            val request = received.get(5, TimeUnit.SECONDS)
+            assertTrue(request.requestLine.contains("PUT /open-android-intelligence/v2/attachments/att_1/content"))
+            assertEquals(1, request.headers.count { it.startsWith("Content-Length:", ignoreCase = true) })
+            assertEquals(bytes.size.toString(), request.headers.single { it.startsWith("Content-Length:", ignoreCase = true) }.substringAfter(':').trim())
+            assertArrayEquals(bytes, request.body)
+            assertEquals(bytes.size.toLong(), progressBytes)
+        }
+    }
+
     private fun serveOneRequest(server: ServerSocket, received: CompletableFuture<String>) {
         try {
             server.accept().use { socket ->
@@ -202,6 +257,54 @@ class GatewayTransportSecurityTest {
         } catch (cause: Exception) {
             received.completeExceptionally(cause)
         }
+    }
+
+    private data class StreamReceivedRequest(
+        val requestLine: String,
+        val headers: List<String>,
+        val body: ByteArray,
+    )
+
+    private fun serveOneStreamRequest(server: ServerSocket, received: CompletableFuture<StreamReceivedRequest>) {
+        try {
+            server.accept().use { socket ->
+                val input = socket.getInputStream()
+                val requestLine = readAsciiLine(input).orEmpty()
+                val headers = generateSequence { readAsciiLine(input) }
+                    .takeWhile { it.isNotEmpty() }
+                    .toList()
+                val contentLength = headers.single { it.startsWith("Content-Length:", ignoreCase = true) }
+                    .substringAfter(':').trim().toInt()
+                val body = input.readNBytes(contentLength)
+                received.complete(StreamReceivedRequest(requestLine, headers, body))
+                writeEmptySuccess(socket.getOutputStream())
+            }
+        } catch (cause: Exception) {
+            received.completeExceptionally(cause)
+        }
+    }
+
+    private fun readAsciiLine(input: InputStream): String? {
+        val bytes = ByteArrayOutputStream()
+        while (true) {
+            val next = input.read()
+            if (next == -1) return if (bytes.size() == 0) null else bytes.toString(Charsets.US_ASCII)
+            if (next == '\n'.code) {
+                val line = bytes.toByteArray()
+                return String(line, 0, line.size - if (line.lastOrNull() == '\r'.code.toByte()) 1 else 0, Charsets.US_ASCII)
+            }
+            bytes.write(next)
+        }
+    }
+
+    private fun writeEmptySuccess(output: java.io.OutputStream) {
+        val payload = RESPONSE_BODY.toByteArray()
+        output.write(
+            ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${payload.size}\r\nConnection: close\r\n\r\n")
+                .toByteArray(),
+        )
+        output.write(payload)
+        output.flush()
     }
 
     private fun profile(gatewayBaseUrl: String, pins: Set<String> = emptySet()) = GatewayProfile(

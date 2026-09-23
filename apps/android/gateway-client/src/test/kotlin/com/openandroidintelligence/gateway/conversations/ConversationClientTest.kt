@@ -25,7 +25,7 @@ class ConversationClientTest {
         var responseToReturn = WireResponse(
             status = 200,
             headers = listOf(RawHeader("content-type", "application/json")),
-            body = """{"protocol":"2.0","data":{"message":{"messageId":"msg_123","conversationId":"conv_123","status":"accepted"}}}""".toByteArray(Charsets.UTF_8),
+            body = """{"protocol":"2.1","data":{"message":{"messageId":"msg_123","conversationId":"conv_123","status":"accepted"}}}""".toByteArray(Charsets.UTF_8),
         )
 
         override suspend fun execute(request: WireRequest): WireResponse {
@@ -69,7 +69,7 @@ class ConversationClientTest {
             responseToReturn = WireResponse(
                 status = 200,
                 headers = listOf(RawHeader("content-type", "application/json")),
-                body = """{"protocol":"2.0","data":{"conversation":{"conversationId":"conv_123","title":"新的对话标题"}}}""".toByteArray(Charsets.UTF_8),
+                body = """{"protocol":"2.1","data":{"conversation":{"conversationId":"conv_123","title":"新的对话标题"}}}""".toByteArray(Charsets.UTF_8),
             )
         }
         val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")
@@ -131,7 +131,7 @@ class ConversationClientTest {
     fun readTimelineFallsBackToCreatedAtWhenTimestampIsZero() = runBlocking {
         val wireBody = """
             {
-              "protocol": "2.0",
+              "protocol": "2.1",
               "data": {
                 "messages": [
                   {
@@ -197,7 +197,7 @@ class ConversationClientTest {
             responseToReturn = WireResponse(
                 status = 200,
                 headers = listOf(RawHeader("content-type", "application/json")),
-                body = """{"protocol":"2.0","data":{"outcome":"CANCELLED"}}""".toByteArray(Charsets.UTF_8),
+                body = """{"protocol":"2.1","data":{"outcome":"CANCELLED"}}""".toByteArray(Charsets.UTF_8),
             )
         }
         val profile = GatewayProfile("acc_test", "dev_test", "sess_test", "https://gateway.example.com")

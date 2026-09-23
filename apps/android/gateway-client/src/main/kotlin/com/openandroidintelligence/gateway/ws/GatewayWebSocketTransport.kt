@@ -383,7 +383,7 @@ open class GatewayWebSocketTransport(
     }
 
     companion object {
-        const val PROTOCOL_HEADER = "2.0"
+        const val PROTOCOL_HEADER = "2.1"
         /**
          * The upgrade target the Gateway serves WebSockets on.
          *

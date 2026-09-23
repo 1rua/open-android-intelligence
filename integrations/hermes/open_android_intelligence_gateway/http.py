@@ -14,12 +14,15 @@ from .admin import (
     normalize_host_api,
 )
 from .core import (
-    DEFAULT_ATTACHMENT_POLICY, GatewayCore, GatewayError, VerifiedGatewayRequest, create_gateway_core,
+    WIRE_PROTOCOL, GatewayCore, GatewayError, VerifiedGatewayRequest,
+    create_gateway_core,
 )
 
 
 EXPOSURE_MODES = ("host-route", "loopback-reverse-proxy", "direct-tls")
-DEFAULT_MAX_BODY_BYTES = DEFAULT_ATTACHMENT_POLICY.max_single_attachment_bytes
+# JSON/control requests stay bounded in memory. Binary attachment bodies use a
+# separate streaming ingress path and are not constrained by this JSON limit.
+DEFAULT_MAX_BODY_BYTES = 1024 * 1024
 _RESPONSE_HEADERS = {"content-type": "application/json; charset=utf-8"}
 
 
@@ -86,9 +89,10 @@ def _identity(request: Any) -> tuple[str, str]:
 def _failure(request: Any, code: str, details: Mapping[str, Any] | None = None) -> dict[str, Any]:
     request_id, correlation_id = _identity(request)
     return {
-        "requestId": request_id, "correlationId": correlation_id, "protocol": "2.0",
+        "requestId": request_id, "correlationId": correlation_id, "protocol": WIRE_PROTOCOL,
         "error": {
-            "code": code, "message": code, "retryable": False,
+            "code": code, "message": code,
+            "retryable": code == "ATTACHMENT_STORAGE_UNAVAILABLE",
             "retryAfterSeconds": None, "details": dict(details or {}),
         },
     }
@@ -98,6 +102,7 @@ def _failure(request: Any, code: str, details: Mapping[str, Any] | None = None) 
 # and answer 400, which is the contract's default for malformed input.
 _ERROR_STATUS = {
     "HOST_INCOMPATIBLE": 503,
+    "ATTACHMENT_STORAGE_UNAVAILABLE": 503,
     "AUTHENTICATION_REQUIRED": 401,
     "AUTHENTICATION_FAILED": 401,
     "REFRESH_REUSED": 401,
@@ -238,7 +243,7 @@ class GatewayHttpRoute:
                     resp["accountId"] = account.account_id
                     resp["requestId"] = request_id
                     resp["correlationId"] = correlation_id
-                    resp["protocol"] = "2.0"
+                    resp["protocol"] = WIRE_PROTOCOL
                     resp_data = dict(bundle)
                     resp_data["accountId"] = account.account_id
                     resp["data"] = resp_data
@@ -300,6 +305,33 @@ class GatewayHttpRoute:
             "statusCode": 200, "headers": dict(_RESPONSE_HEADERS), "body": body,
             "accountId": str(verified.context.accountId), "events": list(events),
         }
+
+    def failure_response(
+        self, request_id: str | None, correlation_id: str | None, code: str,
+    ) -> dict[str, Any]:
+        request = {
+            "verifiedRequest": {"context": {
+                "requestId": request_id or "open-android-intelligence-route",
+                "correlationId": correlation_id or request_id or "open-android-intelligence-route",
+            }},
+        }
+        body = _failure(request, code)
+        return {"statusCode": _status(body), "headers": dict(_RESPONSE_HEADERS), "body": body}
+
+    def handle_verified_request(self, verified: VerifiedGatewayRequest) -> dict[str, Any]:
+        """Dispatch a fully verified request through the same Core seam as HTTP."""
+        if not isinstance(verified, VerifiedGatewayRequest):
+            return self.failure_response(None, None, "AUTHENTICATION_REQUIRED")
+        if not is_host_api_compatible(self._services.host_version, self._services.host_api):
+            body = _failure(verified, "HOST_INCOMPATIBLE", {
+                "hostVersion": self._services.host_version,
+                "minVersion": self._services.host_api.min_version,
+                "maxVersion": self._services.host_api.max_version,
+                "verifiedCommit": self._services.host_api.verified_commit,
+            })
+            return {"statusCode": 503, "headers": dict(_RESPONSE_HEADERS), "body": body}
+        body = self._services.core.handle(verified)
+        return {"statusCode": _status(body), "headers": dict(_RESPONSE_HEADERS), "body": body}
 
     def handler(self, request: Any, response: Any) -> bool:
         result = self._handle_raw(request)
@@ -367,7 +399,7 @@ class GatewayHttpRoute:
                     resp["accountId"] = account.account_id
                     resp["requestId"] = request_id
                     resp["correlationId"] = correlation_id
-                    resp["protocol"] = "2.0"
+                    resp["protocol"] = WIRE_PROTOCOL
                     resp_data = dict(bundle)
                     resp_data["accountId"] = account.account_id
                     resp["data"] = resp_data
@@ -418,8 +450,7 @@ class GatewayHttpRoute:
             return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "AUTHENTICATION_REQUIRED")}
         if not isinstance(verified, VerifiedGatewayRequest):
             return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "AUTHENTICATION_REQUIRED")}
-        response_body = self._services.core.handle(verified)
-        return {"statusCode": _status(response_body), "headers": dict(_RESPONSE_HEADERS), "body": response_body}
+        return self.handle_verified_request(verified)
 
 
 @dataclass(frozen=True)
@@ -479,14 +510,10 @@ def create_gateway_routes(
     verify_request: Callable[[Mapping[str, Any]], Any] | None = None,
     max_body_bytes: int | None = None,
 ) -> list[GatewayHttpRoute]:
-    policy = _get(core, "attachment_policy")
-    negotiated_limit = _get(policy, "max_single_attachment_bytes", default=DEFAULT_MAX_BODY_BYTES)
-    if max_body_bytes is None or max_body_bytes < 0:
-        effective_body_limit = int(negotiated_limit)
-    else:
-        effective_body_limit = int(max_body_bytes)
-        if policy is not None and effective_body_limit < int(negotiated_limit):
-            raise ValueError("REQUEST_BODY_LIMIT_INCOMPATIBLE")
+    effective_body_limit = (
+        DEFAULT_MAX_BODY_BYTES if max_body_bytes is None or max_body_bytes < 0
+        else int(max_body_bytes)
+    )
     services = _RouteServices(
         core=core, host_version=host_version, host_api=normalize_host_api(host_api),
         verify_request=verify_request,

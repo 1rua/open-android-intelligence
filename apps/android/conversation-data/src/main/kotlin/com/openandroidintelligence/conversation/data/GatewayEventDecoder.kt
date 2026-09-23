@@ -9,7 +9,10 @@ import com.openandroidintelligence.conversation.model.ApprovalRequest
 import com.openandroidintelligence.conversation.model.ApprovalSeverity
 import com.openandroidintelligence.conversation.model.AttachmentDraftId
 import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.ClientMessageId
 import com.openandroidintelligence.conversation.model.MessagePart
+import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
+import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.CommandOutcome
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
@@ -80,6 +83,8 @@ object GatewayEventDecoder {
                     ?: JsonFields.string(body, "correlationId").orEmpty(),
                 conversationId = conversationIdOf(payload, body),
             )
+
+            "conversation.message.status" -> messageStatus(eventId, occurredAt, payload)
 
             "conversation.message.delta" -> timelineUpsert(eventId, occurredAt, payload, "STREAMING", body)
 
@@ -294,7 +299,53 @@ object GatewayEventDecoder {
         )
     }
 
+    private fun messageStatus(
+        eventId: String,
+        occurredAt: Long,
+        payload: JsonValue.JObject?,
+    ): VerifiedConversationEvent.MessageStatus? {
+        val conversationId = conversationIdOfKey(payload, "conversationId") ?: return null
+        val messageId = JsonFields.string(payload, "messageId")
+            ?.takeIf { OPAQUE_ID.matches(it) }
+            ?: return null
+        val clientMessageId = JsonFields.string(payload, "clientMessageId")
+            ?.let { runCatching { ClientMessageId(it) }.getOrNull() }
+            ?: return null
+        val status = when (JsonFields.string(payload, "status")) {
+            "queued" -> AgentMessageStatus.QUEUED
+            "delivered" -> AgentMessageStatus.DELIVERED
+            "completed" -> AgentMessageStatus.COMPLETED
+            "failed" -> AgentMessageStatus.FAILED
+            else -> return null
+        }
+        val revision = JsonFields.long(payload, "revision")?.takeIf { it >= 0L } ?: return null
+        val rawError = JsonFields.field(payload, "errorCode") ?: return null
+        val errorCode = when (rawError) {
+            JsonValue.JNull -> null
+            is JsonValue.JString -> when (rawError.value) {
+                "AGENT_UNAVAILABLE" -> AgentMessageErrorCode.AGENT_UNAVAILABLE
+                "ATTACHMENT_READ_FAILED" -> AgentMessageErrorCode.ATTACHMENT_READ_FAILED
+                "AGENT_MEDIA_REJECTED" -> AgentMessageErrorCode.AGENT_MEDIA_REJECTED
+                "MODEL_REQUEST_REJECTED" -> AgentMessageErrorCode.MODEL_REQUEST_REJECTED
+                else -> return null
+            }
+            else -> return null
+        }
+        if ((status == AgentMessageStatus.FAILED) != (errorCode != null)) return null
+        return VerifiedConversationEvent.MessageStatus(
+            eventId = eventId,
+            occurredAt = occurredAt,
+            conversationId = conversationId,
+            messageId = messageId,
+            clientMessageId = clientMessageId,
+            status = status,
+            revision = revision,
+            errorCode = errorCode,
+        )
+    }
+
     private val CONVERSATION_ID_KEYS = listOf("conversationId", "conversation_id", "chat_id")
+    private val OPAQUE_ID = Regex("[A-Za-z0-9._~-]{1,128}")
 
     /**
      * The closed command answer (contract §7.1).
