@@ -10,11 +10,12 @@
 2. 建立 Android 和 Gateway 的分块认证加密暂存接口。对附件流边写入边计数和计算摘要；只有 EOF 后实际长度与摘要匹配才转为 `verified`。保持控制面 JSON 请求体限制独立于附件内容流。
 3. 将 Android 选图、相机和屏幕选区附件改为 IO dispatcher 上的加密暂存、固定长度签名流式上传、进度/取消/重试和明确 I/O 错误；创建按`clientAttachmentId`元数据幂等，未知上传/提交结果先查`GET /attachments/{attachmentId}`再继续，避免重复附件；时间线改存元数据与采样缩略图。
 4. Hermes 以宿主媒体事件传递正文、媒体路径和 MIME；OpenClaw 接通原生 channel inbound media facts。两端在 Agent 确认接收后 ACK 暂存内容，Agent/model拒绝时写入关联消息 ID 的状态事件。
-5. 对 Hermes 旧 AEAD 暂存格式及 OpenClaw 旧明文暂存格式执行事务迁移，支持失败回滚并阻止旧版本使用新格式；Protocol 2.1 的 Android、Hermes、OpenClaw 同版本发布。
+5. 对 Hermes 旧 AEAD 暂存格式及 OpenClaw 旧明文暂存格式执行事务迁移，支持失败回滚并阻止旧版本使用新格式。Hermes 的旧 `aead-v1` 是整对象认证格式，没有有界内存解密接口，因此按允许的“升级前排空”路径将旧暂存事务性标记为 `failed`、要求重传，只有状态/审计提交成功后才清理旧字节；失败时保留原文件并在下次启动重试。配对归属迁移对旧记录保留未知归属，交给原 TTL 清理，解除一台设备配对时不误删其他设备附件。Protocol 2.1 的 Android、Hermes、OpenClaw 同版本发布，旧版本无法写入缺少配对归属的新格式。
 
 ## 验收
 
 - Schema、协商向量、双宿主共享向量均验证 Protocol 2.1；旧 core hash 返回 `PROTOCOL_INCOMPATIBLE`。
 - 超过原 1 MiB、25 MiB、50 MiB 门槛的合成流可到达 Agent 测试端，传输内存与总文件大小无关；任意非空 MIME 都能到达 Agent。
 - 长度或摘要不匹配、流中断、磁盘不足、密文篡改和账号错配均失败关闭，不留下 `verified` 或跨账号可读暂存。
+- 解除配对只清理目标 `deviceId + pairingGeneration` 的未确认附件；同账号其他配对与归属未知的旧记录保留。
 - 图片-only、文字+多附件、Agent/model拒绝、重试、ACK、过期、解除配对与迁移回滚通过 Android/Hermes/OpenClaw 集成测试；最后在真实设备和两个宿主完成完整闭环。

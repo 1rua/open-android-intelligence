@@ -1,11 +1,17 @@
 package com.openandroidintelligence.mobile
 
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
+import java.io.Closeable
+import java.io.InputStream
 import java.io.InputStreamReader
+import java.security.MessageDigest
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /** 一条到达回环 Gateway 的请求，按 HTTP 层原样记录。 */
@@ -95,4 +101,85 @@ internal class LoopbackGatewayStub {
     }
 
     private data class StubResponse(val status: Int, val body: String, val contentType: String)
+}
+
+/**
+ * One-request binary capture used by streaming transport tests. The capture
+ * keeps only request headers and a rolling digest; its working buffer is fixed
+ * at 64 KiB regardless of the body length.
+ */
+internal data class RecordedStreamingGatewayRequest(
+    val headers: List<String>,
+    val contentLength: Long,
+    val bodyLength: Long,
+    val bodySha256Hex: String,
+)
+
+internal class LoopbackStreamingGatewayStub : Closeable {
+    private val server = ServerSocket(0)
+    private val result = CompletableFuture<RecordedStreamingGatewayRequest>()
+
+    val baseUrl: String = "http://127.0.0.1:${server.localPort}"
+
+    init {
+        thread(isDaemon = true, name = "loopback-streaming-gateway") {
+            runCatching { serveOne() }
+                .onFailure(result::completeExceptionally)
+        }
+    }
+
+    fun awaitRequest(): RecordedStreamingGatewayRequest = result.get(2, TimeUnit.MINUTES)
+
+    override fun close() {
+        server.close()
+    }
+
+    private fun serveOne() {
+        server.accept().use { socket ->
+            socket.soTimeout = 60_000
+            val input = socket.getInputStream()
+            readAsciiLine(input) // request line
+            val headers = generateSequence { readAsciiLine(input) }.takeWhile { it.isNotEmpty() }.toList()
+            val lengthHeaders = headers.filter { it.startsWith("Content-Length:", ignoreCase = true) }
+            val contentLength = lengthHeaders.single().substringAfter(':').trim().toLong()
+            val digest = MessageDigest.getInstance("SHA-256")
+            val buffer = ByteArray(64 * 1024)
+            var total = 0L
+            while (total < contentLength) {
+                val wanted = minOf(buffer.size.toLong(), contentLength - total).toInt()
+                val count = input.read(buffer, 0, wanted)
+                if (count < 0) throw java.io.EOFException("short request body")
+                digest.update(buffer, 0, count)
+                total += count
+            }
+            result.complete(
+                RecordedStreamingGatewayRequest(
+                    headers = headers,
+                    contentLength = contentLength,
+                    bodyLength = total,
+                    bodySha256Hex = digest.digest().toHex(),
+                ),
+            )
+            socket.getOutputStream().apply {
+                write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".toByteArray())
+                flush()
+            }
+        }
+    }
+
+    private fun readAsciiLine(input: InputStream): String? {
+        val line = ByteArrayOutputStream()
+        while (true) {
+            val value = input.read()
+            if (value == -1) return if (line.size() == 0) null else line.toString(Charsets.US_ASCII)
+            if (value == '\n'.code) {
+                val bytes = line.toByteArray()
+                val length = bytes.size - if (bytes.lastOrNull() == '\r'.code.toByte()) 1 else 0
+                return String(bytes, 0, length, Charsets.US_ASCII)
+            }
+            line.write(value)
+        }
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 }

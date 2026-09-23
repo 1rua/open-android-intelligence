@@ -41,6 +41,14 @@ private data class AttachmentStageOperations(
     val promotePartial: (File, File) -> Boolean,
 )
 
+private const val ATTACHMENT_STAGE_MAGIC = "OPEN_ANDROID_INTELLIGENCE_ATTACHMENT_STAGE_V1"
+
+private fun chunkAad(scope: String, id: String, index: Long, length: Int): ByteArray =
+    "$ATTACHMENT_STAGE_MAGIC\u0000$scope\u0000$id\u0000$index\u0000$length".encodeToByteArray()
+
+private fun footerAad(scope: String, id: String, chunks: Long): ByteArray =
+    "$ATTACHMENT_STAGE_MAGIC\u0000$scope\u0000$id\u0000footer\u0000$chunks".encodeToByteArray()
+
 /**
  * Authenticated, bounded-memory staging for a single attachment.
  *
@@ -308,12 +316,6 @@ class EncryptedAttachmentStagingStore private constructor(
 
     private fun randomBytes(size: Int): ByteArray = ByteArray(size).also(RANDOM::nextBytes)
 
-    private fun chunkAad(scope: String, id: String, index: Long, length: Int): ByteArray =
-        "$MAGIC\u0000$scope\u0000$id\u0000$index\u0000$length".encodeToByteArray()
-
-    private fun footerAad(scope: String, id: String, chunks: Long): ByteArray =
-        "$MAGIC\u0000$scope\u0000$id\u0000footer\u0000$chunks".encodeToByteArray()
-
     private class EncryptedChunkInputStream(
         file: File,
         private val id: String,
@@ -415,7 +417,7 @@ class EncryptedAttachmentStagingStore private constructor(
         const val MAX_CHUNK_BYTES = 1024 * 1024
         const val DEFAULT_STAGE_TTL_MILLIS = 24L * 60 * 60 * 1000
         private const val DEFAULT_PARTIAL_STAGE_TTL_MILLIS = 10L * 60 * 1000
-        private const val MAGIC = "OPEN_ANDROID_INTELLIGENCE_ATTACHMENT_STAGE_V1"
+        private const val MAGIC = ATTACHMENT_STAGE_MAGIC
         private const val AES_256_BYTES = 32
         private const val IV_BYTES = 12
         private const val TAG_BYTES = 16
@@ -468,12 +470,6 @@ class EncryptedAttachmentStagingStore private constructor(
             } catch (cause: AEADBadTagException) {
                 throw EncryptedAttachmentCorrupted()
             }
-
-        private fun chunkAad(scope: String, id: String, index: Long, length: Int): ByteArray =
-            "$MAGIC\u0000$scope\u0000$id\u0000$index\u0000$length".encodeToByteArray()
-
-        private fun footerAad(scope: String, id: String, chunks: Long): ByteArray =
-            "$MAGIC\u0000$scope\u0000$id\u0000footer\u0000$chunks".encodeToByteArray()
 
         private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
     }

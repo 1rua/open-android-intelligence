@@ -1086,7 +1086,8 @@ class AccountStore:
             );
             CREATE TABLE IF NOT EXISTS attachments (
               attachment_id TEXT PRIMARY KEY NOT NULL,
-              client_attachment_id TEXT NOT NULL, filename TEXT NOT NULL,
+              client_attachment_id TEXT NOT NULL, owner_device_id TEXT,
+              owner_pairing_generation INTEGER, filename TEXT NOT NULL,
               media_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
               sha256 TEXT NOT NULL, state TEXT NOT NULL,
               content_path TEXT, cas_path TEXT, created_at TEXT NOT NULL,
@@ -1199,6 +1200,33 @@ class AccountStore:
         ]:
             if col_name not in existing_cols:
                 self.database.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
+        existing_attachment_cols = {
+            row[1] for row in self.database.execute("PRAGMA table_info(attachments)").fetchall()
+        }
+        for col_name, col_type in (
+            ("owner_device_id", "TEXT"),
+            ("owner_pairing_generation", "INTEGER"),
+        ):
+            if col_name not in existing_attachment_cols:
+                self.database.execute(f"ALTER TABLE attachments ADD COLUMN {col_name} {col_type}")
+        self._metadata("attachment_storage_format", "2")
+        attachment_format = self.database.execute(
+            "SELECT value FROM account_metadata WHERE key = 'attachment_storage_format'"
+        ).fetchone()
+        if attachment_format is None or str(attachment_format[0]) != "2":
+            self.database.close()
+            raise GatewayError("ATTACHMENT_STORAGE_VERSION_UNSUPPORTED")
+        self.database.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS attachments_require_pairing_identity
+            BEFORE INSERT ON attachments
+            WHEN (SELECT value FROM account_metadata WHERE key = 'attachment_storage_format') = '2'
+              AND (NEW.owner_device_id IS NULL OR NEW.owner_device_id = '' OR NEW.owner_pairing_generation IS NULL)
+            BEGIN
+              SELECT RAISE(ABORT, 'ATTACHMENT_PAIRING_BINDING_REQUIRED');
+            END;
+            """
+        )
         if self.aead is None:
             existing_ref = self.database.execute(
                 "SELECT value FROM account_metadata WHERE key = 'master_key_ref'"
@@ -1892,6 +1920,8 @@ class _AttachmentUploadStream:
 
 
 class AttachmentStore:
+    _UNATTRIBUTED_INTERNAL_OWNER = "__gateway_internal_unattributed__"
+
     def __init__(
         self, account_id: str, paths: AccountPaths, store: AccountStore,
         audit: AuditStore, policy: AttachmentPolicy | None = None,
@@ -1925,7 +1955,11 @@ class AttachmentStore:
         )
         filename = str(input["filename"])
         sha256 = str(input["sha256"])
+        owner_device_id = str(input.get("device_id", input.get("deviceId", self._UNATTRIBUTED_INTERNAL_OWNER)))
+        owner_pairing_generation = int(input.get("pairing_generation", input.get("pairingGeneration", 0)))
         if size_bytes < 0 or size_bytes > 0x7FFF_FFFF_FFFF_FFFF or not media_type:
+            raise GatewayError("SCHEMA_INVALID")
+        if not owner_device_id or owner_pairing_generation < 0:
             raise GatewayError("SCHEMA_INVALID")
         requested_expiry = input.get("expires_at") or input.get("expiresAt")
         if requested_expiry is None:
@@ -1944,9 +1978,9 @@ class AttachmentStore:
         )
         with self.store.transaction():
             existing_rows = self.store.database.execute(
-                "SELECT attachment_id, filename, media_type, size_bytes, sha256 FROM attachments "
-                "WHERE client_attachment_id = ? ORDER BY created_at DESC",
-                (client_attachment_id,),
+                "SELECT attachment_id, filename, media_type, size_bytes, sha256, owner_device_id, owner_pairing_generation FROM attachments "
+                "WHERE client_attachment_id = ? AND owner_device_id = ? AND owner_pairing_generation = ? ORDER BY created_at DESC",
+                (client_attachment_id, owner_device_id, owner_pairing_generation),
             ).fetchall()
             if existing_rows:
                 for existing in existing_rows:
@@ -1963,12 +1997,14 @@ class AttachmentStore:
                 self.store.database.execute(
                     """
                     INSERT INTO attachments(attachment_id, client_attachment_id, filename, media_type, size_bytes,
-                      sha256, state, content_path, cas_path, created_at, expires_at, delivered_at, acknowledged_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 'created', NULL, NULL, ?, ?, NULL, NULL)
+                      sha256, state, content_path, cas_path, created_at, expires_at, delivered_at, acknowledged_at,
+                      owner_device_id, owner_pairing_generation)
+                    VALUES (?, ?, ?, ?, ?, ?, 'created', NULL, NULL, ?, ?, NULL, NULL, ?, ?)
                     """,
                     (
                         attachment_id, client_attachment_id, filename, media_type,
                         size_bytes, sha256, iso_millis(current), expires_at,
+                        owner_device_id, owner_pairing_generation,
                     ),
                 )
                 self.audit.append(
@@ -2347,8 +2383,11 @@ class AttachmentStore:
                 deleted += 1
         return deleted
 
-    def revoke_unconfirmed(self, correlation_id: str, now: datetime | str | None = None) -> int:
-        """Destroys the bytes of every attachment no host has acknowledged.
+    def revoke_unconfirmed(
+        self, device_id: str, pairing_generation: int, correlation_id: str,
+        now: datetime | str | None = None,
+    ) -> int:
+        """Destroys unconfirmed attachments created by one pairing only.
 
         Contract section 13 (`:798`) revokes "unconfirmed attachments" when a
         pairing ends. Unconfirmed means the host never acknowledged it: the
@@ -2358,17 +2397,17 @@ class AttachmentStore:
         straight to `deleted` — revocation is a deletion, not one of the
         lifecycle transitions of `_ATTACHMENT_TRANSITIONS`.
 
-        Known limitation, stated rather than papered over: `attachments` carries
-        no device column in this schema, so the sweep is account-wide. A device
-        attribution column belongs to the storage change that adds one; until
-        then an unpair also destroys another device's in-flight bytes.
+        Legacy rows without pairing attribution are left to their original TTL
+        cleanup. Guessing an owner would risk deleting another device's bytes.
         """
         current = _now(now)
         paths: list[Path] = []
         with self.store.transaction():
             rows = self.store.database.execute(
                 "SELECT attachment_id, content_path, cas_path FROM attachments "
-                "WHERE acknowledged_at IS NULL AND state != 'deleted'"
+                "WHERE acknowledged_at IS NULL AND state != 'deleted' "
+                "AND owner_device_id = ? AND owner_pairing_generation = ?",
+                (device_id, pairing_generation),
             ).fetchall()
             for row in rows:
                 for key in ("content_path", "cas_path"):
@@ -2379,8 +2418,11 @@ class AttachmentStore:
                     (row["attachment_id"],),
                 )
                 self.audit.append(
-                    "attachment.revoked", {"accountId": self.account_id},
-                    {"attachmentId": row["attachment_id"]}, correlation_id, current,
+                    "attachment.revoked", {"accountId": self.account_id, "deviceId": device_id},
+                    {
+                        "attachmentId": row["attachment_id"],
+                        "pairingGeneration": pairing_generation,
+                    }, correlation_id, current,
                 )
         for path in set(paths):
             self._move_to_trash(path)
@@ -2423,14 +2465,14 @@ class AttachmentStore:
         return f"open-android-intelligence:attachment:v2:{self.account_id}:{attachment_id}:{sha256}"
 
     def _recover_legacy_attachments(self) -> int:
-        """Fail old one-shot stages deterministically so clients can re-upload.
+        """Drain old one-shot stages transactionally so clients can re-upload.
 
-        This deliberately does not decrypt legacy files. The previous format
-        authenticated the whole body as one value, so migrating it would grow
-        memory with the attachment size. The state transition commits before
-        any cleanup, which makes a process interruption safe: the next startup
-        sees either the original row and retries or the failed row and leaves
-        cleanup to the normal retention path.
+        The old AEAD format authenticated the entire body as one value and has
+        no bounded-memory streaming decrypt operation. Re-encrypting it would
+        restore the full body in memory, so startup drains those legacy stages
+        and returns an explicit re-upload state. Each metadata transition and
+        audit record commit before bytes are removed; a failed transaction
+        leaves the original row and bytes intact for the next startup retry.
         """
         rows = self.store.database.execute(
             "SELECT attachment_id, state, content_path, cas_path, sha256 FROM attachments "
@@ -3301,15 +3343,16 @@ class GatewayAccount:
         current = _now(now)
         with self.store.transaction():
             paired = self.store.database.execute(
-                "SELECT 1 FROM device_keys WHERE device_id = ?", (device_id,)
+                "SELECT pairing_generation FROM device_keys WHERE device_id = ?", (device_id,)
             ).fetchone()
             if paired is None:
                 raise GatewayError("PAIRING_REQUIRED", {"deviceId": device_id})
+            pairing_generation = int(paired["pairing_generation"])
             self.sessions.revoke_device_keys(device_id, correlation_id, current)
             self.sessions.revoke_refresh_credentials(device_id, correlation_id, current)
             self.sessions.revoke_device_sessions(device_id, correlation_id, current)
             self.device_requests.revoke_for_device(device_id, correlation_id, current)
-            self.attachments.revoke_unconfirmed(correlation_id, current)
+            self.attachments.revoke_unconfirmed(device_id, pairing_generation, correlation_id, current)
             next_generation = self.pairing_generation() + 1
             self.store.database.execute(
                 "UPDATE account_metadata SET value = ? WHERE key = 'pairing_generation'",
@@ -3330,7 +3373,7 @@ class GatewayAccount:
             "refreshRevoked": self.sessions.active_refresh_credential_count(device_id) == 0,
             "grantsRevoked": self._device_key_count(device_id) == 0,
             "deviceRequestsRevoked": self._live_device_request_count(device_id) == 0,
-            "unconfirmedAttachmentsRevoked": self._unconfirmed_attachment_count() == 0,
+            "unconfirmedAttachmentsRevoked": self._unconfirmed_attachment_count(device_id, pairing_generation) == 0,
             "sessionsRevoked": self._active_session_count(device_id) == 0,
         }
 
@@ -3394,10 +3437,17 @@ class GatewayAccount:
             "AND state IN ('pending', 'claimed', 'cancel_requested')", (device_id,)
         ).fetchone()[0])
 
-    def _unconfirmed_attachment_count(self) -> int:
-        return int(self.store.database.execute(
-            "SELECT COUNT(*) FROM attachments WHERE acknowledged_at IS NULL AND state != 'deleted'"
-        ).fetchone()[0])
+    def _unconfirmed_attachment_count(
+        self, device_id: str | None = None, pairing_generation: int | None = None,
+    ) -> int:
+        if (device_id is None) != (pairing_generation is None):
+            raise ValueError("device and pairing generation must be supplied together")
+        query = "SELECT COUNT(*) FROM attachments WHERE acknowledged_at IS NULL AND state != 'deleted'"
+        parameters: tuple[Any, ...] = ()
+        if device_id is not None:
+            query += " AND owner_device_id = ? AND owner_pairing_generation = ?"
+            parameters = (device_id, pairing_generation)
+        return int(self.store.database.execute(query, parameters).fetchone()[0])
 
     def close(self) -> None:
         if not self._closed:
@@ -4917,6 +4967,7 @@ class GatewayCore:
                             clientAttachmentId=str(body_map["clientAttachmentId"]),
                             filename=str(body_map["filename"]), mediaType=str(body_map["mediaType"]),
                             sizeBytes=int(body_map["sizeBytes"]), sha256=str(body_map["sha256"]),
+                            deviceId=context["deviceId"], pairingGeneration=int(context["pairingGeneration"]),
                             correlationId=context["correlationId"], now=_request_now(request),
                         )})
                     attachment_content = re.fullmatch(r"/open-android-intelligence/v2/attachments/([^/]+)/content", target_path)

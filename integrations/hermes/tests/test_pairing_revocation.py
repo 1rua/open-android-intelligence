@@ -250,13 +250,20 @@ def _verified_unpair_without_idempotency_key(session, request_id):
     })
 
 
-def _unconfirmed_attachment(account, body=b"staged body"):
+def _unconfirmed_attachment(
+    account,
+    body=b"staged body",
+    device_id="dev_unpair_fixture",
+    client_attachment_id="att_unconfirmed",
+):
     attachment = account.attachments.create(
-        client_attachment_id="att_unconfirmed",
+        client_attachment_id=client_attachment_id,
         filename="note.txt",
         media_type="text/plain",
         size_bytes=len(body),
         sha256=hashlib.sha256(body).hexdigest(),
+        device_id=device_id,
+        pairing_generation=1,
         correlation_id="cor_attachment",
     )
     attachment_id = attachment["attachmentId"]
@@ -276,8 +283,14 @@ def test_unpair_revokes_the_five_items_and_every_access_session(tmp_path):
 
     account = core.open_gateway_account(ACCOUNT_ID)
     try:
-        attachment_id = _unconfirmed_attachment(account)
+        attachment_id = _unconfirmed_attachment(account, device_id=session["deviceId"])
+        other_device_attachment_id = _unconfirmed_attachment(
+            account,
+            device_id="dev_other_device",
+            client_attachment_id="att_unconfirmed_other_device",
+        )
         assert account.attachments.get_record(attachment_id)["hasStagedBytes"] is True
+        assert account.attachments.get_record(other_device_attachment_id)["hasStagedBytes"] is True
         account.device_requests.enqueue(
             request_id="req_unpair_queue",
             device_id=session["deviceId"],
@@ -328,6 +341,9 @@ def test_unpair_revokes_the_five_items_and_every_access_session(tmp_path):
                  if item["deviceId"] == session["deviceId"]]
         assert [item["state"] for item in queue] == ["cancelled"]
         assert account.attachments.get_record(attachment_id)["hasStagedBytes"] is False
+        assert account.attachments.get_record(other_device_attachment_id)["hasStagedBytes"] is True
+        assert account._unconfirmed_attachment_count(session["deviceId"], 1) == 0
+        assert account._unconfirmed_attachment_count("dev_other_device", 1) == 1
         # Both sessions died, not only the one that asked.
         assert account.sessions.resolve_session(
             second["accessToken"], second["sessionId"], second["deviceId"]

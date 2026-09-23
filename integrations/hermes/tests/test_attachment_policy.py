@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import struct
 import sys
 from pathlib import Path
@@ -165,8 +166,10 @@ def test_client_attachment_create_retry_is_metadata_idempotent_and_old_duplicate
     account.store.database.execute(
         """
         INSERT INTO attachments(attachment_id, client_attachment_id, filename, media_type, size_bytes,
-          sha256, state, content_path, cas_path, created_at, expires_at, delivered_at, acknowledged_at)
-        VALUES ('att_legacy_duplicate', ?, ?, ?, ?, ?, 'created', NULL, NULL, ?, ?, NULL, NULL)
+          sha256, state, content_path, cas_path, created_at, expires_at, delivered_at, acknowledged_at,
+          owner_device_id, owner_pairing_generation)
+        VALUES ('att_legacy_duplicate', ?, ?, ?, ?, ?, 'created', NULL, NULL, ?, ?, NULL, NULL,
+          '__gateway_internal_unattributed__', 0)
         """,
         (
             values["clientAttachmentId"], values["filename"], "application/octet-stream",
@@ -199,6 +202,36 @@ def test_client_attachment_create_retry_is_metadata_idempotent_and_old_duplicate
         assert conflict.value.code == "IDEMPOTENCY_CONFLICT"
     finally:
         reopened.close()
+
+
+def test_attachment_storage_fence_rejects_legacy_unbound_inserts(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    account = core.open_gateway_account("acct_attachment_format_fence")
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="ATTACHMENT_PAIRING_BINDING_REQUIRED"):
+            account.store.database.execute(
+                """
+                INSERT INTO attachments(attachment_id, client_attachment_id, filename, media_type, size_bytes,
+                  sha256, state, content_path, cas_path, created_at, expires_at, delivered_at, acknowledged_at)
+                VALUES ('att_old_writer', 'old_writer', 'legacy.bin', 'application/octet-stream', 0,
+                  ?, 'created', NULL, NULL, '2026-09-23T00:00:00.000Z', '2026-09-24T00:00:00.000Z', NULL, NULL)
+                """,
+                ("0" * 64,),
+            )
+    finally:
+        account.close()
+
+
+def test_unknown_attachment_storage_version_fails_closed(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    account = core.open_gateway_account("acct_attachment_unknown_format")
+    account.store.database.execute(
+        "UPDATE account_metadata SET value = '3' WHERE key = 'attachment_storage_format'"
+    )
+    account.close()
+
+    with pytest.raises(GatewayError, match="ATTACHMENT_STORAGE_VERSION_UNSUPPORTED"):
+        core.open_gateway_account("acct_attachment_unknown_format")
 
 
 def test_streamed_attachment_stays_encrypted_and_opens_as_bounded_verified_chunks(tmp_path):
@@ -735,11 +768,20 @@ def test_legacy_stage_recovery_retries_after_a_startup_commit_failure(tmp_path):
         "UPDATE attachments SET state = 'uploading', content_path = ? WHERE attachment_id = ?",
         (str(stage_path), attachment["attachmentId"]),
     )
+    database_path = account.paths.database
     account.close()
 
     core.commit_hook = fail_first_recovery_commit
     with pytest.raises(GatewayError, match="OUTCOME_UNKNOWN"):
         core.open_gateway_account("acct_legacy_retry")
+
+    assert stage_path.is_file()
+    with sqlite3.connect(database_path) as database:
+        row = database.execute(
+            "SELECT state, content_path FROM attachments WHERE attachment_id = ?",
+            (attachment["attachmentId"],),
+        ).fetchone()
+    assert row == ("uploading", str(stage_path))
 
     core.commit_hook = None
     recovered = core.open_gateway_account("acct_legacy_retry")
