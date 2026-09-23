@@ -35,7 +35,7 @@ npm run gateway:v2:conformance
 每个 runner 在构造校验器**之前**必须：
 
 1. 用 meta schema 验证 registry；
-2. 校验 `formatVersion`、`catalogEntries` 数量（7）、`bindingSets` 数量（1）与 binding set ID；
+2. 校验 `formatVersion`、`catalogEntries` 数量（15）、`bindingSets` 数量（1）与 binding set ID；
 3. **重算七个规范 JCS digest**并与登记值比对；
 4. 校验每个 binding 都指向 catalog 中 digest 匹配的条目。
 
@@ -77,7 +77,7 @@ npm run gateway:v2:conformance
 
 ## 当前覆盖
 
-24 个向量 case，覆盖以下 7 类 operation，且每个向量文件都同时包含成功与失败样例：
+62 个向量 case，覆盖以下 7 类 operation，且每个向量文件都同时包含成功与失败样例：
 
 | operation | 覆盖内容 |
 | --- | --- |

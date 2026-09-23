@@ -257,7 +257,7 @@ def test_admin_grant_bump_is_the_management_plane_entry(tmp_path):
     via_cli = run_admin_command(
         ["grant", "bump", ACCOUNT_ID, DEVICE_ID, "--confirm-local"], service=service
     )
-    assert via_cli["ok"] is True
+    assert via_cli["ok"] is True, via_cli
     assert via_cli["data"]["grantRevision"] == 3
 
     account = core.open_gateway_account(ACCOUNT_ID)

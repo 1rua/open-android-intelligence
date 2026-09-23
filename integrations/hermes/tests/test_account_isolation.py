@@ -85,7 +85,7 @@ def test_account_state_and_event_cursors_never_cross_databases(tmp_path):
     event = alice.events.append(
         event_type="gateway.notice",
         correlation_id="cor_alice",
-        payload={"notice": "ready"},
+        payload={"noticeCode": "ready"},
     )
     assert event["eventId"]
     assert event["eventId"] in [item["eventId"] for item in alice.events.read_after(None)]
@@ -124,7 +124,7 @@ def test_handle_enforces_identity_idempotency_and_sse_cursor_binding(tmp_path):
     old_event = account.events.append(
         event_type="gateway.notice",
         correlation_id="cor_old",
-        payload={"notice": "old"},
+        payload={"noticeCode": "old"},
     )
     account.close()
 
@@ -185,9 +185,9 @@ def test_consumes_the_shared_schema_and_vector_registry(tmp_path):
     # 24 base cases plus the `/new` pair in protocol-negotiation.json and
     # sse-events.json: the command-entry capability bit and the command-result
     # payload shape are now shared facts rather than one host's private detail.
-    assert len(cases) == 49
-    assert len({case["id"] for case in cases}) == 49
-    assert len(results) == 49
+    assert len(cases) == 62
+    assert len({case["id"] for case in cases}) == 62
+    assert len(results) == 62
     assert {result["status"] for result in results} == {"pass"}
     assert {result["implementation"] for result in results} == {"hermes-python"}
 
@@ -791,7 +791,7 @@ def test_idempotency_expiry_and_replay_binding_fail_closed(tmp_path):
     assert stale_replay["error"]["code"] == "PAIRING_GENERATION_STALE"
 
     old = core.open_gateway_account("acct_bob")
-    event = old.events.append("gateway.notice", "cor_old", {"notice": "old"}, "2026-08-24T00:00:00.000Z")
+    event = old.events.append("gateway.notice", "cor_old", {"noticeCode": "old"}, "2026-08-24T00:00:00.000Z")
     old.close()
     cursor_expired = core.handle({
         "context": _context(accountId="acct_bob", requestId="req_cursor_expired"),

@@ -23,11 +23,11 @@ class DispatchedSchemaVectorTest {
         val registry = registry()
 
         assertEquals("1.0.0", registry.formatVersion)
-        assertEquals(7, registry.catalogEntries.size)
+        assertEquals(15, registry.catalogEntries.size)
         assertEquals("gateway-core-fixtures-v1", registry.bindingSetId)
         assertEquals(
             "every binding must point at a catalog entry with a matching digest",
-            7,
+            15,
             registry.bindings.size,
         )
     }

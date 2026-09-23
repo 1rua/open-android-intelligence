@@ -521,6 +521,14 @@ class ContractRegistry:
         "event.conversation-command-result.v1",
         "event.conversation-approval-requested.v1",
         "event.conversation-approval-resolved.v1",
+        "event.message-delta.v1",
+        "event.message-completed.v1",
+        "event.title-updated.v1",
+        "event.device-requested.v1",
+        "event.device-request-cancel-requested.v1",
+        "event.pairing-grant-changed.v1",
+        "event.session-revoked.v1",
+        "event.attachment-acknowledged.v1",
     )
 
     schema_definitions = {
@@ -1393,8 +1401,12 @@ class CredentialStore:
 
 
 class EventStore:
-    def __init__(self, store: AccountStore, retention_seconds: int = 86_400):
+    def __init__(self, store: AccountStore, contracts: "ContractRegistry | None", retention_seconds: int = 86_400):
         self.store = store
+        # Mirror DeviceRequestStore: a caller that cannot supply the shared
+        # registry still gets a real one, because fail-closed validation must
+        # never silently degrade to "no validation".
+        self.contracts = contracts or ContractRegistry()
         self.retention_seconds = retention_seconds
 
     def append(
@@ -1413,6 +1425,23 @@ class EventStore:
             "payload": dict(payload),
             "expiresAt": iso_millis(current + timedelta(seconds=self.retention_seconds)),
         }
+        # Fail closed (contract §9): every event payload must validate against
+        # its dispatched sub-Schema, and an event type without a binding must be
+        # rejected rather than silently delivered unvalidated.
+        verified = self.contracts.validate_dispatched(
+            self.contracts.dispatched_registry_id,
+            {"kind": "event", "eventType": event_type},
+            {
+                "correlationId": correlation_id,
+                "occurredAt": event["occurredAt"],
+                "payload": dict(payload),
+            },
+        )
+        if not verified:
+            raise GatewayError(
+                "SCHEMA_INVALID",
+                {"reason": "event payload failed dispatched validation", "eventType": event_type},
+            )
         self.store.database.execute(
             "INSERT INTO events(event_id, event_type, correlation_id, occurred_at, payload_json, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
             (
@@ -2619,7 +2648,7 @@ class GatewayAccount:
         self.master_key_ref = str(store.database.execute("SELECT value FROM account_metadata WHERE key = 'master_key_ref'").fetchone()[0])
         self.masterKeyRef = self.master_key_ref
         self.audit = AuditStore(store, account_id)
-        self.events = EventStore(store)
+        self.events = EventStore(store, contracts)
         self.attachment_policy = attachment_policy or DEFAULT_ATTACHMENT_POLICY
         self.attachments = AttachmentStore(
             account_id, paths, store, self.audit, self.attachment_policy, self.events

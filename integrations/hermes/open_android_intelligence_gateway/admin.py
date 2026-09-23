@@ -208,7 +208,7 @@ class AdminService:
             try:
                 result = account.revoke_pairing(
                     device_id,
-                    str(correlation_id) if correlation_id else f"pairing.revoke:{device_id}",
+                    str(correlation_id) if correlation_id else f"pairing.revoke.{device_id}",
                 )
             finally:
                 account.close()
@@ -247,7 +247,7 @@ class AdminService:
             try:
                 result = account.bump_grant_revision(
                     device_id,
-                    str(correlation_id) if correlation_id else f"grant.bump:{device_id}",
+                    str(correlation_id) if correlation_id else f"grant.bump.{device_id}",
                 )
             finally:
                 account.close()

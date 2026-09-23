@@ -41,6 +41,14 @@ const expectedFixtureIds = [
   "event.conversation-command-result.v1",
   "event.conversation-approval-requested.v1",
   "event.conversation-approval-resolved.v1",
+  "event.message-delta.v1",
+  "event.message-completed.v1",
+  "event.title-updated.v1",
+  "event.device-requested.v1",
+  "event.device-request-cancel-requested.v1",
+  "event.pairing-grant-changed.v1",
+  "event.session-revoked.v1",
+  "event.attachment-acknowledged.v1",
 ] as const;
 
 const expectedFixtureDigests = [
@@ -51,6 +59,14 @@ const expectedFixtureDigests = [
   "sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce",
   "sha256:bce36a217163c4626595ffef4b0ac4456ae95bee57646b0a586ea4413b59d663",
   "sha256:2f455f22f1e50d730a80e22a2e9f93e1259a6920747f527041942451bd377916",
+  "sha256:0e4302bc076d9c2f1282f5abdc84b10b42af64ab402cc3c9b1870451135a453f",
+  "sha256:0e4302bc076d9c2f1282f5abdc84b10b42af64ab402cc3c9b1870451135a453f",
+  "sha256:4fc6ab881fad0203ca84c11103c8d713a3f46818c0df3f0e03acd56b54154714",
+  "sha256:7dcc1ce17e2a105149a9e1a80c3971225f73b0d46361e31134c76a32c292a0e4",
+  "sha256:650aaf6bf78f01339e044b67c524614eff7eb3a03afc359f74bfa20d8e78067e",
+  "sha256:1fd22acb49da0b291eb528550b8d638408b837a309540eff9e6c42f44c367957",
+  "sha256:533930dd454ec07392982a48ca2a64cf01c17471322c31373bd1825911e4a67a",
+  "sha256:1dfc04f9fff6e8f528e29c58926bead33f735e26f1a12880d004a4431d41f7d6",
 ] as const;
 
 const expectedFixtureLogicalKeys: GatewayLogicalSubschemaKey[] = [
@@ -67,6 +83,14 @@ const expectedFixtureLogicalKeys: GatewayLogicalSubschemaKey[] = [
   { kind: "event", eventType: "conversation.command.result" },
   { kind: "event", eventType: "conversation.approval.requested" },
   { kind: "event", eventType: "conversation.approval.resolved" },
+  { kind: "event", eventType: "conversation.message.delta" },
+  { kind: "event", eventType: "conversation.message.completed" },
+  { kind: "event", eventType: "conversation.title.updated" },
+  { kind: "event", eventType: "device.requested" },
+  { kind: "event", eventType: "device.request.cancel.requested" },
+  { kind: "event", eventType: "pairing.grant.changed" },
+  { kind: "event", eventType: "session.revoked" },
+  { kind: "event", eventType: "attachment.acknowledged" },
 ];
 
 const loadSharedFixtureRegistry = (
@@ -208,10 +232,10 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
 
   it("loads the single shared fixture registry and its seven canonical schemas", () => {
     expect(registry.formatVersion).toBe("1.0.0");
-    expect(registry.catalogEntries).toHaveLength(7);
+    expect(registry.catalogEntries).toHaveLength(15);
     expect(registry.bindingSets).toHaveLength(1);
     expect(bindingSet?.id).toBe(bindingSetId);
-    expect(bindings).toHaveLength(7);
+    expect(bindings).toHaveLength(15);
 
     expect(fixtureCatalogEntries.map((entry) => entry.fixtureId)).toEqual([
       "event.gateway-notice.v1",
@@ -221,6 +245,14 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       "event.conversation-command-result.v1",
       "event.conversation-approval-requested.v1",
       "event.conversation-approval-resolved.v1",
+      "event.message-delta.v1",
+      "event.message-completed.v1",
+      "event.title-updated.v1",
+      "event.device-requested.v1",
+      "event.device-request-cancel-requested.v1",
+      "event.pairing-grant-changed.v1",
+      "event.session-revoked.v1",
+      "event.attachment-acknowledged.v1",
     ]);
     expect(bindings.map((binding) => binding.key)).toEqual([
       { kind: "event", eventType: "gateway.notice" },
@@ -236,6 +268,14 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       { kind: "event", eventType: "conversation.command.result" },
       { kind: "event", eventType: "conversation.approval.requested" },
       { kind: "event", eventType: "conversation.approval.resolved" },
+      { kind: "event", eventType: "conversation.message.delta" },
+      { kind: "event", eventType: "conversation.message.completed" },
+      { kind: "event", eventType: "conversation.title.updated" },
+      { kind: "event", eventType: "device.requested" },
+      { kind: "event", eventType: "device.request.cancel.requested" },
+      { kind: "event", eventType: "pairing.grant.changed" },
+      { kind: "event", eventType: "session.revoked" },
+      { kind: "event", eventType: "attachment.acknowledged" },
     ]);
 
     for (const entry of fixtureCatalogEntries) {

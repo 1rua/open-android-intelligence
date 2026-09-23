@@ -8,8 +8,8 @@
     "formatVersion": { "const": "1.0.0" },
     "catalogEntries": {
       "type": "array",
-      "minItems": 7,
-      "maxItems": 7,
+      "minItems": 15,
+      "maxItems": 15,
       "items": { "$ref": "#/$defs/catalogEntry" }
     },
     "bindingSets": {
@@ -168,8 +168,8 @@
         "id": { "const": "gateway-core-fixtures-v1" },
         "bindings": {
           "type": "array",
-          "minItems": 7,
-          "maxItems": 7,
+          "minItems": 15,
+          "maxItems": 15,
           "items": { "$ref": "#/$defs/binding" }
         }
       }

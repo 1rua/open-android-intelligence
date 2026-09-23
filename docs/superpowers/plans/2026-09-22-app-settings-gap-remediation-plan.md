@@ -363,14 +363,14 @@ A0 在 Wave 0 内产出下列裁决。每项裁决的产出物固定为：**契�
 - **语义约束**：`pairing.grant.changed` 只做**通知**；裁决仍走请求路径，携带旧 revision 的请求照旧返回 `GRANT_STALE`（`:782`、`:826`）。**事件不得扩大 Android 本地权威记录**。
 - **副本漂移防护**：`event.schema.json` 的 def 与 fixtures 的 catalog schema 是两份文本，摘要只锁后者 ⇒ 需在 `golden-vectors.test.ts` 加一条深比较断言。
 
-#### D8 修订记录（2026-09-23，最终复审后）
+#### D8 修订记录（2026-09-23，最终复审后 → Wave 2 已落地）
 
-最终独立复审确认：两个新事件的生产者已完成且 payload 逐字符合 Wave 0 规范副本，但 D8 列为 Wave 1 义务的四项只完成了生产者一项。裁决如下：
+最终独立复审确认：两个新事件的生产者已完成且 payload 逐字符合 Wave 0 规范副本，但 D8 列为 Wave 1 义务的四项当时只完成了生产者一项。**Wave 2（2026-09-23）已全部补齐**：
 
-- **fixtures catalog/binding 7→9 与全部计数常量同步**：**二次推迟到 Wave 2**，并入「为其余 8 个裸奔事件 type 补子 Schema」的整体批次一次性完成。理由：`EventStore.append` 的失败关闭一旦开启，`device.requested`、`device.request.cancel.requested`、`conversation.title.updated`、`attachment.acknowledged` 等无 binding 的 type 会立即全部被拒；只扩 2 个 binding 而不开校验，等于把「契约要求」与「运行时执行」继续错开。一次把 12 个 type 的子 Schema、fixtures 与失败关闭校验作为同一事务落地，才是 D8「先补子 Schema 再开校验」的本意。
-- **`EventStore.append` 失败关闭校验**：同上推迟，与 fixtures 同批。
-- **补偿性约束（本波已生效）**：两个新事件的 payload 已由最终复审逐字核对符合 `event.schema.json` 规范副本，且双宿主各自的单元测试以 `ContractRegistry.validate` / `validateGatewayValue` 锁定形状；宿主管理面 `grant.bump` 与 `session.revoked` 的审计仍照写，审计链（Wave 1 A2 交付的哈希链）承载防篡改。
-- **客户端消费方**：Android 侧当前不消费这两个事件（会话失效仍由下一次请求的 401 驱动），符合 D8「事件仅为通知」语义；消费方随 Wave 2 的失败关闭校验一并接线，避免留下无消费方的半实现。
+- **fixtures catalog/binding 7→15**：为其余 8 个裸奔事件 type（`conversation.message.delta/completed`、`conversation.title.updated`、`device.requested`、`device.request.cancel.requested`、`pairing.grant.changed`、`session.revoked`、`attachment.acknowledged`）各补一条 catalog + binding，摘要按 JCS 自算；6 处计数常量同步（meta-schema 两处、`golden-vectors.test.ts` 四处、`dispatched-schema-validator.test.ts` 三数组、Android `EXPECTED_ENTRY_COUNT`、OpenClaw `EXPECTED_CATALOG_ENTRY_COUNT`、Hermes `dispatched_fixture_ids`、conformance 文档）。
+- **`event.schema.json` 规范副本补齐 6 个**（`conversationMessagePayload`（delta/completed 共用）、`messageDeltaPayload`、`messageCompletedPayload`、`titleUpdatedPayload`、`deviceRequestedEventPayload`、`deviceRequestCancelRequestedPayload`、`attachmentAcknowledgedPayload`）。
+- **`EventStore.append` 失败关闭已接线（双宿主）**：Hermes 经 `ContractRegistry.validate_dispatched`，OpenClaw 经 `createGatewayDispatchedValidator`（清单直接 import 共享 fixtures JSON）；未绑定/不合规一律 `SCHEMA_INVALID`。取证发现并修正的真实分歧：①双宿主 `gateway.notice` 实际产出与既有 fixture 不符（测试夹具用 `{"notice":…}`/`{summary}`，契约与生产向量要求 `{noticeCode}`）——修正的是测试夹具；②管理面默认 correlationId 含冒号（`grant.bump:{id}`/`pairing.revoke:{id}`/`admin:…`/`attachment:{id}`）违反 opaqueId 模式——统一改用 `.` 分隔；③`device.requested` 两端字段宽窄不一（Hermes 全量镜像 vs OpenClaw 3 字段），fixture 的 required 取交集 `{requestId,risk,grantRevision}`，其余为可选闭合字段，`parameters` 在子集内以空 schema 表达「按能力开放」。
+- **客户端消费方**：Android 侧对 `session.revoked` 的消费仍未接线（会话失效仍由下一次请求的 401 驱动），符合 D8「事件仅为通知」语义；事件流经 `conversation-data` 的解码器闭集限制，接入属于独立契约/客户端变更，不随本批。
 
 #### 裁决连带约束
 
@@ -531,7 +531,7 @@ cd integrations/hermes && python3 -m pytest -q
 
 ### 5.4 契约摘要三方同步门禁（最高危门禁）
 
-核心摘要现值：`sha256:6654ec19d57eeb53591a7bd58f7e6f67f6487d14071db833dd276970e306659b`（Wave 0 冻结窗口后；旧值 `sha256:665df516…cacb`）。
+核心摘要现值：`sha256:1ec008a64fdf81deda57a71f1d1d355c6575bf8e7d8f5a3508779a4c871e17cf`（Wave 2 事件子 Schema 补齐后；此前为 `sha256:6654ec19…659b`，Wave 0 前为 `sha256:665df516…cacb`）。
 
 **任何 `gateway-contract/schemas/*.schema.json` 的改动都会改变该摘要**，未同步升级的一端会被 `PROTOCOL_INCOMPATIBLE`(406) 拒绝、在重新构建前**完全无法登录**。
 

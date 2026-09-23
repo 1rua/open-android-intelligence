@@ -175,7 +175,7 @@ const loadSharedFixtureRegistry = (
   if (!validate(candidate)) throw new Error("INVALID_FIXTURE_REGISTRY");
   if (
     candidate.formatVersion !== "1.0.0" ||
-    candidate.catalogEntries.length !== 7 ||
+    candidate.catalogEntries.length !== 15 ||
     candidate.bindingSets.length !== 1 ||
     candidate.bindingSets[0]?.id !== bindingSetId
   ) {
@@ -183,7 +183,7 @@ const loadSharedFixtureRegistry = (
   }
 
   const bindings = candidate.bindingSets[0]!.bindings;
-  if (bindings.length !== 7) throw new Error("INVALID_FIXTURE_REGISTRY");
+  if (bindings.length !== 15) throw new Error("INVALID_FIXTURE_REGISTRY");
 
   for (const entry of candidate.catalogEntries) {
     const canonical = canonicalize(entry.schema);
@@ -398,11 +398,11 @@ describe("Gateway Protocol v2 golden vector contract", () => {
 
   it("requires the one shared dispatched fixture registry before constructing its validator", () => {
     expect(registry.formatVersion).toBe("1.0.0");
-    expect(registry.catalogEntries).toHaveLength(7);
+    expect(registry.catalogEntries).toHaveLength(15);
     expect(registry.bindingSets).toHaveLength(1);
     expect(registry.bindingSets[0]?.id).toBe(bindingSetId);
-    expect(sharedFixture.entries).toHaveLength(7);
-    expect(sharedFixture.bindings).toHaveLength(7);
+    expect(sharedFixture.entries).toHaveLength(15);
+    expect(sharedFixture.bindings).toHaveLength(15);
     expect(Object.isFrozen(sharedDispatchedValidator)).toBe(true);
 
     const validateFixtureRegistry = addFormats(new Ajv2020({ strict: true })).compile(fixtureMetaSchema);
