@@ -1,3 +1,6 @@
+import java.security.KeyStore
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -33,12 +36,44 @@ android {
         buildConfig = true
         compose = true
     }
+    signingConfigs {
+        create("release") {
+            storeFile = providers.environmentVariable("OAI_RELEASE_KEYSTORE").orNull?.let(::file)
+            storePassword = providers.environmentVariable("OAI_RELEASE_STORE_PASSWORD").orNull
+            keyAlias = providers.environmentVariable("OAI_RELEASE_KEY_ALIAS").orNull
+            keyPassword = providers.environmentVariable("OAI_RELEASE_KEY_PASSWORD").orNull
+        }
+    }
+    buildTypes.getByName("release") {
+        isDebuggable = false
+        signingConfig = signingConfigs.getByName("release")
+    }
     testOptions.unitTests.apply {
         isIncludeAndroidResources = true
         all {
             val testHome = rootProject.layout.projectDirectory.dir(".gradle/robolectric-home").asFile
             it.systemProperty("user.home", testHome.absolutePath)
             it.doFirst { testHome.mkdirs() }
+        }
+    }
+}
+
+// Fail before producing any release APK/AAB, including direct Gradle builds.
+tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseBundle")) }.configureEach {
+    doFirst {
+        val signing = android.signingConfigs.getByName("release")
+        val keystoreFile = signing.storeFile
+        check(keystoreFile?.isFile == true && !signing.storePassword.isNullOrBlank() &&
+            !signing.keyAlias.isNullOrBlank() && !signing.keyPassword.isNullOrBlank()) {
+            "Release signing requires the four OAI_RELEASE_* environment variables; see apps/android/README.md"
+        }
+        val keystore = KeyStore.getInstance(KeyStore.getDefaultType())
+        keystoreFile!!.inputStream().use { keystore.load(it, signing.storePassword!!.toCharArray()) }
+        val certificate = checkNotNull(keystore.getCertificate(signing.keyAlias)) { "Release signing certificate missing" }
+        val digest = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+            .joinToString("") { "%02X".format(it) }
+        check(digest != "37D9445FAB11D827B032B84B0739ACB2C33AA8ACE1F319ED20A4CC612624CE33") {
+            "The public debug identity must never sign a release build"
         }
     }
 }

@@ -51,6 +51,8 @@ class _Config:
 
 def _services(tmp_path, verify_request):
     core = create_gateway_core(storage_root=tmp_path)
+    from test_support import seed_event_session
+    seed_event_session(core)
     exposure = create_gateway_exposure(
         "host-route", core=core, host_version="1.0.0",
         host_api=TEST_HOST_API, verify_request=verify_request,
@@ -428,4 +430,3 @@ def test_command_catalog_includes_all_standard_commands(tmp_path):
     assert commands["/clear"]["acceptsArguments"] is False
     assert commands["/help"]["acceptsArguments"] is True
     assert commands["/new"]["acceptsArguments"] is False
-

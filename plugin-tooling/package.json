@@ -9,7 +9,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build:references": "tsx src/build-references.ts"
+    "build:references": "tsx src/build-references.ts",
+    "build:fixtures": "tsx src/build-references.ts --fixtures"
   },
   "dependencies": {
     "@noble/curves": "2.2.0",
@@ -20,6 +21,6 @@
   "devDependencies": {
     "@types/node": "24.13.3",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }

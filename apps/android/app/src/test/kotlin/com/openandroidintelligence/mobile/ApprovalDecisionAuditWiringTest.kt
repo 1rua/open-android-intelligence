@@ -126,14 +126,14 @@ class ApprovalDecisionAuditWiringTest {
         const val APPROVAL_ID = "appr_1"
 
         val NEGOTIATE_BODY = """
-            {"protocol":"2.1","data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
+            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":["agent-command-catalog-v1","agent-approval-cards-v1"]},
             "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
         """.trimIndent()
 
         val PASSWORD_BODY = """

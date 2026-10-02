@@ -78,9 +78,9 @@ class GatewaySessionManager(
     fun unpair(profileId: String) {
         val profile = requireProfile(profileId)
         val credential = credentialStore.loadRefresh(profileId)
+        transport.unpair(profile, credential)
         credentialStore.clearRefresh(profileId)
         credentialStore.clearDeviceKey(profileId)
-        transport.unpair(profile, credential)
     }
 
     private fun requireProfile(profileId: String): AccountProfile =

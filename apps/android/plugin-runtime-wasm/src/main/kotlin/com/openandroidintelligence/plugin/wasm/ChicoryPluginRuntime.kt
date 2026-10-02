@@ -9,6 +9,8 @@ import com.dylibso.chicory.runtime.HostFunction
 import com.dylibso.chicory.runtime.ImportValues
 import com.dylibso.chicory.runtime.Instance
 import com.dylibso.chicory.runtime.MStack
+import com.dylibso.chicory.wasm.WasmModule
+import com.dylibso.chicory.wasm.types.FunctionImport
 import com.dylibso.chicory.wasm.Parser
 import com.dylibso.chicory.wasm.types.ExternalType
 import com.dylibso.chicory.wasm.types.FunctionType
@@ -138,15 +140,14 @@ class ChicoryPluginRuntime(
         budget: ResourceBudget,
         input: ByteArray,
     ): ByteArray {
-        val module = load(moduleSource(identity))
         // The request ceiling can only be tightened by the caller, never
         // widened past what this runtime was constructed with.
         val limits = InvocationBudget.from(budget).clampTo(this.budget)
-        return module.invoke(input, limits)
+        return load(moduleSource(identity)).invoke(input, limits)
     }
 
     /**
-     * Validates and instantiates a module.
+     * Validates a module without allocating its linear memory.
      *
      * Import screening happens before instantiation and against the parsed
      * import section, so a module that names WASI or an unknown kernel call
@@ -156,20 +157,10 @@ class ChicoryPluginRuntime(
      * refusal carries the runtime's own code.
      */
     fun load(wasm: ByteArray): LoadedPlugin {
-        val guard = DeadlineGuard(
-            deadlineMillis = clock() + LOAD_DEADLINE_MILLIS,
-            clock = clock,
-            interval = deadlineCheckInterval,
-        )
-        currentGuard = guard
-
         val module = try {
             Parser.parse(wasm)
         } catch (cause: Exception) {
             throw PluginRejected("PARSE:${cause.message}")
-        } finally {
-            // No module may execute outside an explicit invocation.
-            guard.expire()
         }
 
         val importSection = module.importSection()
@@ -186,6 +177,9 @@ class ChicoryPluginRuntime(
             }
             if (entry.importType() != ExternalType.FUNCTION) {
                 throw PluginRejected("IMPORT_TYPE_NOT_ALLOWED:$importName")
+            }
+            if (module.typeSection().getType((entry as FunctionImport).typeIndex()) != KernelAbi.FUNCTIONS[importName]) {
+                throw PluginRejected("IMPORT_SIGNATURE_NOT_ALLOWED:$importName")
             }
         }
 
@@ -214,70 +208,49 @@ class ChicoryPluginRuntime(
             if (declared.shared()) throw PluginRejected("SHARED_MEMORY")
         }
 
-        guard.reset(clock() + LOAD_DEADLINE_MILLIS)
-        val instance = try {
-            Instance.builder(module)
-                .withImportValues(kernelImports())
-                .withMemoryLimits(MemoryLimits(1, maximumPages))
-                // `_start` is not run: instantiation must not be a place where
-                // unrelated work happens before any budget is attached.
-                .withStart(false)
-                .withUnsafeExecutionListener(guard)
-                .build()
-        } catch (cause: BudgetExceeded) {
-            throw cause
-        } catch (cause: Exception) {
-            throw PluginRejected("LINK:${cause.message}")
-        } finally {
-            guard.expire()
-        }
-
-        // Chicory signals a missing export by throwing, not by returning null,
-        // so an absent entrypoint must be caught and translated rather than
-        // allowed to escape as an interpreter error.
-        val entrypoint = runCatching { instance.export(KernelAbi.ENTRYPOINT) }.getOrNull()
-            ?: throw PluginRejected("MISSING_ENTRYPOINT:${KernelAbi.ENTRYPOINT}")
-
-        return LoadedPlugin(instance = instance, entrypoint = entrypoint, guard = guard)
+        val exports = module.exportSection()
+        if ((0 until exports.exportCount()).none {
+            val export = exports.getExport(it)
+            export.name() == KernelAbi.ENTRYPOINT && export.exportType() == ExternalType.FUNCTION
+        }) throw PluginRejected("MISSING_ENTRYPOINT:${KernelAbi.ENTRYPOINT}")
+        return LoadedPlugin(module, declared?.initialPages() ?: 0)
     }
 
-    /** A validated, instantiated module ready to be invoked. */
+    /** Each invocation owns its instance, memory limits and deadline guard. */
     inner class LoadedPlugin internal constructor(
-        private val instance: Instance,
-        private val entrypoint: ExportFunction,
-        private val guard: DeadlineGuard,
+        private val module: WasmModule,
+        private val initialPages: Int,
     ) {
         fun invoke(request: ByteArray, limits: InvocationBudget): ByteArray {
-            val memory = instance.memory() ?: throw PluginRejected("NO_MEMORY")
-            if (request.size > KernelAbi.EXCHANGE_SIZE_BYTES) {
-                throw BudgetExceeded("REQUEST")
-            }
-
-            currentMemory = memory
-            guard.reset(clock() + limits.maxInvocationMillis)
+            val effective = limits.clampTo(this@ChicoryPluginRuntime.budget)
+            val maximumPages = pagesFor(effective.maxMemoryBytes)
+            if (initialPages > maximumPages) throw PluginRejected("MEMORY_LIMIT")
+            if (request.size > KernelAbi.EXCHANGE_SIZE_BYTES) throw BudgetExceeded("REQUEST")
+            val guard = DeadlineGuard(clock() + effective.maxInvocationMillis, clock, deadlineCheckInterval)
             return try {
+                val instance = try {
+                    Instance.builder(module)
+                        .withImportValues(kernelImports(guard))
+                        .withMemoryLimits(MemoryLimits(1, maximumPages))
+                        .withStart(false)
+                        .withUnsafeExecutionListener(guard)
+                        .build()
+                } catch (cause: BudgetExceeded) { throw cause }
+                  catch (cause: Exception) { throw PluginRejected("LINK:${cause.message}") }
+                val memory = instance.memory() ?: throw PluginRejected("NO_MEMORY")
                 memory.write(KernelAbi.EXCHANGE_OFFSET, request)
-                val packed = entrypoint.apply(
-                    KernelAbi.EXCHANGE_OFFSET.toLong(),
-                    request.size.toLong(),
+                val packed = instance.export(KernelAbi.ENTRYPOINT).apply(
+                    KernelAbi.EXCHANGE_OFFSET.toLong(), request.size.toLong(),
                 ).firstOrNull() ?: throw PluginRejected("NO_RESULT")
-
                 val pointer = KernelAbi.resultPointer(packed)
                 val length = KernelAbi.resultLength(packed)
                 if (length < 0 || pointer < 0) throw PluginRejected("BAD_RESULT")
-                if (length > limits.maxOutputBytes) throw BudgetExceeded("OUTPUT")
-
+                if (length > effective.maxOutputBytes) throw BudgetExceeded("OUTPUT")
                 guard.check()
                 memory.readBytes(pointer, length)
-            } finally {
-                guard.expire()
-                currentMemory = null
-            }
+            } finally { guard.expire() }
         }
     }
-
-    private var currentMemory: com.dylibso.chicory.runtime.Memory? = null
-    private var currentGuard: DeadlineGuard? = null
 
     /**
      * The host functions a plugin may call.
@@ -285,14 +258,14 @@ class ChicoryPluginRuntime(
      * Each one is a deliberate, narrow grant. None of them can name a file, an
      * address or a process.
      */
-    private fun kernelImports(): ImportValues = ImportValues.builder()
+    private fun kernelImports(guard: DeadlineGuard): ImportValues = ImportValues.builder()
         .addFunction(
             HostFunction(
                 KernelAbi.MODULE,
                 KernelAbi.LOG,
                 KernelAbi.FUNCTIONS.getValue(KernelAbi.LOG),
             ) { instance, args ->
-                currentGuard?.check()
+                guard.check()
                 val level = args[0].toInt()
                 val pointer = args[1].toInt()
                 val length = args[2].toInt()
@@ -309,7 +282,7 @@ class ChicoryPluginRuntime(
                 KernelAbi.RANDOM_FILL,
                 KernelAbi.FUNCTIONS.getValue(KernelAbi.RANDOM_FILL),
             ) { instance, args ->
-                currentGuard?.check()
+                guard.check()
                 val pointer = args[0].toInt()
                 val length = args[1].toInt()
                 if (length < 0 || length > MAX_RANDOM_BYTES) throw BudgetExceeded("RANDOM")
@@ -325,14 +298,15 @@ class ChicoryPluginRuntime(
                 KernelAbi.NOW_MILLIS,
                 KernelAbi.FUNCTIONS.getValue(KernelAbi.NOW_MILLIS),
             ) { _, _ ->
-                currentGuard?.check()
+                guard.check()
                 longArrayOf(clock())
             },
         )
         .build()
 
     private fun pagesFor(maxMemoryBytes: Long): Int {
-        val pages = (maxMemoryBytes + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES
+        val pages = maxMemoryBytes / PAGE_SIZE_BYTES
+        if (pages < 1) throw PluginRejected("MEMORY_LIMIT")
         return pages.coerceIn(1L, MAX_PAGES.toLong()).toInt()
     }
 

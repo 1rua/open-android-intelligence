@@ -38,15 +38,7 @@ class AlpVerifier(
         }
     }
 
-    fun verify(bytes: ByteArray): VerifiedPluginPackage {
-        val archive = java.nio.file.Files.createTempFile("alp-", ".zip").toFile()
-        archive.writeBytes(bytes)
-        return try {
-            verifyArchive(archive)
-        } finally {
-            archive.delete()
-        }
-    }
+    fun verify(bytes: ByteArray): VerifiedPluginPackage = verify(bytes.inputStream())
 
     /**
      * The platform ZIP reader rejects some malformed containers itself. Its
@@ -73,12 +65,20 @@ class AlpVerifier(
 
     private fun spoolToTempFile(input: InputStream): File {
         val file = java.nio.file.Files.createTempFile("alp-", ".zip").toFile()
+        try {
         file.outputStream().use { out ->
             val buffer = ByteArray(64 * 1024)
             var total = 0L
             while (true) {
-                val read = input.read(buffer)
+                if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("ALP_READ_CANCELLED")
+                var read = input.read(buffer)
                 if (read < 0) break
+                if (read == 0) {
+                    val single = input.read()
+                    if (single < 0) break
+                    buffer[0] = single.toByte()
+                    read = 1
+                }
                 total += read
                 // Bounds the compressed stream itself: a hostile archive cannot
                 // make us buffer unboundedly before size checks even run.
@@ -88,6 +88,10 @@ class AlpVerifier(
                 }
                 out.write(buffer, 0, read)
             }
+        }
+        } catch (cause: Exception) {
+            file.delete()
+            throw cause
         }
         return file
     }
@@ -156,13 +160,19 @@ class AlpVerifier(
 
         verifySignature(manifestBytes, filesBytes, signatureText, authorKey)
 
-        val staged = stagingRoot ?: createTempStaging()
-        staged.mkdirs()
-        for ((path, content) in entries) {
-            if (path in RESERVED_ENTRIES) continue
-            val target = File(staged, path)
-            target.parentFile?.mkdirs()
-            target.writeBytes(content)
+        val staged = if (stagingRoot == null) createTempStaging() else {
+            stagingRoot.mkdirs()
+            java.nio.file.Files.createTempDirectory(stagingRoot.toPath(), "verified-").toFile()
+        }
+        try {
+            for ((path, content) in entries) {
+                val target = File(staged, path)
+                target.parentFile?.mkdirs()
+                target.writeBytes(content)
+            }
+        } catch (cause: Exception) {
+            staged.deleteRecursively()
+            throw cause
         }
 
         return VerifiedPluginPackage(
@@ -176,6 +186,7 @@ class AlpVerifier(
             capabilities = CapabilityDeclaration(manifest.providedCapabilities, manifest.kernelPrimitives),
             security = SecurityDeclaration(manifest.surface),
             stagedDirectory = staged,
+            verifiedFiles = entries.mapValues { (_, bytes) -> VerifiedFile(bytes.size.toLong(), sha256Hex(bytes)) },
         )
     }
 

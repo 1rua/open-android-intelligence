@@ -75,7 +75,8 @@ def test_admin_panel_and_local_cli_share_confirmed_write_semantics(tmp_path):
     ui_create = panel.create_account({"accountId": "account-a", "password": "pw", "localConfirmation": True})
     cli_create = create.action_handler("account-a", {"confirmLocal": True, "password": "pw"})
     assert ui_create["ok"] is True
-    assert cli_create == ui_create
+    assert cli_create["error"]["code"] == "ACCOUNT_EXISTS"
+    assert cli_create == panel.create_account({"accountId": "account-a", "password": "pw", "localConfirmation": True})
     assert status.action_handler() == panel.status()
     assert run_admin_command(["account", "status"], service=service) == panel.status()
 

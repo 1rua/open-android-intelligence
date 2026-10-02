@@ -4,6 +4,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.channels.FileChannel
+import java.security.MessageDigest
 
 /**
  * A fully installed plugin, reachable only through the live pointer.
@@ -34,8 +37,11 @@ data class InstalledPlugin(
 class PluginInstaller(
     private val installRoot: File,
     private val updatePolicy: PluginUpdatePolicy = PluginUpdatePolicy(),
+    private val commitHook: (String) -> Unit = {},
 ) {
-    fun install(
+    init { recoverInterruptedCommits() }
+
+    @Synchronized fun install(
         verified: VerifiedPluginPackage,
         current: InstalledPlugin?,
         approvalGranted: Boolean = false,
@@ -64,10 +70,15 @@ class PluginInstaller(
 
         val destination = File(installRoot, sanitize(identity.pluginId))
         val staged = createStagingDirectory(identity)
-        copyInto(verified.stagedDirectory, staged)
-        fsyncDirectory(staged)
-
-        val committed = commitAtomically(destination, staged, identity.pluginId)
+        val committed = try {
+            copyVerified(verified, staged)
+            fsyncDirectory(staged)
+            commitAtomically(destination, staged, identity.pluginId)
+        } catch (cause: Exception) {
+            staged.deleteRecursively()
+            recoverInterruptedCommits()
+            throw cause
+        }
         // `current` keeps pointing at `.previous/<id>` after the commit, which is
         // exactly where the old version was just moved to.
         val retainedPrevious = current?.let {
@@ -92,17 +103,23 @@ class PluginInstaller(
      * Rollback is only ever to a previously verified version; a package that
      * was never installed cannot be rolled back to.
      */
-    fun rollback(current: InstalledPlugin): InstalledPlugin {
+    @Synchronized fun rollback(current: InstalledPlugin): InstalledPlugin {
         val previous = current.previous
             ?: throw PackageRejected("NO_PREVIOUS_VERSION")
         val retained = retainedDirectory(current.identity.pluginId)
         if (!retained.exists()) throw PackageRejected("PREVIOUS_VERSION_MISSING")
 
         val destination = File(installRoot, sanitize(current.identity.pluginId))
-        val handover = File(installRoot, "${sanitize(current.identity.pluginId)}.handover")
-        deleteRecursively(destination)
-        Files.move(retained.toPath(), handover.toPath(), StandardCopyOption.ATOMIC_MOVE)
-        Files.move(handover.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+        val staged = createStagingDirectory(previous.identity)
+        try {
+            copyInto(retained, staged)
+            fsyncDirectory(staged)
+            commitAtomically(destination, staged, current.identity.pluginId)
+        } catch (cause: Exception) {
+            staged.deleteRecursively()
+            recoverInterruptedCommits()
+            throw cause
+        }
         return previous.copy(directory = destination, previous = null)
     }
 
@@ -121,10 +138,62 @@ class PluginInstaller(
             val retained = retainedDirectory(pluginId)
             deleteRecursively(retained)
             Files.move(destination.toPath(), retained.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            fsyncDirectory(retained.parentFile!!)
+            fsyncDirectory(installRoot)
+            commitHook("previous-retained")
         }
         // The pointer swap: the only step that makes the new version visible.
         Files.move(staged.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+        fsyncDirectory(staged.parentFile!!)
+        fsyncDirectory(installRoot)
+        commitHook("candidate-visible")
         return destination
+    }
+
+    /** A crash between the two directory renames always restores a complete verified version. */
+    fun recoverInterruptedCommits() {
+        val previous = File(installRoot, ".previous")
+        for (retained in previous.listFiles().orEmpty()) {
+            if (!retained.isDirectory) continue
+            val live = File(installRoot, retained.name)
+            if (!live.exists()) {
+                Files.move(retained.toPath(), live.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                fsyncDirectory(previous)
+                fsyncDirectory(installRoot)
+            }
+        }
+    }
+
+    private fun copyVerified(verified: VerifiedPluginPackage, target: File) {
+        val source = verified.stagedDirectory
+        val actual = source.walkTopDown().filter { it != source }.onEach {
+            if (Files.isSymbolicLink(it.toPath())) throw PackageRejected("STAGING_SYMLINK")
+        }.filter { it.isFile }.map { it.relativeTo(source).invariantSeparatorsPath }.toSet()
+        if (actual != verified.verifiedFiles.keys) throw PackageRejected("STAGING_FILE_SET_CHANGED")
+        for ((path, expected) in verified.verifiedFiles) {
+            val file = File(source, path)
+            val destination = File(target, path)
+            destination.parentFile!!.mkdirs()
+            val digest = MessageDigest.getInstance("SHA-256")
+            var size = 0L
+            file.inputStream().use { input ->
+                destination.outputStream().use { output ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        size += count
+                        if (size > expected.size) throw PackageRejected("STAGING_SIZE_CHANGED:$path")
+                        digest.update(buffer, 0, count)
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+            val hash = digest.digest().joinToString("") { "%02x".format(it) }
+            if (size != expected.size || hash != expected.sha256) throw PackageRejected("STAGING_DIGEST_CHANGED:$path")
+            syncFile(destination)
+        }
+        target.walkBottomUp().filter { it.isDirectory }.forEach(::fsyncDirectory)
     }
 
     private fun copyInto(source: File, target: File) {
@@ -150,10 +219,7 @@ class PluginInstaller(
     }
 
     private fun fsyncDirectory(directory: File) {
-        FileOutputStream(File(directory, ".fsync"), true).use { stream ->
-            stream.fd.sync()
-        }
-        File(directory, ".fsync").delete()
+        DirectoryDurability.sync(directory)
     }
 
     private fun createStagingDirectory(identity: PluginIdentity): File {

@@ -70,6 +70,7 @@ data class GatewayEndpoint(
                 val url = URL(candidate)
                 val scheme = url.protocol.lowercase()
                 require(scheme == HTTP || scheme == HTTPS) { "unsupported gateway scheme: $scheme" }
+                require(!candidate.substringAfter("://").contains("://")) { "ambiguous gateway scheme" }
                 require(url.host.isNotBlank()) { "gateway address must contain a host" }
                 GatewayEndpoint(baseUrl = candidate, scheme = scheme, host = url.host)
             }.getOrNull()

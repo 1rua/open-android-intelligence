@@ -184,9 +184,9 @@ def test_consumes_the_shared_schema_and_vector_registry(tmp_path):
     assert discovered - contract_files == {"conversation-ui.json"}
     # The shared Protocol 2.1 fixture set adds two independent message-status
     # cases to the prior vectors, including the failed/errorCode distinction.
-    assert len(cases) == 64
-    assert len({case["id"] for case in cases}) == 64
-    assert len(results) == 64
+    assert len(cases) == 66
+    assert len({case["id"] for case in cases}) == 66
+    assert len(results) == 66
     assert {result["status"] for result in results} == {"pass"}
     assert {result["implementation"] for result in results} == {"hermes-python"}
 
@@ -620,8 +620,8 @@ def test_gateway_core_handle_routes_attachment_and_device_claim_result(tmp_path)
         "idempotencyKey": "req_claim_handle",
         "now": "2026-08-27T00:01:00.000Z",
     })
-    assert claim["data"]["receipt"]["grantRevision"] == 7
-    receipt = claim["data"]["receipt"]
+    assert claim["data"]["grantRevision"] == 7
+    receipt = claim["data"]
     stale = core.handle({
         "context": _context(requestId="req_result_stale", correlationId="cor_result_stale", pairingGeneration=4, grantRevision=8),
         "method": "POST",
@@ -827,7 +827,7 @@ def test_idempotency_expiry_and_replay_binding_fail_closed(tmp_path):
         "method": "POST", "target": "/open-android-intelligence/v2/device-requests/device_req_replay/claim",
         "idempotencyKey": "req_claim_replay", "now": "2026-08-27T00:01:00.000Z",
     })
-    assert claim["data"]["receipt"]
+    assert claim["data"]
     stale_replay = core.handle({
         "context": _context(requestId="req_claim_replay", correlationId="cor_claim_replay", pairingGeneration=5, grantRevision=7),
         "method": "POST", "target": "/open-android-intelligence/v2/device-requests/device_req_replay/claim",

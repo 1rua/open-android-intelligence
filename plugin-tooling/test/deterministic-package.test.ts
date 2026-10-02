@@ -142,7 +142,7 @@ describe("buildPackage determinism", () => {
       const bb = new TextEncoder().encode(b);
       const len = Math.min(ab.length, bb.length);
       for (let i = 0; i < len; i++) {
-        if (ab[i] !== bb[i]) return ab[i] - bb[i];
+        if (ab[i] !== bb[i]) return ab[i]! - bb[i]!;
       }
       return ab.length - bb.length;
     });

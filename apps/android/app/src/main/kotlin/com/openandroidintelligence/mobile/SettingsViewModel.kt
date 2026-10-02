@@ -271,5 +271,7 @@ class SettingsViewModel(
     fun logout(revokeRefresh: Boolean) {
         runtime?.logout(revokeRefresh = revokeRefresh)
     }
-}
 
+    fun unpair() { runtime?.unpair() }
+    fun chooseAnotherAccount() { runtime?.chooseAnotherAccount() }
+}

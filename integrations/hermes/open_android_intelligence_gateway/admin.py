@@ -149,7 +149,7 @@ class AdminService:
         try:
             account = self.core.open_gateway_account(account_id)
             try:
-                account.credentials.set_password(password)
+                account.credentials.create_password(password)
             finally:
                 account.close()
             return _success(operation, False, {"accountId": account_id})
@@ -157,6 +157,34 @@ class AdminService:
             return _failure(operation, False, exc.code)
         except ValueError:
             return _failure(operation, False, "SCHEMA_INVALID")
+        except Exception:
+            return _failure(operation, False, "INTERNAL_ERROR")
+
+    def reset_password(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
+        operation = "account.reset-password"
+        if self.read_only:
+            return _failure(operation, True, "HOST_INCOMPATIBLE")
+        if _input(input, "local_confirmation", "localConfirmation", False) is not True:
+            return _failure(operation, False, "LOCAL_CONFIRMATION_REQUIRED")
+        account_id = _input(input, "account_id", "accountId")
+        if not isinstance(account_id, str) or WIRE_ID_PATTERN.fullmatch(account_id) is None:
+            return _failure(operation, False, "SCHEMA_INVALID")
+        password = _input(input, "password", "password")
+        if not isinstance(password, str) or not password:
+            return _failure(operation, False, "PASSWORD_REQUIRED")
+        if not self.core.account_exists(account_id):
+            return _failure(operation, False, "ACCOUNT_NOT_FOUND")
+        try:
+            account = self.core.open_gateway_account(account_id)
+            try:
+                if not account.credentials.has_password():
+                    return _failure(operation, False, "ACCOUNT_NOT_FOUND")
+                account.credentials.set_password(password)
+            finally:
+                account.close()
+            return _success(operation, False, {"accountId": account_id})
+        except GatewayError as exc:
+            return _failure(operation, False, exc.code)
         except Exception:
             return _failure(operation, False, "INTERNAL_ERROR")
 
@@ -274,6 +302,8 @@ class AdminService:
             return self.status()
         if name == "account.create":
             return self.create_account(_input(command, "input", "input", {}))
+        if name == "account.reset-password":
+            return self.reset_password(_input(command, "input", "input", {}))
         if name == "account.delete":
             return self.delete_account(command)
         if name == "pairing.revoke":
@@ -322,6 +352,11 @@ class AdminPanel:
         return self.service.create_account(input)
 
     createAccount = create_account
+
+    def reset_password(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
+        return self.service.reset_password(input)
+
+    resetPassword = reset_password
 
     def delete_account(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
         return self.service.delete_account(input)
@@ -380,11 +415,11 @@ def _parse_flags(tokens: list[str]) -> dict[str, Any] | None:
 
 
 def _parse_command(args: list[str], service: AdminService) -> Mapping[str, Any] | dict[str, Any]:
-    if args[:2] == ["account", "create"] and len(args) >= 3:
+    if args[:2] in (["account", "create"], ["account", "reset-password"]) and len(args) >= 3:
         flags = _parse_flags(list(args[3:]))
         if flags is None:
             return _invalid_arguments(service)
-        return {"command": "account.create", "input": {
+        return {"command": "account." + args[1], "input": {
             "accountId": args[2], "password": flags["password"],
             "localConfirmation": flags["confirmed"],
         }}
@@ -441,6 +476,15 @@ def create_admin_cli_registrar(service: AdminService) -> Callable[..., Any]:
         ).action(lambda account_id, options=None: service.execute({
             "command": "account.create",
             "input": {
+                "accountId": str(account_id),
+                "password": options.get("password") if isinstance(options, Mapping) else None,
+                "localConfirmation": bool(isinstance(options, Mapping) and options.get("confirmLocal") is True),
+            },
+        }))
+        account.command("reset-password <accountId>").description("Reset password and revoke all refresh credentials; retain pairing keys").option(
+            "--confirm-local", "Confirm this write on the local host"
+        ).option("--password <password>", "New account password").action(lambda account_id, options=None: service.execute({
+            "command": "account.reset-password", "input": {
                 "accountId": str(account_id),
                 "password": options.get("password") if isinstance(options, Mapping) else None,
                 "localConfirmation": bool(isinstance(options, Mapping) and options.get("confirmLocal") is True),

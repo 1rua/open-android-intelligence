@@ -13,7 +13,7 @@ import re
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Set
 
@@ -787,6 +787,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         self._event_sink = self._deliver_committed_event
         # Background work this adapter started and must not lose to collection.
         self._background_tasks: Set[asyncio.Task] = set()
+        self._password_tasks = 0
+        self._maintenance_task = None
         self._media_cache_dir = Path(getattr(self.services.core, "storage_root", Path.home() / ".hermes"))
         self._media_cache_dir = self._media_cache_dir / "inbound-media"
         self._processing_media_files: Dict[tuple[str, str], list[Path]] = {}
@@ -866,6 +868,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             await self._site.start()
 
             self._mark_connected()
+            self._maintenance_task = asyncio.create_task(self._maintain_accounts())
+            self._track_background_task(self._maintenance_task, "retention-maintenance")
             logger.info(
                 "[open_android] Gateway Protocol v2 server listening on %s:%d (default account: %s)",
                 self._host, self._port, self._account_id,
@@ -883,6 +887,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the Gateway Protocol v2 server."""
         self._running = False
+        if self._maintenance_task is not None:
+            self._maintenance_task.cancel()
+            await asyncio.gather(self._maintenance_task, return_exceptions=True)
+            self._maintenance_task = None
         unregister_sink = getattr(getattr(self.services, "core", None), "unregister_event_sink", None)
         if callable(unregister_sink):
             unregister_sink(self._event_sink)
@@ -897,6 +905,37 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         self._site = None
         self._mark_disconnected()
         logger.info("[open_android] Gateway Protocol v2 server stopped")
+
+    async def _maintain_accounts(self) -> None:
+        next_index = 0
+        while self._running:
+            await asyncio.sleep(60)
+            account_ids = self._recovery_account_ids()
+            if not account_ids:
+                continue
+            # One bounded batch per tick; the cursor also visits idle accounts.
+            for offset in range(min(10, len(account_ids))):
+                account_id = account_ids[(next_index + offset) % len(account_ids)]
+                account = None
+                try:
+                    account = self.services.core.open_gateway_account(account_id)
+                    now = datetime.now(timezone.utc)
+                    account.events.purge_expired(now)
+                    account.device_requests.recover_expired(now)
+                    account.device_requests.purge_terminal_payloads(now)
+                    account.audit.purge(now - timedelta(days=30))
+                    for table in ("idempotency_ledger", "uncertain_outcomes"):
+                        account.store.database.execute(
+                            f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE expires_at <= ? LIMIT 1000)",
+                            (now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),),
+                        )
+                    account.store.database.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception as exc:
+                    logger.warning("[open_android] Retention maintenance failed account=%s code=%s", account_id, type(exc).__name__)
+                finally:
+                    if account is not None:
+                        account.close()
+            next_index = (next_index + 10) % len(account_ids)
 
     async def send(
         self,
@@ -1423,7 +1462,19 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         if handler_found is None:
             return web.json_response({"errorCode": "NOT_FOUND"}, status=404)
 
-        result = handler_found._handle_raw(raw_req)
+        if method == "POST" and path == "/open-android-intelligence/v2/sessions/password":
+            # The Core admits at most two password jobs without an unbounded
+            # queue. SQLite connections are created and closed on this worker.
+            if self._password_tasks >= 2:
+                limited = handler_found.failure_response(None, None, "RATE_LIMITED")
+                return web.json_response(limited["body"], status=429)
+            self._password_tasks += 1
+            try:
+                result = await asyncio.to_thread(handler_found._handle_raw, raw_req)
+            finally:
+                self._password_tasks -= 1
+        else:
+            result = handler_found._handle_raw(raw_req)
         status = result.get("statusCode", 200)
         headers = result.get("headers", {})
         body = result.get("body", {})
@@ -1895,6 +1946,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             if status != 200:
                 return web.json_response(handshake.get("body", {}), status=status)
             account_id = str(handshake["accountId"])
+            authorized = lambda: self.services.core.is_event_session_active(handshake["verifiedContext"])
+            if not authorized():
+                failure = route.failure_response(None, None, "SESSION_REVOKED")
+                return web.json_response(failure["body"], status=failure["statusCode"])
             registered_account_id = account_id
             self._event_subscribers.setdefault(account_id, set()).add(queue)
 
@@ -1908,6 +1963,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 },
             )
             await response.prepare(request)
+            if not authorized():
+                return response
             await response.write(SSE_HEARTBEAT)
 
             seen_event_ids: dict[str, None] = {}
@@ -1920,20 +1977,24 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 seen_event_ids[unquote(c)] = None
 
             for event in handshake.get("events", []):
+                if not authorized():
+                    return response
                 eid = event.get("eventId") or event.get("id")
                 if eid:
                     seen_event_ids[str(eid)] = None
                 await response.write(_sse_frame(event))
 
             while self._running:
+                if not authorized():
+                    break
                 try:
-                    frame = await asyncio.wait_for(queue.get(), timeout=SSE_HEARTBEAT_SECONDS)
+                    frame = await asyncio.wait_for(queue.get(), timeout=min(1.0, SSE_HEARTBEAT_SECONDS))
                 except asyncio.TimeoutError:
-                    if not self._running:
+                    if not self._running or not authorized():
                         break
                     await response.write(SSE_HEARTBEAT)
                     continue
-                if not self._running:
+                if not self._running or not authorized():
                     break
                 eid = _extract_event_id_from_item(frame)
                 if eid is not None and eid in seen_event_ids:
@@ -1986,6 +2047,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             if status != 200:
                 return web.json_response(handshake.get("body", {}), status=status)
             account_id = str(handshake["accountId"])
+            authorized = lambda: self.services.core.is_event_session_active(handshake["verifiedContext"])
+            if not authorized():
+                failure = route.failure_response(None, None, "SESSION_REVOKED")
+                return web.json_response(failure["body"], status=failure["statusCode"])
             registered_account_id = account_id
             self._event_subscribers.setdefault(account_id, set()).add(queue)
 
@@ -2002,6 +2067,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 seen_event_ids[unquote(c)] = None
 
             for event in handshake.get("events", []):
+                if not authorized():
+                    await ws.close(code=1008)
+                    return ws
                 eid = event.get("eventId") or event.get("id")
                 if eid:
                     seen_event_ids[str(eid)] = None
@@ -2009,6 +2077,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
             async def send_loop() -> None:
                 while self._running and not ws.closed:
+                    if not authorized():
+                        await ws.close(code=1008)
+                        break
                     try:
                         item = await asyncio.wait_for(queue.get(), timeout=1.0)
                     except asyncio.TimeoutError:
@@ -2025,7 +2096,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                     except Exception:
                         break
 
-                    if not self._running:
+                    if not self._running or not authorized():
                         if not ws.closed:
                             try:
                                 await ws.close()

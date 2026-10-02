@@ -5,6 +5,7 @@ import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
+import com.openandroidintelligence.gateway.schema.JsonValue
 import com.openandroidintelligence.gateway.schema.SchemaContractHash
 
 /** generation-cancel-v1 在对话面能力闭集里的名字。 */
@@ -135,23 +136,58 @@ class NegotiationClient(
             throw IllegalStateException("NEGOTIATION_FAILED:invalid-envelope")
         }
 
-        val result = JsonFields.obj(JsonFields.field(body, "data")) ?: body
-        val protocol = JsonFields.obj(JsonFields.field(result, "protocol"))
-        val features = JsonFields.obj(JsonFields.field(result, "features"))
-        val identity = JsonFields.obj(JsonFields.field(result, "gatewayIdentity"))
+        val result = closedObject(JsonFields.field(body, "data"), setOf("protocol", "features", "limits", "gatewayIdentity"))
+        val protocol = closedObject(JsonFields.field(result, "protocol"), setOf("major", "minor"))
+        check(JsonFields.int(protocol, "major") == PROTOCOL_MAJOR && JsonFields.int(protocol, "minor") == PROTOCOL_MINOR) {
+            "PROTOCOL_INCOMPATIBLE:version"
+        }
+        val features = closedObject(JsonFields.field(result, "features"), setOf("auth", "messages", "attachments", "events", "deviceRequests"), setOf("conversationUi"))
+        val auth = stringArray(JsonFields.field(features, "auth"))
+        check(auth.isNotEmpty() && auth.all { it in AUTH_FEATURES }) { "NEGOTIATION_FAILED:auth" }
+        for ((key, expected) in mapOf("messages" to "chat-v1", "attachments" to "staged-sha256-v1", "events" to "sse-cursor-v1", "deviceRequests" to "risk-queue-v1")) {
+            check(JsonFields.string(features, key) == expected) { "NEGOTIATION_FAILED:feature-$key" }
+        }
+        val conversationUi = JsonFields.field(features, "conversationUi")?.let(::stringArray) ?: emptyList()
+        check(conversationUi.all { it in CONVERSATION_UI_FEATURES }) { "NEGOTIATION_FAILED:unrequested-feature" }
+        val limits = closedObject(JsonFields.field(result, "limits"), setOf("attachmentTtlSeconds", "eventRetentionSeconds", "maxClockSkewSeconds"), setOf("maxBatchMembers", "maxBatchBytes"))
+        for ((key, _) in limits.fields) {
+            val value = JsonFields.long(limits, key)
+            check(value != null && value >= if (key == "maxClockSkewSeconds") 0 else 1) { "NEGOTIATION_FAILED:limit-$key" }
+        }
+        val identity = closedObject(JsonFields.field(result, "gatewayIdentity"), setOf("deploymentId", "tlsSpkiSha256"))
+        val pin = JsonFields.string(identity, "tlsSpkiSha256")
+        check(Regex("[A-Za-z0-9._~-]{1,128}").matches(JsonFields.string(identity, "deploymentId").orEmpty())
+            && (JsonFields.field(identity, "tlsSpkiSha256") === JsonValue.JNull ||
+                (pin != null && com.openandroidintelligence.gateway.http.SpkiPinning.isProtocolPin(pin)))) { "NEGOTIATION_FAILED:identity" }
 
         return NegotiationResult(
-            negotiationId = JsonFields.string(result, "negotiationId") ?: negotiationId,
-            protocolMajor = JsonFields.int(protocol, "major") ?: PROTOCOL_MAJOR,
-            protocolMinor = JsonFields.int(protocol, "minor") ?: PROTOCOL_MINOR,
+            negotiationId = negotiationId,
+            protocolMajor = PROTOCOL_MAJOR,
+            protocolMinor = PROTOCOL_MINOR,
             deploymentId = JsonFields.string(identity, "deploymentId"),
             tlsSpkiSha256 = JsonFields.string(identity, "tlsSpkiSha256"),
             messages = JsonFields.string(features, "messages"),
             attachments = JsonFields.string(features, "attachments"),
             events = JsonFields.string(features, "events"),
             deviceRequests = JsonFields.string(features, "deviceRequests"),
-            conversationUi = JsonFields.strings(features, "conversationUi"),
+            conversationUi = conversationUi,
         )
+    }
+
+    private fun closedObject(value: JsonValue?, required: Set<String>, optional: Set<String> = emptySet()): JsonValue.JObject {
+        val obj = JsonFields.obj(value) ?: error("NEGOTIATION_FAILED:missing-object")
+        val keys = obj.fields.map { it.first }
+        check(keys.toSet().size == keys.size && keys.containsAll(required) && keys.all { it in required || it in optional }) {
+            "NEGOTIATION_FAILED:schema"
+        }
+        return obj
+    }
+
+    private fun stringArray(value: JsonValue?): List<String> {
+        val array = value as? JsonValue.JArray ?: error("NEGOTIATION_FAILED:feature-array")
+        val strings = array.items.map { (it as? JsonValue.JString)?.value ?: error("NEGOTIATION_FAILED:feature-array") }
+        check(strings.distinct().size == strings.size) { "NEGOTIATION_FAILED:duplicate-feature" }
+        return strings
     }
 
     private companion object {

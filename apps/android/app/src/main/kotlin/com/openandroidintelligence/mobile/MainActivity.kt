@@ -109,6 +109,9 @@ class MainActivity : ComponentActivity() {
             ) {
                 val phase by runtime.phase.collectAsState()
                 val controller by runtime.controller.collectAsState()
+                val savedProfiles by runtime.savedProfiles.collectAsState()
+                val isManagingProfiles by runtime.isManagingProfiles.collectAsState()
+                val operationNotice by runtime.operationNotice.collectAsState()
                 var showSettingsSheet by remember { mutableStateOf(false) }
                 var showAssistant by remember { mutableStateOf(false) }
 
@@ -311,6 +314,12 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onOpenSettings = { showSettingsSheet = true },
                                 onRetry = { runtime.resetFailure() },
+                                savedProfiles = savedProfiles,
+                                onSelectProfile = runtime::selectSavedAccount,
+                                onRemoveProfile = runtime::removeLocalAccount,
+                                onReconfirmIdentity = runtime::reconfirmGatewayIdentity,
+                                isManagingProfiles = isManagingProfiles,
+                                operationNotice = operationNotice,
                             )
                             return@AnimatedContent
                         }

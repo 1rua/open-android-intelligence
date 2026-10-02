@@ -46,11 +46,14 @@ data class SecurityDeclaration(
     val surface: SecuritySurface,
 )
 
-data class VerifiedPluginPackage(
+data class VerifiedFile(val size: Long, val sha256: String)
+
+class VerifiedPluginPackage internal constructor(
     val identity: PluginIdentity,
     val version: SemVer,
     val runtime: RuntimeDeclaration,
     val capabilities: CapabilityDeclaration,
     val security: SecurityDeclaration,
     val stagedDirectory: java.io.File,
+    internal val verifiedFiles: Map<String, VerifiedFile>,
 )

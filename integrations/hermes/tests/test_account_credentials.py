@@ -17,7 +17,7 @@ HOST_API = HostApiCompatibility("1.0.0", "1.0.0", "0123456789abcdef0123456789abc
 INSTALLATION = {
     "installationId": "install_credentials",
     "displayName": "Credentials phone",
-    "devicePublicKey": "device-public-key",
+    "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 }
 
 
@@ -42,6 +42,70 @@ def test_password_digest_round_trip_and_failures():
     assert verify_password("correct horse battery staple", "scrypt$0$0$0$AAAA$AAAA") is False
     with pytest.raises(ValueError):
         hash_password("")
+
+
+def test_duplicate_create_does_not_replace_password_or_refresh(tmp_path):
+    from test_support import make_secret_store
+    core = create_gateway_core(storage_root=tmp_path, secret_store=make_secret_store())
+    core.credential_verifier = AccountPasswordVerifier(core)
+    service = _service(core)
+    assert _create(service)["ok"] is True
+    account = core.open_gateway_account("acct_alice")
+    try:
+        session = account.sessions.create_password_session("acct_alice", "correct horse", INSTALLATION, "cor_duplicate")
+        before = tuple(account.store.database.execute("SELECT * FROM account_credentials").fetchone())
+        result = _create(service, password="replacement")
+        assert result["error"]["code"] == "ACCOUNT_EXISTS"
+        assert tuple(account.store.database.execute("SELECT * FROM account_credentials").fetchone()) == before
+        assert account.credentials.verify_password("correct horse")
+        assert not account.credentials.verify_password("replacement")
+        assert account.sessions.refresh(session["refreshCredential"], INSTALLATION["installationId"], session["deviceId"], "cor_still_valid")["accessToken"]
+    finally:
+        account.close()
+
+
+def test_password_reset_revokes_all_refresh_families_and_preserves_keys(tmp_path):
+    from test_support import make_secret_store
+    core = create_gateway_core(storage_root=tmp_path, secret_store=make_secret_store())
+    core.credential_verifier = AccountPasswordVerifier(core)
+    service = _service(core)
+    assert _create(service)["ok"] is True
+    account = core.open_gateway_account("acct_alice")
+    try:
+        installations = [dict(INSTALLATION, installationId="install_one"), dict(INSTALLATION, installationId="install_two")]
+        sessions = [account.sessions.create_password_session("acct_alice", "correct horse", item, "cor_reset") for item in installations]
+        keys = [tuple(row) for row in account.store.database.execute("SELECT * FROM device_keys ORDER BY device_id")]
+        result = service.execute({"command": "account.reset-password", "input": {
+            "accountId": "acct_alice", "password": "new password", "localConfirmation": True,
+        }})
+        assert result["ok"] is True
+        assert [tuple(row) for row in account.store.database.execute("SELECT * FROM device_keys ORDER BY device_id")] == keys
+        assert not account.credentials.verify_password("correct horse")
+        for session, installation in zip(sessions, installations):
+            with pytest.raises(GatewayError):
+                account.sessions.refresh(session["refreshCredential"], installation["installationId"], session["deviceId"], "cor_reset_refused")
+        assert account.sessions.create_password_session("acct_alice", "new password", installations[0], "cor_new_password")["accessToken"]
+    finally:
+        account.close()
+
+
+def test_password_reset_rollback_keeps_password_and_refresh(tmp_path):
+    from test_support import make_secret_store
+    core = create_gateway_core(storage_root=tmp_path, secret_store=make_secret_store())
+    core.credential_verifier = AccountPasswordVerifier(core)
+    service = _service(core)
+    assert _create(service)["ok"] is True
+    account = core.open_gateway_account("acct_alice")
+    try:
+        session = account.sessions.create_password_session("acct_alice", "correct horse", INSTALLATION, "cor_reset")
+        account.store.database.execute("CREATE TRIGGER fail_reset BEFORE UPDATE ON refresh_credentials BEGIN SELECT RAISE(ABORT, 'injected reset failure'); END;")
+        account.store.database.commit()
+        result = service.reset_password({"accountId": "acct_alice", "password": "new password", "localConfirmation": True})
+        assert result["ok"] is False
+        assert account.credentials.verify_password("correct horse")
+        assert account.sessions.active_refresh_credential_count(session["deviceId"]) == 1
+    finally:
+        account.close()
 
 
 def test_account_write_requires_a_password_and_local_confirmation(tmp_path):

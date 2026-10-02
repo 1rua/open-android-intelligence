@@ -1,5 +1,8 @@
 package com.openandroidintelligence.kernel
 
+import com.openandroidintelligence.plugin.pkg.PluginIdentity
+import java.util.Base64
+
 /** Raised when a plugin reaches for storage that is not its own. */
 class StorageDenied(code: String) : IllegalArgumentException("STORAGE_DENIED:$code")
 
@@ -17,6 +20,8 @@ interface PrivateStoreBackend {
     fun delete(partition: String, key: String)
     fun usedBytes(partition: String): Long
     fun keys(partition: String): Set<String>
+    /** Must physically delete every partition in this encoded account scope, or throw. */
+    fun deleteAccountPartitions(scopePrefix: String)
 }
 
 /** An in-process backend. The shipped host replaces it with an encrypted store. */
@@ -41,8 +46,8 @@ class InMemoryPrivateStoreBackend : PrivateStoreBackend {
         data[partition]?.keys?.toSet() ?: emptySet()
 
     /** Wipes one plugin's data for one account, used when that account is removed. */
-    fun clear(partitionPrefix: String) {
-        data.keys.filter { it.startsWith(partitionPrefix) }.forEach { data.remove(it) }
+    override fun deleteAccountPartitions(scopePrefix: String) {
+        data.keys.filter { it.startsWith(scopePrefix) }.forEach { data.remove(it) }
     }
 }
 
@@ -58,6 +63,8 @@ class StorageHandle internal constructor(
     val pluginId: String,
     val accountId: String,
     val installId: String,
+    internal val owner: Any,
+    internal val generation: Long,
 )
 
 class PluginPrivateStore(
@@ -66,20 +73,29 @@ class PluginPrivateStore(
     private val maxBytesPerPartition: Long,
     private val maxKeyLength: Int = 256,
 ) {
-    fun open(pluginId: String, accountId: String): StorageHandle =
-        StorageHandle(
-            partition = partitionOf(pluginId, accountId),
-            pluginId = pluginId,
+    private val owner = Any()
+    private val generations = HashMap<String, Long>()
+    private val deletionPending = HashSet<String>()
+
+    @Synchronized
+    fun open(identity: PluginIdentity, accountId: String): StorageHandle {
+        if (accountId in deletionPending) throw StorageDenied("ACCOUNT_DELETION_PENDING")
+        return StorageHandle(
+            partition = accountPrefix(accountId) + encode(identity.pluginId) + "|" + encode(identity.authorKeyFingerprint),
+            pluginId = identity.pluginId,
             accountId = accountId,
             installId = installId,
+            owner = owner,
+            generation = generations[accountId] ?: 0L,
         )
+    }
 
-    fun read(handle: StorageHandle, accountId: String, key: String): ByteArray? {
+    @Synchronized fun read(handle: StorageHandle, accountId: String, key: String): ByteArray? {
         checkScope(handle, accountId, key)
         return backend.read(handle.partition, key)
     }
 
-    fun write(handle: StorageHandle, accountId: String, key: String, value: ByteArray) {
+    @Synchronized fun write(handle: StorageHandle, accountId: String, key: String, value: ByteArray) {
         checkScope(handle, accountId, key)
         val current = backend.usedBytes(handle.partition)
         val existing = backend.read(handle.partition, key)?.size?.toLong() ?: 0L
@@ -89,29 +105,35 @@ class PluginPrivateStore(
         backend.write(handle.partition, key, value)
     }
 
-    fun delete(handle: StorageHandle, accountId: String, key: String) {
+    @Synchronized fun delete(handle: StorageHandle, accountId: String, key: String) {
         checkScope(handle, accountId, key)
         backend.delete(handle.partition, key)
     }
 
-    fun keys(handle: StorageHandle, accountId: String): Set<String> {
-        if (handle.accountId != accountId) throw StorageDenied("ACCOUNT_MISMATCH")
-        if (handle.installId != installId) throw StorageDenied("INSTALL_MISMATCH")
+    @Synchronized fun keys(handle: StorageHandle, accountId: String): Set<String> {
+        checkHandle(handle, accountId)
         return backend.keys(handle.partition)
     }
 
     /** Removes every partition belonging to one account, on account removal. */
-    fun eraseAccount(accountId: String) {
-        val backendAsMemory = backend as? InMemoryPrivateStoreBackend
-        backendAsMemory?.clear("$installId|$accountId|")
+    @Synchronized fun eraseAccount(accountId: String) {
+        generations[accountId] = (generations[accountId] ?: 0L) + 1L
+        deletionPending.add(accountId)
+        backend.deleteAccountPartitions(accountPrefix(accountId))
+        deletionPending.remove(accountId)
     }
 
     private fun checkScope(handle: StorageHandle, accountId: String, key: String) {
-        if (handle.accountId != accountId) throw StorageDenied("ACCOUNT_MISMATCH")
-        if (handle.installId != installId) throw StorageDenied("INSTALL_MISMATCH")
+        checkHandle(handle, accountId)
         if (key.isEmpty() || key.length > maxKeyLength) throw StorageDenied("BAD_KEY")
     }
 
-    private fun partitionOf(pluginId: String, accountId: String): String =
-        "$installId|$accountId|$pluginId"
+    private fun checkHandle(handle: StorageHandle, accountId: String) {
+        if (handle.accountId != accountId) throw StorageDenied("ACCOUNT_MISMATCH")
+        if (handle.installId != installId) throw StorageDenied("INSTALL_MISMATCH")
+        if (handle.owner !== owner || handle.generation != (generations[accountId] ?: 0L) || accountId in deletionPending) throw StorageDenied("STALE_HANDLE")
+    }
+
+    private fun accountPrefix(accountId: String) = encode(installId) + "|" + encode(accountId) + "|"
+    private fun encode(value: String) = Base64.getUrlEncoder().withoutPadding().encodeToString(value.toByteArray(Charsets.UTF_8))
 }

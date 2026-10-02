@@ -24,7 +24,7 @@ object SpkiPinning {
 
     private val PROTOCOL_PIN = Regex("^sha256:[0-9a-f]{64}$")
 
-    fun isProtocolPin(value: String): Boolean = PROTOCOL_PIN.matches(value)
+    fun isProtocolPin(value: String): Boolean = PROTOCOL_PIN.matches(value) && value != "sha256:" + "0".repeat(64)
 
     fun verify(connection: HttpsURLConnection, pins: Set<String>) {
         verify(connection.serverCertificates, pins)

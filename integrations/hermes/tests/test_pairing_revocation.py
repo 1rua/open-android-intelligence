@@ -44,7 +44,7 @@ TEST_HOST_API = HostApiCompatibility(
 )
 ACCOUNT_ID = "alice"
 INSTALLATION_ID = "install_pairing_revocation"
-DEVICE_PUBLIC_KEY = "device-public-key"
+DEVICE_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 LOGOUT = "/open-android-intelligence/v2/sessions/current"
 
 
@@ -102,7 +102,7 @@ def _login(routes, negotiation_id, installation_id=INSTALLATION_ID):
         },
     })
     assert response["statusCode"] == 200
-    return response["body"]
+    return response["body"]["data"]
 
 
 def _refresh(routes, negotiation_id, session):

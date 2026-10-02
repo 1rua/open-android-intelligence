@@ -161,14 +161,14 @@ class GenerationCancelGateTest {
             if (withCancel) add("generation-cancel-v1")
         }.joinToString(",", "[", "]") { "\"$it\"" }
         return """
-            {"protocol":"2.1","data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
+            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":$conversationUi},
             "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
         """.trimIndent()
     }
 

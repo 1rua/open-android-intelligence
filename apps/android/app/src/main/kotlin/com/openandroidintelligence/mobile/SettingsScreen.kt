@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
@@ -192,7 +193,8 @@ fun SettingsScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
                 onRefreshSession = viewModel::refreshSession,
-                onLogout = { viewModel.logout(revokeRefresh = false) },
+                onLogout = { viewModel.logout(revokeRefresh = true) },
+                onSwitchAccount = { viewModel.chooseAnotherAccount(); onBack() },
                 onRequestUnpair = { showUnpairDialog = true },
             )
         }
@@ -315,7 +317,7 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.logout(revokeRefresh = true)
+                        viewModel.unpair()
                         showUnpairDialog = false
                         onBack()
                     },
@@ -801,6 +803,7 @@ private fun GatewaySubScreen(
     onBack: () -> Unit,
     onRefreshSession: () -> Unit,
     onLogout: () -> Unit,
+    onSwitchAccount: () -> Unit,
     onRequestUnpair: () -> Unit,
 ) {
     Scaffold(
@@ -875,7 +878,7 @@ private fun GatewaySubScreen(
                         SettingsListItem(
                             headline = "设备请求执行通路",
                             supporting = if (uiState.deviceRequestChannel != null) {
-                                "契约 §10 通路已就绪（${uiState.deviceRequestChannel}），等待网关下发请求后执行"
+                                if (uiState.pluginRuntimesWired) "Gateway 支持 ${uiState.deviceRequestChannel}" else "Gateway 支持设备请求协议；本机插件执行链尚未接通"
                             } else {
                                 "Gateway 未提供设备请求"
                             },
@@ -906,6 +909,13 @@ private fun GatewaySubScreen(
                             supporting = "清除本地活动会话（保留配对密钥）",
                             icon = Icons.Default.Lock,
                             onClick = onLogout,
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SettingsListItem(
+                            headline = "切换账号",
+                            supporting = "保留当前账号资料和配对，从已保存账号重新选择",
+                            icon = Icons.Default.Person,
+                            onClick = onSwitchAccount,
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsListItem(
@@ -1230,4 +1240,3 @@ private fun themeLabel(option: ThemePreference): String = when (option) {
     ThemePreference.LIGHT -> "浅色"
     ThemePreference.DARK -> "深色"
 }
-

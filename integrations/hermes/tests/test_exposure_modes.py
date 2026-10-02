@@ -271,12 +271,12 @@ def _password_login(routes, negotiation_id, installation_id):
             "installation": {
                 "installationId": installation_id,
                 "displayName": "Alice test device",
-                "devicePublicKey": "device-public-key",
+                "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             },
         },
     })
     assert response["statusCode"] == 200
-    return response["body"]
+    return response["body"]["data"]
 
 
 def test_unknown_password_login_never_creates_an_account(tmp_path):
@@ -292,7 +292,7 @@ def test_unknown_password_login_never_creates_an_account(tmp_path):
             "installation": {
                 "installationId": "install-unknown",
                 "displayName": "Unknown",
-                "devicePublicKey": "device-public-key",
+                "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             },
         },
     })
@@ -315,7 +315,7 @@ def test_raw_unknown_password_login_never_creates_an_account(tmp_path):
                 "installation": {
                     "installationId": "install-unknown-raw",
                     "displayName": "Unknown",
-                    "devicePublicKey": "device-public-key",
+                    "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                 },
             }).encode("utf-8"),
             url="/open-android-intelligence/v2/sessions/password",
@@ -345,7 +345,7 @@ def test_current_head_session_routes_register_device_keys_and_rotate_or_revoke(t
             "SELECT public_key FROM device_keys WHERE device_id = ?",
             (session["deviceId"],),
         ).fetchone()
-        assert device_key[0] == "device-public-key"
+        assert device_key[0] == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     finally:
         account.close()
 
@@ -408,6 +408,6 @@ def test_current_head_session_routes_register_device_keys_and_rotate_or_revoke(t
         assert account.store.database.execute(
             "SELECT public_key FROM device_keys WHERE device_id = ?",
             (session_2["deviceId"],),
-        ).fetchone()[0] == "device-public-key"
+        ).fetchone()[0] == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     finally:
         account.close()

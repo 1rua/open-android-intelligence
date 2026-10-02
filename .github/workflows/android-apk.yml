@@ -1,7 +1,7 @@
 name: Android APK
 
 # 编译出可直接安装的 APK，并上传为可下载的构建产物（Artifact）。
-# 推送 v* 标签时，额外创建 Release 并附上 APK，便于直接下载。
+# v* 标签只发布使用私有发行身份签名、不可调试的 FullRelease。
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   apk:
-    name: Build Full Debug APK
+    name: Build APK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -29,7 +29,8 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK
+      - name: Build preview APK
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         working-directory: apps/android
         env:
           LC_ALL: C.UTF-8
@@ -40,6 +41,7 @@ jobs:
       # 固定 debug 签名的一致性是"能否直接覆盖安装"的前提：
       # 签名一旦与 app/keystore 里的固定密钥不符，安装时会报 INSTALL_FAILED_UPDATE_INCOMPATIBLE。
       - name: Verify Debug Signing Identity
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         env:
           LC_ALL: C.UTF-8
         run: |
@@ -47,12 +49,29 @@ jobs:
             apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
 
       - name: Upload APK artifact
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
         with:
           name: app-full-debug
           path: apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Build privately signed release APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: apps/android
+        env:
+          OAI_RELEASE_KEYSTORE_BASE64: ${{ secrets.OAI_RELEASE_KEYSTORE_BASE64 }}
+          OAI_RELEASE_KEYSTORE: ${{ runner.temp }}/oai-release.keystore
+          OAI_RELEASE_STORE_PASSWORD: ${{ secrets.OAI_RELEASE_STORE_PASSWORD }}
+          OAI_RELEASE_KEY_ALIAS: ${{ secrets.OAI_RELEASE_KEY_ALIAS }}
+          OAI_RELEASE_KEY_PASSWORD: ${{ secrets.OAI_RELEASE_KEY_PASSWORD }}
+        run: |
+          test -n "$OAI_RELEASE_KEYSTORE_BASE64"
+          umask 077
+          printf '%s' "$OAI_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$OAI_RELEASE_KEYSTORE"
+          trap 'rm -f "$OAI_RELEASE_KEYSTORE"' EXIT
+          ./gradlew :app:assembleFullRelease --stacktrace
 
       - name: Publish release with APK
         if: startsWith(github.ref, 'refs/tags/v')
@@ -61,5 +80,5 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --notes "构建产物：app-full-debug.apk（full flavor / debug 构建）" \
-            apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
+            --notes "构建产物：app-full-release.apk（full flavor / 私有发行签名 / 非 Debug）。旧 Debug 安装签名不同，不能直接覆盖；迁移说明见 apps/android/README.md。" \
+            apps/android/app/build/outputs/apk/full/release/app-full-release.apk

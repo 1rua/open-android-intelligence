@@ -34,28 +34,9 @@ class TailscaleTransportService : Service() {
             host: String?,
             port: Int,
         ): ParcelFileDescriptor? {
-            if (serializedToken.isNullOrBlank() || host.isNullOrBlank() || port <= 0 || port > 65535) {
-                return null
-            }
-
-            // 校验 token 前缀格式
-            if (!serializedToken.startsWith("altok:v1:")) {
-                return null
-            }
-
-            val (hostFd, companionFd) = try {
-                EncryptedByteChannel.createSocketPair()
-            } catch (e: Exception) {
-                return null
-            }
-
-            activeChannels[serializedToken] = Closeable {
-                try {
-                    companionFd.close()
-                } catch (_: Exception) {}
-            }
-
-            return hostFd
+            // No authenticated issuer exchange or tsnet pump is composed yet.
+            // Keep the transport unavailable, including direct Binder calls.
+            return null
         }
     }
 
@@ -72,4 +53,3 @@ class TailscaleTransportService : Service() {
         super.onDestroy()
     }
 }
-

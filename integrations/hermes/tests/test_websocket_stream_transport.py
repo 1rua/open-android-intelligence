@@ -53,6 +53,8 @@ class _Config:
 
 def _services(tmp_path, verify_request):
     core = create_gateway_core(storage_root=tmp_path)
+    from test_support import seed_event_session
+    seed_event_session(core)
     exposure = create_gateway_exposure(
         "host-route",
         core=core,

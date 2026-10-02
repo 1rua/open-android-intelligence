@@ -29,6 +29,7 @@ class NegotiationClientTest {
                           "data":{
                             "protocol":{"major":2,"minor":1},
                             "features":{
+                              "auth":["password","refresh"],
                               "messages":"chat-v1",
                               "attachments":"staged-sha256-v1",
                               "events":"sse-cursor-v1",
@@ -36,7 +37,7 @@ class NegotiationClientTest {
                             },
                             "limits":{
                               "attachmentTtlSeconds":3600,
-                              "eventRetentionSeconds":86400
+                              "eventRetentionSeconds":86400,"maxClockSkewSeconds":120
                             },
                             "gatewayIdentity":{
                               "deploymentId":"deploy-1",

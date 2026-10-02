@@ -54,6 +54,10 @@ class InterruptedInstallInstrumentedTest {
             capabilities = CapabilityDeclaration(emptySet(), emptySet()),
             security = SecurityDeclaration(surface),
             stagedDirectory = staged,
+            verifiedFiles = staged.walkTopDown().filter { it.isFile }.associate { file ->
+                val bytes = file.readBytes()
+                file.relativeTo(staged).invariantSeparatorsPath to VerifiedFile(bytes.size.toLong(), java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) })
+            },
         )
     }
 

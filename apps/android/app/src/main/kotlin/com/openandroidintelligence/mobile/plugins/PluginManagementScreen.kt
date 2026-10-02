@@ -26,6 +26,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -74,26 +79,33 @@ fun PluginManagementScreen(
     val resolvedStore = store ?: remember { PluginInstallStore(context.applicationContext) }
     var installed by remember { mutableStateOf(resolvedStore.listInstalled()) }
     var notice by remember { mutableStateOf<String?>(null) }
+    val installScope = rememberCoroutineScope()
+    var installing by remember { mutableStateOf(false) }
 
     val pickPackage = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val bytes = runCatching {
-            context.contentResolver.openInputStream(uri)?.use { stream -> stream.readBytes() }
-        }.getOrNull()
-        if (bytes == null) {
-            notice = "无法读取所选文件，安装未执行。"
-            return@rememberLauncherForActivityResult
-        }
-        try {
-            val view = resolvedStore.install(bytes)
-            installed = resolvedStore.listInstalled()
-            notice = "已安装 ${view.pluginId ?: view.directory.name}" +
-                (view.version?.let { " v$it" } ?: "") +
-                "（未启用：宿主未装配插件运行时）"
-        } catch (rejected: Exception) {
-            notice = installFailureNotice(rejected)
+        if (installing) return@rememberLauncherForActivityResult
+        installing = true
+        notice = "正在校验并安装…"
+        installScope.launch {
+            try {
+                val view = runInterruptible(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use(resolvedStore::install)
+                        ?: error("无法读取所选文件")
+                }
+                installed = resolvedStore.listInstalled()
+                notice = "已安装 ${view.pluginId ?: view.directory.name}" +
+                    (view.version?.let { " v$it" } ?: "") +
+                    "（未启用：宿主未装配插件运行时）"
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (rejected: Exception) {
+                notice = installFailureNotice(rejected)
+            } finally {
+                installing = false
+            }
         }
     }
 
