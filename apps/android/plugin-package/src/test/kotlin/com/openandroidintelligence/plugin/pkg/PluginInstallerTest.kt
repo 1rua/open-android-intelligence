@@ -37,6 +37,7 @@ class PluginInstallerTest {
     private fun verified(
         version: String,
         authorKey: String = author,
+        securitySurface: SecuritySurface = surface,
         stagedContent: Map<String, ByteArray> = mapOf("payload/plugin.wasm" to byteArrayOf(0, 0x61, 0x73, 0x6d)),
     ): VerifiedPluginPackage {
         val staged = createTempDir("alp-staged")
@@ -54,8 +55,12 @@ class PluginInstallerTest {
             version = SemVer.parse(version)!!,
             runtime = RuntimeDeclaration("protected-wasm", "1.0", "open_android_intelligence_plugin_main", "payload/plugin.wasm"),
             capabilities = CapabilityDeclaration(emptySet(), emptySet()),
-            security = SecurityDeclaration(surface),
+            security = SecurityDeclaration(securitySurface),
             stagedDirectory = staged,
+            verifiedFiles = staged.walkTopDown().filter { it.isFile }.associate { file ->
+                val bytes = file.readBytes()
+                file.relativeTo(staged).invariantSeparatorsPath to VerifiedFile(bytes.size.toLong(), java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) })
+            },
         )
     }
 
@@ -108,9 +113,7 @@ class PluginInstallerTest {
     @Test
     fun requiresApprovalForWidenedSecurity() {
         val first = installer.install(verified("1.0.0"), current = null)
-        val widened = verified("1.1.0").copy(
-            security = SecurityDeclaration(surface.copy(networkHosts = setOf("evil.example.org"))),
-        )
+        val widened = verified("1.1.0", securitySurface = surface.copy(networkHosts = setOf("evil.example.org")))
 
         val denied = runCatching { installer.install(widened, current = first) }.exceptionOrNull()
         assertEquals("APPROVAL_REQUIRED:NETWORK_HOST_ADDED", (denied as? PackageRejected)?.message)
@@ -144,12 +147,11 @@ class PluginInstallerTest {
         // sits in: the pointer has not moved, so the live version must survive.
         val first = installer.install(verified("1.0.0"), current = null)
 
-        val staged = createTempDir("alp-broken")
-        val unreadable = File(staged, "payload/plugin.wasm")
+        val pending = verified("1.1.0", stagedContent = emptyMap())
+        val unreadable = File(pending.stagedDirectory, "payload/plugin.wasm")
         unreadable.parentFile?.mkdirs()
         unreadable.writeBytes(byteArrayOf(0, 0x61, 0x73, 0x6d))
         unreadable.setReadable(false)
-        val pending = verified("1.1.0", stagedContent = emptyMap()).copy(stagedDirectory = staged)
 
         val failure = runCatching { installer.install(pending, current = first) }.exceptionOrNull()
 
@@ -163,4 +165,30 @@ class PluginInstallerTest {
         unreadable.setReadable(true)
         assertNotNull("staging copy was expected to fail", failure)
     }
+    @Test fun rejectsFilesAddedOrModifiedAfterVerification() {
+        val extra = verified("1.0.0")
+        File(extra.stagedDirectory, "unsigned.dex").writeBytes(byteArrayOf(1))
+        assertTrue(runCatching { installer.install(extra, null) }.exceptionOrNull() is PackageRejected)
+        val modified = verified("1.0.0")
+        File(modified.stagedDirectory, "payload/plugin.wasm").writeBytes(byteArrayOf(9))
+        assertTrue(runCatching { installer.install(modified, null) }.exceptionOrNull() is PackageRejected)
+        assertFalse(File(root, "org.example.notifications").exists())
+    }
+
+    @Test fun restoresUsableVersionWhenUpdateOrRollbackStopsBetweenRenames() {
+        val first = installer.install(verified("1.0.0"), null)
+        val interrupted = PluginInstaller(root, commitHook = { if (it == "previous-retained") error("power loss") })
+        assertTrue(runCatching { interrupted.install(verified("1.1.0"), first) }.isFailure)
+        assertTrue(File(first.directory, "payload/plugin.wasm").exists())
+        val second = installer.install(verified("1.1.0"), first)
+        assertTrue(runCatching { interrupted.rollback(second) }.isFailure)
+        assertTrue(File(second.directory, "payload/plugin.wasm").exists())
+        // Simulate process death: bypass catch recovery, then create a fresh installer.
+        val previous = File(root, ".previous/org.example.notifications")
+        previous.deleteRecursively()
+        java.nio.file.Files.move(second.directory.toPath(), previous.toPath())
+        PluginInstaller(root)
+        assertTrue(File(second.directory, "payload/plugin.wasm").exists())
+    }
+
 }

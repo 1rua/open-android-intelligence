@@ -75,6 +75,23 @@ def make_secret_store() -> HermesSecretStoreDouble:
     return HermesSecretStoreDouble()
 
 
+def seed_event_session(core, account_id="acct_alice", device_id="dev_1", session_id="sess_1"):
+    """Lifecycle rows for transport tests whose handshake verifier is a double."""
+    account = core.open_gateway_account(account_id)
+    try:
+        with account.store.transaction():
+            account.store.database.execute(
+                "INSERT OR IGNORE INTO device_keys(device_id, installation_id, public_key, pairing_generation, grant_revision, registered_at) VALUES (?, 'install_stream', ?, 1, 1, '2026-09-13T00:00:00.000Z')",
+                (device_id, "A" * 43),
+            )
+            account.store.database.execute(
+                "INSERT OR IGNORE INTO access_sessions(session_id, installation_id, device_id, status, created_at, expires_at) VALUES (?, 'install_stream', ?, 'active', '2026-09-13T00:00:00.000Z', '2999-01-01T00:00:00.000Z')",
+                (session_id, device_id),
+            )
+    finally:
+        account.close()
+
+
 class IdentityProofVerifierDouble:
     """Test-only verifier for the structured identity continuity seam."""
 

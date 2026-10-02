@@ -53,7 +53,7 @@ def test_portable_backup_excludes_active_identity_credentials_queue_and_content(
         installation={
             "installationId": "install_backup",
             "displayName": "Alice phone",
-            "devicePublicKey": "device-public-key",
+            "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         },
         correlation_id="cor_login",
     )
@@ -124,7 +124,7 @@ def test_refresh_rotation_and_reuse_revokes_all_credentials_for_the_device(tmp_p
     first = account.sessions.create_password_session(
         username="alice",
         password="password",
-        installation={"installationId": "install_1", "displayName": "Alice", "devicePublicKey": "key"},
+        installation={"installationId": "install_1", "displayName": "Alice", "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
         correlation_id="cor_login",
     )
     second = account.sessions.refresh(
@@ -151,7 +151,7 @@ def test_password_session_without_a_credential_verifier_fails_closed(tmp_path):
         account.sessions.create_password_session(
             username="alice",
             password="any-nonempty-password",
-            installation={"installationId": "install_1", "devicePublicKey": "key"},
+            installation={"installationId": "install_1", "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
             correlation_id="cor_password_unverified",
         )
 
@@ -166,7 +166,7 @@ def test_password_session_requires_verified_credentials_and_installation_binding
     with pytest.raises(GatewayError, match="AUTHENTICATION_FAILED"):
         account.sessions.create_password_session(
             username="alice", password="wrong",
-            installation={"installationId": "install_1", "devicePublicKey": "key"},
+            installation={"installationId": "install_1", "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
             correlation_id="cor_password_wrong",
         )
     with pytest.raises(GatewayError, match="AUTHENTICATION_FAILED"):
@@ -178,7 +178,7 @@ def test_password_session_requires_verified_credentials_and_installation_binding
 
     session = account.sessions.create_password_session(
         username="alice", password="password",
-        installation={"installationId": "install_1", "devicePublicKey": "key"},
+        installation={"installationId": "install_1", "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
         correlation_id="cor_password_good",
     )
     assert session["deviceId"].startswith("dev_")

@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.http
 import com.openandroidintelligence.gateway.events.EventCursorStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -23,6 +24,49 @@ import org.junit.Test
  * target *including* the cursor, and no mutating header leaks onto the GET.
  */
 class GatewayEventStreamTest {
+
+    @Test
+    fun `a downstream failure leaves the cursor and event replayable`() = runBlocking {
+        val cursors = MemoryCursorStore().apply { seed("acc_test", "cur_before") }
+        val client = GatewayHttpClient(profile(), RecordingTransport(listOf(completedFrame)), { ByteArray(64) }, cursors)
+        val failure = runCatching { client.events(autoReconnect = false).collect { error("APPLY_FAILED") } }.exceptionOrNull()
+        assertEquals("APPLY_FAILED", failure?.message)
+        assertEquals("cur_before", cursors.load("acc_test"))
+        assertEquals("evt_01", client.events(autoReconnect = false).toList().single().id)
+        assertEquals("evt_01", cursors.load("acc_test"))
+    }
+
+    @Test
+    fun `platform state is applied before its cursor is committed`() = runBlocking {
+        val cursors = MemoryCursorStore().apply { seed("acc_test", "cur_before") }
+        var applied = false
+        val client = GatewayHttpClient(profile(), RecordingTransport(listOf(completedFrame)), { ByteArray(64) }, cursors,
+            handlePlatformEvent = {
+                assertEquals("cur_before", cursors.load("acc_test"))
+                applied = true
+                true
+            })
+        assertTrue(client.events(autoReconnect = false).toList().isEmpty())
+        assertTrue(applied)
+        assertEquals("evt_01", cursors.load("acc_test"))
+    }
+
+    @Test
+    fun `expired cursor is cleared and never retried in the same subscription`() = runBlocking {
+        val cursors = MemoryCursorStore().apply { seed("acc_test", "cur_expired") }
+        var attempts = 0
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attempts++
+                throw EventCursorExpiredException()
+            }
+        }
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, cursors)
+        assertTrue(runCatching { client.events().toList() }.exceptionOrNull() is EventCursorExpiredException)
+        assertEquals(1, attempts)
+        assertEquals(null, cursors.load("acc_test"))
+    }
 
     private class RecordingTransport(private val chunks: List<ByteArray>) : GatewayByteTransport {
         var lastRequest: WireRequest? = null
@@ -240,7 +284,8 @@ class GatewayEventStreamTest {
         assertEquals(2, events.size)
         assertEquals("evt_01", events[0].id)
         assertEquals("evt_02", events[1].id)
-        assertEquals("evt_02", cursorStore.load("acc_test"))
+        // take(2) cancels during the last emission; only the completed delivery is committed.
+        assertEquals("evt_01", cursorStore.load("acc_test"))
 
         assertEquals(listOf(1000L), recordedDelays)
         assertEquals("/open-android-intelligence/v2/events?cursor=cur_0", requestedTargets[0])
@@ -497,7 +542,6 @@ class GatewayEventStreamTest {
         assertEquals("ws_evt_new", events[1].id)
         assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, sink.status.value)
         org.junit.Assert.assertNull("SSE transport must not be called when WebSocket handles replay and stays live", sseTransport.lastRequest)
-        assertEquals("ws_evt_new", cursorStore.load("acc_test"))
+        assertEquals("ws_evt_repeat", cursorStore.load("acc_test"))
     }
 }
-

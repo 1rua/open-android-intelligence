@@ -117,6 +117,8 @@ class PluginKernel(
     }
 
     fun register(registration: PluginRegistration) {
+        val previous = registrations[registration.identity.pluginId]
+        if (previous != null && previous.identity != registration.identity) throw ProviderRejected("IDENTITY_CONFLICT")
         registrations[registration.identity.pluginId] = registration
         semaphores[registration.identity.pluginId] =
             Semaphore(registration.budget.maxConcurrentInvocations.coerceAtLeast(1))
@@ -203,7 +205,7 @@ class PluginKernel(
             throw CapabilityDenied(capability)
         }
         val registration = registrations[identity.pluginId]
-        if (registration == null) {
+        if (registration == null || registration.identity != identity) {
             audit.record(
                 identity.pluginId, accountId, pairingId,
                 "invoke", AuditOutcome.DENIED, correlationId,
@@ -222,7 +224,7 @@ class PluginKernel(
             // actually selected; a plugin that merely declares the capability
             // is not thereby authorised to serve it.
             val selected = providerSelector.select(capability, pairingId)
-            if (selected.identity.pluginId != identity.pluginId) {
+            if (selected.identity != registration.identity) {
                 throw ProviderRejected("NOT_PROVIDER:$capability")
             }
 
@@ -243,8 +245,8 @@ class PluginKernel(
 
             val output = try {
                 when (registration.runtimeType) {
-                    RUNTIME_PROTECTED_WASM -> runProtected(registration, identity, input)
-                    RUNTIME_DEVELOPER_NATIVE -> runNative(registration, identity, input)
+                    RUNTIME_PROTECTED_WASM -> runProtected(registration, registration.identity, input)
+                    RUNTIME_DEVELOPER_NATIVE -> runNative(registration, registration.identity, input)
                     else -> throw ProviderRejected("UNSUPPORTED_RUNTIME:${registration.runtimeType}")
                 }
             } finally {

@@ -13,6 +13,8 @@ version: 2.1.0
 
 V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme 无关，但传输必须满足：HTTPS 是默认且唯一身份可核验的链路，客户端在协商返回 `tlsSpkiSha256` 时必须固定该身份；只有当用户显式输入 `http://` 地址时才允许明文连接，此时没有可核验的 Gateway 身份，客户端必须持续显示未加密警告，且声明了 TLS 指纹的账号不得降级到明文（见 ADR 0047）。事件流原生支持 RFC 6455 WebSocket 与 SSE (Server-Sent Events) 双通道传输，客户端优先协商 WebSocket 并支持自动降级至 SSE。
 
+部署实际 TLS 证书的 SPKI 摘要由本地配置 `OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64位小写hex>` 提供（OpenClaw 也支持 `pluginConfig.tlsSpkiSha256`）。未配置时协商字段为 `null`，仅允许显式 HTTP 客户端继续；HTTPS 客户端必须在发送密码或刷新凭据前拒绝。全零摘要无效，不得表示证书身份。此 Schema 修正会改变 core 摘要，客户端与 Gateway 必须一起升级。
+
 ## 2. 基础约定
 
 默认基路径：
@@ -275,6 +277,8 @@ TypeScript validation diagnostics 的唯一规范化算法为：每个 Ajv error
 ### 5.5 会话终止
 
 `DELETE /sessions/current` 结束当前 access session；请求 `revokeRefresh=true` 时同时实现“退出登录”。解除配对和删除账号使用独立管理端点，不能由普通会话删除隐式替代。
+
+该登出端点沿用 [已裁定的 Wave 0 D4](../superpowers/plans/2026-09-22-app-settings-gap-remediation-plan.md#d4-delete-sessionscurrent--响应照收事实标准签名裁定豁免)：保留 `Authorization`、Protocol、Account、Device、Session 绑定校验，豁免 Timestamp、Nonce、Signature、Request-Id 和 Idempotency-Key。仅终止已验证的当前会话，不删除配对；其余已认证端点（包括解除配对）仍要求第 6 节的完整签名与幂等规则。这是既有登出兼容边界，不是所有会话管理请求的豁免。
 
 ## 6. 已认证请求
 

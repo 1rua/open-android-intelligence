@@ -40,6 +40,7 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.http.TransportSecurity
+import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /**
@@ -56,11 +57,19 @@ fun GatewayLoginScreen(
     modifier: Modifier = Modifier,
     isDarkTheme: Boolean = true,
     onToggleTheme: (() -> Unit)? = null,
+    savedProfiles: List<AccountProfile> = emptyList(),
+    onSelectProfile: (String) -> Unit = {},
+    onRemoveProfile: (String) -> Unit = {},
+    onReconfirmIdentity: (String, String) -> Unit = { _, _ -> },
+    isManagingProfiles: Boolean = false,
+    operationNotice: String? = null,
 ) {
     var url by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
+    var removingProfile by remember { mutableStateOf<AccountProfile?>(null) }
+    var showIdentityConfirmation by remember { mutableStateOf(false) }
 
     val normalizedUrl = remember(url) { sanitizeGatewayUrl(url) }
     // The address decides whether this pairing can be verified at all, so the
@@ -69,7 +78,7 @@ fun GatewayLoginScreen(
     val urlIsValid = endpoint != null
     val showUrlError = url.isNotBlank() && !urlIsValid
     val plaintextAddress = endpoint?.isTls == false
-    val isBusy = phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating
+    val isBusy = phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating || isManagingProfiles
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
     Box(
@@ -341,6 +350,27 @@ fun GatewayLoginScreen(
 
             Spacer(modifier = Modifier.height(6.dp))
 
+            if (savedProfiles.isNotEmpty()) {
+                Text("已保存账号", style = MaterialTheme.typography.titleSmall)
+                savedProfiles.forEach { profile ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(enabled = !isBusy, onClick = {
+                            url = profile.gatewayBaseUrl
+                            username = profile.username
+                            password = ""
+                            onSelectProfile(profile.localProfileId)
+                        }, modifier = Modifier.weight(1f)) {
+                            Text("${profile.username} · ${profile.gatewayBaseUrl}")
+                        }
+                        TextButton(enabled = !isBusy, onClick = { removingProfile = profile }) { Text("移除") }
+                    }
+                }
+            }
+            operationNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            if (endpoint?.isTls == true && username.isNotBlank() && phase is ConnectionPhase.Failed) {
+                TextButton(enabled = !isBusy, onClick = { showIdentityConfirmation = true }) { Text("重新确认网关身份") }
+            }
+
             // ===== 4. Footer Action =====
             TextButton(onClick = onOpenSettings) {
                 Text(
@@ -350,6 +380,18 @@ fun GatewayLoginScreen(
                 )
             }
         }
+    }
+    removingProfile?.let { profile ->
+        AlertDialog(onDismissRequest = { removingProfile = null }, title = { Text("移除本机账号") },
+            text = { Text("将退出 ${profile.username} 并删除本机凭据、配对密钥、账号资料和临时文件。Gateway 账号仍会保留；移除失败时可重试。") },
+            confirmButton = { TextButton(onClick = { onRemoveProfile(profile.localProfileId); removingProfile = null }) { Text("移除") } },
+            dismissButton = { TextButton(onClick = { removingProfile = null }) { Text("取消") } })
+    }
+    if (showIdentityConfirmation) {
+        AlertDialog(onDismissRequest = { showIdentityConfirmation = false }, title = { Text("重新确认网关身份") },
+            text = { Text("请先向管理员核对部署或证书变更。继续会清除该账号的旧网关身份和自动登录凭据；下一次密码登录会重新建立 TLS 信任。") },
+            confirmButton = { TextButton(onClick = { password = ""; onReconfirmIdentity(normalizedUrl, username.trim()); showIdentityConfirmation = false }) { Text("已核对，继续") } },
+            dismissButton = { TextButton(onClick = { showIdentityConfirmation = false }) { Text("取消") } })
     }
 }
 
@@ -567,39 +609,11 @@ private fun TransportSecurityChip(security: TransportSecurity) {
     }
 }
 
-/**
- * 清理与规范化用户或自动化工具输入的网关地址。
- * 1. 消除由于重复输入或粘贴导致的多重协议前缀（例如 "https://http://10.0.2.2:8045" 规范化为 "http://10.0.2.2:8045"）；
- * 2. 对 Android 模拟器宿主地址 (10.0.2.2)、本地环回地址 (127.0.0.1 / localhost) 及常见私有局域网 IP，
- *    在未显式输入协议头时自动补全 http://，避免在非加密开发端口上误触发 TLS Pinning 导致握手失败；
- * 3. 去除首尾空白字符与末尾斜杠。
- */
+/** Default to HTTPS; preserve explicit HTTP and let the endpoint reject ambiguous schemes. */
 fun sanitizeGatewayUrl(raw: String): String {
     var trimmed = raw.trim()
-    while (trimmed.startsWith("https://http://", ignoreCase = true) ||
-        trimmed.startsWith("http://http://", ignoreCase = true) ||
-        trimmed.startsWith("https://https://", ignoreCase = true) ||
-        trimmed.startsWith("http://https://", ignoreCase = true)
-    ) {
-        trimmed = trimmed.substring(trimmed.indexOf("://") + 3)
-    }
-
     if (trimmed.isNotEmpty() && !trimmed.contains("://")) {
-        val lower = trimmed.lowercase()
-        if (lower.startsWith("10.0.2.2") ||
-            lower.startsWith("127.0.0.1") ||
-            lower.startsWith("localhost") ||
-            lower.startsWith("192.168.") ||
-            lower.startsWith("10.") ||
-            lower.startsWith("172.16.") ||
-            lower.startsWith("172.17.") ||
-            lower.startsWith("172.18.") ||
-            lower.startsWith("172.19.") ||
-            lower.startsWith("172.2") ||
-            lower.startsWith("172.3")
-        ) {
-            trimmed = "http://$trimmed"
-        }
+        trimmed = "https://$trimmed"
     }
     return trimmed.removeSuffix("/")
 }

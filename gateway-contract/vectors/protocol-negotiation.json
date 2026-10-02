@@ -10,7 +10,10 @@
         "schemaName": "negotiate.request",
         "value": {
           "negotiationId": "neg_1",
-          "protocol": { "major": 2, "minor": 1 },
+          "protocol": {
+            "major": 2,
+            "minor": 1
+          },
           "client": {
             "installationId": "install_1",
             "appVersion": "2.1.0",
@@ -18,18 +21,35 @@
             "platformApi": 35
           },
           "features": {
-            "auth": ["password", "account-invitation", "refresh", "device-key"],
-            "messages": ["chat-v1"],
-            "attachments": ["staged-sha256-v1"],
-            "events": ["sse-cursor-v1"],
-            "deviceRequests": ["risk-queue-v1"]
+            "auth": [
+              "password",
+              "account-invitation",
+              "refresh",
+              "device-key"
+            ],
+            "messages": [
+              "chat-v1"
+            ],
+            "attachments": [
+              "staged-sha256-v1"
+            ],
+            "events": [
+              "sse-cursor-v1"
+            ],
+            "deviceRequests": [
+              "risk-queue-v1"
+            ]
           },
-          "schemaHashes": { "core": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+          "schemaHashes": {
+            "core": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
         }
       },
       "expected": {
         "outcome": "value",
-        "value": { "valid": true }
+        "value": {
+          "valid": true
+        }
       }
     },
     {
@@ -39,7 +59,10 @@
         "schemaName": "negotiate.request",
         "value": {
           "negotiationId": "neg_1",
-          "protocol": { "major": 3, "minor": 0 },
+          "protocol": {
+            "major": 3,
+            "minor": 0
+          },
           "client": {
             "installationId": "install_1",
             "appVersion": "2.1.0",
@@ -47,13 +70,25 @@
             "platformApi": 35
           },
           "features": {
-            "auth": ["password"],
-            "messages": ["chat-v1"],
-            "attachments": ["staged-sha256-v1"],
-            "events": ["sse-cursor-v1"],
-            "deviceRequests": ["risk-queue-v1"]
+            "auth": [
+              "password"
+            ],
+            "messages": [
+              "chat-v1"
+            ],
+            "attachments": [
+              "staged-sha256-v1"
+            ],
+            "events": [
+              "sse-cursor-v1"
+            ],
+            "deviceRequests": [
+              "risk-queue-v1"
+            ]
           },
-          "schemaHashes": { "core": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+          "schemaHashes": {
+            "core": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
         }
       },
       "expected": {
@@ -67,14 +102,23 @@
       "input": {
         "schemaName": "negotiate.response",
         "value": {
-          "protocol": { "major": 2, "minor": 1 },
+          "protocol": {
+            "major": 2,
+            "minor": 1
+          },
           "features": {
-            "auth": ["password", "refresh"],
+            "auth": [
+              "password",
+              "refresh"
+            ],
             "messages": "chat-v1",
             "attachments": "staged-sha256-v1",
             "events": "sse-cursor-v1",
             "deviceRequests": "risk-queue-v1",
-            "conversationUi": ["agent-command-catalog-v1", "agent-command-new-v1"]
+            "conversationUi": [
+              "agent-command-catalog-v1",
+              "agent-command-new-v1"
+            ]
           },
           "limits": {
             "attachmentTtlSeconds": 86400,
@@ -89,7 +133,9 @@
       },
       "expected": {
         "outcome": "value",
-        "value": { "valid": true }
+        "value": {
+          "valid": true
+        }
       }
     },
     {
@@ -98,14 +144,22 @@
       "input": {
         "schemaName": "negotiate.response",
         "value": {
-          "protocol": { "major": 2, "minor": 1 },
+          "protocol": {
+            "major": 2,
+            "minor": 1
+          },
           "features": {
-            "auth": ["password", "refresh"],
+            "auth": [
+              "password",
+              "refresh"
+            ],
             "messages": "chat-v1",
             "attachments": "staged-sha256-v1",
             "events": "sse-cursor-v1",
             "deviceRequests": "risk-queue-v1",
-            "conversationUi": ["conversation-switch-v1"]
+            "conversationUi": [
+              "conversation-switch-v1"
+            ]
           },
           "limits": {
             "attachmentTtlSeconds": 86400,
@@ -115,6 +169,88 @@
           "gatewayIdentity": {
             "deploymentId": "deploy_hermes",
             "tlsSpkiSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      },
+      "expected": {
+        "outcome": "error",
+        "code": "SCHEMA_INVALID"
+      }
+    },
+    {
+      "id": "protocol-negotiate-explicit-plaintext-null-tls-identity",
+      "operation": "schema.validate",
+      "input": {
+        "schemaName": "negotiate.response",
+        "value": {
+          "protocol": {
+            "major": 2,
+            "minor": 1
+          },
+          "features": {
+            "auth": [
+              "password",
+              "refresh"
+            ],
+            "messages": "chat-v1",
+            "attachments": "staged-sha256-v1",
+            "events": "sse-cursor-v1",
+            "deviceRequests": "risk-queue-v1",
+            "conversationUi": [
+              "agent-command-catalog-v1",
+              "agent-command-new-v1"
+            ]
+          },
+          "limits": {
+            "attachmentTtlSeconds": 86400,
+            "eventRetentionSeconds": 86400,
+            "maxClockSkewSeconds": 120
+          },
+          "gatewayIdentity": {
+            "deploymentId": "deploy_hermes",
+            "tlsSpkiSha256": null
+          }
+        }
+      },
+      "expected": {
+        "outcome": "value",
+        "value": {
+          "valid": true
+        }
+      }
+    },
+    {
+      "id": "protocol-negotiate-zero-tls-identity-is-not-a-certificate",
+      "operation": "schema.validate",
+      "input": {
+        "schemaName": "negotiate.response",
+        "value": {
+          "protocol": {
+            "major": 2,
+            "minor": 1
+          },
+          "features": {
+            "auth": [
+              "password",
+              "refresh"
+            ],
+            "messages": "chat-v1",
+            "attachments": "staged-sha256-v1",
+            "events": "sse-cursor-v1",
+            "deviceRequests": "risk-queue-v1",
+            "conversationUi": [
+              "agent-command-catalog-v1",
+              "agent-command-new-v1"
+            ]
+          },
+          "limits": {
+            "attachmentTtlSeconds": 86400,
+            "eventRetentionSeconds": 86400,
+            "maxClockSkewSeconds": 120
+          },
+          "gatewayIdentity": {
+            "deploymentId": "deploy_hermes",
+            "tlsSpkiSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
           }
         }
       },

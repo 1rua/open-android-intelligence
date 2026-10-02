@@ -114,6 +114,7 @@ class AuditStore:
         correlation_id: str,
         occurred_at: datetime | str | None = None,
     ) -> None:
+        self.purge(_now(occurred_at) - timedelta(days=30))
         self.store.database.execute(
             "INSERT INTO audit_events(event_type, actor_json, subject_json, correlation_id, occurred_at) VALUES (?, ?, ?, ?, ?)",
             (event_type, _json(scrub(actor)), _json(scrub(subject)), correlation_id, _iso_millis(occurred_at)),
@@ -136,5 +137,5 @@ class AuditStore:
         cutoff = _now(before or (datetime.now(timezone.utc) - timedelta(days=30)))
         with self.store.transaction():
             return self.store.database.execute(
-                "DELETE FROM audit_events WHERE occurred_at < ?", (_iso_millis(cutoff),)
+                "DELETE FROM audit_events WHERE audit_id IN (SELECT audit_id FROM audit_events WHERE occurred_at < ? ORDER BY audit_id LIMIT 1000)", (_iso_millis(cutoff),)
             ).rowcount

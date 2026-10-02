@@ -16,8 +16,9 @@ import secrets
 import shutil
 import sqlite3
 import struct
+import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,6 +43,16 @@ PROTOCOL_VERSION = {"major": 2, "minor": 1}
 # One transport that wants committed events as they happen. The account id is
 # the account the event belongs to, so a stream never has to guess it.
 EventSink = Callable[[str, Mapping[str, Any]], None]
+
+
+def canonical_device_key(value: Any) -> bool:
+    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_-]{43}", value) is None:
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(value + "=")
+        return len(raw) == 32 and base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") == value
+    except (ValueError, TypeError):
+        return False
 
 
 # Contract section 4 core schema digest: a domain-separated, name-sorted listing
@@ -695,6 +706,8 @@ class ContractRegistry:
             return False
         if "enum" in schema and value not in schema["enum"]:
             return False
+        if "not" in schema and self._valid(schema["not"], value, current_document):
+            return False
         if "allOf" in schema and not all(self._valid(child, value, current_document) for child in schema["allOf"]):
             return False
         if "anyOf" in schema and not any(self._valid(child, value, current_document) for child in schema["anyOf"]):
@@ -1080,7 +1093,8 @@ class AccountStore:
               PRIMARY KEY (device_id, request_id)
             );
             CREATE TABLE IF NOT EXISTS events (
-              event_id TEXT PRIMARY KEY NOT NULL, event_type TEXT NOT NULL,
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              event_id TEXT UNIQUE NOT NULL, event_type TEXT NOT NULL,
               correlation_id TEXT NOT NULL, occurred_at TEXT NOT NULL,
               payload_json TEXT NOT NULL, expires_at TEXT NOT NULL
             );
@@ -1203,6 +1217,16 @@ class AccountStore:
                 self.database.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
         self.database.execute("BEGIN IMMEDIATE")
         try:
+            event_columns = {row[1] for row in self.database.execute("PRAGMA table_info(events)").fetchall()}
+            if "sequence" not in event_columns:
+                self.database.execute("ALTER TABLE events RENAME TO events_legacy_order")
+                self.database.execute("CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT UNIQUE NOT NULL, event_type TEXT NOT NULL, correlation_id TEXT NOT NULL, occurred_at TEXT NOT NULL, payload_json TEXT NOT NULL, expires_at TEXT NOT NULL)")
+                # Preserve old row insertion order, ciphertext and opaque IDs.
+                self.database.execute("INSERT INTO events(event_id,event_type,correlation_id,occurred_at,payload_json,expires_at) SELECT event_id,event_type,correlation_id,occurred_at,payload_json,expires_at FROM events_legacy_order ORDER BY rowid")
+                self.database.execute("DROP TABLE events_legacy_order")
+            self.database.execute("CREATE INDEX IF NOT EXISTS events_expiry ON events(expires_at)")
+            if "result_json" not in {row["name"] for row in self.database.execute("PRAGMA table_info(device_requests)")}:
+                self.database.execute("ALTER TABLE device_requests ADD COLUMN result_json TEXT NOT NULL DEFAULT ''")
             existing_attachment_cols = {
                 row[1] for row in self.database.execute("PRAGMA table_info(attachments)").fetchall()
             }
@@ -1280,6 +1304,33 @@ class AccountStore:
             self._metadata("gateway_account_id", self.account_id)
         self._metadata("deployment_id", f"deploy_{hashlib.sha256(str(paths.root.parent.parent).encode('utf-8')).hexdigest()[:16]}")
         self._metadata("tls_spki_sha256", "sha256:" + "0" * 64)
+        self.database.execute("PRAGMA secure_delete = ON")
+        message_format = self.database.execute("SELECT value FROM account_metadata WHERE key = 'message_storage_format'").fetchone()
+        if message_format is not None and message_format[0] != "1":
+            raise GatewayError("MESSAGE_STORAGE_VERSION_UNSUPPORTED")
+        if self.aead is not None and message_format is None:
+            self.database.execute("BEGIN IMMEDIATE")
+            try:
+                for row in self.database.execute("SELECT message_id,text FROM messages").fetchall():
+                    self.database.execute("UPDATE messages SET text = ? WHERE message_id = ?", (self.seal_json(row["text"], f"message:{row['message_id']}:text"), row["message_id"]))
+                self.database.execute("INSERT INTO account_metadata(key,value) VALUES ('message_storage_format','1')")
+                self.database.execute("INSERT INTO account_metadata(key,value) VALUES ('message_scrub_pending','1')")
+                self.database.execute("COMMIT")
+            except BaseException:
+                self.database.execute("ROLLBACK")
+                raise
+        if self.aead is not None and self.database.execute("SELECT 1 FROM account_metadata WHERE key = 'message_scrub_pending'").fetchone() is not None:
+            try:
+                def checkpoint():
+                    if self.database.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] != 0:
+                        raise GatewayError("MESSAGE_MIGRATION_BUSY")
+                checkpoint()
+                self.database.execute("VACUUM")
+                checkpoint()
+                self.database.execute("DELETE FROM account_metadata WHERE key = 'message_scrub_pending'")
+            except BaseException:
+                self.database.close()
+                raise
 
     def _metadata(self, key: str, value: str) -> None:
         self.database.execute(
@@ -1448,14 +1499,25 @@ class CredentialStore:
         self.store = store
 
     def set_password(self, password: str, now: datetime | str | None = None) -> None:
+        self._write_password(password, now, create_only=False)
+
+    def create_password(self, password: str, now: datetime | str | None = None) -> None:
+        self._write_password(password, now, create_only=True)
+
+    def _write_password(self, password: str, now: datetime | str | None, *, create_only: bool) -> None:
         digest = hash_password(password)
-        self.store.database.execute(
-            "INSERT INTO account_credentials(credential_id, password_hash, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(credential_id) DO UPDATE SET "
-            "password_hash = excluded.password_hash, updated_at = excluded.updated_at",
-            (self.PASSWORD_CREDENTIAL_ID, digest, iso_millis(now)),
-        )
-        self.store.database.commit()
+        with self.store.transaction():
+            exists = self.has_password()
+            if exists and create_only:
+                raise GatewayError("ACCOUNT_EXISTS")
+            self.store.database.execute(
+                "INSERT INTO account_credentials(credential_id, password_hash, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(credential_id) DO UPDATE SET "
+                "password_hash = excluded.password_hash, updated_at = excluded.updated_at",
+                (self.PASSWORD_CREDENTIAL_ID, digest, iso_millis(now)),
+            )
+            if exists:
+                self.store.database.execute("UPDATE refresh_credentials SET status = 'revoked'")
 
     def has_password(self) -> bool:
         row = self.store.database.execute(
@@ -1474,6 +1536,7 @@ class CredentialStore:
         return verify_password(password, str(row[0]))
 
     setPassword = set_password
+    createPassword = create_password
     hasPassword = has_password
     verifyPassword = verify_password
 
@@ -1520,6 +1583,7 @@ class EventStore:
                 "SCHEMA_INVALID",
                 {"reason": "event payload failed dispatched validation", "eventType": event_type},
             )
+        self.purge_expired(current)
         self.store.database.execute(
             "INSERT INTO events(event_id, event_type, correlation_id, occurred_at, payload_json, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
             (
@@ -1535,6 +1599,7 @@ class EventStore:
 
     def read_after(self, cursor: str | None, now: datetime | str | None = None) -> list[dict[str, Any]]:
         current = _now(now)
+        self.purge_expired(current)
         current_iso = iso_millis(current)
         if cursor is not None:
             row = self.store.database.execute("SELECT expires_at FROM events WHERE event_id = ?", (cursor,)).fetchone()
@@ -1543,17 +1608,23 @@ class EventStore:
             rows = self.store.database.execute(
                 """
                 SELECT * FROM events
-                WHERE expires_at > ? AND (occurred_at, event_id) >
-                  (SELECT occurred_at, event_id FROM events WHERE event_id = ?)
-                ORDER BY occurred_at, event_id
+                WHERE expires_at > ? AND sequence >
+                  (SELECT sequence FROM events WHERE event_id = ?)
+                ORDER BY sequence
                 """,
                 (current_iso, cursor),
             ).fetchall()
         else:
             rows = self.store.database.execute(
-                "SELECT * FROM events WHERE expires_at > ? ORDER BY occurred_at, event_id", (current_iso,)
+                "SELECT * FROM events WHERE expires_at > ? ORDER BY sequence", (current_iso,)
             ).fetchall()
         return [self._map(row) for row in rows]
+
+    def purge_expired(self, now: datetime | str | None = None, limit: int = 1000) -> int:
+        return self.store.database.execute(
+            "DELETE FROM events WHERE sequence IN (SELECT sequence FROM events WHERE expires_at <= ? ORDER BY expires_at LIMIT ?)",
+            (iso_millis(now), limit),
+        ).rowcount
 
     def _map(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -2670,7 +2741,7 @@ class DeviceRequestStore:
             self.contracts.dispatched_registry_id, {"kind": "device.request"}, record
         ):
             raise GatewayError("SCHEMA_INVALID")
-        parameters_json = self.store.seal_json(
+        parameters_json = "" if state == "expired" else self.store.seal_json(
             parameters, f"device-request:{self.account_id}:{request_id}:parameters"
         )
         with self.store.transaction():
@@ -2760,7 +2831,8 @@ class DeviceRequestStore:
                 outcome = result.get("outcome")
                 event = "result_outcome_unknown" if outcome == "outcome_unknown" else f"result_{outcome}"
                 next_state = next_device_request_state(row["state"], event)
-                self.store.database.execute("UPDATE device_requests SET state = ? WHERE request_id = ?", (next_state, request_id))
+                sealed_result = self.store.seal_json(result, f"device-result:{request_id}:{claim_id}")
+                self.store.database.execute("UPDATE device_requests SET state = ?, parameters_json = '', result_json = ? WHERE request_id = ?", (next_state, sealed_result, request_id))
                 self.audit.append(
                     "device.request.result", {"accountId": self.account_id, "deviceId": device_id},
                     {"requestId": request_id, "claimId": claim_id, "outcome": outcome},
@@ -2789,6 +2861,28 @@ class DeviceRequestStore:
             self._assert_binding(receipt, device_id, pairing_generation, grant_revision)
             return None
 
+    def read_result(self, request_id: str, claim_id: str, now: datetime | str | None = None) -> dict[str, Any] | None:
+        row = self._row(request_id)
+        receipt = self.store.database.execute("SELECT 1 FROM claim_receipts WHERE request_id = ? AND claim_id = ?", (request_id, claim_id)).fetchone()
+        if receipt is None:
+            raise GatewayError("OUTCOME_UNKNOWN")
+        if _now(row["expires_at"]) <= _now(now):
+            self.store.database.execute("UPDATE device_requests SET result_json = '', parameters_json = '' WHERE request_id = ?", (request_id,))
+            return None
+        return self.store.open_json(row["result_json"], f"device-result:{request_id}:{claim_id}") if row["result_json"] else None
+
+    def acknowledge_result(self, request_id: str, claim_id: str) -> None:
+        receipt = self.store.database.execute("SELECT 1 FROM claim_receipts WHERE request_id = ? AND claim_id = ?", (request_id, claim_id)).fetchone()
+        if receipt is None:
+            raise GatewayError("OUTCOME_UNKNOWN")
+        self.store.database.execute("UPDATE device_requests SET result_json = '' WHERE request_id = ?", (request_id,))
+
+    def purge_terminal_payloads(self, now: datetime | str | None = None) -> int:
+        return self.store.database.execute(
+            "UPDATE device_requests SET result_json = '', parameters_json = '' WHERE request_id IN (SELECT request_id FROM device_requests WHERE expires_at <= ? AND (result_json != '' OR parameters_json != '') LIMIT 1000)",
+            (iso_millis(now),),
+        ).rowcount
+
     def validate_result_replay(
         self, request_id: str, device_id: str, pairing_generation: int,
         grant_revision: int, claim_id: str, now: datetime | str | None = None,
@@ -2810,7 +2904,7 @@ class DeviceRequestStore:
     def recover_expired(self, now: datetime | str | None = None) -> int:
         current = _now(now)
         rows = self.store.database.execute(
-            "SELECT request_id, state FROM device_requests WHERE expires_at <= ? AND state IN ('pending', 'claimed', 'cancel_requested')",
+            "SELECT request_id, state FROM device_requests WHERE expires_at <= ? AND state IN ('pending', 'claimed', 'cancel_requested') ORDER BY expires_at LIMIT 1000",
             (iso_millis(current),),
         ).fetchall()
         recovered = 0
@@ -2818,7 +2912,7 @@ class DeviceRequestStore:
             with self.store.transaction():
                 event = "expire" if row["state"] == "pending" else "recover_outcome_unknown"
                 self.store.database.execute(
-                    "UPDATE device_requests SET state = ? WHERE request_id = ?",
+                    "UPDATE device_requests SET state = ?, parameters_json = '' WHERE request_id = ?",
                     (next_device_request_state(row["state"], event), row["request_id"]),
                 )
                 recovered += 1
@@ -2835,7 +2929,7 @@ class DeviceRequestStore:
                 expired = True
             else:
                 next_state = next_device_request_state(row["state"], "cancel")
-                self.store.database.execute("UPDATE device_requests SET state = ? WHERE request_id = ?", (next_state, request_id))
+                self.store.database.execute("UPDATE device_requests SET state = ?, parameters_json = CASE WHEN ? = 'cancelled' THEN '' ELSE parameters_json END WHERE request_id = ?", (next_state, next_state, request_id))
                 self.events.append("device.request.cancel.requested", correlation_id, {"requestId": request_id}, current)
                 record = self.get(request_id)
         if expired:
@@ -2866,7 +2960,7 @@ class DeviceRequestStore:
             ).fetchall()
             for row in rows:
                 self.store.database.execute(
-                    "UPDATE device_requests SET state = ? WHERE request_id = ?",
+                    "UPDATE device_requests SET state = ?, parameters_json = '' WHERE request_id = ?",
                     (next_device_request_state(row["state"], "cancel"), row["request_id"]),
                 )
                 self.events.append(
@@ -2893,7 +2987,7 @@ class DeviceRequestStore:
             "risk": row["risk"], "state": row["state"],
             "capability": json.loads(row["capability_json"]),
             "provider": json.loads(row["provider_json"]),
-            "parameters": self.store.open_json(
+            "parameters": {} if row["parameters_json"] == "" else self.store.open_json(
                 row["parameters_json"],
                 f"device-request:{self.account_id}:{row['request_id']}:parameters",
             ),
@@ -2919,7 +3013,7 @@ class DeviceRequestStore:
             return False
         event = "expire" if row["state"] == "pending" else "recover_outcome_unknown"
         self.store.database.execute(
-            "UPDATE device_requests SET state = ? WHERE request_id = ?",
+            "UPDATE device_requests SET state = ?, parameters_json = '' WHERE request_id = ?",
             (next_device_request_state(row["state"], event), row["request_id"]),
         )
         return True
@@ -2985,7 +3079,7 @@ class ConversationPort:
                     created_at, attachment_ids_json, state
                 ) VALUES (?, ?, ?, 'user', ?, ?, ?, 'CONFIRMED')
                 """,
-                (message_id, conversation_id, client_message_id, text, iso_millis(current), _json(attachment_ids)),
+                (message_id, conversation_id, client_message_id, self.store.seal_json(text, f"message:{message_id}:text"), iso_millis(current), _json(attachment_ids)),
             )
             self.audit.append(
                 "conversation.message.accepted", {"accountId": self.account_id, "deviceId": device_id},
@@ -3056,7 +3150,7 @@ class ConversationPort:
             "messageId": str(row["message_id"]),
             "conversationId": str(row["conversation_id"]),
             "clientMessageId": str(row["client_message_id"]),
-            "text": str(row["text"]),
+            "text": self.store.open_json(row["text"], f"message:{row['message_id']}:text"),
             "createdAt": str(row["created_at"]),
             "attachmentIds": attachment_ids,
             "attachments": attachments,
@@ -3181,7 +3275,7 @@ class ConversationPort:
                 ON CONFLICT(message_id) DO UPDATE SET text = excluded.text
                 WHERE messages.sender = 'assistant'
                 """,
-                (message_id, conversation_id, message_id, text, iso_millis(current)),
+                (message_id, conversation_id, message_id, self.store.seal_json(text, f"message:{message_id}:text"), iso_millis(current)),
             )
             return {"status": "recorded", "messageId": message_id, "conversationId": conversation_id}
 
@@ -3222,6 +3316,7 @@ class ConversationPort:
             cmid = r["client_message_id"] if hasattr(r, "keys") and "client_message_id" in r.keys() else r[2]
             sender = r["sender"] if hasattr(r, "keys") and "sender" in r.keys() else r[3]
             txt = r["text"] if hasattr(r, "keys") and "text" in r.keys() else r[4]
+            txt = self.store.open_json(txt, f"message:{mid}:text")
             created = r["created_at"] if hasattr(r, "keys") and "created_at" in r.keys() else r[5]
             st = r["state"] if hasattr(r, "keys") and "state" in r.keys() else r[7]
 
@@ -3509,7 +3604,7 @@ class SessionService:
             not isinstance(username, str) or not username
             or not isinstance(password, str) or not password
             or not isinstance(installation_id, str) or not installation_id
-            or not isinstance(device_public_key, str) or not device_public_key
+            or not canonical_device_key(device_public_key)
             or self.credential_verifier is None
         ):
             raise GatewayError("AUTHENTICATION_FAILED")
@@ -3915,12 +4010,21 @@ class GatewayCore:
         command_catalog: Any = None,
         event_sink: EventSink | None = None,
         approval_resolver: Any = None,
+        tls_spki_sha256: str | None = None,
     ):
         self.storage_root = Path(storage_root or default_hermes_gateway_root()).resolve()
+        self.tls_spki_sha256 = tls_spki_sha256 if tls_spki_sha256 is not None else os.environ.get("OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256")
+        if self.tls_spki_sha256 is not None and (re.fullmatch(r"sha256:[a-f0-9]{64}", self.tls_spki_sha256) is None or self.tls_spki_sha256 == "sha256:" + "0" * 64):
+            raise ValueError("GATEWAY_TLS_IDENTITY_INVALID")
         self.secret_store = secret_store
         self.contract_root = Path(contract_root).resolve() if contract_root is not None else None
         self._contracts: ContractRegistry | None = None
         self._pending_negotiations: dict[str, dict[str, Any]] = {}
+        self._admission_lock = threading.RLock()
+        self._admission_window: datetime | None = None
+        self._negotiation_count = 0
+        self._password_count = 0
+        self._password_jobs = 0
         self.commit_hook = commit_hook
         self.attachment_policy = attachment_policy or DEFAULT_ATTACHMENT_POLICY
         self.credential_verifier = credential_verifier
@@ -4002,6 +4106,24 @@ class GatewayCore:
         return paths.database.is_file()
 
     has_gateway_account = account_exists
+
+    def is_event_session_active(self, context: VerifiedRequestContext, now: datetime | str | None = None) -> bool:
+        """Recheck lifecycle facts without replaying the signed handshake nonce."""
+        try:
+            paths = account_paths(self.storage_root, context.account_id)
+            # A retained handle may reference a deleted/replaced account. Always
+            # consult the current file without creating an unknown account.
+            with closing(sqlite3.connect(paths.database.as_uri() + "?mode=ro", uri=True)) as database:
+                row = database.execute(
+                    "SELECT s.status, s.expires_at, k.pairing_generation "
+                    "FROM access_sessions s JOIN device_keys k ON k.device_id = s.device_id "
+                    "WHERE s.session_id = ? AND s.device_id = ?",
+                    (context.session_id, context.device_id),
+                ).fetchone()
+                return bool(row and row[0] == "active" and _now(row[1]) > _now(now)
+                            and int(row[2]) == context.pairing_generation)
+        except (OSError, sqlite3.Error, AttributeError, TypeError, ValueError):
+            return False
 
     def list_gateway_account_ids(self) -> list[str]:
         """List accounts that have persisted their opaque id for recovery scans."""
@@ -4198,7 +4320,7 @@ class GatewayCore:
             raise GatewayError("PROTOCOL_INCOMPATIBLE")
         if account is None:
             deployment_id = "deploy_" + hashlib.sha256(str(self.storage_root).encode("utf-8")).hexdigest()[:16]
-            tls_identity = "sha256:" + "0" * 64
+            tls_identity = self.tls_spki_sha256
         else:
             metadata = {
                 row["key"]: row["value"] for row in account.store.database.execute(
@@ -4206,7 +4328,8 @@ class GatewayCore:
                 ).fetchall()
             }
             deployment_id = metadata.get("deployment_id", "deploy_hermes")
-            tls_identity = metadata.get("tls_spki_sha256", "sha256:" + "0" * 64)
+            rotated_pin = metadata.get("tls_spki_sha256")
+            tls_identity = rotated_pin if isinstance(rotated_pin, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", rotated_pin) and rotated_pin != "sha256:" + "0" * 64 else self.tls_spki_sha256
         features: dict[str, Any] = {"auth": auth, **required}
         if conversation_ui:
             features["conversationUi"] = conversation_ui
@@ -4230,31 +4353,84 @@ class GatewayCore:
         body = _request_body(request)
         context = self._pre_auth_context(request, body if isinstance(body, Mapping) else {})
         try:
+            now = _request_now(request)
+            self._admit_pre_auth(False, now)
             response = self._build_negotiation_response(body)
             negotiation_id = str(body["negotiationId"])
             now = _request_now(request)
             input_hash = _hash_input("POST", "/open-android-intelligence/v2/negotiate", body)
-            existing = self._pending_negotiations.get(negotiation_id)
-            if existing is not None:
-                if existing["inputHash"] != input_hash:
-                    logger.warning(
-                        "[open_android] Refused negotiation: %s was already started with a different body (%s)",
-                        negotiation_id,
-                        _negotiation_client_hint(body, self.contracts.core_schema_hash),
-                    )
-                    raise GatewayError("PROTOCOL_INCOMPATIBLE")
-            else:
-                self._pending_negotiations[negotiation_id] = {
-                    "inputHash": input_hash,
-                    "installationId": body["client"]["installationId"],
-                    "response": dict(response),
-                    "expiresAt": _now(now) + timedelta(minutes=5),
-                    "accountId": None,
-                }
+            with self._admission_lock:
+                for key in list(self._pending_negotiations):
+                    if self._pending_negotiations[key]["expiresAt"] <= now:
+                        del self._pending_negotiations[key]
+                existing = self._pending_negotiations.get(negotiation_id)
+                if existing is not None:
+                    if existing["inputHash"] != input_hash:
+                        logger.warning(
+                            "[open_android] Refused negotiation: %s was already started with a different body (%s)",
+                            negotiation_id,
+                            _negotiation_client_hint(body, self.contracts.core_schema_hash),
+                        )
+                        raise GatewayError("PROTOCOL_INCOMPATIBLE")
+                else:
+                    if len(self._pending_negotiations) >= 1000:
+                        raise GatewayError("RATE_LIMITED")
+                    self._pending_negotiations[negotiation_id] = {
+                        "inputHash": input_hash,
+                        "installationId": body["client"]["installationId"],
+                        "response": dict(response),
+                        "expiresAt": _now(now) + timedelta(minutes=5),
+                        "accountId": None,
+                    }
             return _success(context, response)
         except GatewayError as exc:
             code = "SCHEMA_INVALID" if exc.code == "INVALID_STATE_TRANSITION" else exc.code
             return _failure(context, code, exc.details)
+
+    def _admit_pre_auth(self, password: bool, now: datetime) -> None:
+        with self._admission_lock:
+            if self._admission_window is None or now < self._admission_window or now >= self._admission_window + timedelta(minutes=1):
+                self._admission_window = now
+                self._negotiation_count = self._password_count = 0
+            if password:
+                self._password_count += 1
+                if self._password_count > 30 or self._password_jobs >= 2:
+                    raise GatewayError("RATE_LIMITED")
+                self._password_jobs += 1
+            else:
+                self._negotiation_count += 1
+                if self._negotiation_count > 1000:
+                    raise GatewayError("RATE_LIMITED")
+
+    def _handle_session_password(self, request: Any) -> GatewayResponse:
+        body = _request_body(request)
+        context = self._pre_auth_context(request, body if isinstance(body, Mapping) else {})
+        admitted = False
+        try:
+            now = _request_now(request)
+            self._admit_pre_auth(True, now)
+            admitted = True
+            if not isinstance(body, Mapping) or not self.contracts.validate("session.password", body):
+                raise GatewayError("SCHEMA_INVALID")
+            installation = body["installation"]
+            if not canonical_device_key(installation["devicePublicKey"]):
+                raise GatewayError("SCHEMA_INVALID")
+            account_id = body["username"]
+            if not self.account_exists(account_id):
+                raise GatewayError("AUTHENTICATION_FAILED")
+            self.bind_negotiation(body["negotiationId"], account_id, installation["installationId"], now)
+            account = self.open_gateway_account(account_id)
+            try:
+                bundle = account.sessions.create_password_session(account_id, body["password"], installation, context["correlationId"], now)
+                return _success(context, {**bundle, "accountId": account_id})
+            finally:
+                account.close()
+        except GatewayError as exc:
+            return _failure(context, exc.code, exc.details)
+        finally:
+            if admitted:
+                with self._admission_lock:
+                    self._password_jobs -= 1
 
     def _handle_session_refresh(self, request: Any) -> GatewayResponse:
         """Rotates an access session from a refresh credential (pre-auth).
@@ -4846,6 +5022,8 @@ class GatewayCore:
             if _value(request, "context") is None:
                 if method == "POST" and target == "/open-android-intelligence/v2/negotiate":
                     return self._handle_pre_auth(request)
+                if method == "POST" and target == "/open-android-intelligence/v2/sessions/password":
+                    return self._handle_session_password(request)
                 if method == "POST" and target == "/open-android-intelligence/v2/sessions/refresh":
                     return self._handle_session_refresh(request)
                 if method == "DELETE" and isinstance(target, str) and (
@@ -5021,11 +5199,11 @@ class GatewayCore:
                         }})
                     claim_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/claim", target_path)
                     if method == "POST" and claim_match:
-                        return _success(context, {"receipt": account.device_requests.claim(
+                        return _success(context, account.device_requests.claim(
                             request_id=claim_match.group(1), device_id=context["deviceId"],
                             pairing_generation=int(context["pairingGeneration"]), grant_revision=int(context["grantRevision"]),
                             correlation_id=context["correlationId"], now=_request_now(request),
-                        )})
+                        ))
                     result_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/result", target_path)
                     if method == "POST" and result_match:
                         body_map = body if isinstance(body, Mapping) else None

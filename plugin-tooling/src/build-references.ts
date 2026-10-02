@@ -4,15 +4,10 @@ import { fileURLToPath } from "node:url";
 import { buildPackage, bytesToBase64url, sha256Hex } from "./build-package.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import type { PluginManifest } from "./manifest.js";
+import { referenceSigningKey, validateReferenceWasm } from "./reference-build-policy.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const ROOT = resolve(__dirname, "../..");
-
-// 固定的参考插件签名私钥种子（32 字节，保持构建可重复）
-const REFERENCE_SEED = new Uint8Array(32).fill(0x77);
-const REFERENCE_PRIVATE_KEY = REFERENCE_SEED;
-const REFERENCE_PUBLIC_KEY = ed25519.getPublicKey(REFERENCE_PRIVATE_KEY);
-const REFERENCE_PUBLIC_KEY_B64 = bytesToBase64url(REFERENCE_PUBLIC_KEY);
 
 interface PluginSpec {
   id: string;
@@ -91,11 +86,16 @@ const REFERENCE_PLUGINS: PluginSpec[] = [
 ];
 
 async function main() {
+  const fixture = process.argv.includes("--fixtures");
+  const privateKey = await referenceSigningKey(fixture, process.env["OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE"]);
+  const publicKey = bytesToBase64url(ed25519.getPublicKey(privateKey));
   console.log("Building reference plugins...");
-  const outDir = join(ROOT, "plugins/dist");
+  const outDir = join(ROOT, fixture ? "plugins/dist/fixtures" : "plugins/dist");
   await mkdir(outDir, { recursive: true });
 
   for (const spec of REFERENCE_PLUGINS) {
+    const provided = spec.provides[0];
+    if (provided === undefined) throw new Error("REFERENCE_CAPABILITY_MISSING");
     const stagingDir = join(outDir, ".staging", spec.id);
     await mkdir(join(stagingDir, "payload"), { recursive: true });
     await mkdir(join(stagingDir, "schemas"), { recursive: true });
@@ -103,7 +103,7 @@ async function main() {
     // 复制或构造 schema
     const schemaContent = JSON.stringify({ type: "object" });
     await writeFile(
-      join(stagingDir, spec.provides[0].schema),
+      join(stagingDir, provided.schema),
       new TextEncoder().encode(schemaContent),
     );
 
@@ -116,10 +116,12 @@ async function main() {
     let wasmBytes: Uint8Array;
     try {
       wasmBytes = await readFile(wasmPath);
-    } catch {
-      // 若尚未编译 wasm，生成有效 minimal wasm header 保证可独立打包与测试
+    } catch (error) {
+      if (!fixture) throw new Error(`PLUGIN_WASM_REQUIRED: compile ${spec.wasmName} before packaging`, { cause: error });
+      // Empty modules belong only to explicitly named packaging fixtures.
       wasmBytes = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
     }
+    if (!fixture) validateReferenceWasm(wasmBytes);
     await writeFile(join(stagingDir, "payload", spec.wasmName), wasmBytes);
 
     const manifest: PluginManifest = {
@@ -132,7 +134,7 @@ async function main() {
       },
       author: {
         algorithm: "Ed25519",
-        publicKey: REFERENCE_PUBLIC_KEY_B64,
+        publicKey,
       },
       runtime: {
         type: "protected-wasm",
@@ -176,13 +178,13 @@ async function main() {
     const built1 = await buildPackage({
       manifest,
       baseDirectory: stagingDir,
-      privateKey: REFERENCE_PRIVATE_KEY,
+      privateKey,
     });
 
     const built2 = await buildPackage({
       manifest,
       baseDirectory: stagingDir,
-      privateKey: REFERENCE_PRIVATE_KEY,
+      privateKey,
     });
 
     if (built1.sha256 !== built2.sha256) {

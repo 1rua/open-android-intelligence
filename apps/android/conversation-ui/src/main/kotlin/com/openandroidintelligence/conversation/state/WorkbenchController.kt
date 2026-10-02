@@ -1707,7 +1707,7 @@ class WorkbenchController(
                     // Recorded only once the event can actually be routed: an
                     // event that arrived while no thread was open must still be
                     // applied when one is, not be swallowed as already seen.
-                    if (!markEventHandled(event.eventId)) return@collect
+                    if (event.eventId.isNotBlank() && handledEventIds.contains(event.eventId)) return@collect
                     when (event) {
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                             val eventConvId = event.conversationId?.value
@@ -1925,6 +1925,7 @@ class WorkbenchController(
                             }
                         }
                     }
+                    markEventHandled(event.eventId)
                 }
         }
     }

@@ -211,49 +211,6 @@ class GatewayHttpRoute:
         if not isinstance(verified, VerifiedGatewayRequest):
             if not _is_pre_auth(verified):
                 return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(request, "AUTHENTICATION_REQUIRED")}
-        if isinstance(verified, Mapping) and _get(verified, "target") == "/open-android-intelligence/v2/sessions/password":
-            body_map = _get(verified, "body") or {}
-            username = body_map.get("username")
-            password = body_map.get("password")
-            installation = body_map.get("installation") or {}
-            correlation_id = str(_get(verified, "correlationId", "correlation_id", default="session-password"))
-            request_id = str(_get(verified, "requestId", "request_id", default="session-password"))
-            if not username or not password:
-                return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(request, "AUTHENTICATION_FAILED")}
-            # Login must never be the act that creates an account: an
-            # unregistered username would otherwise open its own database and
-            # be issued a session.
-            if not _account_exists(self._services.core, username):
-                return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(request, "AUTHENTICATION_FAILED")}
-            try:
-                account = self._services.core.open_gateway_account(username)
-                try:
-                    self._services.core.bind_negotiation(
-                        str(body_map.get("negotiationId")),
-                        account.account_id,
-                        str(installation.get("installationId")),
-                    )
-                    bundle = account.sessions.create_password_session(
-                        username=username,
-                        password=password,
-                        installation=installation,
-                        correlation_id=correlation_id,
-                    )
-                    resp = dict(bundle)
-                    resp["accountId"] = account.account_id
-                    resp["requestId"] = request_id
-                    resp["correlationId"] = correlation_id
-                    resp["protocol"] = WIRE_PROTOCOL
-                    resp_data = dict(bundle)
-                    resp_data["accountId"] = account.account_id
-                    resp["data"] = resp_data
-                    return {"statusCode": 200, "headers": dict(_RESPONSE_HEADERS), "body": resp}
-                finally:
-                    account.close()
-            except GatewayError as exc:
-                return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(request, exc.code)}
-            except Exception:
-                return {"statusCode": 500, "headers": dict(_RESPONSE_HEADERS), "body": _failure(request, "INTERNAL_ERROR")}
         body = self._services.core.handle(verified)
         status = _status(body)
         if _get(_get(body, "error", default={}), "code") in _AUTHENTICATION_FAILURE_CODES:
@@ -304,6 +261,7 @@ class GatewayHttpRoute:
         return {
             "statusCode": 200, "headers": dict(_RESPONSE_HEADERS), "body": body,
             "accountId": str(verified.context.accountId), "events": list(events),
+            "verifiedContext": verified.context,
         }
 
     def failure_response(
@@ -369,47 +327,12 @@ class GatewayHttpRoute:
                 decoded = _strict_json(body)
             except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
                 return {"statusCode": 400, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "SCHEMA_INVALID")}
-            username = decoded.get("username")
-            password = decoded.get("password")
-            installation = decoded.get("installation") or {}
-            correlation_id = str(_get(decoded, "correlationId", "correlation_id", default="session-password"))
-            request_id = str(_get(decoded, "requestId", "request_id", default="session-password"))
-            if not username or not password:
-                return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "AUTHENTICATION_FAILED")}
-            # Login must never be the act that creates an account. Without this
-            # check an unregistered username would open (and therefore create)
-            # its own database and be issued a session.
-            if not _account_exists(self._services.core, username):
-                return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "AUTHENTICATION_FAILED")}
-            try:
-                account = self._services.core.open_gateway_account(username)
-                try:
-                    self._services.core.bind_negotiation(
-                        str(decoded.get("negotiationId")),
-                        account.account_id,
-                        str(installation.get("installationId")),
-                    )
-                    bundle = account.sessions.create_password_session(
-                        username=username,
-                        password=password,
-                        installation=installation,
-                        correlation_id=correlation_id,
-                    )
-                    resp = dict(bundle)
-                    resp["accountId"] = account.account_id
-                    resp["requestId"] = request_id
-                    resp["correlationId"] = correlation_id
-                    resp["protocol"] = WIRE_PROTOCOL
-                    resp_data = dict(bundle)
-                    resp_data["accountId"] = account.account_id
-                    resp["data"] = resp_data
-                    return {"statusCode": 200, "headers": dict(_RESPONSE_HEADERS), "body": resp}
-                finally:
-                    account.close()
-            except GatewayError as exc:
-                return {"statusCode": 401, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, exc.code)}
-            except Exception:
-                return {"statusCode": 500, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "INTERNAL_ERROR")}
+            response_body = self._services.core.handle({
+                "method": method, "target": target, "body": decoded,
+                "requestId": str(_get(request, "requestId", "request_id", default="session-password")),
+                "correlationId": str(_get(request, "correlationId", "correlation_id", default="session-password")),
+            })
+            return {"statusCode": _status(response_body), "headers": dict(_RESPONSE_HEADERS), "body": response_body}
         session_target = target.partition("?")[0] if isinstance(target, str) else target
         if session_target in {"/open-android-intelligence/v2/sessions/refresh", "/open-android-intelligence/v2/sessions/current"}:
             if method != ("POST" if session_target.endswith("refresh") else "DELETE"):

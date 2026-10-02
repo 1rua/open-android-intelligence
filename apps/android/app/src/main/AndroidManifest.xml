@@ -37,6 +37,13 @@
             android:name="com.openandroidintelligence.capability.MediaProjectionCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+        <service
+            android:name=".GatewayAccountAuthenticatorService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCOUNT_AUTHENTICATOR">
+            <intent-filter><action android:name="android.accounts.AccountAuthenticator" /></intent-filter>
+            <meta-data android:name="android.accounts.AccountAuthenticator" android:resource="@xml/gateway_account_authenticator" />
+        </service>
 
         <!--
             仅供 JVM 单元测试（Robolectric + Compose createComposeRule）解析的

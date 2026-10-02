@@ -15,6 +15,8 @@ interface DeviceKeySource {
     fun publicKeyBase64Url(profileId: String): String
 
     fun sign(profileId: String, preimage: ByteArray): ByteArray
+
+    fun delete(profileId: String)
 }
 
 /** 生产实现：Ed25519 私钥以 Keystore 包装密钥加密后落在 App 私有目录。 */
@@ -24,4 +26,6 @@ class KeystoreDeviceKeySource(storageDir: File) : DeviceKeySource {
     override fun publicKeyBase64Url(profileId: String): String = store.publicKeyBase64Url(profileId)
 
     override fun sign(profileId: String, preimage: ByteArray): ByteArray = store.sign(profileId, preimage)
+
+    override fun delete(profileId: String) = store.delete(profileId)
 }

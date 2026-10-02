@@ -134,6 +134,7 @@ class GatewayTransport(
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
             val status = connection.responseCode
             if (status !in 200..299) {
+                if (status == 410) throw EventCursorExpiredException()
                 throw IOException("EVENT_STREAM_FAILED:$status")
             }
             val contentType = connection.getHeaderField("Content-Type").orEmpty()

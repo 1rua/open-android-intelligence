@@ -142,6 +142,12 @@ class PairingGrantStateHolder(
         unbind()
     }
 
+    @Synchronized
+    fun clearFor(target: PairingGrantBinding) {
+        store.clear(target)
+        if (binding == target) unbind()
+    }
+
     private fun update(
         transform: (PairingGrantState) -> PairingGrantState,
     ): PairingGrantState {

@@ -4,8 +4,8 @@
     <application>
         <service
             android:name=".TailscaleTransportService"
-            android:exported="true"
-            android:enabled="true">
+            android:exported="false"
+            android:enabled="false">
             <intent-filter>
                 <action android:name="com.openandroidintelligence.companion.TAILSCALE_TRANSPORT" />
             </intent-filter>
@@ -13,4 +13,3 @@
     </application>
 
 </manifest>
-

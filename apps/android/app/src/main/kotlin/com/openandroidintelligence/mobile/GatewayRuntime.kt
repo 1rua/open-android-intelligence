@@ -12,20 +12,23 @@ import com.openandroidintelligence.conversation.ports.StagedAttachmentContent
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.gateway.attachments.AttachmentUploader
 import com.openandroidintelligence.gateway.attachments.HttpAttachmentTransport
+import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.gateway.auth.AndroidKeystoreGatewayCredentialStore
 import com.openandroidintelligence.gateway.auth.GatewayAuthClient
 import com.openandroidintelligence.gateway.auth.GatewayCredentialStore
 import com.openandroidintelligence.gateway.auth.SessionCredentials
+import com.openandroidintelligence.gateway.auth.PairingRevocationClient
 import com.openandroidintelligence.gateway.commands.CommandCatalogClient
 import com.openandroidintelligence.gateway.conversations.ConversationClient
 import com.openandroidintelligence.gateway.device.DeviceRequestClient
 import com.openandroidintelligence.gateway.device.HttpDeviceRequestTransport
-import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
+import com.openandroidintelligence.gateway.events.GatewayEvent
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayProfile
 import com.openandroidintelligence.gateway.http.GatewayTransport
-import com.openandroidintelligence.gateway.http.SpkiPinning
 import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
 import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvider
@@ -41,6 +44,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
@@ -123,9 +127,15 @@ class GatewayRuntime(
     private val deviceKeys: DeviceKeySource = KeystoreDeviceKeySource(
         File(context.filesDir, "gateway-credentials"),
     ),
+    private val identityTrust: GatewayIdentityTrustStore = GatewayIdentityTrustStore(context),
+    private val accountProfiles: AndroidAccountProfileStore = AndroidAccountProfileStore(context),
 ) {
     private val _phase = MutableStateFlow<ConnectionPhase>(ConnectionPhase.Disconnected)
     val phase: StateFlow<ConnectionPhase> = _phase.asStateFlow()
+    private val _savedProfiles = MutableStateFlow(accountProfiles.list())
+    val savedProfiles: StateFlow<List<AccountProfile>> = _savedProfiles.asStateFlow()
+    private val _isManagingProfiles = MutableStateFlow(false)
+    val isManagingProfiles: StateFlow<Boolean> = _isManagingProfiles.asStateFlow()
 
     private val _controller = MutableStateFlow<WorkbenchController?>(null)
     val controller: StateFlow<WorkbenchController?> = _controller.asStateFlow()
@@ -158,6 +168,7 @@ class GatewayRuntime(
 
     private var connectionJob: Job? = null
     private var sessionJob: Job? = null
+    private var activeAttachmentStaging: LocalAttachmentStagingStore? = null
 
     private val activeThread = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
@@ -178,12 +189,13 @@ class GatewayRuntime(
         _phase.value = ConnectionPhase.Negotiating
         connectionJob = scope.launch {
             try {
-            val negotiation = runCatching { authClientFor(normalized).negotiate("neg_" + newToken()) }
+            val retainedPins = identityTrust.pinsBeforeConnect(endpoint, username)
+            val negotiation = runCatching { authClientFor(normalized, retainedPins).negotiate("neg_" + newToken()) }
             val negotiated = negotiation.getOrElse { cause ->
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
                 return@launch
             }
-            val tlsPin = negotiatedPin(endpoint, negotiated.tlsSpkiSha256)
+            val tlsPin = identityTrust.verifyNegotiation(endpoint, username, negotiated)
             if (endpoint.isTls && tlsPin == null) {
                 _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
                 password.fill('\u0000')
@@ -203,6 +215,7 @@ class GatewayRuntime(
             }
             credentials.fold(
                 onSuccess = { session ->
+                    identityTrust.remember(endpoint, username, negotiated)
                     val refreshCred = session.refreshCredential
                     if (refreshCred.isNotEmpty()) {
                         runCatching {
@@ -266,10 +279,117 @@ class GatewayRuntime(
                 credentialStore.clearRefresh(profileId)
                 clearLastProfile()
             }.onFailure { _operationNotice.value = "Gateway 已登出，但本机凭据清理失败，请检查设备存储。" }
-            if (revokeRefresh) {
-                pairingGrants.clearCurrent()
-            }
             teardown()
+        }
+    }
+
+    /** Leave the active workbench without revoking another saved account's credentials. */
+    fun chooseAnotherAccount() {
+        if (connectionJob?.isActive == true) return
+        teardown()
+        clearLastProfile()
+    }
+
+    fun selectSavedAccount(profileId: String) {
+        if (connectionJob?.isActive == true) return
+        val profile = accountProfiles.find(profileId) ?: return
+        val binding = accountProfiles.binding(profileId) ?: return
+        teardown()
+        val edit = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putString(KEY_LAST_GATEWAY, profile.gatewayBaseUrl).putString(KEY_LAST_USER, profile.username)
+            .putString(KEY_LAST_PROFILE, profileId).putString(KEY_LAST_ACCOUNT, binding.accountId)
+            .putString(KEY_LAST_DEVICE, binding.deviceId).putString(KEY_LAST_SESSION, binding.sessionId)
+            .putInt(KEY_DEVICE_KEY_ENCODING, binding.keyEncoding)
+        if (!edit.commit()) {
+            _operationNotice.value = "账号选择未能保存，请检查本机存储后重试。"
+            return
+        }
+        restoreSessionIfAvailable()
+    }
+
+    /** Called only by the login form's explicit local identity confirmation. */
+    fun reconfirmGatewayIdentity(gatewayUrl: String, username: String) {
+        if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) return
+        val endpoint = GatewayEndpoint.parse(gatewayUrl) ?: return
+        if (!endpoint.isTls) return
+        runCatching {
+            credentialStore.clearRefresh(profileIdFor(endpoint.baseUrl, username))
+            identityTrust.forget(endpoint, username)
+            _phase.value = ConnectionPhase.Disconnected
+            _operationNotice.value = "旧网关身份和自动登录凭据已清除，请核对新身份后使用密码重新登录。"
+        }.onFailure { _operationNotice.value = "网关身份清理失败，请检查本机存储。" }
+    }
+
+    fun removeLocalAccount(profileId: String) {
+        if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) return
+        val profile = accountProfiles.find(profileId) ?: return
+        val binding = accountProfiles.binding(profileId) ?: return
+        _isManagingProfiles.value = true
+        _operationNotice.value = "正在退出并移除本机账号…"
+        connectionJob = scope.launch {
+            var refresh: ByteArray? = null
+            try {
+                refresh = credentialStore.loadRefresh(profileId)
+                if (refresh != null && refresh.isNotEmpty()) {
+                    val endpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl) ?: error("PROFILE_INVALID")
+                    val pins = identityTrust.pinsBeforeConnect(endpoint, profile.username, restoring = true)
+                    val auth = authClientFor(endpoint.baseUrl, pins)
+                    val negotiated = auth.negotiate("neg_" + newToken())
+                    identityTrust.verifyNegotiation(endpoint, profile.username, negotiated)
+                    val session = auth.refresh(binding.accountId, binding.deviceId, negotiated.negotiationId, refresh)
+                    // Preserve the rotated credential if logout cannot be confirmed.
+                    credentialStore.saveRefresh(profileId, session.refreshCredential)
+                    auth.logout(session.accessToken, session.accountId, session.deviceId, session.sessionId, revokeRefresh = true)
+                }
+                withContext(Dispatchers.IO) {
+                    credentialStore.clearRefresh(profileId)
+                    credentialStore.clearDeviceKey(profileId)
+                    deviceKeys.delete(profileId)
+                    pairingGrants.clearFor(PairingGrantBinding(profile.gatewayBaseUrl, binding.accountId, installationId()))
+                    attachmentStagingStore(profile.gatewayBaseUrl, binding.accountId, installationId()).cleanup()
+                    AndroidEventCursorStore(context, profileId).clear(binding.accountId)
+                    identityTrust.forget(GatewayEndpoint.parse(profile.gatewayBaseUrl)!!, profile.username)
+                    accountProfiles.delete(profileId)
+                }
+                if (context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_PROFILE, null) == profileId) clearLastProfile()
+                _savedProfiles.value = accountProfiles.list()
+                _operationNotice.value = "本机账号已移除；Gateway 账号和其他设备配对保持有效。"
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (cause: Exception) { _operationNotice.value = "本机账号移除未完成，资料已保留，请检查连接或存储后重试。" }
+            finally { refresh?.fill(0); _isManagingProfiles.value = false }
+        }
+    }
+
+    fun unpair() {
+        if (connectionJob?.isActive == true) return
+        val current = _phase.value as? ConnectionPhase.Connected ?: return
+        val http = activeHttpClient ?: return
+        val deviceId = lastDeviceId ?: return
+        val profileId = profileIdFor(current.gatewayUrl, current.username)
+        val accountId = lastAccountId ?: return
+        val staging = activeAttachmentStaging
+        connectionJob = scope.launch {
+            try {
+                PairingRevocationClient(http).revoke(deviceId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                _operationNotice.value = "解除配对未获 Gateway 确认，本机凭据已保留，请检查连接后重试。"
+                return@launch
+            }
+            pairingGrants.clearCurrent()
+            teardown()
+            val cleanup = listOf<() -> Unit>(
+                { credentialStore.clearRefresh(profileId) },
+                { credentialStore.clearDeviceKey(profileId) },
+                { deviceKeys.delete(profileId) },
+                { staging?.cleanup(); Unit },
+                { AndroidEventCursorStore(context, profileId).clear(accountId) },
+                { clearLastProfile() },
+            ).map { action -> runCatching(action) }
+            if (cleanup.any { it.isFailure }) {
+                _operationNotice.value = "Gateway 已解除配对，但本机数据清理失败，请重试本机账户清理。"
+            }
         }
     }
 
@@ -317,7 +437,7 @@ class GatewayRuntime(
                     _operationNotice.value = refreshFailureNotice(cause)
                     return@launch
                 }
-                val tlsPin = negotiatedPin(endpoint, negotiated.tlsSpkiSha256)
+                val tlsPin = identityTrust.verifyNegotiation(endpoint, current.username, negotiated)
                 if (endpoint.isTls && tlsPin == null) {
                     _operationNotice.value =
                         "刷新网关凭据失败：Gateway 没有返回可核验的 TLS 身份，已按安全要求中止。"
@@ -412,12 +532,13 @@ class GatewayRuntime(
         _phase.value = ConnectionPhase.Negotiating
         connectionJob = scope.launch {
             try {
-            val auth = authClientFor(endpoint.baseUrl)
+            val retainedPins = identityTrust.pinsBeforeConnect(endpoint, lastUser, restoring = true)
+            val auth = authClientFor(endpoint.baseUrl, retainedPins)
             val negotiated = runCatching { auth.negotiate("neg_" + newToken()) }.getOrElse { cause ->
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
                 return@launch
             }
-            val tlsPin = negotiatedPin(endpoint, negotiated.tlsSpkiSha256)
+            val tlsPin = identityTrust.verifyNegotiation(endpoint, lastUser, negotiated)
             if (endpoint.isTls && tlsPin == null) {
                 _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
                 return@launch
@@ -492,22 +613,23 @@ class GatewayRuntime(
             pinnedSpkiSha256 = pins,
             accessToken = session.accessToken,
         )
-        pairingGrants.bind(
-            PairingGrantBinding(
+        val binding = PairingGrantBinding(
                 gatewayId = endpoint.baseUrl,
                 accountId = session.accountId,
                 installationId = installationId(),
-            ),
-        )
+            )
+        pairingGrants.bind(binding)
         val transport = GatewayTransport(profile)
         val eventStreamStatus = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
         val http = GatewayHttpClient(
             profile = profile,
             transport = transport,
             signer = { preimage -> deviceKeys.sign(profileId, preimage) },
-            cursorStore = InMemoryEventCursorStore(),
+            cursorStore = AndroidEventCursorStore(context, profileId),
             statusSink = eventStreamStatus,
+            handlePlatformEvent = { event -> handlePlatformEvent(event, session.sessionId, binding) },
         )
+        activeHttpClient = http
         val conversationClient = ConversationClient(http)
         // Contract §7.2: approval cards are only wired when the Gateway said it
         // serves them. Without the endpoint there is nothing to press, so the
@@ -561,11 +683,13 @@ class GatewayRuntime(
         val gate = com.openandroidintelligence.conversation.attachment.AttachmentSubmissionGate(
             onSubmit = { error("ATTACHMENT_SUBMISSION_REQUIRES_CONVERSATION_CONTROLLER") },
         )
+        val staging = attachmentStagingStore(endpoint.baseUrl, session.accountId, installationId())
+        activeAttachmentStaging = staging
         val attachmentCoordinator = GatewayAttachmentDraftCoordinator(
             uploader,
             gate,
             sessionScope,
-            attachmentStagingStore(endpoint.baseUrl, session.accountId, installationId()),
+            staging,
         )
 
         val conversationScope = ConversationScope(
@@ -609,10 +733,35 @@ class GatewayRuntime(
         sessionJob = null
         _controller.value = null
         accessTokenHolder = null
+        activeHttpClient = null
+        activeAttachmentStaging = null
         deviceRequestClient = null
         activeThread.set(null)
         pairingGrants.unbind()
         _phase.value = ConnectionPhase.Disconnected
+    }
+
+    private fun handlePlatformEvent(event: GatewayEvent, sessionId: String, binding: PairingGrantBinding): Boolean {
+        if (event.event !in setOf("session.revoked", "pairing.grant.changed")) return false
+        val body = JsonFields.obj(Json.parse(event.data)) ?: error("PLATFORM_EVENT_INVALID")
+        val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: error("PLATFORM_EVENT_INVALID")
+        when (event.event) {
+            "session.revoked" -> {
+                val revoked = JsonFields.string(payload, "sessionId") ?: error("PLATFORM_EVENT_INVALID")
+                if (revoked == sessionId) {
+                    teardown()
+                    _phase.value = ConnectionPhase.Failed("SESSION_REVOKED")
+                }
+            }
+            "pairing.grant.changed" -> {
+                val revision = JsonFields.long(payload, "grantRevision") ?: error("PLATFORM_EVENT_INVALID")
+                check(revision >= 0) { "PLATFORM_EVENT_INVALID" }
+                pairingGrants.clearCurrent()
+                pairingGrants.bind(binding)
+                _operationNotice.value = "网关授权已变更，请重新确认本机授权。"
+            }
+        }
+        return true
     }
 
     private fun authClientFor(
@@ -634,6 +783,7 @@ class GatewayRuntime(
     )
 
     private var accessTokenHolder: String? = null
+    private var activeHttpClient: GatewayHttpClient? = null
 
     /**
      * 当前会话的设备请求执行通路（契约 §10 claim/result）。
@@ -659,6 +809,11 @@ class GatewayRuntime(
     }
 
     private fun saveLastProfile(gatewayUrl: String, username: String, profileId: String, session: SessionCredentials) {
+        val endpoint = checkNotNull(GatewayEndpoint.parse(gatewayUrl))
+        val trustId = if (endpoint.isTls) checkNotNull(identityTrust.retained(endpoint, username)).spki else ""
+        accountProfiles.save(AccountProfile(profileId, gatewayUrl, username, trustId))
+        accountProfiles.saveBinding(profileId, AndroidAccountProfileStore.Binding(session.accountId, session.deviceId, session.sessionId, DEVICE_KEY_ENCODING_VERSION))
+        _savedProfiles.value = accountProfiles.list()
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_LAST_GATEWAY, gatewayUrl)
@@ -709,8 +864,6 @@ class GatewayRuntime(
      * return a usable identity, which the caller fails instead of silently
      * downgrading the account to unverified system trust.
      */
-    private fun negotiatedPin(endpoint: GatewayEndpoint, negotiated: String?): String? =
-        if (endpoint.isTls) negotiated?.takeIf(SpkiPinning::isProtocolPin) else null
 
     private fun attachmentStagingStore(gatewayId: String, accountId: String, installId: String): LocalAttachmentStagingStore {
         val scopeId = "$gatewayId\n$accountId\n$installId"
@@ -735,7 +888,14 @@ class GatewayRuntime(
             override fun cleanupExpired(nowMillis: Long, maxAgeMillis: Long) =
                 delegate.cleanupExpired(nowMillis, maxAgeMillis)
 
-            override fun cleanup() = delegate.cleanup()
+            override fun cleanup() {
+                if (directory.exists()) {
+                    val files = directory.listFiles() ?: error("ATTACHMENT_STORAGE_UNAVAILABLE")
+                    files.filter { it.extension == "part" || it.extension == "stage" }.forEach {
+                        check(it.delete()) { "ATTACHMENT_STORAGE_UNAVAILABLE" }
+                    }
+                }
+            }
         }
     }
 

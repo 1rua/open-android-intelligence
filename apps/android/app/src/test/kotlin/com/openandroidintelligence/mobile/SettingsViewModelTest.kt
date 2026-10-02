@@ -395,14 +395,15 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun aGatewayWithoutDeviceRequestsReadsAsUnavailableInUiState() {
+    fun incompleteNegotiationFailsBeforePasswordAndKeepsDeviceRequestsUnavailable() {
         val gateway = LoopbackGatewayStub()
         try {
             gateway.respond(NEGOTIATE_PATH, NEGOTIATE_WITHOUT_DEVICE_REQUESTS_BODY)
             gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
             val runtime = runtimeFor(gateway)
             runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            awaitConnected(runtime)
+            assertTrue(awaitCondition(10_000L) { runtime.phase.value is ConnectionPhase.Failed })
+            assertFalse(gateway.targetsOf("POST").contains(PASSWORD_PATH))
 
             val state = viewModelFor(runtime).uiState.value
 
@@ -452,6 +453,15 @@ class SettingsViewModelTest {
         externalScope = testScope,
     )
 
+    private fun awaitCondition(timeoutMillis: Long, condition: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return true
+            Thread.sleep(20L)
+        }
+        return false
+    }
+
     private fun awaitConnected(runtime: GatewayRuntime) {
         val deadline = System.currentTimeMillis() + 10_000L
         while (System.currentTimeMillis() < deadline) {
@@ -472,38 +482,38 @@ class SettingsViewModelTest {
 
         /** 网关同意全部五项客户端声明过的能力。 */
         val NEGOTIATE_ALL_FIVE_BODY = """
-            {"protocol":"2.1","data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
+            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":["agent-command-catalog-v1","agent-command-new-v1",
             "agent-approval-cards-v1","message-batches-v1","generation-cancel-v1"]},
             "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
         """.trimIndent()
 
         /** 网关只同意 catalog 与 generation-cancel；message-batches 被略去。 */
         val NEGOTIATE_REFUSED_BODY = """
-            {"protocol":"2.1","data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
+            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":["agent-command-catalog-v1","generation-cancel-v1"]},
             "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
         """.trimIndent()
 
         /** 网关没有声明 deviceRequests 能力。 */
         val NEGOTIATE_WITHOUT_DEVICE_REQUESTS_BODY = """
-            {"protocol":"2.1","data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
+            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "conversationUi":["agent-command-catalog-v1"]},
             "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
         """.trimIndent()
     }
 }

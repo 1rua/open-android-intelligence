@@ -36,15 +36,19 @@ internal class InMemoryCredentialStore : GatewayCredentialStore {
  * 内存版设备密钥：算法仍是真实的 Ed25519（JDK 自带），只是不需要 Android Keystore。
  */
 internal class InMemoryDeviceKeySource : DeviceKeySource {
-    private val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+    private val keys = ConcurrentHashMap<String, java.security.KeyPair>()
+    private fun key(profileId: String) = keys.getOrPut(profileId) { KeyPairGenerator.getInstance("Ed25519").generateKeyPair() }
 
     override fun publicKeyBase64Url(profileId: String): String =
-        Base64.getUrlEncoder().withoutPadding().encodeToString(keyPair.public.encoded)
+        Base64.getUrlEncoder().withoutPadding().encodeToString(key(profileId).public.encoded.takeLast(32).toByteArray())
 
     override fun sign(profileId: String, preimage: ByteArray): ByteArray =
         Signature.getInstance("Ed25519").run {
-            initSign(keyPair.private)
+            initSign(key(profileId).private)
             update(preimage)
             sign()
         }
+
+    override fun delete(profileId: String) { keys.remove(profileId) }
+    fun hasKey(profileId: String): Boolean = keys.containsKey(profileId)
 }

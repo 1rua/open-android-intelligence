@@ -22,6 +22,7 @@ artifacts/test-runs
 # Android
 apps/android/local.properties
 apps/android/.gradle/
+apps/android/.kotlin/
 apps/android/**/build/
 apps/android/**/*.apk
 apps/android/**/*.aab

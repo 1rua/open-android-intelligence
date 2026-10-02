@@ -88,6 +88,7 @@ internal object AuditLineCodec {
     private val decoder = Base64.getUrlDecoder()
 
     sealed interface Decoded {
+        data class RetentionAnchor(val headHash: String) : Decoded
         data class Chained(val event: AuditEvent, val previousHash: String, val hash: String) : Decoded
 
         data class Legacy(val event: AuditEvent) : Decoded
@@ -101,9 +102,14 @@ internal object AuditLineCodec {
             .joinToString("|")
     }
 
+    fun retentionAnchor(headHash: String): String =
+        "v3-anchor|$headHash|${base64Url(sha256("audit-retention-anchor|$headHash".toByteArray(StandardCharsets.UTF_8)))}"
+
     fun decode(line: String): Decoded {
         val fields = line.split('|')
         return when {
+            fields.size == 3 && fields[0] == "v3-anchor" && SHA256_BASE64.matches(fields[1]) &&
+                line == retentionAnchor(fields[1]) -> Decoded.RetentionAnchor(fields[1])
             fields.size == FIELD_COUNT + 1 && fields[0] == LEGACY_VERSION ->
                 // v1 行同样带版本前缀，解码前必须先剥掉，否则旧格式记录会被
                 // 误判成不可解析，升级前的历史就会「读崩」。
@@ -160,6 +166,10 @@ internal object AuditLineCodec {
             if (line.isBlank()) continue
             index++
             when (val decoded = decode(line)) {
+                is Decoded.RetentionAnchor -> {
+                    if (index != 1) return broken(index, "retention-anchor-inside-chain")
+                    head = decoded.headHash
+                }
                 is Decoded.Chained -> when {
                     decoded.previousHash != head -> return broken(index, "chain-link-mismatch")
                     decoded.hash != digest(decoded.previousHash, payloadOf(decoded.event)) ->

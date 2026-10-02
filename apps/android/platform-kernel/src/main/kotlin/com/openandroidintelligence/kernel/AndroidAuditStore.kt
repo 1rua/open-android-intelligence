@@ -88,6 +88,7 @@ class PersistentAuditSink(
     override fun write(event: AuditEvent) {
         synchronized(lock) {
             val cutoff = clock().minus(retention)
+            purgeExpiredPrefix(cutoff)
             val line = AuditLineCodec.encodeChained(event, recovered.headHash)
             append(line)
             recovered = Recovered(
@@ -147,7 +148,9 @@ class PersistentAuditSink(
     private fun load(): Recovered {
         if (!file.isFile) return Recovered(emptyList(), AuditLineCodec.GENESIS)
         val cutoff = clock().minus(retention)
-        val lines = runCatching { file.readLines(StandardCharsets.UTF_8) }.getOrDefault(emptyList())
+        val lines = runCatching { purgeExpiredPrefix(cutoff) }.getOrElse {
+            runCatching { file.readLines(StandardCharsets.UTF_8) }.getOrDefault(emptyList())
+        }
         var head = AuditLineCodec.GENESIS
         val events = mutableListOf<AuditEvent>()
         for (line in lines) {
@@ -155,6 +158,7 @@ class PersistentAuditSink(
             // 无法解析的行不进入内存视图（旧规则：损坏的文件不能让宿主无法
             // 启动），但它在磁盘上原样保留，verifyChain 会如实报告断链。
             when (val decoded = AuditLineCodec.decode(line)) {
+                is AuditLineCodec.Decoded.RetentionAnchor -> head = decoded.headHash
                 is AuditLineCodec.Decoded.Chained -> {
                     events += decoded.event
                     head = decoded.hash
@@ -166,6 +170,43 @@ class PersistentAuditSink(
             }
         }
         return Recovered(events.filterNot { isExpired(it, cutoff) }, head)
+    }
+
+    /** Preserve retained record hashes and the deleted prefix's last digest. Never rewrite a broken chain. */
+    private fun purgeExpiredPrefix(cutoff: Instant): List<String> {
+        if (!file.isFile) return emptyList()
+        val lines = file.readLines(StandardCharsets.UTF_8).filter { it.isNotBlank() }
+        if (!AuditLineCodec.verify(lines).isIntact) return lines
+        var removed = 0
+        var head = AuditLineCodec.GENESIS
+        for (line in lines) {
+            when (val decoded = AuditLineCodec.decode(line)) {
+                is AuditLineCodec.Decoded.RetentionAnchor -> { head = decoded.headHash; removed++ }
+                is AuditLineCodec.Decoded.Chained -> {
+                    if (!isExpired(decoded.event, cutoff)) break
+                    head = decoded.hash
+                    removed++
+                }
+                else -> break
+            }
+        }
+        val anchorCount = if (lines.firstOrNull()?.startsWith("v3-anchor|") == true) 1 else 0
+        if (removed <= anchorCount) return lines
+        val retained = listOf(AuditLineCodec.retentionAnchor(head)) + lines.drop(removed)
+        val parent = checkNotNull(file.absoluteFile.parentFile)
+        val temporary = File.createTempFile("audit-retention-", ".tmp", parent)
+        try {
+            FileOutputStream(temporary).use { output ->
+                output.write((retained.joinToString("\n") + "\n").toByteArray(StandardCharsets.UTF_8))
+                output.fd.sync()
+            }
+            java.nio.file.Files.move(temporary.toPath(), file.toPath(),
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            com.openandroidintelligence.plugin.pkg.DirectoryDurability.sync(parent)
+        } finally {
+            temporary.delete()
+        }
+        return retained
     }
 
     private fun isExpired(event: AuditEvent, cutoff: Instant): Boolean =

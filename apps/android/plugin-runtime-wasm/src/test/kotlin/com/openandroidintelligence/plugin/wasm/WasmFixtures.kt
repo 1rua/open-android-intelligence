@@ -140,10 +140,13 @@ internal object WasmFixtures {
      * It imports `kernel_log` to prove a known import is accepted, and returns
      * `(pointer, length)` packed into one 64-bit word as the ABI requires.
      */
-    fun echo(): ByteArray {
+    fun echo(minPages: Int = 1, logCalls: Int = 0): ByteArray {
         val logType = listOf(I32, I32, I32) to emptyList<Byte>()
         val mainType = listOf(I32, I32) to listOf(I64)
-        val body = byteArrayOf(
+        val calls = (0 until logCalls).flatMap {
+            listOf(OP_I32_CONST, 0x00.toByte(), OP_I32_CONST, 0x00.toByte(), OP_I32_CONST, 0x00.toByte(), 0x10.toByte(), 0x00.toByte())
+        }.toByteArray()
+        val body = calls + byteArrayOf(
             OP_I32_CONST, 0x00, // response pointer: the exchange region
             OP_I64_EXTEND_I32_U,
             OP_I64_CONST, 0x20, // shift by 32
@@ -156,7 +159,7 @@ internal object WasmFixtures {
             typeSection(listOf(logType, mainType)) +
             importSection(listOf(Triple("open_android_intelligence_kernel_v1", "kernel_log", 0))) +
             functionSection(listOf(1)) +
-            memorySection(1) +
+            memorySection(minPages) +
             exportSection(listOf(Triple("open_android_intelligence_plugin_main", 1, EXPORT_FUNC))) +
             codeSection(listOf(body))
     }
@@ -197,6 +200,12 @@ internal object WasmFixtures {
             exportSection(listOf(Triple("open_android_intelligence_plugin_main", 0, EXPORT_FUNC))) +
             codeSection(listOf(body))
     }
+
+    /** Returns the previous page count as a response length; grow failure yields BAD_RESULT. */
+    fun growOnce(): ByteArray = MAGIC +
+        typeSection(listOf(listOf(I32, I32) to listOf(I64))) + functionSection(listOf(0)) +
+        memorySection(1) + exportSection(listOf(Triple("open_android_intelligence_plugin_main", 0, EXPORT_FUNC))) +
+        codeSection(listOf(byteArrayOf(OP_I32_CONST, 1, OP_MEMORY_GROW, 0, OP_I64_EXTEND_I32_U)))
 
     /** A module whose declared minimum memory exceeds any sane budget. */
     fun declaresTooMuchMemory(): ByteArray {

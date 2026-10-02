@@ -17,25 +17,35 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24.x"
+          node-version: "24.18.0"
           cache: "npm"
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm install --global npm@11.16.0
+          npm ci
+          npm ci --prefix plugin-tooling
+          python -m pip install pytest aiohttp jsonschema cryptography
 
       - name: Typecheck
-        run: npm run typecheck
+        run: |
+          npm run typecheck
+          npx tsc -p tsconfig.openclaw.json
+          npm run typecheck --prefix plugin-tooling
 
       - name: Gateway v2 Cross-Host Conformance
         run: npm run gateway:v2:conformance
 
       - name: Run Gateway Tests
-        run: npx vitest run gateway-contract/test/
+        run: |
+          npm test
+          npm test --prefix plugin-tooling
+          python -m pytest integrations/hermes/tests
 
   android:
     name: Android Build & Check
@@ -59,4 +69,4 @@ jobs:
           LC_ALL: C.UTF-8
         run: |
           chmod +x gradlew
-          ./gradlew check --stacktrace
+          ./gradlew check :app:assembleFullDebug --stacktrace

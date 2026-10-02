@@ -9,21 +9,18 @@ import org.junit.Test
 class GatewayLoginSanitizerTest {
 
     @Test
-    fun stripsDuplicateAndNestedProtocolSchemes() {
-        assertEquals("http://10.0.2.2:8045", sanitizeGatewayUrl("https://http://10.0.2.2:8045"))
-        assertEquals("http://127.0.0.1:11451", sanitizeGatewayUrl("http://http://127.0.0.1:11451"))
-        assertEquals("https://gateway.example.com", sanitizeGatewayUrl("https://https://gateway.example.com"))
-        assertEquals("https://gateway.example.com:8443", sanitizeGatewayUrl("http://https://gateway.example.com:8443"))
-        assertEquals("http://10.0.2.2:8045", sanitizeGatewayUrl("https://http://http://10.0.2.2:8045"))
+    fun nestedSchemesAreRejectedWithoutChoosingAnInnerProtocol() {
+        for (value in listOf("https://http://10.0.2.2:8045", "http://http://127.0.0.1:8045", "http://https://gateway.example")) {
+            assertEquals(value, sanitizeGatewayUrl(value))
+            assertNull(GatewayEndpoint.parse(sanitizeGatewayUrl(value)))
+        }
     }
 
     @Test
-    fun autoPrefixesHttpForLocalAndEmulatorAddresses() {
-        assertEquals("http://10.0.2.2:8045", sanitizeGatewayUrl("10.0.2.2:8045"))
-        assertEquals("http://10.0.2.2:11451", sanitizeGatewayUrl("10.0.2.2:11451"))
-        assertEquals("http://127.0.0.1:8045", sanitizeGatewayUrl("127.0.0.1:8045"))
-        assertEquals("http://localhost:8045", sanitizeGatewayUrl("localhost:8045"))
-        assertEquals("http://192.168.1.50:8045", sanitizeGatewayUrl("192.168.1.50:8045"))
+    fun schemelessAddressesAlwaysDefaultToHttps() {
+        for (value in listOf("10.0.2.2:8045", "localhost:8045", "192.168.1.50:8045", "localhost.attacker.example", "172.32.0.1", "gateway.example")) {
+            assertEquals("https://$value", sanitizeGatewayUrl(value))
+        }
     }
 
     @Test
@@ -38,16 +35,11 @@ class GatewayLoginSanitizerTest {
         val sanitizedEmulator = sanitizeGatewayUrl("10.0.2.2:8045")
         val endpoint1 = GatewayEndpoint.parse(sanitizedEmulator)
         assertNotNull(endpoint1)
-        assertEquals("http", endpoint1?.scheme)
+        assertEquals("https", endpoint1?.scheme)
         assertEquals("10.0.2.2", endpoint1?.host)
-        assertEquals(false, endpoint1?.isTls)
+        assertEquals(true, endpoint1?.isTls)
 
-        val sanitizedCorrupted = sanitizeGatewayUrl("https://http://127.0.0.1:11451")
-        val endpoint2 = GatewayEndpoint.parse(sanitizedCorrupted)
-        assertNotNull(endpoint2)
-        assertEquals("http", endpoint2?.scheme)
-        assertEquals("127.0.0.1", endpoint2?.host)
-        assertEquals(false, endpoint2?.isTls)
+        assertNull(GatewayEndpoint.parse(sanitizeGatewayUrl("https://http://127.0.0.1:11451")))
 
         val sanitizedTls = sanitizeGatewayUrl("https://gateway.example.com:8443/")
         val endpoint3 = GatewayEndpoint.parse(sanitizedTls)

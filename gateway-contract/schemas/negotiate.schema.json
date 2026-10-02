@@ -160,7 +160,16 @@
               "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
             },
             "tlsSpkiSha256": {
-              "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256"
+              "$comment": "No configured TLS identity is null for explicit plaintext deployments; HTTPS clients must refuse null before sending credentials. Zero is never an identity.",
+              "oneOf": [
+                { "type": "null" },
+                {
+                  "allOf": [
+                    { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256" },
+                    { "not": { "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000" } }
+                  ]
+                }
+              ]
             }
           }
         }

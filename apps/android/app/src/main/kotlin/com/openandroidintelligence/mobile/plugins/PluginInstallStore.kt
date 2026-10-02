@@ -43,6 +43,8 @@ class PluginInstallStore(private val context: Context) {
 
     val installRoot: File get() = File(context.filesDir, "plugins")
 
+    init { PluginInstaller(installRoot).recoverInterruptedCommits() }
+
     private val limits = PackageLimits(
         maxEntries = 64,
         maxSingleEntryBytes = 8 * 1024 * 1024,
@@ -66,47 +68,31 @@ class PluginInstallStore(private val context: Context) {
      * @throws PackageRejected 包未通过契约校验（消息即契约拒绝码）。
      * @throws PluginInstallRefused 宿主侧拒绝（同 ID 已存在）。
      */
-    fun install(packageBytes: ByteArray): InstalledPluginView {
+    fun install(packageBytes: ByteArray): InstalledPluginView = installVerified { it.verify(packageBytes) }
+
+    fun install(stream: java.io.InputStream): InstalledPluginView = installVerified { it.verify(stream) }
+
+    private fun installVerified(verify: (AlpVerifier) -> com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage): InstalledPluginView {
         val verifier = AlpVerifier(
             limits = limits,
             stagingRoot = File(installRoot, ".verify-staging").apply { mkdirs() },
         )
-        val verified = verifier.verify(packageBytes)
+        val verified = verify(verifier)
         val pluginId = verified.identity.pluginId
         val destination = File(installRoot, pluginId)
         if (destination.exists()) {
             deleteRecursively(verified.stagedDirectory)
             throw PluginInstallRefused("ALREADY_INSTALLED:$pluginId")
         }
-        // 校验器的暂存目录刻意不落保留条目（manifest.json 等）；宿主在提交前
-        // 把已验证包里的 manifest 原字节并回暂存目录，使安装目录自含元数据，
-        // 供设置面展示与内核后续使用——写入同一暂存目录保证安装仍是一次原子提交。
-        extractManifestBytes(packageBytes)?.let { manifestBytes ->
-            runCatching { File(verified.stagedDirectory, "manifest.json").writeBytes(manifestBytes) }
-        }
         val installer = PluginInstaller(installRoot)
         val installed: InstalledPlugin = try {
             installer.install(verified, current = null, approvalGranted = false)
         } finally {
             // 校验暂存区在安装提交后即无用途；清理失败不影响安装结果。
-            runCatching { deleteRecursively(File(installRoot, ".verify-staging")) }
+            runCatching { deleteRecursively(verified.stagedDirectory) }
         }
         return readView(installed.directory)
     }
-
-    /** 从同一份已校验字节里取回 manifest.json 原文（与校验读到的完全一致）。 */
-    private fun extractManifestBytes(packageBytes: ByteArray): ByteArray? = runCatching {
-        val archive = java.nio.file.Files.createTempFile("alp-manifest-", ".zip").toFile()
-        try {
-            archive.writeBytes(packageBytes)
-            java.util.zip.ZipFile(archive).use { zip ->
-                val entry = zip.getEntry("manifest.json") ?: return null
-                zip.getInputStream(entry).use { stream -> stream.readBytes() }
-            }
-        } finally {
-            archive.delete()
-        }
-    }.getOrNull()
 
     private fun readView(directory: File): InstalledPluginView {
         val manifest = File(directory, "manifest.json")

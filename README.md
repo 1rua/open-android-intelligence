@@ -9,7 +9,7 @@
 <p align="center">
   <a href="#-项目目的"><img src="https://img.shields.io/badge/架构-模块化插件架构%20v2-10b981?style=flat-square" alt="Architecture" /></a>
   <a href="#-快速上手与使用方法"><img src="https://img.shields.io/badge/协议-Gateway%20Protocol%20v2-38bdf8?style=flat-square" alt="Protocol" /></a>
-  <a href="#-当前实现与验证状态"><img src="https://img.shields.io/badge/跨宿主一致性-24%2F24%20PASS-34d399?style=flat-square" alt="Conformance" /></a>
+  <a href="#-当前实现与验证状态"><img src="https://img.shields.io/badge/跨宿主契约-66%20vectors-34d399?style=flat-square" alt="Conformance" /></a>
   <a href="#-安全模型与设计底线"><img src="https://img.shields.io/badge/安全模型-Fail--Closed%20%2F%20Zero--Root-f59e0b?style=flat-square" alt="Security" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/许可证-MIT-94a3b8?style=flat-square" alt="License" /></a>
 </p>
@@ -31,9 +31,9 @@
 
 ---
 
-## 🏛️ 最新架构全景
+## 🏛️ 目标架构全景
 
-项目采用 **模块化插件架构（Modular Plugin Architecture）** 与 **Gateway Protocol v2**。
+项目采用 **模块化插件架构（Modular Plugin Architecture）** 与 **Gateway Protocol v2**。下列分层描述设计目标；实际装配与验证范围见「当前实现与验证状态」，插件设备执行链路和 Companion 私网通道尚未启用。
 
 <div align="center">
   <img src="assets/readme/architecture.svg" alt="Open Android Intelligence Architecture" width="100%" />
@@ -69,8 +69,8 @@
 - **多账号与多租户隔离**：
   - 单个适配器部署支持托管多个彼此独立的 Gateway 账号；
   - 各账号的配对设备、会话记录、消息状态、长期记忆与密钥物理隔离；
-- **零保留（Zero-Retention）推理支持**：
-  - 与模型提供方交互遵循隐私合规与零留存原则，不留下用户设备私密资产持久副本。
+- **零保留（Zero-Retention）设计目标**：
+  - 敏感暂存内容已加密；宿主权威历史与部分 ACK 清理接口尚未接通，当前版本不能承诺完整零保留。
 
 ---
 
@@ -130,7 +130,7 @@ open-android-intelligence/
 
 ### 1. 环境准备
 
-- **Node.js**：`>= 24.18.0`（推荐使用 nvm）
+- **Node.js / npm**：验证使用固定 `24.18.0 / 11.16.0`；仓库 `tools/run-node24` 可管理本地固定工具链
 - **Python**：`>= 3.12`
 - **JDK**：`JDK 17` 或更高
 - **Android SDK**：`compileSdk 35`, `minSdk 34`
@@ -141,13 +141,17 @@ open-android-intelligence/
 
 ```bash
 # 安装基础依赖
-npm install
+npm ci
 
-# 运行跨宿主网关一致性测试（Hermes + OpenClaw 24/24 向量一致性全绿）
+# 运行跨宿主网关一致性测试（Hermes + OpenClaw 共用 66 个契约向量）
 npm run gateway:v2:conformance
 ```
 
 ### 3. Agent 端 Hermes 网关账号配置
+
+两个宿主的持久化消息、事件和设备请求均需要账号 AEAD 主密钥；缺少或不匹配时拒绝读写，不回退为明文。OpenClaw 部署需由运维提供独立的原始 32 字节密钥文件（普通文件、非符号链接、权限 `0600`），并设置 `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin`。Hermes 使用宿主 SecretStore 或下述 ADR 0023 初始化步骤。保管主密钥时应与数据库分开；仅恢复数据库不足以解密正文，不能用插件签名 seed 或 APK keystore 代替主密钥。
+
+升级已有明文数据库前先备份，并停止其他读写连接。首次打开会事务加密既有正文，再执行 WAL checkpoint 和 VACUUM 清除物理明文残留，需要足够磁盘空间；遇到读锁或清理失败时拒绝服务该账号，解除阻塞后重新打开可继续清理，不会删除已有历史。两宿主与 Android 还须同步升级核心 Schema 摘要，并按部署证书配置真实 SPKI；配置方法见下文。
 
 项目提供了开箱即用的命令行工具 `hermes-account.py`，用于快速完成 Hermes 网关初始化与多账号生命周期管理：
 
@@ -157,7 +161,7 @@ npm run gateway:v2:conformance
 
 # 步骤 2：创建 Gateway 账号（支持为不同用户创建独立隔离的网关上下文）
 ./hermes-account.py create my_user
-# 按照终端交互提示设置强密码，或保存自动生成的账号刷新凭证
+# 按照终端交互提示设置密码；重复 create 会拒绝覆盖已有账号
 
 # 步骤 3：查看网关当前托管状态与配对概况
 ./hermes-account.py status
@@ -165,17 +169,21 @@ npm run gateway:v2:conformance
 
 ### 4. 构建官方设备插件包（.alp）
 
-你可以使用项目自带的确定性构建工具打包设备插件：
+先用固定 Rust 工具链编译真实 WASM，再提供由发行者保管的原始 32 字节 Ed25519 seed 文件。参考插件业务目前仍为 echo，以下步骤验证编译、ABI 和封装，不代表通知/短信/通话查询已可执行。
 
 ```bash
-cd plugin-tooling
-npm install
-npm run build:references
+cargo build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml
+cargo test --locked --offline --manifest-path plugins/Cargo.toml
+npm ci --prefix plugin-tooling
+OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE=/private/path/plugin-seed.bin \
+  npm run build:references --prefix plugin-tooling
 ```
 构建产物将输出在 `plugins/dist/` 目录下：
-- `org.agentlife.notifications-1.0.0.alp`
-- `org.agentlife.sms-1.0.0.alp`
-- `org.agentlife.call-log-1.0.0.alp`
+- `org.openandroidintelligence.notifications-1.0.0.alp`
+- `org.openandroidintelligence.sms-1.0.0.alp`
+- `org.openandroidintelligence.call-log-1.0.0.alp`
+
+缺少私钥或真实 WASM 时正式构建失败；公开 seed 仅供 `npm run build:fixtures --prefix plugin-tooling` 使用，输出到 `plugins/dist/fixtures/`，不得作为发行身份。
 
 ### 5. Android 宿主编译
 
@@ -183,12 +191,12 @@ npm run build:references
 
 ```bash
 cd apps/android
-./gradlew --no-daemon :app:assembleDebug
+./gradlew --no-daemon check :app:assembleFullDebug
 ```
 
 所有 APK 模块（`app`、`assistant-holder`）的调试包统一使用仓库内固定密钥
 `app/keystore/debug.keystore` 签名（配置在 `apps/android/build.gradle.kts`），不再依赖各机器
-随机生成的 `~/.android/debug.keystore`：本机、CI 与 Release 里的调试包签名完全一致，可以直接
+随机生成的 `~/.android/debug.keystore`：本机、CI 与 nightly 预览调试包签名完全一致，可以直接
 互相覆盖安装，不会出现 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。校验任意调试包的签名身份：
 
 ```bash
@@ -200,17 +208,22 @@ apps/android/tools/verify-debug-signing.sh \
 
 ## 📊 当前实现与验证状态
 
-项目坚持真实测试闭环与“逐步完成”原则，所有状态以实际机读与运行门禁为准：
+库测试、协议向量、SDK 形状集成和设备端到端测试分别列出；历史 FakeAdapter 记录只说明测试替身的行为。逐项核验、修复及未完成原因见 [2026-10-02 审查修复记录](docs/reviews/2026-10-02-review-remediation.zh-CN.md)。
 
 | 验证领域 | 门禁规范与证据 | 状态 |
 | --- | --- | --- |
-| **Gateway Protocol v2 跨宿主契约** | `gateway-contract` 24 项跨语言（TS/Python）黄金向量 | ✅ **PASS (24/24 全绿)** |
-| **Hermes 原生网关适配器** | `integrations/hermes` 单元与集成测试 | ✅ **PASS** |
-| **OpenClaw 适配器插件** | `integrations/openclaw` 运行时及 Schema 验证 | ✅ **PASS** |
-| **设备插件确定性打包器** | `plugin-tooling` RFC 8785 标准 ZIP 容器 | ✅ **PASS** |
-| **官方参考插件构建** | 通知、短信、通话记录三款 .alp 真实输出产物 | ✅ **READY** |
-| **Android 核心架构实现** | Platform Kernel、WASM 运行时集成、Material 3 界面 | ✅ **READY** |
-| **物理真机无缝网络全链路** | 依赖特定物理设备网络环境及 Rootless tsnet 连通性测试 | ⏳ **PENDING (推进中)** |
+| **Gateway Protocol v2 跨宿主契约** | 66 个 TS/Python 共用契约向量 | 契约测试；不覆盖整个设备执行链路 |
+| **Hermes 网关适配器** | pytest 与真实 aiohttp SSE/WS 签名、撤销测试 | 已覆盖；宿主历史/工具结果交付仍不完整 |
+| **OpenClaw 适配器插件** | 锁定 SDK 形状、真实 HTTP 验签与回复回调测试 | 已覆盖；权威历史与媒体回复端口待接通 |
+| **设备插件打包与运行时库** | 确定性签名封装、真实 WASM ABI、预算和安装恢复测试 | 库验证通过；App 执行链路待装配 |
+| **官方参考插件业务** | 通知、短信、通话记录实现当前为 echo | 未完成，不能执行查询业务 |
+| **Android 账户与界面** | 编译、Robolectric 与模块测试 | 账户/身份/事件逻辑已覆盖；加密离线镜像待接通 |
+| **Companion 私网通道** | 未完成 tsnet pump 与可信 IPC token 签发 | 入口关闭，拒绝创建通道 |
+| **物理真机端到端** | Android Keystore、证书轮换、SAF 取消和真实宿主 | 本轮未执行 |
+
+HTTPS 部署必须配置实际 TLS 终止点证书的 SPKI SHA-256：两宿主使用 `OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64 个十六进制字符>`（OpenClaw 也支持 `pluginConfig.tlsSpkiSha256`）。未配置时协商返回 `null`，HTTPS 客户端拒绝提交凭据；显式 HTTP 按 ADR 0047 保留持续警告。证书公钥摘要可由 `openssl x509 -in gateway.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256` 计算。Schema 摘要有变化，宿主与 Android 必须同步升级。
+
+正式 `v*` 标签只发布使用私有发行密钥签名的非 Debug APK，配置和旧 Debug 安装迁移限制见 [Android README](apps/android/README.md#release-signing)。
 
 ---
 

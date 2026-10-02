@@ -48,7 +48,7 @@ TEST_HOST_API = HostApiCompatibility(
 )
 ACCOUNT_ID = "alice"
 INSTALLATION_ID = "install_grant_events"
-DEVICE_PUBLIC_KEY = "device-public-key"
+DEVICE_PUBLIC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 DEVICE_ID = "dev_grant_events"
 
 

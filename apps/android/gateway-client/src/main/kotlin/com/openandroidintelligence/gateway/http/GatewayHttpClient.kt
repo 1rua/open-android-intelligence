@@ -11,8 +11,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
@@ -81,6 +81,7 @@ class GatewayHttpClient(
      * "working".
      */
     private val maxConsecutiveFailures: Int = 6,
+    private val handlePlatformEvent: suspend (GatewayEvent) -> Boolean = { false },
 ) {
 
     /**
@@ -103,6 +104,24 @@ class GatewayHttpClient(
      *   would be starved rather than served, so use one client per stream.
      */
     private val deliveredEventIds = LinkedHashSet<String>()
+
+    @Synchronized private fun wasDelivered(eventId: String?) = !eventId.isNullOrBlank() && eventId in deliveredEventIds
+
+    private suspend fun FlowCollector<GatewayEvent>.deliverEvent(event: GatewayEvent) {
+        if (wasDelivered(event.id)) return
+        try {
+            if (!handlePlatformEvent(event)) emit(event)
+            // Cancellation, reducer and persistence failures leave it replayable.
+            event.id?.takeIf { it.isNotBlank() }?.let { cursorStore.save(profile.accountId, it) }
+            markEventDelivered(event.id)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (cause: Throwable) {
+            throw EventDeliveryFailed(cause)
+        }
+    }
+
+    private class EventDeliveryFailed(cause: Throwable) : RuntimeException(cause)
 
     /**
      * True when this event id has not been delivered yet.
@@ -186,15 +205,7 @@ class GatewayHttpClient(
                         consecutiveFailures = 0
                         statusSink?.report(EventStreamStatus.LIVE)
 
-                        val eventId = event.id
-                        if (!eventId.isNullOrBlank()) {
-                            cursorStore.save(profile.accountId, eventId)
-                            if (!markEventDelivered(eventId)) {
-                                GatewayLog.d(TAG, "skipping duplicate ws event id=$eventId")
-                                return@collect
-                            }
-                        }
-                        emit(event)
+                        deliverEvent(event)
                     }
                     if (currentCoroutineContext().isActive) {
                         streamFailed = true
@@ -205,6 +216,15 @@ class GatewayHttpClient(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
+                    if (e is EventDeliveryFailed) {
+                        statusSink?.report(EventStreamStatus.FAILED)
+                        throw requireNotNull(e.cause)
+                    }
+                    if (e is EventCursorExpiredException) {
+                        cursorStore.clear(profile.accountId)
+                        statusSink?.report(EventStreamStatus.FAILED)
+                        throw e
+                    }
                     streamFailed = true
                     lastFailure = e
                     if (!receivedWsEventInAttempt) {
@@ -226,12 +246,7 @@ class GatewayHttpClient(
                         "$EVENTS_TARGET?cursor=$sseCursor"
                     }
 
-                    val parser = SseParser { event ->
-                        val eventId = event.id
-                        if (!eventId.isNullOrBlank()) {
-                            cursorStore.save(profile.accountId, eventId)
-                        }
-                    }
+                    val parser = SseParser()
 
                     val headers = RawHeaders.validate(
                         listOf(
@@ -256,18 +271,21 @@ class GatewayHttpClient(
                             statusSink?.report(EventStreamStatus.LIVE)
                         }
                         for (event in parsedEvents) {
-                            val eventId = event.id
-                            if (!markEventDelivered(eventId)) {
-                                GatewayLog.d(TAG, "skipping duplicate sse event id=$eventId")
-                                continue
-                            }
-                            GatewayLog.d(TAG, "event ${event.event} id=${event.id}")
-                            emit(event)
+                            deliverEvent(event)
                         }
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
+                    if (e is EventDeliveryFailed) {
+                        statusSink?.report(EventStreamStatus.FAILED)
+                        throw requireNotNull(e.cause)
+                    }
+                    if (e is EventCursorExpiredException) {
+                        cursorStore.clear(profile.accountId)
+                        statusSink?.report(EventStreamStatus.FAILED)
+                        throw e
+                    }
                     streamFailed = true
                     lastFailure = e
                     GatewayLog.w(TAG, "sse attempt failed: ${e.message}")

@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import java.util.Base64
 import org.junit.After
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -32,6 +33,7 @@ class GatewaySessionRefreshTest {
     private lateinit var gateway: LoopbackGatewayStub
     private lateinit var credentialStore: InMemoryCredentialStore
     private lateinit var pairingGrants: PairingGrantStateHolder
+    private lateinit var deviceKeys: InMemoryDeviceKeySource
 
     private val runtimeScope = CoroutineScope(Dispatchers.Unconfined)
 
@@ -39,6 +41,7 @@ class GatewaySessionRefreshTest {
     fun setUp() {
         gateway = LoopbackGatewayStub()
         credentialStore = InMemoryCredentialStore()
+        deviceKeys = InMemoryDeviceKeySource()
         val context = ApplicationProvider.getApplicationContext<Application>()
         pairingGrants = PairingGrantStateHolder(
             store = InMemoryPairingGrantStore(),
@@ -150,12 +153,85 @@ class GatewaySessionRefreshTest {
         scope = runtimeScope,
         pairingGrants = pairingGrants,
         credentialStore = credentialStore,
-        deviceKeys = InMemoryDeviceKeySource(),
+        deviceKeys = deviceKeys,
     )
 
+    @Test
+    fun unpairUsesTheRevocationEndpointAndClearsTheActualSigningKeyAfterConfirmation() {
+        val path = "/open-android-intelligence/v2/pairings/current"
+        gateway.respond(path, """{"protocol":"2.1","data":{"deviceId":"dev_stub","deviceKeysRevoked":true,"refreshRevoked":true,"grantsRevoked":true,"deviceRequestsRevoked":true,"unconfirmedAttachmentsRevoked":true,"sessionsRevoked":true}}""")
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        assertTrue(deviceKeys.hasKey(profileId()))
+        runtime.unpair()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { !deviceKeys.hasKey(profileId()) })
+        assertTrue(gateway.targetsOf("DELETE").contains(path))
+        assertFalse(credentialStore.hasRefresh(profileId()))
+        assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
+    }
+
+    @Test
+    fun refusedUnpairPreservesSigningAndRefreshKeysForRetry() {
+        gateway.respond("/open-android-intelligence/v2/pairings/current", """{"error":{"code":"SESSION_REVOKED"}}""", 401)
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        runtime.unpair()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.operationNotice.value != null })
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertTrue(credentialStore.hasRefresh(profileId()))
+        assertTrue(runtime.phase.value is ConnectionPhase.Connected)
+    }
+
+    @Test
+    fun logoutRetainsPublicProfileAndPairingKeyButClearsRefreshCredential() {
+        gateway.respond("/open-android-intelligence/v2/sessions/current", "{\"data\":{}}")
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        runtime.logout(revokeRefresh = true)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Disconnected })
+        assertEquals(listOf(profileId()), runtime.savedProfiles.value.map { it.localProfileId })
+        assertFalse(credentialStore.hasRefresh(profileId()))
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertFalse(gateway.requests.any { it.target.contains("pairings/current") })
+    }
+
+    @Test
+    fun switchingBackUsesOnlyTheSelectedProfilesCredential() {
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        runtime.chooseAnotherAccount()
+        runtime.login(gateway.baseUrl, "bob", "secret".toCharArray())
+        awaitConnected(runtime)
+        credentialStore.saveRefresh(profileId("bob"), "bob_refresh".toByteArray())
+        runtime.chooseAnotherAccount()
+        runtime.selectSavedAccount(profileId())
+        assertEquals("operator", awaitConnected(runtime).username)
+        assertTrue(gateway.requests.last { it.target == REFRESH_PATH }.body.contains("refresh_1"))
+        assertEquals("bob_refresh", credentialStore.loadRefresh(profileId("bob"))!!.decodeToString())
+        assertEquals(2, runtime.savedProfiles.value.size)
+    }
+
+    @Test
+    fun removingALoggedOutProfileDeletesItsKeyWithoutUnpairingTheGateway() {
+        gateway.respond("/open-android-intelligence/v2/sessions/current", "{\"data\":{}}")
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        runtime.logout(revokeRefresh = true)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Disconnected })
+        runtime.removeLocalAccount(profileId())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.savedProfiles.value.isEmpty() && !runtime.isManagingProfiles.value })
+        assertFalse(deviceKeys.hasKey(profileId()))
+        assertFalse(gateway.requests.any { it.target.contains("pairings/current") })
+    }
+
     /** 与 [GatewayRuntime] 内部的 profileId 规则一致：baseUrl|username 的 base64url。 */
-    private fun profileId(): String = Base64.getUrlEncoder().withoutPadding()
-        .encodeToString("${gateway.baseUrl}|operator".toByteArray(Charsets.UTF_8))
+    private fun profileId(username: String = "operator"): String = Base64.getUrlEncoder().withoutPadding()
+        .encodeToString("${gateway.baseUrl}|$username".toByteArray(Charsets.UTF_8))
 
     private fun awaitConnected(runtime: GatewayRuntime): ConnectionPhase.Connected {
         val deadline = System.currentTimeMillis() + AWAIT_MILLIS
@@ -184,15 +260,15 @@ class GatewaySessionRefreshTest {
         const val REFRESH_PATH = "/open-android-intelligence/v2/sessions/refresh"
 
         val NEGOTIATE_BODY = """
-            {"protocol":"2.1","data":{"negotiationId":"neg_stub","protocol":{"major":2,"minor":1},
+            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
             "features":{"auth":["password","refresh"],"messages":"chat-v1",
             "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
             "deviceRequests":"risk-queue-v1",
             "conversationUi":["agent-command-catalog-v1","agent-command-new-v1",
             "agent-approval-cards-v1","message-batches-v1","generation-cancel-v1"]},
             "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:stub"}}}
+            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
         """.trimIndent()
 
         val PASSWORD_BODY = """

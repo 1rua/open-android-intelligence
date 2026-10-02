@@ -251,11 +251,11 @@ class KernelIsolationTest {
             backend = InMemoryPrivateStoreBackend(),
             maxBytesPerPartition = 1_024L,
         )
-        val handleA = store.open("org.openandroidintelligence.sms", "account-a")
+        val handleA = store.open(smsIdentity, "account-a")
         store.write(handleA, "account-a", "cursor", "42".toByteArray())
 
         assertArrayEquals("42".toByteArray(), store.read(handleA, "account-a", "cursor"))
-        assertNull(store.read(store.open("org.openandroidintelligence.sms", "account-b"), "account-b", "cursor"))
+        assertNull(store.read(store.open(smsIdentity, "account-b"), "account-b", "cursor"))
 
         try {
             store.read(handleA, "account-b", "cursor")
@@ -270,7 +270,7 @@ class KernelIsolationTest {
         val backend = InMemoryPrivateStoreBackend()
         val store = PluginPrivateStore("install-1", backend, 1_024L)
         val foreign = PluginPrivateStore("install-2", backend, 1_024L)
-        val foreignHandle = foreign.open("org.openandroidintelligence.sms", "account-a")
+        val foreignHandle = foreign.open(smsIdentity, "account-a")
         foreign.write(foreignHandle, "account-a", "k", "v".toByteArray())
 
         try {
@@ -284,7 +284,7 @@ class KernelIsolationTest {
     @Test
     fun storageEnforcesItsQuota() {
         val store = PluginPrivateStore("install-1", InMemoryPrivateStoreBackend(), maxBytesPerPartition = 8L)
-        val handle = store.open("org.openandroidintelligence.sms", "account-a")
+        val handle = store.open(smsIdentity, "account-a")
         store.write(handle, "account-a", "k", ByteArray(8))
         try {
             store.write(handle, "account-a", "k2", ByteArray(1))
@@ -616,4 +616,54 @@ class KernelIsolationTest {
         }
         machine.transition(PluginState.UNINSTALLED)
     }
+    @Test fun refusesSubstitutedAuthorOrVersionBeforeRuntimeExecution() {
+        val kernel = kernel()
+        registered(kernel)
+        kernel.enable(smsIdentity.pluginId)
+        for (identity in listOf(smsIdentity.copy(authorKeyFingerprint = "other"), smsIdentity.copy(version = "9.0.0"))) {
+            assertTrue(runCatching { kernel.invoke(identity, "account-a", "pairing-a", "kernel.sms.read", byteArrayOf(1), session()) }.exceptionOrNull() is CapabilityDenied)
+            assertTrue(runCatching { registered(kernel, identity) }.exceptionOrNull() is ProviderRejected)
+        }
+    }
+
+    @Test fun storeUsesAuthorIdentityAndFencesEveryOperationAfterAccountDeletion() {
+        val memory = InMemoryPrivateStoreBackend()
+        var deletes = 0
+        val backend = object : PrivateStoreBackend by memory {
+            override fun deleteAccountPartitions(scopePrefix: String) { deletes++; memory.deleteAccountPartitions(scopePrefix) }
+        }
+        val store = PluginPrivateStore("install|1", backend, 1024)
+        val old = store.open(smsIdentity, "acct|a")
+        store.write(old, "acct|a", "secret", byteArrayOf(7))
+        assertNull(store.read(store.open(smsIdentity.copy(authorKeyFingerprint = "other"), "acct|a"), "acct|a", "secret"))
+        assertArrayEquals(byteArrayOf(7), store.read(store.open(smsIdentity.copy(version = "2.0.0"), "acct|a"), "acct|a", "secret"))
+        store.eraseAccount("acct|a")
+        assertEquals(1, deletes)
+        for (operation in listOf<() -> Any?>({ store.read(old, "acct|a", "secret") }, { store.write(old, "acct|a", "secret", byteArrayOf(8)) }, { store.delete(old, "acct|a", "secret") }, { store.keys(old, "acct|a") })) {
+            assertTrue(runCatching(operation).exceptionOrNull() is StorageDenied)
+        }
+        assertNull(store.read(store.open(smsIdentity, "acct|a"), "acct|a", "secret"))
+    }
+
+    @Test fun failedBackendDeletionFencesOldAndNewHandlesUntilSuccessfulRetry() {
+        val memory = InMemoryPrivateStoreBackend()
+        var rejectDelete = true
+        val backend = object : PrivateStoreBackend by memory {
+            override fun deleteAccountPartitions(scopePrefix: String) {
+                if (rejectDelete) error("DISK_FAILURE")
+                memory.deleteAccountPartitions(scopePrefix)
+            }
+        }
+        val store = PluginPrivateStore("install", backend, 1024)
+        val old = store.open(smsIdentity, "account")
+        store.write(old, "account", "secret", byteArrayOf(9))
+        assertTrue(runCatching { store.eraseAccount("account") }.isFailure)
+        assertTrue(runCatching { store.read(old, "account", "secret") }.exceptionOrNull() is StorageDenied)
+        assertTrue(runCatching { store.open(smsIdentity, "account") }.exceptionOrNull() is StorageDenied)
+        rejectDelete = false
+        store.eraseAccount("account")
+        assertNull(store.read(store.open(smsIdentity, "account"), "account", "secret"))
+        assertTrue(runCatching { store.read(old, "account", "secret") }.exceptionOrNull() is StorageDenied)
+    }
+
 }
