@@ -1526,6 +1526,14 @@ class CredentialStore:
         ).fetchone()
         return row is not None
 
+    def password_digest(self) -> str | None:
+        """Local snapshot used only by the session-issuing transaction."""
+        row = self.store.database.execute(
+            "SELECT password_hash FROM account_credentials WHERE credential_id = ?",
+            (self.PASSWORD_CREDENTIAL_ID,),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
     def verify_password(self, password: str) -> bool:
         row = self.store.database.execute(
             "SELECT password_hash FROM account_credentials WHERE credential_id = ?",
@@ -3526,7 +3534,7 @@ class GatewayAccount:
                 (next_revision, device_id),
             )
             self.events.append(
-                "pairing.grant.changed", correlation_id, {"grantRevision": next_revision}, current,
+                "pairing.grant.changed", correlation_id, {"deviceId": device_id, "grantRevision": next_revision}, current,
             )
             self.audit.append(
                 "pairing.grant.changed",
@@ -3608,6 +3616,8 @@ class SessionService:
             or self.credential_verifier is None
         ):
             raise GatewayError("AUTHENTICATION_FAILED")
+        credentials = CredentialStore(self.store)
+        credential_digest = credentials.password_digest()
         verifier = getattr(self.credential_verifier, "verify", self.credential_verifier)
         try:
             verified = verifier(self.account_id, username, password, installation)
@@ -3617,6 +3627,10 @@ class SessionService:
             raise GatewayError("AUTHENTICATION_FAILED")
         current = _now(now)
         with self.store.transaction():
+            # Compare under the same write lock as issuance: reset must fence
+            # in-flight old verification, including a missing->present digest.
+            if credentials.password_digest() != credential_digest:
+                raise GatewayError("AUTHENTICATION_FAILED")
             bundle = self._issue(installation_id, f"dev_{uuid.uuid4()}", current)
             self._register_device_key(bundle["deviceId"], installation_id, device_public_key, current)
             self.audit.append(
@@ -4023,7 +4037,7 @@ class GatewayCore:
         self._admission_lock = threading.RLock()
         self._admission_window: datetime | None = None
         self._negotiation_count = 0
-        self._password_count = 0
+        self._password_attempts: dict[tuple[str, str], tuple[datetime, int]] = {}
         self._password_jobs = 0
         self.commit_hook = commit_hook
         self.attachment_policy = attachment_policy or DEFAULT_ATTACHMENT_POLICY
@@ -4391,10 +4405,9 @@ class GatewayCore:
         with self._admission_lock:
             if self._admission_window is None or now < self._admission_window or now >= self._admission_window + timedelta(minutes=1):
                 self._admission_window = now
-                self._negotiation_count = self._password_count = 0
+                self._negotiation_count = 0
             if password:
-                self._password_count += 1
-                if self._password_count > 30 or self._password_jobs >= 2:
+                if self._password_jobs >= 2:
                     raise GatewayError("RATE_LIMITED")
                 self._password_jobs += 1
             else:
@@ -4402,14 +4415,32 @@ class GatewayCore:
                 if self._negotiation_count > 1000:
                     raise GatewayError("RATE_LIMITED")
 
+    def _admit_password(self, request: Any, account_id: str, now: datetime) -> None:
+        with self._admission_lock:
+            if self._password_jobs >= 2:
+                raise GatewayError("RATE_LIMITED")
+            for key, (window, _) in list(self._password_attempts.items()):
+                if now < window or now >= window + timedelta(minutes=1):
+                    del self._password_attempts[key]
+            peer = _value(request, "remoteAddress", "remote_address")
+            key = (peer if isinstance(peer, str) and peer else "internal", account_id)
+            window, count = self._password_attempts.get(key, (now, 0))
+            if count >= 30:
+                raise GatewayError("RATE_LIMITED")
+            # Bounded best-effort per-peer throttling, not a shared lockout.
+            # Expensive work always remains bounded by the two global slots.
+            self._password_attempts.pop(key, None)
+            if len(self._password_attempts) >= 1000:
+                del self._password_attempts[next(iter(self._password_attempts))]
+            self._password_attempts[key] = (window, count + 1)
+            self._password_jobs += 1
+
     def _handle_session_password(self, request: Any) -> GatewayResponse:
         body = _request_body(request)
         context = self._pre_auth_context(request, body if isinstance(body, Mapping) else {})
         admitted = False
         try:
             now = _request_now(request)
-            self._admit_pre_auth(True, now)
-            admitted = True
             if not isinstance(body, Mapping) or not self.contracts.validate("session.password", body):
                 raise GatewayError("SCHEMA_INVALID")
             installation = body["installation"]
@@ -4419,6 +4450,8 @@ class GatewayCore:
             if not self.account_exists(account_id):
                 raise GatewayError("AUTHENTICATION_FAILED")
             self.bind_negotiation(body["negotiationId"], account_id, installation["installationId"], now)
+            self._admit_password(request, account_id, now)
+            admitted = True
             account = self.open_gateway_account(account_id)
             try:
                 bundle = account.sessions.create_password_session(account_id, body["password"], installation, context["correlationId"], now)

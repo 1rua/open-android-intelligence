@@ -15,5 +15,11 @@ class AndroidEventCursorStore(context: Context, profileId: String) : EventCursor
     override fun clear(accountId: String) {
         check(prefs.edit().remove(prefix + digest(accountId)).commit()) { "CURSOR_PERSISTENCE_FAILED" }
     }
+    /** Also supports cleanup of a profile whose remote binding was never saved. */
+    fun clearProfile() {
+        val edit = prefs.edit()
+        prefs.all.keys.filter { it.startsWith(prefix) }.forEach(edit::remove)
+        check(edit.commit()) { "CURSOR_PERSISTENCE_FAILED" }
+    }
     private fun digest(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
 }

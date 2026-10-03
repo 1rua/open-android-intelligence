@@ -38,6 +38,7 @@ class PluginInstaller(
     private val installRoot: File,
     private val updatePolicy: PluginUpdatePolicy = PluginUpdatePolicy(),
     private val commitHook: (String) -> Unit = {},
+    private val directorySync: (File) -> Unit = DirectoryDurability::sync,
 ) {
     init { recoverInterruptedCommits() }
 
@@ -113,7 +114,7 @@ class PluginInstaller(
         val staged = createStagingDirectory(previous.identity)
         try {
             copyInto(retained, staged)
-            fsyncDirectory(staged)
+            staged.walkBottomUp().filter { it.isDirectory }.forEach(::fsyncDirectory)
             commitAtomically(destination, staged, current.identity.pluginId)
         } catch (cause: Exception) {
             staged.deleteRecursively()
@@ -219,7 +220,7 @@ class PluginInstaller(
     }
 
     private fun fsyncDirectory(directory: File) {
-        DirectoryDurability.sync(directory)
+        directorySync(directory)
     }
 
     private fun createStagingDirectory(identity: PluginIdentity): File {

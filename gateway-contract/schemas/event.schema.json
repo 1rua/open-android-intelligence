@@ -59,6 +59,10 @@
       "required": ["grantRevision"],
       "properties": {
         "grantRevision": { "type": "integer", "minimum": 0 },
+        "deviceId": {
+          "$comment": "All newly emitted notifications identify the affected device. Optional only for replay of persisted pre-upgrade events.",
+          "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+        },
         "pluginId": { "type": "string", "minLength": 1 },
         "authorKeyId": {
           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256"

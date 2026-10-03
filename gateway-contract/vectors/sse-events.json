@@ -383,7 +383,7 @@
         "value": {
           "correlationId": "correlation_1",
           "occurredAt": "2026-09-22T00:10:00.000Z",
-          "payload": { "grantRevision": 8 }
+          "payload": { "deviceId": "device_1", "grantRevision": 8 }
         }
       },
       "expected": { "outcome": "value", "value": { "valid": true } }

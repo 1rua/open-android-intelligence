@@ -8,6 +8,13 @@ import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import com.openandroidintelligence.gateway.account.AccountProfile
+import com.openandroidintelligence.kernel.PairingGrantStore
+import com.openandroidintelligence.kernel.PairingGrantState
+import com.openandroidintelligence.kernel.PairingGrantBinding
+import com.openandroidintelligence.kernel.PairingGrantCapabilities
+import org.robolectric.shadows.ShadowLooper
 import java.util.Base64
 import org.junit.After
 import org.junit.Assert.assertFalse
@@ -54,7 +61,76 @@ class GatewaySessionRefreshTest {
 
     @After
     fun tearDown() {
+        runtimeScope.cancel()
         gateway.closed()
+    }
+
+    @Test
+    fun aProfileWithoutBindingCanRemoveItsAlreadySavedSecrets() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        AndroidAccountProfileStore(context).save(AccountProfile(profileId(), gateway.baseUrl, "operator", ""))
+        credentialStore.saveRefresh(profileId(), "orphan_refresh".toByteArray())
+        deviceKeys.publicKeyBase64Url(profileId())
+        val runtime = runtime()
+        runtime.removeLocalAccount(profileId())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.savedProfiles.value.isEmpty() && !runtime.isManagingProfiles.value })
+        assertFalse(credentialStore.hasRefresh(profileId()))
+        assertFalse(deviceKeys.hasKey(profileId()))
+        assertFalse(gateway.requests.any { it.target == REFRESH_PATH })
+    }
+
+    @Test
+    fun aGrantCleanupFailureAfterConfirmedUnpairStillDeletesRefreshAndSigningKeys() {
+        val path = "/open-android-intelligence/v2/pairings/current"
+        gateway.respond(path, """{"protocol":"2.1","data":{"deviceId":"dev_stub","deviceKeysRevoked":true,"refreshRevoked":true,"grantsRevoked":true,"deviceRequestsRevoked":true,"unconfirmedAttachmentsRevoked":true,"sessionsRevoked":true}}""")
+        val underlying = InMemoryPairingGrantStore()
+        pairingGrants = PairingGrantStateHolder(object : PairingGrantStore {
+            override fun load(binding: PairingGrantBinding) = underlying.load(binding)
+            override fun save(binding: PairingGrantBinding, state: PairingGrantState) = underlying.save(binding, state)
+            override fun clear(binding: PairingGrantBinding) = error("PAIRING_GRANT_CLEAR_FAILED")
+        }, AndroidAuditStore(InMemoryAuditSink()))
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        runtime.unpair()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { !deviceKeys.hasKey(profileId()) && runtime.operationNotice.value?.contains("清理失败") == true })
+        assertFalse(credentialStore.hasRefresh(profileId()))
+        assertNull(pairingGrants.state.value)
+        assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
+    }
+
+    @Test
+    fun aStreamAuthenticationRejectionFreezesTheAccountWithoutOpeningAConversation() {
+        val path = "/open-android-intelligence/v2/events"
+        gateway.respond(path, """{"error":{"code":"SESSION_REVOKED"}}""", 401)
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Failed })
+        assertTrue(gateway.requests.any { it.target.substringBefore('?') == path })
+        assertNull(pairingGrants.state.value)
+    }
+
+    @Test
+    fun platformGrantEventsOnlyInvalidateTheTargetDeviceAndNewRevisions() {
+        val path = "/open-android-intelligence/v2/events"
+        gateway.respond(path, "", contentType = "text/event-stream")
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, true)
+        fun frame(id: String, device: String, revision: Int) = "id: $id\nevent: pairing.grant.changed\ndata: {\"payload\":{\"deviceId\":\"$device\",\"grantRevision\":$revision}}\n\n"
+        gateway.respond(path, frame("evt_other", "dev_other", 3), contentType = "text/event-stream")
+        val platformCursor = AndroidEventCursorStore(ApplicationProvider.getApplicationContext(), profileId() + ":platform")
+        assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_other" })
+        assertTrue(PairingGrantCapabilities.SMS in pairingGrants.state.value!!.granted)
+        gateway.respond(path, frame("evt_current", "dev_stub", 4), contentType = "text/event-stream")
+        assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_current" })
+        assertTrue(pairingGrants.state.value!!.granted.isEmpty())
+        pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, true)
+        gateway.respond(path, frame("evt_duplicate", "dev_stub", 4), contentType = "text/event-stream")
+        assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_duplicate" })
+        assertTrue(PairingGrantCapabilities.SMS in pairingGrants.state.value!!.granted)
+        assertNull(AndroidEventCursorStore(ApplicationProvider.getApplicationContext(), profileId()).load("acc_stub"))
     }
 
     @Test
@@ -236,6 +312,7 @@ class GatewaySessionRefreshTest {
     private fun awaitConnected(runtime: GatewayRuntime): ConnectionPhase.Connected {
         val deadline = System.currentTimeMillis() + AWAIT_MILLIS
         while (System.currentTimeMillis() < deadline) {
+            ShadowLooper.idleMainLooper(POLL_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)
             (runtime.phase.value as? ConnectionPhase.Connected)?.let { return it }
             Thread.sleep(POLL_MILLIS)
         }
@@ -246,6 +323,7 @@ class GatewaySessionRefreshTest {
     private fun awaitCondition(timeoutMillis: Long, block: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {
+            ShadowLooper.idleMainLooper(POLL_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)
             if (block()) return true
             Thread.sleep(POLL_MILLIS)
         }

@@ -91,17 +91,15 @@ class GatewayHttpClient(
      * reopens, so a Gateway backlog replay can offer the same frame more than
      * once. Remembering the ids on the client — instead of inside one
      * collection — is what makes delivery idempotent across those boundaries:
-     * a replay is dropped at the network edge rather than being filtered again
-     * by every layer above it.
+     * a completed delivery can be dropped at the network edge.
      *
      * Two consequences the callers must know:
-     * - delivery is **at most once per client instance**: an event is recorded
-     *   before it is emitted, so a collector cancelled mid-emit loses it. The
-     *   loss is compensated by the timeline pull a caller performs when the
-     *   stream reports a break;
+     * - collector application and cursor persistence must both succeed before
+     *   an id is remembered. Cancellation or either failure allows replay, so
+     *   collectors must tolerate an event applied before a failed cursor save;
      * - it assumes a **single concurrent collector** per client, which is how
-     *   the app drives it (one account-wide subscription). A second collector
-     *   would be starved rather than served, so use one client per stream.
+     *   the app drives it. The independent platform and conversation streams
+     *   use separate clients and cursors.
      */
     private val deliveredEventIds = LinkedHashSet<String>()
 
@@ -216,6 +214,10 @@ class GatewayHttpClient(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
+                    if (e is EventSessionRejectedException) {
+                        statusSink?.report(EventStreamStatus.FAILED)
+                        throw e
+                    }
                     if (e is EventDeliveryFailed) {
                         statusSink?.report(EventStreamStatus.FAILED)
                         throw requireNotNull(e.cause)
@@ -277,6 +279,10 @@ class GatewayHttpClient(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
+                    if (e is EventSessionRejectedException) {
+                        statusSink?.report(EventStreamStatus.FAILED)
+                        throw e
+                    }
                     if (e is EventDeliveryFailed) {
                         statusSink?.report(EventStreamStatus.FAILED)
                         throw requireNotNull(e.cause)

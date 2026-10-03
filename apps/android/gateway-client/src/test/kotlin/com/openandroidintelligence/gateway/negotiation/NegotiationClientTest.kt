@@ -13,6 +13,30 @@ import org.junit.Test
 class NegotiationClientTest {
 
     @Test
+    fun acceptsCompatibleMinorDifferencesAndPreservesTheNegotiatedVersion() = runBlocking {
+        val client = clientWithVersion("2", "2")
+        assertEquals(2, client.negotiate("neg_minor").protocolMinor)
+    }
+
+    @Test
+    fun rejectsNegativeMinorMajorChangesAndIntegersThatWouldNarrowIntoValidVersions() = runBlocking {
+        for ((major, minor) in listOf("3" to "1", "2" to "-1", "4294967298" to "1", "2" to "4294967297")) {
+            val failure = runCatching { clientWithVersion(major, minor).negotiate("neg_invalid") }.exceptionOrNull()
+            assertEquals("PROTOCOL_INCOMPATIBLE:version", failure?.message)
+        }
+    }
+
+    private fun clientWithVersion(major: String, minor: String) = NegotiationClient(
+        execute = { GatewayResponse(200, emptyList(), """
+            {"protocol":"2.1","data":{"protocol":{"major":$major,"minor":$minor},
+            "features":{"auth":["password","refresh"],"messages":"chat-v1","attachments":"staged-sha256-v1","events":"sse-cursor-v1","deviceRequests":"risk-queue-v1"},
+            "limits":{"attachmentTtlSeconds":3600,"eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
+            "gatewayIdentity":{"deploymentId":"deploy_minor","tlsSpkiSha256":null}}}
+        """.trimIndent().toByteArray()) },
+        installationId = "install_minor", appVersion = "2.1.0", platformApi = 35,
+    )
+
+    @Test
     fun readsNegotiationFieldsFromTheProtocolDataEnvelope() = runBlocking {
         var sent: SignedGatewayRequest? = null
         val client = NegotiationClient(

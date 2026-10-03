@@ -182,6 +182,7 @@ class GatewayHttpRoute:
                     "method": method,
                     "target": target,
                     "body": _get(request, "body"),
+                    "remoteAddress": _get(request, "remoteAddress", "remote_address"),
                     "requestId": _get(request, "requestId", "request_id", default="open-android-intelligence-session"),
                     "correlationId": _get(request, "correlationId", "correlation_id", default="open-android-intelligence-session"),
                 }
@@ -329,6 +330,7 @@ class GatewayHttpRoute:
                 return {"statusCode": 400, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "SCHEMA_INVALID")}
             response_body = self._services.core.handle({
                 "method": method, "target": target, "body": decoded,
+                "remoteAddress": _get(request, "remoteAddress", "remote_address"),
                 "requestId": str(_get(request, "requestId", "request_id", default="session-password")),
                 "correlationId": str(_get(request, "correlationId", "correlation_id", default="session-password")),
             })

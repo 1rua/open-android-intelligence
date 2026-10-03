@@ -27,7 +27,7 @@ object SchemaContractHash {
     )
 
     /** Recomputed and verified by `SchemaContractHashTest` on every build. */
-    const val CORE = "sha256:80e4a81756b850fe916039b9f963488afc148c89479ba714a28e6f556560ca1b"
+    const val CORE = "sha256:99309b87dec79f9c737b7d875a6e949ceffb6bb18b468d7ce98ca37d77dd3d50"
 
     fun compute(schemaDirectory: File): String {
         val lines = mutableListOf(DOMAIN)

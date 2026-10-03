@@ -802,6 +802,8 @@ Gateway 可以声明更短期限，不能超过上表。Android 可以按本地�
 
 授权变更必须由 Android 本地确认。Gateway 保存签名授权摘要并发送 `pairing.grant.changed`，但不能扩大 Android 本地权威记录。请求携带旧 revision 时返回 `GRANT_STALE`，Android 不按旧授权执行。
 
+新发送的 `pairing.grant.changed` 载荷包含目标 `deviceId` 和该配对的 `grantRevision`。账号级事件流可由多个设备订阅；Android 仅对当前设备的新 revision 失效本机授权，忽略其他设备和重复或更旧的 revision。升级前已持久化、缺少 `deviceId` 的通知可重放，但不能据此清除本机授权；Schema 中该字段的可选性仅用于这种兼容。
+
 能力提供者切换产生新 revision 并要求重新授权，不把旧插件授权转移给新插件。
 
 ## 12. 离线、幂等与 fencing

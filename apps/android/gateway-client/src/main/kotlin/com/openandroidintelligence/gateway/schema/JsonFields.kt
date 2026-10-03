@@ -28,7 +28,8 @@ object JsonFields {
     fun double(source: JsonValue.JObject?, name: String): Double? =
         (field(source, name) as? JsonValue.JNumber)?.raw?.toDoubleOrNull()
 
-    fun int(source: JsonValue.JObject?, name: String): Int? = long(source, name)?.toInt()
+    fun int(source: JsonValue.JObject?, name: String): Int? =
+        long(source, name)?.takeIf { it in Int.MIN_VALUE..Int.MAX_VALUE }?.toInt()
 
     /** Objects nested inside an array, skipping anything that is not an object. */
     fun objects(source: JsonValue.JObject?, name: String): List<JsonValue.JObject> =
