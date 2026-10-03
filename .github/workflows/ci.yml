@@ -63,6 +63,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Build real Rust WASM plugins for Android runtime regression
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
+          cargo +1.90.0 build --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml
+
       - name: Run Android Tasks
         working-directory: apps/android
         env:

@@ -58,6 +58,7 @@ data class PairingGrantState(
         pairingId = pairingId,
         granted = granted,
         revision = revision,
+        backgroundSync = "kernel.background.run" in granted,
     )
 }
 
@@ -122,10 +123,17 @@ class PairingGrantStateHolder(
         }
 
     @Synchronized
+    fun updatePrimitives(primitives: Set<String>, enabled: Boolean): PairingGrantState = update { current ->
+        current.copy(granted = if (enabled) current.granted + primitives else current.granted - primitives)
+    }
+
+    @Synchronized
     fun updateScreenSelection(enabled: Boolean): PairingGrantState =
         update { current -> current.copy(screenSelectionEnabled = enabled) }
 
     @Synchronized
+    fun currentBinding(): PairingGrantBinding? = binding
+
     fun currentKernelGrant(pairingId: String): PairingGrant? =
         _state.value?.takeIf { binding?.pairingId == pairingId }?.asKernelGrant()
 

@@ -40,6 +40,7 @@ object KernelAbi {
     const val LOG = "kernel_log"
     const val RANDOM_FILL = "kernel_random_fill"
     const val NOW_MILLIS = "kernel_now_millis"
+    const val CALL = "kernel_call"
 
     /**
      * The reserved exchange region: the kernel writes the request at this
@@ -51,6 +52,7 @@ object KernelAbi {
 
     /** Host functions, by name, with their signatures. */
     val FUNCTIONS: Map<String, FunctionType> = mapOf(
+        CALL to FunctionType.of(arrayOf(ValType.I32, ValType.I32, ValType.I32, ValType.I32, ValType.I32, ValType.I32), arrayOf(ValType.I32)),
         LOG to FunctionType.of(
             arrayOf(ValType.I32, ValType.I32, ValType.I32),
             emptyArray(),
@@ -121,6 +123,7 @@ class ChicoryPluginRuntime(
     private val random: SecureRandom = SecureRandom(),
     /** Instructions between deadline checks; lower is tighter but slower. */
     private val deadlineCheckInterval: Int = 4_096,
+    private val mediatedCall: (PluginIdentity, String, ByteArray) -> ByteArray = { _, primitive, _ -> throw PluginRejected("CAPABILITY_DENIED:$primitive") },
 ) : PluginRuntime {
 
     /** Where host-observed plugin log lines go. The shipped host wires this to the audit sink. */
@@ -143,7 +146,7 @@ class ChicoryPluginRuntime(
         // The request ceiling can only be tightened by the caller, never
         // widened past what this runtime was constructed with.
         val limits = InvocationBudget.from(budget).clampTo(this.budget)
-        return load(moduleSource(identity)).invoke(input, limits)
+        return load(moduleSource(identity)).invoke(input, limits, identity)
     }
 
     /**
@@ -213,15 +216,16 @@ class ChicoryPluginRuntime(
             val export = exports.getExport(it)
             export.name() == KernelAbi.ENTRYPOINT && export.exportType() == ExternalType.FUNCTION
         }) throw PluginRejected("MISSING_ENTRYPOINT:${KernelAbi.ENTRYPOINT}")
-        return LoadedPlugin(module, declared?.initialPages() ?: 0)
+        return LoadedPlugin(module, declared?.initialPages() ?: 0,declared?.maximumPages() ?: maximumPages)
     }
 
     /** Each invocation owns its instance, memory limits and deadline guard. */
     inner class LoadedPlugin internal constructor(
         private val module: WasmModule,
         private val initialPages: Int,
+        private val declaredMaximumPages: Int,
     ) {
-        fun invoke(request: ByteArray, limits: InvocationBudget): ByteArray {
+        fun invoke(request: ByteArray, limits: InvocationBudget, identity: PluginIdentity? = null): ByteArray {
             val effective = limits.clampTo(this@ChicoryPluginRuntime.budget)
             val maximumPages = pagesFor(effective.maxMemoryBytes)
             if (initialPages > maximumPages) throw PluginRejected("MEMORY_LIMIT")
@@ -230,8 +234,8 @@ class ChicoryPluginRuntime(
             return try {
                 val instance = try {
                     Instance.builder(module)
-                        .withImportValues(kernelImports(guard))
-                        .withMemoryLimits(MemoryLimits(1, maximumPages))
+                        .withImportValues(kernelImports(guard, identity, effective))
+                        .withMemoryLimits(MemoryLimits(initialPages.coerceAtLeast(1),minOf(maximumPages,declaredMaximumPages)))
                         .withStart(false)
                         .withUnsafeExecutionListener(guard)
                         .build()
@@ -258,7 +262,20 @@ class ChicoryPluginRuntime(
      * Each one is a deliberate, narrow grant. None of them can name a file, an
      * address or a process.
      */
-    private fun kernelImports(guard: DeadlineGuard): ImportValues = ImportValues.builder()
+    private fun kernelImports(guard: DeadlineGuard, identity: PluginIdentity?, limits: InvocationBudget): ImportValues = ImportValues.builder()
+        .addFunction(HostFunction(KernelAbi.MODULE, KernelAbi.CALL, KernelAbi.FUNCTIONS.getValue(KernelAbi.CALL)) { instance, args ->
+            guard.check()
+            val owner = identity ?: throw PluginRejected("NO_INVOCATION_IDENTITY")
+            val nameLength = args[1].toInt(); val inputLength = args[3].toInt(); val capacity = args[5].toInt()
+            if (nameLength !in 1..256 || inputLength !in 0..KernelAbi.EXCHANGE_SIZE_BYTES || capacity < 0 || capacity > limits.maxOutputBytes) throw BudgetExceeded("HOST_CALL")
+            val memory = instance.memory() ?: throw PluginRejected("NO_MEMORY")
+            val name = memory.readString(args[0].toInt(), nameLength)
+            val response = mediatedCall(owner, name, memory.readBytes(args[2].toInt(), inputLength))
+            guard.check()
+            if (response.size > capacity) throw BudgetExceeded("HOST_CALL_OUTPUT")
+            memory.write(args[4].toInt(), response)
+            longArrayOf(response.size.toLong())
+        })
         .addFunction(
             HostFunction(
                 KernelAbi.MODULE,

@@ -225,6 +225,7 @@ class GatewaySessionRefreshTest {
     }
 
     private fun runtime(): GatewayRuntime = GatewayRuntime(
+        localDocumentKeyProvider = TestDocumentKeys,
         context = ApplicationProvider.getApplicationContext(),
         scope = runtimeScope,
         pairingGrants = pairingGrants,

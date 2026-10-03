@@ -230,8 +230,8 @@ def test_expired_dispatch_lease_cannot_be_completed_by_a_stale_owner(tmp_path):
         ("2020-01-01T00:00:00.000Z", accepted["messageId"]),
     )
     second_claim = account.conversations.claim_dispatch("client_msg_lease")
-    assert second_claim is not None
-    assert second_claim["claimToken"] != first_claim["claimToken"]
+    assert second_claim is None
+    assert account.conversations.workflow.for_message(accepted['messageId'])['state']=='unknown'
     with pytest.raises(GatewayError, match="INVALID_STATE_TRANSITION"):
         account.conversations.update_dispatch_status(
             accepted["messageId"], "delivered", None, "cor_stale_delivery",

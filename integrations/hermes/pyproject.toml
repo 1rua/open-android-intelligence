@@ -7,7 +7,7 @@ name = "open-android-intelligence-hermes-gateway"
 version = "2.1.0"
 description = "Native Python Gateway Protocol v2 plugin for Hermes"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["jsonschema>=4.23,<5"]
 
 [tool.setuptools.packages.find]
 where = ["."]

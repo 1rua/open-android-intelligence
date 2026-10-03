@@ -41,8 +41,8 @@ class ApplicationCompositionTest {
 
         assertEquals(BuildConfig.ALLOW_RUNTIME_PLUGINS, environment.allowRuntimePlugins)
         assertEquals(BuildConfig.ALLOW_DEVELOPER_TRUST_MODE, environment.allowDeveloperTrustMode)
-        // 生产装配没有任何插件运行时：事实必须如实为 false，供插件管理区域降级。
-        assertFalse(app.pluginRuntimesWired)
-        assertFalse(environment.pluginRuntimesWired)
+        // Full 装配真实运行时；Play 保持分发策略禁止动态插件。
+        assertEquals(BuildConfig.ALLOW_RUNTIME_PLUGINS, app.pluginRuntimesWired)
+        assertEquals(app.pluginRuntimesWired, environment.pluginRuntimesWired)
     }
 }

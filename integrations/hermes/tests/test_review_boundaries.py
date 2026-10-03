@@ -1,3 +1,4 @@
+from test_support import enqueue_fixture
 """Regression evidence for review H04/H06/H07/M04/M10/M14/M15."""
 import json
 import sqlite3
@@ -101,7 +102,7 @@ def test_message_and_result_payloads_are_encrypted_and_terminal_inputs_are_erase
     row = account.store.database.execute("SELECT text FROM messages").fetchone()
     assert "private-message-marker" not in row[0]
     assert account.conversations.dispatch_message("client_msg")["text"] == "private-message-marker"
-    account.device_requests.enqueue(request_id="dr_review", device_id="dev_1", pairing_generation=1, grant_revision=1, risk="read",
+    enqueue_fixture(account, request_id="dr_review", device_id="dev_1", pairing_generation=1, grant_revision=1, risk="read",
         capability={"id": "org.openandroidintelligence.sms.query", "version": "1.0.0"},
         provider={"pluginId": "org.openandroidintelligence.sms", "authorKeyId": "sha256:" + "a" * 64},
         parameters={"query": "private-input-marker"}, correlation_id="cor_device", now=NOW)

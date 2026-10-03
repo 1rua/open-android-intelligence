@@ -44,6 +44,7 @@ data class SignedGatewayRequest(
     val body: ByteArray = ByteArray(0),
     val headers: List<RawHeader> = emptyList(),
     val streamBody: GatewayRequestBody? = null,
+    val requestId: String? = null,
 )
 
 data class GatewayResponse(
@@ -101,6 +102,20 @@ class GatewayHttpClient(
      *   the app drives it. The independent platform and conversation streams
      *   use separate clients and cursors.
      */
+    @Volatile private var cursorRecovery: (suspend () -> String)? = null
+    fun setCursorRecovery(recover: suspend () -> String) { cursorRecovery = recover }
+    private suspend fun rebuildCursor() {
+        val recover = cursorRecovery ?: run {
+            cursorStore.clear(profile.accountId)
+            throw EventCursorExpiredException()
+        }
+        val baseline = recover()
+        require(CURSOR_ALPHABET.matches(baseline)) { "SNAPSHOT_BASELINE_INVALID" }
+        cursorStore.save(profile.accountId,baseline)
+        synchronized(this) { deliveredEventIds.clear() }
+        statusSink?.report(EventStreamStatus.RECONNECTING)
+    }
+
     private val deliveredEventIds = LinkedHashSet<String>()
 
     @Synchronized private fun wasDelivered(eventId: String?) = !eventId.isNullOrBlank() && eventId in deliveredEventIds
@@ -109,6 +124,17 @@ class GatewayHttpClient(
         if (wasDelivered(event.id)) return
         try {
             if (!handlePlatformEvent(event)) emit(event)
+            if (event.event == "conversation.message.completed" || event.event == "conversation.message.delta") runCatching {
+                val envelope = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(event.data))
+                val payload = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(envelope, "payload")) ?: envelope
+                com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence(event.event!!, mapOf(
+                    "eventId" to event.id,
+                    "correlationId" to com.openandroidintelligence.gateway.schema.JsonFields.string(envelope, "correlationId"),
+                    "conversationId" to com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "conversationId"),
+                    "messageId" to com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "messageId"),
+                    "sender" to com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "sender"),
+                ))
+            }
             // Cancellation, reducer and persistence failures leave it replayable.
             event.id?.takeIf { it.isNotBlank() }?.let { cursorStore.save(profile.accountId, it) }
             markEventDelivered(event.id)
@@ -149,8 +175,8 @@ class GatewayHttpClient(
         val validatedHeaders = RawHeaders.validate(request.headers)
         require(request.streamBody == null || request.body.isEmpty()) { "REQUEST_BODY_INVALID:multiple-bodies" }
         val input = request.streamBody?.let { body ->
-            signedInput(request.method, request.target, ByteArray(0), body.sha256Hex)
-        } ?: signedInput(request.method, request.target, request.body)
+            signedInput(request.method, request.target, ByteArray(0), body.sha256Hex, request.requestId)
+        } ?: signedInput(request.method, request.target, request.body, requestId = request.requestId)
         val headers = validatedHeaders + authenticationHeaders(input, signatureOf(input), request.method)
 
         return withContext(Dispatchers.IO) {
@@ -223,9 +249,8 @@ class GatewayHttpClient(
                         throw requireNotNull(e.cause)
                     }
                     if (e is EventCursorExpiredException) {
-                        cursorStore.clear(profile.accountId)
-                        statusSink?.report(EventStreamStatus.FAILED)
-                        throw e
+                        rebuildCursor()
+                        continue
                     }
                     streamFailed = true
                     lastFailure = e
@@ -288,9 +313,8 @@ class GatewayHttpClient(
                         throw requireNotNull(e.cause)
                     }
                     if (e is EventCursorExpiredException) {
-                        cursorStore.clear(profile.accountId)
-                        statusSink?.report(EventStreamStatus.FAILED)
-                        throw e
+                        rebuildCursor()
+                        continue
                     }
                     streamFailed = true
                     lastFailure = e
@@ -353,7 +377,8 @@ class GatewayHttpClient(
         target: String,
         body: ByteArray,
         bodySha256Hex: String? = null,
-    ): SignedRequestInput = signedInput(profile, method, target, body, bodySha256Hex)
+        requestId: String? = null,
+    ): SignedRequestInput = signedInput(profile, method, target, body, bodySha256Hex, requestId)
 
     internal fun signatureOf(input: SignedRequestInput): String =
         signatureOf(signer, input)
@@ -390,6 +415,7 @@ class GatewayHttpClient(
             target: String,
             body: ByteArray,
             bodySha256Hex: String? = null,
+            requestId: String? = null,
         ): SignedRequestInput =
             SignedRequestInput(
                 method = method,
@@ -397,7 +423,7 @@ class GatewayHttpClient(
                 accountId = profile.accountId,
                 deviceId = profile.deviceId,
                 sessionId = profile.sessionId,
-                requestId = newRequestId(),
+                requestId = requestId?.also { require(CURSOR_ALPHABET.matches(it)) { "REQUEST_ID_INVALID" } } ?: newRequestId(),
                 // Millisecond precision: the wire format is fixed at three fractional
                 // digits and the Gateway refuses anything else.
                 timestamp = RequestSigner.formatTimestamp(

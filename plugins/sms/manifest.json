@@ -26,6 +26,21 @@
         "id": "org.openandroidintelligence.sms.query",
         "version": "1.0.0",
         "schema": "schemas/sms.json"
+      },
+      {
+        "id": "org.openandroidintelligence.sms.schedule",
+        "version": "1.0.0",
+        "schema": "schemas/sms-schedule.json"
+      },
+      {
+        "id": "org.openandroidintelligence.sms.job-status",
+        "version": "1.0.0",
+        "schema": "schemas/sms-job-status.json"
+      },
+      {
+        "id": "org.openandroidintelligence.sms.cancel",
+        "version": "1.0.0",
+        "schema": "schemas/sms-cancel.json"
       }
     ],
     "depends": [],
@@ -34,14 +49,34 @@
         "id": "kernel.sms.read",
         "version": "1.0.0",
         "purpose": "Read SMS inbox under local policy"
+      },
+      {
+        "id": "kernel.scheduler.set",
+        "version": "1.0.0",
+        "purpose": "Schedule a locally authorized SMS query"
+      },
+      {
+        "id": "kernel.scheduler.read",
+        "version": "1.0.0",
+        "purpose": "Read the scheduled query outcome"
+      },
+      {
+        "id": "kernel.scheduler.cancel",
+        "version": "1.0.0",
+        "purpose": "Cancel a query before execution"
+      },
+      {
+        "id": "kernel.background.run",
+        "version": "1.0.0",
+        "purpose": "Run authorized scheduled queries in the background"
       }
     ]
   },
   "security": {
     "network": [],
     "background": {
-      "requested": false,
-      "minimumIntervalSeconds": null
+      "requested": true,
+      "minimumIntervalSeconds": 60
     },
     "resources": {
       "maxInvocationMillis": 5000,

@@ -7,6 +7,7 @@ grants, the queue and the unconfirmed attachments plus every access session of
 that device. The tests here pin both seams and the boundary between them.
 """
 from __future__ import annotations
+from test_support import enqueue_fixture
 
 import hashlib
 import json
@@ -291,7 +292,7 @@ def test_unpair_revokes_the_five_items_and_every_access_session(tmp_path):
         )
         assert account.attachments.get_record(attachment_id)["hasStagedBytes"] is True
         assert account.attachments.get_record(other_device_attachment_id)["hasStagedBytes"] is True
-        account.device_requests.enqueue(
+        enqueue_fixture(account,
             request_id="req_unpair_queue",
             device_id=session["deviceId"],
             pairing_generation=1,

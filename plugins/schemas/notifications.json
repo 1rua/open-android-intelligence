@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "query": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "receivedAfter": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "packageIds": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$"
+      }
+    }
+  }
+}

@@ -40,7 +40,7 @@ class HermesHttpInteropTest {
             val auth = GatewayAuthClient(GatewayTransport(GatewayProfile("pre", "pre", "pre", baseUrl)),
                 "install_interop", "test", 35)
             val negotiated = auth.negotiate("neg_interop")
-            assertFalse("Hermes does not advertise batches", "message-batches-v1" in negotiated.conversationUi)
+            assertTrue("Hermes serves batches", "message-batches-v1" in negotiated.conversationUi)
             val session = auth.loginWithPassword(negotiated.negotiationId, "alice", "android-fixture-only".toCharArray(),
                 "Android interop test", ed25519WirePublicKey(keyPair.public))
             val profile = GatewayProfile(session.accountId, session.deviceId, session.sessionId, baseUrl, accessToken = session.accessToken)

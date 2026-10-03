@@ -17,6 +17,7 @@ class NotificationControlBootstrapProvider : ContentProvider() {
 
     override fun onCreate(): Boolean {
         val context = context ?: return false
+        if (android.app.Application.getProcessName() != context.packageName) return true
         NotificationHostInstaller.install(context)
         return true
     }

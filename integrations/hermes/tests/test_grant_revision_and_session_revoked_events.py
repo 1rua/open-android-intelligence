@@ -11,6 +11,7 @@ pinned field-by-field against the normative copies in `event.schema.json`
 (`$defs.pairingGrantChangedPayload`, `$defs.sessionRevokedPayload`).
 """
 from __future__ import annotations
+from test_support import enqueue_fixture
 
 import sys
 from pathlib import Path
@@ -138,7 +139,7 @@ def test_a_claim_carrying_the_pre_bump_revision_answers_grant_stale(tmp_path):
     try:
         _register_device(account)
         account.bump_grant_revision(DEVICE_ID, "cor_bump_stale")
-        account.device_requests.enqueue(
+        enqueue_fixture(account,
             request_id="device_req_grant_stale", device_id=DEVICE_ID,
             pairing_generation=1, grant_revision=2, risk="read",
             capability={"id": "org.openandroidintelligence.sms.query", "version": "1.0.0"},

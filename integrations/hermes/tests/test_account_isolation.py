@@ -1,3 +1,4 @@
+from test_support import enqueue_fixture
 import sys
 import hashlib
 import json
@@ -444,9 +445,9 @@ def test_device_claim_result_is_bound_and_recoverable_per_account(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     alice = core.open_gateway_account("acct_alice")
     bob = core.open_gateway_account("acct_bob")
-    read = alice.device_requests.enqueue(**_device_input("device_req_read"))
-    write = alice.device_requests.enqueue(**_device_input("device_req_write", "write"))
-    high = alice.device_requests.enqueue(**_device_input("device_req_high", "high-privilege-ephemeral"))
+    read = enqueue_fixture(alice, **_device_input("device_req_read"))
+    write = enqueue_fixture(alice, **_device_input("device_req_write", "write"))
+    high = enqueue_fixture(alice, **_device_input("device_req_high", "high-privilege-ephemeral"))
 
     assert read["expiresAt"] == "2026-08-25T12:00:00.000Z"
     assert write["expiresAt"] == "2026-08-24T12:15:00.000Z"
@@ -519,7 +520,7 @@ def test_device_claim_result_is_bound_and_recoverable_per_account(tmp_path):
 def test_device_request_expiry_is_enforced_at_claim_and_result_entry(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_alice")
-    account.device_requests.enqueue(**_device_input("device_req_expired", "write", "2026-08-27T00:00:00.000Z"))
+    enqueue_fixture(account, **_device_input("device_req_expired", "write", "2026-08-27T00:00:00.000Z"))
 
     try:
         account.device_requests.claim(
@@ -611,7 +612,7 @@ def test_gateway_core_handle_routes_attachment_and_device_claim_result(tmp_path)
     }
 
     account = core.open_gateway_account("acct_alice")
-    account.device_requests.enqueue(**_device_input("device_req_handle", now="2026-08-27T00:00:00.000Z"))
+    enqueue_fixture(account, **_device_input("device_req_handle", now="2026-08-27T00:00:00.000Z"))
     account.close()
     claim = core.handle({
         "context": _context(requestId="req_claim_handle", correlationId="cor_claim_handle", pairingGeneration=4, grantRevision=7),
@@ -820,7 +821,7 @@ def test_idempotency_expiry_and_replay_binding_fail_closed(tmp_path):
     assert expired["error"]["code"] == "OUTCOME_UNKNOWN"
 
     account = core.open_gateway_account("acct_alice")
-    account.device_requests.enqueue(**_device_input("device_req_replay", now="2026-08-27T00:00:00.000Z"))
+    enqueue_fixture(account, **_device_input("device_req_replay", now="2026-08-27T00:00:00.000Z"))
     account.close()
     claim = core.handle({
         "context": _context(requestId="req_claim_replay", correlationId="cor_claim_replay", pairingGeneration=4, grantRevision=7),
@@ -857,7 +858,7 @@ def _registry_copy(tmp_path, mutate):
     source = Path(__file__).resolve().parents[3] / "gateway-contract"
     target = tmp_path / "gateway-contract"
     shutil.copytree(source, target)
-    registry_path = target / "vectors" / "dispatched-schema-fixtures.json"
+    registry_path = target / "core-dispatched-schemas.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     mutate(registry)
     registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -868,7 +869,7 @@ def _registry_copy(tmp_path, mutate):
     "name,mutate",
     [
         ("unknown top-level field", lambda value: value.update({"unexpected": True})),
-        ("extra binding set", lambda value: value["bindingSets"].append({"id": "untrusted-extra", "bindings": []})),
+        ("extra binding", lambda value: value["bindings"].append(dict(value["bindings"][0]))),
         ("missing catalog entry", lambda value: value["catalogEntries"].pop()),
         ("reordered catalog entries", lambda value: value["catalogEntries"].reverse()),
         ("unknown nested field", lambda value: value["catalogEntries"][0].update({"unexpected": True})),
@@ -900,13 +901,13 @@ def test_dispatched_registry_only_accepts_the_fixed_binding_set(tmp_path):
     }
 
     assert registry.validate_dispatched(
-        "gateway-core-fixtures-v1", {"kind": "event", "eventType": "gateway.notice"}, value
+        "gateway-core-schemas-v1", {"kind": "event", "eventType": "gateway.notice"}, value
     ) is True
     assert registry.validate_dispatched(
         "untrusted-extra", {"kind": "event", "eventType": "gateway.notice"}, value
     ) is False
     assert registry.validate_dispatched(
-        "gateway-core-fixtures-v1",
+        "gateway-core-schemas-v1",
         {"kind": "event", "eventType": "gateway.notice", "schemaSha256": "sha256:" + "a" * 64},
         value,
     ) is False
@@ -975,7 +976,7 @@ def test_authenticated_request_with_unbound_negotiation_fails_closed(tmp_path):
 def test_device_request_event_get_and_list_preserve_full_contract_metadata(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_alice")
-    request = account.device_requests.enqueue(
+    request = enqueue_fixture(account,
         request_id="device_req_metadata", device_id="dev_1", pairing_generation=4,
         grant_revision=7, risk="read",
         capability={"id": "org.openandroidintelligence.sms.query", "version": "1.0.0"},
@@ -1003,7 +1004,7 @@ def test_device_enqueue_rejects_parameters_without_the_trusted_dispatched_bindin
     account = core.open_gateway_account("acct_alice")
 
     with pytest.raises(GatewayError, match="SCHEMA_INVALID"):
-        account.device_requests.enqueue(
+        enqueue_fixture(account,
             request_id="device_req_untrusted", device_id="dev_1", pairing_generation=1,
             grant_revision=1, risk="read",
             capability={"id": "org.openandroidintelligence.sms.query", "version": "1.0.0"},
@@ -1025,7 +1026,7 @@ def test_device_enqueue_rolls_back_row_event_and_audit_when_event_persistence_fa
     )
 
     with pytest.raises(sqlite3.Error, match="device event forced failure"):
-        account.device_requests.enqueue(**_device_input("device_req_atomic"))
+        enqueue_fixture(account, **_device_input("device_req_atomic"))
 
     assert account.store.database.execute(
         "SELECT COUNT(*) FROM device_requests WHERE request_id = 'device_req_atomic'"
@@ -1039,7 +1040,7 @@ def test_device_enqueue_rolls_back_row_event_and_audit_when_event_persistence_fa
 def test_expired_claimed_result_commits_outcome_unknown_before_returning_error(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_alice")
-    account.device_requests.enqueue(**_device_input("device_req_claimed_expiry", "write", "2026-08-27T00:00:00.000Z"))
+    enqueue_fixture(account, **_device_input("device_req_claimed_expiry", "write", "2026-08-27T00:00:00.000Z"))
     claim = account.device_requests.claim(
         request_id="device_req_claimed_expiry", device_id="dev_1", pairing_generation=4,
         grant_revision=7, correlation_id="cor_claimed_expiry", now="2026-08-27T00:01:00.000Z",
@@ -1061,7 +1062,7 @@ def test_expired_claimed_result_commits_outcome_unknown_before_returning_error(t
 def test_expired_cancel_requested_result_commits_outcome_unknown_before_returning_error(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_alice")
-    account.device_requests.enqueue(**_device_input("device_req_cancel_expiry", "write", "2026-08-27T01:00:00.000Z"))
+    enqueue_fixture(account, **_device_input("device_req_cancel_expiry", "write", "2026-08-27T01:00:00.000Z"))
     claim = account.device_requests.claim(
         request_id="device_req_cancel_expiry", device_id="dev_1", pairing_generation=4,
         grant_revision=7, correlation_id="cor_cancel_claim", now="2026-08-27T01:01:00.000Z",
@@ -1084,7 +1085,7 @@ def test_expired_cancel_requested_result_commits_outcome_unknown_before_returnin
 def test_expired_claimed_cancel_commits_outcome_unknown_before_returning_error(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_alice")
-    account.device_requests.enqueue(**_device_input("device_req_cancel_late", "write", "2026-08-27T02:00:00.000Z"))
+    enqueue_fixture(account, **_device_input("device_req_cancel_late", "write", "2026-08-27T02:00:00.000Z"))
     account.device_requests.claim(
         request_id="device_req_cancel_late", device_id="dev_1", pairing_generation=4,
         grant_revision=7, correlation_id="cor_cancel_late_claim", now="2026-08-27T02:01:00.000Z",

@@ -8,6 +8,7 @@ data class TimelineAttachment(
     val filename: String = "",
     val mediaType: String = "",
     val previewBytes: ByteArray? = null,
+    val savedOffline: Boolean = false,
 ) {
     val isImage: Boolean
         get() = mediaType.startsWith("image/") ||
@@ -24,6 +25,7 @@ data class TimelineAttachment(
         if (javaClass != other?.javaClass) return false
 
         other as TimelineAttachment
+        if (savedOffline != other.savedOffline) return false
         if (draftId != other.draftId) return false
         if (filename != other.filename) return false
         if (mediaType != other.mediaType) return false
@@ -36,7 +38,7 @@ data class TimelineAttachment(
     }
 
     override fun hashCode(): Int {
-        var result = draftId.hashCode()
+        var result = 31*draftId.hashCode()+savedOffline.hashCode()
         result = 31 * result + filename.hashCode()
         result = 31 * result + mediaType.hashCode()
         result = 31 * result + (previewBytes?.contentHashCode() ?: 0)

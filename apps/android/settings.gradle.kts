@@ -44,6 +44,7 @@ include(
     ":transport",
     ":encrypted-store",
     ":platform-kernel",
+    ":device-primitives",
     ":plugin-package",
     ":plugin-runtime-wasm",
     ":plugin-ui",

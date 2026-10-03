@@ -56,7 +56,12 @@ class NativePluginLoader(
         if (isHostClass(packageInfo.entrypointClass)) {
             throw NativePluginRejected("HOST_CLASS_ENTRYPOINT")
         }
+        if (!packageInfo.entrypointClass.startsWith(packageInfo.pluginId.replace('-', '_') + ".")) {
+            throw NativePluginRejected("FOREIGN_NAMESPACE_ENTRYPOINT")
+        }
         val plugin = factory(packageInfo)
+        if (plugin.pluginId != packageInfo.pluginId) throw NativePluginRejected("PLUGIN_ID_MISMATCH")
+        unload(packageInfo.pluginId)
         loaded[packageInfo.pluginId] = plugin
         return plugin
     }
@@ -64,6 +69,9 @@ class NativePluginLoader(
     fun loaded(): Set<String> = loaded.keys.toSet()
 
     fun isLoaded(pluginId: String): Boolean = loaded.containsKey(pluginId)
+
+    fun plugin(pluginId: String): NativePlugin? = loaded[pluginId]
+    fun unload(pluginId: String) { loaded.remove(pluginId)?.let { runCatching { it.stop() } } }
 
     /** Stops and forgets every native plugin. Used when trust mode is switched off. */
     fun unloadAll() {

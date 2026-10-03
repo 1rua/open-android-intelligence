@@ -12,9 +12,13 @@ use open_android_intelligence_sdk::{PluginError, declare_plugin};
 use alloc::vec::Vec;
 
 pub fn handle_sms_query(request: &[u8]) -> Result<Vec<u8>, PluginError> {
-    let mut out = Vec::with_capacity(request.len());
-    out.extend_from_slice(request);
-    Ok(out)
+    // Inputs are schema validated and canonicalized by the host before this ABI.
+    let has = |field: &[u8]| request.windows(field.len()).any(|w| w == field);
+    let primitive = if has(b"\"operation\":\"schedule\"") { "kernel.scheduler.set" }
+        else if has(b"\"operation\":\"job-status\"") { "kernel.scheduler.read" }
+        else if has(b"\"operation\":\"cancel\"") { "kernel.scheduler.cancel" }
+        else { "kernel.sms.read" };
+    open_android_intelligence_sdk::call_kernel(primitive, request)
 }
 
 declare_plugin! { handler = handle_sms_query, arena_bytes = 65_536 }
@@ -22,12 +26,8 @@ declare_plugin! { handler = handle_sms_query, arena_bytes = 65_536 }
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn test_sms_query() {
-        let req = b"{\"limit\":5}";
-        let res = handle_sms_query(req).unwrap();
-        assert_eq!(res, req);
+    fn rejects_a_missing_host_instead_of_echoing_parameters() {
+        assert_eq!(handle_sms_query(b"{\"limit\":5}"), Err(PluginError::HandlerFailed));
     }
 }
-

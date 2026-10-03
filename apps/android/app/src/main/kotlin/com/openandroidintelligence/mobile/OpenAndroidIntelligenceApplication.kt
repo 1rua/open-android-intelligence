@@ -45,6 +45,9 @@ class OpenAndroidIntelligenceApplication : Application() {
     lateinit var pairingGrants: PairingGrantStateHolder
         private set
 
+    lateinit var pluginHost: com.openandroidintelligence.mobile.plugins.ProductionPluginHost
+        private set
+
     private lateinit var auditSink: PersistentAuditSink
 
     /**
@@ -64,20 +67,11 @@ class OpenAndroidIntelligenceApplication : Application() {
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             pairingGrants = pairingGrants,
             auditStore = auditStore,
+            pluginHost = pluginHost,
         )
     }
 
-    /**
-     * 进程装配的插件运行时（供 [PluginKernel] 执行裁决）。
-     *
-     * 当前生产装配为空：还没有任何插件运行时接入。运行时装配的真实状态通过
-     * [pluginRuntimesWired] 进入设置面，插件管理区域据此如实声明
-     * 「已安装插件不会运行、启用不可用」，而不是把不存在的执行能力说成可用。
-     * 接入运行时（如 plugin-runtime-wasm）时更新这份装配即可，界面自动跟随。
-     */
-    private val pluginRuntimes: Map<String, com.openandroidintelligence.kernel.PluginRuntime> = emptyMap()
-
-    val pluginRuntimesWired: Boolean get() = pluginRuntimes.isNotEmpty()
+    val pluginRuntimesWired: Boolean get() = ::pluginHost.isInitialized && pluginHost.runtimes.isNotEmpty()
 
     fun platformSettingsEnvironment(): PlatformSettingsEnvironment = PlatformSettingsEnvironment(
         trustMode = trustMode,
@@ -94,6 +88,8 @@ class OpenAndroidIntelligenceApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        if (Application.getProcessName() != packageName) return
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidenceEnabled = BuildConfig.DEBUG
         // The transport writes diagnostics through GatewayLog so it stays testable
         // on a JVM; the app is the only place that knows what Logcat is.
         com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { tag, message ->
@@ -107,23 +103,24 @@ class OpenAndroidIntelligenceApplication : Application() {
             audit = auditStore,
         )
 
-        val providerSelector = CapabilityProviderSelector(phoneDefaults = emptyMap())
+        val installPreferences = getSharedPreferences("open_android_intelligence_runtime", MODE_PRIVATE)
+        val installId = installPreferences.getString("installation_id", null) ?: java.util.UUID.randomUUID().toString().also {
+            check(installPreferences.edit().putString("installation_id", it).commit())
+        }
+        pluginHost = com.openandroidintelligence.mobile.plugins.ProductionPluginHost(this,pairingGrants,trustMode,NativePluginLoader(trustMode),installId)
         kernel = PluginKernel(
-            hostEnvelope = HostEnvelope(
-                primitives = setOf(
-                    "org.openandroidintelligence.notifications.query@1.0.0",
-                    "org.openandroidintelligence.sms.query@1.0.0",
-                    "org.openandroidintelligence.call-log.query@1.0.0",
-                ),
-            ),
-            phoneLimits = PhoneLimits(primitives = emptySet()),
-            runtimes = pluginRuntimes,
+            hostEnvelope = HostEnvelope(pluginHost.hostCapabilities),
+            phoneLimits = PhoneLimits(pluginHost.phoneCapabilities),
+            runtimes = pluginHost.runtimes,
             audit = auditStore,
             trustMode = trustMode,
-            nativeLoader = NativePluginLoader(trustMode),
-            providerSelector = providerSelector,
+            nativeLoader = pluginHost.nativeLoader,
+            providerSelector = pluginHost.selector,
             grants = { pairingId -> pairingGrants.currentKernelGrant(pairingId) },
+            mediate = pluginHost::mediate,
         )
+
+        pluginHost.attach(kernel)
 
         // Visibility is a process fact, not an Activity one: a background gap
         // can leave the event stream nominally alive while the Gateway dropped

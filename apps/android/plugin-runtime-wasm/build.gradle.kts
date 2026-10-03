@@ -17,8 +17,14 @@ android {
 // copy that could drift out of sync.
 android {
     sourceSets {
+        getByName("test").kotlin.srcDir("src/jvmTest/kotlin")
         getByName("androidTest").kotlin.srcDirs("src/test/kotlin")
     }
+}
+
+tasks.withType<Test>().configureEach {
+    inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release").listFiles()
+        .orEmpty().filter { it.extension == "wasm" }).withPropertyName("compiledReferenceWasm")
 }
 
 dependencies {

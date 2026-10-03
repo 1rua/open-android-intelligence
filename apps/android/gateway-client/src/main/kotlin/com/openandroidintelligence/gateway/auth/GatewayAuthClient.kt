@@ -23,6 +23,8 @@ data class SessionCredentials(
     val accessToken: String,
     val refreshCredential: ByteArray,
     val pairingSummary: String?,
+    val pairingGeneration: Int = 1,
+    val grantRevision: Int = 1,
 )
 
 /**
@@ -84,6 +86,33 @@ class GatewayAuthClient(
         } finally {
             password.fill('\u0000')
         }
+    }
+
+    suspend fun loginWithInvite(negotiationId:String,accountId:String,code:String,displayName:String,
+        devicePublicKeyBase64Url:String,sign:(ByteArray)->ByteArray):SessionCredentials = withContext(Dispatchers.IO) {
+        require(code.matches(Regex("[A-F0-9]{16}"))) { "INVITE_INVALID" }
+        val challenge=postJson("/open-android-intelligence/v2/sessions/invite/challenge",mapOf("accountId" to accountId,"negotiationId" to negotiationId,"code" to code,
+            "installation" to mapOf("installationId" to installationId,"displayName" to displayName,"devicePublicKey" to devicePublicKeyBase64Url)))
+        val facts=JsonFields.obj(JsonFields.field(challenge,"data")) ?: error("INVITE_CHALLENGE_INVALID")
+        check(facts.fields.map { it.first }.toSet() == setOf("challengeId","accountId","negotiationId","installationId","devicePublicKey","nonce","expiresAt"))
+        check(JsonFields.string(facts,"accountId")==accountId && JsonFields.string(facts,"negotiationId")==negotiationId &&
+            JsonFields.string(facts,"installationId")==installationId && JsonFields.string(facts,"devicePublicKey")==devicePublicKeyBase64Url) { "INVITE_SCOPE_MISMATCH" }
+        val expiry=java.time.Instant.parse(JsonFields.string(facts,"expiresAt") ?: error("INVITE_CHALLENGE_INVALID"))
+        check(expiry.isAfter(java.time.Instant.now()) && expiry.isBefore(java.time.Instant.now().plusSeconds(120))) { "INVITE_CHALLENGE_EXPIRED" }
+        val signature=java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sign(("OPEN_ANDROID_INTELLIGENCE_PAIRING_V1\n"+Json.canonical(facts)).toByteArray()))
+        parseSessionCredentials(postJson("/open-android-intelligence/v2/pairings/exchange",mapOf("accountId" to accountId,"negotiationId" to negotiationId,
+            "challengeId" to (JsonFields.string(facts,"challengeId") ?: error("INVITE_CHALLENGE_INVALID")),"signature" to signature)),"INVITE_FAILED")
+    }
+
+    suspend fun loginWithDeviceKey(negotiationId:String,accountId:String,deviceId:String,sign:(ByteArray)->ByteArray):SessionCredentials = withContext(Dispatchers.IO) {
+        val response=postJson("/open-android-intelligence/v2/sessions/device/challenge",mapOf("accountId" to accountId,"negotiationId" to negotiationId,"installationId" to installationId,"deviceId" to deviceId))
+        val facts=JsonFields.obj(JsonFields.field(response,"data")) ?: error("DEVICE_CHALLENGE_INVALID")
+        check(facts.fields.map { it.first }.toSet()==setOf("challenge","accountId","negotiationId","installationId","deviceId","nonce","expiresAt")) { "DEVICE_CHALLENGE_INVALID" }
+        check(JsonFields.string(facts,"accountId")==accountId && JsonFields.string(facts,"negotiationId")==negotiationId && JsonFields.string(facts,"installationId")==installationId && JsonFields.string(facts,"deviceId")==deviceId) { "DEVICE_CHALLENGE_SCOPE_MISMATCH" }
+        val expiry=java.time.Instant.parse(JsonFields.string(facts,"expiresAt") ?: error("DEVICE_CHALLENGE_INVALID"))
+        check(expiry.isAfter(java.time.Instant.now()) && expiry.isBefore(java.time.Instant.now().plusSeconds(120))) { "DEVICE_CHALLENGE_EXPIRED" }
+        val signature=java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sign(("OPEN_ANDROID_INTELLIGENCE_DEVICE_SESSION_V1\n"+Json.canonical(facts)).toByteArray()))
+        parseSessionCredentials(postJson("/open-android-intelligence/v2/sessions/device",mapOf("accountId" to accountId,"negotiationId" to negotiationId,"installationId" to installationId,"deviceId" to deviceId,"challenge" to JsonFields.string(facts,"challenge"),"signature" to signature)),"DEVICE_LOGIN_FAILED")
     }
 
     /**
@@ -222,5 +251,7 @@ internal fun parseSessionCredentials(body: JsonValue.JObject, prefix: String): S
         accessToken = accessToken,
         refreshCredential = refresh,
         pairingSummary = JsonFields.string(result, "pairingSummary"),
+        pairingGeneration = JsonFields.int(result, "pairingGeneration") ?: 1,
+        grantRevision = JsonFields.int(result, "grantRevision") ?: 1,
     )
 }

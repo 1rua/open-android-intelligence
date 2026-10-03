@@ -23,7 +23,7 @@ export function validateReferenceWasm(bytes: Uint8Array): void {
   }
   for (const item of WebAssembly.Module.imports(module)) {
     if (item.module !== "open_android_intelligence_kernel_v1" || item.kind !== "function"
-        || !["kernel_log", "kernel_random_fill", "kernel_now_millis"].includes(item.name)) {
+        || !["kernel_log", "kernel_random_fill", "kernel_now_millis", "kernel_call"].includes(item.name)) {
       throw new Error("PLUGIN_WASM_ABI_INVALID: unsupported host import");
     }
   }

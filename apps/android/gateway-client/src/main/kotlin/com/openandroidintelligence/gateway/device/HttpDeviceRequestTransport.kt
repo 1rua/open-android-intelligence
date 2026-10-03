@@ -30,6 +30,7 @@ class HttpDeviceRequestTransport(
             SignedGatewayRequest(
                 method = "POST",
                 target = "/open-android-intelligence/v2/device-requests/$requestId/claim",
+                requestId = stableOperationId("claim", requestId),
                 headers = JSON_HEADERS,
                 // The contract fixes the receipt, not the claim request body; the
                 // grant revision the phone is asking under is the one fact the
@@ -58,6 +59,7 @@ class HttpDeviceRequestTransport(
             SignedGatewayRequest(
                 method = "POST",
                 target = "/open-android-intelligence/v2/device-requests/$requestId/result",
+                requestId = stableOperationId("result", requestId),
                 headers = JSON_HEADERS,
                 body = Json.canonical(Json.of(body)).toByteArray(Charsets.UTF_8),
             ),
@@ -74,6 +76,8 @@ class HttpDeviceRequestTransport(
             ?: throw IllegalStateException("DEVICE_CLAIM_FAILED:malformed")
 
     private companion object {
+        fun stableOperationId(operation: String, id: String): String = operation + "_" +
+            java.security.MessageDigest.getInstance("SHA-256").digest(id.toByteArray()).joinToString("") { "%02x".format(it) }
         /** Contract §2's wire ID alphabet, applied to every receipt field. */
         val WIRE_ID = Regex("[A-Za-z0-9._~-]{1,128}")
         val JSON_HEADERS = listOf(

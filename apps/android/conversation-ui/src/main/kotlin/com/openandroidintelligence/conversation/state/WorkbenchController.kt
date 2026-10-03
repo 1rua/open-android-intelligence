@@ -27,6 +27,7 @@ import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.TimelineMessage
+import com.openandroidintelligence.conversation.ports.completeTimeline
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -91,6 +92,7 @@ data class WorkbenchUiState(
     /** Batch members collected by the debounce window, newest last. */
     val pendingBatch: List<TimelineEntry> = emptyList(),
     val notice: String? = null,
+    val mediaRetention: com.openandroidintelligence.conversation.ports.HistoricalMediaMetadata? = null,
     /**
      * True while the phone is waiting for the Agent's own new conversation.
      *
@@ -123,8 +125,9 @@ data class WorkbenchUiState(
      * guess would put live buttons over a decision that has nowhere to go.
      */
     val approvalCardsSupported: Boolean = false,
+    val isOnline: Boolean = true,
 ) {
-    val canSend: Boolean get() = (draft.isNotBlank() || attachments.isNotEmpty()) &&
+    val canSend: Boolean get() = isOnline && (draft.isNotBlank() || attachments.isNotEmpty()) &&
         composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
 }
 
@@ -170,6 +173,9 @@ class WorkbenchController(
     private val supportsApprovalCards: Boolean = false,
     /** Wall clock, injectable so a countdown can be advanced by a test. */
     private val clock: () -> Long = { System.currentTimeMillis() },
+    private val persistence: WorkbenchPersistence? = null,
+    private val media: com.openandroidintelligence.conversation.ports.HistoricalMediaPort? = null,
+    private val allowSending: Boolean = true,
 ) : AutoCloseable {
 
     /**
@@ -215,10 +221,13 @@ class WorkbenchController(
     // The capability is written in from the start: the data class default only
     // says "no negotiated fact yet", so a Gateway that did offer cards would
     // otherwise read as one that never offered them until the first update ran.
-    private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards))
+    private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,isOnline=allowSending))
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
 
     /** Server-mirrored messages for the active thread, by message id. */
+    private val submittingBatches=mutableSetOf<String>()
+    private val frozenBatches=LinkedHashMap<String,SavedBatch>()
+    private val collectingUnits=LinkedHashMap<String,Pair<String,OutgoingMessage>>()
     private val mirrored = LinkedHashMap<String, TimelineMessage>()
     private val mirroredRevisions = LinkedHashMap<String, Long>()
     private data class MessageStatusReceipt(
@@ -264,6 +273,7 @@ class WorkbenchController(
     private var eventJob: Job? = null
     private var timelineJob: Job? = null
     private var healthJob: Job? = null
+    private var generationJob:Job?=null
     /** Watchdog for one send: the difference between "thinking" and "broken". */
     private var replyWatchdog: Job? = null
     private var awaitingReplyInThread: String? = null
@@ -356,8 +366,10 @@ class WorkbenchController(
         val attachmentIds: List<String>,
         val revision: Long,
         val conversationId: String?,
+        val clientMessageId: String = "cm_" + UUID.randomUUID().toString(),
     )
     private var pendingSubmission: DraftSubmission? = null
+    private var failedSubmission: DraftSubmission? = null
     private val userRenamedThreads = mutableSetOf<String>()
 
     val isCurrentThreadUserRenamed: Boolean
@@ -425,11 +437,14 @@ class WorkbenchController(
         approvalCards.clear()
         eventJob?.cancel()
         healthJob?.cancel()
+        generationJob?.cancel()
         disarmReplyWatchdog()
         batcher.close()
     }
 
     fun cancel() = close()
+
+    fun updateDebouncePolicy(policy:DebouncePolicy) { batcher.updatePolicy(policy) }
 
     private val batcher = DebounceBatcher(
         scope = scope,
@@ -440,9 +455,32 @@ class WorkbenchController(
     )
 
     init {
+        persistence?.load()?.let { saved ->
+            saved.batches.forEach { b -> if (b.sealed) frozenBatches[b.batchId]=b else b.messages.forEach { collectingUnits[it.clientMessageId.value]=b.conversationId to it } }
+            activeThreadId = saved.threadId
+            mirrored.putAll(saved.messages.associateBy { it.id })
+            mirroredRevisions.putAll(saved.revisions)
+            handledEventIds.addAll(saved.eventIds)
+            userRenamedThreads.addAll(saved.renamedThreads)
+            draftRevision = saved.draftRevision
+            failedSubmission = saved.submission?.let { DraftSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) }
+            _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.threads),
+                activeThreadId = saved.threadId, activeThreadTitle = saved.title, draft = saved.draft.ifBlank { saved.submission?.text.orEmpty() },
+                attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,System.currentTimeMillis(),true,b.batchId) } }, timeline = if (saved.messages.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline()),
+                composer = if (saved.submission != null) ComposerState.FAILED else ComposerState.EDITING,
+                notice = if (saved.submission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else null)
+            onActiveThreadChanged(activeThreadId)
+            if (activeThreadId != null) { observeThreadEvents(); activeThreadId?.let(::reloadTimeline) }
+        }
         refreshThreads()
         loadCatalog()
         observeStreamHealth()
+        (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationState?.let { source ->
+            generationJob=scope.launch { source.collect { generation -> update { state ->
+                if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
+                else state.copy(generation=generation)
+            } } }
+        }
     }
 
     /**
@@ -578,7 +616,7 @@ class WorkbenchController(
         }
 
         timelineJob = scope.launch {
-            val result = Result.runCatching { repository.timeline(threadId, PageRequest()) }
+            val result = Result.runCatching { repository.completeTimeline(threadId) }
             if (!isActive || activeThreadId != threadId) return@launch
             result.fold(
                 onSuccess = { page ->
@@ -1324,6 +1362,7 @@ class WorkbenchController(
      * one ordered aggregate input while every member keeps its identity.
      */
     fun sendDraft() {
+        if (!allowSending) { update { it.copy(notice="OFFLINE_MIRROR:重新连接后可发送，草稿已保留") }; return }
         val current = _state.value
         if (!current.canSend) return
         if (pendingCreation != null) {
@@ -1332,7 +1371,10 @@ class WorkbenchController(
             update { it.copy(notice = "CONVERSATION_CREATING:SEND_BLOCKED") }
             return
         }
-        pendingSubmission = DraftSubmission(current.draft, current.attachments.map { it.id.value }, draftRevision, activeThreadId)
+        val attachmentIds = current.attachments.map { it.id.value }
+        pendingSubmission = failedSubmission?.takeIf {
+            it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId
+        }?.copy(revision = draftRevision) ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId)
         update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null, generation = GenerationState.QUEUED) }
         submitWhenAttachmentsVerified()
     }
@@ -1349,6 +1391,7 @@ class WorkbenchController(
                 return
             }
         }
+        failedSubmission = submission
         pendingSubmission = null
         update { it.copy(composer = ComposerState.SUBMITTING) }
         scope.launch {
@@ -1362,6 +1405,8 @@ class WorkbenchController(
                 val target = submission.conversationId ?: activeThreadId
                     ?: bootstrapConversationForFirstMessage().await().getOrThrow()
                 sendTarget = target
+                failedSubmission = submission.copy(conversationId = target)
+                persistCheckpoint()
                 // Only clear the snapshot that was sent; typing during creation keeps the newer draft.
                 if (draftRevision == submission.revision) {
                     update { it.copy(draft = "") }
@@ -1384,7 +1429,7 @@ class WorkbenchController(
                     }
                 }
                 val entry = TimelineEntry(
-                    key = "local_" + UUID.randomUUID().toString(), sender = "user",
+                    key = "local_" + submission.clientMessageId, sender = "user",
                     text = submission.text.ifBlank { if (submittedAttachments.isNotEmpty()) "" else "[附件]" }, isUser = true,
                     timestamp = System.currentTimeMillis(), pendingAcceptance = true,
                     batchGroupId = null,
@@ -1423,6 +1468,8 @@ class WorkbenchController(
                     }
                 }
                 if (supportsMessageBatches && !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()) {
+                    collectingUnits[message.clientMessageId.value]=target to message
+                    persistCheckpoint()
                     batcher.offer(scopeFactory(), target, message)
                 } else {
                     val acceptance = repository.submitMessage(target, message)
@@ -1462,9 +1509,12 @@ class WorkbenchController(
                 // before the Gateway accepted the message left a failed send
                 // with nothing to retry from.
                 submission.attachmentIds.forEach(::releaseSubmittedAttachment)
+                failedSubmission = null
+                persistCheckpoint()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (cause: Exception) {
+                failedSubmission = submission.copy(conversationId = sendTarget ?: submission.conversationId)
                 // A message the Gateway never accepted must not stay on screen
                 // as a pending send: the retry used to stack a second copy of
                 // the same text beside the one that had already failed, and the
@@ -1508,7 +1558,11 @@ class WorkbenchController(
         messages: List<OutgoingMessage>,
     ) {
         if (messages.isEmpty()) return
-        val batchId = "batch_" + UUID.randomUUID().toString()
+        val batchId="batch_"+java.security.MessageDigest.getInstance("SHA-256").digest((conversationId+"\u0000"+messages.joinToString("\u0000") { it.clientMessageId.value }).toByteArray()).joinToString("") { "%02x".format(it) }
+        if (!submittingBatches.add(batchId)) return
+        frozenBatches[batchId]=SavedBatch(batchId,conversationId,messages.toList())
+        messages.forEach { collectingUnits.remove(it.clientMessageId.value) }
+        persistCheckpoint()
         val flushedKeys = messages.map { "local_" + it.clientMessageId.value }.toSet()
         Result.runCatching {
             // The batch already carries its conversation: re-deriving the target
@@ -1518,6 +1572,7 @@ class WorkbenchController(
             ))
         }.fold(
             onSuccess = { acceptance ->
+                frozenBatches.remove(batchId)
                 val pendingEntries = _state.value.pendingBatch
                 messages.forEach { msg ->
                     val localId = msg.clientMessageId.value
@@ -1565,6 +1620,18 @@ class WorkbenchController(
                 update { it.copy(notice = "SEND_FAILED:${errorCodeOf(cause)}") }
             },
         )
+        submittingBatches.remove(batchId)
+    }
+
+    /** Explicit recovery after process death or a missing ACK; IDs and contents stay frozen. */
+    fun retryPendingBatches() {
+        if (!_state.value.isOnline) return
+        val ready=frozenBatches.values.toList()
+        val unsealed=collectingUnits.values.groupBy { it.first }
+        scope.launch {
+            ready.forEach { b -> submitBatch(scopeFactory(),b.conversationId,b.messages) }
+            unsealed.forEach { (id,units) -> if (batcher.hasPending(id)) batcher.flush(id) else submitBatch(scopeFactory(),id,units.map { it.second }) }
+        }
     }
 
     /** Fills the composer with a command; the user still confirms the send. */
@@ -1617,6 +1684,30 @@ class WorkbenchController(
                 },
             )
         }
+    }
+
+    fun proposeMediaRetention(attachmentId:String) {
+        val id=activeThreadId ?: return
+        val port=media ?: return
+        scope.launch { try { val metadata=port.metadata(id,attachmentId); update { it.copy(mediaRetention=metadata) } }
+            catch (c:CancellationException) { throw c } catch (_:Exception) { update { it.copy(notice="REMOTE_UNAVAILABLE:历史原件无法读取") } } }
+    }
+    fun dismissMediaRetention() { update { it.copy(mediaRetention=null) } }
+    fun clearRetainedMediaPreviews() {
+        historicalAttachments.entries.forEach { entry -> if(entry.value.savedOffline) {
+            entry.value.previewBytes?.fill(0)
+            entry.setValue(entry.value.copy(previewBytes=null,savedOffline=false))
+        } }
+        update { it.copy(timeline=if(mirrored.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline()),mediaRetention=null) }
+    }
+    fun confirmMediaRetention() {
+        val metadata=_state.value.mediaRetention ?: return
+        dismissMediaRetention()
+        scope.launch { try {
+            media?.retain(metadata) ?: error("MEDIA_CACHE_UNAVAILABLE")
+            historicalAttachments[metadata.attachmentId]=com.openandroidintelligence.conversation.model.TimelineAttachment(metadata.attachmentId,metadata.filename,metadata.mediaType,media.preview(metadata.attachmentId),true)
+            update { it.copy(timeline=Loadable.Ready(renderTimeline()),notice="已保留加密离线副本") }
+        } catch (c:CancellationException) { throw c } catch (e:Exception) { update { it.copy(notice=errorCodeOf(e)) } } }
     }
 
     fun dismissNotice() {
@@ -1830,6 +1921,7 @@ class WorkbenchController(
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineTombstoned -> {
                             val eventConvId = event.conversationId?.value
                             if (eventConvId == currentActiveId) {
+                                mirrored[event.messageId]?.parts?.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()?.forEach { media?.remove(it.draftId.value) }
                                 mirrored.remove(event.messageId)
                                 mirroredRevisions.remove(event.messageId)
                                 messageStatusRevisions.remove(event.messageId)
@@ -1933,7 +2025,7 @@ class WorkbenchController(
     private fun reloadTimeline(threadId: String) {
         timelineJob?.cancel()
         timelineJob = scope.launch {
-            val result = Result.runCatching { repository.timeline(threadId, PageRequest()) }
+            val result = Result.runCatching { repository.completeTimeline(threadId) }
             if (!isActive || activeThreadId != threadId) return@launch
             result.onSuccess { page ->
                 if (!isActive || activeThreadId != threadId) return@launch
@@ -2117,7 +2209,8 @@ class WorkbenchController(
                                 draftId = id,
                                 filename = d?.filename?.takeUnless { it.isBlank() } ?: att.filename,
                                 mediaType = d?.mediaType?.takeUnless { it.isBlank() } ?: att.mediaType,
-                                previewBytes = attachmentPreviews[id],
+                                previewBytes = attachmentPreviews[id] ?: media?.preview(id),
+                                savedOffline = media?.isRetained(id) == true,
                             )
                         }
                     }
@@ -2140,7 +2233,7 @@ class WorkbenchController(
                     isUser = message.sender == "user",
                     timestamp = message.timestamp,
                     pendingAcceptance = message.state == "PENDING",
-                    batchGroupId = null,
+                    batchGroupId = message.batchId,
                     attachments = messageAttachments,
                     isStreaming = message.state == "STREAMING",
                     messageStatus = com.openandroidintelligence.conversation.ports.AgentMessageStatus.entries
@@ -2345,6 +2438,19 @@ class WorkbenchController(
         return true
     }
 
+    private fun persistCheckpoint() {
+        val ui = _state.value
+        val pending = pendingSubmission ?: failedSubmission
+        persistence?.save(WorkbenchCheckpoint(
+            (ui.threads as? Loadable.Ready)?.value.orEmpty(), activeThreadId, ui.activeThreadTitle,
+            mirrored.values.toList(), mirroredRevisions.toMap(), ui.draft, draftRevision, ui.attachments,
+            pending?.let { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) },
+            userRenamedThreads.toSet(), handledEventIds.toSet(), frozenBatches.values.toList()+collectingUnits.values.groupBy { it.first }.map { (id,units) -> SavedBatch("collecting",id,units.map { it.second },false) }))
+    }
+
+    /** Apply a freshly rebuilt baseline while preserving an unsent local draft. */
+    fun onMirrorRebuilt() { handledEventIds.clear(); mirrored.clear(); mirroredRevisions.clear(); refreshThreads(); activeThreadId?.let(::reloadTimeline) }
+
     private fun update(transform: (WorkbenchUiState) -> WorkbenchUiState) {
         _state.update { current ->
             // The capability is a fact about the Gateway, not about a screen: it
@@ -2359,6 +2465,7 @@ class WorkbenchController(
                 next.copy(approvalCardsSupported = supportsApprovalCards)
             }
         }
+        persistCheckpoint()
     }
 
     private fun isNewConversationCommand(command: String): Boolean =

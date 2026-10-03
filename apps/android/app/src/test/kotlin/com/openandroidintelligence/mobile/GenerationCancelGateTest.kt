@@ -66,6 +66,8 @@ class GenerationCancelGateTest {
         gateway.respond(TIMELINE_PATH, TIMELINE_BODY)
         gateway.respond(EVENTS_PATH, GENERATION_EVENT_SSE, contentType = "text/event-stream")
         gateway.respond(CANCEL_PATH, """{"protocol":"2.1","data":{"outcome":"CANCELLED"}}""")
+        gateway.respond("/open-android-intelligence/v2/conversations/conv_1/generations/current",
+            """{"protocol":"2.1","data":{"generation":{"generationId":"gen_wire_1","conversationId":"conv_1","state":"running"}}}""")
 
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
@@ -112,6 +114,7 @@ class GenerationCancelGateTest {
     // ------------------------------------------------------------------
 
     private fun runtime(): GatewayRuntime = GatewayRuntime(
+        localDocumentKeyProvider = TestDocumentKeys,
         context = ApplicationProvider.getApplicationContext(),
         scope = runtimeScope,
         pairingGrants = pairingGrants,
@@ -199,9 +202,9 @@ class GenerationCancelGateTest {
          * 网关签发的 id），这是 GatewayEventDecoder 的真实规则。
          */
         val GENERATION_EVENT_SSE = """
-            event: generation.started
+            event: conversation.message.status
             id: evt_g1
-            data: {"payload":{"generationId":"gen_wire_1"}}
+            data: {"payload":{"conversationId":"conv_1","messageId":"msg_user_1","clientMessageId":"cm_user_1","generationId":"gen_wire_1","status":"delivered","revision":1,"errorCode":null}}
 
         """.trimIndent() + "\n"
     }

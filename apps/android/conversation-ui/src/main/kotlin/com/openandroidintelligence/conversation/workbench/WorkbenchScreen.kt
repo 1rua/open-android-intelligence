@@ -63,10 +63,18 @@ fun WorkbenchScreen(
     isDarkTheme: Boolean = true,
     onToggleTheme: (() -> Unit)? = null,
     onLogout: (() -> Unit)? = null,
+    pluginCards:@Composable ()->Unit = {},
 ) {
     val state by controller.state.collectAsState()
+    state.mediaRetention?.let { media ->
+        AlertDialog(onDismissRequest=controller::dismissMediaRetention,title={ Text("保留离线副本") },
+            text={ Text("${media.filename}\n${media.mediaType} · ${media.sizeBytes} 字节\n预计加密缓存占用 ${media.estimatedLocalBytes} 字节"+if (!media.remoteAvailable) "\nREMOTE_UNAVAILABLE" else "") },
+            confirmButton={ TextButton(onClick=controller::confirmMediaRetention,enabled=media.remoteAvailable) { Text("保留") } },
+            dismissButton={ TextButton(onClick=controller::dismissMediaRetention) { Text("取消") } })
+    }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
@@ -268,7 +276,10 @@ fun WorkbenchScreen(
                             // a) 会话消息区域
                             Box(Modifier.weight(1f)) {
                                 if (state.timeline == Loadable.Empty || (state.activeThreadId == null && state.timeline == Loadable.Idle)) {
-                                    ConversationWelcome(onCreate = if (state.activeThreadId == null) controller::createThread else null)
+                                    Column(Modifier.fillMaxSize()) {
+                                        pluginCards()
+                                        ConversationWelcome(onCreate = if (state.activeThreadId == null) controller::createThread else null)
+                                    }
                                 } else {
                                     LoadableRegion(
                                         state.timeline,
@@ -282,6 +293,7 @@ fun WorkbenchScreen(
                                                 contentPadding = PaddingValues(Dimensions.SpaceMedium),
                                                 verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceLarge),
                                             ) {
+                                                item(key="protected_plugin_cards") { pluginCards() }
                                                 items(rows, key = { it.key }) { entry ->
                                                     val jumpTarget = entry.systemThreadId
                                                     if (jumpTarget != null) {
@@ -290,7 +302,7 @@ fun WorkbenchScreen(
                                                             onClick = { controller.openThread(jumpTarget) },
                                                         )
                                                     } else {
-                                                        TimelineRow(entry = entry, onDecide = controller::decideApproval)
+                                                        TimelineRow(entry = entry, onDecide = controller::decideApproval,onRetainMedia=controller::proposeMediaRetention)
                                                     }
                                                 }
                                                 if (state.creatingThread &&
@@ -334,6 +346,7 @@ fun WorkbenchScreen(
                                     },
                             ) {
                                 PendingBatchStrip(state.pendingBatch)
+                                if (state.pendingBatch.isNotEmpty()) TextButton(onClick=controller::retryPendingBatches,enabled=state.isOnline) { Text("继续发送待确认批次") }
                                 // Honest degradation: a Gateway that cannot take
                                 // a decision gets no card at all, and the user is
                                 // told the text command is the way to answer.
@@ -421,6 +434,8 @@ fun WorkbenchScreen(
                     onRemoveAttachment = controller::removeAttachment,
                     onRetryAttachment = controller::retryAttachment,
                     onClose = { showAttachmentLibrary = false },
+                    historical=entries.flatMap { it.attachments }.distinctBy { it.draftId },
+                    onRetainHistorical=controller::proposeMediaRetention,
                 )
             }
         }
@@ -612,4 +627,3 @@ private fun ScrollToBottomButton(
         }
     }
 }
-

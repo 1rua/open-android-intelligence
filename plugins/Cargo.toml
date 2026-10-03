@@ -1,7 +1,7 @@
 # Open Android Intelligence 设备插件 Rust 工作区。
 #
 # 只使用 core / alloc，**不引入任何 crates.io 依赖**：受保护插件的 wasm 模块
-# 导入数必须为 0（见 docs/contracts/device-plugin-package-v1.md §5.1），
+# 只能导入版本化内核 ABI（见 docs/contracts/device-plugin-package-v1.md §5.1），
 # 依赖越少越容易审计，也避免构建期联网。
 #
 # 构建（在工作区根目录执行）：

@@ -68,11 +68,49 @@ class GatewayConversationRepository(
     /** The thread cancellation and event scope act on; owned by the screen holder. */
     private val activeConversationId: () -> String? = { null },
 ) : ConversationRepository,
+    com.openandroidintelligence.conversation.ports.MessageOutcomeQuery,
     GenerationTracker,
     StreamHealthSource {
 
     private val _generationId = MutableStateFlow<String?>(null)
     override val generationId: StateFlow<String?> = _generationId
+    private val generations=mutableMapOf<String,LinkedHashMap<String,com.openandroidintelligence.conversation.model.GenerationState>>()
+    private val _generationState=MutableStateFlow(com.openandroidintelligence.conversation.model.GenerationState.IDLE)
+    override val generationState:StateFlow<com.openandroidintelligence.conversation.model.GenerationState> = _generationState
+    @Synchronized fun activeConversationChanged() {
+        val current=generations[activeConversationId()]?.entries?.firstOrNull { it.value!=com.openandroidintelligence.conversation.model.GenerationState.QUEUED }
+            ?: generations[activeConversationId()]?.entries?.firstOrNull()
+        _generationId.value=current?.key
+        _generationState.value=current?.value ?: com.openandroidintelligence.conversation.model.GenerationState.IDLE
+    }
+    @Synchronized fun installCurrentGeneration(conversationId:String,current:Pair<String,String>?) {
+        generations.remove(conversationId)
+        current?.let { generations[conversationId]=linkedMapOf(it.first to when(it.second) {
+            "queued" -> com.openandroidintelligence.conversation.model.GenerationState.QUEUED
+            "unknown" -> com.openandroidintelligence.conversation.model.GenerationState.OUTCOME_UNKNOWN
+            else -> com.openandroidintelligence.conversation.model.GenerationState.RUNNING
+        }) }
+        activeConversationChanged()
+    }
+    @Synchronized private fun acceptGeneration(conversationId:String,id:String?) {
+        id?.let { generations.getOrPut(conversationId) { linkedMapOf() }.putIfAbsent(it,com.openandroidintelligence.conversation.model.GenerationState.QUEUED) }
+        activeConversationChanged()
+    }
+    @Synchronized private fun generationEvent(decoded:GatewayEventDecoder.DecodedFrame) {
+        val conversation=decoded.conversationId ?: return
+        val id=decoded.generationId ?: return
+        val entries=generations.getOrPut(conversation) { linkedMapOf() }
+        when(val e=decoded.event) {
+            is VerifiedConversationEvent.MessageStatus -> when(e.status) {
+                com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED -> entries.putIfAbsent(id,com.openandroidintelligence.conversation.model.GenerationState.QUEUED)
+                com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED -> entries[id]=com.openandroidintelligence.conversation.model.GenerationState.RUNNING
+                else -> entries.remove(id)
+            }
+            is VerifiedConversationEvent.GenerationCancelled -> entries.remove(id)
+            else -> Unit
+        }
+        activeConversationChanged()
+    }
 
     /**
      * The transport's own status, in the domain's vocabulary.
@@ -151,9 +189,11 @@ class GatewayConversationRepository(
                     },
                     timestamp = resolvedTimestamp,
                     state = message.state,
+                    batchId=message.batchId,
                 )
             },
             nextCursor = result.nextCursor,
+            snapshotRevision = result.snapshotRevision,
         )
     }
 
@@ -177,6 +217,7 @@ class GatewayConversationRepository(
         )
         // The mapping travels upward unchanged: it is the only way a caller can
         // key a mirrored member by the id the Gateway will use for it.
+        acceptGeneration(conversationId,acceptance.generationId)
         return BatchAcceptance(batchId = acceptance.batchId, memberIds = acceptance.memberIds)
     }
 
@@ -186,13 +227,34 @@ class GatewayConversationRepository(
     )
 
     override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
-        val response = client.sendMessage(
+        val response = try { client.sendMessage(
             conversationId = conversationId,
             clientMessageId = message.clientMessageId.value,
             text = message.text,
             attachmentIds = message.attachmentIds,
-        )
+        ) } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (cause: Exception) {
+            // The server may have committed before the transport lost the ACK.
+            // Query by the frozen business ID before allowing a manual retry.
+            val accepted = try { client.queryMessage(conversationId, message.clientMessageId.value) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { null }
+            if (accepted != null) return MessageAcceptance(accepted.messageId, message.clientMessageId.value)
+            throw cause
+        }
+        acceptGeneration(conversationId,response.generationId)
         return MessageAcceptance(response.messageId, message.clientMessageId.value)
+    }
+
+    override suspend fun queryMessage(conversationId: String, clientMessageId: com.openandroidintelligence.conversation.model.ClientMessageId): TimelineMessage? {
+        val message = client.queryMessage(conversationId, clientMessageId.value) ?: return null
+        return TimelineMessage(message.messageId, message.sender, message.parts.map { part ->
+            when (part) {
+                is WireMessagePart.Text -> MessagePart.Text(part.text)
+                is WireMessagePart.AttachmentRef -> MessagePart.Attachment(AttachmentDraftId(part.attachmentId), part.filename, part.mediaType)
+            }
+        }, message.timestamp ?: 0L, message.state)
     }
 
     /**
@@ -302,7 +364,7 @@ class GatewayConversationRepository(
             // that starts a generation has to be cancellable by the time its
             // event reaches the UI.
             val decoded = decoder.decodeWithGenerationId(event)
-            decoded.generationId?.let { _generationId.value = it }
+            generationEvent(decoded)
             decoded.event
         }
 

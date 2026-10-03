@@ -35,6 +35,7 @@ data class RuntimeDeclaration(
     val abiVersion: String?,
     val entrypoint: String?,
     val payload: String?,
+    val entrypointClass: String? = null,
 )
 
 data class CapabilityDeclaration(

@@ -36,8 +36,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.contentDescription
@@ -64,12 +66,20 @@ fun ScreenSelectionOverlay(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
     screenshot: ImageBitmap? = null,
+    onFreehandConfirmed: ((List<Offset>) -> Unit)? = null,
 ) {
     val hasScreenshot = screenshot != null && screenshot.width > 0 && screenshot.height > 0
     var canvasSize by remember(screenshot) { mutableStateOf(IntSize.Zero) }
     var selection by remember(screenshot) { mutableStateOf<SelectionBounds?>(null) }
     var dragStart by remember(screenshot) { mutableStateOf<Offset?>(null) }
     var dragCurrent by remember(screenshot) { mutableStateOf<Offset?>(null) }
+    var freehand by remember(screenshot) { mutableStateOf(false) }
+    var points by remember(screenshot) { mutableStateOf<List<Offset>>(emptyList()) }
+    val selectionPath = Path().apply {
+        points.firstOrNull()?.let { moveTo(it.x, it.y) }
+        points.drop(1).forEach { lineTo(it.x, it.y) }
+        if (dragStart == null) close()
+    }
 
     val gestureSelection = if (dragStart != null && dragCurrent != null) {
         normalizeSelection(dragStart!!, dragCurrent!!)
@@ -81,7 +91,7 @@ fun ScreenSelectionOverlay(
         canvasWidth = canvasSize.width.toFloat(),
         canvasHeight = canvasSize.height.toFloat(),
         minimumSize = minimumSize,
-    ) == true
+    ) == true && (!freehand || points.size >= 3 && polygonArea(points) >= minimumSize * minimumSize)
 
     Box(
         modifier = modifier
@@ -100,28 +110,37 @@ fun ScreenSelectionOverlay(
                 modifier = Modifier
                     .fillMaxSize()
                     .onSizeChanged { canvasSize = it }
-                    .pointerInput(screenshot) {
+                    .pointerInput(screenshot, freehand) {
                         detectDragGestures(
                             onDragStart = { offset ->
                                 dragStart = offset
                                 dragCurrent = offset
+                                points = listOf(offset)
                             },
                             onDrag = { change, dragAmount ->
                                 change.consume()
                                 dragCurrent = (dragCurrent ?: change.position) + dragAmount
+                                if (freehand && points.size < 4096) points = points + Offset(
+                                    change.position.x.coerceIn(0f, canvasSize.width.toFloat()),
+                                    change.position.y.coerceIn(0f, canvasSize.height.toFloat()),
+                                )
                             },
                             onDragEnd = {
                                 val start = dragStart
                                 val current = dragCurrent
                                 if (start != null && current != null) {
-                                    selection = normalizeSelection(start, current)
+                                    selection = if (freehand && points.isNotEmpty()) SelectionBounds(
+                                        points.minOf { it.x }, points.minOf { it.y }, points.maxOf { it.x }, points.maxOf { it.y },
+                                    ) else normalizeSelection(start, current)
                                 }
                                 dragStart = null
                                 dragCurrent = null
+                                if (freehand && points.size < 3) selection = null
                             },
                             onDragCancel = {
                                 dragStart = null
                                 dragCurrent = null
+                                points = emptyList()
                             },
                         )
                     },
@@ -131,7 +150,12 @@ fun ScreenSelectionOverlay(
                 drawImage(image, dstSize = destination)
                 drawRect(color = Color.Black.copy(alpha = 0.52f))
 
-                gestureSelection?.let { bounds ->
+                if (freehand && points.size > 1) {
+                    clipPath(selectionPath) { drawImage(image, dstSize = destination) }
+                    drawPath(selectionPath, primaryColor, style = Stroke(width = 2.dp.toPx()))
+                }
+
+                gestureSelection?.takeIf { !freehand }?.let { bounds ->
                     // Draw the chosen portion at full brightness so a user
                     // can verify the crop before it enters the draft.
                     clipRect(
@@ -157,7 +181,7 @@ fun ScreenSelectionOverlay(
             }
 
             SelectionControls(
-                selection = selection,
+                selection = if (freehand) null else selection,
                 canvasSize = canvasSize,
                 minimumSize = minimumSize,
                 validSelection = validSelection,
@@ -175,14 +199,27 @@ fun ScreenSelectionOverlay(
                             minimumSize = minimumSize,
                         )
                     }?.let { bounds ->
-                        onCropConfirmed(bounds.left, bounds.top, bounds.right, bounds.bottom)
+                        if (freehand && validSelection) onFreehandConfirmed?.invoke(points.toList())
+                        else onCropConfirmed(bounds.left, bounds.top, bounds.right, bounds.bottom)
                     }
                 },
                 onCancel = onCancel,
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
+            if (onFreehandConfirmed != null) OutlinedButton(
+                onClick = { freehand = !freehand; selection = null; points = emptyList() },
+                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+            ) { Text(if (freehand) "切换矩形选区" else "自由圈选") }
         }
     }
+}
+
+internal fun polygonArea(points: List<Offset>): Float {
+    if (points.size < 3) return 0f
+    return kotlin.math.abs(points.indices.sumOf { i ->
+        val a = points[i]; val b = points[(i + 1) % points.size]
+        (a.x * b.y - b.x * a.y).toDouble()
+    }.toFloat()) / 2f
 }
 
 @Composable

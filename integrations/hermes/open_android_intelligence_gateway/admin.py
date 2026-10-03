@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -296,8 +297,21 @@ class AdminService:
             "readOnly": self.read_only,
         })
 
+    def create_pairing_invite(self,input):
+        operation="pairing.invite"
+        if self.read_only: return _failure(operation,True,"HOST_INCOMPATIBLE")
+        if input.get("localConfirmation") is not True: return _failure(operation,False,"LOCAL_CONFIRMATION_REQUIRED")
+        if not self.core.account_exists(input.get("accountId")): return _failure(operation,False,"ACCOUNT_NOT_FOUND")
+        from .pairing_invites import PairingInvites
+        account=self.core.open_gateway_account(input["accountId"])
+        identity={'deploymentId':'deploy_'+hashlib.sha256(str(self.core.storage_root).encode()).hexdigest()[:16],'tlsSpkiSha256':self.core.tls_spki_sha256}
+        try: return _success(operation,False,PairingInvites(account).issue(input["gatewayUrl"],gateway_identity=identity))
+        except GatewayError as exc: return _failure(operation,False,exc.code)
+        finally: account.close()
+
     def execute(self, command: Mapping[str, Any] | Any) -> dict[str, Any]:
         name = _input(command, "command", "command")
+        if name == "pairing.invite": return self.create_pairing_invite(command)
         if name == "admin.status":
             return self.status()
         if name == "account.create":
@@ -376,6 +390,9 @@ class AdminPanel:
     def status(self) -> dict[str, Any]:
         return self.service.status()
 
+    def create_pairing_invite(self,input):
+        return self.service.create_pairing_invite(input)
+
     def execute(self, command: Mapping[str, Any] | Any) -> dict[str, Any]:
         return self.service.execute(command)
 
@@ -415,6 +432,7 @@ def _parse_flags(tokens: list[str]) -> dict[str, Any] | None:
 
 
 def _parse_command(args: list[str], service: AdminService) -> Mapping[str, Any] | dict[str, Any]:
+    if len(args)==5 and args[:2]==["pairing","invite"] and args[4]=="--confirm-local": return {"command":"pairing.invite","accountId":args[2],"gatewayUrl":args[3],"localConfirmation":True}
     if args[:2] in (["account", "create"], ["account", "reset-password"]) and len(args) >= 3:
         flags = _parse_flags(list(args[3:]))
         if flags is None:

@@ -64,15 +64,37 @@ class PluginInstallStoreTest {
 
     @Test
     fun installingTheSamePluginIdTwiceIsRefusedInsteadOfSilentlyUpdating() {
-        store.install(TestAlpPackages.signedPackage())
+        val bytes=TestAlpPackages.signedPackage()
+        store.install(bytes)
 
-        val failure = runCatching { store.install(TestAlpPackages.signedPackage()) }.exceptionOrNull()
+        val failure = runCatching { store.install(bytes) }.exceptionOrNull()
 
-        assertTrue("重复安装必须有明确拒绝：$failure", failure is PluginInstallRefused)
+        assertTrue("重复安装必须有明确拒绝：$failure", failure is PackageRejected)
         assertTrue(
-            "拒绝码必须指明同 ID 已存在：${failure!!.message}",
-            failure.message!!.contains("ALREADY_INSTALLED"),
+            "相同版本不能覆盖：${failure!!.message}",
+            failure.message!!.contains("DOWNGRADE"),
         )
+    }
+
+    @Test fun updateRollbackAndUninstallPreserveSignedAuthorAndVersion() {
+        val author=java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        store.install(TestAlpPackages.signedPackage(author=author))
+        store.install(TestAlpPackages.signedPackage(version="1.1.0",author=author))
+        assertEquals("1.1.0",store.listInstalled().single().version)
+        assertEquals("1.0.0",store.rollback("org.example.notifications").version)
+        store.uninstall("org.example.notifications")
+        assertTrue(store.listInstalled().isEmpty())
+        assertTrue(!File(store.installRoot,".previous/org.example.notifications").exists())
+    }
+
+    @Test fun anUpdateCannotReplaceTheAuthorOrDowngrade() {
+        val author=java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        store.install(TestAlpPackages.signedPackage(version="1.1.0",author=author))
+        val other=runCatching { store.install(TestAlpPackages.signedPackage(version="1.2.0")) }.exceptionOrNull()
+        assertTrue(other?.message.orEmpty().contains("AUTHOR_MISMATCH"))
+        val downgrade=runCatching { store.install(TestAlpPackages.signedPackage(author=author)) }.exceptionOrNull()
+        assertTrue(downgrade?.message.orEmpty().contains("DOWNGRADE"))
+        assertEquals("1.1.0",store.listInstalled().single().version)
     }
 
     @Test

@@ -65,7 +65,7 @@ class TestE2EOrchestrator(unittest.TestCase):
         self.assertEqual(res.stage, E2EStage.STAGE_1_PLUGIN_INSTALL)
         self.assertEqual(res.status, TestStatus.PASSED)
         self.assertTrue(res.metrics.get("conformancePassed"))
-        self.assertEqual(res.metrics.get("conformanceMatches"), 24)
+        self.assertEqual(res.metrics.get("conformanceMatches"), 66)
         self.assertTrue(res.metrics.get("adminServiceReady"))
 
     def test_stage_2_account_provision(self):
@@ -280,12 +280,14 @@ class TestE2EOrchestrator(unittest.TestCase):
         runner.run('git config user.name "Test Runner"')
 
         # 创建初始提交
-        readme = repo_dir / "README.md"
-        readme.write_text("# Initial Repo\n", encoding="utf-8")
+        readme = repo_dir / "code.py"
+        readme.write_text("value = 0\n", encoding="utf-8")
+        (repo_dir / ".gitignore").write_text(".worktrees/\nartifacts/\n")
         runner.run("git add -A")
         runner.run('git commit -m "初始: 初始化仓库"')
 
         mgr = MultiAgentWorktreeManager(runner=runner, root_dir=repo_dir, mock_mode=False)
+        mgr.regression_command=[sys.executable,"-c","from pathlib import Path; compile(Path('code.py').read_text(), 'code.py', 'exec')"]
 
         # 1. 正常分支：创建独立文件，无冲突
         ticket_ok = DiagnosticTicket(
@@ -304,12 +306,9 @@ class TestE2EOrchestrator(unittest.TestCase):
         self.assertTrue(wt_dir.exists())
         self.assertEqual(branch, "fix/e2e_ticket_real_1")
 
-        ok_committed = mgr.commit_fix(
-            wt_dir,
-            "修复: 针对 TICKET-REAL-1 提交修复",
-            patch_content="schema update\n",
-            patch_rel_path="contract.txt",
-        )
+        (wt_dir / "contract.py").write_text("version = 2\n")
+        ok_committed = mgr.commit_fix(wt_dir, "修复: 实际契约实现")
+        ticket_ok.resolution_status="RESOLVED"
         self.assertTrue(ok_committed)
 
         # 2. 冲突分支：修改 README.md 第一行
@@ -326,16 +325,13 @@ class TestE2EOrchestrator(unittest.TestCase):
         )
 
         wt_conflict_dir, conflict_branch = mgr.allocate_worktree(ticket_conflict)
-        conflict_committed = mgr.commit_fix(
-            wt_conflict_dir,
-            "修复: 分支修改 README 产生冲突",
-            patch_content="# Branch Conflicting Content\n",
-            patch_rel_path="README.md",
-        )
+        (wt_conflict_dir / "code.py").write_text("value = 2\n")
+        conflict_committed = mgr.commit_fix(wt_conflict_dir,"修复: 实际源文件冲突")
+        ticket_conflict.resolution_status="RESOLVED"
         self.assertTrue(conflict_committed)
 
         # 在主干也修改 README.md 造成与分支的物理代码冲突
-        readme.write_text("# Main Conflicting Content\n", encoding="utf-8")
+        readme.write_text("value = 3\n", encoding="utf-8")
         runner.run("git add -A")
         runner.run('git commit -m "提交: 主干并发修改产生冲突"')
 
@@ -359,6 +355,49 @@ class TestE2EOrchestrator(unittest.TestCase):
 
         # 验证发生冲突的 worktree 目录被妥善保留以供问题排查分析
         self.assertTrue(wt_conflict_dir.exists())
+
+    def test_actual_worker_process_and_failed_regression_gate(self):
+        repo=Path(self.temp_dir.name)/"worker-repo";repo.mkdir()
+        runner=CommandRunner(cwd=repo)
+        for command in (["git","init","-b","main"],["git","config","user.name","Worker Test"],["git","config","user.email","test@example.com"]):
+            self.assertEqual(0,runner.run(command)[0])
+        (repo/"code.py").write_text("value = 0\n")
+        (repo/".gitignore").write_text(".worktrees/\nartifacts/\n")
+        runner.run(["git","add","-A"]);runner.run(["git","commit","-m","initial"])
+        manager=MultiAgentWorktreeManager(runner,repo)
+        manager.regression_command=[sys.executable,"-c","exec(open('code.py').read()); assert value == 1"]
+        # An ordinary subprocess exercises the production worker protocol;
+        # no external AI worker is needed to verify isolation and Git gates.
+        manager.agent_command=[sys.executable,"-c","import sys; from pathlib import Path; assert 'ticket_id' in sys.stdin.read(); Path('code.py').write_text('value = 1\\n')"]
+        ticket=DiagnosticTicket("WORKER-GOOD",E2EStage.STAGE_4_BIDIRECTIONAL_MSG,"P1","wrong value","client",[],"fix source",AgentRole.FIX.value)
+        worktree,_=manager.allocate_worktree(ticket)
+        self.assertTrue(manager.fix_ticket(ticket,worktree))
+        self.assertEqual("RESOLVED",ticket.resolution_status)
+        self.assertEqual("value = 0\n",(repo/"code.py").read_text())
+        manager.merge_in_topological_order([ticket])
+        self.assertEqual("VERIFIED",ticket.resolution_status)
+        self.assertEqual("value = 1\n",(repo/"code.py").read_text())
+        failed=DiagnosticTicket("WORKER-BAD",E2EStage.STAGE_4_BIDIRECTIONAL_MSG,"P1","bad repair","client",[],"fix source",AgentRole.FIX.value)
+        badtree,_=manager.allocate_worktree(failed)
+        manager.agent_command=[sys.executable,"-c","from pathlib import Path; Path('code.py').write_text('value = 9\\n')"]
+        self.assertFalse(manager.fix_ticket(failed,badtree))
+        self.assertEqual("REGRESSION_FAILED",failed.resolution_status)
+        manager.merge_in_topological_order([failed])
+        self.assertTrue(badtree.exists())
+        self.assertEqual("value = 1\n",(repo/"code.py").read_text())
+
+    def test_typed_draft_and_visible_echo_cannot_pass_live_bidirectional_stage(self):
+        live=E2EOrchestrator("DRAFT_ONLY",dry_run=False,storage_root=self.temp_storage)
+        bridge=live.android_cli
+        bridge.is_device_connected=MagicMock(return_value=True)
+        bridge.get_layout=MagicMock(return_value=[{"text":"输入消息","bounds":"[0,0][20,20]"},{"text":"发送","bounds":"[20,0][40,20]"},{"text":"Hello typed draft"}])
+        bridge.tap=MagicMock(return_value=True);bridge.input_text=MagicMock(return_value=True)
+        live.protocol_evidence=MagicMock(return_value=[])
+        live.runner.run=MagicMock(return_value=(0,"",""))
+        with patch.dict(os.environ,{"OAI_E2E_REPLY_TIMEOUT_SECONDS":"0.01"}),patch("run_e2e_orchestrator.time.sleep"):
+            result=live.run_stage_4("Hello typed draft")
+        self.assertEqual(TestStatus.FAILED,result.status)
+        self.assertFalse(result.metrics['messageDelivered'])
 
     def test_stage_2_account_provision_invalid_user_fails(self):
         """测试阶段 2 输入非法用户名格式时能诚实失败并生成诊断工单，而非被 dry_run 隐瞒"""

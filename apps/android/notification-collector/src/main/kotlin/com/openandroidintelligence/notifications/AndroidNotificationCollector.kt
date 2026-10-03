@@ -230,6 +230,7 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
         runtime = created
         preinstalledCollector?.let(created::replaceCollector)
         collector = created.currentCollector()
+        NotificationRuntimeFactoryRegistry.activeCollector = collector
         runtime?.start()
     }
 
@@ -237,9 +238,11 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
         preinstalledCollector = value
         runtime?.replaceCollector(value)
         collector = value
+        NotificationRuntimeFactoryRegistry.activeCollector = value
     }
 
     override fun onDestroy() {
+        if (NotificationRuntimeFactoryRegistry.activeCollector === collector) NotificationRuntimeFactoryRegistry.activeCollector = null
         runtime?.stop()
         runtime = null
         collector = null

@@ -795,6 +795,39 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         # Per conversation: the reply text already published in the current turn,
         # and the message id it was published under.
         self._turn_replies: Dict[str, tuple[str, str]] = {}
+        self._generation_locks: Dict[tuple[str,str],asyncio.Lock] = {}
+
+    def set_session_store(self, session_store: Any) -> None:
+        super().set_session_store(session_store)
+        port=getattr(getattr(self.services.core,"history_reader",None),"__self__",None)
+        if port is not None: port.session_store=session_store
+
+    def _native_generation_canceller(self) -> Any:
+        runner=getattr(getattr(self,"_message_handler",None),"__self__",None)
+        interrupt=getattr(runner,"_interrupt_and_clear_session",None)
+        if not callable(interrupt) or not callable(getattr(self,"cancel_session_processing",None)): return None
+        def cancel(account_id: str,conversation_id: str,generation_id: str) -> str:
+            loop=self._loop
+            if loop is None or loop.is_closed(): return "OUTCOME_UNKNOWN"
+            async def stop() -> str:
+                from gateway.session import build_session_key
+                source=self._agent_source(conversation_id,account_id)
+                session_key=build_session_key(source,group_sessions_per_user=self.config.extra.get("group_sessions_per_user",True),thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user",False))
+                task=getattr(self,"_session_tasks",{}).get(session_key)
+                if task is None or task.done():
+                    account=self.services.core.open_gateway_account(account_id)
+                    try:
+                        generation=account.conversations.workflow._get("generation:"+generation_id)
+                        return "ALREADY_COMPLETED" if generation and generation["state"] in {"completed","failed"} else "OUTCOME_UNKNOWN"
+                    finally: account.close()
+                # Use the same hard interrupt/run invalidation path as Hermes /stop.
+                await interrupt(session_key,source,interrupt_reason="Gateway generation cancelled",invalidation_reason="gateway_generation_cancel")
+                await self.cancel_session_processing(session_key)
+                return "CANCELLED" if task.done() else "OUTCOME_UNKNOWN"
+            future=asyncio.run_coroutine_threadsafe(stop(),loop)
+            try: return future.result(timeout=12)
+            except Exception: return "OUTCOME_UNKNOWN"
+        return cancel
 
     @property
     def _active_sse_queues(self) -> Dict[str, Set[asyncio.Queue]]:
@@ -835,6 +868,9 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         # decision can actually reach the Agent thread waiting on it (§7.2).
         if core is not None:
             core.approval_resolver = self._host_approval_resolver()
+            core.generation_canceller = self._native_generation_canceller()
+            from .host_history import HermesHistoryPort
+            core.history_reader = HermesHistoryPort(core, getattr(self, "_session_store", None)).read
         register_sink = getattr(core, "register_event_sink", None)
         if callable(register_sink):
             register_sink(self._event_sink)
@@ -920,6 +956,11 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 try:
                     account = self.services.core.open_gateway_account(account_id)
                     now = datetime.now(timezone.utc)
+                    history_port = getattr(self.services.core.history_reader,"__self__",None)
+                    if callable(getattr(history_port,"maintain",None)):
+                        await asyncio.to_thread(history_port.maintain,account_id,now)
+                    account.attachments.expire_due(now)
+                    account.attachments.cleanup(now)
                     account.events.purge_expired(now)
                     account.device_requests.recover_expired(now)
                     account.device_requests.purge_terminal_payloads(now)
@@ -971,6 +1012,29 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[open_android] Failed to deliver message to %s: %s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=False)
+
+    async def send_image_file(self,chat_id,image_path,caption=None,reply_to=None,metadata=None,**kwargs):
+        return await self.send_document(chat_id,image_path,caption=caption,reply_to=reply_to,metadata=metadata)
+
+    async def send_document(self,chat_id,file_path,caption=None,file_name=None,reply_to=None,metadata=None,**kwargs):
+        from .history_media import HistoryMedia
+        from .device_tools import resolve_origin
+        account_id=(metadata.get("account_id") if isinstance(metadata,dict) else None) or self._conv_to_account.get(chat_id) or self._account_id
+        if not account_id: return SendResult(success=False,error="ACCOUNT_NOT_CONFIGURED",retryable=False)
+        account=self.services.core.open_gateway_account(account_id)
+        try:
+            message_id=self._published_reply_id(chat_id,caption or "",None)
+            part=HistoryMedia(account).register(chat_id,message_id,file_path)
+            key=f"history-media-reply:{message_id}:{part['attachmentId']}"
+            account.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",(key,account.store.seal_json(part,key)))
+            account.conversations.record_assistant_message(chat_id,message_id,caption or "")
+            payload=self._message_payload(chat_id,message_id,caption or "");payload["parts"].append(part)
+            origin=resolve_origin(self.services.core,"",account_id,chat_id)
+            account.events.append("conversation.message.completed",origin["messageId"] if origin else message_id,payload)
+            return SendResult(success=True,message_id=message_id)
+        except Exception:
+            return SendResult(success=False,error="ATTACHMENT_READ_FAILED",retryable=False)
+        finally: account.close()
 
     def _published_reply_id(self, chat_id: str, text: str, proposed: Optional[str]) -> str:
         """The message id one logical reply is published under.
@@ -1099,7 +1163,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                     account.conversations.record_assistant_message(chat_id, message_id, text, occurred_at)
                 except Exception as rec_err:
                     logger.warning("[open_android] Failed to record completed message: %s", rec_err)
-            account.events.append(event_type, message_id, payload, occurred_at)
+            from .device_tools import resolve_origin
+            origin = resolve_origin(self.services.core,"",target_account,chat_id)
+            correlation_id = origin["messageId"] if origin and origin.get("conversationId") == chat_id else message_id
+            account.events.append(event_type, correlation_id, payload, occurred_at)
         finally:
             account.close()
 
@@ -1463,7 +1530,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         if handler_found is None:
             return web.json_response({"errorCode": "NOT_FOUND"}, status=404)
 
-        if method == "POST" and path == "/open-android-intelligence/v2/sessions/password":
+        if method == "POST" and (path == "/open-android-intelligence/v2/sessions/password" or path.endswith("/cancel") and "/generations/" in path):
             # The Core admits at most two password jobs without an unbounded
             # queue. SQLite connections are created and closed on this worker.
             if self._password_tasks >= 2:
@@ -1483,7 +1550,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         account_header = _header_value(raw_req["headers"], "x-open-android-intelligence-account")
 
         # If this was an inbound message POST, trigger Hermes agent turn
-        if method == "POST" and "/conversations/" in path and path.endswith("/messages") and status in (200, 201):
+        if method == "POST" and "/conversations/" in path and (path.endswith("/messages") or path.endswith("/message-batches")) and status in (200, 201):
             task = asyncio.create_task(self._notify_agent_inbound(
                 path, body_bytes, body, account_header,
             ))
@@ -1628,7 +1695,28 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         finally:
             account.close()
 
-    async def _notify_agent_inbound(
+    async def _notify_agent_inbound(self,path: str,body_bytes: bytes,response_body: Any,account_id: str | None = None) -> None:
+        source_account=account_id or self._account_id
+        conversation_id=_conversation_id_of(path)
+        if not source_account or not conversation_id: return
+        lock=self._generation_locks.setdefault((source_account,conversation_id),asyncio.Lock())
+        async with lock:
+            await self._dispatch_agent_inbound(path,body_bytes,response_body,source_account)
+            data=json.loads(body_bytes)
+            client_id=data.get("clientMessageId") or (data.get("members") or [{}])[0].get("clientMessageId")
+            if not client_id or not callable(getattr(self,"cancel_session_processing",None)): return
+            while True:
+                account=self.services.core.open_gateway_account(source_account)
+                try:
+                    row=account.store.database.execute("SELECT message_id FROM messages WHERE conversation_id=? AND client_message_id=?",(conversation_id,client_id)).fetchone()
+                    generation=account.conversations.workflow.for_message(row[0]) if row else None
+                    # Unknown outcome keeps this thread paused until native completion proves a terminal state.
+                    waiting=generation and generation["state"] in {"running","unknown"}
+                finally: account.close()
+                if not waiting: break
+                await asyncio.sleep(0.2)
+
+    async def _dispatch_agent_inbound(
         self, path: str, body_bytes: bytes, response_body: Any, account_id: str | None = None,
     ) -> None:
         """Notify Hermes agent of a user message received from the Android device."""
@@ -1652,7 +1740,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
 
             data = json.loads(body_bytes.decode("utf-8"))
             user_text = data.get("text") or data.get("content") or ""
-            client_message_id = data.get("clientMessageId") or data.get("clientTurnId")
+            client_message_id = data.get("clientMessageId") or data.get("clientTurnId") or (data.get("members") or [{}])[0].get("clientMessageId")
             client_message_id = str(client_message_id) if client_message_id else str(uuid.uuid4())
 
             if user_text.strip() == NEW_CONVERSATION_COMMAND:
@@ -1716,6 +1804,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 media_types=media_types,
                 timestamp=created_at,
             )
+            event._gateway_claim_token=dispatch_claim_token
             if dispatch_record is not None:
                 self._processing_media_files[(source_account, client_message_id)] = list(materialized_files)
             logger.info(
@@ -1723,17 +1812,28 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 dispatch_record["messageId"] if dispatch_record is not None else client_message_id,
                 len(media_urls),
             )
-            await self.handle_message(event)
+            from .device_tools import trusted_turn
+            origin_row = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?",(f"message-device:{client_message_id}",)).fetchone() if account is not None else None
+            binding_row = account.agent_sessions.lookup(conversation_id) if account is not None else None
+            origin = json.loads(origin_row[0]) if origin_row else {}
+            token = trusted_turn.set({**origin,"core":self.services.core,"accountId":source_account,
+                "sessionId":binding_row.get("agentSessionId") if binding_row else None})
+            try:
+                await self.handle_message(event)
+            finally:
+                trusted_turn.reset(token)
             if getattr(event, "_gateway_accepted", False) is not True:
                 raise GatewayError("AGENT_UNAVAILABLE")
             handed_to_host = True
             materialized_files = []
             if dispatch_record is not None and account is not None:
-                account.conversations.update_dispatch_status(
-                    dispatch_record["messageId"], "delivered", None,
-                    f"dispatch-{dispatch_record['messageId']}",
-                    claim_token=dispatch_claim_token,
-                )
+                current = account.conversations.dispatch_message(client_message_id)
+                if current is not None and current['status'] == 'queued':
+                    account.conversations.update_dispatch_status(
+                        dispatch_record["messageId"], "delivered", None,
+                        f"dispatch-{dispatch_record['messageId']}",
+                        claim_token=dispatch_claim_token,
+                    )
                 for attachment_id in dispatch_record["attachmentIds"]:
                     try:
                         account.attachments.mark_delivered(attachment_id)
@@ -1906,6 +2006,11 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             account = self.services.core.open_gateway_account(account_id)
             record = account.conversations.dispatch_message(client_message_id)
             if record is not None:
+                generation=account.conversations.workflow.for_message(record["messageId"])
+                if generation and generation["state"]=="cancelled": return
+                if status=="completed" and record["status"]=="queued":
+                    account.conversations.update_dispatch_status(record["messageId"],"delivered",None,f"agent-adopted-{record['messageId']}",claim_token=getattr(event,"_gateway_claim_token",None))
+                account.conversations.workflow.settle(record["messageId"],status)
                 account.conversations.update_dispatch_status(
                     record["messageId"], status, error_code,
                     f"agent-complete-{record['messageId']}",
@@ -1952,6 +2057,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 failure = route.failure_response(None, None, "SESSION_REVOKED")
                 return web.json_response(failure["body"], status=failure["statusCode"])
             registered_account_id = account_id
+            self.services.core.set_device_online(handshake["verifiedContext"],True)
             self._event_subscribers.setdefault(account_id, set()).add(queue)
 
             response = web.StreamResponse(
@@ -2014,6 +2120,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             pass
         finally:
             if registered_account_id:
+                self.services.core.set_device_online(handshake["verifiedContext"],False)
                 subscribers = self._event_subscribers.get(registered_account_id)
                 if subscribers:
                     subscribers.discard(queue)
@@ -2053,6 +2160,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
                 failure = route.failure_response(None, None, "SESSION_REVOKED")
                 return web.json_response(failure["body"], status=failure["statusCode"])
             registered_account_id = account_id
+            self.services.core.set_device_online(handshake["verifiedContext"],True)
             self._event_subscribers.setdefault(account_id, set()).add(queue)
 
             ws = web.WebSocketResponse(heartbeat=15.0)
@@ -2178,6 +2286,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             pass
         finally:
             if registered_account_id:
+                self.services.core.set_device_online(handshake["verifiedContext"],False)
                 subscribers = self._event_subscribers.get(registered_account_id)
                 if subscribers:
                     subscribers.discard(queue)

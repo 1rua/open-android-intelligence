@@ -37,6 +37,8 @@ def _get(value: Any, *names: str, default: Any = None) -> Any:
 
 _PRE_AUTH_TARGETS = (
     "/open-android-intelligence/v2/negotiate",
+    "/open-android-intelligence/v2/sessions/invite/challenge",
+    "/open-android-intelligence/v2/sessions/invite/exchange","/open-android-intelligence/v2/pairings/exchange","/open-android-intelligence/v2/sessions/device/challenge","/open-android-intelligence/v2/sessions/device",
     "/open-android-intelligence/v2/sessions/password",
     "/open-android-intelligence/v2/sessions/refresh",
     "/open-android-intelligence/v2/sessions/current",
@@ -177,7 +179,7 @@ class GatewayHttpRoute:
                     "requestId": _get(request, "requestId", "request_id", default="open-android-intelligence-negotiate"),
                     "correlationId": _get(request, "correlationId", "correlation_id", default="open-android-intelligence-negotiate"),
                 }
-            elif context is None and method == "POST" and target == "/open-android-intelligence/v2/sessions/password":
+            elif context is None and method == "POST" and target in {"/open-android-intelligence/v2/sessions/password","/open-android-intelligence/v2/sessions/invite/challenge","/open-android-intelligence/v2/sessions/invite/exchange","/open-android-intelligence/v2/pairings/exchange","/open-android-intelligence/v2/sessions/device/challenge","/open-android-intelligence/v2/sessions/device"}:
                 verified = {
                     "method": method,
                     "target": target,
@@ -323,7 +325,7 @@ class GatewayHttpRoute:
                 "correlationId": str(_get(request, "correlationId", "correlation_id", default="open-android-intelligence-negotiate")),
             })
             return {"statusCode": _status(response_body), "headers": dict(_RESPONSE_HEADERS), "body": response_body}
-        if method == "POST" and target == "/open-android-intelligence/v2/sessions/password":
+        if method == "POST" and target in {"/open-android-intelligence/v2/sessions/password","/open-android-intelligence/v2/sessions/invite/challenge","/open-android-intelligence/v2/sessions/invite/exchange","/open-android-intelligence/v2/pairings/exchange","/open-android-intelligence/v2/sessions/device/challenge","/open-android-intelligence/v2/sessions/device"}:
             try:
                 decoded = _strict_json(body)
             except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
@@ -446,6 +448,11 @@ def create_gateway_routes(
     )
     definitions = (
         ("/open-android-intelligence/v2/negotiate", "exact"),
+        ("/open-android-intelligence/v2/sessions/invite/challenge", "exact"),
+        ("/open-android-intelligence/v2/sessions/invite/exchange", "exact"),
+        ("/open-android-intelligence/v2/pairings/exchange", "exact"),
+        ("/open-android-intelligence/v2/sessions/device/challenge", "exact"),
+        ("/open-android-intelligence/v2/sessions/device", "exact"),
         ("/open-android-intelligence/v2/sessions/password", "exact"),
         ("/open-android-intelligence/v2/sessions/refresh", "exact"),
         ("/open-android-intelligence/v2/sessions/current", "exact"),
@@ -453,6 +460,8 @@ def create_gateway_routes(
         # endpoint and is fully signed — it never joins the pre-auth exemptions
         # that let `sessions/current` arrive without a verified context.
         ("/open-android-intelligence/v2/pairings/current", "exact"),
+        ("/open-android-intelligence/v2/pairings/current/", "prefix"),
+        ("/open-android-intelligence/v2/sync/snapshot", "exact"),
         ("/open-android-intelligence/v2/commands", "exact"),
         ("/open-android-intelligence/v2/events", "exact"),
         ("/open-android-intelligence/v2/conversations", "exact"), ("/open-android-intelligence/v2/conversations/", "prefix"),

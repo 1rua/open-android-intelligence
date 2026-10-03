@@ -37,6 +37,7 @@ class GatewayAttachmentDraftCoordinator(
     private val scope: CoroutineScope,
     private val staging: LocalAttachmentStagingStore,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val recovery: com.openandroidintelligence.conversation.ports.AttachmentDraftRecoveryStore? = null,
 ) : AttachmentDraftCoordinator {
     private val drafts = ConcurrentHashMap<String, AttachmentDraft>()
     private val states = ConcurrentHashMap<String, MutableStateFlow<AttachmentDraftState>>()
@@ -44,6 +45,22 @@ class GatewayAttachmentDraftCoordinator(
     private val staged = ConcurrentHashMap<String, StagedAttachmentContent>()
     private val selections = ConcurrentHashMap<String, LocalAttachmentSelection>()
     private val jobs = ConcurrentHashMap<String, Job>()
+
+    private val ephemeral = java.util.Collections.newSetFromMap(ConcurrentHashMap<String,Boolean>())
+    init {
+        recovery?.load()?.forEach { record ->
+            val draft = if (record.remoteId != null) record.draft.copy(state=AttachmentState.VERIFIED) else record.draft.copy(state=AttachmentState.RETRYABLE_FAILURE)
+            drafts[draft.id.value]=draft; staged[draft.id.value]=record.content
+            record.remoteId?.let { remoteIds[draft.id.value]=it }
+            stateFlowFor(draft.id.value).value=AttachmentDraftState(draft.id,draft.state)
+        }
+    }
+    override fun restoredDrafts() = drafts.values.toList()
+    @Synchronized private fun persist() {
+        recovery?.save(drafts.values.filter { it.id.value !in ephemeral }.mapNotNull { draft ->
+            staged[draft.id.value]?.let { com.openandroidintelligence.conversation.ports.RecoveredAttachmentDraft(draft,it,remoteIds[draft.id.value]) }
+        })
+    }
 
     override suspend fun prepare(selection: LocalAttachmentSelection): AttachmentDraft {
         val draftId = newDraftId()
@@ -56,6 +73,7 @@ class GatewayAttachmentDraftCoordinator(
             state = AttachmentState.LOCAL_PREPARING,
         )
         drafts[draftId] = draft
+        if (!selection.recoverAfterRestart) ephemeral.add(draftId)
         selections[draftId] = selection
         stateFlowFor(draftId).value = AttachmentDraftState(draft.id, AttachmentState.LOCAL_PREPARING)
         jobs[draftId] = scope.launch { stageAndUpload(draftId, selection) }
@@ -79,6 +97,7 @@ class GatewayAttachmentDraftCoordinator(
             drafts.computeIfPresent(draftId) { _, draft ->
                 draft.copy(sizeBytes = content.sizeBytes, sha256 = content.sha256Hex)
             }
+            persist()
             uploadStaged(draftId, content)
         } catch (cancelled: CancellationException) {
             update(draftId, AttachmentState.CANCELLED, cancelled.message)
@@ -118,6 +137,7 @@ class GatewayAttachmentDraftCoordinator(
         )
         remoteIds[draftId] = remoteId
         updateProgress(draftId, AttachmentState.VERIFIED, content.sizeBytes, content.sizeBytes)
+        persist()
     }
 
     override suspend fun armSubmission(draftId: String, revision: Long): PendingSubmissionIntent {
@@ -175,6 +195,8 @@ class GatewayAttachmentDraftCoordinator(
         if (content != null) withContext(ioDispatcher) { staging.delete(content.id) }
         states.remove(draftId)
         drafts.remove(draftId)
+        ephemeral.remove(draftId)
+        persist()
     }
 
     override suspend fun releaseAfterSubmit(draftId: String) {
@@ -184,6 +206,8 @@ class GatewayAttachmentDraftCoordinator(
         remoteIds.remove(draftId)
         states.remove(draftId)
         drafts.remove(draftId)
+        ephemeral.remove(draftId)
+        persist()
         if (content != null) withContext(ioDispatcher) { staging.delete(content.id) }
     }
 

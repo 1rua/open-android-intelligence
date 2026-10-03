@@ -51,12 +51,13 @@ class FileEncryptedOutboxPersistence(private val file: File) : EncryptedOutboxPe
         file.parentFile?.mkdirs()
         val parent = file.parentFile ?: file.absoluteFile.parentFile ?: error("outbox file has no parent")
         val temporary = File(parent, "${file.name}.tmp")
-        temporary.writeBytes(ciphertext)
+        java.io.FileOutputStream(temporary).use { output -> output.write(ciphertext); output.fd.sync() }
         check(temporary.renameTo(file)) { "unable to atomically persist notification outbox" }
     }
 
     override fun clear() {
-        if (file.isFile) file.delete()
+        check(!file.isFile || file.delete()) { "unable to remove encrypted outbox" }
+        File(file.parentFile, "${file.name}.tmp").let { check(!it.exists() || it.delete()) }
     }
 }
 

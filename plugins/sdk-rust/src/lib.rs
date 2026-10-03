@@ -119,6 +119,7 @@ pub const RESULT_FAILED: u64 = u64::MAX;
 pub mod kernel {
     #[link(wasm_import_module = "open_android_intelligence_kernel_v1")]
     extern "C" {
+        pub fn kernel_call(name_ptr: u32, name_len: u32, input_ptr: u32, input_len: u32, output_ptr: u32, capacity: u32) -> i32;
         /// 写一条结构化日志。参数：级别、缓冲区指针、字节数。
         /// 超过宿主上限的日志会被静默丢弃，不影响调用结果。
         pub fn kernel_log(level: u32, ptr: u32, len: u32);
@@ -159,6 +160,25 @@ pub enum PluginError {
     OutOfMemory,
     /// 插件自身处理失败。
     HandlerFailed,
+}
+
+/// A versioned mediated primitive call. Identity/account/grants come from the
+/// kernel's invocation scope, never from plugin-controlled request fields.
+pub fn call_kernel(primitive: &str, request: &[u8]) -> Result<Vec<u8>, PluginError> {
+    if request.len() > EXCHANGE_SIZE_BYTES || primitive.len() > 256 {
+        return Err(PluginError::RequestOutOfBounds);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut response = alloc::vec![0u8; EXCHANGE_SIZE_BYTES];
+        let length = unsafe { kernel::kernel_call(primitive.as_ptr() as u32, primitive.len() as u32,
+            request.as_ptr() as u32, request.len() as u32, response.as_mut_ptr() as u32, response.len() as u32) };
+        if length < 0 || length as usize > response.len() { return Err(PluginError::HandlerFailed); }
+        response.truncate(length as usize);
+        Ok(response)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    { Err(PluginError::HandlerFailed) }
 }
 
 /// 只 bump、不回收的分配器。
@@ -259,6 +279,26 @@ pub fn read_request<'a>(request_ptr: u32, request_len: u32) -> Option<&'a [u8]> 
     }
     if !request_in_bounds(request_ptr, request_len) {
         return None;
+    }
+    if request_ptr == 0 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Address zero is valid WASM linear memory, but Rust references
+            // must be non-null. Read the exchange bytes as external volatile
+            // memory, then construct the slice over our non-null static arena.
+            // Each module instance is single-threaded and invokes one handler
+            // at a time; the copy remains valid until the next invocation.
+            static mut REQUEST_COPY: [u8; EXCHANGE_SIZE_BYTES] = [0; EXCHANGE_SIZE_BYTES];
+            unsafe {
+                let target = core::ptr::addr_of_mut!(REQUEST_COPY) as *mut u8;
+                for index in 0..request_len as usize {
+                    target.add(index).write(core::ptr::read_volatile(index as *const u8));
+                }
+                return Some(core::slice::from_raw_parts(target, request_len as usize));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { return None; }
     }
     // SAFETY: 宿主保证 [ptr, ptr+len) 是可读的字节；已通过交换区边界检查。
     unsafe { Some(core::slice::from_raw_parts(request_ptr as *const u8, request_len as usize)) }

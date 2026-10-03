@@ -79,3 +79,6 @@ fun validateAssistantAttachmentSelections(
         "assistant attachment selection IDs must be unique"
     }
 }
+
+/** Provider handles remain local and are never serialized into bridge requests. */
+class AssistantProviderSelection internal constructor(internal val contentUri: android.net.Uri)

@@ -32,7 +32,13 @@ class CapabilityGatedConversationRepository(
     private val activeConversationId: () -> String?,
 ) : ConversationRepository by upstream,
     GenerationTracker by upstream,
-    StreamHealthSource by upstream {
+    StreamHealthSource by upstream,
+    com.openandroidintelligence.conversation.ports.MessageOutcomeQuery by upstream {
+    override suspend fun timeline(conversationId:String,page:com.openandroidintelligence.conversation.ports.PageRequest):com.openandroidintelligence.conversation.ports.TimelinePage {
+        val result=upstream.timeline(conversationId,page)
+        if (page.cursor==null && capability.agreed) upstream.installCurrentGeneration(conversationId,client.currentGeneration(conversationId))
+        return result
+    }
 
     override suspend fun cancelGeneration(
         generationId: String,
@@ -44,6 +50,7 @@ class CapabilityGatedConversationRepository(
                 message = "NO_ACTIVE_CONVERSATION",
             )
         val outcome = client.cancelGeneration(conversationId, generationId, requestId, capability)
+        if (outcome=="CANCELLED" || outcome=="ALREADY_COMPLETED") upstream.installCurrentGeneration(conversationId,null)
         return CancelGenerationResult(
             outcome = when (outcome) {
                 "CANCELLED" -> CancelGenerationOutcome.CANCELLED

@@ -6,12 +6,38 @@ import java.security.Signature
 import java.util.Base64
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import java.io.File
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonValue
 
 /**
  * 构造真实可安装的 `.alp` 测试包：真实 Ed25519 密钥、真实签名、§5 形状的
  * manifest，与 `plugin-tooling` 产物同构。供插件管理区域的安装链路测试使用。
  */
 internal object TestAlpPackages {
+
+    /** Real compiled SMS code and its checked-in schema, signed with a fresh test key. */
+    fun compiledSmsPackage(): ByteArray {
+        var root = File(requireNotNull(System.getProperty("user.dir"))).absoluteFile
+        while (!File(root, "plugins/sms/manifest.json").isFile) {
+            root = root.parentFile ?: error("Repository root unavailable")
+        }
+        val author = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val publicKey = Base64.getUrlEncoder().withoutPadding().encodeToString(author.public.encoded.copyOfRange(12, 44))
+        val template = Json.parse(File(root, "plugins/sms/manifest.json").readText()) as JsonValue.JObject
+        val manifest = Json.canonical(template.copy(fields = template.fields.map { (name, value) ->
+            name to if (name == "author") Json.of(mapOf("algorithm" to "Ed25519", "publicKey" to publicKey)) else value
+        })).toByteArray()
+        val content = listOf("payload/sms.wasm" to File(root, "plugins/target/wasm32-unknown-unknown/release/sms.wasm").readBytes()) +
+            listOf("sms", "sms-schedule", "sms-job-status", "sms-cancel").map { name ->
+                "schemas/$name.json" to File(root, "plugins/schemas/$name.json").readBytes()
+            }
+        val index = filesJson(content)
+        val preimage = "OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1\n".toByteArray() + manifest + byteArrayOf(10) + index
+        val signature = Signature.getInstance("Ed25519").run { initSign(author.private); update(preimage); sign() }
+        return zipOf(content + listOf("manifest.json" to manifest, "files.json" to index,
+            "signature.ed25519" to Base64.getUrlEncoder().withoutPadding().encode(signature)))
+    }
 
     /** §8 声明式设置贡献：一个带 set-setting 动作的 toggle。 */
     const val SETTINGS_CONTRIBUTION_JSON =
@@ -23,8 +49,9 @@ internal object TestAlpPackages {
         id: String = "org.example.notifications",
         version: String = "1.0.0",
         name: String = "示例通知插件",
+        author: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(),
     ): ByteArray {
-        val parts = buildParts(id, version, name)
+        val parts = buildParts(id, version, name, author)
         return assemble(parts)
     }
 
@@ -53,8 +80,8 @@ internal object TestAlpPackages {
         id: String,
         version: String,
         name: String,
+        keyPair: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(),
     ): Parts {
-        val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         // X509 编码 = 12 字节固定前缀 + 32 字节裸密钥；校验器按同一规则还原。
         val rawPublicKey = keyPair.public.encoded.copyOfRange(12, 44)
         val publicKey = Base64.getUrlEncoder().withoutPadding().encodeToString(rawPublicKey)

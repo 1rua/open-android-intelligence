@@ -18,6 +18,9 @@ Open Android Intelligence - 端到端测试与多 Agent 协同调度流水线 (E
 from __future__ import annotations
 
 import argparse
+import hashlib
+import shlex
+from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import datetime
 import enum
@@ -332,11 +335,17 @@ class MultiAgentWorktreeManager:
         self.root_dir = root_dir
         self.runner = runner if (runner and runner.cwd == root_dir) else CommandRunner(cwd=root_dir)
         self.mock_mode = mock_mode
+        self.agent_command = json.loads(os.environ.get("OAI_FIX_AGENT_ARGV", '["codex", "exec", "--full-auto", "-"]'))
+        self.regression_command = json.loads(os.environ.get("OAI_REGRESSION_ARGV", '["tools/run-node24", "npm", "test"]'))
+        if not all(isinstance(v, list) and v and all(isinstance(a, str) for a in v)
+                   for v in (self.agent_command, self.regression_command)):
+            raise ValueError("Worker and regression commands must be nonempty JSON argv arrays")
         self.worktree_base = root_dir / ".worktrees"
         self.worktree_base.mkdir(parents=True, exist_ok=True)
 
     def allocate_worktree(self, ticket: DiagnosticTicket) -> Tuple[Path, str]:
         """为特定工单在 .worktrees/ 下分配独立的 Git 工作区与分支"""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}",ticket.ticket_id): raise ValueError("TICKET_ID_INVALID")
         clean_id = ticket.ticket_id.lower().replace("-", "_")
         branch_name = f"fix/e2e_{clean_id}"
         target_dir = self.worktree_base / f"e2e-fix-{clean_id}"
@@ -348,27 +357,17 @@ class MultiAgentWorktreeManager:
             ticket.resolution_status = "IN_PROGRESS"
             return target_dir, branch_name
 
-        # 检查是否残留并安全清理（遵循 AGENTS.md 规范：非 worktree 残留移入临时回收区）
         if target_dir.exists():
-            rc_rm, _, _ = self.runner.run(f"git worktree remove '{target_dir}' --force")
-            if rc_rm != 0 and target_dir.exists():
-                safe_trash = Path("/tmp/open-android-intelligence-trash")
-                safe_trash.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.move(str(target_dir), str(safe_trash / f"leftover_{target_dir.name}_{int(time.time())}"))
-                except Exception:
-                    pass
-
-        # 确定基准分支 (优先使用当前 HEAD 分支，若处于 detached 则回退至 main)
-        rc_b, cur_branch, _ = self.runner.run("git rev-parse --abbrev-ref HEAD")
-        target_branch = cur_branch.strip() if (rc_b == 0 and cur_branch.strip() != "HEAD") else "main"
-
-        # 创建分支与 worktree
-        cmd = f"git worktree add -b {branch_name} '{target_dir}' {target_branch}"
-        rc, stdout, stderr = self.runner.run(cmd)
-        if rc != 0 and "already exists" in (stdout + stderr):
-            cmd = f"git worktree add '{target_dir}' {branch_name}"
-            self.runner.run(cmd)
+            raise RuntimeError("WORKTREE_ALREADY_EXISTS: previous work is retained")
+        rc, status, _ = self.runner.run(["git","status","--porcelain"])
+        if rc != 0 or status.strip():
+            raise RuntimeError("MAIN_WORKTREE_NOT_CLEAN")
+        rc, head, _ = self.runner.run(["git","rev-parse","HEAD"])
+        if rc != 0 or not re.fullmatch(r"[0-9a-f]{40,64}",head.strip()):
+            raise RuntimeError("MAIN_HEAD_UNAVAILABLE")
+        rc, _, err = self.runner.run(["git","worktree","add","-b",branch_name,str(target_dir),head.strip()])
+        if rc != 0:
+            raise RuntimeError("WORKTREE_ALLOCATION_FAILED: "+err[:300])
 
         ticket.worktree_path = str(target_dir.relative_to(self.root_dir))
         ticket.branch_name = branch_name
@@ -383,18 +382,58 @@ class MultiAgentWorktreeManager:
         patch_rel_path: str = "artifacts/fixes/patch.md",
     ) -> bool:
         """在工作区内落地修复补丁并提交（中文 commit message）"""
-        target = worktree_dir / patch_rel_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "a", encoding="utf-8") as f:
-            f.write(patch_content or f"# Fix Patch: {commit_msg}\n")
-
         if self.mock_mode:
             return True
-
+        # The worker must change actual source; an evidence note cannot resolve a defect.
         runner = CommandRunner(cwd=worktree_dir)
-        runner.run("git add -A")
-        rc, _, _ = runner.run(f'git commit -m "{commit_msg}"')
+        if patch_content:
+            if not patch_content.startswith("diff --git "):
+                return False
+            patch_file = worktree_dir / ".oai-worker.patch"
+            patch_file.write_text(patch_content, encoding="utf-8")
+            try:
+                rc, _, _ = runner.run(["git", "apply", str(patch_file)])
+                if rc != 0:
+                    return False
+            finally:
+                patch_file.unlink(missing_ok=True)
+        rc, status, _ = runner.run(["git", "status", "--porcelain"])
+        changed = [line[3:] for line in status.splitlines() if len(line) > 3]
+        if rc != 0 or not changed or all(path.startswith(("artifacts/", "docs/")) or Path(path).suffix in {".md",".log"} for path in changed):
+            return False
+        if not self.verify(worktree_dir):
+            return False
+        if runner.run(["git", "add", "-A"])[0] != 0:
+            return False
+        return runner.run(["git", "commit", "-m", commit_msg])[0] == 0
+
+    def verify(self, worktree_dir: Path) -> bool:
+        runner = CommandRunner(cwd=worktree_dir)
+        rc, out, err = runner.run(self.regression_command, timeout=1800)
+        log_dir = self.root_dir / "artifacts" / "e2e" / "worker-regressions"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{worktree_dir.name}.log").write_text(out + "\n" + err, encoding="utf-8")
         return rc == 0
+
+    def fix_ticket(self, ticket: DiagnosticTicket, worktree_dir: Path) -> bool:
+        if self.mock_mode:
+            return True
+        prompt = ("Repair this defect in the checked out repository. Implement the actual source change, "
+                  "add meaningful regression coverage, and run the relevant tests. Do not commit or merge. "
+                  "Do not mark a defect fixed by writing an evidence note.\n" + json.dumps(dataclasses.asdict(ticket), default=str))
+        try:
+            result = subprocess.run(self.agent_command, input=prompt, text=True, capture_output=True,
+                                    cwd=worktree_dir, env=self.runner.env, timeout=1800)
+        except (OSError, subprocess.TimeoutExpired):
+            ticket.resolution_status = "WORKER_FAILED"
+            return False
+        worker_log = self.root_dir / "artifacts" / "e2e" / "worker-regressions" / f"{worktree_dir.name}-worker.log"
+        worker_log.parent.mkdir(parents=True, exist_ok=True)
+        worker_log.write_text(result.stdout + "\n" + result.stderr, encoding="utf-8")
+        ticket.evidence_paths.append(str(worker_log))
+        success = result.returncode == 0 and self.commit_fix(worktree_dir, f"修复: {ticket.ticket_id} {ticket.error_summary}")
+        ticket.resolution_status = "RESOLVED" if success else "REGRESSION_FAILED"
+        return success
 
     def merge_in_topological_order(self, tickets: List[DiagnosticTicket]) -> List[DiagnosticTicket]:
         """按照架构拓扑顺序（契约层 ➔ 网关适配层 ➔ 客户端内核 ➔ 测试资产）串行安全合并各 Worktree 分支"""
@@ -402,11 +441,15 @@ class MultiAgentWorktreeManager:
         sorted_tickets = sorted(tickets, key=lambda t: t.priority)
 
         # 确定目标主干分支
-        rc_b, cur_branch, _ = self.runner.run("git rev-parse --abbrev-ref HEAD")
-        target_branch = cur_branch.strip() if (rc_b == 0 and cur_branch.strip() != "HEAD") else "main"
+        rc_b, cur_branch, _ = self.runner.run(["git","symbolic-ref","--short","HEAD"])
+        if not self.mock_mode and (rc_b != 0 or self.runner.run(["git","check-ref-format","--branch",cur_branch.strip()])[0] != 0):
+            raise RuntimeError("TARGET_BRANCH_UNAVAILABLE")
+        target_branch = cur_branch.strip()
 
         for ticket in sorted_tickets:
             if not ticket.branch_name or not ticket.worktree_path:
+                continue
+            if not self.mock_mode and ticket.resolution_status != "RESOLVED":
                 continue
 
             worktree_abs = self.root_dir / ticket.worktree_path
@@ -422,33 +465,46 @@ class MultiAgentWorktreeManager:
                 ticket.resolution_status = "VERIFIED"
                 continue
 
+            expected=self.worktree_base / ("e2e-fix-"+ticket.ticket_id.lower().replace('-','_'))
+            if worktree_abs.resolve()!=expected.resolve() or ticket.branch_name!="fix/e2e_"+ticket.ticket_id.lower().replace('-','_'):
+                ticket.resolution_status="WORKTREE_IDENTITY_INVALID";continue
+            rc,status,_=self.runner.run(["git","status","--porcelain"])
+            if rc!=0 or status.strip():
+                ticket.resolution_status="MAIN_WORKTREE_NOT_CLEAN";continue
+
             # 1. 在独立 worktree 内先 rebase 目标分支以防冲突
             wt_runner = CommandRunner(cwd=worktree_abs)
-            rc_rebase, _, _ = wt_runner.run(f"git rebase {target_branch}")
+            rc,status,_=wt_runner.run(["git","status","--porcelain"])
+            if rc!=0 or status.strip():
+                ticket.resolution_status="WORKTREE_NOT_CLEAN";continue
+            rc_rebase, _, _ = wt_runner.run(["git","rebase",target_branch])
             if rc_rebase != 0:
-                wt_runner.run("git rebase --abort")
+                wt_runner.run(["git","rebase","--abort"])
                 ticket.resolution_status = "CONFLICT"
                 continue
 
             # 2. 回到主仓库执行无快进合并
-            merge_cmd = f"git merge --no-ff -m '合并: 解决工单 {ticket.ticket_id} ({ticket.error_summary})' {ticket.branch_name}"
-            rc_merge, _, _ = self.runner.run(merge_cmd)
+            # Verify again after rebasing: earlier independent tests did not see prior repairs.
+            if not self.verify(worktree_abs):
+                ticket.resolution_status = "REGRESSION_FAILED"
+                continue
+            rc_merge, _, _ = self.runner.run(["git", "merge", "--no-ff", "-m",
+                f"合并: 解决工单 {ticket.ticket_id}", ticket.branch_name])
 
             if rc_merge == 0:
-                # 3. 合并成功，回收 worktree 并清理分支
-                self.runner.run(f"git worktree remove '{worktree_abs}' --force")
-                if worktree_abs.exists():
-                    safe_trash = Path("/tmp/open-android-intelligence-trash")
-                    safe_trash.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.move(str(worktree_abs), str(safe_trash / f"merged_wt_{ticket.ticket_id}_{int(time.time())}"))
-                    except Exception:
-                        pass
-                self.runner.run(f"git branch -d {ticket.branch_name}")
+                if not self.verify(self.root_dir):
+                    reverted=self.runner.run(["git", "revert", "--no-edit", "-m", "1", "HEAD"])[0]==0
+                    ticket.resolution_status = "REGRESSION_FAILED" if reverted else "REVERT_FAILED"
+                    continue
+                # Verified source and final integrated regression both passed.
+                # A regression can create files; preserve them if Git refuses
+                # normal removal instead of forcing deletion of review evidence.
+                removed=self.runner.run(["git","worktree","remove",str(worktree_abs)])[0]==0
+                if removed: self.runner.run(["git","branch","-d",ticket.branch_name])
                 ticket.resolution_status = "VERIFIED"
             else:
                 # 合并冲突，执行回滚恢复主干干净状态，保留现场供分析
-                self.runner.run("git merge --abort")
+                self.runner.run(["git","merge","--abort"])
                 ticket.resolution_status = "CONFLICT"
 
         return sorted_tickets
@@ -507,15 +563,19 @@ class E2EOrchestrator:
         cmds.append(py_ver_cmd)
         metrics["pythonVersion"] = stdout
 
-        # 2. 验证一致性契约套件 (24/24 PASS)
-        conf_cmd = "npm run gateway:v2:conformance"
+        # Read both independent runners; the vector count grows with the contract.
+        conf_cmd = "tools/run-node24 npm run gateway:v2:conformance"
         self.log(AgentRole.RUNNER, f"正在执行跨宿主一致性套件: {conf_cmd}")
         rc_conf, out_conf, err_conf = self.runner.run(conf_cmd, timeout=45)
         cmds.append(conf_cmd)
 
-        conformance_passed = (rc_conf == 0 and "24/24 pass" in out_conf)
+        summaries = {host: (int(passed), int(total)) for host, passed, total in re.findall(
+            r"^(openclaw-typescript|hermes-python): (\d+)/(\d+) pass$", out_conf, re.MULTILINE)}
+        conformance_passed = (rc_conf == 0 and set(summaries) == {"openclaw-typescript", "hermes-python"}
+                              and all(passed == total and total > 0 for passed, total in summaries.values())
+                              and len({total for _, total in summaries.values()}) == 1)
         metrics["conformancePassed"] = conformance_passed
-        metrics["conformanceMatches"] = 24 if conformance_passed else 0
+        metrics["conformanceMatches"] = summaries["openclaw-typescript"][1] if conformance_passed else 0
 
         # 3. 验证 Hermes 管理服务状态挂载
         status_cmd = "python3 hermes-account.py status"
@@ -798,7 +858,10 @@ class E2EOrchestrator:
                 connected_indicator = self.android_cli.find_nodes_by_text(post_layout, "已连接")
                 workbench_input = self.android_cli.find_nodes_by_text(post_layout, "输入消息") or self.android_cli.find_nodes_by_text(post_layout, "命令")
 
-                passed = (len(connected_indicator) > 0 or len(workbench_input) > 0 or len(login_title) == 0) and len(post_layout) > 0
+                session = next((e for e in self.protocol_evidence() if e.get("type") == "session.ready"
+                                and e.get("accountId") and e.get("deviceId") and e.get("sessionId")
+                                and e.get("at", 0) >= int(start_t * 1000)), None)
+                passed = bool(session and workbench_input and post_layout)
                 metrics["handshakeLatencyMs"] = round((time.time() - start_t) * 1000, 2)
                 metrics["layoutElementsMatched"] = len(post_layout)
                 metrics["workbenchReached"] = passed
@@ -837,6 +900,20 @@ class E2EOrchestrator:
     # --------------------------------------------------------------------------
     # 阶段 4：双向消息发送与接收验证
     # --------------------------------------------------------------------------
+    def protocol_evidence(self) -> List[Dict[str, Any]]:
+        rc, stdout, _ = self.runner.run(["adb", "logcat", "-d", "-v", "raw", "OaiE2E:D", "*:S"], timeout=10)
+        if rc != 0:
+            return []
+        events = []
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line[line.index("{"):])
+                if isinstance(event, dict) and isinstance(event.get("at"), int):
+                    events.append(event)
+            except (ValueError, json.JSONDecodeError):
+                continue
+        return events
+
     def run_stage_4(self, message_text: str = "Hello Agent E2E Test") -> StageResult:
         stage = E2EStage.STAGE_4_BIDIRECTIONAL_MSG
         self.log(AgentRole.RUNNER, f"▶ 开始执行【阶段 4：双向消息发送与接收 (消息: '{message_text}')】")
@@ -857,41 +934,57 @@ class E2EOrchestrator:
                 passed = False
                 metrics["error"] = "NO_DEVICE_CONNECTED"
             else:
+                # Use a fresh diagnostic interval; a prior turn cannot satisfy this send.
+                self.runner.run(["adb", "logcat", "-c"])
                 layout_nodes = self.android_cli.get_layout(no_idle=True)
-                composer_nodes = (
-                    self.android_cli.find_nodes_by_text(layout_nodes, "输入消息")
-                    or self.android_cli.find_nodes_by_text(layout_nodes, "命令")
-                )
-
-                if not composer_nodes:
-                    self.log(AgentRole.DIAGNOSTIC, "⚠ 未能在界面中发现 ComposerBar 输入栏（可能未进入工作台）")
-                    passed = False
-                    metrics["messageDelivered"] = False
+                composer_nodes = (self.android_cli.find_nodes_by_text(layout_nodes, "输入消息")
+                                  or self.android_cli.find_nodes_by_text(layout_nodes, "命令"))
+                passed = False
+                metrics["messageDelivered"] = False
+                center = self.android_cli.get_node_center(composer_nodes[0]) if composer_nodes else None
+                if center and self.android_cli.tap(*center) and self.android_cli.input_text(message_text):
+                    # Input can change the enabled button and its bounds.
+                    fresh = self.android_cli.get_layout(no_idle=True)
+                    send = self.android_cli.find_nodes_by_text(fresh, "发送")
+                    send_center = self.android_cli.get_node_center(send[0]) if send else None
+                    if send_center and self.android_cli.tap(*send_center):
+                        digest = hashlib.sha256(message_text.encode("utf-8")).hexdigest()
+                        deadline = time.monotonic() + float(os.environ.get("OAI_E2E_REPLY_TIMEOUT_SECONDS", "120"))
+                        while time.monotonic() < deadline:
+                            evidence = self.protocol_evidence()
+                            accepted = next((e for e in evidence if e.get("type") == "message.accepted"
+                                             and e.get("textSha256") == digest and e.get("clientMessageId")
+                                             and e.get("messageId") and e.get("conversationId")), None)
+                            completed = next((e for e in evidence if accepted
+                                              and e.get("type") == "conversation.message.completed"
+                                              and e.get("sender") == "assistant"
+                                              and e.get("conversationId") == accepted["conversationId"]
+                                              and e.get("correlationId") in (accepted["messageId"], accepted["clientMessageId"])
+                                              and e.get("messageId") and e.get("messageId") != accepted["messageId"]
+                                              and e.get("at", 0) >= accepted.get("at", 0)), None)
+                            if completed:
+                                after = self.android_cli.get_layout(no_idle=True)
+                                marker = f"OaiMessage:{completed['messageId']}:completed"
+                                rendered = any(marker == str(n.get("contentDescription", n.get("content-desc", ""))) for n in after)
+                                if rendered:
+                                    passed = True
+                                    metrics.update(messageDelivered=True, clientMessageId=accepted["clientMessageId"],
+                                                   messageId=accepted["messageId"], replyMessageId=completed["messageId"],
+                                                   outboundAckLatencyMs=accepted["at"] - int(start_t * 1000),
+                                                   completedLatencyMs=completed["at"] - accepted["at"])
+                                    deltas = [e for e in evidence if e.get("type") == "conversation.message.delta"
+                                              and e.get("correlationId") in (accepted["messageId"], accepted["clientMessageId"])]
+                                    if deltas:
+                                        metrics["sseTimeToFirstTokenMs"] = deltas[0]["at"] - accepted["at"]
+                                    break
+                            time.sleep(0.5)
+                        if not passed:
+                            metrics["error"] = "ACK_AGENT_COMPLETION_OR_RENDER_MISSING"
+                    else:
+                        metrics["error"] = "SEND_ACTION_MISSING"
                 else:
-                    c = self.android_cli.get_node_center(composer_nodes[0])
-                    if c:
-                        self.android_cli.tap(c[0], c[1])
-                        self.android_cli.input_text(message_text)
-
-                    send_btn = self.android_cli.find_nodes_by_text(layout_nodes, "发送")
-                    if send_btn:
-                        btn_center = self.android_cli.get_node_center(send_btn[0])
-                        if btn_center:
-                            self.android_cli.tap(btn_center[0], btn_center[1])
-
-                    time.sleep(2.0)
-                    msg_ss = self.screenshots_dir / "stage_4_message_sent.png"
-                    self.android_cli.capture_screen(msg_ss)
-
-                    after_layout = self.android_cli.get_layout(no_idle=True)
-                    target_kw = message_text.split()[0] if message_text.strip() else message_text
-                    sent_nodes = (
-                        self.android_cli.find_nodes_by_text(after_layout, message_text)
-                        or self.android_cli.find_nodes_by_text(after_layout, target_kw)
-                    )
-                    passed = len(sent_nodes) > 0
-                    metrics["outboundAckLatencyMs"] = round((time.time() - start_t) * 1000, 2)
-                    metrics["messageDelivered"] = passed
+                    metrics["error"] = "COMPOSER_ACTION_FAILED"
+                self.android_cli.capture_screen(self.screenshots_dir / "stage_4_message_sent.png")
 
         duration = time.time() - start_t
         ticket = None
@@ -986,19 +1079,25 @@ class E2EOrchestrator:
         allocated: List[Tuple[DiagnosticTicket, Path, str]] = []
         for t in tickets:
             self.log(AgentRole.FIX, f"为工单 {t.ticket_id} (模块: {t.root_cause_module}, 优先级: P{t.priority}) 申请独立 Worktree...")
-            wt_dir, branch = self.worktree_mgr.allocate_worktree(t)
+            try: wt_dir, branch = self.worktree_mgr.allocate_worktree(t)
+            except Exception as error:
+                t.resolution_status="ALLOCATION_FAILED"
+                self.log(AgentRole.FIX,f"工单 {t.ticket_id} 分配失败: {error}")
+                continue
             allocated.append((t, wt_dir, branch))
             self.log(AgentRole.FIX, f"工单 {t.ticket_id} 已在独立分支 {branch} 就绪 (路径: {wt_dir})")
 
-        # 2. 并行实施代码修复并提交
-        for t, wt_dir, branch in allocated:
-            commit_msg = f"修复: 针对 {t.ticket_id} 修复 {t.error_summary}"
-            patch_content = f"// Fix applied for {t.ticket_id}: {t.error_summary}\n// Module: {t.root_cause_module}"
-            success = self.worktree_mgr.commit_fix(wt_dir, commit_msg, patch_content=patch_content)
-            if success:
-                self.log(AgentRole.FIX, f"工单 {t.ticket_id} 已在分支 {branch} 提交原子修复: '{commit_msg}'")
-            else:
-                self.log(AgentRole.FIX, f"工单 {t.ticket_id} 提交完成（模拟模式）")
+        # Independent source workers run concurrently in isolated worktrees.
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(allocated)))) as workers:
+            futures = [(t, workers.submit(self.worktree_mgr.fix_ticket, t, wt_dir)) for t, wt_dir, _ in allocated]
+            for t, future in futures:
+                try:
+                    fixed = future.result()
+                except Exception as error:
+                    fixed = False
+                    t.resolution_status = "WORKER_FAILED"
+                    self.log(AgentRole.FIX, f"工单 {t.ticket_id} 工作进程失败: {type(error).__name__}")
+                self.log(AgentRole.FIX, f"工单 {t.ticket_id}: {'RESOLVED' if fixed else t.resolution_status}")
 
         # 3. 按照依赖拓扑顺序（契约 -> 网关 -> 客户端 -> 测试）串行合并
         self.log(AgentRole.VERIFICATION, "Verify Agent 启动依赖分层拓扑合并流水线 (契约 ➔ 网关 ➔ 客户端 ➔ 测试)...")

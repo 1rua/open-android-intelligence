@@ -22,6 +22,7 @@ interface PrivateStoreBackend {
     fun keys(partition: String): Set<String>
     /** Must physically delete every partition in this encoded account scope, or throw. */
     fun deleteAccountPartitions(scopePrefix: String)
+    fun deletePluginPartitions(pluginId: String, author: String) { throw StorageDenied("PLUGIN_ERASE_UNAVAILABLE") }
 }
 
 /** An in-process backend. The shipped host replaces it with an encrypted store. */
@@ -48,6 +49,9 @@ class InMemoryPrivateStoreBackend : PrivateStoreBackend {
     /** Wipes one plugin's data for one account, used when that account is removed. */
     override fun deleteAccountPartitions(scopePrefix: String) {
         data.keys.filter { it.startsWith(scopePrefix) }.forEach { data.remove(it) }
+    }
+    override fun deletePluginPartitions(pluginId: String, author: String) {
+        data.keys.filter { it.endsWith("|$pluginId|$author") }.forEach { data.remove(it) }
     }
 }
 
@@ -78,10 +82,10 @@ class PluginPrivateStore(
     private val deletionPending = HashSet<String>()
 
     @Synchronized
-    fun open(identity: PluginIdentity, accountId: String): StorageHandle {
+    fun open(identity: PluginIdentity, accountId: String, pairingId: String = ""): StorageHandle {
         if (accountId in deletionPending) throw StorageDenied("ACCOUNT_DELETION_PENDING")
         return StorageHandle(
-            partition = accountPrefix(accountId) + encode(identity.pluginId) + "|" + encode(identity.authorKeyFingerprint),
+            partition = accountPrefix(accountId) + (if (pairingId.isEmpty()) "" else encode(pairingId) + "|") + encode(identity.pluginId) + "|" + encode(identity.authorKeyFingerprint),
             pluginId = identity.pluginId,
             accountId = accountId,
             installId = installId,
@@ -123,6 +127,12 @@ class PluginPrivateStore(
         deletionPending.remove(accountId)
     }
 
+    @Synchronized fun erasePairing(accountId:String,pairingId:String) {
+        require(pairingId.isNotEmpty())
+        generations[accountId]=(generations[accountId] ?: 0L)+1L
+        backend.deleteAccountPartitions(accountPrefix(accountId)+encode(pairingId)+"|")
+    }
+
     private fun checkScope(handle: StorageHandle, accountId: String, key: String) {
         checkHandle(handle, accountId)
         if (key.isEmpty() || key.length > maxKeyLength) throw StorageDenied("BAD_KEY")
@@ -135,5 +145,8 @@ class PluginPrivateStore(
     }
 
     private fun accountPrefix(accountId: String) = encode(installId) + "|" + encode(accountId) + "|"
+    @Synchronized fun erasePlugin(identity: PluginIdentity) {
+        backend.deletePluginPartitions(encode(identity.pluginId),encode(identity.authorKeyFingerprint))
+    }
     private fun encode(value: String) = Base64.getUrlEncoder().withoutPadding().encodeToString(value.toByteArray(Charsets.UTF_8))
 }

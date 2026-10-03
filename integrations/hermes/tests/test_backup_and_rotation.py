@@ -1,3 +1,4 @@
+from test_support import enqueue_fixture
 import hashlib
 import json
 import sys
@@ -70,7 +71,7 @@ def test_portable_backup_excludes_active_identity_credentials_queue_and_content(
     account.attachments.commit(attachment["attachmentId"])
     account.attachments.mark_delivered(attachment["attachmentId"])
     account.attachments.acknowledge(attachment["attachmentId"], "cor_ack")
-    account.device_requests.enqueue(
+    enqueue_fixture(account,
         request_id="device_req_pending_backup",
         device_id=session["deviceId"],
         pairing_generation=1,

@@ -147,3 +147,20 @@ def trust_core(core):
 
     core.handle = handle
     return core
+
+
+def enqueue_fixture(account, *args, **kwargs):
+    """Explicit device binding for old queue unit tests. Production has no fixture fallback."""
+    import inspect, json
+    from pathlib import Path
+    supplied = dict(inspect.signature(account.device_requests.enqueue).bind_partial(*args, **kwargs).arguments)
+    aliases = supplied.pop("aliases", {})
+    supplied.update(aliases)
+    def value(snake, camel): return supplied.get(snake, supplied.get(camel))
+    entries = json.loads((Path(__file__).resolve().parents[3]/"gateway-contract/vectors/dispatched-schema-fixtures.json").read_text())["catalogEntries"]
+    fixture = next(entry for entry in entries if entry["key"]["kind"] == "device.request")
+    key = fixture["key"]
+    binding = {name:key[name] for name in ("pluginId","authorKeyId","capabilityId","capabilityVersion","schemaSha256")}
+    binding.update(schema=fixture["schema"],risk=value("risk","risk"))
+    account.device_requests.capabilities.register(value("device_id","deviceId"),value("pairing_generation","pairingGeneration"),value("grant_revision","grantRevision"),[binding])
+    return account.device_requests.enqueue(*args, **kwargs)
