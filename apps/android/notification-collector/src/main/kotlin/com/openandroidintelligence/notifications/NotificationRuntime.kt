@@ -149,6 +149,8 @@ fun interface NotificationRuntimeFactory {
  * has no outbox, so an unconfigured install cannot emit notification data.
  */
 object NotificationRuntimeFactoryRegistry {
+    @Volatile var activeCollector: AndroidNotificationCollector? = null
+        internal set
     private val defaultFactory = NotificationRuntimeFactory { scope ->
         NotificationRuntime(
             initialCollector = AndroidNotificationCollector(

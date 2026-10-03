@@ -34,7 +34,7 @@ from test_support import make_secret_store, trust_core  # noqa: E402
 TEST_HOST_API = HostApiCompatibility("1.0.0", "1.0.0", "0123456789abcdef0123456789abcdef01234567")
 ACCOUNT_ID = "acct_approval"
 APPROVALS = "/open-android-intelligence/v2/approvals"
-BINDING_SET_ID = "gateway-core-fixtures-v1"
+BINDING_SET_ID = "gateway-core-schemas-v1"
 
 _real_create_gateway_core = create_gateway_core
 

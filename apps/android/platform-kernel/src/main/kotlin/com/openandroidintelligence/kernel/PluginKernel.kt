@@ -40,6 +40,7 @@ data class PluginRegistration(
     val budget: ResourceBudget,
     val network: NetworkAllowlist? = null,
     val state: PluginStateMachine = PluginStateMachine(PluginState.INSTALLED_DISABLED),
+    val identityScopedGrants: Boolean = false,
 )
 
 /**
@@ -59,6 +60,7 @@ class PluginKernel(
     private val nativeLoader: NativePluginLoader,
     private val providerSelector: CapabilityProviderSelector,
     private val grants: (String) -> PairingGrant?,
+    private val mediate: (KernelCallContext, String, ByteArray) -> ByteArray = { _, id, _ -> throw CapabilityDenied(id) },
 ) {
     companion object {
         const val RUNTIME_PROTECTED_WASM = "protected-wasm"
@@ -72,6 +74,22 @@ class PluginKernel(
     @Volatile
     private var emergencyStopped = false
     private val emergencyStopListeners = mutableListOf<(Boolean) -> Unit>()
+    private val currentCall = ThreadLocal<KernelCallContext>()
+
+    /** Recheck the current local grant before each privileged host call. */
+    fun call(identity: PluginIdentity, primitive: String, input: ByteArray): ByteArray {
+        val context = currentCall.get() ?: throw CapabilityDenied(primitive)
+        if (grants(context.pairingId)?.revision != context.grantRevision) throw CapabilityDenied(primitive)
+        val registration = registrations[identity.pluginId] ?: throw CapabilityDenied(primitive)
+        if (context.identity != identity || registration.identity != identity || emergencyStopped) throw CapabilityDenied(primitive)
+        EffectiveCapabilities.require(CapabilityInputs(hostEnvelope.primitives, phoneLimits.primitives,
+            registration.declaredPrimitives, registration.state.isExecutable(), grants(context.pairingId), context.session), primitive)
+        requireIdentityGrant(registration, context.pairingId, primitive)
+        val result = mediate(context, primitive, input.copyOf())
+        if (result.size > context.budget.maxOutputBytes) throw BudgetExceeded("OUTPUT")
+        audit.record(identity.pluginId, context.accountId, context.pairingId, primitive, AuditOutcome.ALLOWED, context.session.correlationId)
+        return result
+    }
 
     /**
      * The one-way system-level cut-off behind the settings' red button.
@@ -130,6 +148,12 @@ class PluginKernel(
     }
 
     fun registrationFor(pluginId: String): PluginRegistration? = registrations[pluginId]
+
+    private fun requireIdentityGrant(registration: PluginRegistration, pairingId: String, capability: String) {
+        if (registration.identityScopedGrants && identityGrantKey(registration.identity, capability) !in grants(pairingId)?.granted.orEmpty()) {
+            throw CapabilityDenied(capability)
+        }
+    }
 
     fun enable(pluginId: String) {
         val registration = registrations[pluginId]
@@ -241,17 +265,25 @@ class PluginKernel(
                     )
 
             val semaphore = semaphores[identity.pluginId]!!
+            requireIdentityGrant(registration, pairingId, capability)
+            if (session.background && !EffectiveCapabilities.compute(CapabilityInputs(hostEnvelope.primitives,
+                phoneLimits.primitives, registration.declaredPrimitives, true, grants(pairingId), session)).backgroundAllowed) {
+                throw CapabilityDenied("kernel.background.run")
+            }
+            val grantRevision=grants(pairingId)?.revision ?: error("PAIRING_REQUIRED")
             if (!semaphore.tryAcquire()) throw BudgetExceeded("CONCURRENCY")
-
             val output = try {
+                currentCall.set(KernelCallContext(identity, accountId, pairingId, session, registration.budget,grantRevision))
                 when (registration.runtimeType) {
                     RUNTIME_PROTECTED_WASM -> runProtected(registration, registration.identity, input)
                     RUNTIME_DEVELOPER_NATIVE -> runNative(registration, registration.identity, input)
                     else -> throw ProviderRejected("UNSUPPORTED_RUNTIME:${registration.runtimeType}")
                 }
             } finally {
+                currentCall.remove()
                 semaphore.release()
             }
+            if (grants(pairingId)?.revision!=grantRevision || !registration.state.isExecutable() || emergencyStopped) throw CapabilityDenied(capability)
 
             if (output.size > registration.budget.maxOutputBytes) {
                 throw BudgetExceeded("OUTPUT")
@@ -305,3 +337,7 @@ class PluginKernel(
         return runtime.invoke(identity, registration.budget, input)
     }
 }
+
+/** Grants bind the author, but survive an update signed by the same author. */
+fun identityGrantKey(identity: PluginIdentity, capability: String): String =
+    "plugin:${identity.pluginId}:${identity.authorKeyFingerprint}:$capability"

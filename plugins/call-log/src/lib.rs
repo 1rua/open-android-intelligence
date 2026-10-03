@@ -12,9 +12,8 @@ use open_android_intelligence_sdk::{PluginError, declare_plugin};
 use alloc::vec::Vec;
 
 pub fn handle_call_log_query(request: &[u8]) -> Result<Vec<u8>, PluginError> {
-    let mut out = Vec::with_capacity(request.len());
-    out.extend_from_slice(request);
-    Ok(out)
+    let primitive = "kernel.call-log.read";
+    open_android_intelligence_sdk::call_kernel(primitive, request)
 }
 
 declare_plugin! { handler = handle_call_log_query, arena_bytes = 65_536 }
@@ -22,12 +21,8 @@ declare_plugin! { handler = handle_call_log_query, arena_bytes = 65_536 }
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn test_call_log_query() {
-        let req = b"{\"limit\":20}";
-        let res = handle_call_log_query(req).unwrap();
-        assert_eq!(res, req);
+    fn rejects_a_missing_host_instead_of_echoing_parameters() {
+        assert_eq!(handle_call_log_query(b"{\"limit\":5}"), Err(PluginError::HandlerFailed));
     }
 }
-

@@ -337,6 +337,7 @@ describe("输出文件权限的回归防护", () => {
     dataDir = await writeDataDir([v1GatewayRecord()], [v1PluginRecord()]);
     const target = join(root, "owned-by-someone-else.json");
     await writeFile(target, "keep", { mode: 0o644 });
+    await chmod(target, 0o644);
     await chmod(dirname(target), 0o755);
     const link = join(root, "dangling-or-live.json");
     await symlink(target, link);

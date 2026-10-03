@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 from .account_paths import (
     AccountPaths,
@@ -530,25 +530,7 @@ def request_signature_preimage_from_digest(input: Mapping[str, Any], body_sha256
 class ContractRegistry:
     """Read-only consumer of the repository's shared Schema and fixture registry."""
 
-    dispatched_registry_id = "gateway-core-fixtures-v1"
-    dispatched_fixture_ids = (
-        "event.gateway-notice.v1",
-        "device.sms-query.v1",
-        "response.conversation-create.v1",
-        "error.cursor-expired.v1",
-        "event.conversation-command-result.v1",
-        "event.conversation-approval-requested.v1",
-        "event.conversation-approval-resolved.v1",
-        "event.message-delta.v1",
-        "event.message-completed.v1",
-        "event.title-updated.v1",
-        "event.device-requested.v1",
-        "event.device-request-cancel-requested.v1",
-        "event.pairing-grant-changed.v1",
-        "event.session-revoked.v1",
-        "event.attachment-acknowledged.v1",
-        "event.message-status.v1",
-    )
+    dispatched_registry_id = "gateway-core-schemas-v1"
 
     schema_definitions = {
         "negotiate.request": ("negotiate.schema.json", "request"),
@@ -609,37 +591,23 @@ class ContractRegistry:
             raise GatewayError("DISPATCHED_REGISTRY_INVALID", {"reason": reason})
 
         try:
-            vectors = self.root / "vectors"
-            meta_path = vectors / "dispatched-schema-fixtures-1.0.0.schema.json"
-            registry_path = vectors / "dispatched-schema-fixtures.json"
-            if not meta_path.is_file() or not registry_path.is_file():
-                invalid("registry assets missing")
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            registry_path = self.root / "core-dispatched-schemas.json"
             registry = json.loads(registry_path.read_text(encoding="utf-8"))
-            if not self._valid(meta, registry, meta):
-                invalid("registry does not satisfy shared meta-schema")
+            if set(registry) != {"formatVersion","catalogEntries","bindings"}:
+                invalid("unknown registry fields")
             if registry.get("formatVersion") != "1.0.0":
                 invalid("unsupported registry format")
             catalog_entries = registry.get("catalogEntries")
-            binding_sets = registry.get("bindingSets")
-            if not isinstance(catalog_entries, list) or not isinstance(binding_sets, list):
+            bindings = registry.get("bindings")
+            if not isinstance(catalog_entries, list) or not isinstance(bindings, list):
                 invalid("registry collections are not arrays")
-            fixture_ids = [entry.get("fixtureId") for entry in catalog_entries if isinstance(entry, Mapping)]
-            if tuple(fixture_ids) != self.dispatched_fixture_ids:
-                invalid("catalog entry order or identity mismatch")
-            if len(binding_sets) != 1 or not isinstance(binding_sets[0], Mapping):
-                invalid("binding set count mismatch")
-            binding_set = binding_sets[0]
-            if binding_set.get("id") != self.dispatched_registry_id:
-                invalid("binding set identity mismatch")
-            bindings = binding_set.get("bindings")
-            if not isinstance(bindings, list) or len(bindings) != len(catalog_entries):
-                invalid("binding count mismatch")
+            if any(e.get("key", {}).get("kind") == "device.request" for e in catalog_entries):
+                invalid("device schemas must come from verified pairing bindings")
 
             catalog_keys: list[tuple[Any, ...]] = []
             catalog_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
             for entry in catalog_entries:
-                if not isinstance(entry, Mapping) or not isinstance(entry.get("key"), Mapping) or not isinstance(entry.get("schema"), Mapping):
+                if not isinstance(entry, Mapping) or set(entry) != {"key","schema"} or not isinstance(entry.get("key"), Mapping) or not isinstance(entry.get("schema"), Mapping):
                     invalid("catalog entry shape invalid")
                 key = self._logical_key(entry["key"])
                 if key in catalog_by_key:
@@ -654,7 +622,7 @@ class ContractRegistry:
             binding_map: dict[tuple[Any, ...], str] = {}
             binding_keys: list[tuple[Any, ...]] = []
             for binding in bindings:
-                if not isinstance(binding, Mapping) or not isinstance(binding.get("key"), Mapping):
+                if not isinstance(binding, Mapping) or set(binding) != {"key","schemaSha256"} or not isinstance(binding.get("key"), Mapping):
                     invalid("binding shape invalid")
                 key = self._logical_key(binding["key"])
                 if key in binding_map:
@@ -1215,6 +1183,30 @@ class AccountStore:
         ]:
             if col_name not in existing_cols:
                 self.database.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
+        self.database.executescript("""
+            INSERT OR IGNORE INTO account_metadata(key, value)
+              SELECT 'conversation_revision:' || conversation_id,
+                CAST(1 + (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = conversations.conversation_id) AS TEXT)
+              FROM conversations;
+            CREATE TRIGGER IF NOT EXISTS conversation_revision_created AFTER INSERT ON conversations
+              BEGIN INSERT OR IGNORE INTO account_metadata(key,value)
+                VALUES ('conversation_revision:' || NEW.conversation_id, '1'); END;
+            CREATE TRIGGER IF NOT EXISTS conversation_revision_title AFTER UPDATE OF title ON conversations
+              WHEN OLD.title IS NOT NEW.title
+              BEGIN UPDATE account_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+                WHERE key = 'conversation_revision:' || NEW.conversation_id; END;
+            CREATE TRIGGER IF NOT EXISTS conversation_revision_insert AFTER INSERT ON messages
+              BEGIN UPDATE account_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+                WHERE key = 'conversation_revision:' || NEW.conversation_id; END;
+            CREATE TRIGGER IF NOT EXISTS conversation_revision_update AFTER UPDATE ON messages
+              BEGIN UPDATE account_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+                WHERE key = 'conversation_revision:' || NEW.conversation_id; END;
+            CREATE TRIGGER IF NOT EXISTS conversation_revision_delete AFTER DELETE ON messages
+              BEGIN UPDATE account_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+                WHERE key = 'conversation_revision:' || OLD.conversation_id; END;
+            CREATE INDEX IF NOT EXISTS conversation_message_page
+              ON messages(conversation_id, created_at, message_id);
+        """)
         self.database.execute("BEGIN IMMEDIATE")
         try:
             event_columns = {row[1] for row in self.database.execute("PRAGMA table_info(events)").fetchall()}
@@ -1574,6 +1566,8 @@ class EventStore:
             "payload": dict(payload),
             "expiresAt": iso_millis(current + timedelta(seconds=self.retention_seconds)),
         }
+        if event_type == "device.requested" and isinstance(payload.get("expiresAt"), str):
+            event["expiresAt"] = min(event["expiresAt"], payload["expiresAt"])
         # Fail closed (contract §9): every event payload must validate against
         # its dispatched sub-Schema, and an event type without a binding must be
         # rejected rather than silently delivered unvalidated.
@@ -1605,6 +1599,15 @@ class EventStore:
         self.store.record_event(event)
         return event
 
+    def release_device_request(self, request_id: str) -> None:
+        rows = self.store.database.execute("SELECT event_id,payload_json FROM events WHERE event_type='device.requested'")
+        for row in rows:
+            purpose = f"event:{row['event_id']}:payload"
+            payload = self.store.open_json(row["payload_json"], purpose)
+            if payload.get("requestId") == request_id and "parameters" in payload:
+                payload["parameters"] = {}
+                self.store.database.execute("UPDATE events SET payload_json=? WHERE event_id=?", (self.store.seal_json(payload,purpose),row["event_id"]))
+
     def read_after(self, cursor: str | None, now: datetime | str | None = None) -> list[dict[str, Any]]:
         current = _now(now)
         self.purge_expired(current)
@@ -1629,6 +1632,16 @@ class EventStore:
         return [self._map(row) for row in rows]
 
     def purge_expired(self, now: datetime | str | None = None, limit: int = 1000) -> int:
+        marker = self.store.database.execute("SELECT value FROM account_metadata WHERE key='event-body-policy-v2'").fetchone()
+        legacy = self.store.database.execute("SELECT event_id,sequence,payload_json,expires_at FROM events WHERE event_type='device.requested' AND sequence>? ORDER BY sequence LIMIT ?",(int(marker[0]) if marker else 0,limit)).fetchall()
+        for row in legacy:
+            purpose = f"event:{row['event_id']}:payload"
+            payload = self.store.open_json(row['payload_json'],purpose)
+            request = self.store.database.execute("SELECT parameters_json FROM device_requests WHERE request_id=?",(str(payload.get('requestId')),)).fetchone()
+            if request is None or request[0] == '': payload['parameters'] = {}
+            expiry = min(_now(row['expires_at']),_now(payload.get('expiresAt',row['expires_at'])))
+            self.store.database.execute("UPDATE events SET payload_json=?,expires_at=? WHERE event_id=?",(self.store.seal_json(payload,purpose),iso_millis(expiry),row['event_id']))
+        if legacy: self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES ('event-body-policy-v2',?)",(str(legacy[-1]['sequence']),))
         return self.store.database.execute(
             "DELETE FROM events WHERE sequence IN (SELECT sequence FROM events WHERE expires_at <= ? ORDER BY expires_at LIMIT ?)",
             (iso_millis(now), limit),
@@ -2659,12 +2672,18 @@ class AttachmentStore:
 
     @classmethod
     def _move_to_trash(cls, path: Path) -> bool:
-        if not path.exists():
-            return False
-        destination = cls._trash_root() / f"{uuid.uuid4()}-{path.name}"
+        # These bytes are application-managed transport secrets, not user files.
+        # Renaming them into /tmp retained recoverable ciphertext after ACK/TTL.
         try:
-            shutil.move(str(path), str(destination))
-            return True
+            existed = path.exists()
+            path.unlink(missing_ok=True)
+            # Also remove older copies of this exact attachment, never unrelated
+            # files from the shared legacy trash directory.
+            for old_copy in cls._trash_root().glob(f"*-{path.name}"):
+                if old_copy.is_file() and not old_copy.is_symlink():
+                    old_copy.unlink()
+                    existed = True
+            return existed
         except OSError:
             return False
 
@@ -2707,6 +2726,8 @@ class DeviceRequestStore:
         self.audit = audit
         self.events = events
         self.contracts = contracts or ContractRegistry()
+        from .capability_bindings import CapabilityBindings
+        self.capabilities = CapabilityBindings(store, self.contracts)
 
     def enqueue(
         self, request_id: str | None = None, device_id: str | None = None,
@@ -2714,7 +2735,7 @@ class DeviceRequestStore:
         risk: str | None = None, capability: Mapping[str, Any] | None = None,
         provider: Mapping[str, Any] | None = None, parameters: Mapping[str, Any] | None = None,
         correlation_id: str | None = None, now: datetime | str | None = None,
-        requires_foreground_confirmation: bool | None = None, **aliases: Any,
+        requires_foreground_confirmation: bool | None = None, online: bool = False, **aliases: Any,
     ) -> dict[str, Any]:
         request_id = request_id if request_id is not None else aliases.pop("requestId")
         device_id = device_id if device_id is not None else aliases.pop("deviceId")
@@ -2732,8 +2753,8 @@ class DeviceRequestStore:
         )
         current = _now(now)
         ttl = maximum_device_request_queue_seconds(risk)
-        state = "expired" if ttl == 0 else "pending"
-        expires_at = iso_millis(current + timedelta(seconds=ttl))
+        state = "expired" if ttl == 0 and not online else "pending"
+        expires_at = iso_millis(current + timedelta(seconds=ttl or (30 if online else 0)))
         record = {
             "requestId": request_id,
             "capability": dict(capability),
@@ -2743,11 +2764,9 @@ class DeviceRequestStore:
             "grantRevision": int(grant_revision),
             "createdAt": iso_millis(current),
             "expiresAt": expires_at,
-            "requiresForegroundConfirmation": bool(requires_foreground_confirmation),
+            "requiresForegroundConfirmation": risk == "high-privilege-ephemeral" or bool(requires_foreground_confirmation),
         }
-        if not self.contracts.validate_dispatched(
-            self.contracts.dispatched_registry_id, {"kind": "device.request"}, record
-        ):
+        if not self.capabilities.validate(device_id, int(pairing_generation), int(grant_revision), record):
             raise GatewayError("SCHEMA_INVALID")
         parameters_json = "" if state == "expired" else self.store.seal_json(
             parameters, f"device-request:{self.account_id}:{request_id}:parameters"
@@ -2841,6 +2860,7 @@ class DeviceRequestStore:
                 next_state = next_device_request_state(row["state"], event)
                 sealed_result = self.store.seal_json(result, f"device-result:{request_id}:{claim_id}")
                 self.store.database.execute("UPDATE device_requests SET state = ?, parameters_json = '', result_json = ? WHERE request_id = ?", (next_state, sealed_result, request_id))
+                self.events.release_device_request(request_id)
                 self.audit.append(
                     "device.request.result", {"accountId": self.account_id, "deviceId": device_id},
                     {"requestId": request_id, "claimId": claim_id, "outcome": outcome},
@@ -2884,6 +2904,7 @@ class DeviceRequestStore:
         if receipt is None:
             raise GatewayError("OUTCOME_UNKNOWN")
         self.store.database.execute("UPDATE device_requests SET result_json = '' WHERE request_id = ?", (request_id,))
+        self.events.release_device_request(request_id)
 
     def purge_terminal_payloads(self, now: datetime | str | None = None) -> int:
         return self.store.database.execute(
@@ -3051,6 +3072,10 @@ class ConversationPort:
         self.events = events
         self.policy = policy or DEFAULT_ATTACHMENT_POLICY
 
+        self.history_reader: Any = None
+        from .conversation_workflow import ConversationWorkflow
+        self.workflow = ConversationWorkflow(self)
+
     def create(self, client_conversation_id: str, title: str | None, correlation_id: str, now: datetime | str | None = None) -> dict[str, Any]:
         current = _now(now)
         conversation_id = f"conv_{uuid.uuid4()}"
@@ -3071,6 +3096,7 @@ class ConversationPort:
         attachment_ids: list[str], device_id: str, request_id: str,
         correlation_id: str, now: datetime | str | None = None,
         dispatch_to_agent: bool = True,
+        emit_queued: bool = True,
     ) -> dict[str, Any]:
         current = _now(now)
         for attachment_id in attachment_ids:
@@ -3079,7 +3105,16 @@ class ConversationPort:
             row = self.store.database.execute("SELECT conversation_id FROM conversations WHERE conversation_id = ?", (conversation_id,)).fetchone()
             if row is None:
                 raise GatewayError("SCHEMA_INVALID")
+            prior = self.store.database.execute("SELECT message_id,text,attachment_ids_json FROM messages WHERE conversation_id=? AND client_message_id=?", (conversation_id,client_message_id)).fetchone()
+            receipt_key = f"message-receipt:{conversation_id}:{client_message_id}"
+            fingerprint = hashlib.sha256(_jcs({"text":text,"attachments":attachment_ids,"deviceId":device_id}).encode()).hexdigest()
+            if prior:
+                saved = self.store.database.execute("SELECT value FROM account_metadata WHERE key=?",(receipt_key,)).fetchone()
+                if not saved or saved[0] != fingerprint: raise GatewayError("IDEMPOTENCY_CONFLICT")
+                generation = self.workflow.for_message(prior["message_id"])
+                return {"status":"accepted","messageId":prior["message_id"],"conversationId":conversation_id,**({"generationId":generation["generationId"]} if generation else {})}
             message_id = f"msg_{uuid.uuid4()}"
+            self.store.database.execute("INSERT INTO account_metadata(key,value) VALUES (?,?)",(receipt_key,fingerprint))
             self.store.database.execute(
                 """
                 INSERT INTO messages(
@@ -3089,11 +3124,16 @@ class ConversationPort:
                 """,
                 (message_id, conversation_id, client_message_id, self.store.seal_json(text, f"message:{message_id}:text"), iso_millis(current), _json(attachment_ids)),
             )
+            device = self.store.database.execute("SELECT pairing_generation,grant_revision FROM device_keys WHERE device_id=?",(device_id,)).fetchone()
+            origin = {"deviceId":device_id,"pairingGeneration":int(device[0]) if device else 1,"grantRevision":int(device[1]) if device else 1,"conversationId":conversation_id,"messageId":message_id,"clientMessageId":client_message_id}
+            for identity in (message_id,client_message_id):
+                self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",(f"message-device:{identity}",_jcs(origin)))
             self.audit.append(
                 "conversation.message.accepted", {"accountId": self.account_id, "deviceId": device_id},
                 {"conversationId": conversation_id, "messageId": message_id, "attachmentCount": len(attachment_ids)},
                 correlation_id, current,
             )
+            generation_id = self.workflow.register({"messageId":message_id,"conversationId":conversation_id},device_id,iso_millis(current)) if dispatch_to_agent else None
             if dispatch_to_agent:
                 self.store.database.execute(
                     """
@@ -3107,7 +3147,7 @@ class ConversationPort:
                         iso_millis(current), iso_millis(current),
                     ),
                 )
-                self.events.append(
+                if emit_queued: self.events.append(
                     "conversation.message.status", correlation_id,
                     {
                         "conversationId": conversation_id,
@@ -3116,10 +3156,11 @@ class ConversationPort:
                         "status": "queued",
                         "revision": 0,
                         "errorCode": None,
+                        "generationId": generation_id,
                     },
                     current,
                 )
-            return {"status": "accepted", "messageId": message_id, "conversationId": conversation_id}
+            return {"status": "accepted", "messageId": message_id, "conversationId": conversation_id, **({"generationId":generation_id} if generation_id else {})}
 
     def dispatch_message(self, client_message_id: str) -> dict[str, Any] | None:
         """Read the persisted message and ordered attachment metadata for Hermes."""
@@ -3158,7 +3199,7 @@ class ConversationPort:
             "messageId": str(row["message_id"]),
             "conversationId": str(row["conversation_id"]),
             "clientMessageId": str(row["client_message_id"]),
-            "text": self.store.open_json(row["text"], f"message:{row['message_id']}:text"),
+            "text": self.workflow.aggregate(str(row["message_id"]),self.store.open_json(row["text"], f"message:{row['message_id']}:text") if row["text"] else "") if row["status"] == "queued" else "",
             "createdAt": str(row["created_at"]),
             "attachmentIds": attachment_ids,
             "attachments": attachments,
@@ -3184,6 +3225,12 @@ class ConversationPort:
                 return None
             if row["claim_token"] and row["claim_until"] and _now(row["claim_until"]) > current:
                 return None
+            if row["claim_token"]:
+                # An expired lease cannot prove that the native turn stopped.
+                self.workflow.settle(str(row['message_id']),'unknown')
+                self.store.database.execute("UPDATE conversation_message_dispatch SET claim_token=NULL,claim_until=NULL WHERE message_id=?",(row['message_id'],))
+                return None
+            if not self.workflow.claim(str(row["message_id"])): return None
             cursor = self.store.database.execute(
                 """
                 UPDATE conversation_message_dispatch
@@ -3254,6 +3301,14 @@ class ConversationPort:
                 "revision": revision,
                 "errorCode": error_code,
             }
+            generation = self.workflow.for_message(message_id)
+            if generation:
+                payload["generationId"] = generation["generationId"]
+                if status in {"completed","failed"}: self.workflow.settle(message_id,status)
+                for member_id in generation["messageIds"]:
+                    if member_id == message_id: continue
+                    member = self.store.database.execute("SELECT client_message_id FROM messages WHERE message_id=?",(member_id,)).fetchone()
+                    self.events.append("conversation.message.status",correlation_id,{**payload,"messageId":member_id,"clientMessageId":member[0]},current)
             self.events.append("conversation.message.status", correlation_id, payload, current)
             return {"status": status, "revision": revision, "errorCode": error_code}
 
@@ -3273,6 +3328,10 @@ class ConversationPort:
         now: datetime | str | None = None,
     ) -> dict[str, Any]:
         current = _now(now)
+        if callable(self.history_reader):
+            self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)", (
+                f"history-hash:{conversation_id}:{message_id}", hashlib.sha256(text.encode()).hexdigest(),
+            ))
         with self.store.transaction():
             self.store.database.execute(
                 """
@@ -3283,7 +3342,7 @@ class ConversationPort:
                 ON CONFLICT(message_id) DO UPDATE SET text = excluded.text
                 WHERE messages.sender = 'assistant'
                 """,
-                (message_id, conversation_id, message_id, self.store.seal_json(text, f"message:{message_id}:text"), iso_millis(current)),
+                (message_id, conversation_id, message_id, "" if callable(self.history_reader) else self.store.seal_json(text, f"message:{message_id}:text"), iso_millis(current)),
             )
             return {"status": "recorded", "messageId": message_id, "conversationId": conversation_id}
 
@@ -3291,25 +3350,59 @@ class ConversationPort:
         self, conversation_id: str, client_message_id: str | None = None,
         cursor: str | None = None, limit: int = 50,
     ) -> dict[str, Any]:
+        if callable(self.history_reader):
+            from .host_history import host_history_page
+            return host_history_page(self, conversation_id, client_message_id, cursor, limit)
         row = self.store.database.execute(
             "SELECT conversation_id FROM conversations WHERE conversation_id = ?",
             (conversation_id,),
         ).fetchone()
         if row is None:
             raise GatewayError("SCHEMA_INVALID")
-
+        revision_row = self.store.database.execute(
+            "SELECT value FROM account_metadata WHERE key = ?",
+            (f"conversation_revision:{conversation_id}",),
+        ).fetchone()
+        revision = int(revision_row[0]) if revision_row else 1
+        page_limit = max(1, min(int(limit), 100))
+        after: tuple[str, str] | None = None
+        upper_rowid = int(self.store.database.execute(
+            "SELECT COALESCE(MAX(rowid), 0) FROM messages WHERE conversation_id = ?", (conversation_id,),
+        ).fetchone()[0])
+        if cursor:
+            try:
+                saved = self.store.open_json(cursor, f"timeline-cursor:{conversation_id}")
+                if (not isinstance(saved, dict) or set(saved) != {"revision", "through", "createdAt", "messageId"}
+                    or not isinstance(saved["revision"], int) or not isinstance(saved["through"], int)
+                    or not isinstance(saved["createdAt"], str) or not isinstance(saved["messageId"], str)):
+                    raise ValueError("invalid cursor")
+                if saved["revision"] != revision:
+                    raise GatewayError("CURSOR_EXPIRED", {"recoverableResources": ["conversations"]})
+                upper_rowid = saved["through"]
+                after = (saved["createdAt"], saved["messageId"])
+            except GatewayError as error:
+                if error.code == "CURSOR_EXPIRED":
+                    raise
+                raise GatewayError("SCHEMA_INVALID") from error
+            except (ValueError, KeyError, TypeError) as error:
+                raise GatewayError("SCHEMA_INVALID") from error
         query = (
             "SELECT message_id, conversation_id, client_message_id, sender, text, "
-            "created_at, attachment_ids_json, state FROM messages WHERE conversation_id = ?"
+            "created_at, attachment_ids_json, state FROM messages WHERE conversation_id = ? AND rowid <= ?"
         )
-        params: list[Any] = [conversation_id]
+        params: list[Any] = [conversation_id, upper_rowid]
         if client_message_id:
             query += " AND client_message_id = ?"
             params.append(client_message_id)
-        query += " ORDER BY created_at ASC LIMIT ?"
-        params.append(max(1, min(int(limit), 100)))
+        if after:
+            query += " AND (created_at > ? OR (created_at = ? AND message_id > ?))"
+            params.extend((after[0], after[0], after[1]))
+        query += " ORDER BY created_at ASC, message_id ASC LIMIT ?"
+        params.append(page_limit + 1)
 
         rows = self.store.database.execute(query, params).fetchall()
+        has_more = len(rows) > page_limit
+        rows = rows[:page_limit]
         result_messages = []
         for r in rows:
             att_ids = []
@@ -3362,7 +3455,13 @@ class ConversationPort:
                 "state": st or "CONFIRMED",
                 "createdAt": created,
             })
-        return {"messages": result_messages, "nextCursor": None, "snapshotRevision": 1}
+        next_cursor = None
+        if has_more and rows:
+            next_cursor = self.store.seal_json({
+                "revision": revision, "through": upper_rowid,
+                "createdAt": rows[-1]["created_at"], "messageId": rows[-1]["message_id"],
+            }, f"timeline-cursor:{conversation_id}")
+        return {"messages": result_messages, "nextCursor": next_cursor, "snapshotRevision": revision}
 
     def list(self) -> list[dict[str, Any]]:
         rows = self.store.database.execute("SELECT conversation_id, client_conversation_id, title FROM conversations ORDER BY conversation_id").fetchall()
@@ -3505,7 +3604,7 @@ class GatewayAccount:
     revokePairing = revoke_pairing
 
     def bump_grant_revision(
-        self, device_id: str, correlation_id: str, now: datetime | str | None = None,
+        self, device_id: str, correlation_id: str, now: datetime | str | None = None, grant_digest: str | None = None,
     ) -> dict[str, Any]:
         """Raises one pairing's `grantRevision` by one (contract section 11).
 
@@ -3534,7 +3633,7 @@ class GatewayAccount:
                 (next_revision, device_id),
             )
             self.events.append(
-                "pairing.grant.changed", correlation_id, {"deviceId": device_id, "grantRevision": next_revision}, current,
+                "pairing.grant.changed", correlation_id, {"deviceId": device_id, "grantRevision": next_revision, **({"grantDigest":grant_digest} if grant_digest else {})}, current,
             )
             self.audit.append(
                 "pairing.grant.changed",
@@ -3697,10 +3796,10 @@ class SessionService:
         """
         self.store.database.execute(
             "INSERT INTO device_keys(device_id, installation_id, public_key, pairing_generation, grant_revision, registered_at) "
-            "VALUES (?, ?, ?, 1, 1, ?) "
+            "VALUES (?, ?, ?, ?, 1, ?) "
             "ON CONFLICT(device_id) DO UPDATE SET "
             "installation_id = excluded.installation_id, public_key = excluded.public_key, registered_at = excluded.registered_at",
-            (device_id, installation_id, public_key, iso_millis(current)),
+            (device_id, installation_id, public_key, int((self.store.database.execute("SELECT value FROM account_metadata WHERE key='pairing_generation'").fetchone() or [1])[0]), iso_millis(current)),
         )
 
     def resolve_session(
@@ -3866,6 +3965,7 @@ class SessionService:
             "sessionId": session_id, "deviceId": device_id,
             "accessToken": access_token, "refreshCredential": refresh_credential,
             "expiresAt": expires_at,
+            **dict(self.store.database.execute("SELECT pairing_generation AS pairingGeneration,grant_revision AS grantRevision FROM device_keys WHERE device_id=?",(device_id,)).fetchone() or {"pairingGeneration":1,"grantRevision":1}),
         }
 
     createPasswordSession = create_password_session
@@ -4042,7 +4142,11 @@ class GatewayCore:
         self.commit_hook = commit_hook
         self.attachment_policy = attachment_policy or DEFAULT_ATTACHMENT_POLICY
         self.credential_verifier = credential_verifier
+        self._online_devices: dict[tuple[str,str,str], tuple[VerifiedRequestContext,int]] = {}
         self.command_catalog = tuple(command_catalog) if command_catalog is not None else DEFAULT_COMMAND_CATALOG
+        self.history_reader: Any = None
+        self.generation_canceller: Any = None
+        self._cancel_locks: dict[tuple[str, str], tuple[Any, int]] = {}
         self._event_sinks: list[EventSink] = [event_sink] if event_sink is not None else []
         # How a decision reaches the Agent thread blocked on it. Injected by the
         # transport that owns the host runtime; without one, approval cards are
@@ -4138,6 +4242,49 @@ class GatewayCore:
                             and int(row[2]) == context.pairing_generation)
         except (OSError, sqlite3.Error, AttributeError, TypeError, ValueError):
             return False
+
+    def set_device_online(self, context: VerifiedRequestContext, online: bool) -> None:
+        key = (context.account_id,context.device_id,context.session_id)
+        with self._admission_lock:
+            existing = self._online_devices.get(key)
+            if online:
+                if self.is_event_session_active(context):
+                    self._online_devices[key] = (context,(existing[1] if existing else 0)+1)
+            elif existing and existing[1] > 1:
+                self._online_devices[key] = (existing[0],existing[1]-1)
+            else:
+                self._online_devices.pop(key,None)
+        if not online and not self.is_device_online(context.account_id,context.device_id,context.pairing_generation) and self.account_exists(context.account_id):
+            account=self.open_gateway_account(context.account_id)
+            try:
+                with account.store.transaction():
+                    rows=account.store.database.execute("SELECT request_id FROM device_requests WHERE device_id=? AND pairing_generation=? AND risk='high-privilege-ephemeral' AND state='pending'",(context.device_id,context.pairing_generation)).fetchall()
+                    for row in rows:
+                        account.store.database.execute("UPDATE device_requests SET state='expired',parameters_json='',result_json='',expires_at=? WHERE request_id=?",(iso_millis(),row[0]))
+                        account.events.release_device_request(row[0])
+            finally:account.close()
+
+    @contextmanager
+    def _generation_cancel_lock(self, account_id: str, generation_id: str):
+        key = (account_id, generation_id)
+        with self._admission_lock:
+            lock, users = self._cancel_locks.get(key, (threading.RLock(), 0))
+            self._cancel_locks[key] = (lock, users + 1)
+        try:
+            with lock:
+                yield
+        finally:
+            with self._admission_lock:
+                _, users = self._cancel_locks[key]
+                if users == 1:
+                    del self._cancel_locks[key]
+                else:
+                    self._cancel_locks[key] = (lock, users - 1)
+
+    def is_device_online(self, account_id: str, device_id: str, generation: int) -> bool:
+        with self._admission_lock:
+            contexts = [item[0] for key,item in self._online_devices.items() if key[:2] == (account_id,device_id)]
+        return any(ctx.pairing_generation == generation and self.is_event_session_active(ctx) for ctx in contexts)
 
     def list_gateway_account_ids(self) -> list[str]:
         """List accounts that have persisted their opaque id for recovery scans."""
@@ -4256,10 +4403,12 @@ class GatewayCore:
             paths, master_key_ref, self.commit_hook, aead,
             account_id=account_id, event_sink=self.deliver_event,
         )
-        return GatewayAccount(
+        account = GatewayAccount(
             account_id, paths, store, self.contracts, self.attachment_policy,
             self.credential_verifier,
         )
+        account.conversations.history_reader = self.history_reader
+        return account
 
     def delete_gateway_account(self, account_id: str) -> bool:
         """Removes every artifact of one logical Gateway (contract section 13).
@@ -4305,13 +4454,14 @@ class GatewayCore:
         # Only what this Gateway implements is ever advertised: an
         # account-invitation or device-key flow this host cannot serve would be a
         # capability claim the phone would then rely on.
-        supported_auth = {"password", "refresh"}
+        supported_auth = {"password", "account-invitation", "refresh", "device-key"}
         auth = [item for item in requested["auth"] if item in supported_auth]
         # Only capabilities this adapter really serves. `agent-command-new-v1`
         # means the `/new` command entry exists here: it creates the new
         # conversation and answers with the authoritative id. Advertising it
         # without that entry would make the agreement a claim, not a fact.
-        supported_conversation_ui = {"agent-command-catalog-v1", "agent-command-new-v1"}
+        supported_conversation_ui = {"agent-command-catalog-v1", "agent-command-new-v1", "message-batches-v1"}
+        if self.generation_canceller is not None: supported_conversation_ui.add("generation-cancel-v1")
         if self.approval_cards_available:
             # Contract §7.2: only a Gateway that can actually release the blocked
             # Agent thread may promise the phone a card whose buttons do something.
@@ -4434,6 +4584,46 @@ class GatewayCore:
                 del self._password_attempts[next(iter(self._password_attempts))]
             self._password_attempts[key] = (window, count + 1)
             self._password_jobs += 1
+
+    def _handle_pairing_invite(self,request: Any) -> GatewayResponse:
+        from .pairing_invites import PairingInvites
+        body=_request_body(request); context=self._pre_auth_context(request,body if isinstance(body,Mapping) else {}); admitted=False
+        try:
+            now=_request_now(request); challenge=_value(request,"target").endswith("challenge")
+            device='/sessions/device' in _value(request,'target')
+            expected={"accountId","negotiationId","installationId","deviceId"} if device else {"accountId","negotiationId","code","installation"} if challenge else {"accountId","negotiationId","challengeId","signature"}
+            if not isinstance(body,Mapping): raise GatewayError("SCHEMA_INVALID")
+            if device and not challenge:
+                if not self.contracts.validate('session.device',body): raise GatewayError('SCHEMA_INVALID')
+            elif set(body)!=expected: raise GatewayError('SCHEMA_INVALID')
+            for field in ('negotiationId', 'installationId', 'deviceId', 'challengeId'):
+                if field in body and (not isinstance(body[field],str) or not re.fullmatch(r'[A-Za-z0-9._~-]{1,128}',body[field])):
+                    raise GatewayError('SCHEMA_INVALID')
+            account_id=body.get('accountId',body.get('username'))
+            if not isinstance(account_id,str) or not self.account_exists(account_id) or not isinstance(body.get('negotiationId'),str): raise GatewayError('AUTHENTICATION_FAILED')
+            installation=body.get("installation")
+            if device:
+                self.bind_negotiation(body['negotiationId'],account_id,body['installationId'],now)
+            elif challenge:
+                if not isinstance(installation,Mapping) or set(installation)!={"installationId","displayName","devicePublicKey"}: raise GatewayError("SCHEMA_INVALID")
+                self.bind_negotiation(body["negotiationId"],account_id,installation["installationId"],now)
+            else:
+                pending=self._pending_negotiations.get(body["negotiationId"])
+                if not pending or pending["expiresAt"]<=now: raise GatewayError("PROTOCOL_INCOMPATIBLE")
+            self._admit_password(request,account_id,now); admitted=True
+            account=self.open_gateway_account(account_id)
+            try:
+                service=PairingInvites(account)
+                if device:
+                    result=service.device_challenge(body['negotiationId'],body['installationId'],body['deviceId'],now) if challenge else service.device_exchange(body,context['correlationId'],now)
+                    return _success(context,{**result,'accountId':account_id})
+                if challenge: return _success(context,service.challenge(body["code"],body["negotiationId"],installation,now))
+                return _success(context,{**service.exchange(body["challengeId"],body["signature"],body["negotiationId"],context["correlationId"],now),"accountId":account_id})
+            finally: account.close()
+        except GatewayError as exc: return _failure(context,exc.code,exc.details)
+        finally:
+            if admitted:
+                with self._admission_lock: self._password_jobs-=1
 
     def _handle_session_password(self, request: Any) -> GatewayResponse:
         body = _request_body(request)
@@ -5055,6 +5245,8 @@ class GatewayCore:
             if _value(request, "context") is None:
                 if method == "POST" and target == "/open-android-intelligence/v2/negotiate":
                     return self._handle_pre_auth(request)
+                if method == "POST" and target in {"/open-android-intelligence/v2/sessions/invite/challenge","/open-android-intelligence/v2/sessions/invite/exchange","/open-android-intelligence/v2/pairings/exchange","/open-android-intelligence/v2/sessions/device/challenge","/open-android-intelligence/v2/sessions/device"}:
+                    return self._handle_pairing_invite(request)
                 if method == "POST" and target == "/open-android-intelligence/v2/sessions/password":
                     return self._handle_session_password(request)
                 if method == "POST" and target == "/open-android-intelligence/v2/sessions/refresh":
@@ -5098,24 +5290,67 @@ class GatewayCore:
                 parsed_target = urlsplit(str(target))
                 target_path = parsed_target.path
                 query_params: dict[str, str] = {}
-                if parsed_target.query:
-                    for item in parsed_target.query.split("&"):
-                        if "=" in item:
-                            k, v = item.split("=", 1)
-                            query_params[k] = v
+                query_params = {key: values[0] for key, values in parse_qs(parsed_target.query).items() if len(values) == 1}
 
                 # Filled by the decision preflight below and read by `work`'s
                 # approval branch: the hand-off to the host has to happen with no
                 # write lock held, while the settlement it belongs to still lands
                 # inside this request's transaction.
                 approval_handoff: dict[str, Any] = {}
+                cancel_handoff: dict[str, Any] = {}
+                now = _request_now(request)
+                cancel_route = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/generations/([^/]+)/cancel",target_path) if method == "POST" else None
 
                 def work() -> dict[str, Any]:
+                    if cancel_route:
+                        return _success(context,account.conversations.workflow.finish_cancel(*cancel_route.groups(),cancel_handoff["outcome"],context,now))
+                    batch_route = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/message-batches",target_path) if method == "POST" else None
+                    if batch_route:
+                        return _success(context,account.conversations.workflow.accept_batch(batch_route.group(1),body,context,now))
+                    media_match=re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/attachments/([^/]+)/(metadata|cache-grant|content)",target_path)
+                    if media_match:
+                        from .history_media import HistoryMedia
+                        conversation_id,media_id,operation=media_match.groups(); media=HistoryMedia(account)
+                        if method=="GET" and operation=="metadata": return _success(context,{"metadata":media.metadata(conversation_id,media_id)})
+                        if method=="POST" and operation=="cache-grant":
+                            if body!={}: raise GatewayError("SCHEMA_INVALID")
+                            return _success(context,media.grant(conversation_id,media_id,context,now))
+                        if method=="GET" and operation=="content":
+                            content,media_type=media.content(conversation_id,media_id,parse_qs(urlsplit(target).query).get("grantId",[""])[0],context,now)
+                            return _success(context,{"contentBase64":base64.b64encode(content).decode(),"mediaType":media_type})
+                        raise GatewayError("SCHEMA_INVALID")
+                    if method == "GET" and target_path == "/open-android-intelligence/v2/sync/snapshot":
+                        baseline = account.events.append("gateway.notice",context["correlationId"],{"noticeCode":"SYNC_BASELINE"},now=now)
+                        pending = account.store.database.execute("SELECT request_id FROM device_requests WHERE device_id=? AND pairing_generation=? AND state IN ('pending','claimed','cancel_requested') ORDER BY created_at",(context["deviceId"],context["pairingGeneration"])).fetchall()
+                        return _success(context,{"baselineCursor":baseline["eventId"],"conversations":account.conversations.list(),"pendingDeviceRequests":[r[0] for r in pending],"pairingGeneration":context["pairingGeneration"],"grantRevision":context["grantRevision"]})
+                    if method == "GET" and target_path == "/open-android-intelligence/v2/pairings/current":
+                        saved = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?", (f"device-grant-digest:{context['deviceId']}",)).fetchone()
+                        return _success(context,{"deviceId":context["deviceId"],"pairingGeneration":context["pairingGeneration"],"grantRevision":context["grantRevision"],**({"grantDigest":saved[0]} if saved else {})})
+                    if method == "POST" and target_path == "/open-android-intelligence/v2/pairings/current/capabilities":
+                        if (not isinstance(body, Mapping) or set(body) != {"bindings","expectedGrantRevision","localGrantRevision"}
+                            or body["expectedGrantRevision"] != context["grantRevision"] or not isinstance(body["localGrantRevision"], int)):
+                            raise GatewayError("GRANT_STALE")
+                        digest = "sha256:" + hashlib.sha256(_jcs({"bindings":body["bindings"],"localGrantRevision":body["localGrantRevision"]}).encode()).hexdigest()
+                        key = f"device-grant-digest:{context['deviceId']}"
+                        prior = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?", (key,)).fetchone()
+                        revision = int(context["grantRevision"]) if prior and prior[0] == digest else account.bump_grant_revision(context["deviceId"],context["correlationId"],_request_now(request),grant_digest=digest)["grantRevision"]
+                        account.device_requests.capabilities.register(context["deviceId"],int(context["pairingGeneration"]),revision,body["bindings"])
+                        account.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)", (key,digest))
+                        return _success(context,{"grantRevision":revision,"grantDigest":digest})
+                    device_get = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)",target_path)
+                    if method == "GET" and device_get:
+                        record = account.device_requests.get(device_get.group(1))
+                        if record["deviceId"] != context["deviceId"] or record["pairingGeneration"] != int(context["pairingGeneration"]):
+                            raise GatewayError("PAIRING_GENERATION_STALE")
+                        return _success(context,{"request":record})
                     if method == "DELETE" and target_path == "/open-android-intelligence/v2/pairings/current":
                         return self._handle_unpair(account, context, _request_now(request))
                     if method == "GET" and target_path == "/open-android-intelligence/v2/commands":
                         language_code = query_params.get("languageCode") or "en"
                         return _success(context, self.command_catalog_response(language_code))
+                    current_generation=re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/generations/current",target_path)
+                    if method=='GET' and current_generation:
+                        return _success(context,{'generation':account.conversations.workflow.current(current_generation.group(1))})
                     if method == "POST" and target_path == "/open-android-intelligence/v2/negotiate":
                         return _success(context, self._negotiate(account, context, body, _request_now(request)))
                     if method == "POST" and target_path == "/open-android-intelligence/v2/conversations":
@@ -5289,6 +5524,14 @@ class GatewayCore:
                             account, decision_approval_id, body, decision_now,
                         )
 
+                if cancel_route:
+                    if not isinstance(body,Mapping) or set(body)!={"requestId"} or body["requestId"] != context["requestId"]: raise GatewayError("SCHEMA_INVALID")
+                    def decision_preflight() -> None:
+                        native_cancel = (lambda cid,gid: self.generation_canceller(context["accountId"],cid,gid)) if self.generation_canceller else None
+                        cancel_handoff["outcome"] = account.conversations.workflow.prepare_cancel(*cancel_route.groups(),context,native_cancel)
+                if cancel_route:
+                    with self._generation_cancel_lock(context['accountId'], cancel_route.group(2)):
+                        return self._run_idempotent(account, request, context, work, replay_check, decision_preflight)
                 return self._run_idempotent(account, request, context, work, replay_check, decision_preflight)
             finally:
                 account.close()
@@ -5308,6 +5551,11 @@ class GatewayCore:
 
     def run_shared_vectors(self, contract_root: str | Path | None = None) -> list[dict[str, Any]]:
         registry = ContractRegistry(contract_root or self.contract_root)
+        fixtures = json.loads((registry.root / "vectors/dispatched-schema-fixtures.json").read_text())
+        registry.dispatched_registry_id = fixtures["bindingSets"][0]["id"]
+        registry._catalog = {registry._logical_key(item["key"]): {"schema":item["schema"],"schemaSha256":item["key"]["schemaSha256"]} for item in fixtures["catalogEntries"]}
+        registry._bindings = {registry.dispatched_registry_id: {registry._logical_key(item["key"]): item["schemaSha256"] for item in fixtures["bindingSets"][0]["bindings"]}}
+
         vector_files = SHARED_VECTOR_FILE_NAMES
         results: list[dict[str, Any]] = []
         for file_name in vector_files:

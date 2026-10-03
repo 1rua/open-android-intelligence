@@ -7,6 +7,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+tasks.withType<Test>().configureEach {
+    inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/sms.wasm"))
+        .withPropertyName("compiledSmsReference")
+    inputs.dir(rootProject.projectDir.resolve("../../plugins/schemas")).withPropertyName("referenceSchemas")
+    inputs.file(rootProject.projectDir.resolve("../../plugins/sms/manifest.json")).withPropertyName("referenceManifest")
+}
+
 // 固定调试签名（app/keystore/debug.keystore，见同目录 README.md）在根工程
 // build.gradle.kts 里对所有 APK 模块统一配置，此处无需重复声明。
 
@@ -80,6 +87,7 @@ tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseB
 
 dependencies {
     implementation(project(":core-model"))
+    implementation(project(":assistant-holder"))
     implementation(project(":capability-ports"))
     implementation(project(":notification-control"))
     implementation(project(":gateway-client"))
@@ -95,6 +103,7 @@ dependencies {
     // 通知采集宿主装配：ContentProvider 自注册 + Manifest 合并只需运行期在场，
     // app 代码不得 import host 符号（裁决 D6：采集器不进 app 编译期可见面）。
     runtimeOnly(project(":notification-host"))
+    runtimeOnly(project(":device-primitives"))
 
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")

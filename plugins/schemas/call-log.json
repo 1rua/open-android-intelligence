@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "query": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "receivedAfter": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "directions": {
+      "type": "array",
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "incoming",
+          "outgoing",
+          "missed"
+        ]
+      }
+    }
+  }
+}

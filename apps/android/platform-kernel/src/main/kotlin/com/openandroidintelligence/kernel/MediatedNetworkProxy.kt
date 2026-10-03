@@ -11,6 +11,7 @@ data class MediatedRequest(
     val pathAndQuery: String,
     val headers: Map<String, String>,
     val body: ByteArray?,
+    val maximumResponseBytes:Int = Int.MAX_VALUE,
 ) {
     fun requestBytes(): Long = (body?.size ?: 0).toLong()
 }
@@ -45,6 +46,7 @@ interface MediatedTransport {
 data class NetworkAllowlist(
     val hosts: Set<String>,
     val methods: Set<String>,
+    val methodsByHost:Map<String,Set<String>> = emptyMap(),
 )
 
 /**
@@ -54,14 +56,18 @@ data class NetworkAllowlist(
  * redirects, so a redirection cannot move a reviewed destination to an
  * unreviewed one while keeping the user's approval.
  */
+data class NetworkUsage(val windowStartMillis:Long,val spentBytes:Long)
+interface NetworkUsageStore { fun read():NetworkUsage?; fun write(usage:NetworkUsage) }
+
 class MediatedNetworkProxy(
     private val allowlist: NetworkAllowlist,
     private val transport: MediatedTransport,
     private val dailyBudgetBytes: Long,
     private val clock: () -> Long = { System.currentTimeMillis() },
+    private val usageStore:NetworkUsageStore? = null,
 ) {
-    private var windowStartMillis = clock()
-    private var spentBytes = 0L
+    private var windowStartMillis = usageStore?.read()?.windowStartMillis ?: clock()
+    private var spentBytes = usageStore?.read()?.spentBytes ?: 0L
 
     companion object {
         const val MAX_REDIRECTS = 3
@@ -73,7 +79,7 @@ class MediatedNetworkProxy(
         return spentBytes
     }
 
-    fun exchange(request: MediatedRequest): MediatedResponse = follow(request, hop = 0)
+    @Synchronized fun exchange(request: MediatedRequest): MediatedResponse = follow(request, hop = 0)
 
     private fun follow(request: MediatedRequest, hop: Int): MediatedResponse {
         checkAllowed(request)
@@ -82,8 +88,13 @@ class MediatedNetworkProxy(
         val projected = spentBytes + request.requestBytes()
         if (projected > dailyBudgetBytes) throw NetworkDenied("DAILY_BUDGET")
 
-        val response = transport.exchange(request)
+        val available=(dailyBudgetBytes-projected).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        // Reserve before I/O. A crash or ambiguous network error cannot reset the daily counter.
+        spentBytes=dailyBudgetBytes
+        usageStore?.write(NetworkUsage(windowStartMillis,spentBytes))
+        val response = transport.exchange(request.copy(maximumResponseBytes=available))
         spentBytes = projected + response.responseBytes()
+        usageStore?.write(NetworkUsage(windowStartMillis,spentBytes))
         if (spentBytes > dailyBudgetBytes) throw NetworkDenied("DAILY_BUDGET")
 
         val location = response.headers.entries
@@ -104,7 +115,8 @@ class MediatedNetworkProxy(
         }
         if (request.port != 443) throw NetworkDenied("PORT")
         if (!isAllowedHost(request.host)) throw NetworkDenied("HOST_NOT_ALLOWED")
-        if (!allowlist.methods.any { it.equals(request.method, ignoreCase = true) }) {
+        val methods=if (allowlist.methodsByHost.isEmpty()) allowlist.methods else allowlist.methodsByHost[request.host.lowercase().trimEnd('.')].orEmpty()
+        if (!methods.any { it.equals(request.method, ignoreCase = true) }) {
             throw NetworkDenied("METHOD_NOT_ALLOWED")
         }
     }
@@ -157,7 +169,7 @@ class MediatedNetworkProxy(
         val port = portPart.toIntOrNull() ?: return null
         if (port != 443) return null
         if (hostPart.isEmpty() || hostPart.startsWith("@") || hostPart.contains("@")) return null
-        return current.copy(host = hostPart, port = port, pathAndQuery = path)
+        return current.copy(host = hostPart, port = port, pathAndQuery = path,headers=if (hostPart.equals(current.host,ignoreCase=true)) current.headers else current.headers.filterKeys { !it.equals("Authorization",true) && !it.equals("Cookie",true) })
     }
 
     private fun rollWindowIfNeeded() {
@@ -165,6 +177,7 @@ class MediatedNetworkProxy(
         if (now - windowStartMillis >= DAY_MILLIS) {
             windowStartMillis = now
             spentBytes = 0L
+            usageStore?.write(NetworkUsage(windowStartMillis,spentBytes))
         }
     }
 }

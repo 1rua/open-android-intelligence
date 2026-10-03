@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile
 
 import android.graphics.Bitmap
 import android.net.Uri
+import android.content.Intent
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.widget.Toast
@@ -16,10 +17,13 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,6 +60,8 @@ import kotlinx.coroutines.withContext
  * 4. 接入原生相机快照、系统图片选择器与 SAF 文档选择器，走真实三步附件上传链路。
  */
 class MainActivity : ComponentActivity() {
+    private val pendingInvitation = androidx.compose.runtime.mutableStateOf<String?>(null)
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString() }
 
     private val handoffGate: AssistantHandoffGate = DefaultAssistantHandoffGate()
     private var lastHandoffDecision: AssistantHandoffDecision =
@@ -90,6 +96,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
         enableEdgeToEdge()
 
         val app = application as OpenAndroidIntelligenceApplication
@@ -107,6 +114,16 @@ class MainActivity : ComponentActivity() {
                 dynamicColor = appearanceSettings.dynamicColor,
                 reduceMotion = appearanceSettings.reduceMotion,
             ) {
+                val deviceConfirmation by runtime.deviceConfirmation.collectAsState()
+                deviceConfirmation?.let { request ->
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { runtime.decideDeviceRequest(request.requestId,false) },
+                        title = { androidx.compose.material3.Text("确认设备操作") },
+                        text = { androidx.compose.material3.Text("${request.pluginId}\n${request.capability}\n${request.parameters}") },
+                        confirmButton = { androidx.compose.material3.TextButton(onClick = { runtime.decideDeviceRequest(request.requestId,true) }) { androidx.compose.material3.Text("允许这次操作") } },
+                        dismissButton = { androidx.compose.material3.TextButton(onClick = { runtime.decideDeviceRequest(request.requestId,false) }) { androidx.compose.material3.Text("拒绝") } },
+                    )
+                }
                 val phase by runtime.phase.collectAsState()
                 val controller by runtime.controller.collectAsState()
                 val savedProfiles by runtime.savedProfiles.collectAsState()
@@ -297,8 +314,16 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val reduceMotion = LocalMotionPolicy.current.reduceMotion
                     // 登录页 ↔ 工作台：统一走标准淡入滑移转场，禁止生硬替换。
-                    val enterWorkbench = phase is ConnectionPhase.Connected && controller != null
-                    AnimatedContent(
+                    val enterWorkbench = (phase is ConnectionPhase.Connected || phase is ConnectionPhase.OfflineMirror) && controller != null
+                    val pluginRevision by app.pluginHost.revision.collectAsState()
+                    val nativeUi=remember(pluginRevision) { app.pluginHost.nativeUiProvider() }
+                    if (nativeUi != null) {
+                        val state=controller?.state?.collectAsState()?.value
+                        com.openandroidintelligence.mobile.plugins.NativePluginSurface(app.pluginHost,nativeUi.first,nativeUi.second,
+                            com.openandroidintelligence.plugin.ui.NativeUiContext((phase as? ConnectionPhase.Connected)?.gatewayUrl.orEmpty(),state?.activeThreadId,state?.activeThreadTitle.orEmpty(),state?.draft.orEmpty(),
+                                (state?.timeline as? com.openandroidintelligence.conversation.state.Loadable.Ready)?.value.orEmpty().map { com.openandroidintelligence.plugin.ui.NativeUiMessage(it.key,it.sender,it.text,it.isStreaming) },
+                                { controller?.editDraft(it) },{controller?.sendDraft()},{controller?.stopGeneration()},{showSettingsSheet=true}))
+                    } else AnimatedContent(
                         targetState = enterWorkbench,
                         transitionSpec = {
                             AppTransitions.enter(reduceMotion, forward = targetState) togetherWith
@@ -320,6 +345,9 @@ class MainActivity : ComponentActivity() {
                                 onReconfirmIdentity = runtime::reconfirmGatewayIdentity,
                                 isManagingProfiles = isManagingProfiles,
                                 operationNotice = operationNotice,
+                                onInvite = { url,account,code,fingerprint -> runtime.login(url,account,code,invitation=true,expectedIdentityFingerprint=fingerprint) },
+                                onDeviceKey = { url,account -> runtime.login(url,account,charArrayOf(),deviceKey=true) },
+                                invitationPayload = pendingInvitation.value,
                             )
                             return@AnimatedContent
                         }
@@ -330,9 +358,13 @@ class MainActivity : ComponentActivity() {
                             }
                             return@AnimatedContent
                         }
-                        WorkbenchScreen(
+                        Column(Modifier.fillMaxSize()) {
+                        if (phase is ConnectionPhase.OfflineMirror) {
+                            TextButton(onClick=runtime::reconnectOfflineMirror) { Text("离线镜像 · 重新连接 Gateway") }
+                        }
+                        Box(Modifier.weight(1f)) { WorkbenchScreen(
                             controller = activeController,
-                            gatewayLabel = (phase as? ConnectionPhase.Connected)?.gatewayUrl ?: "",
+                            gatewayLabel = (phase as? ConnectionPhase.Connected)?.gatewayUrl ?: (phase as? ConnectionPhase.OfflineMirror)?.gatewayUrl.orEmpty(),
                             onOpenSettings = { showSettingsSheet = true },
                             onOpenAssistant = { showAssistant = true },
                             onPickCamera = { takePictureLauncher.launch(null) },
@@ -345,7 +377,10 @@ class MainActivity : ComponentActivity() {
                                 openDocumentLauncher.launch(arrayOf("*/*"))
                             },
                             onVoiceInput = startVoiceInput,
+                            pluginCards={ com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,runtime.connectedAccountId) {showSettingsSheet=true} },
                         )
+                        }
+                        }
                         AnimatedVisibility(
                             visible = showAssistant,
                             enter = AppTransitions.modalEnter(reduceMotion),

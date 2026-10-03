@@ -260,6 +260,7 @@ class SettingsViewModelTest {
     fun gatewayRuntimePhaseUpdatesUiStateReactively() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Application>()
         val runtime = GatewayRuntime(
+        localDocumentKeyProvider = TestDocumentKeys,
             context = context,
             scope = testScope,
             pairingGrants = pairingGrants,
@@ -348,6 +349,7 @@ class SettingsViewModelTest {
             )
             val credentialStore = InMemoryCredentialStore()
             val runtime = GatewayRuntime(
+        localDocumentKeyProvider = TestDocumentKeys,
                 context = ApplicationProvider.getApplicationContext(),
                 scope = testScope,
                 pairingGrants = pairingGrants,
@@ -440,6 +442,7 @@ class SettingsViewModelTest {
     }
 
     private fun runtimeFor(gateway: LoopbackGatewayStub): GatewayRuntime = GatewayRuntime(
+        localDocumentKeyProvider = TestDocumentKeys,
         context = ApplicationProvider.getApplicationContext(),
         scope = testScope,
         pairingGrants = pairingGrants,

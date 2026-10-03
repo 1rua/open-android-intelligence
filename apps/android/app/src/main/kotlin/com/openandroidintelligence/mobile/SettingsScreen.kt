@@ -55,6 +55,8 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -417,7 +419,48 @@ private fun SettingsOverviewScreen(
                 ),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
         ) {
+            (androidx.compose.ui.platform.LocalContext.current.applicationContext as? OpenAndroidIntelligenceApplication)?.let { app ->
+                val preferences=remember { com.openandroidintelligence.mobile.conversations.DebouncePreferences(app) }
+                val gateway=(app.gatewayRuntime.phase.value as? ConnectionPhase.Connected)?.gatewayUrl
+                var override by remember(gateway) { mutableStateOf(gateway!=null && preferences.hasOverride(gateway)) }
+                var delayMillis by remember(gateway,override) { mutableStateOf(preferences.read(if (override) gateway else null).delay.inWholeMilliseconds.toInt()) }
+                var extend by remember(gateway,override) { mutableStateOf(preferences.read(if (override) gateway else null).mode==com.openandroidintelligence.conversation.batch.DebounceMode.EXTEND_WINDOW) }
+                SectionLabel("消息防抖")
+                SettingsSectionCard {
+                    Column {
+                        if (gateway!=null) Row(verticalAlignment=Alignment.CenterVertically) {
+                            Text("覆盖当前 Gateway 的设置",Modifier.weight(1f))
+                            Switch(checked=override,onCheckedChange={ value -> override=value
+                                if (value) app.gatewayRuntime.updateDebounceSettings(gateway,delayMillis,extend)
+                                else app.gatewayRuntime.useGlobalDebounceSettings(gateway)
+                            })
+                        }
+                        Text(if (delayMillis==0) "关闭防抖" else "等待 ${delayMillis/1000.0} 秒")
+                        Slider(value=delayMillis.toFloat(),valueRange=0f..10000f,steps=19,onValueChange={ delayMillis=it.toInt() },
+                            onValueChangeFinished={ app.gatewayRuntime.updateDebounceSettings(if (override) gateway else null,delayMillis,extend) })
+                        Row(verticalAlignment=Alignment.CenterVertically) {
+                            Text("新消息延长等待",Modifier.weight(1f))
+                            Switch(checked=extend,onCheckedChange={ extend=it;app.gatewayRuntime.updateDebounceSettings(if (override) gateway else null,delayMillis,it) })
+                        }
+                        Text("设置应用于新批次；最长等待 30 秒，每批最多 20 条。")
+                    }
+                }
+            }
             // 模块 1: 外观与动效
+            val mediaRuntime=(androidx.compose.ui.platform.LocalContext.current.applicationContext as? OpenAndroidIntelligenceApplication)?.gatewayRuntime
+            mediaRuntime?.activeMediaCache?.let { cache ->
+                var used by remember(cache) { mutableStateOf(cache.usedBytes) }
+                var quota by remember(cache) { mutableStateOf((cache.quotaBytes/(1024*1024)).toInt()) }
+                SectionLabel("加密离线媒体")
+                SettingsSectionCard {
+                    Text("已用 ${used/(1024*1024)} MiB / $quota MiB；配额不足时保留现有副本。")
+                    Row {
+                        TextButton(onClick={ quota=(quota-8).coerceAtLeast(8); cache.setQuota(quota) }) { Text("减少配额") }
+                        TextButton(onClick={ quota=(quota+8).coerceAtMost(256); cache.setQuota(quota) }) { Text("增加配额") }
+                        TextButton(onClick={ cache.clearMedia();mediaRuntime.controller.value?.clearRetainedMediaPreviews();used=0L }) { Text("只清媒体") }
+                    }
+                }
+            }
             SectionLabel("外观与动效")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
@@ -481,6 +524,7 @@ private fun SettingsOverviewScreen(
                     val phase = uiState.connectionPhase
                     val statusText = when (phase) {
                         is ConnectionPhase.Connected -> "已连接 · " + phase.username
+                        is ConnectionPhase.OfflineMirror -> "离线镜像 · " + phase.username
                         ConnectionPhase.Disconnected -> "未连接 Gateway"
                         ConnectionPhase.Negotiating -> "正在协商协议…"
                         ConnectionPhase.Authenticating -> "正在验证凭据…"

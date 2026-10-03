@@ -1,3 +1,4 @@
+from test_support import enqueue_fixture
 import hashlib
 import json
 import sqlite3
@@ -607,7 +608,7 @@ def test_device_parameters_and_event_payload_are_sealed_at_rest(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_sealed_device")
     parameters = {"query": "from:alice", "senders": ["alice"]}
-    request = account.device_requests.enqueue(
+    request = enqueue_fixture(account,
         **{
             "request_id": "device_req_sealed",
             "device_id": "dev_1",

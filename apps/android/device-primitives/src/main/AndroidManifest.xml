@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <application>
+        <provider android:name="com.openandroidintelligence.device.primitives.PrimitiveBootstrapProvider"
+            android:authorities="${applicationId}.kernel-primitives" android:exported="false" android:initOrder="50" />
+    </application>
+</manifest>

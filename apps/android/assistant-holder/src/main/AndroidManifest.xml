@@ -1,10 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
-        android:allowBackup="false"
-        android:label="Open Android Intelligence Assistant">
+>
         <activity
             android:name=".AssistantActivity"
+            android:process=":assistant_session"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.ASSIST" />
@@ -13,6 +13,7 @@
         </activity>
         <service
             android:name=".AssistantVoiceService"
+            android:process=":assistant_keeper"
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION">
             <intent-filter>
@@ -24,6 +25,7 @@
         </service>
         <service
             android:name=".AssistantSessionService"
+            android:process=":assistant_session"
             android:exported="false"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
     </application>

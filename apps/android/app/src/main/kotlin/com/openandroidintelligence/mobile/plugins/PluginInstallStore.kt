@@ -7,6 +7,9 @@ import com.openandroidintelligence.plugin.pkg.PackageLimits
 import com.openandroidintelligence.plugin.pkg.PackageRejected
 import com.openandroidintelligence.plugin.pkg.PluginInstaller
 import java.io.File
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+import java.io.ByteArrayOutputStream
 
 /** 宿主侧对一次插件安装的明确拒绝（区别于契约校验码）。 */
 class PluginInstallRefused(code: String) : IllegalArgumentException(code)
@@ -34,10 +37,8 @@ data class InstalledPluginView(
  *   的安装根），逐目录读取 `manifest.json` 提取展示用元数据；
  * - 安装：`AlpVerifier.verify`（§5 形状 + Ed25519 签名 + 容器约束）通过后交
  *   `PluginInstaller` 原子落盘。校验失败抛 [PackageRejected]，拒绝码原样
- *   交给界面显示；同 ID 已存在时明确拒绝（更新流程未接入，不得静默覆盖）。
- *
- * 注意：宿主当前生产装配没有任何插件运行时，这里只负责「包内容真实存在」，
- * 启用/执行仍由平台内核的六项交集裁决。
+ *   交给界面显示；更新检查作者、版本和权限变化，保留可回滚版本。
+ *   启用/执行由平台内核的六项交集裁决。
  */
 class PluginInstallStore(private val context: Context) {
 
@@ -68,11 +69,53 @@ class PluginInstallStore(private val context: Context) {
      * @throws PackageRejected 包未通过契约校验（消息即契约拒绝码）。
      * @throws PluginInstallRefused 宿主侧拒绝（同 ID 已存在）。
      */
-    fun install(packageBytes: ByteArray): InstalledPluginView = installVerified { it.verify(packageBytes) }
+    fun install(packageBytes: ByteArray, approvalGranted: Boolean = false): InstalledPluginView = installVerified(approvalGranted) { it.verify(packageBytes) }
 
-    fun install(stream: java.io.InputStream): InstalledPluginView = installVerified { it.verify(stream) }
+    fun install(stream: java.io.InputStream): InstalledPluginView = installVerified(false) { it.verify(stream) }
 
-    private fun installVerified(verify: (AlpVerifier) -> com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage): InstalledPluginView {
+    /** Verify the signed manifest, checksum table and every payload again after restart. */
+    fun openVerified(pluginId: String): com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage = verifyDirectory(File(installRoot, pluginId))
+
+    private fun verifyDirectory(directory: File): com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage {
+        require(directory.isDirectory && directory.canonicalFile.parentFile == installRoot.canonicalFile ||
+            directory.isDirectory && directory.canonicalFile.parentFile == File(installRoot,".previous").canonicalFile) { "PLUGIN_NOT_INSTALLED" }
+        val files = java.nio.file.Files.walk(directory.toPath()).use { paths -> paths.filter { it != directory.toPath() }.map { it.toFile() }.collect(java.util.stream.Collectors.toList()) }
+        require(files.none { java.nio.file.Files.isSymbolicLink(it.toPath()) }) { "SYMLINK_FORBIDDEN" }
+        val entries = files.filter { it.isFile }
+        require(entries.size <= limits.maxEntries && entries.all { it.length() <= limits.maxSingleEntryBytes } &&
+            entries.sumOf { it.length() } <= limits.maxTotalUncompressedBytes) { "SIZE_LIMIT:installed" }
+        val bytes = ByteArrayOutputStream()
+        ZipOutputStream(bytes).use { zip ->
+            entries.sortedBy { it.relativeTo(directory).path }.forEach { file ->
+                require(!java.nio.file.Files.isSymbolicLink(file.toPath())) { "SYMLINK_FORBIDDEN" }
+                zip.putNextEntry(ZipEntry(file.relativeTo(directory).invariantSeparatorsPath))
+                file.inputStream().use { it.copyTo(zip) }; zip.closeEntry()
+            }
+        }
+        return AlpVerifier(limits, stagingRoot = File(installRoot,".verify-staging").apply { mkdirs() }).verify(bytes.toByteArray())
+    }
+
+    private fun current(directory: File, previous: Boolean = true): InstalledPlugin {
+        val verified = verifyDirectory(directory)
+        try {
+            val prior = File(File(installRoot,".previous"), verified.identity.pluginId)
+            return InstalledPlugin(verified.identity,verified.version,verified.security,directory,
+                if (previous && prior.isDirectory) current(prior,false) else null)
+        } finally { deleteRecursively(verified.stagedDirectory) }
+    }
+
+    fun rollback(pluginId: String): InstalledPluginView {
+        val result = PluginInstaller(installRoot).rollback(current(File(installRoot,pluginId)))
+        return readView(result.directory)
+    }
+
+    fun uninstall(pluginId: String) {
+        require(Regex("[A-Za-z0-9.-]+").matches(pluginId))
+        deleteRecursively(File(installRoot,pluginId))
+        deleteRecursively(File(File(installRoot,".previous"),pluginId))
+    }
+
+    private fun installVerified(approvalGranted: Boolean, verify: (AlpVerifier) -> com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage): InstalledPluginView {
         val verifier = AlpVerifier(
             limits = limits,
             stagingRoot = File(installRoot, ".verify-staging").apply { mkdirs() },
@@ -80,13 +123,10 @@ class PluginInstallStore(private val context: Context) {
         val verified = verify(verifier)
         val pluginId = verified.identity.pluginId
         val destination = File(installRoot, pluginId)
-        if (destination.exists()) {
-            deleteRecursively(verified.stagedDirectory)
-            throw PluginInstallRefused("ALREADY_INSTALLED:$pluginId")
-        }
+        val previous = if (destination.exists()) current(destination) else null
         val installer = PluginInstaller(installRoot)
         val installed: InstalledPlugin = try {
-            installer.install(verified, current = null, approvalGranted = false)
+            installer.install(verified, current = previous, approvalGranted = approvalGranted)
         } finally {
             // 校验暂存区在安装提交后即无用途；清理失败不影响安装结果。
             runCatching { deleteRecursively(verified.stagedDirectory) }

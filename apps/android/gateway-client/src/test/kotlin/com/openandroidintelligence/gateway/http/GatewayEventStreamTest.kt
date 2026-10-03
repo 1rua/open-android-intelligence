@@ -85,6 +85,36 @@ class GatewayEventStreamTest {
         assertEquals(null, cursors.load("acc_test"))
     }
 
+    @Test fun `expired cursor resumes only after installing a snapshot baseline`() = runBlocking {
+        val cursors=MemoryCursorStore().apply { seed("acc_test","cur_expired") }
+        var attempts=0; var installed=false
+        val transport=object:GatewayByteTransport {
+            override suspend fun execute(request:WireRequest):WireResponse=error("unused")
+            override fun eventStream(request:WireRequest):Flow<ByteArray> = flow {
+                attempts++
+                if(attempts==1) throw EventCursorExpiredException()
+                assertTrue(installed);assertTrue(request.target.contains("cursor=evt_baseline"))
+                emit(completedFrame)
+            }
+        }
+        val client=GatewayHttpClient(profile(),transport,{ByteArray(64)},cursors)
+        client.setCursorRecovery { assertEquals("cur_expired",cursors.load("acc_test"));installed=true;"evt_baseline" }
+        assertEquals("evt_01",client.events().take(1).toList().single().id)
+        assertEquals(2,attempts)
+    }
+
+    @Test fun `failed snapshot rebuild preserves the last committed cursor`() = runBlocking {
+        val cursors=MemoryCursorStore().apply { seed("acc_test","cur_expired") }
+        val transport=object:GatewayByteTransport {
+            override suspend fun execute(request:WireRequest):WireResponse=error("unused")
+            override fun eventStream(request:WireRequest):Flow<ByteArray> = flow { throw EventCursorExpiredException() }
+        }
+        val client=GatewayHttpClient(profile(),transport,{ByteArray(64)},cursors)
+        client.setCursorRecovery { throw java.io.IOException("SNAPSHOT_INTERRUPTED") }
+        assertEquals("SNAPSHOT_INTERRUPTED",runCatching {client.events().toList()}.exceptionOrNull()?.message)
+        assertEquals("cur_expired",cursors.load("acc_test"))
+    }
+
     private class RecordingTransport(private val chunks: List<ByteArray>) : GatewayByteTransport {
         var lastRequest: WireRequest? = null
 

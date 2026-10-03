@@ -5,6 +5,7 @@ import android.os.Build
 import com.openandroidintelligence.conversation.data.GatewayAttachmentDraftCoordinator
 import com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepository
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
+import com.openandroidintelligence.conversation.ports.completeTimeline
 import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.ports.LocalAttachmentStagingStore
@@ -35,6 +36,7 @@ import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvi
 import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStore
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -90,6 +92,8 @@ sealed interface ConnectionPhase {
 
     data object Authenticating : ConnectionPhase
 
+    data class OfflineMirror(val gatewayUrl:String,val username:String):ConnectionPhase
+
     data class Connected(
         val gatewayUrl: String,
         val username: String,
@@ -133,7 +137,15 @@ class GatewayRuntime(
     ),
     private val identityTrust: GatewayIdentityTrustStore = GatewayIdentityTrustStore(context),
     private val accountProfiles: AndroidAccountProfileStore = AndroidAccountProfileStore(context),
+    private val pluginHost: com.openandroidintelligence.mobile.plugins.ProductionPluginHost? = null,
+    private val localDocumentKeyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null,
 ) {
+    private var executionDriver: com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver? = null
+    private var capabilityPublisher: com.openandroidintelligence.mobile.plugins.CapabilityPublisher? = null
+    val deviceConfirmation = MutableStateFlow<com.openandroidintelligence.mobile.plugins.DeviceConfirmation?>(null)
+    val connectedAccountId: String? get() = lastAccountId.takeIf { activeHttpClient != null }
+    fun decideDeviceRequest(id: String, approved: Boolean) { executionDriver?.decide(id,approved) }
+
     private val _phase = MutableStateFlow<ConnectionPhase>(ConnectionPhase.Disconnected)
     val phase: StateFlow<ConnectionPhase> = _phase.asStateFlow()
     private val _savedProfiles = MutableStateFlow(accountProfiles.list())
@@ -173,12 +185,14 @@ class GatewayRuntime(
     private var connectionJob: Job? = null
     private var sessionJob: Job? = null
     private var gatewayGrantRevision = -1L
+    var activeMediaCache: com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache? = null
+        private set
     private var activeAttachmentStaging: LocalAttachmentStagingStore? = null
 
     private val activeThread = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
     /** The login form's authoritative action; the UI only reflects the phase. */
-    fun login(gatewayUrl: String, username: String, password: CharArray) {
+    fun login(gatewayUrl: String, username: String, password: CharArray, invitation: Boolean = false, deviceKey: Boolean = false, expectedIdentityFingerprint: String? = null) {
         if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) {
             password.fill('\u0000')
             return
@@ -201,6 +215,10 @@ class GatewayRuntime(
                 return@launch
             }
             val tlsPin = identityTrust.verifyNegotiation(endpoint, username, negotiated)
+            if (expectedIdentityFingerprint != null) {
+                val identity=com.openandroidintelligence.gateway.schema.Json.of(mapOf("deploymentId" to negotiated.deploymentId,"tlsSpkiSha256" to negotiated.tlsSpkiSha256))
+                check(com.openandroidintelligence.gateway.schema.Json.sha256(identity)==expectedIdentityFingerprint) { "GATEWAY_IDENTITY_MISMATCH" }
+            }
             if (endpoint.isTls && tlsPin == null) {
                 _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
                 password.fill('\u0000')
@@ -210,7 +228,11 @@ class GatewayRuntime(
             _phase.value = ConnectionPhase.Authenticating
             val credentials = runCatching {
                 val publicKey = deviceKeys.publicKeyBase64Url(profileId)
-                authClientFor(normalized, setOfNotNull(tlsPin)).loginWithPassword(
+                if (deviceKey) {
+                    val binding=accountProfiles.binding(profileId) ?: error("DEVICE_NOT_PAIRED")
+                    authClientFor(normalized,setOfNotNull(tlsPin)).loginWithDeviceKey(negotiated.negotiationId,binding.accountId,binding.deviceId) { deviceKeys.sign(profileId,it) }
+                } else if (invitation) authClientFor(normalized,setOfNotNull(tlsPin)).loginWithInvite(negotiated.negotiationId,username,String(password).trim().uppercase(),Build.MODEL ?: "Android",publicKey) { deviceKeys.sign(profileId,it) }
+                else authClientFor(normalized, setOfNotNull(tlsPin)).loginWithPassword(
                     negotiationId = negotiated.negotiationId,
                     username = username,
                     password = password,
@@ -289,6 +311,12 @@ class GatewayRuntime(
     }
 
     /** Leave the active workbench without revoking another saved account's credentials. */
+    fun reconnectOfflineMirror() {
+        if (connectionJob?.isActive == true || _phase.value !is ConnectionPhase.OfflineMirror) return
+        teardown()
+        restoreSessionIfAvailable()
+    }
+
     fun chooseAnotherAccount() {
         if (connectionJob?.isActive == true) return
         teardown()
@@ -354,6 +382,10 @@ class GatewayRuntime(
                     if (accountId != null) {
                         pairingGrants.clearFor(PairingGrantBinding(profile.gatewayBaseUrl, accountId, installationId()))
                         attachmentStagingStore(profile.gatewayBaseUrl, accountId, installationId()).cleanup()
+                        com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),localDocumentKeyProvider).wipe()
+                        com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),localDocumentKeyProvider).wipe()
+                        com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),keyProvider=localDocumentKeyProvider).clearMedia()
+                        pluginHost?.eraseAccount(accountId,PairingGrantBinding(profile.gatewayBaseUrl,accountId,installationId()).pairingId)
                     }
                     AndroidEventCursorStore(context, profileId).clearProfile()
                     AndroidEventCursorStore(context, platformCursorProfile(profileId)).clearProfile()
@@ -394,6 +426,10 @@ class GatewayRuntime(
                 { credentialStore.clearDeviceKey(profileId) },
                 { deviceKeys.delete(profileId) },
                 { staging?.cleanup(); Unit },
+                { com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
+                { com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
+                { com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),keyProvider=localDocumentKeyProvider).clearMedia() },
+                { pluginHost?.eraseAccount(accountId,binding.pairingId); Unit },
                 { AndroidEventCursorStore(context, profileId).clear(accountId) },
                 { AndroidEventCursorStore(context, platformCursorProfile(profileId)).clear(accountId) },
                 { clearLastProfile() },
@@ -511,6 +547,34 @@ class GatewayRuntime(
         }
     }
 
+    fun updateDebounceSettings(gateway:String?,delayMillis:Int,extend:Boolean) {
+        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
+        preferences.write(gateway,delayMillis,extend)
+        val current=(_phase.value as? ConnectionPhase.Connected)?.gatewayUrl
+        _controller.value?.updateDebouncePolicy(preferences.read(current))
+    }
+    fun useGlobalDebounceSettings(gateway:String) {
+        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
+        preferences.useGlobal(gateway)
+        _controller.value?.updateDebouncePolicy(preferences.read(gateway))
+    }
+
+    private fun showOfflineMirror(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,cause:Throwable) {
+        if (cause !is java.io.IOException || cause is javax.net.ssl.SSLException) return
+        val mirrorScope=ConversationScope(profileId,endpoint.baseUrl,accountId,installationId())
+        val mirror=com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,mirrorScope,localDocumentKeyProvider)
+        mirror.finishBaselineRecovery()
+        if (mirror.load()==null) return
+        val owned=SupervisorJob(scope.coroutineContext[Job]); sessionJob=owned
+        _controller.value=WorkbenchController(CoroutineScope(owned+Dispatchers.Main.immediate),
+            com.openandroidintelligence.mobile.conversations.OfflineMirrorRepository(mirror),
+            object:com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId:String,languageCode:String):com.openandroidintelligence.conversation.ports.AgentCommandCatalog=throw java.io.IOException("OFFLINE_MIRROR")
+            },{ mirrorScope },persistence=mirror,media=com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,mirrorScope,keyProvider=localDocumentKeyProvider),allowSending=false)
+        _phase.value=ConnectionPhase.OfflineMirror(endpoint.baseUrl,username)
+        _operationNotice.value="离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
+    }
+
     /** Attempts silent session recovery on cold start if valid credentials exist. */
     fun restoreSessionIfAvailable() {
         if (connectionJob?.isActive == true || _phase.value !is ConnectionPhase.Disconnected) return
@@ -547,6 +611,7 @@ class GatewayRuntime(
             val auth = authClientFor(endpoint.baseUrl, retainedPins)
             val negotiated = runCatching { auth.negotiate("neg_" + newToken()) }.getOrElse { cause ->
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
+                showOfflineMirror(endpoint,lastUser,lastProfileId,storedAccountId,cause)
                 return@launch
             }
             val tlsPin = identityTrust.verifyNegotiation(endpoint, lastUser, negotiated)
@@ -574,6 +639,7 @@ class GatewayRuntime(
                     clearLastProfile()
                 }
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
+                showOfflineMirror(endpoint,lastUser,lastProfileId,storedAccountId,cause)
                 return@launch
             }
 
@@ -599,6 +665,7 @@ class GatewayRuntime(
                 throw cancelled
             } catch (cause: Exception) {
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
+                showOfflineMirror(endpoint,lastUser,lastProfileId,storedAccountId,cause)
             } finally {
                 refreshBytes.fill(0)
             }
@@ -630,7 +697,7 @@ class GatewayRuntime(
                 installationId = installationId(),
             )
         pairingGrants.bind(binding)
-        gatewayGrantRevision = -1L
+        gatewayGrantRevision = session.grantRevision.toLong()
         val transport = GatewayTransport(profile)
         val eventStreamStatus = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
         val http = GatewayHttpClient(
@@ -687,10 +754,41 @@ class GatewayRuntime(
         lastDeviceId = session.deviceId
         lastSessionId = session.sessionId
 
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("session.ready", mapOf(
+            "accountId" to session.accountId, "deviceId" to session.deviceId, "sessionId" to session.sessionId,
+        ))
+
         sessionJob?.cancel()
         val ownedJob = SupervisorJob(scope.coroutineContext[Job])
         sessionJob = ownedJob
         val sessionScope = CoroutineScope(ownedJob + Dispatchers.Main.immediate)
+        if (pluginHost != null && deviceRequests != null) {
+            val publisher = com.openandroidintelligence.mobile.plugins.CapabilityPublisher(context,http,binding.storageKey,session.grantRevision,
+                localRevision = { pairingGrants.state.value?.revision ?: 0L },host = pluginHost,
+                foreignChange = { executionDriver?.cancelAll(); pairingGrants.clearCurrent(); pairingGrants.bind(binding) })
+            capabilityPublisher = publisher
+            val executor = com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver(context,sessionScope,http,pluginHost,
+                session.accountId,session.deviceId,session.pairingGeneration,binding.storageKey,{ publisher.grantRevision },
+                isForeground = { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) })
+            executionDriver = executor
+            sessionScope.launch { executor.confirmation.collect { deviceConfirmation.value = it } }
+            sessionScope.launch(Dispatchers.IO) {
+                while (isActive) {
+                    try { executor.recoverPending(); com.openandroidintelligence.mobile.plugins.PluginJobScheduler.maintain(context) }
+                    catch (cancelled:CancellationException) { throw cancelled } catch (_:Exception) { _operationNotice.value="设备结果交付重试中。" }
+                    delay(30_000)
+                }
+            }
+            sessionScope.launch(Dispatchers.IO) {
+                kotlinx.coroutines.flow.combine(pairingGrants.state,pluginHost.revision) { _, _ -> Unit }.collectLatest {
+                    while (isActive) {
+                        try { publisher.sync(); break }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { _operationNotice.value = "设备能力授权同步失败，正在重试。"; delay(2_000) }
+                    }
+                }
+            }
+        }
         val attachmentTransport = HttpAttachmentTransport(http)
         val uploader = AttachmentUploader(attachmentTransport)
         val gate = com.openandroidintelligence.conversation.attachment.AttachmentSubmissionGate(
@@ -703,6 +801,7 @@ class GatewayRuntime(
             gate,
             sessionScope,
             staging,
+            recovery = com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,endpoint.baseUrl,session.accountId,installationId()),localDocumentKeyProvider),
         )
 
         val conversationScope = ConversationScope(
@@ -712,20 +811,43 @@ class GatewayRuntime(
             installId = installationId(),
         )
 
+        val mediaCache=com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,conversationScope,http,localDocumentKeyProvider)
+        activeMediaCache=mediaCache
+        val mirror = com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,conversationScope,localDocumentKeyProvider)
+        mirror.finishBaselineRecovery()
+        val mirroredRepository = com.openandroidintelligence.mobile.conversations.MirroredConversationRepository(workbenchRepository,mirror,mediaCache)
+        http.setCursorRecovery {
+            val response = http.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest("GET","/open-android-intelligence/v2/sync/snapshot"))
+            check(response.status == 200) { "SNAPSHOT_FAILED" }
+            val envelope = JsonFields.obj(Json.parse(response.body.decodeToString())) ?: error("SNAPSHOT_INVALID")
+            val data = JsonFields.obj(JsonFields.field(envelope,"data")) ?: error("SNAPSHOT_INVALID")
+            val baseline = JsonFields.string(data,"baselineCursor") ?: error("SNAPSHOT_INVALID")
+            val threads = workbenchRepository.listConversations(conversationScope,com.openandroidintelligence.conversation.ports.PageRequest()).conversations
+            val pages = linkedMapOf<String,com.openandroidintelligence.conversation.ports.TimelinePage>()
+            threads.forEach { thread -> pages[thread.id.value] = workbenchRepository.completeTimeline(thread.id.value) }
+            mirror.installBaseline(threads,pages,baseline)
+            mediaCache.reconcile(pages.values.flatMap { it.messages }.flatMap { it.parts }.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>().map { it.draftId.value }.toSet())
+            mirror.finishBaselineRecovery()
+            _controller.value?.onMirrorRebuilt()
+            baseline
+        }
         _controller.value = WorkbenchController(
             scope = sessionScope,
-            repository = workbenchRepository,
+            repository = mirroredRepository,
             catalogRepository = catalogRepository,
             scopeFactory = { conversationScope },
             attachmentCoordinator = attachmentCoordinator,
             supportsMessageBatches = "message-batches-v1" in conversationUi,
+            debouncePolicy=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
             // Whether this Gateway serves the `/new` command entry. Without it
             // the workbench refuses to create a thread at all rather than
             // building one only the phone knows about.
             supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
             supportsApprovalCards = approvalClient != null,
-            onActiveThreadChanged = { threadId -> activeThread.set(threadId) },
+            onActiveThreadChanged = { threadId -> activeThread.set(threadId);repository.activeConversationChanged() },
             streamHealthSource = workbenchRepository,
+            persistence = mirror,
+            media = mediaCache,
         )
         _phase.value = ConnectionPhase.Connected(
             gatewayUrl = endpoint.baseUrl,
@@ -747,6 +869,15 @@ class GatewayRuntime(
             webSocketTransport = null,
             handlePlatformEvent = { event -> handlePlatformEvent(event, session.sessionId, session.deviceId, binding) },
         )
+        platformHttp.setCursorRecovery {
+            val response = platformHttp.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest("GET","/open-android-intelligence/v2/sync/snapshot"))
+            check(response.status == 200) { "SNAPSHOT_FAILED" }
+            val data = JsonFields.obj(JsonFields.field(JsonFields.obj(Json.parse(response.body.decodeToString())),"data")) ?: error("SNAPSHOT_INVALID")
+            capabilityPublisher?.sync()
+            JsonFields.strings(data,"pendingDeviceRequests").forEach { executionDriver?.accept(it) }
+            executionDriver?.recoverPending()
+            JsonFields.string(data,"baselineCursor") ?: error("SNAPSHOT_INVALID")
+        }
         sessionScope.launch {
             // This cursor/collector never consumes the conversation cursor:
             // business events keep their apply-before-commit delivery path.
@@ -768,6 +899,12 @@ class GatewayRuntime(
     }
 
     private fun teardown() {
+        _controller.value?.close()
+        activeMediaCache = null
+        executionDriver?.cancelAll()
+        executionDriver = null
+        capabilityPublisher = null
+        deviceConfirmation.value = null
         sessionJob?.cancel()
         sessionJob = null
         _controller.value = null
@@ -780,11 +917,13 @@ class GatewayRuntime(
         _phase.value = ConnectionPhase.Disconnected
     }
 
-    private fun handlePlatformEvent(event: GatewayEvent, sessionId: String, deviceId: String, binding: PairingGrantBinding): Boolean {
+    private suspend fun handlePlatformEvent(event: GatewayEvent, sessionId: String, deviceId: String, binding: PairingGrantBinding): Boolean {
         if (event.event !in PLATFORM_EVENTS) return false
         val body = JsonFields.obj(Json.parse(event.data)) ?: error("PLATFORM_EVENT_INVALID")
         val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: error("PLATFORM_EVENT_INVALID")
         when (event.event) {
+            "device.requested" -> executionDriver?.accept(JsonFields.string(payload,"requestId") ?: error("PLATFORM_EVENT_INVALID"))
+            "device.request.cancel.requested" -> executionDriver?.cancel(JsonFields.string(payload,"requestId") ?: error("PLATFORM_EVENT_INVALID"))
             "session.revoked" -> {
                 val revoked = JsonFields.string(payload, "sessionId") ?: error("PLATFORM_EVENT_INVALID")
                 if (revoked == sessionId) {
@@ -799,6 +938,11 @@ class GatewayRuntime(
                 // advisory only and cannot clear another device's local grant.
                 val target = JsonFields.string(payload, "deviceId") ?: return true
                 if (target != deviceId || revision <= gatewayGrantRevision) return true
+                if (capabilityPublisher?.observeChange(revision.toInt(),JsonFields.string(payload,"grantDigest")) == true) {
+                    gatewayGrantRevision = revision
+                    return true
+                }
+                executionDriver?.cancelAll()
                 pairingGrants.clearCurrent()
                 pairingGrants.bind(binding)
                 gatewayGrantRevision = revision
@@ -946,7 +1090,7 @@ class GatewayRuntime(
     }
 
     private companion object {
-        val PLATFORM_EVENTS = setOf("session.revoked", "pairing.grant.changed")
+        val PLATFORM_EVENTS = setOf("session.revoked", "pairing.grant.changed", "device.requested", "device.request.cancel.requested")
         const val PREFS_NAME = "open_android_intelligence_runtime"
         const val KEY_INSTALL = "installation_id"
         const val KEY_LAST_GATEWAY = "last_gateway_url"

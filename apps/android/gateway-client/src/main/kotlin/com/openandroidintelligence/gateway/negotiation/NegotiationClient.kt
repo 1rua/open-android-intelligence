@@ -198,7 +198,7 @@ class NegotiationClient(
         const val PROTOCOL_HEADER = "2.1"
 
         /** Authentication flows this client implements today. */
-        val AUTH_FEATURES = listOf("password", "refresh")
+        val AUTH_FEATURES = listOf("password", "account-invitation", "refresh", "device-key")
 
         /**
          * Conversation-surface features this client implements today. The list

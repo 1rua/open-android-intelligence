@@ -59,6 +59,14 @@ internal fun ScreenSelectionOverlayHost(
             .onSizeChanged { canvasSize = it },
     ) {
         ScreenSelectionOverlay(
+            onFreehandConfirmed = { points ->
+                val current = frame ?: error("SCREENSHOT_SOURCE_UNAVAILABLE")
+                val crop = cropPngSelection(current.pngBytes(), current.widthPixels, current.heightPixels,
+                    canvasSize.width.toFloat(), canvasSize.height.toFloat(),
+                    points.minOf { it.x }, points.minOf { it.y }, points.maxOf { it.x }, points.maxOf { it.y }, points)
+                if (crop == null) { frame = null; screenshot = null }
+                else onConfirmCrop(ScreenSelectionCrop(crop))
+            },
             onCropConfirmed = { left, top, right, bottom ->
                 val current = frame
                 val frameBytes = current?.pngBytes()
@@ -146,6 +154,7 @@ internal fun cropPngSelection(
     top: Float,
     right: Float,
     bottom: Float,
+    pathPoints: List<androidx.compose.ui.geometry.Offset> = emptyList(),
 ): ByteArray? {
     if (canvasWidthPx <= 0f || canvasHeightPx <= 0f) return null
     if (left >= right || top >= bottom) return null
@@ -157,7 +166,24 @@ internal fun cropPngSelection(
     val y0 = floor(top * scaleY).toInt().coerceIn(0, bitmap.height - 1)
     val x1 = ceil(right * scaleX).toInt().coerceIn(x0 + 1, bitmap.width)
     val y1 = ceil(bottom * scaleY).toInt().coerceIn(y0 + 1, bitmap.height)
-    val cropped = Bitmap.createBitmap(bitmap, x0, y0, x1 - x0, y1 - y0) ?: return null
+    var cropped = Bitmap.createBitmap(bitmap, x0, y0, x1 - x0, y1 - y0) ?: return null
+    if (pathPoints.isNotEmpty()) {
+        if (pathPoints.size !in 3..4096 || pathPoints.any { !it.x.isFinite() || !it.y.isFinite() } ||
+            com.openandroidintelligence.conversation.selection.polygonArea(pathPoints) < 1f) return null
+        val masked = Bitmap.createBitmap(cropped.width, cropped.height, Bitmap.Config.ARGB_8888)
+        val path = android.graphics.Path().apply {
+            val first = pathPoints.first()
+            moveTo(first.x * scaleX - x0, first.y * scaleY - y0)
+            pathPoints.drop(1).forEach { lineTo(it.x * scaleX - x0, it.y * scaleY - y0) }
+            close()
+        }
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE }
+        val canvas = android.graphics.Canvas(masked)
+        canvas.drawPath(path, paint)
+        paint.xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_IN)
+        canvas.drawBitmap(cropped, 0f, 0f, paint)
+        cropped = masked
+    }
     val output = ByteArrayOutputStream()
     if (!cropped.compress(Bitmap.CompressFormat.PNG, 100, output)) return null
     val bytes = output.toByteArray()

@@ -21,7 +21,7 @@ data class PageRequest(val cursor: String? = null, val limit: Int = 50)
 data class ConversationPage(val conversations: List<ConversationSummary>, val nextCursor: String?)
 data class ConversationSummary(val id: ConversationId, val title: String, val updatedAt: Long)
 data class Conversation(val id: ConversationId, val title: String, val createdAt: Long)
-data class TimelinePage(val messages: List<TimelineMessage>, val nextCursor: String?)
+data class TimelinePage(val messages: List<TimelineMessage>, val nextCursor: String?, val snapshotRevision: Long? = null)
 data class TimelineMessage(
     val id: String,
     val sender: String,
@@ -31,6 +31,7 @@ data class TimelineMessage(
     /** The conversation carried by an SSE event, when the Gateway provides it. */
     val conversationId: ConversationId? = null,
     val errorCode: String? = null,
+    val batchId:String?=null,
 )
 
 data class MessageBatch(
@@ -140,9 +141,11 @@ fun interface AttachmentContentSource {
                 val failure = AtomicReference<Throwable?>(null)
                 val producer = Thread({
                     try {
-                        output.use(writer)
+                        writer(output)
                     } catch (cause: Throwable) {
                         failure.set(cause)
+                    } finally {
+                        // Publish the error before EOF can wake the reader.
                         runCatching { output.close() }
                     }
                 }, "attachment-source-writer").apply {
@@ -191,6 +194,7 @@ data class LocalAttachmentSelection(
     val contentSource: AttachmentContentSource,
     /** Bounded, optional display preview; never the upload payload. */
     val previewBytes: ByteArray? = null,
+    val recoverAfterRestart: Boolean = true,
 )
 
 data class StagedAttachmentContent(val id: String, val sizeBytes: Long, val sha256Hex: String)
@@ -398,11 +402,44 @@ interface MessageOutcomeQuery {
     suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage?
 }
 
+/** Complete a snapshot before exposing it. A changing snapshot is restarted, never mixed. */
+suspend fun ConversationRepository.completeTimeline(conversationId: String): TimelinePage {
+    repeat(3) { attempt ->
+        val messages = linkedMapOf<String, TimelineMessage>()
+        val cursors = mutableSetOf<String>()
+        var cursor: String? = null
+        var revision: Long? = null
+        try {
+            do {
+                val page = timeline(conversationId, PageRequest(cursor, 100))
+                if (revision != null && page.snapshotRevision != revision) error("CURSOR_EXPIRED")
+                revision = page.snapshotRevision
+                page.messages.forEach { messages[it.id] = it }
+                cursor = page.nextCursor
+                check(cursor == null || cursors.add(cursor)) { "TIMELINE_CURSOR_CYCLE" }
+            } while (cursor != null)
+            return TimelinePage(messages.values.toList(), null, revision)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (cause: Exception) {
+            if (attempt == 2 || !cause.message.orEmpty().contains("CURSOR_EXPIRED")) throw cause
+        }
+    }
+    error("TIMELINE_RESYNC_FAILED")
+}
+
 interface AgentCommandCatalogRepository {
     suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog
 }
 
+data class RecoveredAttachmentDraft(val draft: AttachmentDraft, val content: StagedAttachmentContent, val remoteId: String?)
+interface AttachmentDraftRecoveryStore {
+    fun load(): List<RecoveredAttachmentDraft>
+    fun save(records: List<RecoveredAttachmentDraft>)
+}
+
 interface AttachmentDraftCoordinator {
+    fun restoredDrafts(): List<AttachmentDraft> = emptyList()
     suspend fun prepare(selection: LocalAttachmentSelection): AttachmentDraft
     suspend fun armSubmission(draftId: String, revision: Long): PendingSubmissionIntent
     suspend fun cancelSubmission(intentId: String): CancelSubmissionResult
@@ -430,4 +467,15 @@ interface ConversationMirrorStore {
  */
 interface GenerationTracker {
     val generationId: kotlinx.coroutines.flow.StateFlow<String?>
+    val generationState:kotlinx.coroutines.flow.StateFlow<GenerationState>? get()=null
+}
+
+data class HistoricalMediaMetadata(val conversationId:String,val attachmentId:String,val filename:String,val mediaType:String,
+    val sizeBytes:Long,val sha256:String,val remoteAvailable:Boolean,val estimatedLocalBytes:Long)
+interface HistoricalMediaPort {
+    suspend fun metadata(conversationId:String,attachmentId:String):HistoricalMediaMetadata
+    suspend fun retain(metadata:HistoricalMediaMetadata)
+    fun isRetained(attachmentId:String):Boolean
+    fun preview(attachmentId:String):ByteArray?
+    fun remove(attachmentId:String)
 }

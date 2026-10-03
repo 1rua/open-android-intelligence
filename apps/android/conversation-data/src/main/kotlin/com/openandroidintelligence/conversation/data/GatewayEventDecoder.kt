@@ -47,7 +47,7 @@ object GatewayEventDecoder {
      * The stream needs both readings of every frame, so parsing the same bytes
      * twice per frame was the only cost this shape had to remove.
      */
-    data class DecodedFrame(val event: VerifiedConversationEvent?, val generationId: String?)
+    data class DecodedFrame(val event: VerifiedConversationEvent?, val generationId: String?,val conversationId:String?=null)
 
     fun decode(event: GatewayEvent): VerifiedConversationEvent? = decodedEventOf(event, parse(event))
 
@@ -64,6 +64,7 @@ object GatewayEventDecoder {
         return DecodedFrame(
             event = decodedEventOf(event, frame),
             generationId = generationIdOf(frame),
+            conversationId=JsonFields.string(frame.payload,"conversationId"),
         )
     }
 

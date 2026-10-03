@@ -95,3 +95,7 @@ integrations/hermes/build/
 .agent-life-hermes/
 
 apps/android/.toolchains/
+
+# Runtime reports must not make an otherwise clean source worktree dirty.
+/artifacts/e2e/
+/.worktrees/

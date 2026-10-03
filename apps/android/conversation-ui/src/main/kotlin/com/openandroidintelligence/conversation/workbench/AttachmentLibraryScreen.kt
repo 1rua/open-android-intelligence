@@ -20,6 +20,8 @@ fun AttachmentLibraryScreen(
     onPickCamera: () -> Unit, onRemoveAttachment: (String) -> Unit, onRetryAttachment: (String) -> Unit,
     modifier: Modifier = Modifier,
     onClose: (() -> Unit)? = null,
+    historical:List<com.openandroidintelligence.conversation.model.TimelineAttachment> = emptyList(),
+    onRetainHistorical:(String)->Unit = {},
 ) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         LazyColumn(Modifier.widthIn(max = Dimensions.ReadingWidth).fillMaxSize(),
@@ -73,8 +75,14 @@ fun AttachmentLibraryScreen(
             item {
                 HorizontalDivider()
                 Text("历史媒体", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = Dimensions.SpaceLarge))
-                Text("历史媒体读取暂不可用。你仍可通过系统选择器添加本地文件。", style = MaterialTheme.typography.bodyMedium,
+                if(historical.isEmpty()) Text("当前对话暂无历史媒体。", style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = Dimensions.SpaceSmall))
+            }
+            items(historical,key={ "history_"+it.draftId }) { media ->
+                OutlinedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(Dimensions.SpaceMedium)) {
+                    Text(media.filename.ifBlank { "附件" });Text(media.mediaType,style=MaterialTheme.typography.bodySmall)
+                    TextButton(onClick={onRetainHistorical(media.draftId)}) { Text(if(media.savedOffline) "已保留离线副本 · 查看信息" else "查看原件信息并保留") }
+                } }
             }
         }
     }

@@ -53,6 +53,9 @@ const REFERENCE_PLUGINS: PluginSpec[] = [
         version: "1.0.0",
         schema: "schemas/sms.json",
       },
+      { id: "org.openandroidintelligence.sms.schedule", version: "1.0.0", schema: "schemas/sms-schedule.json" },
+      { id: "org.openandroidintelligence.sms.job-status", version: "1.0.0", schema: "schemas/sms-job-status.json" },
+      { id: "org.openandroidintelligence.sms.cancel", version: "1.0.0", schema: "schemas/sms-cancel.json" },
     ],
     kernelPrimitives: [
       {
@@ -60,6 +63,10 @@ const REFERENCE_PLUGINS: PluginSpec[] = [
         version: "1.0.0",
         purpose: "Read SMS inbox under local policy",
       },
+      { id: "kernel.scheduler.set", version: "1.0.0", purpose: "Schedule a locally authorized SMS query" },
+      { id: "kernel.scheduler.read", version: "1.0.0", purpose: "Read the scheduled query outcome" },
+      { id: "kernel.scheduler.cancel", version: "1.0.0", purpose: "Cancel a query before execution" },
+      { id: "kernel.background.run", version: "1.0.0", purpose: "Run authorized scheduled queries in the background" },
     ],
   },
   {
@@ -100,12 +107,10 @@ async function main() {
     await mkdir(join(stagingDir, "payload"), { recursive: true });
     await mkdir(join(stagingDir, "schemas"), { recursive: true });
 
-    // 复制或构造 schema
-    const schemaContent = JSON.stringify({ type: "object" });
-    await writeFile(
-      join(stagingDir, provided.schema),
-      new TextEncoder().encode(schemaContent),
-    );
+    for (const capability of spec.provides) {
+      const schemaContent = await readFile(join(ROOT, "plugins", capability.schema));
+      await writeFile(join(stagingDir, capability.schema), schemaContent);
+    }
 
     // 检查 target/wasm32-unknown-unknown/release 产物或使用 fixture stub
     const wasmPath = join(
@@ -154,8 +159,8 @@ async function main() {
       security: {
         network: [],
         background: {
-          requested: false,
-          minimumIntervalSeconds: null,
+          requested: spec.id === "org.openandroidintelligence.sms",
+          minimumIntervalSeconds: spec.id === "org.openandroidintelligence.sms" ? 60 : null,
         },
         resources: {
           maxInvocationMillis: 5000,

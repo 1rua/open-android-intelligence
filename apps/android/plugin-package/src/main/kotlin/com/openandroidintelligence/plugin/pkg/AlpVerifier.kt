@@ -336,6 +336,7 @@ class AlpVerifier(
             abiVersion = (runtimeObj.get("abiVersion") as? JsonValue.JString)?.value,
             entrypoint = (runtimeObj.get("entrypoint") as? JsonValue.JString)?.value,
             payload = (runtimeObj.get("payload") as? JsonValue.JString)?.value,
+            entrypointClass = (runtimeObj.get("entrypointClass") as? JsonValue.JString)?.value,
         )
 
         val capabilities = root.get("capabilities") as? JsonValue.JObject
@@ -348,7 +349,8 @@ class AlpVerifier(
         val security = root.get("security") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:security")
         rejectUnknownFields(security, setOf("network", "background", "resources"), "securityField")
-        val surface = parseSurface(security, runtimeType)
+        val surface = parseSurface(security, runtimeType).copy(kernelPrimitives = primitives,
+            nativeAbis = if (runtimeType == "developer-native") setOf("android-dex") else emptySet())
 
         val compatibility = root.get("compatibility") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:compatibility")

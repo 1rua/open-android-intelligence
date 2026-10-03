@@ -62,8 +62,12 @@ class _SessionStoreDouble:
     """The host's session store, reduced to the one call the binding makes."""
 
     def __init__(self):
+        self._db = self
         self.calls: list[tuple[str, bool]] = []
         self.sessions: dict[str, str] = {}
+
+    def get_messages(self, session_id, include_inactive=False):
+        return []
 
     def get_or_create_session(self, source, force_new: bool = False):
         chat_id = str(getattr(source, "chat_id", ""))

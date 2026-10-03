@@ -18,6 +18,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -71,13 +73,14 @@ fun MessageTimeline(
     entries: List<TimelineEntry>,
     onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
+    onRetainMedia: (String)->Unit = {},
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
     ) {
         entries.forEach { entry ->
-            TimelineRow(entry = entry, onDecide = onDecide)
+            TimelineRow(entry = entry, onDecide = onDecide,onRetainMedia=onRetainMedia)
         }
     }
 }
@@ -93,7 +96,23 @@ fun TimelineRow(
     entry: TimelineEntry,
     onDecide: (String, ApprovalChoice) -> Unit,
     modifier: Modifier = Modifier,
+    onRetainMedia: (String)->Unit = {},
 ) {
+    if (entry.approval == null && entry.attachments.any { it.draftId.startsWith("media_") }) {
+        Column(modifier) {
+            TimelineRow(entry.copy(attachments=entry.attachments.filterNot { it.draftId.startsWith("media_") }),onDecide)
+            entry.attachments.filter { it.draftId.startsWith("media_") }.forEach { attachment ->
+                Text(attachment.filename.ifBlank { "历史媒体附件" })
+                if (attachment.savedOffline) Text("已保留加密离线副本")
+                else TextButton(onClick={ onRetainMedia(attachment.draftId) }) { Text("保留离线副本") }
+                attachment.previewBytes?.let { bytes ->
+                    val image=remember(bytes) { BitmapFactory.decodeByteArray(bytes,0,bytes.size)?.asImageBitmap() }
+                    if (image!=null) Image(image,contentDescription=attachment.filename,modifier=Modifier.fillMaxWidth().heightIn(max=240.dp))
+                }
+            }
+        }
+        return
+    }
     val approval = entry.approval
     if (approval != null) {
         // A request the Gateway made, not something anyone said: it owns
@@ -106,7 +125,9 @@ fun TimelineRow(
     } else if (entry.isUser) {
         UserMessageBubble(entry = entry, modifier = modifier)
     } else {
-        AssistantMessageRow(entry = entry, modifier = modifier)
+        AssistantMessageRow(entry = entry, modifier = modifier.semantics {
+            contentDescription = "OaiMessage:${entry.key}:${if (entry.isStreaming) "streaming" else "completed"}"
+        })
     }
 }
 

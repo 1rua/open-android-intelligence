@@ -43,7 +43,7 @@ sealed class MessagePart {
 }
 
 /** The authoritative acceptance of one chat-v1 message. */
-data class MessageAcceptance(val messageId: String, val conversationId: String)
+data class MessageAcceptance(val messageId: String, val conversationId: String, val generationId:String?=null)
 
 data class ConversationThread(
     val conversationId: String,
@@ -67,6 +67,7 @@ data class GatewayTimelineMessage(
     val parts: List<MessagePart>,
     val timestamp: Long?,
     val state: String,
+    val batchId:String?=null,
 )
 
 /** One page of `GET /conversations/{id}/messages`. */
@@ -112,6 +113,14 @@ data class BatchAcceptance(
  * reference cannot be constructed here even by mistake.
  */
 class ConversationClient(private val http: GatewayHttpClient) {
+    suspend fun currentGeneration(conversationId:String):Pair<String,String>? {
+        val data=execute("GET","/open-android-intelligence/v2/conversations/$conversationId/generations/current").requireData("GENERATION_CURRENT")
+        val generation=JsonFields.obj(JsonFields.field(data,"generation")) ?: return null
+        check(JsonFields.string(generation,"conversationId")==conversationId) { "GENERATION_SCOPE_MISMATCH" }
+        val id=JsonFields.string(generation,"generationId") ?: error("GENERATION_INVALID")
+        val state=JsonFields.string(generation,"state")?.takeIf { it in setOf("queued","running","unknown") } ?: error("GENERATION_INVALID")
+        return id to state
+    }
 
     companion object {
         /**
@@ -230,6 +239,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
             ),
         )
         if (response.status != 200) {
+            response.requireData("TIMELINE_FAILED")
             throw IllegalStateException("TIMELINE_FAILED:${response.status}")
         }
         val body = parsed(response) ?: throw IllegalStateException("TIMELINE_FAILED:malformed")
@@ -254,6 +264,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
                     parts = readParts(message),
                     timestamp = timestamp,
                     state = JsonFields.string(message, "state") ?: "CONFIRMED",
+                    batchId=JsonFields.string(message,"batchId"),
                 )
             },
             nextCursor = JsonFields.string(body, "nextCursor"),
@@ -291,6 +302,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
             parts = readParts(raw),
             timestamp = timestamp,
             state = JsonFields.string(raw, "state") ?: "CONFIRMED",
+            batchId=JsonFields.string(raw,"batchId"),
         )
     }
 
@@ -310,15 +322,23 @@ class ConversationClient(private val http: GatewayHttpClient) {
             method = "POST",
             target = "/open-android-intelligence/v2/conversations/$conversationId/messages",
             body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
+            requestId = "send_" + java.security.MessageDigest.getInstance("SHA-256")
+                .digest("$conversationId\u0000$clientMessageId".toByteArray()).joinToString("") { "%02x".format(it) },
         )
         val data = response.requireData("SEND_MESSAGE_FAILED")
         val message = JsonFields.obj(JsonFields.field(data, "message"))
         check(JsonFields.string(message, "status") == "accepted" &&
             JsonFields.string(message, "conversationId") == conversationId) { "SEND_MESSAGE_FAILED:invalid-acceptance" }
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("message.accepted", mapOf(
+            "clientMessageId" to clientMessageId, "conversationId" to conversationId,
+            "messageId" to JsonFields.string(message, "messageId"),
+            "textSha256" to java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) },
+        ))
         return MessageAcceptance(
             messageId = JsonFields.string(message, "messageId")
                 ?: throw IllegalStateException("SEND_MESSAGE_FAILED:missing-message-id"),
             conversationId = conversationId,
+            generationId=JsonFields.string(message,"generationId"),
         )
     }
 
@@ -346,6 +366,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
             method = "POST",
             target = "/open-android-intelligence/v2/conversations/$conversationId/message-batches",
             body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
+            requestId="batch_"+java.security.MessageDigest.getInstance("SHA-256").digest("$conversationId\u0000${batch.clientBatchId}".toByteArray()).joinToString("") { "%02x".format(it) },
         )
         if (response.status !in 200..299) {
             throw IllegalStateException("SUBMIT_BATCH_FAILED:${response.status}")
@@ -392,12 +413,14 @@ class ConversationClient(private val http: GatewayHttpClient) {
             method = "POST",
             target = "/open-android-intelligence/v2/conversations/$conversationId/generations/$generationId/cancel",
             body = Json.canonical(Json.of(mapOf("requestId" to requestId))).toByteArray(Charsets.UTF_8),
+            requestId=requestId,
         )
         when (response.status) {
-            404 -> return "ALREADY_COMPLETED"
+            404 -> return "OUTCOME_UNKNOWN"
             in 200..299 -> {
-                val body = parsed(response) ?: return "CANCELLED"
-                return JsonFields.string(body, "outcome") ?: "CANCELLED"
+                val body = parsed(response) ?: return "OUTCOME_UNKNOWN"
+                val outcome=JsonFields.string(body,"outcome")
+                return outcome?.takeIf { it in setOf("CANCELLED","ALREADY_COMPLETED","UNSUPPORTED","OUTCOME_UNKNOWN") } ?: "OUTCOME_UNKNOWN"
             }
             else -> throw IllegalStateException("CANCEL_GENERATION_FAILED:${response.status}")
         }
@@ -407,6 +430,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
         method: String,
         target: String,
         body: ByteArray = ByteArray(0),
+        requestId: String? = null,
     ): GatewayResponse = http.execute(
         SignedGatewayRequest(
             method = method,
@@ -420,6 +444,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
                 )
             },
             body = body,
+            requestId = requestId,
         ),
     )
 

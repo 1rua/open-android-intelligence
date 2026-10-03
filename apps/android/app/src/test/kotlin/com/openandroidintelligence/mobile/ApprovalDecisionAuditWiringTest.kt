@@ -66,6 +66,7 @@ class ApprovalDecisionAuditWiringTest {
     @Test
     fun aSubmittedApprovalDecisionIsAuditedThroughTheHostBridge() {
         val runtime = GatewayRuntime(
+        localDocumentKeyProvider = TestDocumentKeys,
             context = ApplicationProvider.getApplicationContext(),
             scope = runtimeScope,
             pairingGrants = pairingGrants,

@@ -33,6 +33,7 @@ import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 class GatewayTransport(
     private val profile: GatewayProfile,
     private val factory: GatewayConnectionFactory = GatewayConnectionFactory(),
+    private val maximumResponseBytes:Int = 32*1024*1024,
 ) : GatewayByteTransport {
 
     private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
@@ -207,12 +208,15 @@ class GatewayTransport(
     private fun readBody(connection: HttpURLConnection, status: Int): ByteArray {
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             ?: return ByteArray(0)
+        require(maximumResponseBytes >= 0)
+        if (connection.contentLengthLong > maximumResponseBytes) throw java.io.IOException("RESPONSE_TOO_LARGE")
         val out = ByteArrayOutputStream()
         stream.use { input ->
             val buffer = ByteArray(BODY_CHUNK_BYTES)
             while (true) {
                 val read = input.read(buffer)
                 if (read == -1) break
+                if (out.size().toLong()+read>maximumResponseBytes) throw java.io.IOException("RESPONSE_TOO_LARGE")
                 if (read > 0) out.write(buffer, 0, read)
             }
         }

@@ -342,6 +342,8 @@ def interactive_setup(
 def register(ctx: Any) -> None:
     services = compose_gateway_services(ctx)
     bind_admin_service(services.admin)
+    from .device_tools import register_device_tools
+    register_device_tools(ctx,services.core)
     gateway_platform = GatewayPlatform(services.core, services.exposure, services.admin)
     admin_surface = AdminSurface(services.admin)
 

@@ -63,15 +63,34 @@ fun GatewayLoginScreen(
     onReconfirmIdentity: (String, String) -> Unit = { _, _ -> },
     isManagingProfiles: Boolean = false,
     operationNotice: String? = null,
+    onInvite: ((String,String,CharArray,String?)->Unit)? = null,
+    onDeviceKey: ((String,String)->Unit)? = null,
+    invitationPayload: String? = null,
 ) {
     var url by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var invitation by remember { mutableStateOf(false) }
     var passwordVisible by remember { mutableStateOf(false) }
+    var invitePayload by remember { mutableStateOf("") }
     var removingProfile by remember { mutableStateOf<AccountProfile?>(null) }
+    androidx.compose.runtime.LaunchedEffect(invitationPayload) {
+        invitationPayload?.let { payload ->
+            val uri=android.net.Uri.parse(payload)
+            if (uri.scheme=="oai" && uri.host=="pair") {
+                invitation=true; invitePayload=payload; url=uri.getQueryParameter("gateway").orEmpty(); username=uri.getQueryParameter("account").orEmpty(); password=uri.getQueryParameter("code").orEmpty()
+            }
+        }
+    }
     var showIdentityConfirmation by remember { mutableStateOf(false) }
 
     val normalizedUrl = remember(url) { sanitizeGatewayUrl(url) }
+    val invitationUri=remember(invitePayload) { runCatching { android.net.Uri.parse(invitePayload) }.getOrNull() }
+    val invitationFingerprint=invitationUri?.getQueryParameter("identityFingerprint")
+    val invitationCurrent=invitePayload.isBlank() || runCatching {
+        invitationUri?.scheme=="oai" && invitationUri.host=="pair" && invitationUri.getQueryParameter("invitationId")?.isNotBlank()==true &&
+            invitationFingerprint?.matches(Regex("sha256:[0-9a-f]{64}"))==true && java.time.Instant.parse(invitationUri.getQueryParameter("expiresAt")).isAfter(java.time.Instant.now())
+    }.getOrDefault(false)
     // The address decides whether this pairing can be verified at all, so the
     // form classifies it exactly the way the runtime will.
     val endpoint = remember(normalizedUrl) { GatewayEndpoint.parse(normalizedUrl) }
@@ -197,6 +216,16 @@ fun GatewayLoginScreen(
                 Column(
                     verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
                 ) {
+                    if (onInvite != null) {
+                        TextButton(onClick={ invitation=!invitation; password="";invitePayload="" }) { Text(if (invitation) "改用密码登录" else "使用邀请短码") }
+                        if (invitation) FormInputField(label="二维码内容",value=invitePayload,onValueChange={ value ->
+                            invitePayload=value
+                            val uri=android.net.Uri.parse(value)
+                            if (uri.scheme=="oai" && uri.host=="pair") {
+                                uri.getQueryParameter("gateway")?.let { url=it }; uri.getQueryParameter("account")?.let { username=it }; uri.getQueryParameter("code")?.let { password=it }
+                            }
+                        },placeholder="粘贴 oai://pair?… 邀请内容")
+                    }
                     FormInputField(
                         label = "网关地址",
                         value = url,
@@ -233,7 +262,7 @@ fun GatewayLoginScreen(
                     )
 
                     FormInputField(
-                        label = "访问凭据 / 密码",
+                        label = if (invitation) "一次性邀请短码" else "访问凭据 / 密码",
                         value = password,
                         onValueChange = { password = it },
                         placeholder = "输入访问凭据或密码",
@@ -246,7 +275,7 @@ fun GatewayLoginScreen(
                                 if (urlIsValid && username.isNotBlank() && password.isNotEmpty() && !isBusy) {
                                     val secret = password.toCharArray()
                                     password = ""
-                                    onLogin(normalizedUrl, username.trim(), secret)
+                                    if (invitation && onInvite != null) { if (invitationCurrent) onInvite(normalizedUrl,username.trim(),secret,invitationFingerprint) else secret.fill('\u0000') } else onLogin(normalizedUrl, username.trim(), secret)
                                 }
                             },
                         ),
@@ -277,7 +306,7 @@ fun GatewayLoginScreen(
                         onClick = {
                             val secret = password.toCharArray()
                             password = ""
-                            onLogin(normalizedUrl, username.trim(), secret)
+                            if (invitation && onInvite != null) { if (invitationCurrent) onInvite(normalizedUrl,username.trim(),secret,invitationFingerprint) else secret.fill('\u0000') } else onLogin(normalizedUrl, username.trim(), secret)
                         },
                         enabled = urlIsValid && username.isNotBlank() && password.isNotEmpty() && !isBusy,
                         shape = MaterialTheme.shapes.medium,
@@ -367,6 +396,10 @@ fun GatewayLoginScreen(
                 }
             }
             operationNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            if (invitation && !invitationCurrent) Text("邀请内容无效或已过期，请重新获取。",color=MaterialTheme.colorScheme.error)
+            if (onDeviceKey != null && savedProfiles.any { it.gatewayBaseUrl==normalizedUrl && it.username==username.trim() }) {
+                TextButton(enabled=!isBusy,onClick={ password="";onDeviceKey(normalizedUrl,username.trim()) }) { Text("使用已配对设备密钥登录") }
+            }
             if (endpoint?.isTls == true && username.isNotBlank() && phase is ConnectionPhase.Failed) {
                 TextButton(enabled = !isBusy, onClick = { showIdentityConfirmation = true }) { Text("重新确认网关身份") }
             }
@@ -498,6 +531,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
             Text("正在验证凭据…", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
         }
 
+        is ConnectionPhase.OfflineMirror -> Text("离线镜像",color=MaterialTheme.colorScheme.secondary)
         is ConnectionPhase.Connected -> Row(verticalAlignment = Alignment.CenterVertically) {
             StatusDot(
                 color = if (phase.transportSecurity.isEncrypted) {

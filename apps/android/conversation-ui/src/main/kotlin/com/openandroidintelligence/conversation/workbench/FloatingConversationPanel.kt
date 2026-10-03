@@ -63,6 +63,7 @@ fun FloatingConversationPanel(
                 // the command behind it stays blocked. Sharing the screen's
                 // method reference keeps that path single.
                 MessageTimeline(
+                    onRetainMedia=controller::proposeMediaRetention,
                     entries = last,
                     onDecide = controller::decideApproval,
                 )
@@ -102,6 +103,7 @@ fun FloatingConversationPanel(
                             filename = "screen-crop-${System.currentTimeMillis()}.png",
                             mediaType = "image/png",
                             contentSource = AttachmentContentSource.fromWriter(crop::writePngTo),
+                            recoverAfterRestart = false,
                         ),
                     )
                     explainSelection = false
