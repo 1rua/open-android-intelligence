@@ -639,7 +639,7 @@
       "key": {
         "kind": "event",
         "eventType": "pairing.grant.changed",
-        "schemaSha256": "sha256:1fd22acb49da0b291eb528550b8d638408b837a309540eff9e6c42f44c367957"
+        "schemaSha256": "sha256:dc74b1f738e6f1d5171930d0591da7b70bdebb94a8416826d736ac0127fd46d0"
       },
       "schema": {
         "type": "object",
@@ -671,6 +671,12 @@
           "grantDigest": {
             "type": "string",
             "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "deviceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._~-]+$"
           }
         }
       }
@@ -934,7 +940,7 @@
             "kind": "event",
             "eventType": "pairing.grant.changed"
           },
-          "schemaSha256": "sha256:1fd22acb49da0b291eb528550b8d638408b837a309540eff9e6c42f44c367957"
+          "schemaSha256": "sha256:dc74b1f738e6f1d5171930d0591da7b70bdebb94a8416826d736ac0127fd46d0"
         },
         {
           "key": {

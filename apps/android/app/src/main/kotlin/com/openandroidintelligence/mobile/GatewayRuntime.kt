@@ -45,6 +45,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.collect
+import com.openandroidintelligence.gateway.http.EventSessionRejectedException
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
@@ -168,6 +172,7 @@ class GatewayRuntime(
 
     private var connectionJob: Job? = null
     private var sessionJob: Job? = null
+    private var gatewayGrantRevision = -1L
     private var activeAttachmentStaging: LocalAttachmentStagingStore? = null
 
     private val activeThread = java.util.concurrent.atomic.AtomicReference<String?>(null)
@@ -323,14 +328,15 @@ class GatewayRuntime(
     fun removeLocalAccount(profileId: String) {
         if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) return
         val profile = accountProfiles.find(profileId) ?: return
-        val binding = accountProfiles.binding(profileId) ?: return
+        val binding = accountProfiles.binding(profileId)
+        val accountId = binding?.accountId ?: accountProfiles.accountId(profileId)
         _isManagingProfiles.value = true
         _operationNotice.value = "正在退出并移除本机账号…"
         connectionJob = scope.launch {
             var refresh: ByteArray? = null
             try {
                 refresh = credentialStore.loadRefresh(profileId)
-                if (refresh != null && refresh.isNotEmpty()) {
+                if (refresh != null && refresh.isNotEmpty() && binding != null) {
                     val endpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl) ?: error("PROFILE_INVALID")
                     val pins = identityTrust.pinsBeforeConnect(endpoint, profile.username, restoring = true)
                     val auth = authClientFor(endpoint.baseUrl, pins)
@@ -345,9 +351,12 @@ class GatewayRuntime(
                     credentialStore.clearRefresh(profileId)
                     credentialStore.clearDeviceKey(profileId)
                     deviceKeys.delete(profileId)
-                    pairingGrants.clearFor(PairingGrantBinding(profile.gatewayBaseUrl, binding.accountId, installationId()))
-                    attachmentStagingStore(profile.gatewayBaseUrl, binding.accountId, installationId()).cleanup()
-                    AndroidEventCursorStore(context, profileId).clear(binding.accountId)
+                    if (accountId != null) {
+                        pairingGrants.clearFor(PairingGrantBinding(profile.gatewayBaseUrl, accountId, installationId()))
+                        attachmentStagingStore(profile.gatewayBaseUrl, accountId, installationId()).cleanup()
+                    }
+                    AndroidEventCursorStore(context, profileId).clearProfile()
+                    AndroidEventCursorStore(context, platformCursorProfile(profileId)).clearProfile()
                     identityTrust.forget(GatewayEndpoint.parse(profile.gatewayBaseUrl)!!, profile.username)
                     accountProfiles.delete(profileId)
                 }
@@ -368,6 +377,7 @@ class GatewayRuntime(
         val profileId = profileIdFor(current.gatewayUrl, current.username)
         val accountId = lastAccountId ?: return
         val staging = activeAttachmentStaging
+        val binding = PairingGrantBinding(current.gatewayUrl, accountId, installationId())
         connectionJob = scope.launch {
             try {
                 PairingRevocationClient(http).revoke(deviceId)
@@ -377,14 +387,15 @@ class GatewayRuntime(
                 _operationNotice.value = "解除配对未获 Gateway 确认，本机凭据已保留，请检查连接后重试。"
                 return@launch
             }
-            pairingGrants.clearCurrent()
             teardown()
             val cleanup = listOf<() -> Unit>(
+                { pairingGrants.clearFor(binding) },
                 { credentialStore.clearRefresh(profileId) },
                 { credentialStore.clearDeviceKey(profileId) },
                 { deviceKeys.delete(profileId) },
                 { staging?.cleanup(); Unit },
                 { AndroidEventCursorStore(context, profileId).clear(accountId) },
+                { AndroidEventCursorStore(context, platformCursorProfile(profileId)).clear(accountId) },
                 { clearLastProfile() },
             ).map { action -> runCatching(action) }
             if (cleanup.any { it.isFailure }) {
@@ -619,6 +630,7 @@ class GatewayRuntime(
                 installationId = installationId(),
             )
         pairingGrants.bind(binding)
+        gatewayGrantRevision = -1L
         val transport = GatewayTransport(profile)
         val eventStreamStatus = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
         val http = GatewayHttpClient(
@@ -627,7 +639,8 @@ class GatewayRuntime(
             signer = { preimage -> deviceKeys.sign(profileId, preimage) },
             cursorStore = AndroidEventCursorStore(context, profileId),
             statusSink = eventStreamStatus,
-            handlePlatformEvent = { event -> handlePlatformEvent(event, session.sessionId, binding) },
+            // Platform lifecycle is consumed independently of the selected thread.
+            handlePlatformEvent = { event -> event.event in PLATFORM_EVENTS },
         )
         activeHttpClient = http
         val conversationClient = ConversationClient(http)
@@ -726,6 +739,32 @@ class GatewayRuntime(
             requestedConversationUi = CLIENT_CONVERSATION_UI_OFFER,
             deviceRequests = deviceRequests,
         )
+        val platformHttp = GatewayHttpClient(
+            profile = profile,
+            transport = transport,
+            signer = { preimage -> deviceKeys.sign(profileId, preimage) },
+            cursorStore = AndroidEventCursorStore(context, platformCursorProfile(profileId)),
+            webSocketTransport = null,
+            handlePlatformEvent = { event -> handlePlatformEvent(event, session.sessionId, session.deviceId, binding) },
+        )
+        sessionScope.launch {
+            // This cursor/collector never consumes the conversation cursor:
+            // business events keep their apply-before-commit delivery path.
+            while (isActive) {
+                try {
+                    platformHttp.events().collect { }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (rejected: EventSessionRejectedException) {
+                    teardown()
+                    _phase.value = ConnectionPhase.Failed("SESSION_REJECTED")
+                    _operationNotice.value = "网关会话已失效，本机授权已冻结，请重新登录。"
+                    return@launch
+                } catch (cause: Exception) {
+                    delay(1_000)
+                }
+            }
+        }
     }
 
     private fun teardown() {
@@ -741,8 +780,8 @@ class GatewayRuntime(
         _phase.value = ConnectionPhase.Disconnected
     }
 
-    private fun handlePlatformEvent(event: GatewayEvent, sessionId: String, binding: PairingGrantBinding): Boolean {
-        if (event.event !in setOf("session.revoked", "pairing.grant.changed")) return false
+    private fun handlePlatformEvent(event: GatewayEvent, sessionId: String, deviceId: String, binding: PairingGrantBinding): Boolean {
+        if (event.event !in PLATFORM_EVENTS) return false
         val body = JsonFields.obj(Json.parse(event.data)) ?: error("PLATFORM_EVENT_INVALID")
         val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: error("PLATFORM_EVENT_INVALID")
         when (event.event) {
@@ -756,13 +795,20 @@ class GatewayRuntime(
             "pairing.grant.changed" -> {
                 val revision = JsonFields.long(payload, "grantRevision") ?: error("PLATFORM_EVENT_INVALID")
                 check(revision >= 0) { "PLATFORM_EVENT_INVALID" }
+                // Persisted pre-upgrade notifications have no target. They are
+                // advisory only and cannot clear another device's local grant.
+                val target = JsonFields.string(payload, "deviceId") ?: return true
+                if (target != deviceId || revision <= gatewayGrantRevision) return true
                 pairingGrants.clearCurrent()
                 pairingGrants.bind(binding)
+                gatewayGrantRevision = revision
                 _operationNotice.value = "网关授权已变更，请重新确认本机授权。"
             }
         }
         return true
     }
+
+    private fun platformCursorProfile(profileId: String) = "$profileId:platform"
 
     private fun authClientFor(
         gatewayUrl: String,
@@ -811,8 +857,8 @@ class GatewayRuntime(
     private fun saveLastProfile(gatewayUrl: String, username: String, profileId: String, session: SessionCredentials) {
         val endpoint = checkNotNull(GatewayEndpoint.parse(gatewayUrl))
         val trustId = if (endpoint.isTls) checkNotNull(identityTrust.retained(endpoint, username)).spki else ""
-        accountProfiles.save(AccountProfile(profileId, gatewayUrl, username, trustId))
-        accountProfiles.saveBinding(profileId, AndroidAccountProfileStore.Binding(session.accountId, session.deviceId, session.sessionId, DEVICE_KEY_ENCODING_VERSION))
+        accountProfiles.save(AccountProfile(profileId, gatewayUrl, username, trustId),
+            AndroidAccountProfileStore.Binding(session.accountId, session.deviceId, session.sessionId, DEVICE_KEY_ENCODING_VERSION))
         _savedProfiles.value = accountProfiles.list()
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
@@ -900,6 +946,7 @@ class GatewayRuntime(
     }
 
     private companion object {
+        val PLATFORM_EVENTS = setOf("session.revoked", "pairing.grant.changed")
         const val PREFS_NAME = "open_android_intelligence_runtime"
         const val KEY_INSTALL = "installation_id"
         const val KEY_LAST_GATEWAY = "last_gateway_url"

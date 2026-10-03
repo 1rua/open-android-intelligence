@@ -26,6 +26,23 @@ import org.junit.Test
 class GatewayEventStreamTest {
 
     @Test
+    fun `an authentication rejection is terminal and leaves the cursor unchanged`() = runBlocking {
+        val cursors = MemoryCursorStore().apply { seed("acc_test", "cur_before") }
+        var attempts = 0
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attempts++
+                throw EventSessionRejectedException()
+            }
+        }
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, cursors)
+        assertTrue(runCatching { client.events().toList() }.exceptionOrNull() is EventSessionRejectedException)
+        assertEquals(1, attempts)
+        assertEquals("cur_before", cursors.load("acc_test"))
+    }
+
+    @Test
     fun `a downstream failure leaves the cursor and event replayable`() = runBlocking {
         val cursors = MemoryCursorStore().apply { seed("acc_test", "cur_before") }
         val client = GatewayHttpClient(profile(), RecordingTransport(listOf(completedFrame)), { ByteArray(64) }, cursors)

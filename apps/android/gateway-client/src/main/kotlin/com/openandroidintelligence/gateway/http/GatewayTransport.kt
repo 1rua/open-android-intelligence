@@ -135,6 +135,7 @@ class GatewayTransport(
             val status = connection.responseCode
             if (status !in 200..299) {
                 if (status == 410) throw EventCursorExpiredException()
+                if (status == 401) throw EventSessionRejectedException()
                 throw IOException("EVENT_STREAM_FAILED:$status")
             }
             val contentType = connection.getHeaderField("Content-Type").orEmpty()

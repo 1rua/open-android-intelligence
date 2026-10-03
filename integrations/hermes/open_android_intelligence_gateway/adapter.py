@@ -1327,6 +1327,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             "target": request.path_qs,
             "headers": dict(request.headers),
             "rawHeaders": raw_header_pairs,
+            "remoteAddress": getattr(request, "remote", None),
             "body": body,
         }
 

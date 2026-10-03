@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Bundle
 import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.gateway.account.AccountProfileStore
+import org.json.JSONObject
 
 /** Android owns public profiles; passwords and refresh credentials stay in Keystore. */
 class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
@@ -19,9 +20,15 @@ class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
     }
     override fun find(localProfileId: String): AccountProfile? = list().find { it.localProfileId == localProfileId }
 
-    override fun save(profile: AccountProfile) {
+    override fun save(profile: AccountProfile) = saveProfile(profile, null)
+
+    /** A new framework account is created with its complete binding in one Bundle. */
+    fun save(profile: AccountProfile, binding: Binding) = saveProfile(profile, binding)
+
+    private fun saveProfile(profile: AccountProfile, binding: Binding?) {
         val account = Account(profile.localProfileId, TYPE)
-        val values = mapOf("gateway" to profile.gatewayBaseUrl, "username" to profile.username, "tlsTrustId" to profile.tlsTrustId)
+        val values = mutableMapOf("gateway" to profile.gatewayBaseUrl, "username" to profile.username, "tlsTrustId" to profile.tlsTrustId)
+        binding?.let { values["binding"] = encode(it) }
         if (manager.getAccountsByType(TYPE).none { it == account }) {
             val data = Bundle().apply { values.forEach { (key, value) -> putString(key, value) } }
             check(manager.addAccountExplicitly(account, null, data)) { "PROFILE_PERSISTENCE_FAILED" }
@@ -31,16 +38,31 @@ class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
     fun saveBinding(profileId: String, binding: Binding) {
         check(find(profileId) != null) { "UNKNOWN_PROFILE" }
         val account = Account(profileId, TYPE)
-        manager.setUserData(account, "accountId", binding.accountId)
-        manager.setUserData(account, "deviceId", binding.deviceId)
-        manager.setUserData(account, "sessionId", binding.sessionId)
-        manager.setUserData(account, "keyEncoding", binding.keyEncoding.toString())
+        manager.setUserData(account, "binding", encode(binding))
     }
 
     fun binding(profileId: String): Binding? {
         val account = Account(profileId, TYPE)
+        manager.getUserData(account, "binding")?.let { encoded ->
+            return runCatching {
+                val data = JSONObject(encoded)
+                Binding(data.getString("accountId").also { check(it.isNotBlank()) },
+                    data.getString("deviceId").also { check(it.isNotBlank()) },
+                    if (data.isNull("sessionId")) null else data.getString("sessionId"), data.getInt("keyEncoding"))
+            }.getOrNull()
+        }
         return runCatching { Binding(required(account, "accountId"), required(account, "deviceId"), manager.getUserData(account, "sessionId"), required(account, "keyEncoding").toInt()) }.getOrNull()
     }
+
+    fun accountId(profileId: String): String? {
+        val account = Account(profileId, TYPE)
+        return binding(profileId)?.accountId ?: manager.getUserData(account, "accountId")?.takeIf { it.isNotBlank() }
+    }
+
+    private fun encode(binding: Binding) = JSONObject().apply {
+        put("accountId", binding.accountId); put("deviceId", binding.deviceId)
+        put("sessionId", binding.sessionId ?: JSONObject.NULL); put("keyEncoding", binding.keyEncoding)
+    }.toString()
 
     override fun delete(localProfileId: String) {
         val account = Account(localProfileId, TYPE)

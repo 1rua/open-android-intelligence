@@ -134,6 +134,23 @@ class PluginInstallerTest {
     }
 
     @Test
+    fun rollbackDoesNotPublishNestedResourcesWhenTheirDirectoryCannotBeSynced() {
+        val files = mapOf("payload/plugin.wasm" to byteArrayOf(0, 0x61, 0x73, 0x6d),
+            "resources/nested/data.bin" to byteArrayOf(7, 8, 9))
+        val first = installer.install(verified("1.0.0", stagedContent = files), null)
+        val second = installer.install(verified("1.1.0"), first)
+        val failing = PluginInstaller(root, directorySync = { directory ->
+            if (directory.name == "nested") throw java.io.IOException("DIRECTORY_SYNC_FAILED")
+            DirectoryDurability.sync(directory)
+        })
+        val failure = runCatching { failing.rollback(second) }.exceptionOrNull()
+        assertEquals("DIRECTORY_SYNC_FAILED", failure?.message)
+        assertTrue(second.directory.exists())
+        val restored = installer.rollback(second)
+        assertTrue(File(restored.directory, "resources/nested/data.bin").readBytes().contentEquals(byteArrayOf(7, 8, 9)))
+    }
+
+    @Test
     fun rollbackWithoutPreviousFailsClosed() {
         val first = installer.install(verified("1.0.0"), current = null)
 

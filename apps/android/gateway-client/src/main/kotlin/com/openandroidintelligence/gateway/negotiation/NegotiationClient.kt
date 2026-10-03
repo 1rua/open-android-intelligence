@@ -138,7 +138,9 @@ class NegotiationClient(
 
         val result = closedObject(JsonFields.field(body, "data"), setOf("protocol", "features", "limits", "gatewayIdentity"))
         val protocol = closedObject(JsonFields.field(result, "protocol"), setOf("major", "minor"))
-        check(JsonFields.int(protocol, "major") == PROTOCOL_MAJOR && JsonFields.int(protocol, "minor") == PROTOCOL_MINOR) {
+        val major = JsonFields.int(protocol, "major")
+        val minor = JsonFields.int(protocol, "minor")
+        check(major == PROTOCOL_MAJOR && minor != null && minor >= 0) {
             "PROTOCOL_INCOMPATIBLE:version"
         }
         val features = closedObject(JsonFields.field(result, "features"), setOf("auth", "messages", "attachments", "events", "deviceRequests"), setOf("conversationUi"))
@@ -162,8 +164,8 @@ class NegotiationClient(
 
         return NegotiationResult(
             negotiationId = negotiationId,
-            protocolMajor = PROTOCOL_MAJOR,
-            protocolMinor = PROTOCOL_MINOR,
+            protocolMajor = major,
+            protocolMinor = minor,
             deploymentId = JsonFields.string(identity, "deploymentId"),
             tlsSpkiSha256 = JsonFields.string(identity, "tlsSpkiSha256"),
             messages = JsonFields.string(features, "messages"),

@@ -118,10 +118,10 @@ def test_grant_bump_appends_a_schema_valid_pairing_grant_changed_event(tmp_path)
     assert len(grant_events) == 1
     event = grant_events[0]
     assert event["correlationId"] == "cor_grant_event"
-    # Field-by-field: required `grantRevision`, and nothing else — no unknown
+    # The target device and revision are exact; there are no unknown
     # fields, and the optional fields this Gateway has no real values for are
     # omitted rather than fabricated.
-    assert event["payload"] == {"grantRevision": bumped["grantRevision"]}
+    assert event["payload"] == {"deviceId": DEVICE_ID, "grantRevision": bumped["grantRevision"]}
     contracts = ContractRegistry()
     assert contracts.validate("event.pairingGrantChangedPayload", dict(event["payload"])) is True
     assert contracts.validate("event", {

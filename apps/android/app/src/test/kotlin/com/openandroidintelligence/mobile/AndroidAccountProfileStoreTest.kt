@@ -28,6 +28,33 @@ class AndroidAccountProfileStoreTest {
         assertEquals(binding, reopened.binding("alice"))
     }
 
+    @Test fun aNewProfileContainsItsWholeBindingInTheCreationBundle() {
+        val store = AndroidAccountProfileStore(context)
+        val binding = AndroidAccountProfileStore.Binding("account_a", "device_a", "session_a", 1)
+        store.save(profile("alice"), binding)
+        assertEquals(binding, AndroidAccountProfileStore(context).binding("alice"))
+        val manager = AccountManager.get(context)
+        val account = Account("alice", AndroidAccountProfileStore.TYPE)
+        assertNotNull(manager.getUserData(account, "binding"))
+        assertNull(manager.getUserData(account, "deviceId"))
+    }
+
+    @Test fun legacyBindingStillLoadsAndAnIncompleteBindingDoesNotPreventLocalDeletion() {
+        val store = AndroidAccountProfileStore(context)
+        store.save(profile("alice"))
+        val manager = AccountManager.get(context)
+        val account = Account("alice", AndroidAccountProfileStore.TYPE)
+        manager.setUserData(account, "accountId", "account_a")
+        manager.setUserData(account, "deviceId", "device_a")
+        manager.setUserData(account, "keyEncoding", "1")
+        assertEquals("device_a", store.binding("alice")?.deviceId)
+        manager.setUserData(account, "deviceId", null)
+        assertNull(store.binding("alice"))
+        assertEquals("account_a", store.accountId("alice"))
+        store.delete("alice")
+        assertNull(store.find("alice"))
+    }
+
     @Test fun accountManagerStoresNoPasswordOrRefreshCredential() {
         val store = AndroidAccountProfileStore(context)
         store.save(profile("alice"))

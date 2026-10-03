@@ -222,6 +222,7 @@ open class GatewayWebSocketTransport(
             ?: throw IOException("WEBSOCKET_HANDSHAKE_FAILED: unexpected end of stream")
         if (!statusLine.contains(" 101 ") && !statusLine.endsWith(" 101")) {
             if (Regex("HTTP/1\\.[01] 410(?: .*|$)").matches(statusLine)) throw com.openandroidintelligence.gateway.http.EventCursorExpiredException()
+            if (Regex("HTTP/1\\.[01] 401(?: .*|$)").matches(statusLine)) throw com.openandroidintelligence.gateway.http.EventSessionRejectedException()
             throw IOException("WEBSOCKET_HANDSHAKE_FAILED: $statusLine")
         }
 
