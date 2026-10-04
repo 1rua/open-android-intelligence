@@ -12,12 +12,21 @@ class CapabilityBindings:
         self.store, self.contracts = store, contracts
 
     def register(self, device_id: str, generation: int, revision: int, bindings: list[dict[str, Any]]) -> None:
+        from .core import _jcs
+        self.validate_publication(bindings)
+        self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
+            (f"device-capabilities:{device_id}", _jcs({"generation": generation, "revision": revision, "bindings": bindings})))
+
+    def validate_publication(self, bindings: list[dict[str, Any]]) -> None:
+        """Check the entire publication before making any authorization change."""
         from .core import GatewayError, _jcs
         if not isinstance(bindings, list) or len(bindings) > 128 or len(_jcs(bindings).encode()) > 262144:
             raise GatewayError("SCHEMA_INVALID")
         keys = set()
         for binding in bindings:
             if not isinstance(binding, dict) or set(binding) != {"pluginId", "authorKeyId", "capabilityId", "capabilityVersion", "schemaSha256", "schema", "risk"}:
+                raise GatewayError("SCHEMA_INVALID")
+            if any(not isinstance(binding[key],str) for key in set(binding)-{"schema"}):
                 raise GatewayError("SCHEMA_INVALID")
             if (not re.fullmatch(r"[A-Za-z0-9.-]+", str(binding["pluginId"]))
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(binding["authorKeyId"]))
@@ -31,8 +40,6 @@ class CapabilityBindings:
                 raise GatewayError("SCHEMA_INVALID")
             keys.add(key)
             self._check_schema(binding["schema"])
-        self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
-            (f"device-capabilities:{device_id}", _jcs({"generation": generation, "revision": revision, "bindings": bindings})))
 
     def _check_schema(self, root: Any) -> None:
         from .core import GatewayError

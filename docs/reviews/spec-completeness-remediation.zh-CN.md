@@ -65,7 +65,7 @@ PR #6 首轮 CI 暴露两处问题，修复后已重新执行完整 Gateway 检�
 
 ## PR #6 Codex 审查评论修复
 
-本轮处理 11 条审查评论：修复 10 项确认的代码缺陷；快照恢复评论结合独立的平台/对话游标验证，保留由平台事件流恢复设备任务的设计。原 F17（Tailscale）继续按修复范围排除。
+两轮共处理 17 条审查评论：修复 16 项确认的代码缺陷；快照恢复评论结合独立的平台/对话游标验证，保留由平台事件流恢复设备任务的设计。原 F17（Tailscale）继续按修复范围排除。
 
 |评论|处理|实现与回归证据|
 |---|---|---|
@@ -83,11 +83,28 @@ PR #6 首轮 CI 暴露两处问题，修复后已重新执行完整 Gateway 检�
 
 风险以包声明的 primitive 为边界，因为当前 ABI 允许每个已提供能力调用包内全部已声明 primitive。包含可变 primitive 的包，其查询能力也使用 write 风险，避免仅更换能力名称就绕过前台确认。通用调度入参已写入 [设备插件包契约](../contracts/device-plugin-package-v1.md)。
 
-本轮本地验证：Node 104 个文件、920 项通过；Hermes 282 项通过、可选原生集成 1 项跳过，固定宿主原生历史/媒体 2 项另行通过；E2E 编排 19 项及 10 个验收子案例通过；双宿主各 66/66、跨宿主比较 3 项通过；plugin-tooling 46 项和全部类型检查通过；Rust 39 项通过并实际编译 WASM。Android 完整 `check :app:assembleFullDebug --no-build-cache` 通过，2436 项测试中 2432 项通过、Play 版按设计跳过 4 项，Full Debug APK 构建通过。最新远端 CI 结果见 PR 检查页。
+首轮审查评论本地验证：Node 104 个文件、920 项通过；Hermes 282 项通过、可选原生集成 1 项跳过，固定宿主原生历史/媒体 2 项另行通过；E2E 编排 19 项及 10 个验收子案例通过；双宿主各 66/66、跨宿主比较 3 项通过；plugin-tooling 46 项和全部类型检查通过；Rust 39 项通过并实际编译 WASM。Android 完整 `check :app:assembleFullDebug --no-build-cache` 通过，2436 项测试中 2432 项通过、Play 版按设计跳过 4 项，Full Debug APK 构建通过。[提交 3c782b1 的两项远端 CI](https://github.com/1rua/open-android-intelligence/actions/runs/37210238666)均通过。
 
 完整 WASM 回归发现 SMS 调度添加目标字段后，请求和内核响应必须同时保留，原 64 KiB arena 会不足。调度请求现在预先检查扩展后长度并一次分配，arena 为两个 64 KiB 交换区；实际 Cargo/WASM 调度回归通过。E2E 用发送前已出现的回执 ID 隔离旧证据，不要求手机与测试机时钟完全同步；回归覆盖旧回执和手机时钟偏差。
 
 新增测试入口包括 [Hermes 审查回归](../../integrations/hermes/tests/test_review_regressions.py)、[附件恢复](../../apps/android/conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/AttachmentRecoveryTest.kt)、[批次验收证据](../../apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/conversations/BatchAcceptanceEvidenceTest.kt)、[双游标快照恢复](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/PlatformSnapshotRecoveryTest.kt)及 [生产定时目标/设备执行](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/ProductionPluginHostTest.kt)。
+
+### 第二轮审查评论修复
+
+首轮 CI 通过后新增的 6 项 P1/P2 评论均已确认并修复。
+
+|评论|级别|实现与回归证据|
+|---|---|---|
+|[Android 递归能力参数](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4178147922)|P2|移除引用与数据共用的固定深度限制，按正在求值的 schema/输入节点身份检测不推进的引用环。回归接受 17、32、64、128 层有限树，拒绝深层错误叶子；验证共享子树、本地嵌套及转义 JSON Pointer。|
+|[插件重载后的 provider 选择](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4178147924)|P2|重载后将显式选择迁移到同插件、同签名作者的新身份，保留选择的授权版本及配对隔离。缺失或更换作者的 provider 不自动回退。真实签名包/WASM 验证启用后升级、实际回滚仍可发布并调用，换作者不继承；内核回归验证另一个默认 provider 不能覆盖显式选择。|
+|[定时任务执行租约](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4178147926)|P1|读取任务后和调用边界分别检查 expiresAt，不依赖维护循环先执行；过期或缺失租约转入 expired，生产持久化移除参数。真实 WASM 回归覆盖截止时刻、长期延误及缺少租约，确认没有原语执行。|
+|[能力发布失败推进授权](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4178147930)|P1|OpenClaw/Hermes 在计算摘要和推进 grantRevision 前完整验证全部 binding、Schema 与 UTF-8 大小。双宿主实际路由覆盖 7 种无效发布及其幂等重放，核对授权、绑定、摘要、审计、事件和已有设备请求均不变；后续合法发布只推进一次。|
+|[助理冷启动恢复账号](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4178147934)|P2|未同意客户端恢复连接后可显示可用状态，并在用户显式同意时采用当前账号。已有共享同意锁定账号，断线/切换撤销同意且旧客户端不能跟随另一个账号。回归覆盖冷启动、同意前切换、同意后切换和同账号重连。|
+|[Hermes 同一回复的多个附件](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4178147938)|P2|每次媒体或文字 upsert 都携带该消息保存的全部附件；重复交付不改变顺序或增加重复项，原生历史读取共用同一附件集合。空 caption 和相同 caption 回归覆盖两个实际文件、重复文件交付及最终文字事件。|
+
+本轮 Node 105 个文件、921 项通过；Hermes 285 项通过、可选原生集成 1 项跳过，固定宿主原生历史/媒体 2 项另行通过；双宿主协议各 66/66、跨宿主比较 3 项通过；根目录和生产 OpenClaw 类型检查通过。Android 完整 `check :app:assembleFullDebug --no-build-cache` 通过：2466 项测试中 2460 项通过，Play 版按设计跳过 6 项，Full Debug APK 构建通过。
+
+测试入口包括 [Android 递归参数](../../apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/schema/CapabilitySchemaValidatorTest.kt)、[生产插件升级/定时执行](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/ProductionPluginHostTest.kt)、[助理同意与账号](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/assistant/AssistantClientScopeTest.kt)、[OpenClaw 发布事务](../../integrations/openclaw/test/capability-publication-atomicity.test.ts)、[Hermes 发布事务](../../integrations/hermes/tests/test_review_regressions.py)及 [Hermes 多附件事件](../../integrations/hermes/tests/test_assistant_message_identity.py)。
 
 ## 验证范围
 

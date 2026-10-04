@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timezone, timedelta
 import threading
 from typing import Any, Mapping
+from .history_media import HistoryMedia
 
 
 def visible_text(content: Any) -> str:
@@ -113,7 +114,7 @@ class HermesHistoryPort:
                 inactive = row.get("active", 1) in (0, False)
                 result.append({"messageId": message_id, "clientMessageId": client_id, "conversationId": conversation_id,
                                "sender": role, "text": "" if inactive else text,
-                               "parts": [] if inactive else [{"type": "text", "text": text}]+[account.store.open_json(item[1],item[0]) for item in account.store.database.execute("SELECT key,value FROM account_metadata WHERE key LIKE ?",(f"history-media-reply:{message_id}:%",)).fetchall()],
+                               "parts": [] if inactive else [{"type": "text", "text": text}]+HistoryMedia(account).reply_parts(message_id),
                                "timestamp": millis, "state": "DELETED" if inactive else "CONFIRMED"})
             return [expanded for item in result for expanded in account.conversations.workflow.expand_history(item)]
         finally:

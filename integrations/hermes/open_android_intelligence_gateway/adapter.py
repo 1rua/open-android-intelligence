@@ -1026,9 +1026,10 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
             message_id=self._published_reply_id(chat_id,caption or "",None)
             part=HistoryMedia(account).register(chat_id,message_id,file_path)
             key=f"history-media-reply:{message_id}:{part['attachmentId']}"
-            account.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",(key,account.store.seal_json(part,key)))
+            account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,account.store.seal_json(part,key)))
             account.conversations.record_assistant_message(chat_id,message_id,caption or "")
-            payload=self._message_payload(chat_id,message_id,caption or "");payload["parts"].append(part)
+            payload=self._message_payload(chat_id,message_id,caption or "")
+            payload["parts"].extend(HistoryMedia(account).reply_parts(message_id))
             origin=resolve_origin(self.services.core,"",account_id,chat_id)
             account.events.append("conversation.message.completed",origin["messageId"] if origin else message_id,payload)
             return SendResult(success=True,message_id=message_id)
@@ -1158,6 +1159,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
         payload = self._message_payload(chat_id, message_id, text, occurred_at)
         account = self.services.core.open_gateway_account(target_account)
         try:
+            from .history_media import HistoryMedia
+            payload["parts"].extend(HistoryMedia(account).reply_parts(message_id))
             if event_type == "conversation.message.completed":
                 try:
                     account.conversations.record_assistant_message(chat_id, message_id, text, occurred_at)

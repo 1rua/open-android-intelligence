@@ -26,6 +26,63 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class ProductionPluginHostTest {
+    @Test fun anEnabledSignedUpgradeAndRollbackKeepTheSelectedProviderAndAuthorScopedGrant() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val context=ApplicationProvider.getApplicationContext<Application>()
+        val originalHandler=Thread.getDefaultUncaughtExceptionHandler()
+        val previousProvider=KernelPrimitiveRegistry.provider("kernel.sms.read")
+        var calls=0
+        val provider=object: KernelPrimitiveProvider {
+            override val primitiveId="kernel.sms.read"
+            override suspend fun invoke(context: LocalGrantContext,input: ByteArray): ByteArray {
+                calls++;return """{"records":["upgraded-provider"]}""".toByteArray()
+            }
+        }
+        KernelPrimitiveRegistry.register(provider)
+        try {
+            val audit=AndroidAuditStore()
+            val grants=PairingGrantStateHolder(InMemoryPairingGrantStore(),audit)
+            grants.bind(PairingGrantBinding("https://host.example","acct_upgrade","install_upgrade"))
+            val trust=DeveloperTrustMode()
+            val host=ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_upgrade")
+            val author=java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+            host.installStore.installRoot.deleteRecursively()
+            host.installStore.install(TestAlpPackages.compiledSmsPackage(author=author,version="1.0.0"))
+            val kernel=PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
+                audit,trust,host.nativeLoader,host.selector,{grants.currentKernelGrant(it)},host::mediate)
+            host.attach(kernel)
+            val original=host.entries("org.openandroidintelligence.sms").first { it.id.endsWith(".query") }
+            host.enable(original.identity.pluginId,true);host.grant(original.identity.pluginId,true)
+            val before=grants.state.value!!
+            val selection=host.selector.select(original.key,before.pairingId)
+            for (version in listOf("2.0.0","1.0.0")) {
+                if (version == "2.0.0") host.installStore.install(TestAlpPackages.compiledSmsPackage(author=author,version=version))
+                else host.installStore.rollback(original.identity.pluginId)
+                host.reload()
+                val current=host.entries(original.identity.pluginId).first { it.key == original.key }
+                assertEquals(version,current.identity.version)
+                assertTrue(host.isEnabled(current.identity.pluginId))
+                assertEquals(before,grants.state.value)
+                assertEquals(selection.grantRevision,host.selector.select(current.key,before.pairingId).grantRevision)
+                assertEquals(current.identity,host.selector.select(current.key,before.pairingId).identity)
+                assertTrue(host.authorizedBindings().any { it["capabilityId"] == current.id })
+                assertTrue(host.invoke(current.identity,"acct_upgrade",current.key,Json.parse("""{"limit":1}"""),"cor_upgrade").decodeToString().contains("upgraded-provider"))
+            }
+            assertEquals(2,calls)
+            // A new author must not inherit the old override, enablement or grants.
+            host.installStore.uninstall(original.identity.pluginId)
+            host.installStore.install(TestAlpPackages.compiledSmsPackage(version="3.0.0"))
+            host.reload()
+            assertFalse(host.isEnabled(original.identity.pluginId))
+            assertTrue(host.authorizedBindings().isEmpty())
+            assertEquals(original.identity.authorKeyFingerprint,host.selector.select(original.key,before.pairingId).identity.authorKeyFingerprint)
+        } finally {
+            KernelPrimitiveRegistry.unregister(provider)
+            if(previousProvider!=null) KernelPrimitiveRegistry.register(previousProvider)
+            Thread.setDefaultUncaughtExceptionHandler(originalHandler)
+        }
+    }
+
     @Test fun signedSmsExecutionKeepsItsGrantFenceAndRetriesOnlyDeliveryAfterALostReply() = runBlocking {
         assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val context = ApplicationProvider.getApplicationContext<Application>()
@@ -158,17 +215,23 @@ class ProductionPluginHostTest {
             assertEquals(entry,host.scheduledTarget(call,args))
             val metadata=mapOf("pluginId" to entry.identity.pluginId,"author" to entry.identity.authorKeyFingerprint,
                 "version" to entry.identity.version,"accountId" to "acct_host","capabilityId" to entry.id,
-                "capabilityVersion" to entry.version,"schemaSha256" to Json.sha256(entry.schema),"query" to mapOf("limit" to 1))
+                "capabilityVersion" to entry.version,"schemaSha256" to Json.sha256(entry.schema),"query" to mapOf("limit" to 1),
+                "expiresAt" to 1_000_000L)
             fun run(record: Map<String,Any?>) {
                 checkpoints.clear()
                 // Exercise the same serialization and target resolution used after an OS restart.
                 val restored=com.openandroidintelligence.gateway.schema.JsonFields.obj(Json.parse(Json.canonical(Json.of(record))))!!
-                PluginJobScheduler.executeStoredInvocation(host,restored,"job_test") { state,result ->
+                PluginJobScheduler.executeStoredInvocation(host,restored,"job_test",nowMillis = 999_999L) { state,result ->
                     checkpoints+=state
                     if(state=="succeeded") assertTrue(Json.canonical(result!!).contains("timer-result"))
                 }
             }
             run(metadata);assertEquals(listOf("executing","succeeded"),checkpoints);assertEquals(1,calls)
+            // Delayed OS delivery must fence writes without an earlier maintenance pass.
+            run(metadata+("expiresAt" to 999_999L));assertEquals(listOf("expired"),checkpoints)
+            run(metadata+("expiresAt" to 1L));assertEquals(listOf("expired"),checkpoints)
+            run(metadata-"expiresAt");assertEquals(listOf("expired"),checkpoints)
+            assertEquals(1,calls)
             run(metadata-"capabilityId");assertEquals(listOf("target_unavailable"),checkpoints)
             run(metadata+("capabilityVersion" to "1.0.0"));assertEquals(listOf("target_unavailable"),checkpoints)
             run(metadata+("schemaSha256" to "sha256:"+"0".repeat(64)));assertEquals(listOf("target_unavailable"),checkpoints)

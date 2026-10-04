@@ -34,7 +34,7 @@ class CapabilityProviderSelector(
     private val overrides = HashMap<Pair<String, String>, ProviderSelection>()
     private var revisionCounter = 0L
 
-    fun select(capability: String, pairingId: String): ProviderSelection {
+    @Synchronized fun select(capability: String, pairingId: String): ProviderSelection {
         val key = capability to pairingId
         overrides[key]?.let { return it }
         val identity = phoneDefaults[capability]
@@ -57,7 +57,7 @@ class CapabilityProviderSelector(
      * "switching providers requires re-authorisation" rule enforceable rather
      * than documentary.
      */
-    fun setOverride(
+    @Synchronized fun setOverride(
         capability: String,
         pairingId: String,
         identity: PluginIdentity,
@@ -78,10 +78,22 @@ class CapabilityProviderSelector(
         return selection
     }
 
-    fun clearOverride(capability: String, pairingId: String) {
+    /** Retain the chosen author/provider when its verified package version changes. */
+    @Synchronized fun refreshOverrides(providers: Map<String,List<PluginIdentity>>) {
+        overrides.replaceAll { _, selection ->
+            val updated = providers[selection.capability].orEmpty().firstOrNull {
+                it.pluginId == selection.identity.pluginId &&
+                    it.authorKeyFingerprint == selection.identity.authorKeyFingerprint
+            }
+            // An absent or differently signed provider must not fall back to another plugin.
+            if (updated == null) selection else selection.copy(identity = updated)
+        }
+    }
+
+    @Synchronized fun clearOverride(capability: String, pairingId: String) {
         overrides.remove(capability to pairingId)
     }
 
-    fun revisionFor(capability: String, pairingId: String): Long =
+    @Synchronized fun revisionFor(capability: String, pairingId: String): Long =
         overrides[capability to pairingId]?.grantRevision ?: 0L
 }

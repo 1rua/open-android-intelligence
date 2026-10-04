@@ -12,6 +12,12 @@ class HistoryMedia:
         row=self.store.database.execute('SELECT value FROM account_metadata WHERE key=?',(key,)).fetchone()
         return self.store.open_json(row[0],key) if row else None
     def _put(self,key,value): self.store.database.execute('INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)',(key,self.store.seal_json(value,key)))
+    def reply_parts(self, message_id):
+        prefix = f"history-media-reply:{message_id}:"
+        rows = self.store.database.execute(
+            "SELECT key,value FROM account_metadata WHERE substr(key,1,?)=? ORDER BY rowid",
+            (len(prefix), prefix)).fetchall()
+        return [self.store.open_json(row[1], row[0]) for row in rows]
     def register(self,conversation_id,message_id,path,media_type=None):
         try:
             from gateway.platforms.base import validate_media_delivery_path
