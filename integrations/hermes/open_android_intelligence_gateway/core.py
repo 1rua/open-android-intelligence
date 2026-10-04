@@ -5334,6 +5334,7 @@ class GatewayCore:
                         if (not isinstance(body, Mapping) or set(body) != {"bindings","expectedGrantRevision","localGrantRevision"}
                             or body["expectedGrantRevision"] != context["grantRevision"] or not isinstance(body["localGrantRevision"], int)):
                             raise GatewayError("GRANT_STALE")
+                        account.device_requests.capabilities.validate_publication(body["bindings"])
                         digest = "sha256:" + hashlib.sha256(_jcs({"bindings":body["bindings"],"localGrantRevision":body["localGrantRevision"]}).encode()).hexdigest()
                         key = f"device-grant-digest:{context['deviceId']}"
                         prior = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?", (key,)).fetchone()

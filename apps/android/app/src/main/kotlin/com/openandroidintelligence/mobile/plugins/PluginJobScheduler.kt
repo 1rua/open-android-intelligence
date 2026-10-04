@@ -68,6 +68,7 @@ object PluginJobScheduler {
     @Synchronized fun run(context: Context,jobId: String) {
         val doc = JsonFields.obj(Json.parse(documents(context).read(jobId)?.decodeToString() ?: return)) ?: return
         if (JsonFields.string(doc,"state") != "scheduled") return
+        if (invocationExpired(doc,System.currentTimeMillis())) { save(context,jobId,doc,"expired"); return }
         val app = context.applicationContext as OpenAndroidIntelligenceApplication
         val account = JsonFields.string(doc,"accountId")!!
         val pairing = JsonFields.string(doc,"pairingId")!!
@@ -78,7 +79,9 @@ object PluginJobScheduler {
         executeStoredInvocation(app.pluginHost,doc,jobId) { state,result -> save(context,jobId,doc,state,result) }
     }
     internal fun executeStoredInvocation(host: ProductionPluginHost,doc: JsonValue.JObject,jobId: String,
-        checkpoint: (String,JsonValue?) -> Unit) {
+        nowMillis: Long = System.currentTimeMillis(), checkpoint: (String,JsonValue?) -> Unit) {
+        // Recheck at the invocation boundary, including time spent restoring authorization.
+        if (invocationExpired(doc,nowMillis)) { checkpoint("expired",null); return }
         val identity = PluginIdentity(JsonFields.string(doc,"pluginId")!!,JsonFields.string(doc,"author")!!,JsonFields.string(doc,"version")!!)
         val target = host.entries(identity.pluginId).firstOrNull {
             it.identity == identity && it.id == JsonFields.string(doc,"capabilityId") &&
@@ -94,6 +97,8 @@ object PluginJobScheduler {
         } catch (cancelled: CancellationException) { checkpoint("outcome_unknown",null); throw cancelled }
         catch (_: Exception) { checkpoint("failed",null) }
     }
+    private fun invocationExpired(doc: JsonValue.JObject,nowMillis: Long): Boolean =
+        (JsonFields.long(doc,"expiresAt") ?: 0L) <= nowMillis
     private fun save(context: Context,id: String,doc: JsonValue.JObject,state: String,result: JsonValue? = null) {
         val fields = doc.fields.toMap().toMutableMap(); fields["state"] = JsonValue.JString(state)
         if (state != "scheduled" && state != "executing") { fields["expiresAt"] = Json.of(System.currentTimeMillis()+900_000L); fields.remove("query") }

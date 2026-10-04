@@ -121,6 +121,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                 } finally { verified.stagedDirectory.deleteRecursively() }
             }.onFailure { kernel.unregister(id); capabilities.remove(id); preferences.edit().remove(id).commit() }
         }
+        selector.refreshOverrides(capabilities.values.flatten().groupBy { it.key }.mapValues { (_, entries) -> entries.map { it.identity } })
         revision.value++
     }
 

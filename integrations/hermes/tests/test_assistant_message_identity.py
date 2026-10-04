@@ -12,6 +12,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -199,4 +200,52 @@ def test_a_different_reply_inside_the_same_turn_is_a_new_message(tmp_path):
         rows = _rows(core, conversation)
         assert len(rows) == 2
         assert {row["text"] for row in rows} == {"先看一下终端", "看完了，磁盘还剩 11G"}
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("caption", [None,"same caption"])
+def test_document_upserts_include_every_attachment_and_text_completion_keeps_them(tmp_path, monkeypatch, caption):
+    home = tmp_path / "hermes_home"
+    monkeypatch.setenv("HERMES_HOME",str(home))
+    outputs = home / "outputs"
+    outputs.mkdir(parents=True)
+    first, second = outputs / "first.txt", outputs / "second.txt"
+    first.write_bytes(b"first document")
+    second.write_bytes(b"second document")
+
+    async def scenario():
+        core = create_gateway_core(tmp_path / "gateway")
+        conversation = _seed_conversation(core,"cconv_documents")
+        adapter = _adapter(core)
+        one = await adapter.send_document(conversation,first,caption=caption)
+        two = await adapter.send_document(conversation,second,caption=caption)
+        assert one.success and two.success
+        assert one.message_id == two.message_id
+
+        def parts():
+            account = core.open_gateway_account(ACCOUNT_ID)
+            try:
+                event = [e for e in account.events.read_after(None) if e["eventType"] == "conversation.message.completed"][-1]
+                assert event["payload"]["messageId"] == one.message_id
+                return event["payload"]["parts"]
+            finally:
+                account.close()
+
+        accumulated = parts()
+        assert [p["filename"] for p in accumulated if p["type"] == "attachment"] == ["first.txt","second.txt"]
+        assert accumulated[0] == {"type":"text","text":caption or ""}
+        # A delivery retry and a final text upsert must not drop or duplicate media.
+        assert (await adapter.send_document(conversation,first,caption=caption)).success
+        assert parts() == accumulated
+        assert (await adapter.send(conversation,caption or "")).success
+        assert parts() == accumulated
+        account = core.open_gateway_account(ACCOUNT_ID)
+        try:
+            from open_android_intelligence_gateway.history_media import HistoryMedia
+            assert HistoryMedia(account).reply_parts(one.message_id) == accumulated[1:]
+            assert HistoryMedia(account).reply_parts(one.message_id.replace("_","%")) == []
+            for part in accumulated[1:]:
+                assert HistoryMedia(account).metadata(conversation,part["attachmentId"])["remoteAvailable"]
+        finally:
+            account.close()
     asyncio.run(scenario())

@@ -204,6 +204,22 @@ class KernelIsolationTest {
 
     // --- provider switching ------------------------------------------------------
 
+    @Test fun reloadingVersionsPreservesExplicitProviderChoiceAndItsPairingRevision() {
+        val capability="org.openandroidintelligence.sms.query@1.0.0"
+        val selector=CapabilityProviderSelector(mapOf(capability to smsIdentity))
+        val selection=selector.setOverride(capability,"pairing-a",otherIdentity)
+        val upgraded=otherIdentity.copy(version="2.0.0")
+        selector.refreshOverrides(mapOf(capability to listOf(smsIdentity,upgraded)))
+        assertEquals(selection.copy(identity=upgraded),selector.select(capability,"pairing-a"))
+        assertEquals(smsIdentity,selector.select(capability,"pairing-b").identity)
+        val differentAuthor=upgraded.copy(authorKeyFingerprint="different-author")
+        selector.refreshOverrides(mapOf(capability to listOf(smsIdentity,differentAuthor)))
+        assertEquals(upgraded,selector.select(capability,"pairing-a").identity)
+        selector.refreshOverrides(emptyMap())
+        assertEquals(upgraded,selector.select(capability,"pairing-a").identity)
+        assertEquals(selection.grantRevision,selector.revisionFor(capability,"pairing-a"))
+    }
+
     @Test
     fun switchingProviderAllocatesANewGrantRevisionAndInheritsNothing() {
         val selector = CapabilityProviderSelector(
