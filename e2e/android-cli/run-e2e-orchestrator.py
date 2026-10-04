@@ -954,12 +954,14 @@ class E2EOrchestrator:
                             evidence = self.protocol_evidence()
                             accepted = next((e for e in evidence if e.get("type") == "message.accepted"
                                              and e.get("textSha256") == digest and e.get("clientMessageId")
-                                             and e.get("messageId") and e.get("conversationId")), None)
+                                             and e.get("messageId") and e.get("conversationId")
+                                             and e.get("at", 0) >= int(start_t * 1000)), None)
                             completed = next((e for e in evidence if accepted
                                               and e.get("type") == "conversation.message.completed"
                                               and e.get("sender") == "assistant"
                                               and e.get("conversationId") == accepted["conversationId"]
-                                              and e.get("correlationId") in (accepted["messageId"], accepted["clientMessageId"])
+                                              and e.get("correlationId") in (accepted["messageId"], accepted["clientMessageId"], accepted.get("replyCorrelationId"))
+                                              and e.get("correlationId")
                                               and e.get("messageId") and e.get("messageId") != accepted["messageId"]
                                               and e.get("at", 0) >= accepted.get("at", 0)), None)
                             if completed:
@@ -973,7 +975,9 @@ class E2EOrchestrator:
                                                    outboundAckLatencyMs=accepted["at"] - int(start_t * 1000),
                                                    completedLatencyMs=completed["at"] - accepted["at"])
                                     deltas = [e for e in evidence if e.get("type") == "conversation.message.delta"
-                                              and e.get("correlationId") in (accepted["messageId"], accepted["clientMessageId"])]
+                                              and e.get("conversationId") == accepted["conversationId"]
+                                              and e.get("correlationId") in (accepted["messageId"], accepted["clientMessageId"], accepted.get("replyCorrelationId"))
+                                              and e.get("correlationId") and e.get("at", 0) >= accepted["at"]]
                                     if deltas:
                                         metrics["sseTimeToFirstTokenMs"] = deltas[0]["at"] - accepted["at"]
                                     break

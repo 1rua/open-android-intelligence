@@ -16,6 +16,33 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchSendRegressionTest {
+    @Test fun restoredAttachmentStatusAndRetryContinueToUpdateTheWorkbench() = runTest {
+        val repository=RecordingRepository()
+        val restored=AttachmentDraft(AttachmentDraftId("restored"),"note.txt","text/plain",3,"0".repeat(64),AttachmentState.VERIFYING)
+        val state=kotlinx.coroutines.flow.MutableStateFlow(AttachmentDraftState(restored.id,AttachmentState.VERIFYING))
+        val coordinator=object: RecordingAttachmentCoordinator() {
+            override fun restoredDrafts()=listOf(restored)
+            override fun observe(draftId: String)=state
+            override fun retry(draftId: String) { state.value=AttachmentDraftState(restored.id,AttachmentState.VERIFIED,progress=1f) }
+        }
+        val persistence=object: WorkbenchPersistence {
+            override fun load()=WorkbenchCheckpoint(emptyList(),null,"",emptyList(),emptyMap(),"hello",1,listOf(restored),null,emptySet(),emptySet())
+            override fun save(checkpoint: WorkbenchCheckpoint)=Unit
+        }
+        val controller=WorkbenchController(this,repository,object: AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String,languageCode: String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
+        },{ConversationScope("profile","gateway","account","install")},attachmentCoordinator=coordinator,
+            persistence=persistence,replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
+        runCurrent()
+        state.value=AttachmentDraftState(restored.id,AttachmentState.RETRYABLE_FAILURE,errorMessage="ATTACHMENT_EXPIRED")
+        runCurrent()
+        assertEquals(AttachmentState.RETRYABLE_FAILURE,controller.state.value.attachments.single().state)
+        controller.retryAttachment(restored.id.value);runCurrent()
+        assertEquals(AttachmentState.VERIFIED,controller.state.value.attachments.single().state)
+        controller.sendDraft();advanceUntilIdle()
+        assertEquals(listOf("att_restored"),repository.sent.single().attachmentIds)
+        controller.cancel()
+    }
     @Test fun acceptedHttpMessageRemainsQueuedUntilMonotonicAgentStatusArrives() = runTest {
         val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 8)
         val repository = object : RecordingRepository() {
@@ -1693,7 +1720,7 @@ class WorkbenchSendRegressionTest {
     )
 
     /** Verifies immediately, so a send can be driven without a real upload. */
-    private class RecordingAttachmentCoordinator : AttachmentDraftCoordinator {
+    private open class RecordingAttachmentCoordinator : AttachmentDraftCoordinator {
         private var created = 0
 
         override suspend fun prepare(selection: LocalAttachmentSelection): AttachmentDraft {

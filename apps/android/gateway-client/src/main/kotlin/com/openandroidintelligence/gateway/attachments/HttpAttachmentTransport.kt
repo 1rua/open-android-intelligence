@@ -68,6 +68,7 @@ class HttpAttachmentTransport(
                 target = "/open-android-intelligence/v2/attachments/$attachmentId",
             ),
         )
+        if (response.status == 404) throw IllegalStateException("ATTACHMENT_STATUS_FAILED:ATTACHMENT_EXPIRED")
         val data = response.requireData("ATTACHMENT_STATUS_FAILED")
         val attachment = JsonFields.obj(JsonFields.field(data, "attachment"))
             ?: throw IllegalStateException("ATTACHMENT_STATUS_FAILED:malformed")

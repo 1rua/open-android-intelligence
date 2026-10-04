@@ -837,7 +837,7 @@ class GatewayRuntime(
             catalogRepository = catalogRepository,
             scopeFactory = { conversationScope },
             attachmentCoordinator = attachmentCoordinator,
-            supportsMessageBatches = "message-batches-v1" in conversationUi,
+            supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
             debouncePolicy=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
             // Whether this Gateway serves the `/new` command entry. Without it
             // the workbench refuses to create a thread at all rather than
@@ -870,13 +870,10 @@ class GatewayRuntime(
             handlePlatformEvent = { event -> handlePlatformEvent(event, session.sessionId, session.deviceId, binding) },
         )
         platformHttp.setCursorRecovery {
-            val response = platformHttp.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest("GET","/open-android-intelligence/v2/sync/snapshot"))
-            check(response.status == 200) { "SNAPSHOT_FAILED" }
-            val data = JsonFields.obj(JsonFields.field(JsonFields.obj(Json.parse(response.body.decodeToString())),"data")) ?: error("SNAPSHOT_INVALID")
-            capabilityPublisher?.sync()
-            JsonFields.strings(data,"pendingDeviceRequests").forEach { executionDriver?.accept(it) }
-            executionDriver?.recoverPending()
-            JsonFields.string(data,"baselineCursor") ?: error("SNAPSHOT_INVALID")
+            recoverPlatformSnapshot(platformHttp,
+                syncCapabilities = { capabilityPublisher?.sync() },
+                acceptRequest = { executionDriver?.accept(it) },
+                recoverLocalRequests = { executionDriver?.recoverPending() })
         }
         sessionScope.launch {
             // This cursor/collector never consumes the conversation cursor:

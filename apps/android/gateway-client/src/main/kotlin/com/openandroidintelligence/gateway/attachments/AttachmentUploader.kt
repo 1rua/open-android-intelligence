@@ -79,6 +79,7 @@ interface GatewayAttachmentTransport {
 class AttachmentUploader(
     private val transport: GatewayAttachmentTransport,
 ) {
+    suspend fun status(attachmentId: String): AttachmentRemoteStatusInfo = transport.getStatus(attachmentId)
 
     suspend fun upload(attachment: SelectedAttachment, onPhase: ((AttachmentUploadPhase) -> Unit)? = null): String {
         val sizeBytes = attachment.body.contentLength

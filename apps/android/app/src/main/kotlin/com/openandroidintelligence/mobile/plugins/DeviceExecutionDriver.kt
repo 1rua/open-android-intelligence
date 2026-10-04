@@ -32,9 +32,10 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
     suspend fun accept(requestId: String) {
         require(requestId.matches(Regex("[A-Za-z0-9._~-]{1,128}")))
         val response = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/device-requests/$requestId"))
-        if (response.status == 403 || response.status == 404 || response.status == 409) return
+        if (response.status == 403 || response.status == 404 || response.status == 409) { documents.delete(requestId); return }
         val request = JsonFields.obj(JsonFields.field(response.requireData("DEVICE_LOOKUP_FAILED"),"request")) ?: error("DEVICE_REQUEST_INVALID")
         if (JsonFields.string(request,"deviceId") != deviceId || JsonFields.int(request,"pairingGeneration") != generation) return
+        if (JsonFields.int(request,"grantRevision") != currentGrantRevision()) { documents.delete(requestId); return }
         if (JsonFields.string(request,"state") !in setOf("pending","claimed","cancel_requested")) { documents.delete(requestId); return }
         if (Instant.parse(JsonFields.string(request,"expiresAt") ?: error("DEVICE_REQUEST_INVALID")).toEpochMilli() <= System.currentTimeMillis()) {
             documents.delete(requestId); return
@@ -59,11 +60,12 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
     }
     private suspend fun execute(id: String,request: JsonValue.JObject) {
         val grantRevision = JsonFields.int(request,"grantRevision") ?: error("DEVICE_REQUEST_INVALID")
-        if (grantRevision != currentGrantRevision()) return // a fenced request must never execute under another revision
+        if (grantRevision != currentGrantRevision()) { documents.delete(id); return } // a fenced request must never execute under another revision
         val old = JsonFields.obj(Json.parse(documents.read(id)!!.decodeToString())) ?: error("EXECUTION_JOURNAL_INVALID")
         val claim = client.claim(id,grantRevision)
         check(claim.accountId == accountId && claim.deviceId == deviceId && claim.pairingGeneration == generation && claim.grantRevision == grantRevision) { "RECEIPT_BINDING_MISMATCH" }
         var invocationStarted=false
+        var invocationRisk=JsonFields.string(request,"risk")
         var result: DeviceRequestResult = DeviceRequestResult.OutcomeUnknown
         try {
             val saved = JsonFields.obj(JsonFields.field(old,"result"))
@@ -77,7 +79,9 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
                 val entry = host.entries(pluginId).firstOrNull { it.key == key && "sha256:${it.identity.authorKeyFingerprint}" == JsonFields.string(provider,"authorKeyId") }
                     ?: throw CapabilityDenied(key)
                 val parameters = JsonFields.field(request,"parameters") ?: error("DEVICE_REQUEST_INVALID")
-                val requiresConfirmation = JsonFields.bool(request,"requiresForegroundConfirmation") == true || JsonFields.string(request,"risk") in setOf("write","high-privilege-ephemeral")
+                if (entry.risk != "read") invocationRisk=entry.risk
+                val requiresConfirmation = JsonFields.bool(request,"requiresForegroundConfirmation") == true ||
+                    JsonFields.string(request,"risk") in setOf("write","high-privilege-ephemeral") || entry.risk in setOf("write","high-privilege-ephemeral")
                 if (requiresConfirmation && !confirm(id,entry.identity,key,parameters,request)) result = DeviceRequestResult.Denied(mapOf("code" to "LOCAL_CONFIRMATION_REQUIRED"))
                 else {
                     currentCoroutineContext().ensureActive()
@@ -89,7 +93,7 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
             }
         } catch (denied: CapabilityDenied) { result = DeviceRequestResult.Denied(mapOf("code" to "CAPABILITY_DENIED")) }
         catch (cancelled: CancellationException) { result = DeviceRequestResult.OutcomeUnknown }
-        catch (_: Exception) { result = if (invocationStarted && JsonFields.string(request,"risk") != "read") DeviceRequestResult.OutcomeUnknown else DeviceRequestResult.Failed(mapOf("code" to "PLUGIN_EXECUTION_FAILED")) }
+        catch (_: Exception) { result = if (invocationStarted && invocationRisk != "read") DeviceRequestResult.OutcomeUnknown else DeviceRequestResult.Failed(mapOf("code" to "PLUGIN_EXECUTION_FAILED")) }
         // Persist the outcome before attempting delivery. A lost HTTP reply cannot repeat execution.
         checkpoint(id,request,"completed",encodeResult(result))
         withContext(NonCancellable) {

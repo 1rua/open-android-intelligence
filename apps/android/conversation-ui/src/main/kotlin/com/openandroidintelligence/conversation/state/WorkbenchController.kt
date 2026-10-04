@@ -469,6 +469,9 @@ class WorkbenchController(
                 attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,System.currentTimeMillis(),true,b.batchId) } }, timeline = if (saved.messages.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline()),
                 composer = if (saved.submission != null) ComposerState.FAILED else ComposerState.EDITING,
                 notice = if (saved.submission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else null)
+            attachmentCoordinator?.let { coordinator ->
+                _state.value.attachments.forEach { observeAttachment(coordinator,it.id.value) }
+            }
             onActiveThreadChanged(activeThreadId)
             if (activeThreadId != null) { observeThreadEvents(); activeThreadId?.let(::reloadTimeline) }
         }
@@ -1278,28 +1281,22 @@ class WorkbenchController(
             update { state ->
                 state.copy(attachments = state.attachments + draft)
             }
-            attachmentJobs[draftId]?.cancel()
-            attachmentJobs[draftId] = scope.launch {
-                coordinator.observe(draftId).collect { draftState ->
-                    update { state ->
-                        state.copy(
-                            attachments = state.attachments.map { current ->
-                                if (current.id.value == draftId) {
-                                    current.copy(
-                                        state = draftState.state,
-                                        progress = draftState.progress,
-                                        transferredBytes = draftState.transferredBytes,
-                                        totalBytes = draftState.totalBytes,
-                                        errorMessage = draftState.errorMessage,
-                                    )
-                                } else {
-                                    current
-                                }
-                            },
-                        )
-                    }
-                    submitWhenAttachmentsVerified()
-                }
+            observeAttachment(coordinator,draftId)
+        }
+    }
+
+    private fun observeAttachment(coordinator: com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator,draftId: String) {
+        attachmentJobs[draftId]?.cancel()
+        attachmentJobs[draftId] = scope.launch {
+            coordinator.observe(draftId).collect { draftState ->
+                update { state -> state.copy(attachments = state.attachments.map { current ->
+                    if (current.id.value == draftId) current.copy(
+                        state = draftState.state, progress = draftState.progress,
+                        transferredBytes = draftState.transferredBytes,totalBytes = draftState.totalBytes,
+                        errorMessage = draftState.errorMessage,
+                    ) else current
+                }) }
+                submitWhenAttachmentsVerified()
             }
         }
     }

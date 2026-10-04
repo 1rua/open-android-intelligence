@@ -13,6 +13,8 @@ import java.time.Instant
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -99,6 +101,9 @@ class ProductionPluginHostTest {
                 val driver = DeviceExecutionDriver(context, executionScope, http, host, "acct_host", "dev_host", 1,
                     "test_host_execution", { 7 }, { true }, TestDocumentKeys)
                 driver.accept("req_host")
+                driver.accept("req_host") // Snapshot/event replay must not create another invocation.
+                withTimeout(5000) { driver.confirmation.filterNotNull().first() }
+                driver.decide("req_host",true) // The local verified risk wins over the mock's stale "read" risk.
                 withTimeout(5000) { submitted.await(); executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
                 assertEquals(2, calls) // Initial direct invocation plus one device invocation.
                 assertEquals(2, results.size)
@@ -114,6 +119,66 @@ class ProductionPluginHostTest {
         } finally {
             KernelPrimitiveRegistry.unregister(provider)
             if (previousProvider != null) KernelPrimitiveRegistry.register(previousProvider)
+            Thread.setDefaultUncaughtExceptionHandler(originalHandler)
+        }
+    }
+
+    @Test fun storedTimerInvokesTheVerifiedNonQueryNameAndVersionAndFencesLegacyOrChangedTargets() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val context=ApplicationProvider.getApplicationContext<Application>()
+        val originalHandler=Thread.getDefaultUncaughtExceptionHandler()
+        val previousProvider=KernelPrimitiveRegistry.provider("kernel.sms.read")
+        val checkpoints=mutableListOf<String>();var calls=0
+        val provider=object: KernelPrimitiveProvider {
+            override val primitiveId="kernel.sms.read"
+            override suspend fun invoke(context: LocalGrantContext,input: ByteArray): ByteArray {
+                assertEquals("executing",checkpoints.last())
+                assertTrue(input.decodeToString().contains("\"limit\":1"));calls++
+                return """{"records":["timer-result"]}""".toByteArray()
+            }
+        }
+        KernelPrimitiveRegistry.register(provider)
+        try {
+            val audit=AndroidAuditStore()
+            val grants=PairingGrantStateHolder(InMemoryPairingGrantStore(),audit)
+            grants.bind(PairingGrantBinding("https://host.example","acct_host","install_host"))
+            val trust=DeveloperTrustMode()
+            val host=ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_host")
+            host.installStore.installRoot.deleteRecursively()
+            host.installStore.install(TestAlpPackages.compiledSmsPackage("org.openandroidintelligence.sms.fetch","2.0.0"))
+            val kernel=PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),
+                host.runtimes,audit,trust,host.nativeLoader,host.selector,{grants.currentKernelGrant(it)},host::mediate)
+            host.attach(kernel)
+            val entry=host.entries("org.openandroidintelligence.sms").first { it.id.endsWith(".fetch") }
+            host.enable(entry.identity.pluginId,true);host.grant(entry.identity.pluginId,true)
+            val call=KernelCallContext(entry.identity,"acct_host",grants.state.value!!.pairingId,
+                SessionConstraints(entry.primitives+entry.key,false,"cor_schedule"),kernel.registrationFor(entry.identity.pluginId)!!.budget)
+            val args=com.openandroidintelligence.gateway.schema.JsonFields.obj(Json.of(mapOf(
+                "capabilityId" to entry.id,"capabilityVersion" to entry.version,"query" to mapOf("limit" to 1))))!!
+            assertEquals(entry,host.scheduledTarget(call,args))
+            val metadata=mapOf("pluginId" to entry.identity.pluginId,"author" to entry.identity.authorKeyFingerprint,
+                "version" to entry.identity.version,"accountId" to "acct_host","capabilityId" to entry.id,
+                "capabilityVersion" to entry.version,"schemaSha256" to Json.sha256(entry.schema),"query" to mapOf("limit" to 1))
+            fun run(record: Map<String,Any?>) {
+                checkpoints.clear()
+                // Exercise the same serialization and target resolution used after an OS restart.
+                val restored=com.openandroidintelligence.gateway.schema.JsonFields.obj(Json.parse(Json.canonical(Json.of(record))))!!
+                PluginJobScheduler.executeStoredInvocation(host,restored,"job_test") { state,result ->
+                    checkpoints+=state
+                    if(state=="succeeded") assertTrue(Json.canonical(result!!).contains("timer-result"))
+                }
+            }
+            run(metadata);assertEquals(listOf("executing","succeeded"),checkpoints);assertEquals(1,calls)
+            run(metadata-"capabilityId");assertEquals(listOf("target_unavailable"),checkpoints)
+            run(metadata+("capabilityVersion" to "1.0.0"));assertEquals(listOf("target_unavailable"),checkpoints)
+            run(metadata+("schemaSha256" to "sha256:"+"0".repeat(64)));assertEquals(listOf("target_unavailable"),checkpoints)
+            assertEquals(1,calls)
+            host.grant(entry.identity.pluginId,false)
+            assertNotNull(runCatching { host.scheduledTarget(call,args) }.exceptionOrNull())
+            run(metadata);assertEquals(listOf("executing","failed"),checkpoints);assertEquals(1,calls)
+        } finally {
+            KernelPrimitiveRegistry.unregister(provider)
+            if(previousProvider!=null) KernelPrimitiveRegistry.register(previousProvider)
             Thread.setDefaultUncaughtExceptionHandler(originalHandler)
         }
     }

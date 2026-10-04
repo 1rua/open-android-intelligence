@@ -399,6 +399,45 @@ class TestE2EOrchestrator(unittest.TestCase):
         self.assertEqual(TestStatus.FAILED,result.status)
         self.assertFalse(result.metrics['messageDelivered'])
 
+    def test_live_batch_receipt_requires_its_correlated_assistant_completion_and_rendered_message(self):
+        import hashlib
+        import time
+        text="batch member sent from composer"
+        now=int(time.time()*1000)
+        accepted={"type":"message.accepted","textSha256":hashlib.sha256(text.encode()).hexdigest(),
+            "clientMessageId":"cm_second","messageId":"msg_second","conversationId":"conv_live",
+            "batchId":"batch_live","replyCorrelationId":"msg_leader","at":now}
+        completed={"type":"conversation.message.completed","sender":"assistant","messageId":"reply_live",
+            "conversationId":"conv_live","correlationId":"msg_leader","at":now+10}
+        cases=[
+            ("batch_success",completed,True,TestStatus.PASSED),
+            ("wrong_conversation",{**completed,"conversationId":"conv_other"},True,TestStatus.FAILED),
+            ("unrelated_reply",{**completed,"correlationId":"msg_other"},True,TestStatus.FAILED),
+            ("missing_correlation",{**completed,"correlationId":None},True,TestStatus.FAILED),
+            ("old_reply",{**completed,"at":now-1},True,TestStatus.FAILED),
+            ("old_receipt",completed,True,TestStatus.FAILED),
+            ("user_echo",{**completed,"sender":"user"},True,TestStatus.FAILED),
+            ("not_rendered",completed,False,TestStatus.FAILED),
+            ("single_batch",{**completed,"correlationId":"msg_second"},True,TestStatus.PASSED),
+        ]
+        for name,reply,rendered,expected in cases:
+            with self.subTest(name=name):
+                live=E2EOrchestrator(name,dry_run=False,storage_root=self.temp_storage)
+                bridge=live.android_cli
+                bridge.is_device_connected=MagicMock(return_value=True)
+                layout=[{"text":"输入消息","bounds":"[0,0][20,20]"},{"text":"发送","bounds":"[20,0][40,20]"}]
+                if rendered: layout.append({"contentDescription":"OaiMessage:reply_live:completed"})
+                bridge.get_layout=MagicMock(return_value=layout)
+                bridge.tap=MagicMock(return_value=True);bridge.input_text=MagicMock(return_value=True)
+                bridge.capture_screen=MagicMock()
+                live.runner.run=MagicMock(return_value=(0,"",""))
+                receipt={**accepted,"at":now-1000} if name=="old_receipt" else accepted
+                live.protocol_evidence=MagicMock(return_value=[receipt,reply])
+                with patch.dict(os.environ,{"OAI_E2E_REPLY_TIMEOUT_SECONDS":"0.01"}),patch("run_e2e_orchestrator.time.sleep"),patch("run_e2e_orchestrator.time.time",return_value=now/1000):
+                    result=live.run_stage_4(text)
+                self.assertEqual(expected,result.status)
+                self.assertEqual(expected==TestStatus.PASSED,result.metrics["messageDelivered"])
+
     def test_stage_2_account_provision_invalid_user_fails(self):
         """测试阶段 2 输入非法用户名格式时能诚实失败并生成诊断工单，而非被 dry_run 隐瞒"""
         res = self.orchestrator.run_stage_2(username="invalid user with spaces!")

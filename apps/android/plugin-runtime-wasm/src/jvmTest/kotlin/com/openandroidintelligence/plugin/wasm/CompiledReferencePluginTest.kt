@@ -33,7 +33,14 @@ class CompiledReferencePluginTest {
         val identity=PluginIdentity("org.example.sms","author","1.0.0")
         for((operation,primitive) in listOf("schedule" to "kernel.scheduler.set","job-status" to "kernel.scheduler.read","cancel" to "kernel.scheduler.cancel")) {
             var observed:String?=null
-            val runtime=ChicoryPluginRuntime(InvocationBudget(5000,16L*1024*1024,65536),{module("sms")},mediatedCall={_,id,_ -> observed=id;"{\"jobId\":\"job-real\"}".toByteArray()})
+            val runtime=ChicoryPluginRuntime(InvocationBudget(5000,16L*1024*1024,65536),{module("sms")},mediatedCall={_,id,args ->
+                observed=id
+                if(operation=="schedule") {
+                    assertTrue(args.decodeToString().contains("\"capabilityId\":\"org.openandroidintelligence.sms.query\""))
+                    assertTrue(args.decodeToString().contains("\"capabilityVersion\":\"1.0.0\""))
+                }
+                "{\"jobId\":\"job-real\"}".toByteArray()
+            })
             val result=runtime.invoke(identity,budget,"{\"operation\":\"$operation\"}".toByteArray()).decodeToString()
             assertEquals(primitive,observed);assertTrue(result.contains("job-real"))
         }

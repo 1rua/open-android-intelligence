@@ -17,7 +17,7 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 internal object TestAlpPackages {
 
     /** Real compiled SMS code and its checked-in schema, signed with a fresh test key. */
-    fun compiledSmsPackage(): ByteArray {
+    fun compiledSmsPackage(queryCapabilityId: String = "org.openandroidintelligence.sms.query", queryVersion: String = "1.0.0"): ByteArray {
         var root = File(requireNotNull(System.getProperty("user.dir"))).absoluteFile
         while (!File(root, "plugins/sms/manifest.json").isFile) {
             root = root.parentFile ?: error("Repository root unavailable")
@@ -26,7 +26,19 @@ internal object TestAlpPackages {
         val publicKey = Base64.getUrlEncoder().withoutPadding().encodeToString(author.public.encoded.copyOfRange(12, 44))
         val template = Json.parse(File(root, "plugins/sms/manifest.json").readText()) as JsonValue.JObject
         val manifest = Json.canonical(template.copy(fields = template.fields.map { (name, value) ->
-            name to if (name == "author") Json.of(mapOf("algorithm" to "Ed25519", "publicKey" to publicKey)) else value
+            name to when (name) {
+                "author" -> Json.of(mapOf("algorithm" to "Ed25519", "publicKey" to publicKey))
+                "capabilities" -> (value as JsonValue.JObject).copy(fields = value.fields.map { (field,caps) ->
+                    field to if(field == "provides") JsonValue.JArray((caps as JsonValue.JArray).items.map { entry ->
+                        val cap=entry as JsonValue.JObject
+                        if ((cap.fields.toMap()["id"] as? JsonValue.JString)?.value != "org.openandroidintelligence.sms.query") cap
+                        else cap.copy(fields=cap.fields.map { (key,item) -> key to when(key) {
+                            "id" -> Json.of(queryCapabilityId); "version" -> Json.of(queryVersion); else -> item
+                        } })
+                    }) else caps
+                })
+                else -> value
+            }
         })).toByteArray()
         val content = listOf("payload/sms.wasm" to File(root, "plugins/target/wasm32-unknown-unknown/release/sms.wasm").readBytes()) +
             listOf("sms", "sms-schedule", "sms-job-status", "sms-cancel").map { name ->

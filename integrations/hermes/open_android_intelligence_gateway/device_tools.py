@@ -70,23 +70,37 @@ async def execute(core: Any,args: Mapping[str, Any],**host_context: Any) -> dict
             online=core.is_device_online(account_id,device_id,int(device[0])))
         expires = _now(queued["expiresAt"]).timestamp()
     finally: account.close()
-    while True:
+    try:
+        while True:
+            account = core.open_gateway_account(account_id)
+            try:
+                record = account.device_requests.get(request_id)
+                receipt = account.store.database.execute("SELECT claim_id FROM claim_receipts WHERE request_id=?",(request_id,)).fetchone()
+                if receipt and record["state"] in {"succeeded","failed","denied","cancelled","outcome_unknown"}:
+                    result = account.device_requests.read_result(request_id,receipt[0])
+                    response = {"requestId":request_id,**(result or {"outcome":"outcome_unknown"})}
+                    if result is not None:
+                        fingerprint = hashlib.sha256(_jcs(response).encode()).hexdigest()
+                        with _pending_lock: _pending[(id(core),str(origin.get("sessionId") or ""),request_id)] = (account_id,receipt[0],fingerprint)
+                    return response
+                if record["state"] in {"expired","cancelled","outcome_unknown"} or _now().timestamp() >= expires:
+                    account.device_requests.recover_expired()
+                    return {"requestId":request_id,"outcome":"outcome_unknown","code":"DEVICE_OFFLINE" if record["state"] == "expired" else "DEVICE_TIMEOUT"}
+            finally: account.close()
+            await asyncio.sleep(0.2)
+    except asyncio.CancelledError:
+        # Host stop/cancellation must also fence the phone's queued invocation.
+        # A claimed request remains cancel_requested: cancellation is not proof
+        # that an already-started side effect did not happen.
         account = core.open_gateway_account(account_id)
         try:
-            record = account.device_requests.get(request_id)
-            receipt = account.store.database.execute("SELECT claim_id FROM claim_receipts WHERE request_id=?",(request_id,)).fetchone()
-            if receipt and record["state"] in {"succeeded","failed","denied","cancelled","outcome_unknown"}:
-                result = account.device_requests.read_result(request_id,receipt[0])
-                response = {"requestId":request_id,**(result or {"outcome":"outcome_unknown"})}
-                if result is not None:
-                    fingerprint = hashlib.sha256(_jcs(response).encode()).hexdigest()
-                    with _pending_lock: _pending[(id(core),str(origin.get("sessionId") or ""),request_id)] = (account_id,receipt[0],fingerprint)
-                return response
-            if record["state"] in {"expired","cancelled","outcome_unknown"} or _now().timestamp() >= expires:
-                account.device_requests.recover_expired()
-                return {"requestId":request_id,"outcome":"outcome_unknown","code":"DEVICE_OFFLINE" if record["state"] == "expired" else "DEVICE_TIMEOUT"}
+            if account.device_requests.get(request_id)["state"] in {"pending", "claimed"}:
+                account.device_requests.cancel(request_id,device_id,origin["pairingGeneration"],origin["grantRevision"],origin["messageId"])
+        except GatewayError:
+            # Expiry/revocation may have fenced the request while the host stopped.
+            pass
         finally: account.close()
-        await asyncio.sleep(0.2)
+        raise
 
 def acknowledge_adopted(core: Any,**event: Any) -> None:
     from .core import _jcs

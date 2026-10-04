@@ -240,6 +240,8 @@ SHA-256(authorKey) / pluginId / gatewayAccountId / androidInstallationId
 
 后台执行必须同时满足 Manifest 请求、手机级允许、当前配对 Background Sync Grant 和 Android 系统调度约束。宿主不会以常驻进程作为可用性承诺。
 
+`kernel.scheduler.set` 接收 `runAt`、`query`、`capabilityId` 和 `capabilityVersion`。目标能力必须属于调用者当前已验证的插件身份，并且已由该配对授权、选为提供者；`query` 必须符合目标能力包内签名 Schema。宿主将目标 ID、能力版本、Schema 摘要及插件/作者/账号/配对/授权版本写入加密任务记录，定时执行重新验证这些绑定，不从插件 ID 推测能力名称或版本。缺少目标信息的旧任务进入 `target_unavailable`，不会调用猜测出的目标。SMS 参考插件在内核调用中补充自己的 `org.openandroidintelligence.sms.query@1.0.0`，其公开 schedule Schema 保持 SMS 查询参数格式。
+
 ## 8. 声明式 UI
 
 V1 组件白名单：`section`、`text`、`status`、`toggle`、`select`、`button`、`permission-request`、`capability-picker`。每个交互提交结构化 action ID 和已验证值，由平台内核再次执行授权检查。

@@ -16,12 +16,12 @@ class EncryptedAttachmentRecovery(context: Context, scope: ConversationScope,key
             fun s(key:String)=JsonFields.string(row,key) ?: error("ATTACHMENT_MAP_INVALID")
             val size=JsonFields.long(row,"size") ?: error("ATTACHMENT_MAP_INVALID")
             RecoveredAttachmentDraft(AttachmentDraft(AttachmentDraftId(s("id")),s("filename"),s("mediaType"),size,s("sha256")),
-                StagedAttachmentContent(s("stagedId"),size,s("sha256")),JsonFields.string(row,"remoteId"))
+                StagedAttachmentContent(s("stagedId"),size,s("sha256")),JsonFields.string(row,"remoteId"),JsonFields.string(row,"clientAttachmentId"))
         }
     }
     override fun save(records: List<RecoveredAttachmentDraft>) { documents.write("drafts",Json.canonical(Json.of(mapOf("drafts" to records.map { r ->
         mapOf("id" to r.draft.id.value,"filename" to r.draft.filename,"mediaType" to r.draft.mediaType,"size" to r.content.sizeBytes,
-            "sha256" to r.content.sha256Hex,"stagedId" to r.content.id,"remoteId" to r.remoteId)
+            "sha256" to r.content.sha256Hex,"stagedId" to r.content.id,"remoteId" to r.remoteId,"clientAttachmentId" to r.clientAttachmentId)
     }))).toByteArray()) }
     fun wipe()=documents.erase()
 }

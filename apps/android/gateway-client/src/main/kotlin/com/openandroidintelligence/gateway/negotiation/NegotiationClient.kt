@@ -22,6 +22,7 @@ val DECLARED_CONVERSATION_UI_FEATURES: List<String> = listOf(
     "agent-command-new-v1",
     "agent-approval-cards-v1",
     "message-batches-v1",
+    "newline-v1",
     GENERATION_CANCEL_FEATURE,
 )
 
@@ -50,6 +51,9 @@ data class NegotiationResult(
     /** [GENERATION_CANCEL_FEATURE] 是否双方同意，作为取消生成请求的门禁。 */
     val generationCancelAgreed: Boolean
         get() = GENERATION_CANCEL_FEATURE in agreedConversationUi
+
+    val messageBatchesAgreed: Boolean
+        get() = setOf("message-batches-v1", "newline-v1").all { it in agreedConversationUi }
 }
 
 /**

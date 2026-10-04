@@ -42,23 +42,34 @@ class GatewayAttachmentDraftCoordinator(
     private val drafts = ConcurrentHashMap<String, AttachmentDraft>()
     private val states = ConcurrentHashMap<String, MutableStateFlow<AttachmentDraftState>>()
     private val remoteIds = ConcurrentHashMap<String, String>()
+    private val uploadAttemptIds = ConcurrentHashMap<String, String>()
     private val staged = ConcurrentHashMap<String, StagedAttachmentContent>()
     private val selections = ConcurrentHashMap<String, LocalAttachmentSelection>()
     private val jobs = ConcurrentHashMap<String, Job>()
 
     private val ephemeral = java.util.Collections.newSetFromMap(ConcurrentHashMap<String,Boolean>())
     init {
-        recovery?.load()?.forEach { record ->
-            val draft = if (record.remoteId != null) record.draft.copy(state=AttachmentState.VERIFIED) else record.draft.copy(state=AttachmentState.RETRYABLE_FAILURE)
+        val restored = recovery?.load().orEmpty()
+        restored.forEach { record ->
+            val draft = record.draft.copy(state=if (record.remoteId != null) AttachmentState.VERIFYING else AttachmentState.RETRYABLE_FAILURE)
             drafts[draft.id.value]=draft; staged[draft.id.value]=record.content
+            uploadAttemptIds[draft.id.value]=record.clientAttachmentId ?: "att_client_${draft.id.value}"
             record.remoteId?.let { remoteIds[draft.id.value]=it }
             stateFlowFor(draft.id.value).value=AttachmentDraftState(draft.id,draft.state)
+        }
+        restored.filter { it.remoteId != null }.forEach { record ->
+            val id = record.draft.id.value
+            jobs[id] = scope.launch {
+                try { revalidateRemote(id,record.content) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (cause: Exception) { update(id,failureState(cause),errorCode(cause)) }
+            }
         }
     }
     override fun restoredDrafts() = drafts.values.toList()
     @Synchronized private fun persist() {
         recovery?.save(drafts.values.filter { it.id.value !in ephemeral }.mapNotNull { draft ->
-            staged[draft.id.value]?.let { com.openandroidintelligence.conversation.ports.RecoveredAttachmentDraft(draft,it,remoteIds[draft.id.value]) }
+            staged[draft.id.value]?.let { com.openandroidintelligence.conversation.ports.RecoveredAttachmentDraft(draft,it,remoteIds[draft.id.value],uploadAttemptIds[draft.id.value]) }
         })
     }
 
@@ -122,7 +133,7 @@ class GatewayAttachmentDraftCoordinator(
                 filename = draft.filename,
                 mediaType = draft.mediaType,
                 body = source,
-                clientAttachmentId = "att_client_$draftId",
+                clientAttachmentId = uploadAttemptIds.getOrPut(draftId) { "att_client_$draftId" },
                 declaredSha256 = content.sha256Hex,
             ),
             onPhase = { phase ->
@@ -157,7 +168,41 @@ class GatewayAttachmentDraftCoordinator(
         )
     }
 
-    override fun remoteAttachmentId(draftId: String): String? = remoteIds[draftId]
+    override fun remoteAttachmentId(draftId: String): String? =
+        remoteIds[draftId].takeIf { drafts[draftId]?.state == AttachmentState.VERIFIED }
+
+    /** A persisted remote ID is a candidate, never proof that its staging TTL is live. */
+    private suspend fun revalidateRemote(draftId: String, content: StagedAttachmentContent): Boolean {
+        val remoteId = remoteIds[draftId] ?: return false
+        update(draftId,AttachmentState.VERIFYING)
+        val status = try { uploader.status(remoteId) }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (cause: Exception) {
+            if (cause.message == "ATTACHMENT_STATUS_FAILED:ATTACHMENT_EXPIRED") {
+                invalidateRemote(draftId); return false
+            }
+            throw cause
+        }
+        check(status.sizeBytes == content.sizeBytes && status.sha256 == content.sha256Hex) { "ATTACHMENT_STATUS_MISMATCH" }
+        return when (status.status) {
+            com.openandroidintelligence.gateway.attachments.AttachmentRemoteStatus.UPLOADED -> {
+                updateProgress(draftId,AttachmentState.VERIFIED,content.sizeBytes,content.sizeBytes)
+                persist(); true
+            }
+            com.openandroidintelligence.gateway.attachments.AttachmentRemoteStatus.STAGED -> {
+                update(draftId,AttachmentState.RETRYABLE_FAILURE,"ATTACHMENT_UPLOAD_REQUIRED"); false
+            }
+            else -> { invalidateRemote(draftId); false }
+        }
+    }
+
+    private fun invalidateRemote(draftId: String) {
+        remoteIds.remove(draftId)
+        // A definitive expired/missing result starts a new idempotent attempt.
+        uploadAttemptIds[draftId]="att_client_"+java.util.UUID.randomUUID()
+        update(draftId,AttachmentState.RETRYABLE_FAILURE,"ATTACHMENT_EXPIRED")
+        persist()
+    }
 
     override suspend fun cancelSubmission(intentId: String): CancelSubmissionResult {
         gate.invalidate("cancelled-by-user")
@@ -175,7 +220,7 @@ class GatewayAttachmentDraftCoordinator(
                     val selection = selections[draftId] ?: return@launch
                     stageAndUpload(draftId, selection)
                 } else {
-                    uploadStaged(draftId, content)
+                    if (!revalidateRemote(draftId,content)) uploadStaged(draftId, content)
                 }
             } catch (cancelled: CancellationException) {
                 update(draftId, AttachmentState.CANCELLED, cancelled.message)
@@ -191,6 +236,7 @@ class GatewayAttachmentDraftCoordinator(
         val content = staged.remove(draftId)
         selections.remove(draftId)
         remoteIds.remove(draftId)
+        uploadAttemptIds.remove(draftId)
         update(draftId, AttachmentState.CANCELLED)
         if (content != null) withContext(ioDispatcher) { staging.delete(content.id) }
         states.remove(draftId)
@@ -204,6 +250,7 @@ class GatewayAttachmentDraftCoordinator(
         val content = staged.remove(draftId)
         selections.remove(draftId)
         remoteIds.remove(draftId)
+        uploadAttemptIds.remove(draftId)
         states.remove(draftId)
         drafts.remove(draftId)
         ephemeral.remove(draftId)

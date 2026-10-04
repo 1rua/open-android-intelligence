@@ -52,7 +52,9 @@ class DebounceBatcher(
     fun offer(targetScope: ConversationScope, conversationId: String, message: OutgoingMessage) {
         var policy = batchPolicies.getOrPut(conversationId) { this.policy }
         val bytes = message.text.toByteArray(Charsets.UTF_8).size
-        val priorBytes = activeBatches[conversationId].orEmpty().sumOf { it.text.toByteArray(Charsets.UTF_8).size }
+        val prior = activeBatches[conversationId].orEmpty()
+        // newline-v1 contributes one UTF-8 byte between each pair of members.
+        val priorBytes = prior.sumOf { it.text.toByteArray(Charsets.UTF_8).size } + prior.size
         if (priorBytes + bytes > policy.maximumBytes) { flush(conversationId); policy=this.policy; batchPolicies[conversationId]=policy }
         activeScopes[conversationId] = targetScope
         val list = activeBatches.getOrPut(conversationId) { mutableListOf() }

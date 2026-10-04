@@ -4460,7 +4460,7 @@ class GatewayCore:
         # means the `/new` command entry exists here: it creates the new
         # conversation and answers with the authoritative id. Advertising it
         # without that entry would make the agreement a claim, not a fact.
-        supported_conversation_ui = {"agent-command-catalog-v1", "agent-command-new-v1", "message-batches-v1"}
+        supported_conversation_ui = {"agent-command-catalog-v1", "agent-command-new-v1", "message-batches-v1", "newline-v1"}
         if self.generation_canceller is not None: supported_conversation_ui.add("generation-cancel-v1")
         if self.approval_cards_available:
             # Contract §7.2: only a Gateway that can actually release the blocked
@@ -4482,6 +4482,21 @@ class GatewayCore:
                 _negotiation_client_hint(body, self.contracts.core_schema_hash),
             )
             raise GatewayError("PROTOCOL_INCOMPATIBLE")
+        identity = self.gateway_identity(account)
+        features: dict[str, Any] = {"auth": auth, **required}
+        if conversation_ui:
+            features["conversationUi"] = conversation_ui
+        return {
+            "protocol": dict(PROTOCOL_VERSION),
+            "features": features,
+            "limits": {
+                "attachmentTtlSeconds": self.attachment_policy.attachment_ttl_seconds,
+                "eventRetentionSeconds": 86_400, "maxClockSkewSeconds": 120,
+            },
+            "gatewayIdentity": identity,
+        }
+
+    def gateway_identity(self, account: GatewayAccount | None = None) -> dict[str, Any]:
         if account is None:
             deployment_id = "deploy_" + hashlib.sha256(str(self.storage_root).encode("utf-8")).hexdigest()[:16]
             tls_identity = self.tls_spki_sha256
@@ -4494,18 +4509,7 @@ class GatewayCore:
             deployment_id = metadata.get("deployment_id", "deploy_hermes")
             rotated_pin = metadata.get("tls_spki_sha256")
             tls_identity = rotated_pin if isinstance(rotated_pin, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", rotated_pin) and rotated_pin != "sha256:" + "0" * 64 else self.tls_spki_sha256
-        features: dict[str, Any] = {"auth": auth, **required}
-        if conversation_ui:
-            features["conversationUi"] = conversation_ui
-        return {
-            "protocol": dict(PROTOCOL_VERSION),
-            "features": features,
-            "limits": {
-                "attachmentTtlSeconds": self.attachment_policy.attachment_ttl_seconds,
-                "eventRetentionSeconds": 86_400, "maxClockSkewSeconds": 120,
-            },
-            "gatewayIdentity": {"deploymentId": deployment_id, "tlsSpkiSha256": tls_identity},
-        }
+        return {"deploymentId": deployment_id, "tlsSpkiSha256": tls_identity}
 
     def _pre_auth_context(self, request: Any, body: Mapping[str, Any]) -> dict[str, str]:
         return {
@@ -5342,6 +5346,8 @@ class GatewayCore:
                         record = account.device_requests.get(device_get.group(1))
                         if record["deviceId"] != context["deviceId"] or record["pairingGeneration"] != int(context["pairingGeneration"]):
                             raise GatewayError("PAIRING_GENERATION_STALE")
+                        if record["grantRevision"] != int(context["grantRevision"]):
+                            raise GatewayError("GRANT_STALE")
                         return _success(context,{"request":record})
                     if method == "DELETE" and target_path == "/open-android-intelligence/v2/pairings/current":
                         return self._handle_unpair(account, context, _request_now(request))
