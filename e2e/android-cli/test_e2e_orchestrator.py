@@ -419,6 +419,7 @@ class TestE2EOrchestrator(unittest.TestCase):
             ("user_echo",{**completed,"sender":"user"},True,TestStatus.FAILED),
             ("not_rendered",completed,False,TestStatus.FAILED),
             ("single_batch",{**completed,"correlationId":"msg_second"},True,TestStatus.PASSED),
+            ("device_clock_skew",{**completed,"at":now-14900},True,TestStatus.PASSED),
         ]
         for name,reply,rendered,expected in cases:
             with self.subTest(name=name):
@@ -431,8 +432,10 @@ class TestE2EOrchestrator(unittest.TestCase):
                 bridge.tap=MagicMock(return_value=True);bridge.input_text=MagicMock(return_value=True)
                 bridge.capture_screen=MagicMock()
                 live.runner.run=MagicMock(return_value=(0,"",""))
-                receipt={**accepted,"at":now-1000} if name=="old_receipt" else accepted
-                live.protocol_evidence=MagicMock(return_value=[receipt,reply])
+                receipt={**accepted,"at":now-15000} if name=="device_clock_skew" else accepted
+                prior=[receipt] if name=="old_receipt" else []
+                polls=iter([prior])
+                live.protocol_evidence=MagicMock(side_effect=lambda: next(polls,[receipt,reply]))
                 with patch.dict(os.environ,{"OAI_E2E_REPLY_TIMEOUT_SECONDS":"0.01"}),patch("run_e2e_orchestrator.time.sleep"),patch("run_e2e_orchestrator.time.time",return_value=now/1000):
                     result=live.run_stage_4(text)
                 self.assertEqual(expected,result.status)

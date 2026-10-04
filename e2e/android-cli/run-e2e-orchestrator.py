@@ -947,6 +947,10 @@ class E2EOrchestrator:
                     fresh = self.android_cli.get_layout(no_idle=True)
                     send = self.android_cli.find_nodes_by_text(fresh, "发送")
                     send_center = self.android_cli.get_node_center(send[0]) if send else None
+                    # Compare receipt identities, not device timestamps against
+                    # the runner clock: the protocol permits clock skew.
+                    prior_receipts = {e.get("clientMessageId") for e in self.protocol_evidence()
+                                      if e.get("type") == "message.accepted"} if send_center else set()
                     if send_center and self.android_cli.tap(*send_center):
                         digest = hashlib.sha256(message_text.encode("utf-8")).hexdigest()
                         deadline = time.monotonic() + float(os.environ.get("OAI_E2E_REPLY_TIMEOUT_SECONDS", "120"))
@@ -955,7 +959,7 @@ class E2EOrchestrator:
                             accepted = next((e for e in evidence if e.get("type") == "message.accepted"
                                              and e.get("textSha256") == digest and e.get("clientMessageId")
                                              and e.get("messageId") and e.get("conversationId")
-                                             and e.get("at", 0) >= int(start_t * 1000)), None)
+                                             and e.get("clientMessageId") not in prior_receipts), None)
                             completed = next((e for e in evidence if accepted
                                               and e.get("type") == "conversation.message.completed"
                                               and e.get("sender") == "assistant"

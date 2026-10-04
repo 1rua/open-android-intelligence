@@ -83,7 +83,9 @@ PR #6 首轮 CI 暴露两处问题，修复后已重新执行完整 Gateway 检�
 
 风险以包声明的 primitive 为边界，因为当前 ABI 允许每个已提供能力调用包内全部已声明 primitive。包含可变 primitive 的包，其查询能力也使用 write 风险，避免仅更换能力名称就绕过前台确认。通用调度入参已写入 [设备插件包契约](../contracts/device-plugin-package-v1.md)。
 
-本轮本地验证：Node 104 个文件、920 项通过；Hermes 282 项通过、可选原生集成 1 项跳过，固定宿主原生历史/媒体 2 项另行通过；E2E 编排 19 项及 9 个验收子案例通过；双宿主各 66/66、跨宿主比较 3 项通过；plugin-tooling 46 项和全部类型检查通过；Rust 38 项通过并实际编译 WASM。Android 已通过 Gateway、领域、数据、工作台及 Full Debug app 的定向单元套件；完整 `check :app:assembleFullDebug --no-build-cache` 和最新 CI 结果以 PR 检查页为准。
+本轮本地验证：Node 104 个文件、920 项通过；Hermes 282 项通过、可选原生集成 1 项跳过，固定宿主原生历史/媒体 2 项另行通过；E2E 编排 19 项及 10 个验收子案例通过；双宿主各 66/66、跨宿主比较 3 项通过；plugin-tooling 46 项和全部类型检查通过；Rust 39 项通过并实际编译 WASM。Android 完整 `check :app:assembleFullDebug --no-build-cache` 通过，2436 项测试中 2432 项通过、Play 版按设计跳过 4 项，Full Debug APK 构建通过。最新远端 CI 结果见 PR 检查页。
+
+完整 WASM 回归发现 SMS 调度添加目标字段后，请求和内核响应必须同时保留，原 64 KiB arena 会不足。调度请求现在预先检查扩展后长度并一次分配，arena 为两个 64 KiB 交换区；实际 Cargo/WASM 调度回归通过。E2E 用发送前已出现的回执 ID 隔离旧证据，不要求手机与测试机时钟完全同步；回归覆盖旧回执和手机时钟偏差。
 
 新增测试入口包括 [Hermes 审查回归](../../integrations/hermes/tests/test_review_regressions.py)、[附件恢复](../../apps/android/conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/AttachmentRecoveryTest.kt)、[批次验收证据](../../apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/conversations/BatchAcceptanceEvidenceTest.kt)、[双游标快照恢复](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/PlatformSnapshotRecoveryTest.kt)及 [生产定时目标/设备执行](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/ProductionPluginHostTest.kt)。
 
