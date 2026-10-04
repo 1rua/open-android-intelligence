@@ -45,9 +45,14 @@
 |`cargo build --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml`|真实 WASM 构建通过|
 |三个参考插件的生产签名打包命令|通过；本地验证使用临时测试签名种子|
 |原生 Hermes 历史/媒体 + E2E 编排回归|20 项通过；修复 worker 测试使用普通 Python 子进程，未在本次验证启动 AI 修复任务|
-|Android `check :app:assembleFullDebug`|通过；2390 项测试中 2388 项通过、2 项因 Play 版禁用运行时插件而按设计跳过；Full Debug APK 构建成功|
+|Android `check :app:assembleFullDebug`|通过；2396 项测试中 2394 项通过、2 项因 Play 版禁用运行时插件而按设计跳过；Full Debug APK 构建成功|
 
 Android CI 已增加真实 Rust WASM 构建，JVM 集成回归直接运行 Cargo 产物；Gradle 把这些产物列为测试输入，避免 WASM 改变后沿用旧测试缓存。
+
+PR #6 首轮 CI 暴露两处问题，修复后已重新执行完整 Gateway 检查和 Android `check :app:assembleFullDebug --no-build-cache`：
+
+- SMS 已提供后台调度，但旧 Manifest 契约测试仍要求 `background.requested=false`。测试现在检查 SMS 申请后台执行、最低间隔 60 秒及对应内核原语，同时继续检查另外两个只读插件不申请后台执行。
+- 系统助理在 UI 线程执行 `Bitmap.compress`，触发 `WrongThread`。真实 PNG 编码移到工作线程，选区 Bitmap 由编码线程释放；返回 UI 后重新检查连接、会话令牌和共享同意，过期结果清除字节并丢弃。新回归在 Debug/Release 均验证实际 PNG 像素、工作线程、释放时机及关闭/未同意时不交付。
 
 主要新增回归可见：
 
@@ -55,6 +60,7 @@ Android CI 已增加真实 Rust WASM 构建，JVM 集成回归直接运行 Cargo
 - [实际编译的参考 WASM](../../apps/android/plugin-runtime-wasm/src/jvmTest/kotlin/com/openandroidintelligence/plugin/wasm/CompiledReferencePluginTest.kt)
 - [OpenClaw 原生历史](../../integrations/openclaw/test/native-history.test.ts)、[Hermes 原生 SessionDB 迁移](../../integrations/hermes/tests/test_native_history_complete.py)
 - [加密镜像恢复](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/EncryptedMirrorRecoveryTest.kt)、[加密媒体配额](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/EncryptedHistoryMediaCacheTest.kt)
+- [助理截图编码与会话结束时丢弃](../../apps/android/assistant-holder/src/test/kotlin/com/openandroidintelligence/assistant/AssistantScreenAttachmentTest.kt)
 - [Hermes 媒体原件与下载许可](../../integrations/hermes/tests/test_history_media_complete.py)、[真实 Git/worker 与草稿反例](../../e2e/android-cli/test_e2e_orchestrator.py)
 
 ## 验证范围

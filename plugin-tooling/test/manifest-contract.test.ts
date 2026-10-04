@@ -169,7 +169,16 @@ describe("reference plugin manifests conform to device-plugin-package-v1 §5", (
         expect(isRecord(background), "background 必须是对象").toBe(true);
         const bg = background as Record<string, unknown>;
         requireKeys(bg, ["minimumIntervalSeconds", "requested"], "security.background");
-        expect(bg["requested"]).toBe(false);
+        // SMS declares scheduled queries; the other read-only references do
+        // not request background execution.
+        expect(bg).toEqual({
+          requested: id === "sms",
+          minimumIntervalSeconds: id === "sms" ? 60 : null,
+        });
+        const capabilities = manifest["capabilities"] as Record<string, unknown>;
+        const primitives = capabilities["kernelPrimitives"] as Record<string, unknown>[];
+        expect(primitives.some((primitive) => primitive["id"] === "kernel.background.run"))
+          .toBe(id === "sms");
 
         const resources = record["resources"];
         expect(isRecord(resources), "resources 必须是对象").toBe(true);
