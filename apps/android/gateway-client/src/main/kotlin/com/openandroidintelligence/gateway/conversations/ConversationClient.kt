@@ -372,7 +372,8 @@ class ConversationClient(private val http: GatewayHttpClient) {
             throw IllegalStateException("SUBMIT_BATCH_FAILED:${response.status}")
         }
         val body = parsed(response) ?: throw IllegalStateException("SUBMIT_BATCH_FAILED:malformed")
-        val memberIds = JsonFields.objects(body, "members").mapNotNull { member ->
+        val members = JsonFields.objects(body, "members")
+        val memberIds = members.mapNotNull { member ->
             val client = JsonFields.string(member, "clientMessageId") ?: return@mapNotNull null
             val server = JsonFields.string(member, "messageId") ?: return@mapNotNull null
             client to server
@@ -382,14 +383,30 @@ class ConversationClient(private val http: GatewayHttpClient) {
         // leave the caller keying the mirror by its own local id — exactly the
         // duplicate this mapping exists to prevent — so it is refused instead of
         // being degraded into a silent second copy on screen.
-        check(memberIds.size == batch.members.size) { "SUBMIT_BATCH_FAILED:missing-member-ids" }
-        return BatchAcceptance(
+        check(members.size == batch.members.size && memberIds.keys == batch.members.map { it.clientMessageId }.toSet() &&
+            memberIds.size == batch.members.size && memberIds.values.all { it.isNotBlank() } &&
+            memberIds.values.toSet().size == memberIds.size) { "SUBMIT_BATCH_FAILED:missing-member-ids" }
+        check(JsonFields.string(body,"status") == "accepted") { "SUBMIT_BATCH_FAILED:invalid-acceptance" }
+        val acceptance = BatchAcceptance(
             batchId = JsonFields.string(body, "batchId")
                 ?: throw IllegalStateException("SUBMIT_BATCH_FAILED:missing-batch-id"),
-            status = JsonFields.string(body, "status") ?: "accepted",
+            status = "accepted",
             memberIds = memberIds,
             generationId = JsonFields.string(body, "generationId"),
         )
+        check(acceptance.batchId.isNotBlank()) { "SUBMIT_BATCH_FAILED:missing-batch-id" }
+        // Both hosts dispatch the aggregate under its first member's server ID.
+        val replyCorrelationId = memberIds.getValue(batch.members.first().clientMessageId)
+        batch.members.forEach { member ->
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("message.accepted", mapOf(
+                "clientMessageId" to member.clientMessageId,"messageId" to memberIds.getValue(member.clientMessageId),
+                "conversationId" to conversationId,"batchId" to acceptance.batchId,"generationId" to acceptance.generationId,
+                "replyCorrelationId" to replyCorrelationId,
+                "textSha256" to java.security.MessageDigest.getInstance("SHA-256").digest(member.text.toByteArray(Charsets.UTF_8))
+                    .joinToString("") { "%02x".format(it) },
+            ))
+        }
+        return acceptance
     }
 
     /**

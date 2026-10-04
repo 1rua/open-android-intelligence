@@ -29,13 +29,15 @@ object PluginJobScheduler {
         val minimum=app.pluginHost.minimumBackgroundInterval(call.identity.pluginId)*1000L
         require(delay in minimum..30L*24*60*60*1000) { "SCHEDULE_TIME_INVALID" }
         val query = JsonFields.obj(JsonFields.field(args,"query")) ?: error("SCHEMA_INVALID")
+        val target = app.pluginHost.scheduledTarget(call,args)
         val jobId = "job_${UUID.randomUUID()}"
         val scheduler = context.getSystemService(JobScheduler::class.java)
         val osId = (UUID.randomUUID().hashCode() and Int.MAX_VALUE)
         check(scheduler.getPendingJob(osId) == null) { "SCHEDULER_ID_CONFLICT" }
         val record = mapOf("jobId" to jobId,"osId" to osId,"pluginId" to call.identity.pluginId,"author" to call.identity.authorKeyFingerprint,
             "version" to call.identity.version,"accountId" to call.accountId,"pairingId" to call.pairingId,"grantRevision" to grant.revision,
-            "runAt" to runAt,"expiresAt" to runAt+900_000L,"query" to query,"state" to "scheduled")
+            "runAt" to runAt,"expiresAt" to runAt+900_000L,"query" to query,"state" to "scheduled",
+            "capabilityId" to target.id,"capabilityVersion" to target.version,"schemaSha256" to Json.sha256(target.schema))
         documents(context).write(jobId,Json.canonical(Json.of(record)).toByteArray())
         val extras = PersistableBundle().apply { putString("jobId",jobId) }
         val info = JobInfo.Builder(osId,ComponentName(context,PluginTimerService::class.java)).setMinimumLatency(delay)
@@ -73,15 +75,24 @@ object PluginJobScheduler {
         if (app.gatewayRuntime.connectedAccountId != account || grant?.revision != JsonFields.long(doc,"grantRevision") || grant?.backgroundSync != true) {
             save(context,jobId,doc,"authorization_expired"); return
         }
-        // Persist before invoking: an OS restart cannot repeat a query or a native side effect.
-        save(context,jobId,doc,"executing")
+        executeStoredInvocation(app.pluginHost,doc,jobId) { state,result -> save(context,jobId,doc,state,result) }
+    }
+    internal fun executeStoredInvocation(host: ProductionPluginHost,doc: JsonValue.JObject,jobId: String,
+        checkpoint: (String,JsonValue?) -> Unit) {
         val identity = PluginIdentity(JsonFields.string(doc,"pluginId")!!,JsonFields.string(doc,"author")!!,JsonFields.string(doc,"version")!!)
+        val target = host.entries(identity.pluginId).firstOrNull {
+            it.identity == identity && it.id == JsonFields.string(doc,"capabilityId") &&
+                it.version == JsonFields.string(doc,"capabilityVersion") && Json.sha256(it.schema) == JsonFields.string(doc,"schemaSha256")
+        }
+        if (target == null) { checkpoint("target_unavailable",null); return }
+        // Persist before invoking: an OS restart cannot repeat a query or a native side effect.
+        checkpoint("executing",null)
         try {
-            val output = app.pluginHost.invoke(identity,account,"${identity.pluginId}.query@1.0.0",
+            val output = host.invoke(identity,JsonFields.string(doc,"accountId")!!,target.key,
                 JsonFields.field(doc,"query")!!,jobId,background = true)
-            save(context,jobId,doc,"succeeded",Json.parse(output.decodeToString()))
-        } catch (cancelled: CancellationException) { save(context,jobId,doc,"outcome_unknown"); throw cancelled }
-        catch (_: Exception) { save(context,jobId,doc,"failed") }
+            checkpoint("succeeded",Json.parse(output.decodeToString()))
+        } catch (cancelled: CancellationException) { checkpoint("outcome_unknown",null); throw cancelled }
+        catch (_: Exception) { checkpoint("failed",null) }
     }
     private fun save(context: Context,id: String,doc: JsonValue.JObject,state: String,result: JsonValue? = null) {
         val fields = doc.fields.toMap().toMutableMap(); fields["state"] = JsonValue.JString(state)

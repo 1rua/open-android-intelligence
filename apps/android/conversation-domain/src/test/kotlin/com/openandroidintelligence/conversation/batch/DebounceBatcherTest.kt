@@ -61,4 +61,26 @@ class DebounceBatcherTest {
 
     private fun message(id: String, text: String): OutgoingMessage =
         OutgoingMessage(ClientMessageId(id), text, emptyList())
+
+    @Test fun newlineByteSplitsTwo32KiBMembersBeforeTheyExceedTheWireLimit() = runTest {
+        val flushed = mutableListOf<List<String>>()
+        val batcher = DebounceBatcher(this) { _, _, messages -> flushed += messages.map { it.text } }
+        batcher.offer(gatewayScope,"conv_a",message("m1","a".repeat(32 * 1024)))
+        batcher.offer(gatewayScope,"conv_a",message("m2","b".repeat(32 * 1024)))
+        advanceTimeBy(1500); runCurrent()
+        assertEquals(listOf(1,1),flushed.map { it.size })
+        flushed.forEach { org.junit.Assert.assertTrue(it.joinToString("\n").toByteArray().size <= 64 * 1024) }
+    }
+
+    @Test fun countsPriorSeparatorsAndUtf8BytesWhileAcceptingAnExactFit() = runTest {
+        val flushed = mutableListOf<List<String>>()
+        val batcher = DebounceBatcher(this,DebouncePolicy(maximumBytes=5)) { _, _, messages -> flushed += messages.map { it.text } }
+        listOf("a","b","c").forEachIndexed { i,text -> batcher.offer(gatewayScope,"conv_a",message("m$i",text)) }
+        advanceTimeBy(1500); runCurrent()
+        assertEquals(listOf(listOf("a","b","c")),flushed)
+        flushed.clear()
+        listOf("é","a","b").forEachIndexed { i,text -> batcher.offer(gatewayScope,"conv_a",message("n$i",text)) }
+        advanceTimeBy(1500); runCurrent()
+        assertEquals(listOf(listOf("é","a"),listOf("b")),flushed)
+    }
 }

@@ -11,6 +11,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NegotiationClientTest {
+    @Test fun batchSendingRequiresBothTheBatchAndJoinModeAgreement() {
+        for (features in listOf(emptyList(),listOf("message-batches-v1"),listOf("newline-v1"))) {
+            org.junit.Assert.assertFalse(result(features).messageBatchesAgreed)
+        }
+        assertTrue(result(listOf("message-batches-v1","newline-v1")).messageBatchesAgreed)
+        assertTrue("newline-v1" in DECLARED_CONVERSATION_UI_FEATURES)
+    }
 
     @Test
     fun acceptsCompatibleMinorDifferencesAndPreservesTheNegotiatedVersion() = runBlocking {

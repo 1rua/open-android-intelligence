@@ -41,19 +41,28 @@ class CapabilityBindings:
         allowed = {"type","properties","required","additionalProperties","enum","const","minLength","maxLength",
                    "pattern","format","minimum","maximum","exclusiveMinimum","exclusiveMaximum","multipleOf",
                    "minItems","maxItems","uniqueItems","items","allOf","anyOf","oneOf","$defs","$ref","title","description","$schema","$id"}
+        visited: set[int] = set()
         def check(schema: Any, depth: int) -> None:
             if isinstance(schema, bool):
                 return
             if not isinstance(schema, dict) or depth > 32 or set(schema) - allowed:
                 raise GatewayError("SCHEMA_INVALID")
+            if id(schema) in visited:
+                return
+            visited.add(id(schema))
             if "$ref" in schema:
                 if not str(schema["$ref"]).startswith("#/$defs/"):
                     raise GatewayError("SCHEMA_INVALID")
-                # No cyclic references or pointers capable of unbounded recursion.
-                target = str(schema["$ref"])[len("#/$defs/"):]
-                if "/" in target or target not in root.get("$defs", {}):
-                    raise GatewayError("SCHEMA_INVALID")
-                check(root["$defs"][target], depth+1)
+                target = root
+                for token in str(schema["$ref"])[2:].split("/"):
+                    if re.search(r"~(?![01])", token):
+                        raise GatewayError("SCHEMA_INVALID")
+                    token = token.replace("~1", "/").replace("~0", "~")
+                    if not isinstance(target, dict) or token not in target:
+                        raise GatewayError("SCHEMA_INVALID")
+                    target = target[token]
+                # References form a graph; only structural nesting consumes depth.
+                check(target, 0)
             for name in ("properties","$defs"):
                 for child in schema.get(name, {}).values(): check(child,depth+1)
             for name in ("items", "additionalProperties"):

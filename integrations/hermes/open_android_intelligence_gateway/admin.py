@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -304,8 +303,7 @@ class AdminService:
         if not self.core.account_exists(input.get("accountId")): return _failure(operation,False,"ACCOUNT_NOT_FOUND")
         from .pairing_invites import PairingInvites
         account=self.core.open_gateway_account(input["accountId"])
-        identity={'deploymentId':'deploy_'+hashlib.sha256(str(self.core.storage_root).encode()).hexdigest()[:16],'tlsSpkiSha256':self.core.tls_spki_sha256}
-        try: return _success(operation,False,PairingInvites(account).issue(input["gatewayUrl"],gateway_identity=identity))
+        try: return _success(operation,False,PairingInvites(account).issue(input["gatewayUrl"],gateway_identity=self.core.gateway_identity(account)))
         except GatewayError as exc: return _failure(operation,False,exc.code)
         finally: account.close()
 

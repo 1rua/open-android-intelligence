@@ -30,7 +30,7 @@
 |F22|P2|多 Agent 自动修复和 Verify Agent 只是写占位文档并合并|已修复|生产默认调用实际 Codex worker，最多四个隔离 worktree 并发；拒绝只有文档的“修复”，提交、rebase 及合并均检查真实回归进程结果，失败保留现场/撤回合并。普通 Python worker、真实 Git 仓库及失败门禁回归通过。|
 |F23|P2|二维码/短码邀请与设备密钥会话未实现|已修复|管理入口生成五分钟邀请，Android URI/短码入口显式确认账号及身份；两端提供 pairing exchange、一次性 Ed25519 challenge 和 device-key session，拒绝跨账号、错误绑定、过期及重放。实际签名与会话回归通过。|
 
-## 验证记录
+## 首轮修复验证记录
 
 以下命令从仓库根目录执行，Android 命令从 `apps/android` 执行。需要 Python 3.12、Node 24.18、Rust 1.90、Java 17 和 Android SDK 35。
 
@@ -62,6 +62,30 @@ PR #6 首轮 CI 暴露两处问题，修复后已重新执行完整 Gateway 检�
 - [加密镜像恢复](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/EncryptedMirrorRecoveryTest.kt)、[加密媒体配额](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/EncryptedHistoryMediaCacheTest.kt)
 - [助理截图编码与会话结束时丢弃](../../apps/android/assistant-holder/src/test/kotlin/com/openandroidintelligence/assistant/AssistantScreenAttachmentTest.kt)
 - [Hermes 媒体原件与下载许可](../../integrations/hermes/tests/test_history_media_complete.py)、[真实 Git/worker 与草稿反例](../../e2e/android-cli/test_e2e_orchestrator.py)
+
+## PR #6 Codex 审查评论修复
+
+本轮处理 11 条审查评论：修复 10 项确认的代码缺陷；快照恢复评论结合独立的平台/对话游标验证，保留由平台事件流恢复设备任务的设计。原 F17（Tailscale）继续按修复范围排除。
+
+|评论|处理|实现与回归证据|
+|---|---|---|
+|[取消 Hermes 工具任务](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575457)|已修复|捕获 `CancelledError`，持久取消 pending/claimed 请求后重新抛出；已完成结果保持原终态且不伪造 ACK。Hermes 回归覆盖三种状态。|
+|[批次换行字节](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575460)|已修复|准入大小计入全部 newline-v1 分隔符；回归覆盖两个 32 KiB 成员、精确边界、累计分隔符和多字节 UTF-8。|
+|[可变 primitive 风险](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575465)|已修复|使用宿主只读 primitive 白名单；调度、删除、写入、网络和未知 primitive 按 write 发布，原生插件按临时高权限发布。设备执行再次检查本地验证风险。|
+|[Hermes 递归 schema](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575468)|已修复|按已访问 schema 节点验证引用图，引用不消耗结构嵌套预算；支持本地 JSON Pointer 解码，拒绝外部、未解析及非法引用。回归实际注册并验证递归树参数。|
+|[轮换后的邀请身份](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575470)|已修复|协商和邀请共用账号 Gateway 身份读取；回归更换 deployment ID/TLS pin 后核对 QR 指纹与协商身份。|
+|[恢复附件远端 ID](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575473)|已修复|恢复先进入 VERIFYING 并查询状态；过期/缺失转为可重试并持久生成新上传尝试 ID，继续使用本地暂存字节。网络不可达不轮换尝试；丢失 commit 回复后跨重启查询恢复且不重复 PUT。工作台继续订阅恢复附件进度。|
+|[读取设备任务的授权版本](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575479)|已修复|OpenClaw/Hermes 均校验当前 grantRevision 并返回 GRANT_STALE；Android 删除受隔离的任务日志。双宿主和加密日志回归验证不返回旧参数、不 claim、不循环恢复。|
+|[批量发送验收证据](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575483)|已修复|严格验证批次状态与成员映射后输出每个成员的真实 ACK、正文摘要及聚合首成员关联 ID。验收要求本轮 ACK、关联助手完成事件和实际消息渲染标记；错误/旧回复、用户回显及仅有草稿均失败。|
+|[newline-v1 协商](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176575488)|已修复|双宿主和 Android 均声明 newline-v1；Android 只有两项能力都同意时才启用批次。分别只提供 batch、join mode、两者及均不提供的回归通过。|
+|[快照待处理设备任务](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176672348)|已验证并补回归|原平台事件流使用独立 `:platform` 游标，已有 pendingDeviceRequests 接入。提取实际恢复函数供生产和测试共用，严格验证快照 ID，先同步能力、接收任务并恢复日志，再提交游标。双事件流按两种恢复顺序验证互不跳过任务；失败时保留旧平台游标。|
+|[定时任务实际目标](https://github.com/1rua/open-android-intelligence/pull/6#discussion_r4176672354)|已修复|调度验证并加密保存目标能力 ID、版本及 Schema 摘要；执行重新验证当前插件身份和授权。真实签名/WASM 回归执行 `.fetch@2.0.0`，拒绝旧目标缺失、版本/Schema 变化及授权撤回；SMS WASM 回归验证显式目标传入内核。|
+
+风险以包声明的 primitive 为边界，因为当前 ABI 允许每个已提供能力调用包内全部已声明 primitive。包含可变 primitive 的包，其查询能力也使用 write 风险，避免仅更换能力名称就绕过前台确认。通用调度入参已写入 [设备插件包契约](../contracts/device-plugin-package-v1.md)。
+
+本轮本地验证：Node 104 个文件、920 项通过；Hermes 282 项通过、可选原生集成 1 项跳过，固定宿主原生历史/媒体 2 项另行通过；E2E 编排 19 项及 9 个验收子案例通过；双宿主各 66/66、跨宿主比较 3 项通过；plugin-tooling 46 项和全部类型检查通过；Rust 38 项通过并实际编译 WASM。Android 已通过 Gateway、领域、数据、工作台及 Full Debug app 的定向单元套件；完整 `check :app:assembleFullDebug --no-build-cache` 和最新 CI 结果以 PR 检查页为准。
+
+新增测试入口包括 [Hermes 审查回归](../../integrations/hermes/tests/test_review_regressions.py)、[附件恢复](../../apps/android/conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/AttachmentRecoveryTest.kt)、[批次验收证据](../../apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/conversations/BatchAcceptanceEvidenceTest.kt)、[双游标快照恢复](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/PlatformSnapshotRecoveryTest.kt)及 [生产定时目标/设备执行](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/ProductionPluginHostTest.kt)。
 
 ## 验证范围
 

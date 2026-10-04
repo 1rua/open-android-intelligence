@@ -432,7 +432,8 @@ interface AgentCommandCatalogRepository {
     suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog
 }
 
-data class RecoveredAttachmentDraft(val draft: AttachmentDraft, val content: StagedAttachmentContent, val remoteId: String?)
+data class RecoveredAttachmentDraft(val draft: AttachmentDraft, val content: StagedAttachmentContent, val remoteId: String?,
+    val clientAttachmentId: String? = null)
 interface AttachmentDraftRecoveryStore {
     fun load(): List<RecoveredAttachmentDraft>
     fun save(records: List<RecoveredAttachmentDraft>)

@@ -92,7 +92,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                         val schemaPath = JsonFields.string(cap,"schema") ?: error("MANIFEST_INVALID")
                         VerifiedCapability(verified.identity,capabilityId,JsonFields.string(cap,"version") ?: error("MANIFEST_INVALID"),
                             Json.parse(File(verified.stagedDirectory,schemaPath).readText()),
-                            if (verified.runtime.type == "developer-native") "high-privilege-ephemeral" else if (capabilityId.endsWith(".schedule") || capabilityId.endsWith(".cancel") || primitives.any { it.endsWith(".write") || it.endsWith(".send") }) "write" else "read",primitives)
+                            PluginCapabilityRisk.classify(verified.runtime.type,primitives),primitives)
                     }
                     val declared = entries.map { it.key }.toSet() + primitives
                     val surface = verified.security.surface
@@ -244,6 +244,16 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         val pairingId = grants.state.value?.pairingId ?: error("PAIRING_REQUIRED")
         return kernel.invoke(identity,accountId,pairingId,capability,Json.canonical(parameters).toByteArray(),
             SessionConstraints(entry.primitives + entry.key,background,correlationId)).output
+    }
+    fun scheduledTarget(call: KernelCallContext, args: JsonValue.JObject): VerifiedCapability {
+        val id = JsonFields.string(args,"capabilityId") ?: error("SCHEDULE_TARGET_REQUIRED")
+        val version = JsonFields.string(args,"capabilityVersion") ?: error("SCHEDULE_TARGET_REQUIRED")
+        val entry = entries(call.identity.pluginId).firstOrNull { it.identity == call.identity && it.id == id && it.version == version }
+            ?: throw CapabilityDenied("$id@$version")
+        check(authorizedBindings().any { it["capabilityId"] == id && it["capabilityVersion"] == version &&
+            it["pluginId"] == call.identity.pluginId }) { "SCHEDULE_TARGET_DENIED" }
+        check(CapabilitySchemaValidator.accepts(entry.schema,JsonFields.field(args,"query") ?: error("SCHEMA_INVALID"))) { "SCHEMA_INVALID" }
+        return entry
     }
     fun mediate(call: KernelCallContext, primitive: String, input: ByteArray): ByteArray {
         KernelPrimitiveRegistry.provider(primitive)?.let { provider -> return runBlocking {

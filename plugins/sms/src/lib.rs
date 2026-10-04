@@ -14,8 +14,15 @@ use alloc::vec::Vec;
 pub fn handle_sms_query(request: &[u8]) -> Result<Vec<u8>, PluginError> {
     // Inputs are schema validated and canonicalized by the host before this ABI.
     let has = |field: &[u8]| request.windows(field.len()).any(|w| w == field);
-    let primitive = if has(b"\"operation\":\"schedule\"") { "kernel.scheduler.set" }
-        else if has(b"\"operation\":\"job-status\"") { "kernel.scheduler.read" }
+    if has(b"\"operation\":\"schedule\"") {
+        // The public schedule schema stays SMS-specific; the generic kernel
+        // receives the exact verified capability to invoke when the timer fires.
+        if request.first() != Some(&b'{') { return Err(PluginError::HandlerFailed); }
+        let mut scheduled = b"{\"capabilityId\":\"org.openandroidintelligence.sms.query\",\"capabilityVersion\":\"1.0.0\",".to_vec();
+        scheduled.extend_from_slice(&request[1..]);
+        return open_android_intelligence_sdk::call_kernel("kernel.scheduler.set", &scheduled);
+    }
+    let primitive = if has(b"\"operation\":\"job-status\"") { "kernel.scheduler.read" }
         else if has(b"\"operation\":\"cancel\"") { "kernel.scheduler.cancel" }
         else { "kernel.sms.read" };
     open_android_intelligence_sdk::call_kernel(primitive, request)
