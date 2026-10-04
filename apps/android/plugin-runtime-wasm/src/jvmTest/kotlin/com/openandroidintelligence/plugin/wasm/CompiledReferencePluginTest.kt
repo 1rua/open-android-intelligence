@@ -41,7 +41,9 @@ class CompiledReferencePluginTest {
                 }
                 "{\"jobId\":\"job-real\"}".toByteArray()
             })
-            val result=runtime.invoke(identity,budget,"{\"operation\":\"$operation\"}".toByteArray()).decodeToString()
+            val input=if(operation=="schedule") """{"operation":"schedule","runAt":"2026-10-04T20:00:00Z","query":{"limit":1}}"""
+                else "{\"operation\":\"$operation\"}"
+            val result=runtime.invoke(identity,budget,input.toByteArray()).decodeToString()
             assertEquals(primitive,observed);assertTrue(result.contains("job-real"))
         }
     }
