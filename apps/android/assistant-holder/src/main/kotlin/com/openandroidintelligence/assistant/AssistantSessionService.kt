@@ -29,7 +29,11 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                 box.addView(Button(context).apply { text="确认圈选"; setOnClickListener {
                     val crop=view.crop()
                     if (crop == null) Toast.makeText(context,"请圈出需要的区域",Toast.LENGTH_SHORT).show()
-                    else { panel?.attachScreen(crop); crop.recycle(); container.removeView(box); selection=null; screenshot?.recycle(); screenshot=null }
+                    else {
+                        val target = panel
+                        if (target != null) target.attachScreen(crop) else crop.recycle()
+                        container.removeView(box); selection=null; screenshot?.recycle(); screenshot=null
+                    }
                 } })
                 box.addView(Button(context).apply { text="取消"; setOnClickListener { container.removeView(box); selection=null } })
                 container.addView(box,FrameLayout.LayoutParams(-1,-1))

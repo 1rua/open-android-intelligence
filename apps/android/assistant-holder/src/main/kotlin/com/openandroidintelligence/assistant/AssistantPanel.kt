@@ -16,6 +16,8 @@ internal class AssistantPanel(context: Context, private val close: () -> Unit,
     private var token: String? = null
     private var updating = false
     private var bound = false
+    private var disposed = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val status = TextView(context)
     private val history = TextView(context)
     private val composer = EditText(context).apply { hint="输入消息"; contentDescription="助理消息输入"; maxLines=4 }
@@ -30,6 +32,7 @@ internal class AssistantPanel(context: Context, private val close: () -> Unit,
     }
     private var threadIds = listOf<Pair<String,String>>()
     private val receiver = Messenger(Handler(Looper.getMainLooper()) { message ->
+        if (disposed) return@Handler true
         if (message.data.getInt("version") != 1) return@Handler true
         token = message.data.getString("token")
         val state = runCatching { JSONObject(message.data.getString("state") ?: "{}") }.getOrNull() ?: return@Handler true
@@ -53,7 +56,7 @@ internal class AssistantPanel(context: Context, private val close: () -> Unit,
         true
     })
     private val connection=object: ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) { bridge=Messenger(service); command("connect") }
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) { if (!disposed) { bridge=Messenger(service); command("connect") } }
         override fun onServiceDisconnected(name: ComponentName?) { bridge=null; token=null; send.isEnabled=false; status.text="助理连接已中断，请重新打开" }
         override fun onBindingDied(name: ComponentName?) = onServiceDisconnected(name)
     }
@@ -93,19 +96,50 @@ internal class AssistantPanel(context: Context, private val close: () -> Unit,
         val body=Bundle().apply { putInt("version",1); putString("command",name); token?.let { putString("token",it) }; fill() }
         return runCatching { val target=bridge ?: error("BRIDGE_UNAVAILABLE");target.send(Message.obtain().apply { data=body; replyTo=receiver });true }.getOrElse { status.text="连接已中断，请重新打开助理";false }
     }
+    /** Takes ownership of the selected bitmap; the worker recycles it after encoding. */
     fun attachScreen(bitmap: Bitmap) {
-        val output=java.io.ByteArrayOutputStream(); if (!bitmap.compress(Bitmap.CompressFormat.PNG,100,output)) return
-        val bytes=output.toByteArray(); if (bytes.size > 8*1024*1024) { bytes.fill(0); Toast.makeText(context,"圈选图片过大，请缩小范围",Toast.LENGTH_LONG).show();return }
-        val pipe=ParcelFileDescriptor.createPipe()
-        if (!command("screen") { putParcelable("content",pipe[0]); putInt("size",bytes.size) }) { pipe.forEach { it.close() };bytes.fill(0);return }
-        val timeout=Runnable { runCatching { pipe[1].close() } }
-        val watchdogHandler=Handler(Looper.getMainLooper());watchdogHandler.postDelayed(timeout,10_000)
-        Thread {
-            try { ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { it.write(bytes) } }
-            catch (_:Exception) {} finally { watchdogHandler.removeCallbacks(timeout);bytes.fill(0); pipe[0].close() }
-        }.start()
+        val expectedBridge = bridge
+        val expectedToken = token
+        if (!canAttachScreen(expectedBridge, expectedToken)) { bitmap.recycle(); return }
+        encodeAssistantScreen(bitmap) { bytes ->
+            if (!mainHandler.post {
+                if (!canAttachScreen(expectedBridge, expectedToken)) { bytes?.fill(0); return@post }
+                if (bytes == null) {
+                    Toast.makeText(context, "屏幕附件无法编码，请重新圈选", Toast.LENGTH_LONG).show()
+                    return@post
+                }
+                if (bytes.size > 8 * 1024 * 1024) {
+                    bytes.fill(0)
+                    Toast.makeText(context, "圈选图片过大，请缩小范围", Toast.LENGTH_LONG).show()
+                    return@post
+                }
+                val pipe = runCatching { ParcelFileDescriptor.createPipe() }.getOrElse {
+                    bytes.fill(0)
+                    Toast.makeText(context, "屏幕附件无法读取，请重新圈选", Toast.LENGTH_LONG).show()
+                    return@post
+                }
+                if (!command("screen") { putParcelable("content", pipe[0]); putInt("size", bytes.size) }) {
+                    pipe.forEach { runCatching { it.close() } }; bytes.fill(0); return@post
+                }
+                val timeout = Runnable { runCatching { pipe[1].close() } }
+                mainHandler.postDelayed(timeout, 10_000)
+                Thread({
+                    try { ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { it.write(bytes) } }
+                    catch (_: Exception) {}
+                    finally {
+                        mainHandler.removeCallbacks(timeout)
+                        bytes.fill(0)
+                        runCatching { pipe[0].close() }
+                    }
+                }, "assistant-screen-delivery").start()
+            }) bytes?.fill(0)
+        }
     }
-    fun dispose() { command("disconnect"); bridge=null; token=null; if (bound) { context.unbindService(connection); bound=false }; history.text=""; updating=true; composer.setText("") }
+    private fun canAttachScreen(expectedBridge: Messenger?, expectedToken: String?): Boolean =
+        !disposed && send.isEnabled && expectedBridge != null && bridge === expectedBridge &&
+            expectedToken != null && token == expectedToken
+
+    fun dispose() { disposed=true; command("disconnect"); bridge=null; token=null; if (bound) { context.unbindService(connection); bound=false }; history.text=""; updating=true; composer.setText("") }
 }
 
 /** Assist screenshot is memory-only. Selection and confirmation are separate user actions. */
