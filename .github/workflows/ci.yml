@@ -136,8 +136,12 @@ jobs:
           # The interpreter Hermes Agent ships, matching the plugin runtime.
           python-version: "3.11"
 
-      - name: Install the Gateway fixture dependencies
-        run: python -m pip install jsonschema
+      # Installed as a package so its declared dependencies come from the
+      # plugin own metadata. Listing them here instead let a required runtime
+      # dependency go missing, which showed up only as a 401 from the Gateway
+      # under test.
+      - name: Install the Hermes Gateway plugin for the fixture
+        run: python -m pip install .hermes-gateway-plugin cryptography
 
       - name: Build real Rust WASM plugins for Android runtime regression
         run: |
