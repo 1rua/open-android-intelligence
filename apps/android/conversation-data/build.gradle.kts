@@ -34,5 +34,8 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
         events("failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
         showStackTraces = true
+        // The Gateway fixture diagnostics are written to the test streams;
+        // without this they are captured but never shown.
+        showStandardStreams = true
     }
 }
