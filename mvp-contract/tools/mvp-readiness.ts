@@ -162,11 +162,12 @@ export const PACKETS: ReadonlyArray<{
     id: "WP-07",
     label: "Hermes/OpenClaw adapters and shared skill",
     source: [
-      // The Hermes product is the native Python plugin; the TypeScript adapter of
-      // the same name is the legacy fixture kept under `legacy/`.
-      "integrations/hermes/open_android_intelligence_gateway/plugin.py",
-      "integrations/hermes/pyproject.toml",
-      "integrations/hermes/README.md",
+      // The Hermes Gateway plugin was split into its own repository
+      // (1rua/hermes-gateway-plugin) so the host installs it with
+      // `hermes plugins install`. What remains here is the contract both sides
+      // are validated against, plus the TypeScript fixture kept under `legacy/`.
+      "gateway-contract/tools/run-hermes-conformance.py",
+      "gateway-contract/tools/check-contract-pin.py",
       "legacy/integrations/hermes-v1/adapter.ts",
       "legacy/integrations/hermes-v1/adapter.test.ts",
       "legacy/integrations/hermes-v1/plugin-manifest.json",

@@ -114,9 +114,51 @@ class TestStatus(str, enum.Enum):
 class WorktreePriority(int, enum.Enum):
     """合并拓扑优先级（数字越小优先级越高，最先合并，符合规范第 6.3 节）"""
     CONTRACT = 1     # 契约层 (gateway-contract/)
-    GATEWAY = 2      # 网关适配层 (integrations/hermes, integrations/openclaw)
+    GATEWAY = 2      # 网关适配层 (插件仓 hermes-gateway-plugin, integrations/openclaw)
     CLIENT = 3       # 客户端与内核 (apps/android/)
     TESTS = 4        # 测试资产与自动化套件 (apps/android/journeys/, e2e/)
+
+
+def ensure_plugin_importable() -> None:
+    """让网关插件包可导入。
+
+    插件已拆为独立仓库，主仓不再持有其源码。优先使用已安装的包；只有在未
+    安装时才回退到 HERMES_PLUGIN_ROOT 指向的 checkout，方便本地开发。两者都
+    不可用时明确报错，不让"缺少插件"伪装成后续步骤的其它失败。
+    """
+    try:
+        import open_android_intelligence_gateway  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+    root = os.environ.get("HERMES_PLUGIN_ROOT", "").strip()
+    if root and root not in sys.path:
+        sys.path.insert(0, root)
+        try:
+            import open_android_intelligence_gateway  # noqa: F401
+            return
+        except ModuleNotFoundError:
+            sys.path.remove(root)
+    raise RuntimeError(
+        "无法导入 Hermes 网关插件包。请安装它"
+        "（pip install open-android-intelligence-hermes-gateway），"
+        "或设置 HERMES_PLUGIN_ROOT 指向 hermes-gateway-plugin 仓库的本地检出。"
+    )
+
+
+def hermes_account_cli() -> str:
+    """插件仓中的账号管理 CLI 命令。
+
+    网关插件已拆为独立仓库，脚本不再位于主仓根。未提供插件仓路径时直接
+    抛错，而不是让命令落空后把"网关就绪"判成通过。
+    """
+    root = os.environ.get("HERMES_PLUGIN_ROOT", "").strip()
+    if not root:
+        raise RuntimeError(
+            "需要 HERMES_PLUGIN_ROOT 指向 hermes-gateway-plugin 仓库，"
+            "其中提供 tools/hermes-account.py"
+        )
+    return f'python3 "{root}/tools/hermes-account.py"'
 
 
 def module_to_priority(module: str) -> int:
@@ -578,7 +620,7 @@ class E2EOrchestrator:
         metrics["conformanceMatches"] = summaries["openclaw-typescript"][1] if conformance_passed else 0
 
         # 3. 验证 Hermes 管理服务状态挂载
-        status_cmd = "python3 hermes-account.py status"
+        status_cmd = hermes_account_cli() + " status"
         rc_status, out_status, err_status = self.runner.run(status_cmd)
         cmds.append(status_cmd)
         status_ok = (rc_status == 0 and "操作成功" in out_status and "'readOnly': False" in out_status)
@@ -595,7 +637,7 @@ class E2EOrchestrator:
                 stage=stage,
                 severity="P0",
                 error_summary="网关插件安装或跨宿主一致性向量校验不达标",
-                root_cause_module="integrations/hermes",
+                root_cause_module="hermes-gateway-plugin",
                 evidence_paths=[str(self.logs_dir / "stage_1_conformance.log")],
                 suggested_fix="核对 gateway-contract 向量并消除序列化差异",
                 assigned_agent=AgentRole.FIX.value,
@@ -633,13 +675,14 @@ class E2EOrchestrator:
         self.runner.env["HERMES_STORAGE_ROOT"] = str(self.storage_root)
 
         # 1. 显式调用带有 --confirm-local 的创建命令
-        create_cmd = f'python3 hermes-account.py create "{username}" "{password}"'
+        create_cmd = hermes_account_cli() + f' create "{username}" "{password}"'
         self.log(AgentRole.RUNNER, f"执行账号注册命令: {create_cmd}")
         rc_create, out_create, err_create = self.runner.run(create_cmd)
         cmds.append(create_cmd)
         metrics["createResponse"] = out_create
 
         # 2. 检查沙箱物理目录与 SQLite 数据库隔离
+        ensure_plugin_importable()
         from open_android_intelligence_gateway.account_paths import account_paths
         try:
             paths = account_paths(self.storage_root, username)
@@ -696,7 +739,7 @@ class E2EOrchestrator:
         metrics["pairingHandshakeVerifierSeamless"] = verifier_handshake_ok
 
         # 4. 验证管理员权限与状态
-        status_cmd = "python3 hermes-account.py status"
+        status_cmd = hermes_account_cli() + " status"
         rc_st, out_st, _ = self.runner.run(status_cmd)
         cmds.append(status_cmd)
 
@@ -713,7 +756,7 @@ class E2EOrchestrator:
                 stage=stage,
                 severity="P0",
                 error_summary="本地账号创建失败或物理沙箱权限未满足 0700/SQLite 就绪要求",
-                root_cause_module="integrations/hermes/open_android_intelligence_gateway/admin.py",
+                root_cause_module="hermes-gateway-plugin:open_android_intelligence_gateway/admin.py",
                 evidence_paths=[],
                 suggested_fix="检查 storage_root 权限分配与 SQLite migration 流程",
                 assigned_agent=AgentRole.FIX.value,
@@ -1051,7 +1094,7 @@ class E2EOrchestrator:
                     stage=E2EStage.STAGE_2_ACCOUNT_PROVISION,
                     severity="P1",
                     error_summary="网关适配器账号沙箱权限与连接池安全",
-                    root_cause_module="integrations/hermes",
+                    root_cause_module="hermes-gateway-plugin",
                     evidence_paths=[],
                     suggested_fix="确保 0700 权限与独立连接",
                     assigned_agent=AgentRole.FIX.value,

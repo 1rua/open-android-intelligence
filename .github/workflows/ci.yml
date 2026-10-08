@@ -32,6 +32,27 @@ jobs:
           npm ci --prefix plugin-tooling
           python -m pip install pytest aiohttp jsonschema cryptography
 
+      # The Hermes Gateway lives in its own repository and is consumed as an
+      # installed package; this repository stays the authoritative source of the
+      # Gateway Protocol contract that both sides validate against.
+      - name: Check out the Hermes Gateway plugin
+        uses: actions/checkout@v4
+        with:
+          repository: 1rua/hermes-gateway-plugin
+          path: .hermes-gateway-plugin
+
+      - name: Install the Hermes Gateway plugin
+        run: python -m pip install -e .hermes-gateway-plugin
+
+      # The plugin fetches the contract at a pinned commit, so a contract change
+      # here that is not released together with the plugin would leave the phone
+      # refusing the negotiation. Compare the contract tree rather than the
+      # commit, so commits that touch no schema force no pin bump.
+      - name: Verify the plugin pins this commit's contract
+        env:
+          HERMES_PLUGIN_ROOT: ${{ github.workspace }}/.hermes-gateway-plugin
+        run: python gateway-contract/tools/check-contract-pin.py
+
       - name: Typecheck
         run: |
           npm run typecheck
@@ -45,7 +66,8 @@ jobs:
         run: |
           npm test
           npm test --prefix plugin-tooling
-          python -m pytest integrations/hermes/tests
+          OPEN_ANDROID_GATEWAY_CONTRACT_ROOT="$PWD/gateway-contract" \
+            python -m pytest .hermes-gateway-plugin/tests
 
   android:
     name: Android Build & Check

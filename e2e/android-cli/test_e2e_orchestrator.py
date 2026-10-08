@@ -41,6 +41,11 @@ from run_e2e_orchestrator import (
 
 class TestE2EOrchestrator(unittest.TestCase):
     def setUp(self):
+        # The account CLI now lives in the standalone plugin repository; the
+        # orchestrator refuses to run without this, which is the point.
+        os.environ.setdefault(
+            "HERMES_PLUGIN_ROOT", str(ROOT_DIR / ".hermes-gateway-plugin"),
+        )
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_storage = Path(self.temp_dir.name) / "storage"
         self.orchestrator = E2EOrchestrator(
@@ -199,7 +204,7 @@ class TestE2EOrchestrator(unittest.TestCase):
 
     def test_module_to_priority(self):
         self.assertEqual(module_to_priority("gateway-contract/schemas"), WorktreePriority.CONTRACT.value)
-        self.assertEqual(module_to_priority("integrations/hermes"), WorktreePriority.GATEWAY.value)
+        self.assertEqual(module_to_priority("hermes-gateway-plugin"), WorktreePriority.GATEWAY.value)
         self.assertEqual(module_to_priority("apps/android/gateway-client"), WorktreePriority.CLIENT.value)
         self.assertEqual(module_to_priority("apps/android/journeys"), WorktreePriority.TESTS.value)
 
@@ -230,7 +235,7 @@ class TestE2EOrchestrator(unittest.TestCase):
                 stage=E2EStage.STAGE_2_ACCOUNT_PROVISION,
                 severity="P1",
                 error_summary="Gateway adapter issue",
-                root_cause_module="integrations/hermes",
+                root_cause_module="hermes-gateway-plugin",
                 evidence_paths=[],
                 suggested_fix="Fix adapter storage",
                 assigned_agent="Agent-Fix",
@@ -317,7 +322,7 @@ class TestE2EOrchestrator(unittest.TestCase):
             stage=E2EStage.STAGE_2_ACCOUNT_PROVISION,
             severity="P1",
             error_summary="冲突修改",
-            root_cause_module="integrations/hermes",
+            root_cause_module="hermes-gateway-plugin",
             evidence_paths=[],
             suggested_fix="冲突修复",
             assigned_agent="Agent-Fix",

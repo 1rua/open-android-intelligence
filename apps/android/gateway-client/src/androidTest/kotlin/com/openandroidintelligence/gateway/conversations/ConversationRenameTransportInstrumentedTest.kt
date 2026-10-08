@@ -26,8 +26,8 @@ import kotlin.concurrent.thread
  * 而 App 实际运行的平台实现（OkHttp）允许它，所以“手机端真的发出了 PATCH”只能在
  * 真机/模拟器上观察：这里对一个回环网关断言客户端写出的原始请求行、请求体与签名头。
  *
- * 网关侧“接受并落库”的证据由 `integrations/hermes/tests/test_conversation_rename.py`
- * 承担（同一个线协议，真实 HTTP 边界 + 真实签名）。
+ * 网关侧“接受并落库”的证据由插件仓 `hermes-gateway-plugin` 的
+ * `tests/test_conversation_rename.py` 承担（同一个线协议，真实 HTTP 边界 + 真实签名）。
  */
 @RunWith(AndroidJUnit4::class)
 class ConversationRenameTransportInstrumentedTest {

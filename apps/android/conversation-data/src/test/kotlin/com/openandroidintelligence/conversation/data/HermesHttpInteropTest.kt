@@ -25,14 +25,35 @@ import java.util.concurrent.TimeUnit
  * 会话重命名走 `PATCH`，而 JDK 的 `HttpURLConnection` 明确拒绝 PATCH（平台上的
  * OkHttp 实现才允许），因此这条链路的“手机端确实发出 PATCH”证据由设备侧插桩测试
  * `ConversationRenameTransportInstrumentedTest` 承担，“网关接受并落库”证据由
- * `integrations/hermes/tests/test_conversation_rename.py` 承担。
+ * 插件仓 `hermes-gateway-plugin` 的 `tests/test_conversation_rename.py` 承担。
+ *
+ * 该插件已拆为独立仓库，本测试通过 `HERMES_PLUGIN_ROOT` 定位它，并用
+ * `OPEN_ANDROID_GATEWAY_CONTRACT_ROOT` 指定本仓持有的契约；两者缺一时直接失败，
+ * 不会跳过——否则这条真实链路会退化成无人验证的绿。
  */
 class HermesHttpInteropTest {
     @Test fun passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes() = runBlocking {
         val root = File("../../..").canonicalFile
         val log = File(root, "tmp/bugfix-20260915/hermes-interop.log").also { it.parentFile!!.mkdirs() }
-        val process = ProcessBuilder("python3", "integrations/hermes/tests/android_gateway_fixture.py")
-            .directory(root).redirectError(log).start()
+        val pluginRoot = File(
+            System.getenv("HERMES_PLUGIN_ROOT")
+                ?: error(
+                    "需要 HERMES_PLUGIN_ROOT 指向 hermes-gateway-plugin 仓库（git clone " +
+                        "https://github.com/1rua/hermes-gateway-plugin），该插件已从主仓拆出。"
+                )
+        ).canonicalFile
+        val fixture = File(pluginRoot, "tests/android_gateway_fixture.py")
+        check(fixture.isFile) { "插件仓缺少网关 fixture: $fixture" }
+        // This repository owns the contract, so it is passed explicitly rather
+        // than letting the plugin fetch its own pinned copy.
+        val contractRoot = System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT")
+        val command = if (contractRoot != null) {
+            listOf("python3", fixture.absolutePath, "--contract-root", contractRoot)
+        } else {
+            listOf("python3", fixture.absolutePath)
+        }
+        val process = ProcessBuilder(command)
+            .directory(pluginRoot).redirectError(log).start()
         try {
             val baseUrl = process.inputStream.bufferedReader().readLine()
             check(baseUrl != null && baseUrl.startsWith("http://127.0.0.1:")) { "Fixture failed: ${log.readText()}" }

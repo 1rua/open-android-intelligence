@@ -4,6 +4,12 @@ Consumes the shared ``gateway-contract/vectors/*.json`` documents through the
 Hermes Python Gateway Core and emits standard JSONL plus a manifest. The
 OpenClaw side is a separate TypeScript process; the two runners share no
 runtime binary.
+
+The Gateway itself lives in its own repository (``1rua/hermes-gateway-plugin``)
+and is consumed here as an installed package. This repository stays the
+authoritative source of the contract, so the runner passes that directory in
+explicitly instead of letting the plugin resolve its own fetched copy: the
+vectors exercised here must be the ones this commit ships.
 """
 
 from __future__ import annotations
@@ -16,11 +22,15 @@ from pathlib import Path
 TOOLS_DIR = Path(__file__).resolve().parent
 CONTRACT_ROOT = TOOLS_DIR.parent
 REPO_ROOT = CONTRACT_ROOT.parent
-HERMES_ROOT = REPO_ROOT / "integrations" / "hermes"
 
-sys.path.insert(0, str(HERMES_ROOT))
-
-from open_android_intelligence_gateway.core import create_gateway_core  # noqa: E402
+try:
+    from open_android_intelligence_gateway.core import create_gateway_core
+except ModuleNotFoundError as exc:  # fail closed with an actionable message
+    raise SystemExit(
+        "缺少 Hermes 网关插件包，无法运行一致性校验。\n"
+        "请先安装：pip install open-android-intelligence-hermes-gateway\n"
+        "（源码仓库：https://github.com/1rua/hermes-gateway-plugin）"
+    ) from exc
 
 HERMES_IMPLEMENTATION = "hermes-python"
 
@@ -61,7 +71,7 @@ def main() -> int:
     directory = artifact_directory()
     directory.mkdir(parents=True, exist_ok=True)
 
-    core = create_gateway_core()
+    core = create_gateway_core(contract_root=CONTRACT_ROOT)
     results = core.run_shared_vectors(CONTRACT_ROOT)
 
     records_path = directory / f"{HERMES_IMPLEMENTATION}.jsonl"
