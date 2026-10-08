@@ -35,18 +35,24 @@ class HermesHttpInteropTest {
     @Test fun passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes() = runBlocking {
         val root = File("../../..").canonicalFile
         val log = File(root, "tmp/bugfix-20260915/hermes-interop.log").also { it.parentFile!!.mkdirs() }
-        val pluginRoot = File(
-            System.getenv("HERMES_PLUGIN_ROOT")
-                ?: error(
-                    "需要 HERMES_PLUGIN_ROOT 指向 hermes-gateway-plugin 仓库（git clone " +
-                        "https://github.com/1rua/hermes-gateway-plugin），该插件已从主仓拆出。"
-                )
-        ).canonicalFile
+        // The plugin checkout is located by convention rather than only by
+        // environment: CI checks it out at .hermes-gateway-plugin, and a reused
+        // Gradle daemon can carry the environment of an earlier run, which would
+        // fail this test for reasons unrelated to it. An explicit override still
+        // wins for local development.
+        val pluginRoot = (
+            System.getenv("HERMES_PLUGIN_ROOT")?.let { File(it) }
+                ?: File(root, ".hermes-gateway-plugin")
+            ).canonicalFile
         val fixture = File(pluginRoot, "tests/android_gateway_fixture.py")
-        check(fixture.isFile) { "插件仓缺少网关 fixture: $fixture" }
+        check(fixture.isFile) {
+            "未找到 Hermes 网关插件的 fixture: " + fixture +
+                "（HERMES_PLUGIN_ROOT=" + System.getenv("HERMES_PLUGIN_ROOT") + "）"
+        }
         // This repository owns the contract, so it is passed explicitly rather
         // than letting the plugin fetch its own pinned copy.
         val contractRoot = System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT")
+            ?: File(root, "gateway-contract").path
         val command = if (contractRoot != null) {
             listOf("python3", fixture.absolutePath, "--contract-root", contractRoot)
         } else {
