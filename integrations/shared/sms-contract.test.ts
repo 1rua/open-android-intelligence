@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 // Hermes plugin is the native Python package and does not implement these
 // shared provider operations.
 import { createHermesAdapter, HERMES_PLUGIN_MANIFEST } from "../../legacy/integrations/hermes-v1/adapter.js";
-import { createOpenClawAdapter, OPENCLAW_PLUGIN_MANIFEST } from "../openclaw/adapter.js";
 import {
   FROZEN_SMS_TOOLS,
   FROZEN_PROVIDER_TOOLS,
@@ -35,7 +34,7 @@ const MAX_SMS_PROVIDER_ID = 9_223_372_036_854_775_807n;
 const bytes = (value: unknown): string => JSON.stringify(value, (_key, current) =>
   typeof current === "bigint" ? current.toString() : current);
 
-describe("shared Hermes/OpenClaw SMS contract", () => {
+describe("legacy Hermes TypeScript SMS fixture contract", () => {
   it("preserves notification discovery while adding exactly three frozen SMS tools", () => {
     const expectedProviderTools = [
       "mobile.notifications.query",
@@ -54,12 +53,10 @@ describe("shared Hermes/OpenClaw SMS contract", () => {
     expect(FROZEN_PROVIDER_TOOLS).toEqual(expectedProviderTools);
     expect(Object.isFrozen(FROZEN_PROVIDER_TOOLS)).toBe(true);
     expect(HERMES_PLUGIN_MANIFEST.tools).toEqual(expectedProviderTools);
-    expect(OPENCLAW_PLUGIN_MANIFEST.tools).toEqual(expectedProviderTools);
     expect(HERMES_PLUGIN_MANIFEST.tools.filter((name) => name.startsWith("mobile.sms."))).toEqual(FROZEN_SMS_TOOLS);
-    expect(OPENCLAW_PLUGIN_MANIFEST.tools.filter((name) => name.startsWith("mobile.sms."))).toEqual(FROZEN_SMS_TOOLS);
   });
 
-  it("returns byte-equivalent complete SMS query records for Hermes and OpenClaw", async () => {
+  it("returns the complete SMS query record shape from the legacy fixture", async () => {
     const options = {
       context: fixtureContext(),
       zeroRetention: fixtureZeroRetentionEvidence(),
@@ -71,14 +68,19 @@ describe("shared Hermes/OpenClaw SMS contract", () => {
       })],
     };
     const hermes = createHermesAdapter(options);
-    const openclaw = createOpenClawAdapter(options);
     await hermes.pair(fixtureBinding());
-    await openclaw.pair(fixtureBinding());
 
     const input = { toolCallId: "sms-call-1", deviceId: "device-a", limit: 10_000 };
     const hermesResult = await hermes.querySms(input);
-    const openclawResult = await openclaw.querySms(input);
-    expect(bytes(hermesResult)).toBe(bytes(openclawResult));
+    expect(bytes(hermesResult)).toBe(bytes([
+      smsRecord({ body: "" }),
+      smsRecord({
+        recordId: "sms:43",
+        cursorProviderId: 43n,
+        messageAtEpochMs: 1_700_000_000_001n,
+        body: "complete untruncated body\nwith a second line",
+      }),
+    ]));
     expect(hermesResult.map((entry) => entry.body)).toEqual(["", "complete untruncated body\nwith a second line"]);
     expect(Object.keys(hermesResult[0]!).sort()).toEqual([
       "body", "captureRevision", "cursorProviderId", "messageAtEpochMs", "observedAtEpochMs",

@@ -3,13 +3,10 @@ import { describe, expect, it } from "vitest";
 // Hermes plugin is the native Python package and does not implement these
 // shared provider operations.
 import { createHermesAdapter } from "../../legacy/integrations/hermes-v1/adapter.js";
-import { createOpenClawAdapter } from "../openclaw/adapter.js";
 import { fixtureBinding, fixtureContext, fixtureZeroRetentionEvidence } from "./fixtures.js";
 
-const normalized = (value: unknown): string => JSON.stringify(value);
-
-describe("Hermes/OpenClaw normalized notification and assistant contract", () => {
-  it("keeps on-demand query and text response byte-equivalent", async () => {
+describe("legacy Hermes TypeScript notification fixture", () => {
+  it("returns a bounded notification result and accepted assistant message", async () => {
     const options = { context: fixtureContext(), zeroRetention: fixtureZeroRetentionEvidence(), onDemand: async () => [{
       kind: "upsert" as const,
       recordId: "notice-1",
@@ -18,13 +15,11 @@ describe("Hermes/OpenClaw normalized notification and assistant contract", () =>
       content: null,
     }] };
     const hermes = createHermesAdapter(options);
-    const openclaw = createOpenClawAdapter(options);
     await hermes.pair(fixtureBinding());
-    await openclaw.pair(fixtureBinding());
-    expect(normalized(await hermes.queryNotifications({ toolCallId: "call-1", deviceId: "device-a", mode: "on_demand", limit: 1 })))
-      .toBe(normalized(await openclaw.queryNotifications({ toolCallId: "call-1", deviceId: "device-a", mode: "on_demand", limit: 1 })));
-    expect(normalized(await hermes.sendAssistantMessage({ messageId: "message-1", text: "hello" })))
-      .toBe(normalized(await openclaw.sendAssistantMessage({ messageId: "message-1", text: "hello" })));
+    await expect(hermes.queryNotifications({ toolCallId: "call-1", deviceId: "device-a", mode: "on_demand", limit: 1 }))
+      .resolves.toEqual([{ kind: "upsert", recordId: "notice-1", packageId: "com.example.mail", title: null, content: null }]);
+    await expect(hermes.sendAssistantMessage({ messageId: "message-1", text: "hello" }))
+      .resolves.toMatchObject({ messageId: "message-1", status: "accepted" });
   });
 
   it("does not route a notification event across workspace, session, or job", async () => {
