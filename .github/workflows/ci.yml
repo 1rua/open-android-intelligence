@@ -90,6 +90,24 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # HermesHttpInteropTest starts the real Gateway from the plugin checkout
+      # and drives it over HTTP. Without these it fails loudly rather than
+      # silently skipping the only cross-language contract evidence we have.
+      - name: Checkout the Hermes Gateway plugin
+        uses: actions/checkout@v4
+        with:
+          repository: 1rua/hermes-gateway-plugin
+          path: .hermes-gateway-plugin
+
+      - name: Set up Python for the Gateway fixture
+        uses: actions/setup-python@v5
+        with:
+          # The interpreter Hermes Agent ships, matching the plugin runtime.
+          python-version: "3.11"
+
+      - name: Install the Gateway fixture dependencies
+        run: python -m pip install jsonschema
+
       - name: Build real Rust WASM plugins for Android runtime regression
         run: |
           rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
@@ -99,6 +117,10 @@ jobs:
         working-directory: apps/android
         env:
           LC_ALL: C.UTF-8
+          HERMES_PLUGIN_ROOT: ${{ github.workspace }}/.hermes-gateway-plugin
+          # This repository owns the contract; the plugin is pointed at it
+          # rather than fetching its own pinned copy during a test run.
+          OPEN_ANDROID_GATEWAY_CONTRACT_ROOT: ${{ github.workspace }}/gateway-contract
         run: |
           chmod +x gradlew
           ./gradlew check :app:assembleFullDebug --stacktrace
