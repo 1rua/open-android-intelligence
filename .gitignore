@@ -102,3 +102,4 @@ apps/android/.toolchains/
 
 # CI 中检出的 Hermes 网关插件仓库（独立仓，本地开发可放同一路径）
 .hermes-gateway-plugin/
+.openclaw-gateway-plugin/

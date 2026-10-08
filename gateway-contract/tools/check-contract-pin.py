@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that the Hermes plugin pins this repository's contract.
+"""Check that a standalone Gateway plugin pins this repository's contract.
 
 The Gateway plugin ships in its own repository and fetches the contract at a
 pinned commit, so nothing in either repository would fail if that pin drifted
@@ -10,14 +10,16 @@ This gate compares the plugin's pinned revision with the commit that carries
 this contract and fails when the plugin is behind, so the bump is made here and
 in the plugin together rather than discovered on a device.
 
-Set ``HERMES_PLUGIN_ROOT`` to a checkout of the plugin repository. Without it the
-gate is skipped with a stated reason rather than silently passing.
+Set ``HERMES_PLUGIN_ROOT`` or ``OPENCLAW_PLUGIN_ROOT`` to the corresponding
+plugin checkout. CI invokes this script once for each plugin root.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +27,7 @@ from pathlib import Path
 TOOLS_DIR = Path(__file__).resolve().parent
 CONTRACT_ROOT = TOOLS_DIR.parent
 REPO_ROOT = CONTRACT_ROOT.parent
-PLUGIN_ENV = "HERMES_PLUGIN_ROOT"
+DEFAULT_PLUGIN_ENV = "HERMES_PLUGIN_ROOT"
 
 # Everything the Gateway validates a negotiation against: the schemas, the
 # shared vectors, and the registry that maps dispatched schemas to them.
@@ -93,16 +95,19 @@ def contract_matches(revision: str):
 
 
 def main() -> int:
-    plugin_root = os.environ.get(PLUGIN_ENV, "").strip()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--plugin-root-env", default=DEFAULT_PLUGIN_ENV)
+    plugin_env = parser.parse_args().plugin_root_env
+    plugin_root = os.environ.get(plugin_env, "").strip()
     if not plugin_root:
         # Fail closed: a gate that can be switched off by forgetting a variable
         # is not a gate. ALLOW_SKIP_PIN_GATE=1 is the explicit opt-out for
         # inspecting a tree locally without a plugin checkout.
         if os.environ.get("ALLOW_SKIP_PIN_GATE") == "1":
-            print(f"跳过：未设置 {PLUGIN_ENV}（已显式允许跳过）")
+            print(f"跳过：未设置 {plugin_env}（已显式允许跳过）")
             return 0
         print(
-            f"❌ 未设置 {PLUGIN_ENV}，无法校验插件仓锁定的契约提交。\n"
+            f"❌ 未设置 {plugin_env}，无法校验插件仓锁定的契约提交。\n"
             f"   CI 必须提供该变量；本地若确实没有插件仓检出，"
             f"可设置 ALLOW_SKIP_PIN_GATE=1 显式跳过。"
         )
@@ -115,7 +120,7 @@ def main() -> int:
 
     pin = json.loads(pin_path.read_text(encoding="utf-8"))
     revision = str(pin.get("revision") or "")
-    if len(revision) != 40:
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
         print(f"❌ contract-pin.json 的 revision 必须是 40 位提交，当前为 {revision or '(空)'}")
         return 1
 

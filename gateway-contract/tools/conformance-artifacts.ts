@@ -78,6 +78,7 @@ const sha256OfFile = (path: string): string =>
  */
 export const conformanceInputDigests = (
   contractRoot: string = conformanceContractRoot(),
+  implementation?: ConformanceImplementation,
 ): Readonly<Record<string, string>> => {
   const digests: Record<string, string> = {};
   const vectorsDirectory = join(contractRoot, "vectors");
@@ -86,6 +87,11 @@ export const conformanceInputDigests = (
   }
   for (const fileName of CONFORMANCE_FIXTURE_FILE_NAMES) {
     digests[`vectors/${fileName}`] = sha256OfFile(join(vectorsDirectory, fileName));
+  }
+  if (implementation === "openclaw-typescript") {
+    digests["openclaw-plugin-pin.json"] = sha256OfFile(
+      join(dirname(contractRootDirectory), "openclaw-plugin-pin.json"),
+    );
   }
   return digests;
 };
@@ -163,7 +169,7 @@ export const readConformanceArtifacts = (
   }
 
   const manifest = JSON.parse(readFileSync(paths.manifest, "utf8")) as ConformanceManifest;
-  const expectedDigests = conformanceInputDigests(contractRoot);
+  const expectedDigests = conformanceInputDigests(contractRoot, implementation);
   if (
     manifest.formatVersion !== CONFORMANCE_MANIFEST_FORMAT_VERSION ||
     manifest.implementation !== implementation ||
@@ -200,7 +206,7 @@ const pythonCommand = (): string => {
 const tsxCliPath = (): string => {
   const localPath = join(dirname(contractRootDirectory), "node_modules", "tsx", "dist", "cli.mjs");
   if (existsSync(localPath)) return localPath;
-  return join("/mnt/数据/项目/open-android-intelligence", "node_modules", "tsx", "dist", "cli.mjs");
+  throw new Error(`TSX_TOOLCHAIN_MISSING:${localPath}`);
 };
 
 const runnerCommand = (
@@ -290,7 +296,7 @@ export const writeConformanceArtifacts = (
     formatVersion: CONFORMANCE_MANIFEST_FORMAT_VERSION,
     implementation,
     caseCount: records.length,
-    vectorDigests: conformanceInputDigests(contractRoot),
+    vectorDigests: conformanceInputDigests(contractRoot, implementation),
     recordsDigest: sha256OfFile(paths.records),
   };
   writeFileSync(paths.manifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");

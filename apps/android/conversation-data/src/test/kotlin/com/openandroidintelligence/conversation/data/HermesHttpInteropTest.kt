@@ -101,6 +101,15 @@ class HermesHttpInteropTest {
             assertEquals(id, attPart.draftId.value)
             assertEquals("interop.txt", attPart.filename)
             assertEquals("text/plain", attPart.mediaType)
+        } catch (failure: Throwable) {
+            // The fixture records every request it served; without them a
+            // rejection is indistinguishable from a bad signature, an expired
+            // session or a contract mismatch.
+            runCatching { log.readText() }.getOrNull()?.let {
+                System.err.println("=== Hermes fixture 日志 ===")
+                System.err.println(it)
+            }
+            throw failure
         } finally {
             process.destroy()
             check(process.waitFor(10, TimeUnit.SECONDS)) { "Fixture did not stop" }
