@@ -68,10 +68,9 @@ jobs:
       - name: Install the OpenClaw Gateway plugin dependencies
         run: npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
 
-      # The plugin fetches the contract at a pinned commit, so a contract change
-      # here that is not released together with the plugin would leave the phone
-      # refusing the negotiation. Compare the contract tree rather than the
-      # commit, so commits that touch no schema force no pin bump.
+      # The plugin packages a contract snapshot generated from a pinned commit.
+      # Compare the contract tree rather than the commit, so commits that touch
+      # no schema force no plugin pin bump.
       - name: Verify the plugin pins this commit's contract
         run: |
           python gateway-contract/tools/check-contract-pin.py --plugin-root-env HERMES_PLUGIN_ROOT
