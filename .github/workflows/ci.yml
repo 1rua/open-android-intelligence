@@ -88,6 +88,7 @@ jobs:
           npm run typecheck --prefix .openclaw-gateway-plugin
           npm run build --prefix .openclaw-gateway-plugin
           git -C .openclaw-gateway-plugin diff --exit-code -- runtime
+          test -z "$(git -C .openclaw-gateway-plugin ls-files --others -- runtime)"
           npm run typecheck --prefix plugin-tooling
 
       - name: Gateway v2 Cross-Host Conformance
