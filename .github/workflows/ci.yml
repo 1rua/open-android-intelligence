@@ -69,8 +69,8 @@ jobs:
         run: npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
 
       # The plugin packages a contract snapshot generated from a pinned commit.
-      # Compare the contract tree rather than the commit, so commits that touch
-      # no schema force no plugin pin bump.
+      # Compare all contract inputs (source, schemas, registry and vectors)
+      # rather than commit identity, so unrelated app commits need no plugin bump.
       - name: Verify the plugin pins this commit's contract
         run: |
           python gateway-contract/tools/check-contract-pin.py --plugin-root-env HERMES_PLUGIN_ROOT

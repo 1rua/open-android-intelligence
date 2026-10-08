@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Check that a standalone Gateway plugin pins this repository's contract.
+"""Check that each standalone Gateway plugin pins this repository's contract.
 
-The Gateway plugin ships in its own repository and fetches the contract at a
-pinned commit, so nothing in either repository would fail if that pin drifted
-away from the schemas shipped here. The phone would simply be told
-``PROTOCOL_INCOMPATIBLE`` at negotiation time.
+Hermes and OpenClaw maintain their contract pins in their own repositories.
+OpenClaw packages a generated snapshot, while Hermes resolves its pinned
+contract during plugin loading. If a pinned contract input drifts, the phone
+would be told ``PROTOCOL_INCOMPATIBLE`` at negotiation time.
 
-This gate compares the plugin's pinned revision with the commit that carries
-this contract and fails when the plugin is behind, so the bump is made here and
-in the plugin together rather than discovered on a device.
+This gate compares all pinned contract inputs with this checkout rather than
+requiring the same app commit. Unrelated app changes therefore do not force a
+plugin update, while any contract input change requires a coordinated pin bump.
 
 Set ``HERMES_PLUGIN_ROOT`` or ``OPENCLAW_PLUGIN_ROOT`` to the corresponding
 plugin checkout. CI invokes this script once for each plugin root.
@@ -69,9 +69,8 @@ def contract_matches(revision: str):
     """Whether the pinned commit carries the same contract as this checkout.
 
     None means the pinned commit is not present locally, so the question cannot
-    be answered here. Comparing the contract tree rather than the commit is what
-    makes this useful: an application commit that touches no schema leaves the
-    pin correct, and only a real contract change has to bump it.
+    be answered here. Comparing every pinned contract input rather than the
+    application commit keeps unrelated application changes from forcing a bump.
     """
     present = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{revision}^{{commit}}"],
