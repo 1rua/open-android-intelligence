@@ -49,8 +49,9 @@ const completeRows = (): Record<string, string>[] => {
   rows[2] = row({ decision_id: "MVP-DEP-BRIDGE", official_reference: "https://nodejs.org/docs/", immutable_version: "bridge-runtime@abc123", blocks: "WP-06,WP-09" });
   rows[3] = row({ decision_id: "MVP-DEP-HERMES", official_reference: "https://hermes-agent.example/docs", immutable_version: "hermes@abc123", blocks: "WP-07,WP-09" });
   rows[4] = row({ decision_id: "MVP-DEP-OPENCLAW", official_reference: "https://openclaw.example/docs", immutable_version: "openclaw@abc123", blocks: "WP-07,WP-09" });
-  rows[5] = row({ decision_id: "MVP-DEP-MODEL", official_reference: "https://example.com/model/retention", immutable_version: "profile@abc123", blocks: "WP-06,WP-08,WP-09" });
-  rows[6] = row({ decision_id: "MVP-DEP-ARTIFACT", official_reference: "https://example.com/object-store", immutable_version: "artifact@abc123", blocks: "WP-10" });
+  rows[5] = row({ decision_id: "MVP-DEP-OPENCLAW-PLUGIN", official_reference: "https://github.com/1rua/openclaw-gateway-plugin", immutable_version: "openclaw-gateway-plugin@abc123", blocks: "WP-07,WP-09" });
+  rows[6] = row({ decision_id: "MVP-DEP-MODEL", official_reference: "https://example.com/model/retention", immutable_version: "profile@abc123", blocks: "WP-06,WP-08,WP-09" });
+  rows[7] = row({ decision_id: "MVP-DEP-ARTIFACT", official_reference: "https://example.com/object-store", immutable_version: "artifact@abc123", blocks: "WP-10" });
   for (const value of rows) value.integrity = `sha256:${sha256Evidence(value)}`;
   return rows;
 };

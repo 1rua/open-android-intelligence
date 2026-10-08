@@ -11,6 +11,8 @@ if [ -d "${ANDROID_SDK_REPO_DIR}" ]; then
   export ANDROID_SDK_ROOT="${ANDROID_SDK_REPO_DIR}"
 fi
 NODE_LAUNCHER="$ROOT_DIR/tools/run-node24"
+OPENCLAW_PLUGIN_ROOT="${OPENCLAW_PLUGIN_ROOT:-${ROOT_DIR}/.openclaw-gateway-plugin}"
+export OPENCLAW_PLUGIN_ROOT
 MODE="${1:-}"
 if [[ "$MODE" != "--sdk-free" && "$MODE" != "--release" ]]; then
   echo "usage: $0 --sdk-free|--release" >&2
@@ -21,6 +23,14 @@ if [[ ! -x "$NODE_LAUNCHER" ]]; then
   echo "SDK_FREE_BLOCKED: fixed Node 24 launcher missing ($NODE_LAUNCHER)" >&2
   exit 1
 fi
+
+python3 "$ROOT_DIR/tools/check-openclaw-plugin-pin.py"
+python3 "$ROOT_DIR/gateway-contract/tools/check-contract-pin.py" --plugin-root-env OPENCLAW_PLUGIN_ROOT
+if [[ ! -x "$OPENCLAW_PLUGIN_ROOT/node_modules/.bin/vitest" ]]; then
+  "$NODE_LAUNCHER" npm ci --prefix "$OPENCLAW_PLUGIN_ROOT" --ignore-scripts
+fi
+OPEN_ANDROID_GATEWAY_CONTRACT_ROOT="$ROOT_DIR/gateway-contract" \
+  "$NODE_LAUNCHER" npm run contract:check --prefix "$OPENCLAW_PLUGIN_ROOT"
 
 if [[ "$MODE" == "--release" ]]; then
   if ! "$NODE_LAUNCHER" npm --prefix "$ROOT_DIR" run mvp:lock:check; then
@@ -48,6 +58,11 @@ fi
   mvp-contract/test/mvp-contract.test.ts \
   mvp-contract/test/dependency-lock.test.ts
 
+"$NODE_LAUNCHER" npm run typecheck --prefix "$OPENCLAW_PLUGIN_ROOT"
+"$NODE_LAUNCHER" npm test --prefix "$OPENCLAW_PLUGIN_ROOT"
+"$NODE_LAUNCHER" npm run build --prefix "$OPENCLAW_PLUGIN_ROOT"
+git -C "$OPENCLAW_PLUGIN_ROOT" diff --exit-code -- runtime
+
 python3 -m unittest discover -s "$ROOT_DIR/apps/android/tools" -p 'test_*.py'
 
 "$NODE_LAUNCHER" npx --no-install tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext \
@@ -58,7 +73,6 @@ python3 -m unittest discover -s "$ROOT_DIR/apps/android/tools" -p 'test_*.py'
   "$ROOT_DIR"/mvp-contract/src/wire-codec.ts \
   "$ROOT_DIR"/integrations/shared/adapter.ts \
   "$ROOT_DIR"/legacy/integrations/hermes-v1/adapter.ts \
-  "$ROOT_DIR"/integrations/openclaw/adapter.ts \
   --types node --typeRoots "$ROOT_DIR/node_modules/@types"
 
 if "$NODE_LAUNCHER" npm --prefix "$ROOT_DIR" run mvp:lock:check >/tmp/open-android-intelligence-mvp-lock.out 2>&1; then

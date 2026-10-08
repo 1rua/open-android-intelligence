@@ -1,5 +1,5 @@
 {
-  "//": "The conformance runners import the OpenClaw integration sources, so this project matches the strictness of integrations/openclaw's own typecheck rather than the stricter contract-package flags.",
+  "//": "These tools orchestrate independent Hermes/OpenClaw runners; each adapter repository typechecks its own runtime sources.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["node"],

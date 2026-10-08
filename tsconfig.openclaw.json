@@ -1,5 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": { "types": ["node"], "exactOptionalPropertyTypes": false, "noEmit": true },
-  "include": ["gateway-contract/src/**/*.ts", "integrations/openclaw/src/**/*.ts", "integrations/openclaw/*.d.ts"]
-}

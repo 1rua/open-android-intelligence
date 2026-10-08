@@ -114,7 +114,7 @@ class TestStatus(str, enum.Enum):
 class WorktreePriority(int, enum.Enum):
     """合并拓扑优先级（数字越小优先级越高，最先合并，符合规范第 6.3 节）"""
     CONTRACT = 1     # 契约层 (gateway-contract/)
-    GATEWAY = 2      # 网关适配层 (插件仓 hermes-gateway-plugin, integrations/openclaw)
+    GATEWAY = 2      # 网关适配层 (hermes-gateway-plugin 与 openclaw-plugin-pin.json)
     CLIENT = 3       # 客户端与内核 (apps/android/)
     TESTS = 4        # 测试资产与自动化套件 (apps/android/journeys/, e2e/)
 
@@ -605,6 +605,13 @@ class E2EOrchestrator:
         cmds.append(py_ver_cmd)
         metrics["pythonVersion"] = stdout
 
+        # The OpenClaw source is an independent repository. Verify the exact
+        # commit selected by the application repository before comparing hosts.
+        pin_cmd = "python3 tools/check-openclaw-plugin-pin.py"
+        rc_pin, out_pin, err_pin = self.runner.run(pin_cmd)
+        cmds.append(pin_cmd)
+        metrics["openClawPluginPin"] = (rc_pin == 0)
+
         # Read both independent runners; the vector count grows with the contract.
         conf_cmd = "tools/run-node24 npm run gateway:v2:conformance"
         self.log(AgentRole.RUNNER, f"正在执行跨宿主一致性套件: {conf_cmd}")
@@ -613,7 +620,7 @@ class E2EOrchestrator:
 
         summaries = {host: (int(passed), int(total)) for host, passed, total in re.findall(
             r"^(openclaw-typescript|hermes-python): (\d+)/(\d+) pass$", out_conf, re.MULTILINE)}
-        conformance_passed = (rc_conf == 0 and set(summaries) == {"openclaw-typescript", "hermes-python"}
+        conformance_passed = (rc_pin == 0 and rc_conf == 0 and set(summaries) == {"openclaw-typescript", "hermes-python"}
                               and all(passed == total and total > 0 for passed, total in summaries.values())
                               and len({total for _, total in summaries.values()}) == 1)
         metrics["conformancePassed"] = conformance_passed

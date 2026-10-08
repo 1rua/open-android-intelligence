@@ -162,18 +162,18 @@ export const PACKETS: ReadonlyArray<{
     id: "WP-07",
     label: "Hermes/OpenClaw adapters and shared skill",
     source: [
-      // The Hermes Gateway plugin was split into its own repository
-      // (1rua/hermes-gateway-plugin) so the host installs it with
-      // `hermes plugins install`. What remains here is the contract both sides
-      // are validated against, plus the TypeScript fixture kept under `legacy/`.
+      // Hermes and OpenClaw production plugins have independent source
+      // repositories. This checkout owns the shared contract, their immutable
+      // pins, and the legacy TypeScript fixture retained for historical tests.
       "gateway-contract/tools/run-hermes-conformance.py",
       "gateway-contract/tools/check-contract-pin.py",
+      "gateway-contract/tools/run-openclaw-conformance.ts",
       "legacy/integrations/hermes-v1/adapter.ts",
       "legacy/integrations/hermes-v1/adapter.test.ts",
       "legacy/integrations/hermes-v1/plugin-manifest.json",
-      "integrations/openclaw/adapter.ts",
-      "integrations/openclaw/adapter.test.ts",
-      "integrations/openclaw/plugin-manifest.json",
+      "openclaw-plugin-pin.json",
+      "tools/check-openclaw-plugin-pin.py",
+      "docs/adr/0052-own-openclaw-gateway-plugin-in-standalone-repository.md",
       "integrations/shared/notification-contract.test.ts",
       "integrations/skills/android-device-bridge/SKILL.md",
     ],
@@ -300,6 +300,19 @@ export const auditReleaseBlockers = (): ReleaseBlocker[] => {
     blockers.push({
       code: "MVP-DEP-LOCK",
       detail: `controller dependency lock is not fully locked (${lockResult.rows.length} rows);${pending}`,
+    });
+  }
+
+  const openClawPinCheck = spawnSync("python3", ["tools/check-openclaw-plugin-pin.py"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: process.env,
+  });
+  if (openClawPinCheck.error !== undefined || openClawPinCheck.status !== 0) {
+    const detail = String(openClawPinCheck.stderr ?? openClawPinCheck.stdout ?? "").trim();
+    blockers.push({
+      code: "OPENCLAW-PLUGIN-PIN",
+      detail: detail || "OpenClaw plugin checkout is missing or does not match openclaw-plugin-pin.json",
     });
   }
 

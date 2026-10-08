@@ -6,7 +6,7 @@ Open Android Intelligence 的 Gateway Protocol v2 有两个**独立实现**：
 
 | 宿主 | 实现语言 | 代码位置 | 声明的 implementation ID |
 | --- | --- | --- | --- |
-| OpenClaw | TypeScript | `integrations/openclaw/src/core/shared-vectors.ts` | `openclaw-typescript` |
+| OpenClaw | TypeScript | 插件仓 `1rua/openclaw-gateway-plugin` 的 `src/core/shared-vectors.ts` | `openclaw-typescript` |
 | Hermes | Python | 插件仓 `1rua/hermes-gateway-plugin` 的 `open_android_intelligence_gateway/core.py` | `hermes-python` |
 
 两者**不共享二进制、不互相调用**，但必须对同一份协议向量产生**完全一致的可观察结果**。本门禁就是证明这一点的自动检查。
@@ -19,15 +19,17 @@ npm run gateway:v2:conformance
 
 该命令依次执行三步，任一失败即整体失败：
 
-1. `gateway-contract/tools/run-openclaw-conformance.ts` — OpenClaw runner（TypeScript 进程）
+1. `gateway-contract/tools/run-openclaw-conformance.ts` — 从 `openclaw-plugin-pin.json` 固定提交加载插件仓的 `runtime/src/core/gateway-core.js`，再用本仓向量运行 OpenClaw runner（TypeScript 进程）
 2. `gateway-contract/tools/run-hermes-conformance.py` — Hermes runner（Python 进程）
 3. `gateway-contract/test/cross-host-conformance.test.ts` — 比对两侧产物
 
-> 单独执行 `npx vitest run` 也会覆盖该门禁：若产物缺失或过期，测试会**自动重新生成**两个 runner 的产物后再比对。
+> 单独执行 `npx vitest run` 也会覆盖该门禁：若产物缺失或过期，测试会**自动重新生成**两个 runner 的产物后再比对。OpenClaw 产物还绑定 `openclaw-plugin-pin.json`，插件提交变化后旧结果会失效。
+
+主仓 CI 按 `openclaw-plugin-pin.json` 检出不可变提交，并校验 checkout HEAD、插件仓契约 pin 与本仓契约内容。本地运行时，把同一提交检出到 `.openclaw-gateway-plugin`，或用 `OPENCLAW_PLUGIN_ROOT` 指向该目录；提交不匹配或缺少已构建的 `runtime/` 时 runner 失败。
 
 ## 共享输入
 
-两个 runner 消费完全相同的输入，不存在任何宿主本地的 Schema/向量副本：
+两个 runner 消费本仓维护的同一组权威向量和动态分派 registry。OpenClaw 可安装包内包含由固定主仓提交生成的契约运行快照，CI 会逐文件校验快照与 pin，避免出现独立维护的副本：
 
 - 六个向量文件：`request-signatures.json`、`protocol-negotiation.json`、`auth-sessions.json`、`attachments.json`、`sse-events.json`、`device-requests.json`
 - 唯一的动态分派 fixture registry：`dispatched-schema-fixtures.json` + `dispatched-schema-fixtures-1.0.0.schema.json`，binding set 恒为 `gateway-core-fixtures-v1`
@@ -77,7 +79,7 @@ npm run gateway:v2:conformance
 
 ## 当前覆盖
 
-62 个向量 case，覆盖以下 7 类 operation，且每个向量文件都同时包含成功与失败样例：
+66 个向量 case，覆盖以下 7 类 operation，且每个向量文件都同时包含成功与失败样例：
 
 | operation | 覆盖内容 |
 | --- | --- |
@@ -109,7 +111,7 @@ npm run gateway:v2:conformance
 
 其中**删除**与**多账号隔离**属于宿主运行时行为（SQLite、CAS、附件 staging、账号目录），不是纯 reducer/向量的可观察输出，因此不进入本共享向量集，而是分别由以下宿主自身测试覆盖：
 
-- OpenClaw：`integrations/openclaw/test/`（账号隔离、附件生命周期、备份与轮换、设备请求队列）
+- OpenClaw：插件仓 `1rua/openclaw-gateway-plugin` 的 `test/`（账号隔离、附件生命周期、备份与轮换、设备请求队列）
 - Hermes：插件仓 `1rua/hermes-gateway-plugin` 的 `tests/`（同构测试）
 
 一致性门禁保证的是**协议层**的跨宿主等价；**状态层**的等价由上述两套同构宿主测试保证。

@@ -76,10 +76,10 @@ flowchart TD
    - 核验宿主版本范围是否符合声明（如 Hermes API 1.0.0 ~ 3.0.0）；若宿主超出范围，依协议规范自动进入 `HOST_INCOMPATIBLE` 只读冻结状态。
 2. **插件安装与加载**：
    - Hermes 宿主：插件已拆为独立仓库，执行 `hermes plugins install 1rua/hermes-gateway-plugin --enable`；本地开发可将仓库检出到 `HERMES_PLUGIN_ROOT` 指向的位置以复用同一套脚本与夹具；
-   - OpenClaw 宿主：通过渠道插件注册机制引入 `integrations/openclaw`。
+   - OpenClaw 宿主：安装 `1rua/openclaw-gateway-plugin` 的固定 GitHub tag；测试前读取 `openclaw-plugin-pin.json` 并校验完整提交 SHA。
 3. **规范一致性套件校验**：
    - 执行 `npm run gateway:v2:conformance`，运行跨宿主测试套件；
-   - 必须通过全量 24 个标准化协议向量测试（包括 Target 规范化排序、Ed25519 签名验证、握手协商 Schema 校验、SSE 消息模式与防重放规则），两端 SHA-256 结果指纹必须 100% 绝对一致。
+   - 必须通过全量 66 个标准化协议向量测试（包括 Target 规范化排序、Ed25519 签名验证、握手协商 Schema 校验、SSE 消息模式与防重放规则），两端 SHA-256 结果指纹必须 100% 绝对一致。
 4. **管理 CLI 注册验证**：
    - 执行 `hermes open-android-intelligence status`（宿主内）或 `python3 "$HERMES_PLUGIN_ROOT/tools/hermes-account.py" status`（无宿主时），确认子命令正常注入且返回当前网关就绪信息；未设置 `HERMES_PLUGIN_ROOT` 时编排器直接失败而不静默跳过。
 
@@ -342,7 +342,7 @@ gitGraph
 1. **第一优先级：契约层 (Contracts)**
    - 涉及 `gateway-contract/` 或 `docs/contracts/` 的修改必须首先合并，并同步生成一致性测试哈希；
 2. **第二优先级：网关适配层 (Gateway Integrations)**
-   - 合并 Hermes / OpenClaw 适配器代码并确保通过最新契约测试；
+   - 检出 Hermes 插件与 `openclaw-plugin-pin.json` 固定的 OpenClaw 插件提交，并确保通过最新契约测试；
 3. **第三优先级：客户端内核与 UI 层 (Android Platform Kernel & Apps)**
    - 合并 Android 客户端修复，并基于已更新的网关契约执行联调；
 4. **第四优先级：测试资产与执行套件 (Journeys & E2E Suites)**
@@ -406,4 +406,3 @@ graph TD
 1. **绝对杜绝伪造数据与死状态**：全部测试操作均由真实的 Android CLI 控件树注入驱动，网络通信经过真实的 TLS/HTTPS 与 SSE 协议栈，账号与消息严格持久化至 SQLite 数据库；
 2. **端到端完整闭环**：从插件安装、账号配置、配对握手到双向通信全链路串联；
 3. **多 Agent 生产级自治**：具备完备的故障自动诊断、Git Worktree 并发隔离修复与门禁合并回归能力，为系统持续演进提供了坚不可摧的质量防护盾。
-

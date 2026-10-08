@@ -106,9 +106,10 @@ open-android-intelligence/
 │   └── ...                           # 领域模型、数据存储与契约端口模块
 ├── gateway-contract/                 # Gateway Protocol v2 核心契约与双宿主一致性套件
 │   ├── schemas/                      # 严谨封闭的 JSON Schema 2020-12 协议定义
-│   ├── vectors/                      # 语言无关的跨宿主黄金测试向量（24 例）
+│   ├── vectors/                      # 语言无关的跨宿主黄金测试向量（66 例）
 │   ├── src/                          # TypeScript 契约实现（Schema 编译、请求签名校验、状态机）
-│   └── tools/                        # Hermes (Python) 与 OpenClaw (TS) 一致性执行套件
+│   └── tools/                        # Hermes 与固定 OpenClaw 插件版本的一致性执行套件
+├── openclaw-plugin-pin.json          # 固定独立 OpenClaw 插件版本、标签与提交 SHA
 ├── plugins/                          # 官方第一方参考设备插件（遵循 .alp 规范构建）
 │   ├── notifications/                # 策略驱动通知采集插件源码（Rust/WASM）
 │   ├── sms/                          # 短信查询与确认发送插件源码（Rust/WASM）
@@ -116,8 +117,7 @@ open-android-intelligence/
 │   ├── sdk-rust/                     # 设备插件官方 Rust SDK
 │   └── dist/                         # 确定性构建生成的 .alp 标准产物包
 ├── plugin-tooling/                   # 设备插件构建与签名工具链（确定性打包器）
-├── integrations/                     # Agent 宿主适配器集成（Hermes 网关已拆为独立仓，见下）
-│   └── openclaw/                     # OpenClaw 原生网关适配器插件
+├── integrations/                     # 共享测试夹具、旧 Hermes TypeScript 夹具与 skill
 ├── docs/                             # 规范文档、ADR 架构决策与实施计划
 └── legacy/                           # 已冻结归档的旧 Bridge 与历史组件
 ```
@@ -141,11 +141,16 @@ open-android-intelligence/
 # 安装基础依赖
 npm ci
 
+# 按主仓 pin 检出 OpenClaw 插件仓并安装其独立依赖
+git clone https://github.com/1rua/openclaw-gateway-plugin.git .openclaw-gateway-plugin
+git -C .openclaw-gateway-plugin checkout "$(python3 -c 'import json; print(json.load(open("openclaw-plugin-pin.json"))["revision"])')"
+npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
+
 # 运行跨宿主网关一致性测试（Hermes + OpenClaw 共用 66 个契约向量）
-npm run gateway:v2:conformance
+OPENCLAW_PLUGIN_ROOT="$PWD/.openclaw-gateway-plugin" npm run gateway:v2:conformance
 ```
 
-### 3. Agent 端 Hermes 网关账号配置
+### 3. Agent 端网关配置（Hermes / OpenClaw）
 
 两个宿主的持久化消息、事件和设备请求均需要账号 AEAD 主密钥；缺少或不匹配时拒绝读写，不回退为明文。OpenClaw 部署需由运维提供独立的原始 32 字节密钥文件（普通文件、非符号链接、权限 `0600`），并设置 `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin`。Hermes 使用宿主 SecretStore 或下述 ADR 0023 初始化步骤。保管主密钥时应与数据库分开；仅恢复数据库不足以解密正文，不能用插件签名 seed 或 APK keystore 代替主密钥。
 
@@ -167,6 +172,15 @@ hermes open-android-intelligence status
 hermes open-android-intelligence contract status   # 协议契约是否就绪
 ```
 
+OpenClaw Gateway 插件源码位于独立仓库 [`1rua/openclaw-gateway-plugin`](https://github.com/1rua/openclaw-gateway-plugin)。应用主仓在 `openclaw-plugin-pin.json` 中锁定插件提交；插件仓按 `contract-pin.json` 固定本仓唯一维护的 Gateway Protocol 契约。首个独立发行版本为 `v1.0.0`，协议版本保持 `2.1.0`，宿主 API 范围保持 `2026.7.1`：
+
+```bash
+openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@v1.0.0
+openclaw plugins inspect open-android-intelligence-gateway --runtime --json
+```
+
+插件 tag 包含由固定契约提交生成的运行快照与 JavaScript 运行入口；安装和启动时不联网获取契约。核心 Schema 摘要变化时，仍须同步升级 Android、Hermes 和 OpenClaw。
+
 插件仓库另附等价 CLI，可在没有宿主的机器上离线预置账号（与上面共用同一套管理服务和主密钥来源）：
 
 ```bash
@@ -181,7 +195,7 @@ python3 tools/hermes-account.py create my_user
 python3 tools/hermes-account.py status
 ```
 
-插件在加载时按 `contract-pin.json` 锁定的提交自动获取协议契约，因此无需在本仓安装插件源码。本仓仍是契约的唯一真源：`gateway-contract/tools/check-contract-pin.py` 会校验插件锁定的提交与本仓契约一致，契约变更未同步升级 pin 时直接失败。
+Hermes 插件在加载时按 `contract-pin.json` 锁定的提交获取协议契约，因此无需在本仓安装 Hermes 源码。本仓仍是契约的唯一真源：`gateway-contract/tools/check-contract-pin.py` 可分别校验 Hermes 与 OpenClaw 插件锁定的提交；契约变更未同步升级 pin 时直接失败。
 
 ### 4. 构建官方设备插件包（.alp）
 
@@ -230,7 +244,7 @@ apps/android/tools/verify-debug-signing.sh \
 | --- | --- | --- |
 | **Gateway Protocol v2 跨宿主契约** | 66 个 TS/Python 共用契约向量 | 契约测试；不覆盖整个设备执行链路 |
 | **Hermes 网关适配器** | pytest 与真实 aiohttp SSE/WS 签名、撤销测试 | 已覆盖；宿主历史/工具结果交付仍不完整 |
-| **OpenClaw 适配器插件** | 锁定 SDK 形状、真实 HTTP 验签与回复回调测试 | 已覆盖；权威历史与媒体回复端口待接通 |
+| **OpenClaw 适配器插件** | 独立仓固定版本、宿主运行时加载与 66 个共享向量 | 固定版安装/加载及协议向量已验证；Android 真机闭环未执行 |
 | **设备插件打包与运行时库** | 确定性签名封装、真实 WASM ABI、预算和安装恢复测试 | 库验证通过；App 执行链路待装配 |
 | **官方参考插件业务** | 通知、短信、通话记录实现当前为 echo | 未完成，不能执行查询业务 |
 | **Android 账户与界面** | 编译、Robolectric 与模块测试 | 账户/身份/事件逻辑已覆盖；加密离线镜像待接通 |

@@ -8,8 +8,10 @@
   typed provider-contract 与高风险 control-port 授权边界（不宣称系统数据源/控制后端已实现）；
 - `bridge-contract/`：配对、代际 fencing、通知 query/subscribe、ACK 与
   package/field filter 的 deterministic fake；
-- `integrations/`：Hermes/OpenClaw adapters、统一工具契约与
-  `android-device-bridge` skill。
+- `integrations/`：Hermes 历史 TypeScript 测试夹具、共享假适配器契约与
+  `android-device-bridge` skill；Hermes 和 OpenClaw 的生产插件源码分别位于独立仓库。
+- `openclaw-plugin-pin.json`、`gateway-contract/tools/check-openclaw-plugin-pin.py`：固定
+  OpenClaw 插件提交，并在主仓 CI 中验证提交与契约 pin。
 - `artifact-contract/`：图片/文件选择后的 digest、PoP、ticket、提交与
   orphan reclaim source contract；不宣称对象存储或真实上传已完成。
 - `apps/android/artifact-ports/`：手机端授权选择、摘要、临时加密副本、提交回执
@@ -21,7 +23,8 @@
 - `e2e/mvp/run-readiness.sh`：串联 SDK-free smoke 与 WP-00..WP-10
   artifact audit；`--release` 会对依赖、工具链、设备及 P0a 门禁 fail-closed。
 - `docs/mvp/mvp-dependency-lock.md` 与 `mvp-contract/tools/check-lock.ts`：
-  真实依赖的 fail-closed 控制器门禁；七行依赖证据目前仍为 PENDING。
+  真实依赖的 fail-closed 控制器门禁；OpenClaw 宿主与独立插件仓分列，其他依赖行的
+  过期或占位证据仍会阻断整体门禁。
 - `docs/mvp/p0a-gate-decisions.md`：记录已确认的 Task 7 D1–D4 与 Task 9
   产品字面值。它不会替代 Task 9 技术预检、依赖锁、设备或生产部署门禁。
 - `docs/mvp/plugin-architecture-migration-evidence.md`：模块化插件架构迁移的
@@ -34,7 +37,7 @@
 
 ```bash
 e2e/mvp/run-smoke.sh --sdk-free
-npm run mvp:lock:check  # 当前按设计失败，直到控制器填满七行证据
+npm run mvp:lock:check  # 其他依赖行仍有过期或占位证据时会失败
 ```
 
 Protocol checks run in `.worktrees/p0a-protocol-security-model` with
