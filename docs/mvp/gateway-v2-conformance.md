@@ -7,7 +7,7 @@ Open Android Intelligence 的 Gateway Protocol v2 有两个**独立实现**：
 | 宿主 | 实现语言 | 代码位置 | 声明的 implementation ID |
 | --- | --- | --- | --- |
 | OpenClaw | TypeScript | `integrations/openclaw/src/core/shared-vectors.ts` | `openclaw-typescript` |
-| Hermes | Python | `integrations/hermes/open_android_intelligence_gateway/core.py` | `hermes-python` |
+| Hermes | Python | 插件仓 `1rua/hermes-gateway-plugin` 的 `open_android_intelligence_gateway/core.py` | `hermes-python` |
 
 两者**不共享二进制、不互相调用**，但必须对同一份协议向量产生**完全一致的可观察结果**。本门禁就是证明这一点的自动检查。
 
@@ -110,6 +110,6 @@ npm run gateway:v2:conformance
 其中**删除**与**多账号隔离**属于宿主运行时行为（SQLite、CAS、附件 staging、账号目录），不是纯 reducer/向量的可观察输出，因此不进入本共享向量集，而是分别由以下宿主自身测试覆盖：
 
 - OpenClaw：`integrations/openclaw/test/`（账号隔离、附件生命周期、备份与轮换、设备请求队列）
-- Hermes：`integrations/hermes/tests/`（同构测试，91 项）
+- Hermes：插件仓 `1rua/hermes-gateway-plugin` 的 `tests/`（同构测试）
 
 一致性门禁保证的是**协议层**的跨宿主等价；**状态层**的等价由上述两套同构宿主测试保证。

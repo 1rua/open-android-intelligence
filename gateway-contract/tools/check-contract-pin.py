@@ -27,6 +27,15 @@ CONTRACT_ROOT = TOOLS_DIR.parent
 REPO_ROOT = CONTRACT_ROOT.parent
 PLUGIN_ENV = "HERMES_PLUGIN_ROOT"
 
+# Everything the Gateway validates a negotiation against: the schemas, the
+# shared vectors, and the registry that maps dispatched schemas to them.
+CONTRACT_PATHS = (
+    "gateway-contract/schemas",
+    "gateway-contract/vectors",
+    "gateway-contract/core-dispatched-schemas.json",
+    "gateway-contract/src",
+)
+
 
 def head_revision() -> str:
     return subprocess.run(
@@ -68,12 +77,15 @@ def contract_matches(revision: str):
     )
     if present.returncode != 0:
         return None
-    # Only the contract proper: the runners under gateway-contract/tools are
-    # repository tooling, not part of what the phone negotiates against.
+    # The contract proper, named file by file. Directories would be wrong in
+    # both directions: gateway-contract/tools is repository tooling rather than
+    # contract, while the dispatched-schema registry sits at the contract root
+    # and a directory-only list would miss it — which is exactly the change that
+    # makes the phone refuse the negotiation.
     unchanged = subprocess.run(
         [
             "git", "-C", str(REPO_ROOT), "diff", "--quiet", revision, "--",
-            "gateway-contract/schemas", "gateway-contract/vectors",
+            *CONTRACT_PATHS,
         ],
         capture_output=True,
     )
@@ -83,11 +95,18 @@ def contract_matches(revision: str):
 def main() -> int:
     plugin_root = os.environ.get(PLUGIN_ENV, "").strip()
     if not plugin_root:
+        # Fail closed: a gate that can be switched off by forgetting a variable
+        # is not a gate. ALLOW_SKIP_PIN_GATE=1 is the explicit opt-out for
+        # inspecting a tree locally without a plugin checkout.
+        if os.environ.get("ALLOW_SKIP_PIN_GATE") == "1":
+            print(f"跳过：未设置 {PLUGIN_ENV}（已显式允许跳过）")
+            return 0
         print(
-            f"跳过：未设置 {PLUGIN_ENV}，无法校验插件仓锁定的契约提交。"
-            f"CI 插件门禁会设置该变量。"
+            f"❌ 未设置 {PLUGIN_ENV}，无法校验插件仓锁定的契约提交。\n"
+            f"   CI 必须提供该变量；本地若确实没有插件仓检出，"
+            f"可设置 ALLOW_SKIP_PIN_GATE=1 显式跳过。"
         )
-        return 0
+        return 1
 
     pin_path = Path(plugin_root).expanduser() / "contract-pin.json"
     if not pin_path.is_file():
@@ -112,10 +131,11 @@ def main() -> int:
     matches = contract_matches(revision)
     if matches is None:
         print(
-            f"跳过：本地没有插件仓锁定的提交 {revision}，无法比对契约内容。\n"
-            f"   请在完整（浅克隆请加 --depth 0）检出中运行，或先 fetch 该提交。"
+            f"❌ 本地没有插件仓锁定的提交 {revision}，无法比对契约内容。\n"
+            f"   请在完整检出中运行（浅克隆需 --depth 0），或先执行：\n"
+            f"   git fetch origin {revision}"
         )
-        return 0
+        return 1
     if matches:
         print(
             f"✅ 插件仓锁定提交 {revision[:12]} 的契约与本仓 HEAD {current[:12]} 一致"

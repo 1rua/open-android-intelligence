@@ -78,7 +78,7 @@ fun specificFailureText(code: String): String? {
     val value = code.uppercase()
     return when {
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
-        value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请让网关部署者重装 Hermes 网关插件以自动生成主密钥并重启网关。"
+        value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请让网关部署者执行插件仓的 tools/hermes-account.py init-key 生成受限密钥文件（或修复其权限后）并重启网关。"
         value.contains("APPROVAL_UNSUPPORTED") ->
             "该 Gateway 不支持审批卡片，App 不会伪造一张无法提交的卡片。请升级 Gateway，或用 /approve 文本命令回复。"
         value.contains("APPROVAL_EXPIRED") ->

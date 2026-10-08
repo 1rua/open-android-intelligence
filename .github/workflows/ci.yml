@@ -13,6 +13,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # The contract pin gate compares the pinned commit against this one,
+          # so the history it references must be present; a shallow clone would
+          # make the gate silently skip itself.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

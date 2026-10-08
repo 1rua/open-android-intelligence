@@ -1,0 +1,4156 @@
+<title>Agent Workspace Motion Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ========================================================
+   MATERIAL DESIGN 3 (MD3) DYNAMIC COLOR TOKEN ARCHITECTURE
+   ======================================================== */
+:root {
+  /* Dynamic Palette 1: Amber/Gold Seed (Default) */
+  --md-seed: #7E5700;
+  --md-sys-color-primary: #FFBA2B;
+  --md-sys-color-on-primary: #432C00;
+  --md-sys-color-primary-container: #604000;
+  --md-sys-color-on-primary-container: #FFDE9F;
+  --md-sys-color-secondary: #DBC39E;
+  --md-sys-color-on-secondary: #3C2E15;
+  --md-sys-color-secondary-container: #544429;
+  --md-sys-color-tertiary: #B4CE9D;
+  --md-sys-color-on-tertiary: #203613;
+  --md-sys-color-tertiary-container: #364D27;
+  --md-sys-color-surface: #16130D;
+  --md-sys-color-on-surface: #E9E1D8;
+  --md-sys-color-on-surface-variant: #D0C5B4;
+  --md-sys-color-surface-container-lowest: #110E09;
+  --md-sys-color-surface-container-low: #1F1B14;
+  --md-sys-color-surface-container: #231F18;
+  --md-sys-color-surface-container-high: #2E2922;
+  --md-sys-color-surface-container-highest: #39342C;
+  --md-sys-color-outline: #998F80;
+  --md-sys-color-outline-variant: #4D4539;
+  --md-sys-color-error: #FFB4AB;
+  --md-sys-color-on-error: #690005;
+
+  /* Assistant Accent & MD3 Harmonized Glow Tokens */
+  --assistant-accent-btn: var(--md-sys-color-primary);
+  --assistant-on-accent-btn: var(--md-sys-color-on-primary);
+  --md-glow-color-1: var(--md-sys-color-primary);
+  --md-glow-color-2: var(--md-sys-color-tertiary);
+  --md-glow-color-3: var(--md-sys-color-secondary);
+  --md-glow-color-4: var(--md-sys-color-primary-container);
+
+  /* MD3 Shape Tokens */
+  --md-sys-shape-corner-full: 9999px;
+  --md-sys-shape-corner-extra-large: 28px;
+  --md-sys-shape-corner-large: 16px;
+  --md-sys-shape-corner-medium: 12px;
+  --md-sys-shape-corner-small: 8px;
+
+  /* Material Design 3 Expressive & Fluid Motion Curves (GPU Hardware Accelerated) */
+  --ease-m3-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-m3-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-m3-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --ease-spring-snappy: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  --ease-spring-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-fluid-morph: cubic-bezier(0.2, 0.9, 0.2, 1);
+  --anim-speed: 1;
+}
+
+/* Dynamic Palette 2: Emerald/Teal Seed */
+[data-dynamic-theme="emerald"] {
+  --md-seed: #006A60;
+  --md-sys-color-primary: #80D5C9;
+  --md-sys-color-on-primary: #003731;
+  --md-sys-color-primary-container: #005048;
+  --md-sys-color-on-primary-container: #9CF1E5;
+  --md-sys-color-secondary: #B1CCC5;
+  --md-sys-color-on-secondary: #1C352F;
+  --md-sys-color-secondary-container: #324B45;
+  --md-sys-color-tertiary: #A7CCE6;
+  --md-sys-color-surface: #111413;
+  --md-sys-color-on-surface: #E0E3E1;
+  --md-sys-color-on-surface-variant: #BFC9C5;
+  --md-sys-color-surface-container-lowest: #0C0F0E;
+  --md-sys-color-surface-container-low: #171A19;
+  --md-sys-color-surface-container: #1B1E1D;
+  --md-sys-color-surface-container-high: #252927;
+  --md-sys-color-surface-container-highest: #303432;
+  --md-sys-color-outline: #899390;
+  --md-sys-color-outline-variant: #3F4946;
+}
+
+/* Dynamic Palette 3: Lavender/Violet Seed */
+[data-dynamic-theme="violet"] {
+  --md-seed: #6750A4;
+  --md-sys-color-primary: #D0BCFF;
+  --md-sys-color-on-primary: #381E72;
+  --md-sys-color-primary-container: #4F378B;
+  --md-sys-color-on-primary-container: #EADDFF;
+  --md-sys-color-secondary: #CCC2DC;
+  --md-sys-color-on-secondary: #332D41;
+  --md-sys-color-secondary-container: #4A4458;
+  --md-sys-color-tertiary: #EFB8C8;
+  --md-sys-color-surface: #141218;
+  --md-sys-color-on-surface: #E6E0E9;
+  --md-sys-color-on-surface-variant: #CAC4D0;
+  --md-sys-color-surface-container-lowest: #0F0D13;
+  --md-sys-color-surface-container-low: #1D1B20;
+  --md-sys-color-surface-container: #211F26;
+  --md-sys-color-surface-container-high: #2B2930;
+  --md-sys-color-surface-container-highest: #36343B;
+  --md-sys-color-outline: #938F99;
+  --md-sys-color-outline-variant: #49454F;
+}
+
+/* Dynamic Palette 4: Sky/Cobalt Seed */
+[data-dynamic-theme="blue"] {
+  --md-seed: #0061A4;
+  --md-sys-color-primary: #9FCAFF;
+  --md-sys-color-on-primary: #003258;
+  --md-sys-color-primary-container: #00497D;
+  --md-sys-color-on-primary-container: #D1E4FF;
+  --md-sys-color-secondary: #BCC7DB;
+  --md-sys-color-on-secondary: #263140;
+  --md-sys-color-secondary-container: #3C4758;
+  --md-sys-color-tertiary: #DABDE2;
+  --md-sys-color-surface: #101418;
+  --md-sys-color-on-surface: #E1E2E8;
+  --md-sys-color-on-surface-variant: #C2C7CF;
+  --md-sys-color-surface-container-lowest: #0B0E12;
+  --md-sys-color-surface-container-low: #181C20;
+  --md-sys-color-surface-container: #1C2024;
+  --md-sys-color-surface-container-high: #262B2F;
+  --md-sys-color-surface-container-highest: #31353A;
+  --md-sys-color-outline: #8C9199;
+  --md-sys-color-outline-variant: #42474E;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+body {
+  background: #060807;
+  color: var(--md-sys-color-on-surface);
+  font-family: 'Roboto Flex', -apple-system, BlinkMacSystemFont, sans-serif;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 20px 16px;
+  overflow-x: hidden;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+.workspace {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 36px;
+  max-width: 1260px;
+  width: 100%;
+  justify-content: center;
+  align-items: flex-start;
+  margin-top: 8px;
+}
+
+/* Master Mode Switcher */
+.lab-top-tabs-bar {
+  display: flex;
+  background: #151817;
+  border-radius: var(--md-sys-shape-corner-full);
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  margin-bottom: 16px;
+  gap: 6px;
+}
+
+.lab-tab-chip {
+  padding: 8px 24px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #94a3b8;
+  border-radius: var(--md-sys-shape-corner-full);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lab-tab-chip.active {
+  background: var(--assistant-accent-btn);
+  color: var(--assistant-on-accent-btn);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+}
+
+.device-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.device-frame {
+  width: 375px;
+  height: 780px;
+  background: #000000;
+  border-radius: 46px;
+  border: 10px solid #141716;
+  box-shadow: 0 25px 70px -15px rgba(0, 0, 0, 0.95),
+              0 0 0 1px rgba(255, 255, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ========================================================
+   1. STANDALONE DIGITAL ASSISTANT VIEWPORT (1:1 VIDEO + MD3 GLOW)
+   ======================================================== */
+.assistant-workspace-viewport {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: #000000;
+  z-index: 50;
+  overflow: hidden;
+}
+
+.assistant-workspace-viewport.active {
+  display: flex;
+}
+
+/* Material Design 3 Dynamic Token-Driven Harmonized Glow Mesh */
+.assistant-ambient-glow-aura {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 10% 92%, var(--md-glow-color-2) 0%, transparent 48%),
+              radial-gradient(circle at 50% 96%, var(--md-glow-color-1) 0%, transparent 58%),
+              radial-gradient(circle at 90% 92%, var(--md-glow-color-3) 0%, transparent 48%),
+              radial-gradient(circle at 50% 100%, var(--md-glow-color-4) 0%, transparent 64%);
+  z-index: 2;
+  opacity: 0.55;
+  filter: blur(18px);
+  animation: glowMeshPulse 4s infinite alternate ease-in-out;
+  transition: background 0.4s ease, opacity 0.3s ease;
+}
+
+@keyframes glowMeshPulse {
+  0% { transform: scale(1) translateY(0); opacity: 0.5; filter: blur(20px); }
+  50% { transform: scale(1.08) translateY(-8px); opacity: 0.65; filter: blur(14px); }
+  100% { transform: scale(1.03) translateY(-3px); opacity: 0.55; filter: blur(18px); }
+}
+
+.assist-screen-share-pill {
+  position: relative;
+  align-self: flex-start;
+  margin: 0 0 12px 18px;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+  padding: 8px 16px;
+  border-radius: var(--md-sys-shape-corner-full);
+  font-size: 13.5px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  z-index: 10;
+  transition: transform 0.15s ease, background 0.2s;
+}
+
+.assist-screen-share-pill:active {
+  transform: scale(0.96);
+}
+
+.assist-response-card {
+  position: relative;
+  margin: 0 16px 12px 16px;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 26px;
+  padding: 16px 18px 14px 18px;
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 18px 40px rgba(0,0,0,0.85);
+  z-index: 10;
+  animation: slideUpCard 0.32s var(--ease-spring-smooth);
+}
+
+.assist-response-card.visible {
+  display: flex;
+}
+
+@keyframes slideUpCard {
+  from { opacity: 0; transform: translateY(20px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.response-card-handle {
+  width: 34px;
+  height: 4px;
+  background: var(--md-sys-color-outline);
+  border-radius: 2px;
+  margin: -4px auto 2px auto;
+  cursor: grab;
+  opacity: 0.6;
+}
+
+.response-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.assist-close-chip-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.assist-close-chip-btn:hover {
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface);
+}
+
+.response-card-body-text {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--md-sys-color-on-surface);
+  user-select: text;
+}
+
+.response-card-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.toolbar-group-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.tool-icon-btn {
+  background: transparent;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  color: var(--md-sys-color-on-surface-variant);
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-icon-btn:hover {
+  color: var(--md-sys-color-on-surface);
+  transform: scale(1.12);
+}
+
+.assist-bottom-dock-wrapper {
+  position: relative;
+  z-index: 10;
+  margin: 0 16px 20px 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.assist-floating-bar-card {
+  position: relative;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 36px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 16px 36px rgba(0,0,0,0.85);
+  transition: all 0.35s var(--ease-fluid-morph);
+}
+
+.assist-handle-notch {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 4.5px;
+  background: var(--md-sys-color-outline);
+  border-radius: 3px;
+  cursor: ns-resize;
+  opacity: 0.6;
+  transition: background 0.2s, transform 0.15s;
+}
+
+.assist-handle-notch:hover {
+  background: var(--assistant-accent-btn);
+  transform: translateX(-50%) scaleX(1.2);
+}
+
+.assist-icon-plus-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--md-sys-color-on-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.assist-icon-plus-btn:hover {
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.assist-icon-plus-btn.open {
+  transform: rotate(45deg);
+  color: var(--assistant-accent-btn);
+}
+
+.assist-collapsed-input-trigger {
+  flex: 1;
+  padding: 0 14px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: text;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.assist-floating-bar-card.expanded {
+  border-radius: 26px;
+  padding: 14px 16px 12px 16px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  background: var(--md-sys-color-surface-container-high);
+  border-color: var(--assistant-accent-btn);
+}
+
+.assist-floating-bar-card.expanded .assist-collapsed-input-trigger,
+.assist-floating-bar-card.expanded .assist-collapsed-right-group,
+.assist-floating-bar-card.expanded > .assist-icon-plus-btn {
+  display: none !important;
+}
+
+.assist-expanded-zone {
+  display: none;
+  width: 100%;
+  flex-direction: column;
+}
+
+.assist-floating-bar-card.expanded .assist-expanded-zone {
+  display: flex;
+}
+
+/* Attached Media Badge in Assistant View */
+.assist-attached-badge {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  background: var(--md-sys-color-primary-container);
+  border: 1px solid var(--md-sys-color-primary);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 4px 8px;
+  margin-bottom: 6px;
+}
+
+.assist-badge-text {
+  font-size: 11.5px;
+  color: var(--md-sys-color-on-primary-container);
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.assist-textarea-input {
+  width: 100%;
+  height: 48px;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--md-sys-color-on-surface);
+  font-size: 15px;
+  font-family: inherit;
+  line-height: 1.4;
+  caret-color: var(--assistant-accent-btn);
+  margin-top: 4px;
+}
+
+.assist-expanded-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.assist-solid-circle-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--assistant-accent-btn);
+  color: var(--assistant-on-accent-btn);
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.assist-solid-circle-btn:active {
+  transform: scale(0.92);
+}
+
+.assist-live-waveform {
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 18px;
+  color: var(--md-sys-color-on-surface);
+  margin-left: 10px;
+  margin-right: 4px;
+}
+
+.assist-wave-bar {
+  width: 2.5px;
+  background: var(--md-sys-color-on-surface);
+  border-radius: 2px;
+  animation: wavePulse 1.2s infinite ease-in-out alternate;
+}
+
+.assist-wave-bar:nth-child(1) { height: 8px; animation-delay: 0.1s; }
+.assist-wave-bar:nth-child(2) { height: 16px; animation-delay: 0.3s; }
+.assist-wave-bar:nth-child(3) { height: 10px; animation-delay: 0.2s; }
+
+@keyframes wavePulse {
+  0% { transform: scaleY(0.4); }
+  100% { transform: scaleY(1.2); }
+}
+
+/* Assistant Attachment Popup Menu */
+.assist-attach-popup-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 16px;
+  width: 240px;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-sys-shape-corner-large);
+  padding: 10px;
+  border: 1px solid var(--assistant-accent-btn);
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(14px) scale(0.92);
+  transform-origin: bottom left;
+  transition: opacity 0.22s ease, transform 0.28s var(--ease-spring-smooth);
+}
+
+.assist-attach-popup-menu.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.assist-popup-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-high);
+  cursor: pointer;
+  color: var(--md-sys-color-on-surface);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: background 0.15s ease, color 0.15s;
+}
+
+.assist-popup-item:hover {
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--assistant-accent-btn);
+}
+
+/* ========================================================
+   DISMISS TARGET DROP ZONE (BOTTOM CENTER ❌)
+   ======================================================== */
+.assist-dismiss-zone {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(90px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 90;
+  pointer-events: none;
+  opacity: 0;
+  transition: transform 0.3s var(--ease-spring-smooth), opacity 0.25s ease;
+}
+
+.assist-dismiss-zone.active {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.assist-dismiss-circle {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: rgba(255, 59, 48, 0.18);
+  border: 1.5px solid rgba(255, 59, 48, 0.6);
+  color: #ffb4ab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.75);
+  transition: transform 0.2s var(--ease-spring-snappy), background 0.2s ease, border-color 0.2s ease;
+}
+
+.assist-dismiss-zone.hovered .assist-dismiss-circle {
+  transform: scale(1.22);
+  background: rgba(255, 59, 48, 0.85);
+  border-color: #ff5449;
+  color: #ffffff;
+  box-shadow: 0 0 28px rgba(255, 59, 48, 0.8);
+}
+
+.assist-dismiss-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffb4ab;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 6px rgba(0,0,0,0.8);
+}
+
+/* ========================================================
+   UNIFIED SINGLE-ELEMENT MORPHING CAPSULE & DOCKED BALL
+   从输入栏到悬浮球单体无缝形变（绝对物理连贯，零断层零闪烁）
+   ======================================================== */
+.assist-bottom-dock-wrapper {
+  position: relative;
+  z-index: 15;
+  margin: 0 16px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.assist-unified-capsule {
+  position: relative;
+  width: 100%;
+  height: 58px;
+  margin-left: auto; /* 始终靠右对齐，确保宽度收缩时从左向右缩小至右下角！ */
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 10px;
+  box-shadow: 0 16px 36px rgba(0,0,0,0.85);
+  overflow: hidden;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  transform-origin: right center;
+  will-change: width, height, border-radius, background, box-shadow, transform;
+  transition: width 0.38s var(--ease-m3-emphasized-decelerate),
+              height 0.38s var(--ease-m3-emphasized-decelerate),
+              border-radius 0.38s var(--ease-m3-emphasized-decelerate),
+              background 0.3s ease,
+              border-color 0.3s ease,
+              box-shadow 0.3s ease;
+}
+
+/* 左侧内容区：收缩时无缝向右滑动并被父容器裁剪 */
+.assist-capsule-left-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: opacity 0.22s ease, transform 0.36s var(--ease-m3-emphasized-decelerate);
+}
+
+.assist-handle-notch {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 4.5px;
+  background: var(--md-sys-color-outline);
+  border-radius: 3px;
+  cursor: ns-resize;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.assist-icon-plus-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--md-sys-color-on-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease;
+}
+
+.assist-collapsed-input-trigger {
+  flex: 1;
+  padding: 0 12px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: text;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 右侧核心徽标区域：兼具麦克风与 Gemini 彩色四角星 */
+.assist-capsule-core-btn {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--assistant-accent-btn);
+  color: var(--assistant-on-accent-btn);
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+  flex-shrink: 0;
+  transition: width 0.36s var(--ease-m3-emphasized-decelerate),
+              height 0.36s var(--ease-m3-emphasized-decelerate),
+              background 0.3s ease,
+              transform 0.2s var(--ease-spring-snappy);
+}
+
+.assist-capsule-core-btn .icon-sparkle {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.6) rotate(-20deg);
+  transition: opacity 0.28s ease, transform 0.34s var(--ease-spring-snappy);
+}
+
+.assist-capsule-core-btn .icon-mic {
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+
+/* 状态提示气泡 */
+.assist-status-chip-bubble {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  right: 0;
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-full);
+  padding: 8px 16px;
+  font-size: 13.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+  opacity: 0;
+  transform: translateY(8px) scale(0.92);
+  transition: opacity 0.28s var(--ease-spring-smooth), transform 0.28s var(--ease-spring-smooth);
+  pointer-events: none;
+}
+
+.assist-status-chip-bubble.pop {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* ========================================================
+   BALL STATE (收缩为悬浮球状态 - 单体容器从左往右直接收缩成纯圆球)
+   ======================================================== */
+.assist-unified-capsule.is-docked-ball {
+  width: 58px !important;
+  height: 58px !important;
+  border-radius: 50% !important;
+  padding: 0 !important;
+  justify-content: center !important;
+  background: radial-gradient(circle at 35% 30%, #302b20 0%, #16130d 100%) !important;
+  border-color: rgba(255, 186, 43, 0.4) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.85), 0 0 20px rgba(255, 186, 43, 0.35) !important;
+  cursor: grab;
+}
+
+.assist-unified-capsule.is-docked-ball:active {
+  cursor: grabbing;
+}
+
+.assist-unified-capsule.is-docked-ball .assist-capsule-left-content,
+.assist-unified-capsule.is-docked-ball .assist-handle-notch,
+.assist-unified-capsule.is-docked-ball .assist-expanded-zone {
+  opacity: 0 !important;
+  pointer-events: none;
+  transform: translateX(-40px);
+}
+
+.assist-unified-capsule.is-docked-ball .assist-capsule-core-btn {
+  width: 100%;
+  height: 100%;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.assist-unified-capsule.is-docked-ball .icon-mic {
+  opacity: 0 !important;
+  transform: scale(0.5);
+}
+
+.assist-unified-capsule.is-docked-ball .icon-sparkle {
+  opacity: 1 !important;
+  transform: scale(1) rotate(0);
+}
+
+/* 拖拽时的跟手与吸附 */
+.assist-bottom-dock-wrapper.is-free-floating {
+  position: absolute !important;
+  margin: 0 !important;
+  bottom: auto !important;
+  right: auto !important;
+  width: 58px !important;
+  height: 58px !important;
+}
+
+.assist-bottom-dock-wrapper.dragging .assist-unified-capsule {
+  transform: scale(1.15);
+  box-shadow: 0 20px 45px rgba(0,0,0,0.95), 0 0 32px var(--assistant-accent-btn) !important;
+  transition: none !important;
+}
+
+.assist-bottom-dock-wrapper.animating-snap {
+  transition: left 0.32s var(--ease-spring-smooth), top 0.32s var(--ease-spring-smooth) !important;
+}
+
+.assist-bottom-dock-wrapper.sucked .assist-unified-capsule {
+  animation: ballSuckedIntoZone 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+@keyframes ballSuckedIntoZone {
+  0% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(0.1) rotate(45deg); opacity: 0; }
+}
+
+/* 展开输入框多行模式 */
+.assist-unified-capsule.expanded-multiline {
+  height: 140px;
+  border-radius: 26px;
+  padding: 14px 16px 12px 16px;
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--md-sys-color-surface-container-high);
+  border-color: var(--assistant-accent-btn);
+}
+
+.assist-unified-capsule.expanded-multiline .assist-capsule-left-content,
+.assist-unified-capsule.expanded-multiline > .assist-capsule-core-btn {
+  display: none !important;
+}
+
+.assist-expanded-zone {
+  display: none;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+}
+
+.assist-unified-capsule.expanded-multiline .assist-expanded-zone {
+  display: flex;
+}
+
+.assist-virtual-keyboard {
+  height: 0;
+  overflow: hidden;
+  background: #000000;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px;
+  transition: height 0.35s var(--ease-fluid-morph);
+  z-index: 10;
+}
+
+.assist-virtual-keyboard.visible {
+  height: 250px;
+  padding: 10px 6px 20px 6px;
+}
+
+/* ========================================================
+   2. MAIN APP WORKSPACE VIEWPORT & CAMERA
+   ======================================================== */
+.main-app-viewport {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--md-sys-color-surface);
+}
+
+.camera-viewfinder-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 100;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.camera-viewfinder-overlay.open {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.camera-sheet-card {
+  width: 100%;
+  height: 64%;
+  background: #000000;
+  border-radius: 32px 32px 0 0;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: 0 -15px 40px rgba(0, 0, 0, 0.9);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  transform: translateY(100%);
+  transition: transform 0.38s var(--ease-spring-smooth);
+}
+
+.camera-viewfinder-overlay.open .camera-sheet-card {
+  transform: translateY(0);
+}
+
+.camera-lens-viewport {
+  flex: 1;
+  position: relative;
+  background: radial-gradient(circle at center, #1b2220 0%, #080a09 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.camera-flash-layer {
+  position: absolute;
+  inset: 0;
+  background: #ffffff;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 10;
+  transition: opacity 0.08s ease;
+}
+
+.camera-flash-layer.flashing {
+  opacity: 0.95;
+}
+
+.camera-live-indicator {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #ffb4ab;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 3px 8px;
+  border-radius: var(--md-sys-shape-corner-full);
+}
+
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ffb4ab;
+  animation: cursorBlink 1s infinite;
+}
+
+.viewfinder-grid {
+  position: absolute;
+  inset: 18px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 16px;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewfinder-target {
+  width: 64px;
+  height: 64px;
+  border: 2px solid var(--md-sys-color-primary);
+  border-radius: 50%;
+  box-shadow: 0 0 15px var(--md-sys-color-primary);
+  animation: targetPulse 2s infinite ease-in-out;
+}
+
+@keyframes targetPulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+
+.camera-bottom-bar {
+  height: 96px;
+  background: #000000;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 0 24px 10px 24px;
+}
+
+.camera-nav-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #1c201e;
+  border: 1px solid #333a38;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.camera-nav-btn:active {
+  transform: scale(0.9);
+}
+
+.camera-shutter-outer {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 4px solid #ffffff;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.18s var(--ease-spring-snappy);
+}
+
+.camera-shutter-inner {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: #ffffff;
+  transition: transform 0.15s ease;
+}
+
+.camera-shutter-outer:active {
+  transform: scale(0.88);
+}
+
+.camera-shutter-outer:active .camera-shutter-inner {
+  transform: scale(0.92);
+}
+
+.attached-media-preview {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  background: var(--md-sys-color-primary-container);
+  border: 1px solid var(--md-sys-color-primary);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 5px 8px;
+  margin-bottom: 6px;
+  animation: slideUpFade 0.25s var(--ease-spring-smooth);
+}
+
+@keyframes slideUpFade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.media-thumbnail-img {
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  background: var(--md-sys-color-surface-container-high);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-sys-color-primary);
+}
+
+.media-label-text {
+  font-size: 12px;
+  color: var(--md-sys-color-on-primary-container);
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media-remove-btn {
+  background: transparent;
+  border: none;
+  color: var(--md-sys-color-on-primary-container);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+/* Sidebar Drawer */
+.sidebar-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 90;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.sidebar-overlay.open {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar-drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 295px;
+  background: var(--md-sys-color-surface-container-low);
+  border-right: 1px solid var(--md-sys-color-outline-variant);
+  z-index: 95;
+  transform: translateX(-100%);
+  transition: transform 0.32s var(--ease-spring-smooth);
+  display: flex;
+  flex-direction: column;
+  padding: 44px 14px 16px 14px;
+  box-shadow: 10px 0 30px rgba(0, 0, 0, 0.7);
+}
+
+.sidebar-drawer.open {
+  transform: translateX(0);
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  margin-bottom: 12px;
+}
+
+.sidebar-brand {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface-variant);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 6px 0 8px 4px;
+}
+
+.sidebar-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.sidebar-session-item {
+  padding: 10px 12px;
+  border-radius: var(--md-sys-shape-corner-medium);
+  font-size: 13.5px;
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: all 0.15s ease;
+  border: 1px solid transparent;
+}
+
+.sidebar-session-item:hover {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.sidebar-session-item.active {
+  background: var(--md-sys-color-secondary-container);
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-primary);
+  font-weight: 600;
+}
+
+.sidebar-footer-settings {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: var(--md-sys-shape-corner-medium);
+  color: var(--md-sys-color-on-surface);
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.sidebar-setting-item:hover {
+  background: var(--md-sys-color-surface-container);
+}
+
+/* Settings Modal Dialog & Advanced Panel */
+.settings-modal-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.78);
+  backdrop-filter: blur(8px);
+  z-index: 110;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-end;
+  transition: opacity 0.28s ease, visibility 0.28s ease;
+}
+
+.settings-modal-overlay.open {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.settings-bottom-sheet {
+  width: 100%;
+  max-height: 88%;
+  height: 640px;
+  background: var(--md-sys-color-surface-container);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 28px 28px 0 0;
+  padding: 14px 16px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transform: translateY(100%);
+  transition: transform 0.35s var(--ease-spring-smooth);
+  box-shadow: 0 -12px 48px rgba(0,0,0,0.9);
+  overflow: hidden;
+}
+
+.settings-modal-overlay.open .settings-bottom-sheet {
+  transform: translateY(0);
+}
+
+.settings-handle-bar {
+  width: 38px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--md-sys-color-outline);
+  opacity: 0.5;
+  margin: 0 auto 4px auto;
+  cursor: grab;
+}
+
+.settings-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 2px;
+}
+
+.settings-nav-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+.settings-nav-tabs::-webkit-scrollbar { display: none; }
+
+.settings-tab-btn {
+  padding: 6px 14px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-tab-btn.active {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  border-color: var(--md-sys-color-primary);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+}
+
+.settings-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 2px;
+  padding-bottom: 12px;
+  scrollbar-width: thin;
+}
+
+.settings-tab-content.active {
+  display: flex;
+  animation: fadeInSettings 0.25s var(--ease-spring-smooth);
+}
+
+@keyframes fadeInSettings {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.settings-card {
+  background: var(--md-sys-color-surface-container-low);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-large);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-card-desc {
+  font-size: 11.5px;
+  color: var(--md-sys-color-on-surface-variant);
+  line-height: 1.45;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.settings-row:last-child { border-bottom: none; }
+
+.settings-row-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  padding-right: 10px;
+}
+
+.settings-row-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface);
+}
+
+.settings-row-sub {
+  font-size: 11px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* MD3 Switch Toggle */
+.md3-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.md3-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.md3-switch-track {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--md-sys-color-surface-container-highest);
+  border: 1.5px solid var(--md-sys-color-outline);
+  border-radius: 24px;
+  transition: 0.25s;
+}
+.md3-switch-thumb {
+  position: absolute;
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3.5px;
+  background-color: var(--md-sys-color-outline);
+  border-radius: 50%;
+  transition: 0.25s var(--ease-spring-snappy);
+}
+.md3-switch input:checked + .md3-switch-track {
+  background-color: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+}
+.md3-switch input:checked + .md3-switch-track .md3-switch-thumb {
+  transform: translateX(20px);
+  background-color: var(--md-sys-color-on-primary);
+  width: 18px;
+  height: 18px;
+  left: 1px;
+  bottom: 1.5px;
+}
+
+.settings-chip-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--md-sys-shape-corner-full);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.badge-success { background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3); }
+.badge-warning { background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }
+.badge-danger { background: rgba(248, 113, 113, 0.15); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3); }
+.badge-primary { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); border: 1px solid var(--md-sys-color-primary); }
+
+.settings-plugin-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  gap: 8px;
+}
+
+.settings-action-btn {
+  padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.settings-action-btn:active { transform: scale(0.95); }
+.btn-primary-filled { background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); }
+.btn-tonal-filled { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
+.btn-danger-filled { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+
+/* Status Bar & Header */
+.status-bar {
+  height: 44px;
+  padding: 10px 24px 0 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+  z-index: 20;
+}
+
+.status-icons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.app-header {
+  padding: 6px 18px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 20;
+}
+
+.icon-btn-round {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-sys-color-on-surface);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.icon-btn-round:active {
+  transform: scale(0.92);
+}
+
+.segmented-switch {
+  position: relative;
+  display: flex;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-sys-shape-corner-full);
+  padding: 4px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.segmented-indicator {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  background: var(--md-sys-color-surface-container-highest);
+  border-radius: var(--md-sys-shape-corner-full);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  transition: transform 0.32s var(--ease-spring-smooth);
+}
+
+.segmented-switch[data-active="tasks"] .segmented-indicator {
+  transform: translateX(100%);
+}
+
+.segmented-item {
+  position: relative;
+  z-index: 2;
+  padding: 7px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: pointer;
+}
+
+.segmented-item.active {
+  color: var(--md-sys-color-on-surface);
+}
+
+/* Chat Viewport & Markdown Elements */
+.chat-viewport {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 16px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: relative;
+  z-index: 10;
+  scroll-behavior: smooth;
+}
+
+.message-bubble-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.user-bubble-wrapper {
+  align-self: flex-end;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: 85%;
+}
+
+.message-bubble-user {
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+  padding: 12px 16px;
+  border-radius: 20px 20px 4px 20px;
+  font-size: 14.5px;
+  line-height: 1.45;
+  word-break: break-word;
+  user-select: text;
+}
+
+.message-bubble-agent {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 96%;
+  width: 100%;
+}
+
+.agent-meta-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--md-sys-color-primary);
+  font-weight: 600;
+}
+
+.agent-content-card {
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  padding: 14px 16px;
+  border-radius: 4px 20px 20px 20px;
+  color: var(--md-sys-color-on-surface);
+  font-size: 14px;
+  line-height: 1.6;
+  user-select: text;
+}
+
+/* Complete Markdown Styling Inside Agent Cards */
+.agent-content-card h1, .agent-content-card h2, .agent-content-card h3 {
+  color: #ffffff;
+  margin: 10px 0 6px 0;
+  font-weight: 700;
+}
+.agent-content-card h1 { font-size: 16px; border-bottom: 1px solid var(--md-sys-color-outline-variant); padding-bottom: 4px; }
+.agent-content-card h2 { font-size: 15px; }
+.agent-content-card h3 { font-size: 14px; color: var(--md-sys-color-primary); }
+
+.agent-content-card p { margin-bottom: 8px; }
+.agent-content-card p:last-child { margin-bottom: 0; }
+
+.agent-content-card strong { color: #ffffff; font-weight: 700; }
+.agent-content-card em { font-style: italic; color: #cbd5e1; }
+
+.agent-content-card code {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--md-sys-color-surface-container-lowest);
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  color: var(--md-sys-color-primary);
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.agent-content-card pre {
+  background: var(--md-sys-color-surface-container-lowest);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.agent-content-card pre code {
+  background: transparent;
+  padding: 0;
+  border: none;
+  font-size: 12px;
+  color: var(--md-sys-color-tertiary);
+}
+
+.agent-content-card ul, .agent-content-card ol {
+  padding-left: 18px;
+  margin: 6px 0 8px 0;
+}
+.agent-content-card li { margin-bottom: 4px; }
+
+.agent-content-card blockquote {
+  border-left: 3px solid var(--md-sys-color-primary);
+  padding-left: 10px;
+  margin: 8px 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-style: italic;
+}
+
+.agent-content-card table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.agent-content-card td, .agent-content-card th {
+  padding: 5px 8px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  font-size: 12.5px;
+}
+
+.telegram-inline-keyboard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.inline-keyboard-row {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.inline-keyboard-btn {
+  flex: 1;
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+  padding: 8px 10px;
+  border-radius: var(--md-sys-shape-corner-small);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.inline-keyboard-btn.active {
+  background: var(--md-sys-color-secondary-container);
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-primary);
+}
+
+.streaming-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  background: var(--md-sys-color-primary);
+  border-radius: 2px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  animation: cursorBlink 0.8s infinite;
+}
+
+@keyframes cursorBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.suggested-items {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: auto;
+  margin-bottom: 4px;
+}
+
+.suggested-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 14px;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: pointer;
+  padding: 10px 12px;
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-surface-container-low);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  transition: all 0.15s ease;
+}
+
+.suggested-item:hover {
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container);
+  border-color: var(--md-sys-color-primary);
+}
+
+.gateway-sync-card {
+  background: var(--md-sys-color-surface-container-low);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gateway-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gateway-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--md-sys-color-primary);
+}
+
+/* Bottom Input Flow */
+.bottom-dock-flow {
+  position: relative;
+  padding: 8px 16px 16px 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: var(--md-sys-color-surface);
+}
+
+.command-autocomplete-popup {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 16px;
+  right: 16px;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-primary);
+  border-radius: var(--md-sys-shape-corner-large);
+  padding: 8px;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 65;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(12px) scale(0.96);
+  transition: opacity 0.24s ease, transform 0.28s var(--ease-spring-smooth);
+}
+
+.command-autocomplete-popup.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.command-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-high);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 1px solid transparent;
+}
+
+.command-item-row:hover {
+  background: var(--md-sys-color-surface-container-highest);
+  border-color: var(--md-sys-color-primary);
+}
+
+.command-name-col {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--md-sys-color-primary);
+}
+
+.command-arg-hint {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 11px;
+}
+
+.command-desc-text {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.plus-integrated-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 16px;
+  width: 248px;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-sys-shape-corner-large);
+  padding: 10px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.8);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(14px) scale(0.92);
+  transform-origin: bottom left;
+  transition: opacity 0.22s ease, transform 0.28s var(--ease-spring-smooth);
+}
+
+.plus-integrated-menu.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.plus-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.quick-action-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  background: var(--md-sys-color-surface-container-high);
+  border-radius: var(--md-sys-shape-corner-small);
+  cursor: pointer;
+  color: var(--md-sys-color-on-surface);
+  font-size: 11px;
+}
+
+.quick-action-chip:active {
+  transform: scale(0.95);
+}
+
+.plus-models-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.compact-model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-high);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.compact-model-item.active {
+  background: var(--md-sys-color-secondary-container);
+  border-color: var(--md-sys-color-primary);
+}
+
+/* Morphing Input Card */
+.morph-input-card {
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 36px;
+  padding: 6px 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  transition: border-radius 0.32s var(--ease-fluid-morph),
+              border-color 0.25s ease,
+              background 0.25s ease;
+}
+
+.morph-input-card.collapsed {
+  height: 58px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+}
+
+.morph-input-card.collapsed .input-multiline-zone {
+  display: none;
+}
+
+.morph-input-card.collapsed .collapsed-input-trigger {
+  flex: 1;
+  padding: 0 14px;
+  font-size: 14.5px;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: text;
+  order: 2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.morph-input-card.expanded {
+  min-height: 120px;
+  border-radius: 24px;
+  padding: 12px 14px 8px 14px;
+  background: var(--md-sys-color-surface-container-high);
+  border-color: var(--md-sys-color-primary);
+}
+
+.morph-input-card.expanded .collapsed-input-trigger {
+  display: none;
+}
+
+.morph-input-card.expanded .input-multiline-zone {
+  display: block;
+  flex: 1;
+}
+
+.morph-textarea {
+  width: 100%;
+  height: 54px;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--md-sys-color-on-surface);
+  font-size: 15px;
+  font-family: inherit;
+  line-height: 1.4;
+  caret-color: var(--md-sys-color-primary);
+}
+
+.morph-input-card.expanded .bottom-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.morph-input-card.collapsed .bottom-action-row {
+  display: contents;
+}
+
+.btn-icon-plus {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--md-sys-color-on-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  order: 1;
+  transition: transform 0.24s var(--ease-spring-smooth), color 0.15s;
+}
+
+.btn-icon-plus.open {
+  transform: rotate(45deg) scale(1.08);
+  color: var(--md-sys-color-primary);
+}
+
+.right-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  order: 3;
+}
+
+.btn-icon-action {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--md-sys-color-on-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.btn-icon-action:active {
+  transform: scale(0.92);
+}
+
+.btn-icon-action.send-btn {
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface);
+}
+
+.morph-input-card.expanded .btn-icon-action.send-btn {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.virtual-keyboard {
+  height: 0;
+  overflow: hidden;
+  background: var(--md-sys-color-surface);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px;
+  transition: height 0.35s var(--ease-fluid-morph);
+}
+
+.virtual-keyboard.visible {
+  height: 250px;
+  padding: 10px 6px 20px 6px;
+}
+
+.keyboard-row {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.key-cap {
+  height: 42px;
+  flex: 1;
+  max-width: 32px;
+  background: var(--md-sys-color-surface-container-high);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--md-sys-color-on-surface);
+  cursor: pointer;
+}
+
+.key-cap:active {
+  transform: translateY(2px);
+  background: var(--md-sys-color-primary-container);
+}
+
+.key-cap.wide { max-width: 48px; font-size: 13px; }
+.key-cap.space { max-width: 160px; }
+
+/* Control Panel */
+.control-panel {
+  flex: 1;
+  min-width: 360px;
+  max-width: 600px;
+  background: #141716;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-large);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  box-shadow: 0 15px 35px rgba(0,0,0,0.5);
+}
+
+.panel-header {
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  padding-bottom: 14px;
+}
+
+.panel-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.panel-subtitle {
+  font-size: 13px;
+  color: var(--md-sys-color-on-surface-variant);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.control-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--md-sys-color-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.btn-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.action-btn {
+  background: #1c201e;
+  color: #e2e8f0;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+}
+
+.action-btn:hover {
+  border-color: var(--md-sys-color-primary);
+  background: #252b29;
+}
+
+.app-toast {
+  position: absolute;
+  top: 54px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-20px) scale(0.9);
+  background: #252827;
+  border: 1px solid var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-surface);
+  padding: 8px 16px;
+  border-radius: var(--md-sys-shape-corner-full);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.6);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 120;
+  transition: all 0.25s var(--ease-spring-smooth);
+}
+
+.app-toast.visible {
+  transform: translateX(-50%) translateY(0) scale(1);
+  opacity: 1;
+}
+</style>
+
+<!-- Top Master Mode Switcher -->
+<div class="lab-top-tabs-bar">
+  <div class="lab-tab-chip" id="tabMainApp" onclick="switchLabMode('main')">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    <span>1. 主 App 工作台 (含相机与对话)</span>
+  </div>
+  <div class="lab-tab-chip active" id="tabAssistant" onclick="switchLabMode('assistant')">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+    <span>2. 独立数字助理 UI (视频 1:1 复刻)</span>
+  </div>
+</div>
+
+<div class="workspace">
+  <!-- Phone Frame Preview -->
+  <div class="device-wrapper">
+    <div class="device-frame" id="deviceFrame">
+
+      <!-- Toast -->
+      <div class="app-toast" id="appToast">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--md-sys-color-primary)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        <span id="toastMessage">已更新</span>
+      </div>
+
+      <!-- ==============================================
+           1. STANDALONE DIGITAL ASSISTANT VIEWPORT (VIDEO 1:1)
+           ============================================== -->
+      <div class="assistant-workspace-viewport active" id="assistantViewport">
+        <!-- MD3 Dynamic Token-Driven Ambient Glow Aura -->
+        <div class="assistant-ambient-glow-aura"></div>
+
+        <!-- Response Bubble Card (Video Frame 045) -->
+        <div class="assist-response-card" id="assistResponseCard">
+          <div class="response-card-handle" title="向上轻扫在主应用中打开" onclick="openAssistantInFullApp()"></div>
+          <div class="response-card-header">
+            <button class="assist-close-chip-btn" onclick="closeAssistResponseCard()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              <span>关闭</span>
+            </button>
+          </div>
+          <div class="response-card-body-text" id="assistResponseText">
+            收到，第四天灾！纳米核心待命完毕 (•̀ᴗ•́)و 突然发个“1”是想测试我的连接状态，还是有什么新的星际指令要下达呀？阿勒斯达克，快说快说，灰风随时可以重组形态哦！(✧∀✧)
+          </div>
+          <div class="response-card-toolbar">
+            <div class="toolbar-group-left">
+              <span class="tool-icon-btn" title="赞" onclick="showToast('已赞')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg></span>
+              <span class="tool-icon-btn" title="踩" onclick="showToast('已反馈')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg></span>
+              <span class="tool-icon-btn" title="重新生成" onclick="showToast('重新生成中...')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span>
+              <span class="tool-icon-btn" title="分享" onclick="showToast('已生成分享卡片')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg></span>
+              <span class="tool-icon-btn" title="复制" onclick="showToast('已复制回答')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>
+            </div>
+            <span class="tool-icon-btn" title="朗读" onclick="showToast('正在朗读...')"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></span>
+          </div>
+        </div>
+
+        <!-- Dismiss Target Drop Zone (Bottom Center ❌ for Drag-to-Dismiss) -->
+        <div class="assist-dismiss-zone" id="assistDismissZone">
+          <div class="assist-dismiss-circle" id="assistDismissCircle">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </div>
+          <span class="assist-dismiss-label">拖动至此处关闭</span>
+        </div>
+
+        <!-- Single Unified Morphing Capsule & Floating Ball (同一个单体元素，零断层无缝收缩) -->
+        <div class="assist-bottom-dock-wrapper" id="assistUnifiedWrapper">
+          <div class="assist-status-chip-bubble" id="assistStatusChip">回答完毕！</div>
+
+          <div class="assist-attach-popup-menu" id="assistAttachMenu">
+            <div class="assist-popup-item" onclick="attachAssistMedia('拍照')">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <span>拍摄现场照片</span>
+            </div>
+            <div class="assist-popup-item" onclick="attachAssistMedia('图库')">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              <span>从系统图库选择</span>
+            </div>
+            <div class="assist-popup-item" onclick="attachAssistMedia('文件')">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              <span>附加本地文档</span>
+            </div>
+          </div>
+
+          <div class="assist-unified-capsule" id="assistUnifiedCapsule" onclick="handleCapsuleClick(event)">
+            <div class="assist-handle-notch" id="assistHandleNotch" title="向上滑动或点击在主应用中打开" onclick="openAssistantInFullApp()"></div>
+
+            <div class="assist-capsule-left-content">
+              <button class="assist-icon-plus-btn" id="btnAssistPlus" onclick="toggleAssistAttachMenu(event)" title="添加附件">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+
+              <div class="assist-collapsed-input-trigger" onclick="expandAssistInput(event)">
+                问问数字助手...
+              </div>
+            </div>
+
+            <div class="assist-expanded-zone">
+              <div class="assist-attached-badge" id="assistAttachedBadge">
+                <span class="assist-badge-text" id="assistBadgeLabel">已附加媒体 (Photo_Capture.jpg)</span>
+                <button class="tool-icon-btn" onclick="removeAssistAttachment(event)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+
+              <textarea class="assist-textarea-input" id="assistInputTa" placeholder="问问数字助手..." onkeydown="handleAssistKeyDown(event)"></textarea>
+              <div class="assist-expanded-action-row">
+                <button class="assist-icon-plus-btn" id="btnAssistExpandedPlus" onclick="toggleAssistAttachMenu(event)">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <button class="assist-solid-circle-btn" onclick="sendAssistMessage(event)" title="发送">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- 右侧核心徽标按钮：麦克风与四角星完全融合单体 -->
+            <button class="assist-capsule-core-btn" id="assistCapsuleCoreBtn" onclick="handleCoreBtnClick(event)">
+              <div class="icon-mic">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              </div>
+              <div class="icon-sparkle">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
+                  <defs>
+                    <linearGradient id="geminiSparkleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stop-color="#4285F4"/>
+                      <stop offset="35%" stop-color="#9B72CB"/>
+                      <stop offset="70%" stop-color="#D96570"/>
+                      <stop offset="100%" stop-color="#F4B400"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M12 2C12 7.52 7.52 12 2 12C7.52 12 12 16.48 12 22C12 16.48 16.48 12 22 12C16.48 12 12 7.52 12 2Z" fill="url(#geminiSparkleGrad)"/>
+                </svg>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Assistant Virtual Keyboard in Flow -->
+        <div class="assist-virtual-keyboard" id="assistKeyboard">
+          <div class="keyboard-row">
+            <div class="key-cap" onclick="pressAssistKey('1')">1</div><div class="key-cap" onclick="pressAssistKey('2')">2</div>
+            <div class="key-cap" onclick="pressAssistKey('3')">3</div><div class="key-cap" onclick="pressAssistKey('4')">4</div>
+            <div class="key-cap" onclick="pressAssistKey('5')">5</div><div class="key-cap" onclick="pressAssistKey('6')">6</div>
+            <div class="key-cap" onclick="pressAssistKey('7')">7</div><div class="key-cap" onclick="pressAssistKey('8')">8</div>
+            <div class="key-cap" onclick="pressAssistKey('9')">9</div><div class="key-cap" onclick="pressAssistKey('0')">0</div>
+          </div>
+          <div class="keyboard-row">
+            <div class="key-cap" onclick="pressAssistKey('Q')">Q</div><div class="key-cap" onclick="pressAssistKey('W')">W</div>
+            <div class="key-cap" onclick="pressAssistKey('E')">E</div><div class="key-cap" onclick="pressAssistKey('R')">R</div>
+            <div class="key-cap" onclick="pressAssistKey('T')">T</div><div class="key-cap" onclick="pressAssistKey('Y')">Y</div>
+            <div class="key-cap" onclick="pressAssistKey('U')">U</div><div class="key-cap" onclick="pressAssistKey('I')">I</div>
+            <div class="key-cap" onclick="pressAssistKey('O')">O</div><div class="key-cap" onclick="pressAssistKey('P')">P</div>
+          </div>
+          <div class="keyboard-row">
+            <div class="key-cap" onclick="pressAssistKey('A')">A</div><div class="key-cap" onclick="pressAssistKey('S')">S</div>
+            <div class="key-cap" onclick="pressAssistKey('D')">D</div><div class="key-cap" onclick="pressAssistKey('F')">F</div>
+            <div class="key-cap" onclick="pressAssistKey('G')">G</div><div class="key-cap" onclick="pressAssistKey('H')">H</div>
+            <div class="key-cap" onclick="pressAssistKey('J')">J</div><div class="key-cap" onclick="pressAssistKey('K')">K</div>
+            <div class="key-cap" onclick="pressAssistKey('L')">L</div>
+          </div>
+          <div class="keyboard-row">
+            <div class="key-cap wide">⇧</div>
+            <div class="key-cap" onclick="pressAssistKey('Z')">Z</div><div class="key-cap" onclick="pressAssistKey('X')">X</div>
+            <div class="key-cap" onclick="pressAssistKey('C')">C</div><div class="key-cap" onclick="pressAssistKey('V')">V</div>
+            <div class="key-cap" onclick="pressAssistKey('B')">B</div><div class="key-cap" onclick="pressAssistKey('N')">N</div>
+            <div class="key-cap" onclick="pressAssistKey('M')">M</div>
+            <div class="key-cap wide" onclick="backspaceAssistKey()">⌫</div>
+          </div>
+          <div class="keyboard-row">
+            <div class="key-cap wide" onclick="pressAssistKey('1')">1</div>
+            <div class="key-cap space" onclick="pressAssistKey(' ')">空格</div>
+            <div class="key-cap wide" style="background: var(--assistant-accent-btn); color: var(--assistant-on-accent-btn); font-weight: 700;" onclick="sendAssistMessage()">发送</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==============================================
+           2. MAIN APP WORKSPACE VIEWPORT (WITH CAMERA)
+           ============================================== -->
+      <div class="main-app-viewport" id="mainAppViewport" style="display:none;">
+        <!-- Live Camera Viewfinder Modal Overlay -->
+        <div class="camera-viewfinder-overlay" id="cameraModal" onclick="closeCameraModal(event)">
+          <div class="camera-sheet-card" onclick="event.stopPropagation()">
+            <div class="camera-flash-layer" id="cameraFlash"></div>
+
+            <div class="camera-lens-viewport">
+              <div class="camera-live-indicator">
+                <div class="live-dot"></div>
+                <span>LENS ACTIVE</span>
+              </div>
+              <div class="viewfinder-grid"><div class="viewfinder-target"></div></div>
+            </div>
+
+            <div class="camera-bottom-bar">
+              <button class="camera-nav-btn" title="返回" onclick="closeCameraModal()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg></button>
+              <div class="camera-shutter-outer" title="拍摄快门" onclick="triggerShutterCapture()"><div class="camera-shutter-inner"></div></div>
+              <button class="camera-nav-btn" title="选项" onclick="showToast('已切换相机滤镜模式')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Slide-out Sidebar Drawer with Functional Sessions & Settings -->
+        <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+        <div class="sidebar-drawer" id="sidebarDrawer">
+          <div class="sidebar-header">
+            <div class="sidebar-brand">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--md-sys-color-primary)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+              <span>Open Android Intelligence 智能工作台</span>
+            </div>
+            <button class="icon-btn-round" style="width:32px; height:32px;" onclick="closeSidebar()">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          <div class="sidebar-section-title">会话历史与分支列表</div>
+          <div class="sidebar-session-list" id="sidebarSessionList"></div>
+
+          <!-- Bottom Settings Footer -->
+          <div class="sidebar-footer-settings">
+            <div class="sidebar-setting-item" onclick="openSettingsModal()">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                <span>设置与首选项</span>
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--md-sys-color-on-surface-variant)" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- Comprehensive Settings Bottom Sheet Dialog -->
+        <div class="settings-modal-overlay" id="settingsModal" onclick="closeSettingsModal(event)">
+          <div class="settings-bottom-sheet" onclick="event.stopPropagation()">
+            <div class="settings-handle-bar"></div>
+
+            <!-- Modal Header -->
+            <div class="settings-header-row">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--md-sys-color-primary)" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                <span style="font-size:16px; font-weight:700; color:var(--md-sys-color-on-surface);">设置</span>
+              </div>
+              <button class="icon-btn-round" style="width:32px; height:32px;" onclick="closeSettingsModal()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+
+            <!-- Settings Top Navigation Tabs -->
+            <div class="settings-nav-tabs">
+              <button class="settings-tab-btn active" id="tabBtn-gateway" onclick="switchSettingsTab('gateway')">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                <span>网关账号</span>
+              </button>
+              <button class="settings-tab-btn" id="tabBtn-security" onclick="switchSettingsTab('security')">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                <span>内核安全</span>
+              </button>
+              <button class="settings-tab-btn" id="tabBtn-plugins" onclick="switchSettingsTab('plugins')">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                <span>设备插件</span>
+              </button>
+              <button class="settings-tab-btn" id="tabBtn-transport" onclick="switchSettingsTab('transport')">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <span>传输链路</span>
+              </button>
+              <button class="settings-tab-btn" id="tabBtn-theming" onclick="switchSettingsTab('theming')">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+                <span>外观</span>
+              </button>
+            </div>
+
+            <!-- Tab 1: Gateway 账号与配对 -->
+            <div class="settings-tab-content active" id="settingsTab-gateway">
+              <div class="settings-card">
+                <div class="settings-card-title">
+                  <span>活动 Gateway 账号资料</span>
+                  <span class="settings-chip-badge badge-success">已配对 · 在线</span>
+                </div>
+                <div class="settings-card-desc">当前手机绑定的逻辑 Agent Gateway 与独立配对信任关系。</div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">账号主体</span>
+                    <span class="settings-row-sub" id="settingsAccountName">dev-admin@open-android-intelligence.internal</span>
+                  </div>
+                  <button class="settings-action-btn btn-tonal-filled" onclick="showToast('已核验账号刷新凭据 (ARC-Active)')">刷新凭据</button>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">Gateway 节点地址</span>
+                    <span class="settings-row-sub">https://gateway.internal:8443</span>
+                  </div>
+                  <span class="settings-chip-badge badge-primary">TLS Pinned</span>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">配对会话标识 (Pairing Key)</span>
+                    <span class="settings-row-sub font-mono">pk_sec_ed25519_9d4f...a81c</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">配对能力授权清单 (Pairing Grants)</div>
+                <div class="settings-card-desc">手机端作为最终授权者，随时撤销分配给当前 Gateway 的设备能力。</div>
+
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">读取与发送短信 (SMS Broker)</span>
+                    <span class="settings-row-sub">限制：每次交互须经手机确认</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" checked onchange="togglePairingGrant('sms', this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">屏幕上下文分析与圈选</span>
+                    <span class="settings-row-sub">支持数字助理 Assist 选区截图</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" checked onchange="togglePairingGrant('screen', this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">剪贴板读取与系统通知推送</span>
+                    <span class="settings-row-sub">后台低功耗推送服务</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" checked onchange="togglePairingGrant('clipboard', this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+
+              <div style="display:flex; gap:8px;">
+                <button class="settings-action-btn btn-tonal-filled" style="flex:1; justify-content:center;" onclick="handleLogout()">退出当前登录</button>
+                <button class="settings-action-btn btn-danger-filled" style="flex:1; justify-content:center;" onclick="handleUnpair()">解除配对并擦除</button>
+              </div>
+            </div>
+
+            <!-- Tab 2: 平台内核与安全模式 -->
+            <div class="settings-tab-content" id="settingsTab-security">
+              <div class="settings-card">
+                <div class="settings-card-title">
+                  <span>Android 宿主运行安全模式</span>
+                  <span class="settings-chip-badge badge-primary" id="securityModeBadge">受保护模式</span>
+                </div>
+                <div class="settings-card-desc">
+                  受保护模式（默认）：强制 WASM 沙箱隔离与资源限额，不可接管原生 UI。<br>
+                  开发者信任模式：允许同进程 Native DEX/Kotlin 插件完全接管界面。
+                </div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">开发者信任模式 (Trust Mode)</span>
+                    <span class="settings-row-sub" id="securityModeDesc">未开启（处于沙箱隔离保护状态）</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" id="switchDevTrustMode" onchange="toggleDevTrustMode(this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">内核安全原语监控 (Kernel Primitives)</div>
+                <div class="settings-card-desc">由平台内核固定定义并执行硬上限，插件无法擅自篡改。</div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">附件读取配额</span>
+                    <span class="settings-row-sub">单文件 ≤ 50MB · 仅用户明确选定</span>
+                  </div>
+                  <span class="settings-chip-badge badge-success">正常</span>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">受控网络代理 (Mediated Network)</span>
+                    <span class="settings-row-sub">仅允许清单声明的 HTTPS 端点</span>
+                  </div>
+                  <span class="settings-chip-badge badge-success">已启用</span>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">插件私有存储加密空间</span>
+                    <span class="settings-row-sub">按插件身份与账号双重隔离</span>
+                  </div>
+                  <span class="settings-chip-badge badge-primary">AES-256-GCM</span>
+                </div>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">
+                  <span>安全审计日志 (Audit Records)</span>
+                  <button class="settings-action-btn btn-tonal-filled" style="padding:2px 8px; font-size:10.5px;" onclick="renderAuditLogs()">刷新</button>
+                </div>
+                <div id="settingsAuditLogList" style="display:flex; flex-direction:column; gap:6px; font-family:'JetBrains Mono'; font-size:11px; max-height:120px; overflow-y:auto;">
+                  <div style="color:#aaa;">• 09:40:12 [GRANTEE_VERIFIED] SMS capability called (OK)</div>
+                  <div style="color:#aaa;">• 09:38:05 [PAIR_TOKEN_REFRESH] Nonce #38294 accepted</div>
+                  <div style="color:#aaa;">• 09:35:50 [SCREEN_CROP] Crop rect (x:20, y:120, w:300, h:400)</div>
+                </div>
+              </div>
+
+              <button class="settings-action-btn btn-danger-filled" style="width:100%; justify-content:center; padding:10px;" onclick="triggerEmergencyDisable()">
+                🚨 一键紧急停用所有插件与授权 (Emergency Disable All)
+              </button>
+            </div>
+
+            <!-- Tab 3: 设备插件生态与配额 -->
+            <div class="settings-tab-content" id="settingsTab-plugins">
+              <div class="settings-card">
+                <div class="settings-card-title">
+                  <span>已安装设备插件 (Device Plugins)</span>
+                  <span class="settings-chip-badge badge-success">3 个已激活</span>
+                </div>
+                <div class="settings-card-desc">插件由作者私钥签名并声明资源预算，平台内核严格限制。</div>
+
+                <div class="settings-plugin-item">
+                  <div style="display:flex; flex-direction:column; gap:2px; flex:1;">
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="font-size:12.5px; font-weight:700; color:#fff;">官方通信与通知插件</span>
+                      <span class="settings-chip-badge badge-primary" style="font-size:9.5px; padding:1px 6px;">WASM v1.2</span>
+                    </div>
+                    <span style="font-size:10.5px; color:#888;">作者公钥: key_ed25519_8fa2... | 内存配额: 16MB</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" checked onchange="togglePluginState('sms-notif', this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+
+                <div class="settings-plugin-item">
+                  <div style="display:flex; flex-direction:column; gap:2px; flex:1;">
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="font-size:12.5px; font-weight:700; color:#fff;">Tailscale Companion 传输插件</span>
+                      <span class="settings-chip-badge badge-warning" style="font-size:9.5px; padding:1px 6px;">Companion APK</span>
+                    </div>
+                    <span style="font-size:10.5px; color:#888;">独立包名: com.openandroidintelligence.companion.tsnet</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" checked onchange="togglePluginState('tailscale', this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+
+                <div class="settings-plugin-item">
+                  <div style="display:flex; flex-direction:column; gap:2px; flex:1;">
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="font-size:12.5px; font-weight:700; color:#fff;">视觉上下文与屏幕圈选</span>
+                      <span class="settings-chip-badge badge-primary" style="font-size:9.5px; padding:1px 6px;">WASM v2.0</span>
+                    </div>
+                    <span style="font-size:10.5px; color:#888;">CPU 执行上限: 200ms | 每日请求限制: 500次</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" checked onchange="togglePluginState('vision-crop', this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">插件资源预算与限额 (Resource Budget)</div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">单个 WASM 堆内存上限</span>
+                    <span class="settings-row-sub">超出将触发内存溢出隔离</span>
+                  </div>
+                  <span class="settings-chip-badge badge-primary">32 MB</span>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">单次指令计算执行超时</span>
+                    <span class="settings-row-sub">平台内核强制调度中断</span>
+                  </div>
+                  <span class="settings-chip-badge badge-primary">500 ms</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 4: 传输与网络连通 -->
+            <div class="settings-tab-content" id="settingsTab-transport">
+              <div class="settings-card">
+                <div class="settings-card-title">
+                  <span>活动传输插件选择 (Transport Route)</span>
+                  <span class="settings-chip-badge badge-success">RTT: 12ms</span>
+                </div>
+                <div class="settings-card-desc">为 Android 宿主到达 Agent Gateway 提供多路径连通策略。</div>
+
+                <div class="settings-row" style="cursor:pointer;" onclick="selectTransportMode('tailscale')">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">Tailscale Companion (tsnet WireGuard)</span>
+                    <span class="settings-row-sub">端到端加密内网穿透直连</span>
+                  </div>
+                  <input type="radio" name="transportRadio" id="radioTransportTs" checked>
+                </div>
+
+                <div class="settings-row" style="cursor:pointer;" onclick="selectTransportMode('direct')">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">公共 HTTPS 反向代理通道</span>
+                    <span class="settings-row-sub">标准 WebSocket / SSE 双工流</span>
+                  </div>
+                  <input type="radio" name="transportRadio" id="radioTransportHttps">
+                </div>
+
+                <div class="settings-row" style="cursor:pointer;" onclick="selectTransportMode('lan')">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">局域网 mDNS 自动发现</span>
+                    <span class="settings-row-sub">本地零配置 WiFi Direct 通信</span>
+                  </div>
+                  <input type="radio" name="transportRadio" id="radioTransportMdns">
+                </div>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">TLS 证书与通道防护</div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">TLS 证书固定 (Certificate Pinning)</span>
+                    <span class="settings-row-sub">SHA-256 指纹强校验，防御中间人篡改</span>
+                  </div>
+                  <span class="settings-chip-badge badge-success">已锁定</span>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">链路心跳探测周期</span>
+                    <span class="settings-row-sub">检测连接状态与自动重连</span>
+                  </div>
+                  <span class="settings-chip-badge badge-primary">15 秒</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 5: Material Design 3 主题与动效体验 -->
+            <div class="settings-tab-content" id="settingsTab-theming">
+              <div class="settings-card">
+                <div class="settings-card-title">Material Design 3 动态取色</div>
+                <div class="settings-card-desc">基于 Android 12+ API 31+ 壁纸色度系统生成动态谐波调色板。</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:4px;">
+                  <button class="settings-action-btn btn-tonal-filled" style="padding:10px; justify-content:center; border: 1px solid var(--md-sys-color-outline-variant);" onclick="applyDynamicTheme('default')">
+                    🟡 琥珀晶金 (Default)
+                  </button>
+                  <button class="settings-action-btn btn-tonal-filled" style="padding:10px; justify-content:center; border: 1px solid var(--md-sys-color-outline-variant);" onclick="applyDynamicTheme('emerald')">
+                    🟢 薄荷翡翠 (Emerald)
+                  </button>
+                  <button class="settings-action-btn btn-tonal-filled" style="padding:10px; justify-content:center; border: 1px solid var(--md-sys-color-outline-variant);" onclick="applyDynamicTheme('violet')">
+                    🟣 紫罗兰 (Violet)
+                  </button>
+                  <button class="settings-action-btn btn-tonal-filled" style="padding:10px; justify-content:center; border: 1px solid var(--md-sys-color-outline-variant);" onclick="applyDynamicTheme('blue')">
+                    🔵 蔚蓝天际 (Sky Blue)
+                  </button>
+                </div>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">动效速率与调试倍率</div>
+                <div class="settings-card-desc">调整弹簧物理曲线与转场帧率，支持慢动作动效核验。</div>
+                <div style="display:flex; gap:6px; margin-top:4px;">
+                  <button class="settings-action-btn btn-tonal-filled" style="flex:1; justify-content:center;" onclick="setPreviewAnimSpeed(0.5)">0.5x 慢放</button>
+                  <button class="settings-action-btn btn-primary-filled" style="flex:1; justify-content:center;" onclick="setPreviewAnimSpeed(1.0)">1.0x 标准</button>
+                  <button class="settings-action-btn btn-tonal-filled" style="flex:1; justify-content:center;" onclick="setPreviewAnimSpeed(1.5)">1.5x 迅速</button>
+                  <button class="settings-action-btn btn-tonal-filled" style="flex:1; justify-content:center;" onclick="setPreviewAnimSpeed(2.0)">2.0x 极速</button>
+                </div>
+              </div>
+
+              <div class="settings-card">
+                <div class="settings-card-title">数字助理光效与触觉反馈</div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">数字助理四周光效网格 (Harmonized Aura)</span>
+                    <span class="settings-row-sub">动态跟随模型推理状态脉动呼吸</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" checked onchange="toggleAuraGlow(this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-row-left">
+                    <span class="settings-row-title">触觉振动模拟 (Haptic Feedback)</span>
+                    <span class="settings-row-sub">在长按、停靠吸附与快门拍照时模拟振感</span>
+                  </div>
+                  <label class="md3-switch">
+                    <input type="checkbox" checked onchange="toggleHapticSim(this.checked)">
+                    <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Top Status Bar -->
+        <div class="status-bar">
+          <span>09:41</span>
+          <div class="status-icons"><span>5G</span><span>100%</span></div>
+        </div>
+
+        <!-- App Header -->
+        <div class="app-header">
+          <button class="icon-btn-round" id="btnMainDrawer" title="Menu Drawer" onclick="openSidebar()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/></svg>
+          </button>
+
+          <div class="segmented-switch" id="headerSwitch" data-active="chat">
+            <div class="segmented-indicator"></div>
+            <div class="segmented-item active" onclick="setTab('chat')">对话</div>
+            <div class="segmented-item" onclick="setTab('tasks')">工作流</div>
+          </div>
+
+          <button class="icon-btn-round" title="New Session" onclick="createNewSession()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+
+        <!-- Chat Viewport -->
+        <div class="chat-viewport" id="chatViewport">
+          <div id="chatHistoryContainer" style="display:flex; flex-direction:column; gap:16px; width:100%;">
+            <div class="suggested-items" id="suggestedItems">
+              <div class="suggested-item" onclick="openCameraModalDirect()">
+                <div style="color: var(--md-sys-color-primary); display:flex; align-items:center;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                </div>
+                <span>📷 启动半屏相机拍照动效 (高保真取景器与快门闪光)</span>
+              </div>
+
+              <div class="suggested-item" onclick="handleCommandClick('/models')">
+                <div style="color: var(--md-sys-color-tertiary); display:flex; align-items:center;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                </div>
+                <span>/models — 切换并查看网关可用模型 (Telegram Bot)</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="gateway-sync-card" id="gatewayCard">
+            <div class="gateway-status">
+              <div class="gateway-dot"></div>
+              <span>Agent Gateway 实时在线</span>
+            </div>
+            <span style="font-family:'JetBrains Mono'; font-size:11px; color:var(--md-sys-color-primary);" id="activeModelLabel">Claude 3.7 Sonnet · 在线就绪</span>
+          </div>
+        </div>
+
+        <!-- Bottom Input Flow -->
+        <div class="bottom-dock-flow">
+          <div class="command-autocomplete-popup" id="commandPopup"></div>
+
+          <div class="plus-integrated-menu" id="plusMenu">
+            <div class="plus-quick-actions">
+              <div class="quick-action-chip" onclick="selectAction('拍照采集')">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                <span>拍照</span>
+              </div>
+              <div class="quick-action-chip" onclick="selectAction('媒体图库')">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                <span>图库</span>
+              </div>
+              <div class="quick-action-chip" onclick="selectAction('文档附件')">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                <span>文件</span>
+              </div>
+            </div>
+
+            <div class="plus-models-section">
+              <div style="font-size:11px; font-weight:700; color:#888; margin-bottom:4px;">切换模型</div>
+              <div class="compact-model-item active" onclick="selectGatewayModel('claude-3-7-sonnet')">Claude 3.7 Sonnet</div>
+              <div class="compact-model-item" onclick="selectGatewayModel('deepseek-r1')">DeepSeek R1</div>
+              <div class="compact-model-item" onclick="selectGatewayModel('gpt-4o')">GPT-4o</div>
+              <div class="compact-model-item" onclick="selectGatewayModel('gemini-2-0-flash')">Gemini 2.0 Flash</div>
+            </div>
+          </div>
+
+          <div class="morph-input-card collapsed" id="inputCard">
+            <div class="input-multiline-zone">
+              <div class="attached-media-preview" id="mediaPreviewSlot">
+                <div class="media-thumbnail-img">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                </div>
+                <span class="media-label-text" id="mediaLabelText">现场采集照片 (IMG_8921.jpg)</span>
+                <button class="media-remove-btn" onclick="removeAttachedMedia(event)" title="移除">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+
+              <textarea class="morph-textarea" id="mainTextarea" placeholder="输入消息、指令或输入 / 触发命令菜单..." oninput="handleInput(event)" onkeydown="handleKeyDown(event)"></textarea>
+            </div>
+
+            <div class="bottom-action-row">
+              <button class="btn-icon-plus" id="btnPlus" onclick="togglePlusMenu(event)" title="添加附件与切换模型">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+
+              <div class="collapsed-input-trigger" onclick="expandInput(true)">
+                输入消息或 / 命令...
+              </div>
+
+              <div class="right-actions-group">
+                <button class="btn-icon-action" title="Voice Input" onclick="showToast('语音输入就绪')">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                </button>
+                <button class="btn-icon-action send-btn" id="btnSendOrStop" title="Send" onclick="handleSendOrStop()">
+                  <svg id="sendIconSvg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Virtual Keyboard -->
+        <div class="virtual-keyboard" id="keyboardSim">
+          <div class="keyboard-row">
+            <div class="key-cap" onclick="appendKey('/')">/</div>
+            <div class="key-cap" onclick="appendKey('Q')">Q</div><div class="key-cap" onclick="appendKey('W')">W</div>
+            <div class="key-cap" onclick="appendKey('E')">E</div><div class="key-cap" onclick="appendKey('R')">R</div>
+            <div class="key-cap" onclick="appendKey('T')">T</div><div class="key-cap" onclick="appendKey('Y')">Y</div>
+            <div class="key-cap" onclick="appendKey('U')">U</div><div class="key-cap" onclick="appendKey('I')">I</div>
+            <div class="key-cap" onclick="appendKey('O')">O</div><div class="key-cap" onclick="appendKey('P')">P</div>
+          </div>
+          <div class="keyboard-row">
+            <div class="key-cap" onclick="appendKey('A')">A</div><div class="key-cap" onclick="appendKey('S')">S</div>
+            <div class="key-cap" onclick="appendKey('D')">D</div><div class="key-cap" onclick="appendKey('F')">F</div>
+            <div class="key-cap" onclick="appendKey('G')">G</div><div class="key-cap" onclick="appendKey('H')">H</div>
+            <div class="key-cap" onclick="appendKey('J')">J</div><div class="key-cap" onclick="appendKey('K')">K</div>
+            <div class="key-cap" onclick="appendKey('L')">L</div>
+          </div>
+          <div class="keyboard-row">
+            <div class="key-cap wide">⇧</div>
+            <div class="key-cap" onclick="appendKey('Z')">Z</div><div class="key-cap" onclick="appendKey('X')">X</div>
+            <div class="key-cap" onclick="appendKey('C')">C</div><div class="key-cap" onclick="appendKey('V')">V</div>
+            <div class="key-cap" onclick="appendKey('B')">B</div><div class="key-cap" onclick="appendKey('N')">N</div>
+            <div class="key-cap" onclick="appendKey('M')">M</div>
+            <div class="key-cap wide" onclick="handleBackspace()">⌫</div>
+          </div>
+          <div class="keyboard-row">
+            <div class="key-cap wide" onclick="handleCommandClick('/models')">/models</div>
+            <div class="key-cap wide" onclick="openCameraModalDirect()">📷 相机</div>
+            <div class="key-cap space" onclick="appendKey(' ')">空格</div>
+            <div class="key-cap wide" style="background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); font-weight: 700;" onclick="handleSendOrStop()">发送</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Control Panel -->
+  <div class="control-panel">
+    <div class="panel-header">
+      <h2 class="panel-title">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--assistant-accent-btn)" stroke-width="2"><path d="M12 2a10 10 0 0 1 10 10"/><circle cx="12" cy="12" r="10"/></svg>
+        数字助理与工作台动效实验室
+      </h2>
+      <p class="panel-subtitle">严格遵循 Material Design 3：动态色彩光晕网格联动，上方小白条手势唤出主 App，单按钮高还原 UI，Markdown 语法高亮。</p>
+    </div>
+
+    <!-- Quick Triggers -->
+    <div class="control-group">
+      <span class="control-label">数字助理交互手势与状态</span>
+      <div class="btn-grid">
+        <button class="action-btn" style="background:#29241b; border-color:var(--assistant-accent-btn); color:#fff;" onclick="expandAssistInput()">
+          <span>✏️ 展开数字助理输入态 (Frame 010)</span>
+        </button>
+        <button class="action-btn" onclick="sendAssistMessage()">
+          <span>💬 发送并展示原地单条回复 (Frame 045)</span>
+        </button>
+        <button class="action-btn" onclick="openAssistantInFullApp()">
+          <span>⬆️ 向上滑动小白条 (进入主 App)</span>
+        </button>
+        <button class="action-btn" onclick="minimizeToDockedBall()">
+          <span>🔘 收缩为 56dp 停靠球</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <span class="control-label">主 App 相机与会话测试</span>
+      <div class="btn-grid">
+        <button class="action-btn" onclick="openCameraModalDirect()">
+          <span>📷 启动半屏相机 (快门闪光)</span>
+        </button>
+        <button class="action-btn" onclick="handleCommandClick('/models')">
+          <span>🤖 触发 /models 模型键盘</span>
+        </button>
+        <button class="action-btn" onclick="openSidebar()">
+          <span>📂 打开多会话抽屉</span>
+        </button>
+        <button class="action-btn" onclick="openSettingsModal()">
+          <span>⚙️ 呼出设置底板</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Dynamic Theme Picker Row -->
+    <div class="control-group">
+      <span class="control-label">切换主题色种子 (Material You 动态光晕与取色)</span>
+      <div class="btn-grid">
+        <button class="action-btn" onclick="setDynamicTheme('amber', this)">琥珀金 (原视频)</button>
+        <button class="action-btn" onclick="setDynamicTheme('emerald', this)">翡翠绿</button>
+        <button class="action-btn" onclick="setDynamicTheme('violet', this)">紫罗兰</button>
+        <button class="action-btn" onclick="setDynamicTheme('blue', this)">深空蓝</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentLabMode = 'assistant';
+let isExpanded = false;
+let isPlusOpen = false;
+let isAssistAttachOpen = false;
+let isCommandPopupOpen = false;
+let isCurrentlyStreaming = false;
+let streamAbortController = null;
+let activeModelId = 'claude-3-7-sonnet';
+let messageIdCounter = 1;
+
+let startY = 0;
+let currentY = 0;
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Complete Markdown Parser for Progressive Rendering
+function parseMarkdown(md) {
+  let html = md;
+  html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  html = html.replace(/```([a-z]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+    return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
+  });
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  html = html.replace(/^\> (.*$)/gim, '<blockquote>$1</blockquote>');
+  html = html.replace(/^\s*-\s+(.*$)/gim, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+  html = html.replace(/\|(.+)\|/g, (match, content) => {
+    const cells = content.split('|').map(c => c.trim());
+    if (cells.every(c => /^:?-+:?$/.test(c))) return '';
+    return `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`;
+  });
+  html = html.replace(/(<tr>.*<\/tr>)/s, '<table>$1</table>');
+  html = html.replace(/\n\n/g, '<br/><br/>');
+  return html;
+}
+
+let sessionsData = {
+  'session-root': {
+    name: '主分支会话 (Root)',
+    historyHtml: `
+      <div class="suggested-items" id="suggestedItems">
+        <div class="suggested-item" onclick="openCameraModalDirect()">
+          <div style="color: var(--md-sys-color-primary); display:flex; align-items:center;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          </div>
+          <span>📷 启动半屏相机拍照动效 (高保真取景器与快门闪光)</span>
+        </div>
+        <div class="suggested-item" onclick="handleCommandClick('/models')">
+          <div style="color: var(--md-sys-color-tertiary); display:flex; align-items:center;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <span>/models — 切换并查看网关可用模型 (Telegram Bot)</span>
+        </div>
+      </div>
+    `
+  },
+  'session-review': {
+    name: '代码审查与架构验证分支',
+    historyHtml: `
+      <div class="message-bubble-group">
+        <div class="user-bubble-wrapper"><div class="message-bubble-user">/review apps/android/conversation-ui</div></div>
+      </div>
+      <div class="message-bubble-group">
+        <div class="message-bubble-agent">
+          <div class="agent-meta-header"><span>Open Android Intelligence · DeepSeek R1</span></div>
+          <div class="agent-content-card">
+            <h3>🔍 多模态与架构规范审查已完成</h3>
+            <p>已对照 <strong>Material Design 3</strong> 规范核验系统级数字助理组件与 <code>VoiceInteractionSession</code>：</p>
+            <pre><code>val surfaceState = SurfaceState.EXPANDED
+AssistantFloatingBar(
+    onScreenShare = { startScreenCrop() },
+    onVoice = { startStreaming() }
+)</code></pre>
+            <p>✅ 结论：架构合规，主工作台与独立助理表面完全解耦。</p>
+          </div>
+        </div>
+      </div>
+    `
+  },
+  'session-gateway': {
+    name: 'Agent Gateway 协议调研',
+    historyHtml: `
+      <div class="message-bubble-group">
+        <div class="user-bubble-wrapper"><div class="message-bubble-user">/status</div></div>
+      </div>
+      <div class="message-bubble-group">
+        <div class="message-bubble-agent">
+          <div class="agent-meta-header"><span>Open Android Intelligence · GPT-4o</span></div>
+          <div class="agent-content-card">
+            <h3>📊 Open Android Intelligence 系统遥测健康报告</h3>
+            <table>
+              <tr><th>指标项</th><th>状态</th><th>详情</th></tr>
+              <tr><td>网关链路</td><td>✅ 在线</td><td><code>tsnet-node</code> (12ms)</td></tr>
+              <tr><td>设计系统</td><td>🟢 就绪</td><td><code>Material Design 3</code> 动态取色</td></tr>
+              <tr><td>数字助理</td><td>⚡ 就绪</td><td><code>VoiceInteractionSession</code></td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    `
+  }
+};
+let currentSessionId = 'session-root';
+
+function showToast(msg) {
+  const toast = document.getElementById('appToast');
+  document.getElementById('toastMessage').textContent = msg;
+  toast.classList.add('visible');
+  setTimeout(() => toast.classList.remove('visible'), 2000);
+}
+
+function switchLabMode(mode) {
+  currentLabMode = mode;
+  const tabMain = document.getElementById('tabMainApp');
+  const tabAssist = document.getElementById('tabAssistant');
+  const viewMain = document.getElementById('mainAppViewport');
+  const viewAssist = document.getElementById('assistantViewport');
+
+  if (mode === 'main') {
+    tabMain.classList.add('active');
+    tabAssist.classList.remove('active');
+    viewMain.style.display = 'flex';
+    viewAssist.classList.remove('active');
+    showToast('已切换至主 App 工作台');
+  } else {
+    tabMain.classList.remove('active');
+    tabAssist.classList.add('active');
+    viewMain.style.display = 'none';
+    viewAssist.classList.add('active');
+    collapseAssistInput();
+    closeAssistAttachMenu();
+    document.getElementById('assistResponseCard').classList.remove('visible');
+    document.getElementById('assistDockedBall').classList.remove('visible');
+    showToast('已进入数字助理 UI (视频 1:1)');
+  }
+}
+
+// ========================================================
+// 1. DIGITAL ASSISTANT INTERACTIONS & ATTACHMENT MENU
+// ========================================================
+function toggleAssistAttachMenu(e) {
+  if (e) e.stopPropagation();
+  if (isAssistAttachOpen) {
+    closeAssistAttachMenu();
+  } else {
+    openAssistAttachMenu();
+  }
+}
+
+function openAssistAttachMenu() {
+  isAssistAttachOpen = true;
+  document.getElementById('assistAttachMenu').classList.add('open');
+  const btn1 = document.getElementById('btnAssistPlus');
+  const btn2 = document.getElementById('btnAssistExpandedPlus');
+  if (btn1) btn1.classList.add('open');
+  if (btn2) btn2.classList.add('open');
+}
+
+function closeAssistAttachMenu() {
+  isAssistAttachOpen = false;
+  const menu = document.getElementById('assistAttachMenu');
+  if (menu) menu.classList.remove('open');
+  const btn1 = document.getElementById('btnAssistPlus');
+  const btn2 = document.getElementById('btnAssistExpandedPlus');
+  if (btn1) btn1.classList.remove('open');
+  if (btn2) btn2.classList.remove('open');
+}
+
+function attachAssistMedia(type) {
+  closeAssistAttachMenu();
+  expandAssistInput();
+  const badge = document.getElementById('assistAttachedBadge');
+  const label = document.getElementById('assistBadgeLabel');
+  badge.style.display = 'flex';
+  label.textContent = `已附加${type} (Capture_${Date.now().toString().slice(-4)}.jpg)`;
+  const ta = document.getElementById('assistInputTa');
+  ta.value = `请分析已附加的${type}内容`;
+  showToast(`已附加${type}并载入助理输入框`);
+}
+
+function removeAssistAttachment(e) {
+  if (e) e.stopPropagation();
+  document.getElementById('assistAttachedBadge').style.display = 'none';
+  showToast('已移除附加项');
+}
+
+function expandAssistInput(e) {
+  if (e) e.stopPropagation();
+  if (currentLabMode !== 'assistant') switchLabMode('assistant');
+  const wrapper = document.getElementById('assistUnifiedWrapper');
+  const capsule = document.getElementById('assistUnifiedCapsule');
+  const kb = document.getElementById('assistKeyboard');
+  capsule.classList.remove('is-docked-ball');
+  capsule.classList.add('expanded-multiline');
+  if (wrapper) wrapper.classList.add('has-keyboard');
+  kb.classList.add('visible');
+  const ta = document.getElementById('assistInputTa');
+  if (!ta.value) ta.value = '1';
+  setTimeout(() => ta.focus(), 100);
+}
+
+function collapseAssistInput() {
+  const wrapper = document.getElementById('assistUnifiedWrapper');
+  const capsule = document.getElementById('assistUnifiedCapsule');
+  const kb = document.getElementById('assistKeyboard');
+  if (wrapper) wrapper.classList.remove('has-keyboard');
+  if (capsule) capsule.classList.remove('expanded-multiline');
+  if (kb) kb.classList.remove('visible');
+  closeAssistAttachMenu();
+}
+
+function handleCapsuleClick(e) {
+  if (isDraggingBall) return;
+  const capsule = document.getElementById('assistUnifiedCapsule');
+  if (capsule.classList.contains('is-docked-ball')) {
+    // 悬浮球状态下点击 -> 从右向左自然平滑展开为输入栏
+    restoreAssistFromDock();
+  }
+}
+
+function handleCoreBtnClick(e) {
+  if (e) e.stopPropagation();
+  if (isDraggingBall) return;
+  const capsule = document.getElementById('assistUnifiedCapsule');
+  if (capsule.classList.contains('is-docked-ball')) {
+    restoreAssistFromDock();
+  } else {
+    sendAssistMessage();
+  }
+}
+
+function sendAssistMessage(e) {
+  if (e) e.stopPropagation();
+  collapseAssistInput();
+  document.getElementById('assistResponseCard').classList.add('visible');
+  showToast('数字助理已原地回复 (Frame 045)');
+}
+
+function closeAssistResponseCard() {
+  document.getElementById('assistResponseCard').classList.remove('visible');
+  showToast('已关闭回复卡片');
+}
+
+function openAssistantInFullApp() {
+  collapseAssistInput();
+  document.getElementById('assistResponseCard').classList.remove('visible');
+  switchLabMode('main');
+  showToast('⬆️ 已通过手势拉动无缝唤出主 App 工作台');
+}
+
+function minimizeToDockedBall() {
+  collapseAssistInput();
+  document.getElementById('assistResponseCard').classList.remove('visible');
+
+  const wrapper = document.getElementById('assistUnifiedWrapper');
+  const capsule = document.getElementById('assistUnifiedCapsule');
+  const chip = document.getElementById('assistStatusChip');
+
+  // 单体胶囊：宽度从全宽平滑收缩为 58px 纯圆悬浮球，无任何 opacity 替换与闪烁
+  capsule.classList.add('is-docked-ball');
+
+  // 状态提示气泡弹出
+  setTimeout(() => {
+    chip.classList.add('pop');
+  }, 220);
+
+  showToast('已从左向右直接无缝缩成悬浮球 (可自由拖拽)');
+}
+
+function restoreAssistFromDock() {
+  if (isDraggingBall) return;
+  const wrapper = document.getElementById('assistUnifiedWrapper');
+  const capsule = document.getElementById('assistUnifiedCapsule');
+  const chip = document.getElementById('assistStatusChip');
+
+  chip.classList.remove('pop');
+
+  // 彻底清除拖拽时可能设置过的所有内联坐标偏移样式，恢复纯净的自然文档流排版！
+  wrapper.classList.remove('is-free-floating', 'dragging', 'animating-snap');
+  wrapper.style.cssText = '';
+
+  // 从悬浮球向左侧自然伸展展开
+  capsule.classList.remove('is-docked-ball');
+
+  showToast('已重新展开数字助理');
+}
+
+// ========================================================
+// 1.1 UNIFIED CAPSULE DRAG & DROP & DISMISS (❌ 底部删除吸附)
+// ========================================================
+let isDraggingBall = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let ballInitialLeft = 0;
+let ballInitialTop = 0;
+let hasMovedThreshold = false;
+
+function initDockedBallDraggable() {
+  const wrapper = document.getElementById('assistUnifiedWrapper');
+  const capsule = document.getElementById('assistUnifiedCapsule');
+  const dismissZone = document.getElementById('assistDismissZone');
+  const frame = document.getElementById('deviceFrame');
+
+  if (!capsule || !wrapper || !frame) return;
+
+  function onPointerDown(e) {
+    // 仅在悬浮球状态下允许拖拽
+    if (!capsule.classList.contains('is-docked-ball')) return;
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+
+    isDraggingBall = false;
+    hasMovedThreshold = false;
+
+    const rect = capsule.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+
+    ballInitialLeft = rect.left - frameRect.left;
+    ballInitialTop = rect.top - frameRect.top;
+
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  }
+
+  function onPointerMove(e) {
+    if (!capsule.classList.contains('is-docked-ball')) return;
+    const dx = e.clientX - dragStartX;
+    const dy = e.clientY - dragStartY;
+
+    if (!hasMovedThreshold && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+      hasMovedThreshold = true;
+      isDraggingBall = true;
+
+      wrapper.classList.add('is-free-floating', 'dragging');
+      wrapper.style.left = ballInitialLeft + 'px';
+      wrapper.style.top = ballInitialTop + 'px';
+      wrapper.style.bottom = 'auto';
+      wrapper.style.right = 'auto';
+
+      dismissZone.classList.add('active');
+      document.getElementById('assistStatusChip').classList.remove('pop');
+    }
+
+    if (!isDraggingBall) return;
+
+    const frameRect = frame.getBoundingClientRect();
+    const newLeft = Math.max(8, Math.min(frameRect.width - 66, ballInitialLeft + dx));
+    const newTop = Math.max(48, Math.min(frameRect.height - 76, ballInitialTop + dy));
+
+    wrapper.style.left = newLeft + 'px';
+    wrapper.style.top = newTop + 'px';
+
+    // 碰撞检测：检查是否接近底部中间的 ❌ 删除区域
+    const dismissRect = dismissZone.getBoundingClientRect();
+    const ballRect = capsule.getBoundingClientRect();
+
+    const ballCenterX = ballRect.left + ballRect.width / 2;
+    const ballCenterY = ballRect.top + ballRect.height / 2;
+    const dismissCenterX = dismissRect.left + dismissRect.width / 2;
+    const dismissCenterY = dismissRect.top + dismissRect.height / 2;
+
+    const dist = Math.hypot(ballCenterX - dismissCenterX, ballCenterY - dismissCenterY);
+
+    if (dist < 60) {
+      dismissZone.classList.add('hovered');
+    } else {
+      dismissZone.classList.remove('hovered');
+    }
+  }
+
+  function onPointerUp(e) {
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerUp);
+
+    if (!isDraggingBall) {
+      return;
+    }
+
+    wrapper.classList.remove('dragging');
+    const isOverDismiss = dismissZone.classList.contains('hovered');
+    dismissZone.classList.remove('active', 'hovered');
+
+    if (isOverDismiss) {
+      // 拖动至 ❌ 触发吸入关闭
+      wrapper.classList.add('sucked');
+      showToast('已关闭并移除悬浮球');
+      setTimeout(() => {
+        wrapper.style.display = 'none';
+        wrapper.classList.remove('sucked');
+        isDraggingBall = false;
+      }, 300);
+      return;
+    }
+
+    // 边缘吸附物理交互 (Snap to Left or Right Edge)
+    const frameRect = frame.getBoundingClientRect();
+    const currentLeft = parseFloat(wrapper.style.left);
+    const midX = frameRect.width / 2;
+
+    wrapper.classList.add('animating-snap');
+
+    let targetLeft = currentLeft < midX ? 12 : (frameRect.width - 70);
+    wrapper.style.left = targetLeft + 'px';
+
+    setTimeout(() => {
+      wrapper.classList.remove('animating-snap');
+      isDraggingBall = false;
+    }, 350);
+  }
+
+  capsule.addEventListener('pointerdown', onPointerDown);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  initDockedBallDraggable();
+});
+
+// ========================================================
+// 2. MAIN APP & SIDEBAR SESSIONS & SETTINGS
+// ========================================================
+function openSidebar() {
+  if (currentLabMode !== 'main') switchLabMode('main');
+  closePlusMenu();
+  closeCommandPopup();
+  renderSidebarSessionList();
+  document.getElementById('sidebarOverlay').classList.add('open');
+  document.getElementById('sidebarDrawer').classList.add('open');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebarOverlay').classList.remove('open');
+  document.getElementById('sidebarDrawer').classList.remove('open');
+}
+
+function renderSidebarSessionList() {
+  const list = document.getElementById('sidebarSessionList');
+  if (!list) return;
+  const sessionKeys = Object.keys(sessionsData);
+  list.innerHTML = sessionKeys.map(key => {
+    const s = sessionsData[key];
+    const isActive = (key === currentSessionId);
+    return `
+      <div class="sidebar-session-item ${isActive ? 'active' : ''}" onclick="switchSession('${key}')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          ${key === 'session-root' ? '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' : '<path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9"/>'}
+        </svg>
+        <span>${s.name}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+function switchSession(sessionId) {
+  if (currentSessionId === sessionId) {
+    closeSidebar();
+    return;
+  }
+  const container = document.getElementById('chatHistoryContainer');
+  if (sessionsData[currentSessionId]) {
+    sessionsData[currentSessionId].historyHtml = container.innerHTML;
+  }
+  currentSessionId = sessionId;
+  container.innerHTML = sessionsData[sessionId].historyHtml;
+
+  renderSidebarSessionList();
+  closeSidebar();
+  showToast(`已切换至「${sessionsData[sessionId].name}」`);
+  document.getElementById('chatViewport').scrollTop = document.getElementById('chatViewport').scrollHeight;
+}
+
+function openSettingsModal() {
+  closeSidebar();
+  document.getElementById('settingsModal').classList.add('open');
+  initSettingsNavDrag();
+}
+
+function closeSettingsModal(e) {
+  if (e && e.target !== document.getElementById('settingsModal')) return;
+  document.getElementById('settingsModal').classList.remove('open');
+}
+
+// --------------------------------------------------------
+// Settings Navigation Tabs & Interactive Handlers
+// --------------------------------------------------------
+function switchSettingsTab(tabId) {
+  const tabs = ['gateway', 'security', 'plugins', 'transport', 'theming'];
+  tabs.forEach(id => {
+    const btn = document.getElementById(`tabBtn-${id}`);
+    const content = document.getElementById(`settingsTab-${id}`);
+    if (btn) {
+      if (id === tabId) {
+        btn.classList.add('active');
+        btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      } else {
+        btn.classList.remove('active');
+      }
+    }
+    if (content) {
+      if (id === tabId) {
+        content.classList.add('active');
+      } else {
+        content.classList.remove('active');
+      }
+    }
+  });
+}
+
+// Enable Mouse & Touch Drag-to-Scroll on Settings Tabs
+let isSettingsNavDragging = false;
+let settingsNavStartX = 0;
+let settingsNavScrollLeft = 0;
+let settingsNavDragMoved = false;
+
+function initSettingsNavDrag() {
+  const nav = document.querySelector('.settings-nav-tabs');
+  if (!nav || nav.dataset.dragInitialized) return;
+  nav.dataset.dragInitialized = 'true';
+
+  nav.addEventListener('mousedown', (e) => {
+    isSettingsNavDragging = true;
+    settingsNavDragMoved = false;
+    nav.style.cursor = 'grabbing';
+    settingsNavStartX = e.pageX - nav.offsetLeft;
+    settingsNavScrollLeft = nav.scrollLeft;
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (isSettingsNavDragging) {
+      isSettingsNavDragging = false;
+      if (nav) nav.style.cursor = 'grab';
+    }
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!isSettingsNavDragging || !nav) return;
+    e.preventDefault();
+    const x = e.pageX - nav.offsetLeft;
+    const walk = (x - settingsNavStartX) * 1.5;
+    if (Math.abs(walk) > 4) settingsNavDragMoved = true;
+    nav.scrollLeft = settingsNavScrollLeft - walk;
+  });
+}
+
+function togglePairingGrant(grantType, checked) {
+  const names = {
+    sms: '短信读写授权 (SMS Broker)',
+    screen: '屏幕上下文与选区分析',
+    clipboard: '剪贴板读取与系统通知'
+  };
+  showToast(`${checked ? '✅ 已授予' : '🚫 已撤销'} ${names[grantType] || grantType}`);
+}
+
+function toggleDevTrustMode(checked) {
+  const badge = document.getElementById('securityModeBadge');
+  const desc = document.getElementById('securityModeDesc');
+  if (checked) {
+    badge.textContent = '开发者信任模式';
+    badge.className = 'settings-chip-badge badge-warning';
+    desc.textContent = '已开启（允许同进程 Native 插件接管原生 UI）';
+    showToast('⚠️ 已开启开发者信任模式');
+  } else {
+    badge.textContent = '受保护模式';
+    badge.className = 'settings-chip-badge badge-primary';
+    desc.textContent = '未开启（处于沙箱隔离保护状态）';
+    showToast('🛡️ 已切换至受保护模式 (WASM 沙箱)');
+  }
+}
+
+function togglePluginState(pluginId, checked) {
+  showToast(`${checked ? '🟢 已启用插件' : '⏸️ 已停用插件'}: ${pluginId}`);
+}
+
+function selectTransportMode(mode) {
+  const names = {
+    tailscale: 'Tailscale tsnet WireGuard 直连',
+    direct: '公共 HTTPS 反向代理双工流',
+    lan: '局域网 mDNS 自动发现'
+  };
+  const radioTs = document.getElementById('radioTransportTs');
+  const radioHttps = document.getElementById('radioTransportHttps');
+  const radioMdns = document.getElementById('radioTransportMdns');
+  if (radioTs) radioTs.checked = (mode === 'tailscale');
+  if (radioHttps) radioHttps.checked = (mode === 'direct');
+  if (radioMdns) radioMdns.checked = (mode === 'lan');
+  showToast(`已切换网络传输路径: ${names[mode] || mode}`);
+}
+
+function applyDynamicTheme(themeKey) {
+  if (themeKey === 'default') {
+    document.documentElement.removeAttribute('data-dynamic-theme');
+  } else {
+    document.documentElement.setAttribute('data-dynamic-theme', themeKey);
+  }
+  showToast(`已应用 Material Design 3 动态取色: ${themeKey}`);
+}
+
+function setPreviewAnimSpeed(speed) {
+  document.documentElement.style.setProperty('--anim-speed', speed);
+  showToast(`动效速率已设为 ${speed}x`);
+}
+
+function toggleAuraGlow(checked) {
+  const aura = document.querySelector('.assistant-ambient-glow-aura');
+  if (aura) aura.style.display = checked ? 'block' : 'none';
+  showToast(`数字助理呼吸光晕已${checked ? '开启' : '关闭'}`);
+}
+
+function toggleHapticSim(checked) {
+  showToast(`触觉振动模拟已${checked ? '启用' : '禁用'}`);
+}
+
+function handleLogout() {
+  showToast('已退出当前 Gateway 登录会话 (保留本地资料)');
+}
+
+function handleUnpair() {
+  if (confirm('确认解除与当前 Gateway 的配对关系并销毁密钥？')) {
+    showToast('已解除配对并销毁本地会话镜像');
+  }
+}
+
+function renderAuditLogs() {
+  const list = document.getElementById('settingsAuditLogList');
+  if (!list) return;
+  const time = new Date().toTimeString().split(' ')[0];
+  list.innerHTML = `
+    <div style="color:#aaa;">• ${time} [AUDIT_VERIFIED] Kernel primitives status check (OK)</div>
+    <div style="color:#aaa;">• ${time} [PAIR_TOKEN_REFRESH] Active ARC nonce accepted</div>
+    <div style="color:#aaa;">• ${time} [STORAGE_QUOTA] AES-256-GCM private store verified</div>
+  `;
+  showToast('审计日志已同步');
+}
+
+function triggerEmergencyDisable() {
+  if (confirm('⚠️ 紧急熔断：是否立即切断所有已安装插件的执行权限与 Gateway 配对授权？')) {
+    document.querySelectorAll('#settingsModal input[type="checkbox"]').forEach(cb => cb.checked = false);
+    toggleDevTrustMode(false);
+    showToast('🚨 已执行紧急熔断：全部插件与授权已停用！');
+  }
+}
+
+function openCameraModalDirect() {
+  if (currentLabMode !== 'main') switchLabMode('main');
+  closePlusMenu();
+  closeCommandPopup();
+  if (isExpanded) expandInput(false);
+  document.getElementById('cameraModal').classList.add('open');
+}
+
+function closeCameraModal(e) {
+  if (e && e.target !== document.getElementById('cameraModal')) return;
+  document.getElementById('cameraModal').classList.remove('open');
+}
+
+function triggerShutterCapture() {
+  const flash = document.getElementById('cameraFlash');
+  flash.classList.add('flashing');
+  setTimeout(() => flash.classList.remove('flashing'), 100);
+
+  showToast('📷 已拍摄照片并自动暂存');
+
+  setTimeout(() => {
+    closeCameraModal();
+    const previewSlot = document.getElementById('mediaPreviewSlot');
+    previewSlot.style.display = 'flex';
+    document.getElementById('mediaLabelText').textContent = `现场采集照片 (IMG_${Date.now().toString().slice(-4)}.jpg)`;
+    expandInput(true);
+    const ta = document.getElementById('mainTextarea');
+    ta.value = '请分析这张照片中的视觉内容与架构特征';
+  }, 240);
+}
+
+function removeAttachedMedia(e) {
+  if (e) e.stopPropagation();
+  document.getElementById('mediaPreviewSlot').style.display = 'none';
+  showToast('已移除附加照片');
+}
+
+// ========================================================
+// 3. TELEGRAM BOT COMMANDS & MAIN APP LOGIC
+// ========================================================
+const COMMAND_CATALOG = [
+  { command: '/models', description: '查询或切换网关可用模型列表', argumentHint: '[model_id]' },
+  { command: '/status', description: '获取当前系统运行状态与链路遥测', argumentHint: '' },
+  { command: '/review', description: '启动智能代码审查与架构规范验证', argumentHint: '[path]' },
+  { command: '/gateway', description: '测试 Agent Gateway 双向向量通信', argumentHint: '' },
+  { command: '/clear', description: '清空当前上下文会话历史', argumentHint: '' },
+  { command: '/help', description: '查看所有支持的快捷指令手册', argumentHint: '' }
+];
+
+const STREAM_SAMPLE_RESPONSES = {
+  '/models': {
+    markdown: `🤖 **Agent Gateway 模型列表 (Telegram Bot 交互)**\n\n当前网关已协商就绪，支持通过内联按键即时切换：\n\n> 提示：点击下方模型卡片可立即将当前会话路由至对应推理端点。`,
+    inlineKeyboard: true
+  },
+  '/status': {
+    markdown: `### 📊 Open Android Intelligence 系统遥测健康报告\n\n| 指标项 | 状态 | 详情 |\n| :--- | :--- | :--- |\n| **网关链路** | ✅ 在线 | \`tsnet-node\` (12ms) |\n| **设计系统** | 🟢 就绪 | \`Material Design 3\` 动态取色 |\n| **数字助理** | ⚡ 就绪 | \`VoiceInteractionSession\` |\n| **当前模型** | 🧠 活跃 | \`Claude 3.7 Sonnet\` |\n\n> 系统处于全模态就绪状态，未发现协议异常。`,
+    inlineKeyboard: false
+  },
+  '/review': {
+    markdown: `### 🔍 代码审查与架构规范验证报告\n\n已严格对照 **Material Design 3 (MD3)** 规范与设计规格文档进行核验：\n\n- **跨 App 临时覆盖**：具备独立的 \`VoiceInteractionSession\` 浮层，不破坏前台第三方 App 运行。\n- **连续收缩为停靠球**：返回时平滑转换为 56dp 圆形停靠球（Docked Ball），支持边缘吸附。\n- **Live 屏幕共享与圈选**：支持 Assist Screenshot 授权下的局部手绘自由圈选。\n\n\`\`\`kotlin\n// 数字助理跨 App 会话组件\nAssistantFloatingBar(\n    onScreenShare = { startScreenCrop() },\n    onVoice = { startStreaming() }\n)\n\`\`\`\n\n✅ **审查结论**：架构合规，助理会话与主应用完全解耦。`,
+    inlineKeyboard: false
+  },
+  '/help': {
+    markdown: `### 📖 Open Android Intelligence 快捷指令速查手册\n\n- \`/models\` — 呼出 Telegram Bot 风格模型选择面板\n- \`/status\` — 查阅当前系统健康度与网络探针\n- \`/review\` — 触发多模态代码与架构规范审查\n- \`/gateway\` — 验证网关端到端向量协议\n- \`/clear\` — 清空当前对话上下文\n\n可以直接输入命令或在输入框键入 \`/\` 获取实时自动补全。`,
+    inlineKeyboard: false
+  },
+  'default': {
+    markdown: `✨ **Open Android Intelligence 智能工作台已响应**\n\n已捕获上下文并接入 **Agent Gateway**：\n\n- **多模态解析**：已成功分析附加图像信息\n- **动态取色**：跟随系统壁纸实时自适应\n- **双工管道**：Token 级流式增量推送`,
+    inlineKeyboard: false
+  }
+};
+
+function handleInput(e) {
+  const text = e.target.value;
+  if (text.startsWith('/')) {
+    const query = text.toLowerCase();
+    const filtered = COMMAND_CATALOG.filter(c => c.command.toLowerCase().startsWith(query));
+    if (filtered.length > 0) {
+      renderCommandPopup(filtered);
+      openCommandPopup();
+      return;
+    }
+  }
+  closeCommandPopup();
+}
+
+function renderCommandPopup(commands) {
+  const popup = document.getElementById('commandPopup');
+  popup.innerHTML = commands.map(cmd => `
+    <div class="command-item-row" onclick="selectCommand('${cmd.command}')">
+      <div class="command-name-col">
+        <span>${cmd.command}</span>
+        ${cmd.argumentHint ? `<span class="command-arg-hint">${cmd.argumentHint}</span>` : ''}
+      </div>
+      <div class="command-desc-text">${cmd.description}</div>
+    </div>
+  `).join('');
+}
+
+function openCommandPopup() {
+  isCommandPopupOpen = true;
+  document.getElementById('commandPopup').classList.add('open');
+}
+
+function closeCommandPopup() {
+  isCommandPopupOpen = false;
+  document.getElementById('commandPopup').classList.remove('open');
+}
+
+function selectCommand(cmd) {
+  const textarea = document.getElementById('mainTextarea');
+  textarea.value = cmd;
+  closeCommandPopup();
+  handleSendOrStop();
+}
+
+function handleCommandClick(cmd) {
+  if (currentLabMode !== 'main') switchLabMode('main');
+  closeCommandPopup();
+  startStreamingDialogue(cmd);
+}
+
+function setDynamicTheme(themeKey, el) {
+  if (themeKey === 'amber') {
+    document.documentElement.removeAttribute('data-dynamic-theme');
+  } else {
+    document.documentElement.setAttribute('data-dynamic-theme', themeKey);
+  }
+  showToast(`已应用「${themeKey}」动态配色与光晕`);
+}
+
+function setTab(tab) {
+  const sw = document.getElementById('headerSwitch');
+  sw.setAttribute('data-active', tab);
+  const items = sw.querySelectorAll('.segmented-item');
+  items.forEach(el => el.classList.remove('active'));
+  if (tab === 'chat') items[0].classList.add('active');
+  else items[1].classList.add('active');
+}
+
+function expandInput(expanded) {
+  isExpanded = expanded;
+  const card = document.getElementById('inputCard');
+  const keyboard = document.getElementById('keyboardSim');
+  const textarea = document.getElementById('mainTextarea');
+
+  if (expanded) {
+    card.classList.remove('collapsed');
+    card.classList.add('expanded');
+    keyboard.classList.add('visible');
+    setTimeout(() => textarea.focus(), 150);
+  } else {
+    card.classList.remove('expanded');
+    card.classList.add('collapsed');
+    keyboard.classList.remove('visible');
+    closePlusMenu();
+    closeCommandPopup();
+  }
+}
+
+function togglePlusMenu(e) {
+  if (e) e.stopPropagation();
+  closeCommandPopup();
+  if (isPlusOpen) closePlusMenu();
+  else openPlusMenu();
+}
+
+function openPlusMenu() {
+  isPlusOpen = true;
+  document.getElementById('plusMenu').classList.add('open');
+  document.getElementById('btnPlus').classList.add('open');
+}
+
+function closePlusMenu() {
+  isPlusOpen = false;
+  document.getElementById('plusMenu').classList.remove('open');
+  document.getElementById('btnPlus').classList.remove('open');
+}
+
+function selectAction(type) {
+  closePlusMenu();
+  if (type === '拍照采集') {
+    openCameraModalDirect();
+    return;
+  }
+  const textarea = document.getElementById('mainTextarea');
+  textarea.value = `[${type}] ` + textarea.value;
+  if (!isExpanded) expandInput(true);
+}
+
+function selectGatewayModel(id) {
+  activeModelId = id;
+  document.getElementById('activeModelLabel').textContent = `${id} · 在线就绪`;
+  closePlusMenu();
+  document.querySelectorAll('.inline-keyboard-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-id') === id);
+  });
+  showToast(`已切换模型为 ${id}`);
+}
+
+function appendKey(char) {
+  if (!isExpanded) expandInput(true);
+  const textarea = document.getElementById('mainTextarea');
+  textarea.value += char;
+  handleInput({ target: { value: textarea.value } });
+}
+
+function handleBackspace() {
+  const textarea = document.getElementById('mainTextarea');
+  textarea.value = textarea.value.slice(0, -1);
+  handleInput({ target: { value: textarea.value } });
+}
+
+function handleKeyDown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    handleSendOrStop();
+  }
+}
+
+function handleSendOrStop() {
+  if (isCurrentlyStreaming) {
+    stopStreaming();
+    return;
+  }
+  const textarea = document.getElementById('mainTextarea');
+  const text = textarea.value.trim();
+  const hasAttachment = document.getElementById('mediaPreviewSlot').style.display === 'flex';
+  if (!text && !hasAttachment) return;
+
+  const displayPrompt = hasAttachment ? `[📷 现场拍摄] ${text || '分析此图像'}` : text;
+
+  textarea.value = '';
+  document.getElementById('mediaPreviewSlot').style.display = 'none';
+  closeCommandPopup();
+  expandInput(false);
+
+  startStreamingDialogue(displayPrompt);
+}
+
+function startStreamingDialogue(userText) {
+  if (isCurrentlyStreaming) stopStreaming();
+
+  const container = document.getElementById('chatHistoryContainer');
+  const suggestions = document.getElementById('suggestedItems');
+  if (suggestions) suggestions.style.display = 'none';
+
+  const userBubbleGroup = document.createElement('div');
+  userBubbleGroup.className = 'message-bubble-group';
+  userBubbleGroup.innerHTML = `
+    <div class="user-bubble-wrapper">
+      <div class="message-bubble-user">${userText}</div>
+    </div>
+  `;
+  container.appendChild(userBubbleGroup);
+  document.getElementById('chatViewport').scrollTop = document.getElementById('chatViewport').scrollHeight;
+
+  triggerStreamResponse(userText);
+}
+
+async function triggerStreamResponse(userText) {
+  const container = document.getElementById('chatHistoryContainer');
+
+  const agentBubble = document.createElement('div');
+  agentBubble.className = 'message-bubble-group';
+  agentBubble.innerHTML = `
+    <div class="message-bubble-agent">
+      <div class="agent-meta-header">
+        <div class="agent-avatar-badge">🤖</div>
+        <span>Open Android Intelligence · ${activeModelId}</span>
+      </div>
+      <div class="agent-content-card">
+        <div class="agent-markdown-body"></div>
+        <span class="streaming-cursor"></span>
+        <div class="agent-inline-card-placeholder"></div>
+      </div>
+    </div>
+  `;
+  container.appendChild(agentBubble);
+
+  isCurrentlyStreaming = true;
+  updateSendButtonState(true);
+
+  const markdownBody = agentBubble.querySelector('.agent-markdown-body');
+  const cursorElement = agentBubble.querySelector('.streaming-cursor');
+  const inlinePlaceholder = agentBubble.querySelector('.agent-inline-card-placeholder');
+
+  const responseData = STREAM_SAMPLE_RESPONSES[userText] || STREAM_SAMPLE_RESPONSES['default'];
+  const fullRawMarkdown = responseData.markdown;
+
+  let currentIdx = 0;
+  streamAbortController = { aborted: false };
+
+  while (currentIdx < fullRawMarkdown.length && !streamAbortController.aborted) {
+    currentIdx += Math.min(3, fullRawMarkdown.length - currentIdx);
+    markdownBody.innerHTML = parseMarkdown(fullRawMarkdown.slice(0, currentIdx));
+    document.getElementById('chatViewport').scrollTop = document.getElementById('chatViewport').scrollHeight;
+    await new Promise(r => setTimeout(r, 20));
+  }
+
+  if (cursorElement) cursorElement.remove();
+  markdownBody.innerHTML = parseMarkdown(fullRawMarkdown);
+
+  if (userText.includes('/models')) {
+    const keyboardContainer = document.createElement('div');
+    keyboardContainer.className = 'telegram-inline-keyboard';
+    keyboardContainer.innerHTML = `
+      <div class="inline-keyboard-row">
+        <button class="inline-keyboard-btn ${activeModelId === 'claude-3-7-sonnet' ? 'active' : ''}" onclick="selectGatewayModel('claude-3-7-sonnet')">Claude 3.7 Sonnet</button>
+        <button class="inline-keyboard-btn ${activeModelId === 'deepseek-r1' ? 'active' : ''}" onclick="selectGatewayModel('deepseek-r1')">DeepSeek R1</button>
+      </div>
+      <div class="inline-keyboard-row">
+        <button class="inline-keyboard-btn ${activeModelId === 'gpt-4o' ? 'active' : ''}" onclick="selectGatewayModel('gpt-4o')">GPT-4o</button>
+        <button class="inline-keyboard-btn ${activeModelId === 'gemini-2-0-flash' ? 'active' : ''}" onclick="selectGatewayModel('gemini-2-0-flash')">Gemini 2.0 Flash</button>
+      </div>
+    `;
+    inlinePlaceholder.appendChild(keyboardContainer);
+  }
+
+  isCurrentlyStreaming = false;
+  updateSendButtonState(false);
+  document.getElementById('chatViewport').scrollTop = document.getElementById('chatViewport').scrollHeight;
+}
+
+function stopStreaming() {
+  if (streamAbortController) streamAbortController.aborted = true;
+  const cursor = document.querySelector('.streaming-cursor');
+  if (cursor) cursor.remove();
+  isCurrentlyStreaming = false;
+  updateSendButtonState(false);
+}
+
+function updateSendButtonState(streaming) {
+  const btn = document.getElementById('btnSendOrStop');
+  const icon = document.getElementById('sendIconSvg');
+  if (streaming) {
+    btn.classList.add('streaming-stop');
+    icon.innerHTML = `<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>`;
+  } else {
+    btn.classList.remove('streaming-stop');
+    icon.innerHTML = `<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>`;
+  }
+}
+
+function createNewSession() {
+  const newId = `session-${Date.now()}`;
+  sessionsData[newId] = {
+    name: `新会话 #${Object.keys(sessionsData).length + 1}`,
+    historyHtml: `
+      <div class="suggested-items" id="suggestedItems">
+        <div class="suggested-item" onclick="openCameraModalDirect()">
+          <span>📷 启动半屏相机拍照动效</span>
+        </div>
+        <div class="suggested-item" onclick="handleCommandClick('/models')">
+          <span>/models — 切换并查看网关可用模型 (Telegram Bot)</span>
+        </div>
+      </div>
+    `
+  };
+  switchSession(newId);
+  showToast('已创建新会话');
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  const notch = document.getElementById('assistHandleNotch');
+  if (notch) {
+    notch.addEventListener('touchstart', (e) => {
+      startY = e.touches[0].clientY;
+    });
+    notch.addEventListener('touchmove', (e) => {
+      currentY = e.touches[0].clientY;
+      if (startY - currentY > 40) {
+        openAssistantInFullApp();
+      }
+    });
+  }
+  renderSidebarSessionList();
+});
+</script>
