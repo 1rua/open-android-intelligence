@@ -1,0 +1,31 @@
+# Hermes 官方插件目录（plugin-catalog/）条目。
+#
+# 该目录是 Hermes 对外插件的唯一发现系统，条目经人工 PR 合入，并由上游 CI
+# 检出每个变更条目、在其锁定的提交上运行 。
+# 因此 sha 必须是真实的 40 位提交，且该提交上的插件必须能通过官方校验。
+#
+# 提交本 PR 时的检查清单：
+#   1. git clone https://github.com/1rua/hermes-gateway-plugin
+#   2. cd hermes-gateway-plugin && git checkout <下方 sha>
+#   3. hermes plugins validate .          # 必须返回 ok: true
+#   4. 确认下方 description 与实际能力一致
+name: open-android-intelligence-gateway
+repo: https://github.com/1rua/hermes-gateway-plugin
+sha: a8753549d535f1ebec90831f616bec4cfef65ccb
+description: >-
+  Native Gateway Protocol v2.1 platform adapter that connects an Open Android
+  Intelligence phone to a Hermes Agent host: chat, notifications, SMS, device
+  requests and attachment transfer over one authenticated local channel. The
+  Gateway Protocol contract is fetched at a pinned commit, so the host validates
+  against exactly the schemas the phone negotiates with.
+maintainer: 1rua
+tier: community
+category: platform
+docs_url: https://github.com/1rua/hermes-gateway-plugin#readme
+capabilities:
+  provides_tools:
+    - open_android_device
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

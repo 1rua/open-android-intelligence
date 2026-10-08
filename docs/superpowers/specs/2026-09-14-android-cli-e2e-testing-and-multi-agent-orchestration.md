@@ -75,13 +75,13 @@ flowchart TD
    - 验证 Python 运行时（Python ≥ 3.12）或 Node.js 运行时（Node ≥ 24.18.0）；
    - 核验宿主版本范围是否符合声明（如 Hermes API 1.0.0 ~ 3.0.0）；若宿主超出范围，依协议规范自动进入 `HOST_INCOMPATIBLE` 只读冻结状态。
 2. **插件安装与加载**：
-   - Hermes 宿主：执行 `pip install -e integrations/hermes` 或安装编译完成的 Wheel 单文件；
+   - Hermes 宿主：插件已拆为独立仓库，执行 `hermes plugins install 1rua/hermes-gateway-plugin --enable`；本地开发可将仓库检出到 `HERMES_PLUGIN_ROOT` 指向的位置以复用同一套脚本与夹具；
    - OpenClaw 宿主：通过渠道插件注册机制引入 `integrations/openclaw`。
 3. **规范一致性套件校验**：
    - 执行 `npm run gateway:v2:conformance`，运行跨宿主测试套件；
    - 必须通过全量 24 个标准化协议向量测试（包括 Target 规范化排序、Ed25519 签名验证、握手协商 Schema 校验、SSE 消息模式与防重放规则），两端 SHA-256 结果指纹必须 100% 绝对一致。
 4. **管理 CLI 注册验证**：
-   - 执行 `./hermes-account.py status` 或 `hermes open-android-intelligence status`，确认子命令正常注入且返回当前网关就绪信息。
+   - 执行 `hermes open-android-intelligence status`（宿主内）或 `python3 "$HERMES_PLUGIN_ROOT/tools/hermes-account.py" status`（无宿主时），确认子命令正常注入且返回当前网关就绪信息；未设置 `HERMES_PLUGIN_ROOT` 时编排器直接失败而不静默跳过。
 
 ### 2.2 阶段二：账号创建与沙箱隔离初始化 (Account Provisioning & Sandbox Isolation)
 1. **本地显式确认创建账号**：
@@ -259,7 +259,7 @@ Agent 间基于统一的状态文件 `orchestrator_state.json` 与 Ticket 契约
 
 ### 5.1 典型问题一：网关插件安装与一致性校验失败
 - **故障现象**：
-  - 执行 `pip install -e integrations/hermes` 抛出构建异常；或 `npm run gateway:v2:conformance` 报告某项向量（如 `request-signature-oracle`）哈希不匹配，测试终止。
+  - 插件包未安装且 `HERMES_PLUGIN_ROOT` 未指向可导入的检出；或 `npm run gateway:v2:conformance` 报告某项向量（如 `request-signature-oracle`）哈希不匹配，测试终止。
 - **排查定位抓手**：
   - 检查 Python/Node 运行时依赖版本是否在 `engines` 许可区间；
   - 运行 `python3 -c "import open_android_intelligence_gateway"` 查看具体 `ModuleNotFoundError`；
@@ -379,7 +379,7 @@ graph TD
 |:---:|:---:|:---:|:---:|:---|
 | **01** | `ENV_READY` | 无 | 立即阻断 | `prepare_environment.sh` |
 | **02** | `PLUGIN_INSTALL` | `ENV_READY` | 熔断流水线并触发 Diag | `pip install -e` + `npm run gateway:v2:conformance` |
-| **03** | `ACCOUNT_PROVISION` | `PLUGIN_INSTALL` | 熔断流水线并触发 Diag | `./hermes-account.py create` |
+| **03** | `ACCOUNT_PROVISION` | `PLUGIN_INSTALL` | 熔断流水线并触发 Diag | `tools/hermes-account.py create` |
 | **04** | `PAIRING_HANDSHAKE` | `ACCOUNT_PROVISION` + `ENV_READY` | 熔断流水线并触发 Diag | `android layout` + 表单注入 + 登录点击 |
 | **05** | `BIDIRECTIONAL_MSG` | `PAIRING_HANDSHAKE` | 派发 Diag 分析上/下行 | `android layout` + 消息发送 + SSE 监听 |
 | **06** | `ABNORMAL_DEFENSE` | `BIDIRECTIONAL_MSG` | 记录缺陷并并行修复 | 执行 EXC-01 ~ EXC-08 异常用例 |

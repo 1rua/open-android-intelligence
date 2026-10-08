@@ -116,10 +116,8 @@ open-android-intelligence/
 │   ├── sdk-rust/                     # 设备插件官方 Rust SDK
 │   └── dist/                         # 确定性构建生成的 .alp 标准产物包
 ├── plugin-tooling/                   # 设备插件构建与签名工具链（确定性打包器）
-├── integrations/                     # Agent 宿主适配器集成
-│   ├── hermes/                       # Hermes Python 原生网关适配器（open_android_intelligence_gateway）
+├── integrations/                     # Agent 宿主适配器集成（Hermes 网关已拆为独立仓，见下）
 │   └── openclaw/                     # OpenClaw 原生网关适配器插件
-├── hermes-account.py                 # Hermes 网关本地多账号命令行管理工具
 ├── docs/                             # 规范文档、ADR 架构决策与实施计划
 └── legacy/                           # 已冻结归档的旧 Bridge 与历史组件
 ```
@@ -153,19 +151,37 @@ npm run gateway:v2:conformance
 
 升级已有明文数据库前先备份，并停止其他读写连接。首次打开会事务加密既有正文，再执行 WAL checkpoint 和 VACUUM 清除物理明文残留，需要足够磁盘空间；遇到读锁或清理失败时拒绝服务该账号，解除阻塞后重新打开可继续清理，不会删除已有历史。两宿主与 Android 还须同步升级核心 Schema 摘要，并按部署证书配置真实 SPKI；配置方法见下文。
 
-项目提供了开箱即用的命令行工具 `hermes-account.py`，用于快速完成 Hermes 网关初始化与多账号生命周期管理：
+Hermes 网关已拆分为独立插件仓库 [`1rua/hermes-gateway-plugin`](https://github.com/1rua/hermes-gateway-plugin)，由宿主用官方命令安装与更新：
+
+```bash
+# 安装并启用插件
+hermes plugins install 1rua/hermes-gateway-plugin --enable
+
+# 随后在向导中创建手机连接账号
+hermes gateway setup
+
+# 日常管理（宿主内）
+hermes open-android-intelligence account list
+hermes open-android-intelligence account create -u my_user -p <密码> --confirm-local
+hermes open-android-intelligence status
+hermes open-android-intelligence contract status   # 协议契约是否就绪
+```
+
+插件仓库另附等价 CLI，可在没有宿主的机器上离线预置账号（与上面共用同一套管理服务和主密钥来源）：
 
 ```bash
 # 步骤 1：生成 0600 受限主密钥文件（遵循 ADR 0023 规范）
-./hermes-account.py init-key
+python3 tools/hermes-account.py init-key
 
 # 步骤 2：创建 Gateway 账号（支持为不同用户创建独立隔离的网关上下文）
-./hermes-account.py create my_user
+python3 tools/hermes-account.py create my_user
 # 按照终端交互提示设置密码；重复 create 会拒绝覆盖已有账号
 
 # 步骤 3：查看网关当前托管状态与配对概况
-./hermes-account.py status
+python3 tools/hermes-account.py status
 ```
+
+插件在加载时按 `contract-pin.json` 锁定的提交自动获取协议契约，因此无需在本仓安装插件源码。本仓仍是契约的唯一真源：`gateway-contract/tools/check-contract-pin.py` 会校验插件锁定的提交与本仓契约一致，契约变更未同步升级 pin 时直接失败。
 
 ### 4. 构建官方设备插件包（.alp）
 
