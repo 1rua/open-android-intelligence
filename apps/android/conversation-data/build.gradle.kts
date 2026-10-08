@@ -27,4 +27,12 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     listOf("HERMES_PLUGIN_ROOT", "OPEN_ANDROID_GATEWAY_CONTRACT_ROOT").forEach { name ->
         System.getenv(name)?.let { environment(name, it) }
     }
+    // Without this a failing test reaches the CI log as a bare FAILED with no
+    // message, which makes an integration failure indistinguishable from a
+    // broken fixture or a missing checkout.
+    testLogging {
+        events("failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStackTraces = true
+    }
 }
