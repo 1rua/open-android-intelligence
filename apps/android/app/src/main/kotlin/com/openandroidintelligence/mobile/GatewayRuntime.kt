@@ -220,11 +220,6 @@ class GatewayRuntime(
                 val identity=com.openandroidintelligence.gateway.schema.Json.of(mapOf("deploymentId" to negotiated.deploymentId,"tlsSpkiSha256" to negotiated.tlsSpkiSha256))
                 check(com.openandroidintelligence.gateway.schema.Json.sha256(identity)==expectedIdentityFingerprint) { "GATEWAY_IDENTITY_MISMATCH" }
             }
-            if (endpoint.isTls && tlsPin == null) {
-                _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
-                password.fill('\u0000')
-                return@launch
-            }
 
             _phase.value = ConnectionPhase.Authenticating
             val credentials = runCatching {
@@ -486,11 +481,6 @@ class GatewayRuntime(
                     return@launch
                 }
                 val tlsPin = identityTrust.verifyNegotiation(endpoint, current.username, negotiated)
-                if (endpoint.isTls && tlsPin == null) {
-                    _operationNotice.value =
-                        "刷新网关凭据失败：Gateway 没有返回可核验的 TLS 身份，已按安全要求中止。"
-                    return@launch
-                }
                 val session = runCatching {
                     authClientFor(current.gatewayUrl, setOfNotNull(tlsPin)).refresh(
                         accountId = accountId,
@@ -622,10 +612,6 @@ class GatewayRuntime(
                 return@launch
             }
             val tlsPin = identityTrust.verifyNegotiation(endpoint, lastUser, negotiated)
-            if (endpoint.isTls && tlsPin == null) {
-                _phase.value = ConnectionPhase.Failed("NEGOTIATION_FAILED:missing-tls-identity")
-                return@launch
-            }
 
             _phase.value = ConnectionPhase.Authenticating
             val session = runCatching {
@@ -1057,7 +1043,8 @@ class GatewayRuntime(
 
     private fun saveLastProfile(gatewayUrl: String, username: String, profileId: String, session: SessionCredentials) {
         val endpoint = checkNotNull(GatewayEndpoint.parse(gatewayUrl))
-        val trustId = if (endpoint.isTls) checkNotNull(identityTrust.retained(endpoint, username)).spki else ""
+        val retained = if (endpoint.isTls) checkNotNull(identityTrust.retained(endpoint, username)) else null
+        val trustId = if (endpoint.isTls) (retained?.spki ?: "ca:${retained?.deploymentId}") else ""
         accountProfiles.save(AccountProfile(profileId, gatewayUrl, username, trustId),
             AndroidAccountProfileStore.Binding(session.accountId, session.deviceId, session.sessionId, DEVICE_KEY_ENCODING_VERSION))
         _savedProfiles.value = accountProfiles.list()

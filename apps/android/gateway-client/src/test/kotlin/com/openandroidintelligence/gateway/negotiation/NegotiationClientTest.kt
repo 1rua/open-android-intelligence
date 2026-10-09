@@ -7,6 +7,7 @@ import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.SchemaContractHash
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -144,6 +145,52 @@ class NegotiationClientTest {
         assertTrue(
             DECLARED_CONVERSATION_UI_FEATURES.contains("generation-cancel-v1"),
         )
+    }
+
+    @Test
+    fun allowsNegotiationWithOmittedOrBlankTlsSpkiSha256() = runBlocking {
+        for (identityJson in listOf(
+            """{"deploymentId":"deploy-omitted"}""",
+            """{"deploymentId":"deploy-null","tlsSpkiSha256":null}""",
+            """{"deploymentId":"deploy-blank","tlsSpkiSha256":""}""",
+            """{"deploymentId":"deploy-spaces","tlsSpkiSha256":"   "}"""
+        )) {
+            val client = NegotiationClient(
+                execute = { _ ->
+                    GatewayResponse(
+                        status = 200,
+                        headers = emptyList(),
+                        body = """
+                            {
+                              "requestId":"req-1",
+                              "correlationId":"cor-1",
+                              "protocol":"2.1",
+                              "data":{
+                                "protocol":{"major":2,"minor":1},
+                                "features":{
+                                  "auth":["password","refresh"],
+                                  "messages":"chat-v1",
+                                  "attachments":"staged-sha256-v1",
+                                  "events":"sse-cursor-v1",
+                                  "deviceRequests":"risk-queue-v1"
+                                },
+                                "limits":{
+                                  "attachmentTtlSeconds":3600,
+                                  "eventRetentionSeconds":86400,"maxClockSkewSeconds":120
+                                },
+                                "gatewayIdentity":$identityJson
+                              }
+                            }
+                        """.trimIndent().toByteArray(),
+                    )
+                },
+                installationId = "install-1",
+                appVersion = "2.1.0",
+                platformApi = 35,
+            )
+            val result = client.negotiate("neg-1")
+            assertNull("省略、null 或空白指纹必须解析为 null 而非报错", result.tlsSpkiSha256)
+        }
     }
 
     private fun result(conversationUi: List<String>): NegotiationResult = NegotiationResult(

@@ -1,0 +1,3 @@
+当前网络代理将声明域名的范围外路径交给传输层：/private/admin
+当前真实 Manifest 解析及更新策略将 GET 改为 POST 判为：AutoApply
+未授后台权限：前台标识保留读取能力，真实后台标识的 backgroundAllowed=false

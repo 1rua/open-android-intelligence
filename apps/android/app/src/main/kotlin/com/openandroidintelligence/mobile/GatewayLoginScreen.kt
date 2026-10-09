@@ -86,10 +86,10 @@ fun GatewayLoginScreen(
 
     val normalizedUrl = remember(url) { sanitizeGatewayUrl(url) }
     val invitationUri=remember(invitePayload) { runCatching { android.net.Uri.parse(invitePayload) }.getOrNull() }
-    val invitationFingerprint=invitationUri?.getQueryParameter("identityFingerprint")
-    val invitationCurrent=invitePayload.isBlank() || runCatching {
-        invitationUri?.scheme=="oai" && invitationUri.host=="pair" && invitationUri.getQueryParameter("invitationId")?.isNotBlank()==true &&
-            invitationFingerprint?.matches(Regex("sha256:[0-9a-f]{64}"))==true && java.time.Instant.parse(invitationUri.getQueryParameter("expiresAt")).isAfter(java.time.Instant.now())
+    val invitationFingerprint = invitationUri?.getQueryParameter("identityFingerprint")?.takeIf { it.isNotBlank() }
+    val invitationCurrent = invitePayload.isBlank() || runCatching {
+        invitationUri?.scheme == "oai" && invitationUri.host == "pair" && invitationUri.getQueryParameter("invitationId")?.isNotBlank() == true &&
+            (invitationFingerprint == null || invitationFingerprint.matches(Regex("sha256:[0-9a-f]{64}"))) && java.time.Instant.parse(invitationUri.getQueryParameter("expiresAt")).isAfter(java.time.Instant.now())
     }.getOrDefault(false)
     // The address decides whether this pairing can be verified at all, so the
     // form classifies it exactly the way the runtime will.
@@ -272,10 +272,10 @@ fun GatewayLoginScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(
                             onDone = {
-                                if (urlIsValid && username.isNotBlank() && password.isNotEmpty() && !isBusy) {
+                                if (urlIsValid && username.isNotBlank() && password.isNotEmpty() && (!invitation || invitationCurrent) && !isBusy) {
                                     val secret = password.toCharArray()
                                     password = ""
-                                    if (invitation && onInvite != null) { if (invitationCurrent) onInvite(normalizedUrl,username.trim(),secret,invitationFingerprint) else secret.fill('\u0000') } else onLogin(normalizedUrl, username.trim(), secret)
+                                    if (invitation && onInvite != null) onInvite(normalizedUrl, username.trim(), secret, invitationFingerprint) else onLogin(normalizedUrl, username.trim(), secret)
                                 }
                             },
                         ),
@@ -306,9 +306,9 @@ fun GatewayLoginScreen(
                         onClick = {
                             val secret = password.toCharArray()
                             password = ""
-                            if (invitation && onInvite != null) { if (invitationCurrent) onInvite(normalizedUrl,username.trim(),secret,invitationFingerprint) else secret.fill('\u0000') } else onLogin(normalizedUrl, username.trim(), secret)
+                            if (invitation && onInvite != null) onInvite(normalizedUrl, username.trim(), secret, invitationFingerprint) else onLogin(normalizedUrl, username.trim(), secret)
                         },
-                        enabled = urlIsValid && username.isNotBlank() && password.isNotEmpty() && !isBusy,
+                        enabled = urlIsValid && username.isNotBlank() && password.isNotEmpty() && (!invitation || invitationCurrent) && !isBusy,
                         shape = MaterialTheme.shapes.medium,
                         modifier = Modifier
                             .fillMaxWidth()

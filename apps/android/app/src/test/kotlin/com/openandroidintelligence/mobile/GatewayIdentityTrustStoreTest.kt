@@ -55,6 +55,28 @@ class GatewayIdentityTrustStoreTest {
         refused("NEGOTIATION_FAILED:missing-tls-identity") { GatewayIdentityTrustStore(context).verifyNegotiation(endpoint, "alice", negotiated.copy(tlsSpkiSha256 = "sha256:" + "0".repeat(64))) }
     }
 
+    @Test fun standardCaWithoutSpkiPinIsApprovedAndCanRestore() {
+        val standard = negotiated.copy(tlsSpkiSha256 = null)
+        val store = GatewayIdentityTrustStore(context)
+        assertNull(store.verifyNegotiation(endpoint, "alice", standard))
+        store.remember(endpoint, "alice", standard)
+
+        val restored = GatewayIdentityTrustStore(context)
+        assertTrue(restored.pinsBeforeConnect(endpoint, "alice", restoring = true).isEmpty())
+        assertNull(restored.verifyNegotiation(endpoint, "alice", standard))
+
+        // deployment 改变必须被拦截
+        refused("GATEWAY_IDENTITY_CHANGED") { restored.verifyNegotiation(endpoint, "alice", standard.copy(deploymentId = "deploy_changed")) }
+        // 变更并添加 pin 也属于身份变更
+        refused("GATEWAY_IDENTITY_CHANGED") { restored.verifyNegotiation(endpoint, "alice", negotiated) }
+    }
+
+    @Test fun blankTlsSpkiSha256IsTreatedAsStandardCa() {
+        val blank = negotiated.copy(tlsSpkiSha256 = "  ")
+        val store = GatewayIdentityTrustStore(context)
+        assertNull(store.verifyNegotiation(endpoint, "alice", blank))
+    }
+
     @Test fun explicitDefaultPortCannotBypassTheApprovedTlsAuthority() {
         val store = GatewayIdentityTrustStore(context)
         store.remember(GatewayEndpoint.parse("https://alias.example")!!, "alice", negotiated)

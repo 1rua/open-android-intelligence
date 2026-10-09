@@ -160,18 +160,19 @@ class NegotiationClient(
             val value = JsonFields.long(limits, key)
             check(value != null && value >= if (key == "maxClockSkewSeconds") 0 else 1) { "NEGOTIATION_FAILED:limit-$key" }
         }
-        val identity = closedObject(JsonFields.field(result, "gatewayIdentity"), setOf("deploymentId", "tlsSpkiSha256"))
-        val pin = JsonFields.string(identity, "tlsSpkiSha256")
+        val identity = closedObject(JsonFields.field(result, "gatewayIdentity"), setOf("deploymentId"), setOf("tlsSpkiSha256"))
+        val pinField = JsonFields.field(identity, "tlsSpkiSha256")
+        val pin = JsonFields.string(identity, "tlsSpkiSha256")?.takeIf { it.isNotBlank() }
         check(Regex("[A-Za-z0-9._~-]{1,128}").matches(JsonFields.string(identity, "deploymentId").orEmpty())
-            && (JsonFields.field(identity, "tlsSpkiSha256") === JsonValue.JNull ||
-                (pin != null && com.openandroidintelligence.gateway.http.SpkiPinning.isProtocolPin(pin)))) { "NEGOTIATION_FAILED:identity" }
+            && (pinField == null || pinField === JsonValue.JNull || pin == null ||
+                com.openandroidintelligence.gateway.http.SpkiPinning.isProtocolPin(pin))) { "NEGOTIATION_FAILED:identity" }
 
         return NegotiationResult(
             negotiationId = negotiationId,
             protocolMajor = major,
             protocolMinor = minor,
             deploymentId = JsonFields.string(identity, "deploymentId"),
-            tlsSpkiSha256 = JsonFields.string(identity, "tlsSpkiSha256"),
+            tlsSpkiSha256 = pin,
             messages = JsonFields.string(features, "messages"),
             attachments = JsonFields.string(features, "attachments"),
             events = JsonFields.string(features, "events"),

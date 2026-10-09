@@ -10,7 +10,7 @@ import java.security.MessageDigest
 /** Approved public identity survives logout; refresh secrets never enter this store. */
 class GatewayIdentityTrustStore(context: Context) {
     private val preferences = context.getSharedPreferences("gateway-identities", Context.MODE_PRIVATE)
-    data class Identity(val deploymentId: String, val spki: String)
+    data class Identity(val deploymentId: String, val spki: String?)
 
     fun retained(endpoint: GatewayEndpoint, username: String): Identity? = retained(key(endpoint, username))
 
@@ -18,7 +18,8 @@ class GatewayIdentityTrustStore(context: Context) {
         val pin = preferences.getString("$key.pin", null)
         val deployment = preferences.getString("$key.deployment", null)
         if (pin == null && deployment == null) return null
-        check(pin != null && SpkiPinning.isProtocolPin(pin) && !deployment.isNullOrBlank()) { "TLS_IDENTITY_RECONFIRMATION_REQUIRED" }
+        val validPin = pin == null || SpkiPinning.isProtocolPin(pin)
+        check(validPin && !deployment.isNullOrBlank()) { "TLS_IDENTITY_RECONFIRMATION_REQUIRED" }
         return Identity(deployment, pin)
     }
 
@@ -29,25 +30,36 @@ class GatewayIdentityTrustStore(context: Context) {
             check(retained(key(endpoint, username, portOverride = 443)) == null) { "TLS_DOWNGRADE_REFUSED" }
         }
         check(!restoring || !endpoint.isTls || identity != null) { "TLS_IDENTITY_RECONFIRMATION_REQUIRED" }
-        return identity?.let { setOf(it.spki) } ?: emptySet()
+        return identity?.spki?.let { setOf(it) } ?: emptySet()
     }
 
     fun verifyNegotiation(endpoint: GatewayEndpoint, username: String, result: NegotiationResult): String? {
         pinsBeforeConnect(endpoint, username)
         if (!endpoint.isTls) return null
-        val pin = result.tlsSpkiSha256
+        val pin = result.tlsSpkiSha256?.takeIf { it.isNotBlank() }
         val deployment = result.deploymentId
-        check(pin != null && SpkiPinning.isProtocolPin(pin) && !deployment.isNullOrBlank()) { "NEGOTIATION_FAILED:missing-tls-identity" }
+        check(!deployment.isNullOrBlank()) { "NEGOTIATION_FAILED:missing-deployment" }
+        if (pin != null) {
+            check(SpkiPinning.isProtocolPin(pin)) { "NEGOTIATION_FAILED:missing-tls-identity" }
+        }
         val identity = retained(endpoint, username)
         check(identity == null || identity == Identity(deployment, pin)) { "GATEWAY_IDENTITY_CHANGED" }
         return pin
     }
 
-    /** Call only after authentication succeeded through the negotiated pin. */
+    /** Call only after authentication succeeded through the negotiated pin or standard CA. */
     fun remember(endpoint: GatewayEndpoint, username: String, result: NegotiationResult) {
-        val pin = verifyNegotiation(endpoint, username, result) ?: return
+        val pin = verifyNegotiation(endpoint, username, result)
+        val deployment = result.deploymentId
+        if (!endpoint.isTls || deployment.isNullOrBlank()) return
         val key = key(endpoint, username)
-        check(preferences.edit().putString("$key.pin", pin).putString("$key.deployment", result.deploymentId).commit()) { "TLS_IDENTITY_PERSISTENCE_FAILED" }
+        val editor = preferences.edit().putString("$key.deployment", deployment)
+        if (pin != null) {
+            editor.putString("$key.pin", pin)
+        } else {
+            editor.remove("$key.pin")
+        }
+        check(editor.commit()) { "TLS_IDENTITY_PERSISTENCE_FAILED" }
     }
 
     fun forget(endpoint: GatewayEndpoint, username: String) {
