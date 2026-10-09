@@ -1,17 +1,38 @@
 package com.openandroidintelligence.encrypted.store
 
 import java.io.ByteArrayOutputStream
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
 import java.io.DataOutputStream
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import javax.crypto.spec.SecretKeySpec
 
 class AesGcmEncryptedBlobStoreTest {
+    @Test
+    fun current_writer_preserves_the_v1_envelope_and_accepts_existing_caller_iv_ciphertext() {
+        val persistence = InMemoryOutboxPersistence()
+        val key = SecretKeySpec(ByteArray(32) { 21 }, "AES")
+        val plain = "旧镜像仍能被当前代码读取".encodeToByteArray()
+        persistence.write(envelopeWithIv(key, ByteArray(12) { 7 }, plain))
+        val store = AesGcmEncryptedBlobStore(persistence, key)
+        assertArrayEquals(plain, store.readPlaintext())
+
+        store.writePlaintext(plain)
+        val firstIv = storedIv(checkNotNull(persistence.bytes))
+        store.writePlaintext(plain)
+        val secondIv = storedIv(checkNotNull(persistence.bytes))
+        assertEquals(12, firstIv.size)
+        assertEquals(12, secondIv.size)
+        assertFalse("每次加密必须使用新的初始化向量", firstIv.contentEquals(secondIv))
+        assertArrayEquals(plain, store.readPlaintext())
+    }
     @Test
     fun ciphertext_never_contains_plaintext_and_restores_with_fixed_256_bit_key() {
         val persistence = InMemoryOutboxPersistence()
@@ -103,5 +124,11 @@ class AesGcmEncryptedBlobStoreTest {
             }
             bytes.toByteArray()
         }
+    }
+
+    private fun storedIv(envelope: ByteArray): ByteArray = DataInputStream(ByteArrayInputStream(envelope)).use { input ->
+        val magic = ByteArray(input.readInt()).also(input::readFully).decodeToString()
+        assertEquals("OPEN_ANDROID_INTELLIGENCE_AES_GCM_BLOB_V1", magic)
+        ByteArray(input.readInt()).also(input::readFully)
     }
 }

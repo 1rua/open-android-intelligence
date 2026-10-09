@@ -1,0 +1,17 @@
+Android 登录后故障修复前的回归证据（2026-10-09）
+
+执行位置：apps/android
+命令：
+./gradlew :app:testFullDebugUnitTest --tests '*GatewaySessionRefreshTest.firstLoginPersistsTheWorkbenchWithANonExportableRandomizedEncryptionKey' --tests '*GatewaySessionRefreshTest.postLoginStorageFailureReportsItsStageAndPreservesAccountCredentials' --no-daemon --console=plain --no-build-cache --offline
+
+结果：退出码 1，31 秒，实际执行 2 项测试，2 项失败。
+严格测试提供者使用不可导出的 AES 密钥，实际加解密由 SunJCE 执行；与 Android Keystore 一样，拒绝调用方指定加密 IV。
+
+关键失败：
+firstLoginPersistsTheWorkbenchWithANonExportableRandomizedEncryptionKey
+登录没有在 10000ms 内完成，最后阶段是 Failed(code=ENCRYPTED_BLOB_CORRUPTED)。
+
+postLoginStorageFailureReportsItsStageAndPreservesAccountCredentials
+预期 POST_LOGIN_INITIALIZATION_FAILED:ATTACHMENT_RECOVERY，实际失败状态直接包含测试注入的原始异常信息，没有阶段诊断。
+
+边界：这两项是 Robolectric 下的真实 GatewayRuntime 密码登录调用链，网络使用回环测试 Gateway，不证明手机与生产 Hermes 的端到端登录完成。真实 Android Keystore 验证另存。

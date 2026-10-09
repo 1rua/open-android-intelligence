@@ -5,7 +5,6 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.security.GeneralSecurityException
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
@@ -53,11 +52,13 @@ class AesGcmEncryptedBlobStore(
     fun writePlaintext(value: ByteArray) {
         require(value.isNotEmpty()) { "encrypted blob plaintext must not be empty" }
         val plain = value.copyOf()
-        val iv = ByteArray(IV_BYTES).also(random::nextBytes)
-        val ciphertext = try {
+        val (iv, ciphertext) = try {
             Cipher.getInstance(TRANSFORMATION).run {
-                init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
-                doFinal(plain)
+                // Android Keystore 的随机化加密密钥要求提供者生成 IV，不能由调用方传入。
+                init(Cipher.ENCRYPT_MODE, key)
+                val generatedIv = iv?.copyOf() ?: throw EncryptedBlobCorrupted()
+                if (generatedIv.size != IV_BYTES) throw EncryptedBlobCorrupted()
+                generatedIv to doFinal(plain)
             }
         } catch (_: GeneralSecurityException) {
             throw EncryptedBlobCorrupted()
@@ -110,6 +111,5 @@ class AesGcmEncryptedBlobStore(
         const val TAG_BYTES = TAG_BITS / 8
         const val MAX_MAGIC_BYTES = 128
         const val MAX_CIPHERTEXT_BYTES = 16 * 1_024 * 1_024
-        val random = SecureRandom()
     }
 }

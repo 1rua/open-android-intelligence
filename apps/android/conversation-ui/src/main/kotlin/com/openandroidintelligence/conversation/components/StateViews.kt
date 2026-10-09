@@ -77,6 +77,23 @@ private val STATUS_406 = Regex("(:|^)406\\b")
 fun specificFailureText(code: String): String? {
     val value = code.uppercase()
     return when {
+        value.contains("SESSION_REJECTED") ->
+            "登录已成功，但 Gateway 拒绝了事件通道的会话认证，本机授权已冻结。账号资料和历史记录已保留，请重新登录；若持续发生，请检查 Gateway 的会话与设备认证配置。"
+        value.contains("SESSION_REVOKED") ->
+            "当前 Gateway 会话已被撤销，本机授权已冻结。账号资料和历史记录已保留，请重新登录。"
+        value.startsWith("POST_LOGIN_INITIALIZATION_FAILED:") -> {
+            val stage = when (value.substringAfter(':')) {
+                "SESSION_SETUP" -> "本机会话"
+                "PAIRING_STATE" -> "本机授权状态"
+                "DEVICE_EXECUTION" -> "本机设备功能"
+                "ATTACHMENT_RECOVERY" -> "本机附件记录"
+                "MEDIA_CACHE" -> "本机媒体缓存"
+                "MIRROR_RECOVERY" -> "本机对话历史"
+                "WORKBENCH" -> "本机工作台"
+                else -> "本机初始化"
+            }
+            "登录已成功，但 App 未能完成${stage}的初始化。账号资料和历史记录已保留，请更新 App 后重试；若持续发生，请查看手机上的连接诊断。"
+        }
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
         value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请让网关部署者执行插件仓的 tools/hermes-account.py init-key 生成受限密钥文件（或修复其权限后）并重启网关。"
         value.contains("APPROVAL_UNSUPPORTED") ->

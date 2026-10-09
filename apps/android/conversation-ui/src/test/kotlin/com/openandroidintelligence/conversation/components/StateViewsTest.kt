@@ -14,6 +14,24 @@ import org.junit.Test
 class StateViewsTest {
 
     @Test
+    fun sessionRejectionNamesThePostLoginEventChannelAndKeepsAccountHistory() {
+        val rejected = readableFailure("SESSION_REJECTED", CONNECTION_FAILURE_FALLBACK)
+        assertTrue("登录成功后的事件认证拒绝必须区分于网络失败", rejected.contains("登录") && rejected.contains("事件"))
+        assertTrue("必须提示保留账号和历史记录", rejected.contains("历史") && rejected.contains("保留"))
+        val revoked = readableFailure("SESSION_REVOKED", CONNECTION_FAILURE_FALLBACK)
+        assertTrue("会话撤销必须明确引导重新登录", revoked.contains("会话") && revoked.contains("重新登录"))
+    }
+
+    @Test
+    fun localInitializationFailureNamesTheLocalStageWithoutBlamingTheGatewayNetwork() {
+        val failure = readableFailure("POST_LOGIN_INITIALIZATION_FAILED:WORKBENCH", CONNECTION_FAILURE_FALLBACK)
+        assertTrue("初始化失败必须明确已经登录成功", failure.contains("登录") && failure.contains("成功"))
+        assertTrue("工作台和本机数据必须有对应说明", failure.contains("工作台") && failure.contains("本机"))
+        assertTrue("失败不应建议用户删除历史", failure.contains("保留"))
+        assertTrue("已知初始化错误不能落到通用连接失败", failure != CONNECTION_FAILURE_FALLBACK)
+    }
+
+    @Test
     fun readableFailureMapsAllProtocolErrorCodesToHumanActionableGuidance() {
         val cursorExpired = readableFailure("CURSOR_EXPIRED:evt_123")
         assertTrue("CURSOR_EXPIRED 必须提示刷新重新同步", cursorExpired.contains("重新同步") || cursorExpired.contains("过期"))

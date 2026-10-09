@@ -10,12 +10,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import com.openandroidintelligence.gateway.account.AccountProfile
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
+import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.kernel.PairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantState
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantCapabilities
 import org.robolectric.shadows.ShadowLooper
 import java.util.Base64
+import java.security.Security
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -106,8 +111,95 @@ class GatewaySessionRefreshTest {
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Failed })
+        assertEquals("SESSION_REJECTED", (runtime.phase.value as ConnectionPhase.Failed).code)
         assertTrue(gateway.requests.any { it.target.substringBefore('?') == path })
         assertNull(pairingGrants.state.value)
+        assertTrue(credentialStore.hasRefresh(profileId()))
+        assertTrue(deviceKeys.hasKey(profileId()))
+    }
+
+    @Test
+    fun firstLoginPersistsTheWorkbenchWithANonExportableRandomizedEncryptionKey() {
+        Security.insertProviderAt(RandomizedEncryptionRequiredProvider(), 1)
+        try {
+            gateway.respond("/open-android-intelligence/v2/events", "", contentType = "text/event-stream")
+            val key = NonExportableAesKey()
+            val keys = object : AesGcmKeyProvider {
+                override fun getOrCreate() = key
+                override fun delete() = Unit
+            }
+            val runtime = runtime(keys)
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            awaitConnected(runtime)
+            assertNotNull(runtime.controller.value)
+            assertTrue("工作台首次更新必须实际写入加密镜像", ApplicationProvider.getApplicationContext<Application>()
+                .noBackupFilesDir.resolve("private-documents").walkTopDown().any { it.isFile && it.length() > 0 })
+            assertTrue(credentialStore.hasRefresh(profileId()))
+            assertTrue(deviceKeys.hasKey(profileId()))
+            runtime.chooseAnotherAccount()
+        } finally {
+            Security.removeProvider(RandomizedEncryptionRequiredProvider.NAME)
+        }
+    }
+
+    @Test
+    fun postLoginStorageFailureReportsItsStageAndPreservesAccountCredentials() {
+        val records = CopyOnWriteArrayList<String>()
+        val previousSink = GatewayLog.sink
+        GatewayLog.sink = { tag, message -> records += "$tag $message" }
+        val sensitiveText = "口令令牌响应正文不得出现在诊断中"
+        try {
+            val keys = object : AesGcmKeyProvider {
+                override fun getOrCreate(): javax.crypto.SecretKey = throw IllegalStateException(sensitiveText)
+                override fun delete() = error("失败不能删除密钥")
+            }
+            val runtime = runtime(keys)
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Failed })
+            assertEquals("POST_LOGIN_INITIALIZATION_FAILED:ATTACHMENT_RECOVERY", (runtime.phase.value as ConnectionPhase.Failed).code)
+            assertNull(runtime.controller.value)
+            assertNull(runtime.connectedAccountId)
+            assertNull(pairingGrants.state.value)
+            assertTrue("登录已签发的刷新凭据必须保留", credentialStore.hasRefresh(profileId()))
+            assertTrue("配对设备密钥必须保留", deviceKeys.hasKey(profileId()))
+            assertEquals(listOf(profileId()), runtime.savedProfiles.value.map { it.localProfileId })
+            assertFalse("本地初始化失败发生在事件流请求之前", gateway.requests.any { it.target.contains("/events") })
+            assertTrue("诊断必须点明阶段和异常类型", records.any { it.contains("ATTACHMENT_RECOVERY") && it.contains("IllegalStateException") })
+            assertFalse("不得记录原始异常信息", records.any { it.contains(sensitiveText) || it.contains("refresh_1") || it.contains("token_1") })
+        } finally {
+            GatewayLog.sink = previousSink
+        }
+    }
+
+    @Test
+    fun localInitializationFailureAfterRefreshDoesNotClaimThatTheStoppedConnectionIsLive() {
+        val rejectStorage = AtomicBoolean(false)
+        val keys = object : AesGcmKeyProvider {
+            override fun getOrCreate(): javax.crypto.SecretKey {
+                if (rejectStorage.get()) throw IllegalStateException("测试存储不可用")
+                return TestDocumentKeys.getOrCreate()
+            }
+            override fun delete() = error("续期失败不能删除密钥")
+        }
+        val runtime = runtime(keys)
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        assertTrue("先等待旧工作台的初始读取完成，避免把故障注入到无关的旧请求", awaitCondition(AWAIT_MILLIS) {
+            val state = runtime.controller.value?.state?.value
+            state?.threads is com.openandroidintelligence.conversation.state.Loadable.Failed &&
+                state.catalog is com.openandroidintelligence.conversation.state.Loadable.Failed
+        })
+        rejectStorage.set(true)
+        runtime.refreshSession()
+
+        assertTrue(awaitCondition(AWAIT_MILLIS) { !runtime.isRefreshingSession.value && credentialStore.loadRefresh(profileId())?.decodeToString() == "refresh_2" })
+        assertTrue("续期成功而本机重建失败必须报告失败，实际阶段 ${runtime.phase.value}", runtime.phase.value is ConnectionPhase.Failed)
+        assertEquals("POST_LOGIN_INITIALIZATION_FAILED:ATTACHMENT_RECOVERY", (runtime.phase.value as ConnectionPhase.Failed).code)
+        assertFalse("连接已经停止，不能再声称有效", runtime.operationNotice.value.orEmpty().contains("当前连接仍然有效"))
+        assertNull(runtime.controller.value)
+        assertNull(runtime.connectedAccountId)
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertEquals(listOf(profileId()), runtime.savedProfiles.value.map { it.localProfileId })
     }
 
     @Test
@@ -224,8 +316,8 @@ class GatewaySessionRefreshTest {
         assertNull("notice 必须可被界面关闭", runtime.operationNotice.value)
     }
 
-    private fun runtime(): GatewayRuntime = GatewayRuntime(
-        localDocumentKeyProvider = TestDocumentKeys,
+    private fun runtime(keys: AesGcmKeyProvider = TestDocumentKeys): GatewayRuntime = GatewayRuntime(
+        localDocumentKeyProvider = keys,
         context = ApplicationProvider.getApplicationContext(),
         scope = runtimeScope,
         pairingGrants = pairingGrants,

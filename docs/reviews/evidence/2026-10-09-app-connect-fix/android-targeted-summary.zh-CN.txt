@@ -1,0 +1,23 @@
+Android 定向回归结果（2026-10-09）
+
+执行位置：apps/android
+最终命令：
+./gradlew :app:testFullDebugUnitTest --tests '*GatewaySessionRefreshTest' :encrypted-store:testDebugUnitTest --tests '*AesGcmEncryptedBlobStoreTest' :conversation-ui:testDebugUnitTest --tests '*StateViewsTest' --no-daemon --console=plain --no-build-cache --offline
+
+首次 GREEN：退出码 0，1 分 9 秒；实际执行 GatewaySessionRefreshTest 15 项、AesGcmEncryptedBlobStoreTest 6 项、StateViewsTest 11 项，全部通过，无跳过。
+后续补充续期失败回归：修复前实际执行 1 项，退出码 1，错误说明为“续期成功而本机重建失败必须报告失败，实际阶段 Disconnected”。
+最终 GREEN：退出码 0，45 秒；GatewaySessionRefreshTest 16 项重新执行，全部通过，无跳过；加密和文案源码未再改动，相应 6 项与 11 项任务显示 UP-TO-DATE，沿用本次首次 GREEN 的已执行通过结果。
+本次涉及的测试合计 33 项，失败 0、错误 0、跳过 0。
+
+覆盖：
+- 真实 GatewayRuntime 密码登录调用链与回环 HTTP 请求，首次工作台保存使用不可导出的随机化 AES 密钥。
+- 本机附件恢复失败的阶段和异常类型诊断；诊断不回显原始异常正文、访问令牌或刷新凭据。
+- 本机初始化失败后取消本次运行态，保留账号资料、刷新凭据和配对设备密钥。
+- 已登录后的事件接口 401 拒绝转为 SESSION_REJECTED，并保留账号凭据。
+- 会话续期完成后本机重建失败转为有阶段的 Failed 状态，保留已轮换的刷新凭据，不谎报连接仍然有效。
+- 原 V1 加密信封、旧的调用方 IV 密文、12 字节随机新 IV、篡改与错误密钥失败关闭。
+- 本机初始化失败、事件会话拒绝和会话撤销的专门中文提示。
+
+git diff --check：通过。
+未运行：全量 Gradle check、完整 APK 组装、将本次修复 APK 安装到用户手机后的生产 Hermes 登录与事件闭环。真实 Android Keystore 探针由主 Agent 单独记录。
+本子任务没有提交或推送；已有用户报告与证据未改写；没有访问生产账号数据库、创建生产账号、清除手机日志或安装/卸载 APK。
