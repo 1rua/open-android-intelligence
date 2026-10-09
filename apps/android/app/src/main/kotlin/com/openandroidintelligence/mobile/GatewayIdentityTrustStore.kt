@@ -47,7 +47,7 @@ class GatewayIdentityTrustStore(context: Context) {
         return pin
     }
 
-    /** Call only after authentication succeeded through the negotiated pin or standard CA. */
+    /** 仅在通过协商得到的 pin 或标准 CA 证书认证成功后调用。 */
     fun remember(endpoint: GatewayEndpoint, username: String, result: NegotiationResult) {
         val pin = verifyNegotiation(endpoint, username, result)
         val deployment = result.deploymentId

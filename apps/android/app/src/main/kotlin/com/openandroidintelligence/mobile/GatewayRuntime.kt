@@ -1160,6 +1160,8 @@ internal fun refreshFailureNotice(cause: Throwable): String {
     return when {
         text.contains("REFRESH_REUSED") ->
             "Gateway 拒绝续期：刷新凭据已被使用过，请重新登录以取得新的会话凭据。"
+        text.contains("GATEWAY_IDENTITY_CHANGED") ->
+            "刷新网关凭据失败：网关部署身份或证书已变更，请核对后重新登录以建立新信任。"
         text.contains("PROTOCOL_INCOMPATIBLE") || text.contains(":406") ->
             "Gateway 拒绝续期：App 与 Gateway 的契约版本不一致，请把两端升级到同一版本后重试。"
         text.contains("401") || text.contains("403") ||

@@ -193,6 +193,38 @@ class NegotiationClientTest {
         }
     }
 
+    @Test
+    fun rejectsNonStringTlsSpkiSha256Types() = runBlocking {
+        for (invalidValue in listOf("123", "true", "{}", "[]")) {
+            val client = NegotiationClient(
+                execute = { _ ->
+                    GatewayResponse(
+                        status = 200,
+                        headers = emptyList(),
+                        body = """
+                            {
+                              "requestId":"req-1",
+                              "correlationId":"cor-1",
+                              "protocol":"2.1",
+                              "data":{
+                                "protocol":{"major":2,"minor":1},
+                                "features":{"auth":["password","refresh"],"messages":"chat-v1","attachments":"staged-sha256-v1","events":"sse-cursor-v1","deviceRequests":"risk-queue-v1"},
+                                "limits":{"attachmentTtlSeconds":3600,"eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
+                                "gatewayIdentity":{"deploymentId":"deploy-invalid","tlsSpkiSha256":$invalidValue}
+                              }
+                            }
+                        """.trimIndent().toByteArray(),
+                    )
+                },
+                installationId = "install-1",
+                appVersion = "2.1.0",
+                platformApi = 35,
+            )
+            val failure = runCatching { client.negotiate("neg-1") }.exceptionOrNull()
+            assertEquals("非字符串类型的 tlsSpkiSha256 必须被拒绝", "NEGOTIATION_FAILED:identity", failure?.message)
+        }
+    }
+
     private fun result(conversationUi: List<String>): NegotiationResult = NegotiationResult(
         negotiationId = "neg-1",
         protocolMajor = 2,

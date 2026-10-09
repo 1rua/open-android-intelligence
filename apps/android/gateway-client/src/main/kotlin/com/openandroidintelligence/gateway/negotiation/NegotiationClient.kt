@@ -162,10 +162,11 @@ class NegotiationClient(
         }
         val identity = closedObject(JsonFields.field(result, "gatewayIdentity"), setOf("deploymentId"), setOf("tlsSpkiSha256"))
         val pinField = JsonFields.field(identity, "tlsSpkiSha256")
-        val pin = JsonFields.string(identity, "tlsSpkiSha256")?.takeIf { it.isNotBlank() }
+        val isOmittedOrNull = pinField == null || pinField === JsonValue.JNull
+        val isString = pinField is JsonValue.JString
+        val pin = (pinField as? JsonValue.JString)?.value?.takeIf { it.isNotBlank() }
         check(Regex("[A-Za-z0-9._~-]{1,128}").matches(JsonFields.string(identity, "deploymentId").orEmpty())
-            && (pinField == null || pinField === JsonValue.JNull || pin == null ||
-                com.openandroidintelligence.gateway.http.SpkiPinning.isProtocolPin(pin))) { "NEGOTIATION_FAILED:identity" }
+            && (isOmittedOrNull || (isString && (pin == null || com.openandroidintelligence.gateway.http.SpkiPinning.isProtocolPin(pin))))) { "NEGOTIATION_FAILED:identity" }
 
         return NegotiationResult(
             negotiationId = negotiationId,
