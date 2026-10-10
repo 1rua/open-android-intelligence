@@ -72,6 +72,8 @@
 
 修复后查询回归 7 项全部通过，同时通过现有客户端、工作台发送/恢复、生成及 Wire 回归和原生 Hermes HTTP/SSE 互通。追加结果见 [query-envelope-green.txt](evidence/2026-10-10-conversation-bugfix/query-envelope-green.txt) 及 [逐类计数](evidence/2026-10-10-conversation-bugfix/query-envelope-counts.txt)。该增量没有修改协议或 Schema。
 
+增量审查再次补出混合 `messages`/`message` 结构及客户端身份类型错误两个边界，追加样本得到 **7 项中 2 项失败**，见 [query-shape-red.txt](evidence/2026-10-10-conversation-bugfix/query-shape-red.txt)。最终查询结果必须唯一选择一种结构；客户端身份字段缺省仍兼容，字段存在则必须为匹配原身份的字符串。修复后客户端 16 项、工作台 52 项、数据 12 项全部通过，含 7 项查询回归与真实原生 Hermes HTTP 互通，见 [query-shape-green.txt](evidence/2026-10-10-conversation-bugfix/query-shape-green.txt) 和 [计数](evidence/2026-10-10-conversation-bugfix/query-shape-counts.txt)。上述追加执行分阶段记录，不重复累加为新的总测试数。
+
 ## 数据迁移与手机验收
 
 迁移细节见 [发送记录迁移说明](../superpowers/plans/2026-10-11-conversation-send-ledger-migration.md)。两处部署只更新现有插件程序及必要依赖，再重启现有 Gateway 服务；保留账号目录、主密钥、配对与宿主绑定。

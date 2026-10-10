@@ -287,6 +287,9 @@ class ConversationClient(private val http: GatewayHttpClient) {
             throw IllegalStateException("MESSAGE_QUERY_FAILED:${response.status}")
         }
         val body = response.requireData("MESSAGE_QUERY_FAILED")
+        check(body.fields.count { it.first == "messages" || it.first == "message" } == 1) {
+            "MESSAGE_QUERY_FAILED:ambiguous-result-shape"
+        }
         val raw = when {
             body.fields.any { it.first == "messages" } -> {
                 val messages = JsonFields.array(JsonFields.field(body, "messages"))
@@ -305,7 +308,9 @@ class ConversationClient(private val http: GatewayHttpClient) {
         val messageId = JsonFields.string(raw, "messageId")?.takeIf { it.isNotBlank() }
             ?: error("MESSAGE_QUERY_FAILED:missing-message-id")
         val queriedClientId = JsonFields.string(raw, "clientMessageId")
-        check(queriedClientId == null || queriedClientId == clientMessageId) { "MESSAGE_QUERY_FAILED:client-id-conflict" }
+        check(raw.fields.none { it.first == "clientMessageId" } || queriedClientId == clientMessageId) {
+            "MESSAGE_QUERY_FAILED:client-id-conflict"
+        }
         val rawTimestamp = JsonFields.long(raw, "timestamp")
         val timestamp = if (rawTimestamp != null && rawTimestamp > 0L) {
             rawTimestamp

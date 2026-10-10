@@ -30,7 +30,9 @@ class QueryMessageEvidenceTest {
 
     @Test fun missingOrMalformedResultCollectionsAreQueryFailures() {
         listOf(emptyMap<String, Any>(), mapOf("messages" to "wrong"), mapOf("messages" to null),
-            mapOf("messages" to listOf("wrong")), mapOf("message" to "wrong")).forEach(::assertQueryFailure)
+            mapOf("messages" to listOf("wrong")), mapOf("message" to "wrong"),
+            mapOf("messages" to emptyList<Any>(), "message" to mapOf("messageId" to "msg_existing")),
+            mapOf("messages" to emptyList<Any>(), "message" to null)).forEach(::assertQueryFailure)
     }
 
     @Test fun resultsWithoutAValidRemoteIdentityAreQueryFailures() {
@@ -45,7 +47,9 @@ class QueryMessageEvidenceTest {
     }
 
     @Test fun anUnrelatedClientIdentityCannotConfirmTheOriginalSend() {
-        assertQueryFailure(mapOf("messages" to listOf(mapOf("messageId" to "msg_one", "clientMessageId" to "cm_other"))))
+        listOf("cm_other", 12, null).forEach { clientId ->
+            assertQueryFailure(mapOf("messages" to listOf(mapOf("messageId" to "msg_one", "clientMessageId" to clientId))))
+        }
     }
 
     @Test fun explicitlyEmptyResultsRemainAbsent() = runBlocking {
@@ -61,6 +65,10 @@ class QueryMessageEvidenceTest {
         assertEquals("msg_one", row.messageId)
         assertEquals("cm_original", row.clientMessageId)
         assertEquals("原消息", (row.parts.single() as MessagePart.Text).text)
+        val legacy = client(mapOf("message" to mapOf("messageId" to "msg_legacy")))
+            .queryMessage("conv_a", "cm_original")!!
+        assertEquals("msg_legacy", legacy.messageId)
+        assertNull("旧格式缺省客户端身份仍保持兼容", legacy.clientMessageId)
     }
 
     @Test fun rejectedQueriesKeepTheStableErrorWithoutPrivateDetails() = runBlocking {
