@@ -75,6 +75,11 @@ class GatewayConversationRepository(
     private val _generationId = MutableStateFlow<String?>(null)
     override val generationId: StateFlow<String?> = _generationId
     private val generations=mutableMapOf<String,LinkedHashMap<String,com.openandroidintelligence.conversation.model.GenerationState>>()
+    private val terminalGenerations=LinkedHashSet<Pair<String,String>>()
+    private companion object {
+        // 与 HTTP 事件身份窗口采用相同容量，终态记录不会无限积累。
+        private const val MAX_TERMINAL_GENERATIONS = 4096
+    }
     private val _generationState=MutableStateFlow(com.openandroidintelligence.conversation.model.GenerationState.IDLE)
     override val generationState:StateFlow<com.openandroidintelligence.conversation.model.GenerationState> = _generationState
     @Synchronized fun activeConversationChanged() {
@@ -84,6 +89,10 @@ class GatewayConversationRepository(
         _generationState.value=current?.value ?: com.openandroidintelligence.conversation.model.GenerationState.IDLE
     }
     @Synchronized fun installCurrentGeneration(conversationId:String,current:Pair<String,String>?) {
+        if (current != null && (conversationId to current.first) in terminalGenerations) {
+            activeConversationChanged()
+            return
+        }
         generations.remove(conversationId)
         current?.let { generations[conversationId]=linkedMapOf(it.first to when(it.second) {
             "queued" -> com.openandroidintelligence.conversation.model.GenerationState.QUEUED
@@ -93,22 +102,41 @@ class GatewayConversationRepository(
         activeConversationChanged()
     }
     @Synchronized private fun acceptGeneration(conversationId:String,id:String?) {
-        id?.let { generations.getOrPut(conversationId) { linkedMapOf() }.putIfAbsent(it,com.openandroidintelligence.conversation.model.GenerationState.QUEUED) }
+        id?.takeUnless { (conversationId to it) in terminalGenerations }?.let {
+            generations.getOrPut(conversationId) { linkedMapOf() }.putIfAbsent(it,com.openandroidintelligence.conversation.model.GenerationState.QUEUED)
+        }
         activeConversationChanged()
+    }
+    private fun rememberTerminalGeneration(conversationId:String,id:String) {
+        terminalGenerations.add(conversationId to id)
+        if (terminalGenerations.size > MAX_TERMINAL_GENERATIONS) terminalGenerations.iterator().let {
+            it.next()
+            it.remove()
+        }
     }
     @Synchronized private fun generationEvent(decoded:GatewayEventDecoder.DecodedFrame) {
         val conversation=decoded.conversationId ?: return
         val id=decoded.generationId ?: return
+        // 同一明确生成的终态不可逆，旧事件或较晚的 HTTP 回执只能补充受理身份。
+        if ((conversation to id) in terminalGenerations) return
         val entries=generations.getOrPut(conversation) { linkedMapOf() }
         when(val e=decoded.event) {
             is VerifiedConversationEvent.MessageStatus -> when(e.status) {
                 com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED -> entries.putIfAbsent(id,com.openandroidintelligence.conversation.model.GenerationState.QUEUED)
                 com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED -> entries[id]=com.openandroidintelligence.conversation.model.GenerationState.RUNNING
-                else -> entries.remove(id)
+                com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
+                com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED -> {
+                    rememberTerminalGeneration(conversation,id)
+                    entries.remove(id)
+                }
             }
-            is VerifiedConversationEvent.GenerationCancelled -> entries.remove(id)
+            is VerifiedConversationEvent.GenerationCancelled -> {
+                rememberTerminalGeneration(conversation,id)
+                entries.remove(id)
+            }
             else -> Unit
         }
+        if (entries.isEmpty()) generations.remove(conversation)
         activeConversationChanged()
     }
 
@@ -190,6 +218,7 @@ class GatewayConversationRepository(
                     timestamp = resolvedTimestamp,
                     state = message.state,
                     batchId=message.batchId,
+                    clientMessageId=message.clientMessageId?.let { com.openandroidintelligence.conversation.model.ClientMessageId(it) },
                 )
             },
             nextCursor = result.nextCursor,
@@ -249,12 +278,14 @@ class GatewayConversationRepository(
 
     override suspend fun queryMessage(conversationId: String, clientMessageId: com.openandroidintelligence.conversation.model.ClientMessageId): TimelineMessage? {
         val message = client.queryMessage(conversationId, clientMessageId.value) ?: return null
+        check(message.clientMessageId == null || message.clientMessageId == clientMessageId.value) { "MESSAGE_QUERY_ID_MISMATCH" }
         return TimelineMessage(message.messageId, message.sender, message.parts.map { part ->
             when (part) {
                 is WireMessagePart.Text -> MessagePart.Text(part.text)
                 is WireMessagePart.AttachmentRef -> MessagePart.Attachment(AttachmentDraftId(part.attachmentId), part.filename, part.mediaType)
             }
-        }, message.timestamp ?: 0L, message.state)
+        }, message.timestamp ?: 0L, message.state, conversationId = ConversationId(conversationId),
+            clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId(message.clientMessageId ?: clientMessageId.value))
     }
 
     /**

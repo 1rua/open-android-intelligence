@@ -1,0 +1,59 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.12/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build
+
+> Configure project :app
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :conversation-data:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-data:preBuild UP-TO-DATE
+> Task :conversation-data:preReleaseBuild UP-TO-DATE
+> Task :conversation-data:generateReleaseResValues UP-TO-DATE
+> Task :conversation-data:generateReleaseResources UP-TO-DATE
+> Task :conversation-data:packageReleaseResources UP-TO-DATE
+> Task :conversation-data:parseReleaseLocalResources UP-TO-DATE
+> Task :conversation-data:generateReleaseRFile UP-TO-DATE
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:preBuild UP-TO-DATE
+> Task :conversation-domain:preReleaseBuild UP-TO-DATE
+> Task :conversation-domain:generateReleaseResValues UP-TO-DATE
+> Task :conversation-domain:generateReleaseResources UP-TO-DATE
+> Task :conversation-domain:packageReleaseResources UP-TO-DATE
+> Task :conversation-domain:parseReleaseLocalResources UP-TO-DATE
+> Task :conversation-domain:generateReleaseRFile UP-TO-DATE
+> Task :conversation-domain:compileReleaseKotlin UP-TO-DATE
+> Task :conversation-domain:javaPreCompileRelease UP-TO-DATE
+> Task :conversation-domain:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-domain:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preReleaseBuild UP-TO-DATE
+> Task :gateway-client:generateReleaseResValues UP-TO-DATE
+> Task :gateway-client:generateReleaseResources UP-TO-DATE
+> Task :gateway-client:packageReleaseResources UP-TO-DATE
+> Task :gateway-client:parseReleaseLocalResources UP-TO-DATE
+> Task :gateway-client:generateReleaseRFile UP-TO-DATE
+> Task :gateway-client:compileReleaseKotlin UP-TO-DATE
+> Task :gateway-client:javaPreCompileRelease UP-TO-DATE
+> Task :gateway-client:compileReleaseJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :conversation-data:compileReleaseKotlin UP-TO-DATE
+> Task :conversation-data:javaPreCompileRelease UP-TO-DATE
+> Task :conversation-data:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-data:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :conversation-data:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :conversation-data:preReleaseUnitTestBuild UP-TO-DATE
+> Task :conversation-data:generateReleaseUnitTestStubRFile UP-TO-DATE
+> Task :conversation-data:compileReleaseUnitTestKotlin UP-TO-DATE
+> Task :conversation-data:javaPreCompileReleaseUnitTest UP-TO-DATE
+> Task :conversation-data:compileReleaseUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-data:processReleaseJavaRes UP-TO-DATE
+> Task :conversation-data:processReleaseUnitTestJavaRes UP-TO-DATE
+> Task :conversation-domain:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :conversation-domain:processReleaseJavaRes UP-TO-DATE
+> Task :gateway-client:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :gateway-client:processReleaseJavaRes UP-TO-DATE
+> Task :conversation-data:testReleaseUnitTest
+
+BUILD SUCCESSFUL in 11s
+35 actionable tasks: 1 executed, 34 up-to-date

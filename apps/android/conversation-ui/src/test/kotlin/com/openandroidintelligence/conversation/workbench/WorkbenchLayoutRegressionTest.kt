@@ -41,7 +41,7 @@ class WorkbenchLayoutRegressionTest {
         }, { ConversationScope("p", "g", "a", "i") })
         compose.setContent {
             MaterialTheme {
-                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {})
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {}, onLogout = {})
             }
         }
         compose.runOnIdle { controller.editDraft("1111") }
@@ -54,7 +54,7 @@ class WorkbenchLayoutRegressionTest {
             CompositionLocalProvider(LocalDensity provides Density(density.density, 1.5f)) {
                 MaterialTheme {
                     Box(Modifier.size(320.dp, 640.dp)) {
-                        ThreadDrawer("gateway", Loadable.Empty, null, {}, {}, {}, {}, {})
+                        ThreadDrawer("gateway", Loadable.Empty, null, {}, {}, {}, {}, {}, onLogout = {})
                     }
                 }
             }
@@ -93,6 +93,7 @@ class WorkbenchLayoutRegressionTest {
                         onRefresh = {},
                         onOpenSettings = { settingsOpened = true },
                         onCloseDrawer = { drawerClosed = true },
+                        onLogout = {},
                     )
                 }
             }
@@ -143,7 +144,7 @@ class WorkbenchLayoutRegressionTest {
 
         compose.setContent {
             MaterialTheme {
-                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {})
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {}, onLogout = {})
             }
         }
 
@@ -234,7 +235,7 @@ class WorkbenchLayoutRegressionTest {
 
         compose.setContent {
             MaterialTheme {
-                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {})
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {}, onLogout = {})
             }
         }
 
@@ -276,7 +277,7 @@ class WorkbenchLayoutRegressionTest {
 
         compose.setContent {
             MaterialTheme {
-                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {})
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {}, onLogout = {})
             }
         }
 

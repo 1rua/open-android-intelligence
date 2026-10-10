@@ -221,7 +221,13 @@ private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifie
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    if (entry.messageStatus != null) {
+                    if (entry.submissionFailureCode != null) {
+                        Text(
+                            text = "发送失败 · ${entry.submissionFailureCode}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else if (entry.messageStatus != null) {
                         val failedStatus = entry.messageStatus == AgentMessageStatus.FAILED
                         Box(
                             modifier = Modifier

@@ -21,6 +21,13 @@ import org.junit.Test
  */
 class GatewayEventDecoderTest {
 
+    @Test fun upsertRetainsTheExplicitClientIdentityBeforeHttpAcceptanceArrives() {
+        val event = SseParser().feed(frame("evt_client_identity", "conversation.timeline.upsert",
+            """{"payload":{"conversationId":"conv_a","messageId":"msg_1","clientMessageId":"cm_1","sender":"user","parts":[],"revision":2}}""")).single()
+        val decoded = GatewayEventDecoder.decode(event) as VerifiedConversationEvent.TimelineUpsert
+        assertEquals("cm_1", decoded.message.clientMessageId?.value)
+    }
+
     private fun frame(id: String, event: String, data: String): String =
         "id: $id\nevent: $event\ndata: $data\n\n"
 

@@ -18,6 +18,16 @@ import java.security.KeyPairGenerator
 import java.security.Signature
 import java.util.Base64
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import com.openandroidintelligence.gateway.events.EventStreamStatus
+import com.openandroidintelligence.gateway.events.EventStreamStatusSink
+import com.openandroidintelligence.gateway.events.GatewayEvent
 
 /**
  * Real HTTP, real password session, real signatures, real Python Gateway Core.
@@ -32,6 +42,70 @@ import java.util.concurrent.TimeUnit
  * 不会跳过——否则这条真实链路会退化成无人验证的绿。
  */
 class HermesHttpInteropTest {
+    @Test fun batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary() = runBlocking {
+        val root = File("../../..").canonicalFile
+        val pluginRoot = (System.getenv("HERMES_PLUGIN_ROOT")?.let(::File) ?: File(root, ".hermes-gateway-plugin")).canonicalFile
+        val fixture = File(pluginRoot, "tests/android_gateway_fixture.py")
+        check(fixture.isFile) { "HERMES_FIXTURE_MISSING" }
+        val log = File(root, "tmp/conversation-bugfix/hermes-batch-interop.txt").also { it.parentFile!!.mkdirs() }
+        val process = ProcessBuilder("python3", fixture.path, "--echo-agent", "--contract-root",
+            System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT") ?: File(root, "gateway-contract").path)
+            .directory(pluginRoot).redirectError(log).start()
+        try {
+            val baseUrl = process.inputStream.bufferedReader().readLine()
+            check(baseUrl?.startsWith("http://127.0.0.1:") == true) { "HERMES_FIXTURE_START_FAILED" }
+            val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+            val auth = GatewayAuthClient(GatewayTransport(GatewayProfile("pre", "pre", "pre", baseUrl!!)), "install_batch_interop", "test", 35)
+            val negotiated = auth.negotiate("neg_batch_interop")
+            assertTrue("message-batches-v1" in negotiated.conversationUi)
+            val session = auth.loginWithPassword(negotiated.negotiationId, "alice", "android-fixture-only".toCharArray(), "批次互通", ed25519WirePublicKey(keyPair.public))
+            val profile = GatewayProfile(session.accountId, session.deviceId, session.sessionId, baseUrl, accessToken = session.accessToken)
+            val health = EventStreamStatusSink()
+            val http = GatewayHttpClient(profile, GatewayTransport(profile), { bytes ->
+                Signature.getInstance("Ed25519").run { initSign(keyPair.private); update(bytes); sign() }
+            }, InMemoryEventCursorStore(), webSocketTransport = null, statusSink = health)
+            val repository = GatewayConversationRepository(ConversationClient(http))
+            val scope = ConversationScope("profile", baseUrl, session.accountId, "install_batch_interop")
+            val conversation = repository.createConversation(scope, "cconv_batch_interop")
+            val replies = Channel<GatewayEvent>(Channel.BUFFERED)
+            val subscription = launch(start = CoroutineStart.UNDISPATCHED) {
+                http.events().collect { event -> if (event.event == "conversation.message.completed") replies.send(event) }
+            }
+            try {
+                // 先建立真实订阅，再提交；回复必须即时投递，不能只在重连后读取。
+                http.execute(SignedGatewayRequest("GET", "/open-android-intelligence/v2/sync/snapshot")).requireData("SYNC_SNAPSHOT")
+                withTimeout(10_000) { health.status.first { it == EventStreamStatus.LIVE } }
+                val batch = MessageBatch("cb_batch_interop", listOf(
+                    OutgoingMessage(ClientMessageId("cm_batch_one"), "第一条，保留空格 "),
+                    OutgoingMessage(ClientMessageId("cm_batch_two"), "第二条消息"),
+                ), conversation.id.value)
+                val accepted = repository.submitBatch(conversation.id.value, batch)
+                assertEquals(2, accepted.memberIds.size)
+                assertEquals(2, accepted.memberIds.values.toSet().size)
+                val reply = withTimeout(10_000) { replies.receive() }
+                val message = (GatewayEventDecoder.decode(reply) as VerifiedConversationEvent.TimelineUpsert).message
+                assertEquals(conversation.id, message.conversationId)
+                assertEquals("fixture-agent-reply:\n第一条，保留空格 \n第二条消息", (message.parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+                assertEquals(accepted, repository.submitBatch(conversation.id.value, batch))
+                val ordinary = repository.submitMessage(conversation.id.value, OutgoingMessage(ClientMessageId("cm_after_batch"), "下一回合"))
+                assertTrue(ordinary.messageId.isNotBlank())
+                val next = withTimeout(10_000) { replies.receive() }
+                val nextMessage = (GatewayEventDecoder.decode(next) as VerifiedConversationEvent.TimelineUpsert).message
+                assertEquals("fixture-agent-reply:\n下一回合", (nextMessage.parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+            } finally {
+                subscription.cancelAndJoin()
+                replies.close()
+            }
+        } finally {
+            process.destroy()
+            check(process.waitFor(10, TimeUnit.SECONDS)) { "HERMES_FIXTURE_STOP_FAILED" }
+        }
+        val turns = log.readLines().count { line ->
+            runCatching { JsonFields.string(JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(line)), "fixtureEvent") == "agent-turn" }.getOrDefault(false)
+        }
+        assertEquals("批次重放不能再次执行宿主回合", 2, turns)
+    }
+
     @Test fun passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes() = runBlocking {
         val root = File("../../..").canonicalFile
         val log = File(root, "tmp/bugfix-20260915/hermes-interop.log").also { it.parentFile!!.mkdirs() }

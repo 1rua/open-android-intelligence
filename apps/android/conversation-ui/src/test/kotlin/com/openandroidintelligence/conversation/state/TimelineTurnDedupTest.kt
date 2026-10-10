@@ -41,6 +41,30 @@ import org.junit.Test
 class TimelineTurnDedupTest {
 
     @Test
+    fun distinctClientIdentitiesKeepRepeatedUserText() = runTest {
+        val first = user("继续", timestamp = 1_000L).copy(
+            clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId("cm_first"),
+        )
+        val second = user("继续", timestamp = 1_100L).copy(
+            clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId("cm_second"),
+        )
+        val entries = rendered(first, second)
+
+        assertEquals("明确不同身份的两次提交不能因正文相同而消失", 2, entries.count { it.isUser })
+        assertEquals(setOf(first.id, second.id), entries.map { it.key }.toSet())
+    }
+
+    @Test
+    fun theSameClientIdentityStillRendersOnce() = runTest {
+        val first = user("一次提交", timestamp = 1_000L).copy(
+            clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId("cm_once"),
+        )
+        val replay = first.copy(id = "msg_replayed", timestamp = 1_100L)
+
+        assertEquals("同一客户端身份的回放只显示一次", 1, rendered(first, replay).count { it.isUser })
+    }
+
+    @Test
     fun identicalRepliesPublishedUnderDifferentIdsRenderOnce() = runTest {
         val entries = rendered(
             user("现在几点", timestamp = 1_000L),

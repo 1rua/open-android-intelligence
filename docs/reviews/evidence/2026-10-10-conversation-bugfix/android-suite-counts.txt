@@ -1,0 +1,230 @@
+[
+  {
+    "module": "conversation-ui",
+    "task": "testReleaseUnitTest",
+    "counts": {
+      "tests": 112,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "suites": [
+      {
+        "name": "com.openandroidintelligence.conversation.state.ApprovalStateMachineTest",
+        "tests": "13",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:55:30"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.NewConversationAuthorityTest",
+        "tests": "28",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:55:30"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.TimelineTurnDedupTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:55:30"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchForegroundResumeTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:55:30"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+        "tests": "14",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:55:30"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+        "tests": "38",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:55:30"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.workbench.WorkbenchLayoutRegressionTest",
+        "tests": "7",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:55:31"
+      }
+    ]
+  },
+  {
+    "module": "app",
+    "task": "testPlayReleaseUnitTest",
+    "counts": {
+      "tests": 45,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "suites": [
+      {
+        "name": "com.openandroidintelligence.mobile.AttachmentKeystoreRegressionTest",
+        "tests": "7",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:56:02"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.AttachmentStreamEndToEndTest",
+        "tests": "1",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:56:02"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.EncryptedMirrorRecoveryTest",
+        "tests": "2",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:56:04"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest",
+        "tests": "11",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:56:05"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.GatewaySessionRefreshTest",
+        "tests": "21",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:56:06"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.GatewayWorkbenchLogoutTest",
+        "tests": "3",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:56:10"
+      }
+    ]
+  },
+  {
+    "module": "conversation-data",
+    "task": "testReleaseUnitTest",
+    "counts": {
+      "tests": 47,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "suites": [
+      {
+        "name": "com.openandroidintelligence.conversation.data.AttachmentPhaseTest",
+        "tests": "3",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:52:49"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.data.AttachmentRecoveryTest",
+        "tests": "4",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:52:49"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.data.GatewayEventDecoderTest",
+        "tests": "28",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:52:49"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:52:49"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.data.GatewayWireRegressionTest",
+        "tests": "4",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:52:49"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.data.HermesHttpInteropTest",
+        "tests": "2",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:52:49"
+      }
+    ]
+  },
+  {
+    "module": "encrypted-store",
+    "task": "testReleaseUnitTest",
+    "counts": {
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "suites": [
+      {
+        "name": "com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStoreTest",
+        "tests": "8",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:52:47"
+      }
+    ]
+  },
+  {
+    "module": "gateway-client",
+    "task": "testReleaseUnitTest",
+    "counts": {
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "suites": [
+      {
+        "name": "com.openandroidintelligence.gateway.conversations.BatchAcceptanceEvidenceTest",
+        "tests": "3",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "timestamp": "2026-10-10T20:52:25"
+      }
+    ]
+  }
+]

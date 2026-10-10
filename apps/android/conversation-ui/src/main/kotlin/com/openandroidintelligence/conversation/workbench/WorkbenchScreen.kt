@@ -62,7 +62,7 @@ fun WorkbenchScreen(
     onOpenAssistant: (() -> Unit)? = null,
     isDarkTheme: Boolean = true,
     onToggleTheme: (() -> Unit)? = null,
-    onLogout: (() -> Unit)? = null,
+    onLogout: () -> Unit,
     pluginCards:@Composable ()->Unit = {},
 ) {
     val state by controller.state.collectAsState()
@@ -146,7 +146,7 @@ fun WorkbenchScreen(
                 },
                 onLogout = {
                     scope.launch { drawer.close() }
-                    onLogout?.invoke()
+                    onLogout()
                 },
             )
         }
@@ -346,7 +346,7 @@ fun WorkbenchScreen(
                                     },
                             ) {
                                 PendingBatchStrip(state.pendingBatch)
-                                if (state.pendingBatch.isNotEmpty()) TextButton(onClick=controller::retryPendingBatches,enabled=state.isOnline) { Text("继续发送待确认批次") }
+                                if (state.hasRecoverableSubmissions) TextButton(onClick=controller::retryPendingSubmissions,enabled=state.isOnline) { Text("确认并查询未确认消息") }
                                 // Honest degradation: a Gateway that cannot take
                                 // a decision gets no card at all, and the user is
                                 // told the text command is the way to answer.

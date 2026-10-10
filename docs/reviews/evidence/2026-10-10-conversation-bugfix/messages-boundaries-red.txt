@@ -1,0 +1,157 @@
+Starting a Gradle Daemon, 1 incompatible and 4 stopped Daemons could not be reused, use --status for details
+
+> Configure project :app
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :capability-ports:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :capability-ports:preBuild UP-TO-DATE
+> Task :capability-ports:preReleaseBuild UP-TO-DATE
+> Task :capability-ports:generateReleaseResValues UP-TO-DATE
+> Task :capability-ports:generateReleaseResources UP-TO-DATE
+> Task :capability-ports:packageReleaseResources UP-TO-DATE
+> Task :capability-ports:parseReleaseLocalResources UP-TO-DATE
+> Task :capability-ports:generateReleaseRFile UP-TO-DATE
+> Task :core-model:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-model:preBuild UP-TO-DATE
+> Task :core-model:preReleaseBuild UP-TO-DATE
+> Task :core-model:generateReleaseResValues UP-TO-DATE
+> Task :core-model:generateReleaseResources UP-TO-DATE
+> Task :core-model:packageReleaseResources UP-TO-DATE
+> Task :core-model:parseReleaseLocalResources UP-TO-DATE
+> Task :core-model:generateReleaseRFile UP-TO-DATE
+> Task :core-model:compileReleaseKotlin UP-TO-DATE
+> Task :core-model:javaPreCompileRelease UP-TO-DATE
+> Task :core-model:compileReleaseJavaWithJavac NO-SOURCE
+> Task :core-model:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :capability-ports:compileReleaseKotlin UP-TO-DATE
+> Task :capability-ports:javaPreCompileRelease UP-TO-DATE
+> Task :capability-ports:compileReleaseJavaWithJavac NO-SOURCE
+> Task :capability-ports:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :capability-ports:processReleaseJavaRes UP-TO-DATE
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:preBuild UP-TO-DATE
+> Task :conversation-domain:preReleaseBuild UP-TO-DATE
+> Task :conversation-domain:generateReleaseResValues UP-TO-DATE
+> Task :conversation-domain:generateReleaseResources UP-TO-DATE
+> Task :conversation-domain:packageReleaseResources UP-TO-DATE
+> Task :conversation-domain:parseReleaseLocalResources UP-TO-DATE
+> Task :conversation-domain:generateReleaseRFile UP-TO-DATE
+> Task :conversation-domain:compileReleaseKotlin UP-TO-DATE
+> Task :conversation-domain:javaPreCompileRelease UP-TO-DATE
+> Task :conversation-domain:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-domain:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :conversation-domain:processReleaseJavaRes UP-TO-DATE
+> Task :capability-ports:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :conversation-domain:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :conversation-ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-ui:preBuild UP-TO-DATE
+> Task :conversation-ui:preReleaseBuild UP-TO-DATE
+> Task :conversation-ui:generateReleaseResValues UP-TO-DATE
+> Task :conversation-ui:generateReleaseResources UP-TO-DATE
+> Task :conversation-ui:packageReleaseResources UP-TO-DATE
+> Task :conversation-ui:parseReleaseLocalResources UP-TO-DATE
+> Task :conversation-ui:generateReleaseRFile UP-TO-DATE
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preReleaseBuild UP-TO-DATE
+> Task :gateway-client:generateReleaseResValues UP-TO-DATE
+> Task :gateway-client:generateReleaseResources UP-TO-DATE
+> Task :gateway-client:packageReleaseResources UP-TO-DATE
+> Task :gateway-client:parseReleaseLocalResources UP-TO-DATE
+> Task :gateway-client:generateReleaseRFile UP-TO-DATE
+> Task :gateway-client:compileReleaseKotlin UP-TO-DATE
+> Task :gateway-client:javaPreCompileRelease UP-TO-DATE
+> Task :gateway-client:compileReleaseJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :conversation-ui:compileReleaseKotlin UP-TO-DATE
+> Task :conversation-ui:javaPreCompileRelease UP-TO-DATE
+> Task :conversation-ui:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-ui:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :conversation-ui:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :capability-ports:compileReleaseLibraryResources UP-TO-DATE
+> Task :conversation-domain:compileReleaseLibraryResources UP-TO-DATE
+> Task :capability-ports:writeReleaseAarMetadata UP-TO-DATE
+> Task :conversation-domain:writeReleaseAarMetadata UP-TO-DATE
+> Task :conversation-ui:preReleaseUnitTestBuild UP-TO-DATE
+> Task :conversation-ui:writeReleaseAarMetadata UP-TO-DATE
+> Task :core-model:writeReleaseAarMetadata UP-TO-DATE
+> Task :gateway-client:writeReleaseAarMetadata UP-TO-DATE
+> Task :conversation-ui:checkReleaseUnitTestAarMetadata UP-TO-DATE
+> Task :conversation-ui:compileReleaseLibraryResources UP-TO-DATE
+> Task :conversation-ui:generateReleaseUnitTestResValues UP-TO-DATE
+> Task :conversation-ui:mapReleaseUnitTestSourceSetPaths UP-TO-DATE
+> Task :conversation-ui:generateReleaseUnitTestResources UP-TO-DATE
+> Task :conversation-ui:mergeReleaseUnitTestResources UP-TO-DATE
+> Task :capability-ports:extractDeepLinksRelease UP-TO-DATE
+> Task :capability-ports:processReleaseManifest UP-TO-DATE
+> Task :conversation-domain:extractDeepLinksRelease UP-TO-DATE
+> Task :conversation-domain:processReleaseManifest UP-TO-DATE
+> Task :conversation-ui:extractDeepLinksRelease UP-TO-DATE
+> Task :conversation-ui:processReleaseManifest UP-TO-DATE
+> Task :core-model:extractDeepLinksRelease UP-TO-DATE
+> Task :core-model:processReleaseManifest UP-TO-DATE
+> Task :gateway-client:extractDeepLinksRelease UP-TO-DATE
+> Task :gateway-client:processReleaseManifest UP-TO-DATE
+> Task :conversation-ui:processReleaseUnitTestManifest UP-TO-DATE
+> Task :core-model:compileReleaseLibraryResources UP-TO-DATE
+> Task :gateway-client:compileReleaseLibraryResources UP-TO-DATE
+> Task :conversation-ui:processReleaseUnitTestResources UP-TO-DATE
+> Task :conversation-ui:javaPreCompileReleaseUnitTest UP-TO-DATE
+> Task :capability-ports:mergeReleaseShaders UP-TO-DATE
+> Task :capability-ports:compileReleaseShaders NO-SOURCE
+> Task :capability-ports:generateReleaseAssets UP-TO-DATE
+> Task :capability-ports:mergeReleaseAssets UP-TO-DATE
+> Task :conversation-domain:mergeReleaseShaders UP-TO-DATE
+> Task :conversation-domain:compileReleaseShaders NO-SOURCE
+> Task :conversation-domain:generateReleaseAssets UP-TO-DATE
+> Task :conversation-domain:mergeReleaseAssets UP-TO-DATE
+> Task :conversation-ui:generateReleaseUnitTestAssets UP-TO-DATE
+> Task :conversation-ui:mergeReleaseShaders UP-TO-DATE
+> Task :conversation-ui:compileReleaseShaders NO-SOURCE
+> Task :conversation-ui:generateReleaseAssets UP-TO-DATE
+> Task :conversation-ui:mergeReleaseAssets UP-TO-DATE
+> Task :core-model:mergeReleaseShaders UP-TO-DATE
+> Task :core-model:compileReleaseShaders NO-SOURCE
+> Task :core-model:generateReleaseAssets UP-TO-DATE
+> Task :core-model:mergeReleaseAssets UP-TO-DATE
+> Task :gateway-client:mergeReleaseShaders UP-TO-DATE
+> Task :gateway-client:compileReleaseShaders NO-SOURCE
+> Task :gateway-client:generateReleaseAssets UP-TO-DATE
+> Task :gateway-client:mergeReleaseAssets UP-TO-DATE
+> Task :conversation-ui:mergeReleaseUnitTestAssets UP-TO-DATE
+> Task :conversation-ui:packageReleaseUnitTestForUnitTest UP-TO-DATE
+> Task :conversation-ui:generateReleaseUnitTestConfig UP-TO-DATE
+> Task :conversation-ui:processReleaseJavaRes UP-TO-DATE
+> Task :core-model:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :core-model:processReleaseJavaRes UP-TO-DATE
+> Task :gateway-client:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :gateway-client:processReleaseJavaRes UP-TO-DATE
+> Task :conversation-ui:compileReleaseUnitTestKotlin
+> Task :conversation-ui:compileReleaseUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-ui:processReleaseUnitTestJavaRes UP-TO-DATE
+
+> Task :conversation-ui:testReleaseUnitTest FAILED
+
+WorkbenchSendPersistenceTest > recoveryQueriesAcceptedBatchInsteadOfExecutingItAgain FAILED
+    java.lang.AssertionError at WorkbenchSendPersistenceTest.kt:90
+
+WorkbenchSendPersistenceTest > completionBeforeHttpAcceptanceIsNotDowngradedByTheLateReceipt FAILED
+    java.lang.AssertionError at WorkbenchSendPersistenceTest.kt:51
+
+WorkbenchSendPersistenceTest > preparedBatchSurvivesRestartWithoutAutomaticallySending FAILED
+    java.lang.AssertionError at WorkbenchSendPersistenceTest.kt:70
+
+5 tests completed, 3 failed
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':conversation-ui:testReleaseUnitTest'.
+> There were failing tests. See the report at: file:///mnt/data/projects/open-android-intelligence/apps/android/conversation-ui/build/reports/tests/testReleaseUnitTest/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+BUILD FAILED in 22s
+94 actionable tasks: 2 executed, 92 up-to-date

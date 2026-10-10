@@ -12,10 +12,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BatchAcceptanceEvidenceTest {
-    private fun client(data: Any): ConversationClient {
+    private fun client(data: Any, status: Int = 200): ConversationClient {
         val transport = object: GatewayByteTransport {
-            override suspend fun execute(request: WireRequest) = WireResponse(200,emptyList(),
-                Json.canonical(Json.of(mapOf("protocol" to "2.1","data" to data))).toByteArray())
+            override suspend fun execute(request: WireRequest) = WireResponse(status,emptyList(),
+                Json.canonical(Json.of(mapOf("protocol" to "2.1",(if (status in 200..299) "data" else "error") to data))).toByteArray())
             override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
         }
         return ConversationClient(GatewayHttpClient(GatewayProfile("acct","dev","sess","https://gateway.example"),
@@ -23,6 +23,14 @@ class BatchAcceptanceEvidenceTest {
     }
     private fun batch(count: Int) = MessageBatchRequest("cb_evidence",clientConversationId="cc_evidence",joinMode="newline-v1",
         members=(1..count).map { MessageBatchRequest.BatchMember("cm_$it","text_$it") })
+
+    @Test fun rejectedBatchKeepsTheStableGatewayErrorWithoutItsPrivateMessage() = runBlocking {
+        val failure = runCatching {
+            client(mapOf("code" to "INTERNAL_ERROR", "message" to "private-error-detail"), 400).submitBatch("conv_remote", batch(1))
+        }.exceptionOrNull()
+        assertEquals("SUBMIT_BATCH_FAILED:INTERNAL_ERROR", failure?.message)
+        assertFalse(failure?.message.orEmpty().contains("private-error-detail"))
+    }
 
     @Test fun singleAndMultiMemberBatchesEmitOnlyAcknowledgedIdsAndTheAggregateLeaderCorrelation() = runBlocking {
         val previousSink=GatewayLog.sink; val previousEnabled=GatewayLog.protocolEvidenceEnabled

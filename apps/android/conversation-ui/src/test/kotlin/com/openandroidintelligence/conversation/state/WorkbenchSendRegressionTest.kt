@@ -28,6 +28,8 @@ class WorkbenchSendRegressionTest {
         val persistence=object: WorkbenchPersistence {
             override fun load()=WorkbenchCheckpoint(emptyList(),null,"",emptyList(),emptyMap(),"hello",1,listOf(restored),null,emptySet(),emptySet())
             override fun save(checkpoint: WorkbenchCheckpoint)=Unit
+            override fun loadSendAtoms(conversationId: String)=emptyList<LocalSendAtom>()
+            override fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>)=Unit
         }
         val controller=WorkbenchController(this,repository,object: AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String,languageCode: String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
@@ -1641,9 +1643,11 @@ class WorkbenchSendRegressionTest {
         controller.cancel()
     }
 
-    @Test fun aFailedSendLeavesNoPendingCopyAndRestoresTheDraft() = runTest {
+    @Test fun aNetworkFailureKeepsTheUnconfirmedMessageAndRestoresTheDraft() = runTest {
+        val attempts = mutableListOf<OutgoingMessage>()
         val repository = object : RecordingRepository() {
             override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
+                attempts += message
                 throw java.io.IOException("offline")
             }
         }
@@ -1660,10 +1664,12 @@ class WorkbenchSendRegressionTest {
             controller.state.value.pendingBatch.isEmpty(),
         )
         val entries = (controller.state.value.timeline as Loadable.Ready).value
-        assertTrue(
-            "没有被 Gateway 接受的消息不得作为已发送条目留在时间线上",
-            entries.none { it.text == "会失败的消息" },
-        )
+        val retained = entries.single { it.text == "会失败的消息" }
+        assertEquals("网络中断后保留原客户端身份", "local_${attempts.single().clientMessageId.value}", retained.key)
+        assertTrue("未知结果必须显示为未确认，不能表现为已受理", retained.pendingAcceptance)
+        assertNull("网络中断不能伪造 Agent 状态", retained.messageStatus)
+        assertNull("未知结果不能当作明确拒绝", retained.submissionFailureCode)
+        assertTrue(controller.state.value.notice?.startsWith("SEND_OUTCOME_UNKNOWN:") == true)
         assertEquals("失败的消息必须回到输入框供用户重试", "会失败的消息", controller.state.value.draft)
         controller.cancel()
     }

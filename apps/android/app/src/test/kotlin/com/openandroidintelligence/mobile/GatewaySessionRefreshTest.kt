@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile
 
 import android.app.Application
+import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.InMemoryAuditSink
@@ -8,6 +9,8 @@ import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
@@ -16,6 +19,7 @@ import com.openandroidintelligence.kernel.PairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantState
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantCapabilities
+import com.openandroidintelligence.conversation.ports.TimelineMessage
 import org.robolectric.shadows.ShadowLooper
 import java.util.Base64
 import java.security.Security
@@ -365,6 +369,148 @@ class GatewaySessionRefreshTest {
         assertFalse(credentialStore.hasRefresh(profileId()))
         assertTrue(deviceKeys.hasKey(profileId()))
         assertFalse(gateway.requests.any { it.target.contains("pairings/current") })
+    }
+
+    @Test
+    fun refusedLogoutKeepsTheSessionAndItsCredentialsForRetry() {
+        gateway.respond("/open-android-intelligence/v2/sessions/current", """{"error":{"code":"SERVICE_UNAVAILABLE"}}""", 503)
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        runtime.logout(revokeRefresh = true)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.operationNotice.value?.contains("未获 Gateway 确认") == true })
+        assertTrue(runtime.phase.value is ConnectionPhase.Connected)
+        assertNotNull(runtime.controller.value)
+        assertTrue(credentialStore.hasRefresh(profileId()))
+        assertTrue(deviceKeys.hasKey(profileId()))
+    }
+
+    @Test
+    fun confirmedLogoutStillDisablesAutomaticRestoreWhenLocalCredentialCleanupFails() {
+        gateway.respond("/open-android-intelligence/v2/sessions/current", """{"data":{}}""")
+        val failingCredentials = object : com.openandroidintelligence.gateway.auth.GatewayCredentialStore by credentialStore {
+            override fun clearRefresh(profileId: String) = error("DEVICE_STORAGE_UNAVAILABLE")
+        }
+        val runtime = GatewayRuntime(
+            context = ApplicationProvider.getApplicationContext(),
+            scope = runtimeScope,
+            pairingGrants = pairingGrants,
+            credentialStore = failingCredentials,
+            deviceKeys = deviceKeys,
+            localDocumentKeyProvider = TestDocumentKeys,
+        )
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        runtime.logout(revokeRefresh = true)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Disconnected })
+        assertEquals("Gateway 已登出，但本机凭据清理失败，请检查设备存储。", runtime.operationNotice.value)
+        assertTrue(credentialStore.hasRefresh(profileId()))
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertEquals(listOf(profileId()), runtime.savedProfiles.value.map { it.localProfileId })
+
+        val priorRequests = gateway.requests.size
+        val restarted = runtime()
+        restarted.restoreSessionIfAvailable()
+        assertTrue("远端已确认退出后，本机清理失败也必须禁用自动恢复", restarted.phase.value is ConnectionPhase.Disconnected)
+        assertNull(restarted.controller.value)
+        assertEquals(priorRequests, gateway.requests.size)
+    }
+
+    @Test
+    fun cancellingAnUnconfirmedLogoutKeepsCredentialsWithoutReportingANetworkFailure() {
+        val path = "/open-android-intelligence/v2/sessions/current"
+        val release = gateway.holdResponse(path, """{"data":{}}""")
+        try {
+            val runtime = runtime()
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            awaitConnected(runtime)
+            runtime.dismissOperationNotice()
+            runtime.logout(revokeRefresh = true)
+            assertTrue(awaitCondition(AWAIT_MILLIS) { gateway.requests.any { it.method == "DELETE" && it.target.startsWith(path) } })
+            runtimeScope.cancel()
+            release.countDown()
+            assertTrue(awaitCondition(AWAIT_MILLIS) { runtimeScope.coroutineContext[Job]?.isCompleted == true })
+            assertNull("协程取消不能伪装成网络失败", runtime.operationNotice.value)
+            assertTrue(credentialStore.hasRefresh(profileId()))
+            assertTrue(deviceKeys.hasKey(profileId()))
+        } finally {
+            release.countDown()
+        }
+    }
+
+    @Test
+    fun logoutPreservesOtherAccountsAndHistoryAndCannotAutoRestoreTheExitedAccount() {
+        gateway.respond("/open-android-intelligence/v2/sessions/current", """{"data":{}}""")
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        AndroidAccountProfileStore(context).save(AccountProfile(profileId("bob"), gateway.baseUrl, "bob", ""))
+        credentialStore.saveRefresh(profileId("bob"), "bob_refresh".toByteArray())
+        deviceKeys.publicKeyBase64Url(profileId("bob"))
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        val installId = requireNotNull(context.getSharedPreferences("open_android_intelligence_runtime", Context.MODE_PRIVATE).getString("installation_id", null))
+        val mirror = com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(
+            context,
+            com.openandroidintelligence.conversation.ports.ConversationScope(profileId(), gateway.baseUrl, "acc_stub", installId),
+            TestDocumentKeys,
+        )
+        val history = com.openandroidintelligence.conversation.ports.TimelinePage(
+            listOf(TimelineMessage("msg_kept", "user",
+                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("退出后保留的历史")), 1L, "CONFIRMED")),
+            null,
+            1L,
+        )
+        mirror.saveTimeline("conv_kept", history)
+
+        runtime.logout(revokeRefresh = true)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Disconnected })
+        assertEquals(setOf(profileId(), profileId("bob")), runtime.savedProfiles.value.map { it.localProfileId }.toSet())
+        assertEquals("bob_refresh", credentialStore.loadRefresh(profileId("bob"))!!.decodeToString())
+        assertTrue(deviceKeys.hasKey(profileId("bob")))
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertEquals(history, mirror.timeline("conv_kept"))
+        assertFalse(gateway.requests.any { it.target.contains("pairings/current") })
+        val priorAuthRequests = gateway.requests.count { it.target in setOf(NEGOTIATE_PATH, REFRESH_PATH) }
+        val restarted = runtime()
+        restarted.restoreSessionIfAvailable()
+        assertTrue(restarted.phase.value is ConnectionPhase.Disconnected)
+        assertNull(restarted.controller.value)
+        assertEquals("已退出的账号不得自动发起恢复请求", priorAuthRequests,
+            gateway.requests.count { it.target in setOf(NEGOTIATE_PATH, REFRESH_PATH) })
+    }
+
+    @Test
+    fun offlineLogoutExplainsTheMissingConfirmationAndPreservesTheMirrorAndCredentials() {
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        requireNotNull(runtime.controller.value).editDraft("离线草稿仍需保留")
+        runtimeScope.cancel()
+        gateway.closed()
+        val offlineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val offline = GatewayRuntime(
+                context = ApplicationProvider.getApplicationContext(),
+                scope = offlineScope,
+                pairingGrants = pairingGrants,
+                credentialStore = credentialStore,
+                deviceKeys = deviceKeys,
+                localDocumentKeyProvider = TestDocumentKeys,
+            )
+            offline.restoreSessionIfAvailable()
+            assertTrue("断网重启必须进入已保存的离线镜像", awaitCondition(AWAIT_MILLIS) { offline.phase.value is ConnectionPhase.OfflineMirror })
+            val controller = requireNotNull(offline.controller.value)
+            offline.dismissOperationNotice()
+            offline.logout(revokeRefresh = true)
+            assertEquals("当前离线，无法向 Gateway 确认退出，请先重新连接。", offline.operationNotice.value)
+            assertTrue(offline.phase.value is ConnectionPhase.OfflineMirror)
+            assertEquals(controller, offline.controller.value)
+            assertEquals("离线草稿仍需保留", controller.state.value.draft)
+            assertTrue(credentialStore.hasRefresh(profileId()))
+            assertTrue(deviceKeys.hasKey(profileId()))
+        } finally {
+            offlineScope.cancel()
+        }
     }
 
     @Test

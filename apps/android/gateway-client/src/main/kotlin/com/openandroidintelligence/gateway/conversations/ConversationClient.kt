@@ -68,6 +68,7 @@ data class GatewayTimelineMessage(
     val timestamp: Long?,
     val state: String,
     val batchId:String?=null,
+    val clientMessageId: String? = null,
 )
 
 /** One page of `GET /conversations/{id}/messages`. */
@@ -265,6 +266,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
                     timestamp = timestamp,
                     state = JsonFields.string(message, "state") ?: "CONFIRMED",
                     batchId=JsonFields.string(message,"batchId"),
+                    clientMessageId=JsonFields.string(message,"clientMessageId"),
                 )
             },
             nextCursor = JsonFields.string(body, "nextCursor"),
@@ -303,6 +305,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
             timestamp = timestamp,
             state = JsonFields.string(raw, "state") ?: "CONFIRMED",
             batchId=JsonFields.string(raw,"batchId"),
+            clientMessageId=JsonFields.string(raw,"clientMessageId"),
         )
     }
 
@@ -368,10 +371,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
             body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
             requestId="batch_"+java.security.MessageDigest.getInstance("SHA-256").digest("$conversationId\u0000${batch.clientBatchId}".toByteArray()).joinToString("") { "%02x".format(it) },
         )
-        if (response.status !in 200..299) {
-            throw IllegalStateException("SUBMIT_BATCH_FAILED:${response.status}")
-        }
-        val body = parsed(response) ?: throw IllegalStateException("SUBMIT_BATCH_FAILED:malformed")
+        val body = response.requireData("SUBMIT_BATCH_FAILED")
         val members = JsonFields.objects(body, "members")
         val memberIds = members.mapNotNull { member ->
             val client = JsonFields.string(member, "clientMessageId") ?: return@mapNotNull null

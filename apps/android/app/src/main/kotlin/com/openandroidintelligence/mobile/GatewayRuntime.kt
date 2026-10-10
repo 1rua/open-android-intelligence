@@ -279,14 +279,19 @@ class GatewayRuntime(
 
     fun logout(revokeRefresh: Boolean) {
         if (connectionJob?.isActive == true) return
+        if (_phase.value is ConnectionPhase.OfflineMirror) {
+            _operationNotice.value = "当前离线，无法向 Gateway 确认退出，请先重新连接。"
+            return
+        }
         val current = _phase.value as? ConnectionPhase.Connected ?: return
         val profileId = profileIdFor(current.gatewayUrl, current.username)
         val accountId = lastAccountId ?: return
         val deviceId = lastDeviceId ?: return
         val sessionId = lastSessionId ?: return
         val accessToken = accessTokenHolder ?: return
+        _operationNotice.value = null
         connectionJob = scope.launch {
-            runCatching {
+            try {
                 authClientFor(current.gatewayUrl, setOfNotNull(current.tlsSpkiSha256)).logout(
                     accessToken = accessToken,
                     accountId = accountId,
@@ -294,14 +299,25 @@ class GatewayRuntime(
                     sessionId = sessionId,
                     revokeRefresh = revokeRefresh,
                 )
-            }.onFailure { cause ->
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
                 _operationNotice.value = "登出未获 Gateway 确认，请检查连接后重试。"
                 return@launch
             }
-            runCatching {
-                credentialStore.clearRefresh(profileId)
-                clearLastProfile()
-            }.onFailure { _operationNotice.value = "Gateway 已登出，但本机凭据清理失败，请检查设备存储。" }
+            val cleanup = listOf<() -> Unit>(
+                { credentialStore.clearRefresh(profileId) },
+                { clearLastProfile() },
+            )
+            for (action in cleanup) {
+                try {
+                    action()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    _operationNotice.value = "Gateway 已登出，但本机凭据清理失败，请检查设备存储。"
+                }
+            }
             teardown()
         }
     }

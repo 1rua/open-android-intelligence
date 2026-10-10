@@ -53,7 +53,7 @@ fun ThreadDrawer(
     modifier: Modifier = Modifier,
     showClose: Boolean = true,
     onOpenAttachments: (() -> Unit)? = null,
-    onLogout: (() -> Unit)? = null,
+    onLogout: () -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val threadList = (threads as? Loadable.Ready)?.value.orEmpty()
@@ -386,7 +386,7 @@ fun ThreadDrawer(
                     )
 
                     TextButton(
-                        onClick = { onLogout?.invoke() ?: onOpenSettings() },
+                        onClick = onLogout,
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                     ) {
                         Icon(

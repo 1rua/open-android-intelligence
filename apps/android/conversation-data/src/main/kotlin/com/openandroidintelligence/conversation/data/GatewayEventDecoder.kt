@@ -283,6 +283,9 @@ object GatewayEventDecoder {
         body: JsonValue.JObject? = null,
     ): VerifiedConversationEvent.TimelineUpsert? {
         val messageId = JsonFields.string(payload, "messageId") ?: return null
+        val clientMessageId = JsonFields.string(payload, "clientMessageId")?.let {
+            runCatching { ClientMessageId(it) }.getOrNull() ?: return null
+        }
         return VerifiedConversationEvent.TimelineUpsert(
             eventId = eventId,
             occurredAt = occurredAt,
@@ -296,6 +299,7 @@ object GatewayEventDecoder {
                     ?: System.currentTimeMillis(),
                 state = state,
                 conversationId = conversationIdOf(payload, body),
+                clientMessageId = clientMessageId,
             ),
         )
     }

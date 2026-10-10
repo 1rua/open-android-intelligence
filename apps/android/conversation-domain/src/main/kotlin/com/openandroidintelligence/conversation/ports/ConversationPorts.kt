@@ -32,6 +32,8 @@ data class TimelineMessage(
     val conversationId: ConversationId? = null,
     val errorCode: String? = null,
     val batchId:String?=null,
+    val clientMessageId: ClientMessageId? = null,
+    val localSubmissionFailure: String? = null,
 )
 
 data class MessageBatch(

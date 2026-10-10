@@ -19,6 +19,7 @@ internal data class RecordedGatewayRequest(
     val method: String,
     val target: String,
     val body: String,
+    val headers: List<String> = emptyList(),
 )
 
 /**
@@ -53,6 +54,13 @@ internal class LoopbackGatewayStub {
         routes[path] = StubResponse(status, body, contentType)
     }
 
+    /** 暂停一个响应，供取消测试在请求已到达后确定性地中断客户端协程。 */
+    fun holdResponse(path: String, body: String, status: Int = 200): java.util.concurrent.CountDownLatch {
+        val release = java.util.concurrent.CountDownLatch(1)
+        routes[path] = StubResponse(status, body, "application/json", release)
+        return release
+    }
+
     fun targetsOf(method: String): List<String> =
         requests.filter { it.method == method }.map { it.target }
 
@@ -76,10 +84,11 @@ internal class LoopbackGatewayStub {
             }
             val target = requestLine.split(' ').getOrNull(1).orEmpty()
             val method = requestLine.substringBefore(' ')
-            recorded += RecordedGatewayRequest(method, target, String(body, 0, read))
+            recorded += RecordedGatewayRequest(method, target, String(body, 0, read), headers)
 
             val path = target.substringBefore('?')
             val response = routes[path] ?: StubResponse(404, """{"error":{"code":"NOT_FOUND"}}""", "application/json")
+            check(response.release?.await(10, TimeUnit.SECONDS) != false) { "回环响应等待释放超时" }
             write(open, response)
         }
     }
@@ -100,7 +109,12 @@ internal class LoopbackGatewayStub {
         }
     }
 
-    private data class StubResponse(val status: Int, val body: String, val contentType: String)
+    private data class StubResponse(
+        val status: Int,
+        val body: String,
+        val contentType: String,
+        val release: java.util.concurrent.CountDownLatch? = null,
+    )
 }
 
 /**

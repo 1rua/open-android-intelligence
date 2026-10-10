@@ -165,11 +165,9 @@ class EncryptedAttachmentStagingStore private constructor(
                         } catch (cause: ArithmeticException) {
                             throw IOException("ATTACHMENT_SIZE_UNREPRESENTABLE", cause)
                         }
-                        val nonce = randomBytes(IV_BYTES)
-                        val ciphertext = encrypt(
+                        val (nonce, ciphertext) = encrypt(
                             plain = buffer,
                             plainLength = count,
-                            nonce = nonce,
                             aad = chunkAad(scopeId, id, chunkIndex, count),
                         )
                         try {
@@ -189,8 +187,7 @@ class EncryptedAttachmentStagingStore private constructor(
                         .putLong(totalBytes)
                         .put(finalDigest)
                         .array()
-                    val nonce = randomBytes(IV_BYTES)
-                    val ciphertext = encrypt(footer, footer.size, nonce, footerAad(scopeId, id, chunkIndex))
+                    val (nonce, ciphertext) = encrypt(footer, footer.size, footerAad(scopeId, id, chunkIndex))
                     try {
                         sink.writeInt(FOOTER_MARKER)
                         sink.write(nonce)
@@ -311,8 +308,17 @@ class EncryptedAttachmentStagingStore private constructor(
         return count
     }
 
-    private fun encrypt(plain: ByteArray, plainLength: Int, nonce: ByteArray, aad: ByteArray): ByteArray =
-        cipher(Cipher.ENCRYPT_MODE, key, nonce, aad).doFinal(plain, 0, plainLength)
+    private fun encrypt(plain: ByteArray, plainLength: Int, aad: ByteArray): Pair<ByteArray, ByteArray> =
+        Cipher.getInstance("AES/GCM/NoPadding").run {
+            // 每个数据块和结尾校验块都由密钥库生成新 IV，保留原 V1 信封格式。
+            init(Cipher.ENCRYPT_MODE, key)
+            val nonce = iv?.copyOf() ?: throw EncryptedAttachmentCorrupted()
+            if (nonce.size != IV_BYTES) throw EncryptedAttachmentCorrupted()
+            updateAAD(aad)
+            val ciphertext = doFinal(plain, 0, plainLength)
+            if (ciphertext.size != plainLength + TAG_BYTES) throw EncryptedAttachmentCorrupted()
+            nonce to ciphertext
+        }
 
     private fun randomBytes(size: Int): ByteArray = ByteArray(size).also(RANDOM::nextBytes)
 
@@ -420,7 +426,8 @@ class EncryptedAttachmentStagingStore private constructor(
         private const val MAGIC = ATTACHMENT_STAGE_MAGIC
         private const val AES_256_BYTES = 32
         private const val IV_BYTES = 12
-        private const val TAG_BYTES = 16
+        private const val TAG_BITS = 128
+        private const val TAG_BYTES = TAG_BITS / 8
         private const val SHA256_BYTES = 32
         private const val FOOTER_MARKER = 0
         private const val FOOTER_PLAIN_BYTES = Long.SIZE_BYTES + SHA256_BYTES
@@ -458,15 +465,13 @@ class EncryptedAttachmentStagingStore private constructor(
             return removed
         }
 
-        private fun cipher(mode: Int, key: SecretKey, nonce: ByteArray, aad: ByteArray): Cipher =
-            Cipher.getInstance("AES/GCM/NoPadding").apply {
-                init(mode, key, GCMParameterSpec(128, nonce))
-                updateAAD(aad)
-            }
-
         private fun decrypt(ciphertext: ByteArray, key: SecretKey, nonce: ByteArray, aad: ByteArray): ByteArray =
             try {
-                cipher(Cipher.DECRYPT_MODE, key, nonce, aad).doFinal(ciphertext)
+                Cipher.getInstance("AES/GCM/NoPadding").run {
+                    init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
+                    updateAAD(aad)
+                    doFinal(ciphertext)
+                }
             } catch (cause: AEADBadTagException) {
                 throw EncryptedAttachmentCorrupted()
             }

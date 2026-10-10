@@ -75,6 +75,9 @@ class RandomizedGcmCipher : CipherSpi() {
     override fun engineUpdate(input: ByteArray, inputOffset: Int, inputLen: Int): ByteArray? =
         delegate.update(input, inputOffset, inputLen)
 
+    override fun engineUpdateAAD(input: ByteArray, inputOffset: Int, inputLen: Int) =
+        delegate.updateAAD(input, inputOffset, inputLen)
+
     override fun engineUpdate(input: ByteArray, inputOffset: Int, inputLen: Int, output: ByteArray, outputOffset: Int): Int =
         delegate.update(input, inputOffset, inputLen, output, outputOffset)
 

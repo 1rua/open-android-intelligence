@@ -47,6 +47,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 1rua/hermes-gateway-plugin
+          # 固定本次修复及其独立审查提交，保证联调不会随插件 main 漂移。
+          ref: d7ec5fbfae81cf9228fdd9d53c86e4c99d682b80
           path: .hermes-gateway-plugin
 
       - name: Install the Hermes Gateway plugin
@@ -128,6 +130,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 1rua/hermes-gateway-plugin
+          ref: d7ec5fbfae81cf9228fdd9d53c86e4c99d682b80
           path: .hermes-gateway-plugin
 
       - name: Set up Python for the Gateway fixture

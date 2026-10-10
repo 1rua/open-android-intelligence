@@ -1,0 +1,216 @@
+Starting a Gradle Daemon, 1 incompatible and 1 stopped Daemons could not be reused, use --status for details
+
+> Configure project :app
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :conversation-data:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-data:preBuild UP-TO-DATE
+> Task :conversation-data:preReleaseBuild UP-TO-DATE
+> Task :conversation-data:generateReleaseResValues UP-TO-DATE
+> Task :conversation-data:generateReleaseResources UP-TO-DATE
+> Task :conversation-data:packageReleaseResources UP-TO-DATE
+> Task :conversation-data:parseReleaseLocalResources UP-TO-DATE
+> Task :conversation-data:generateReleaseRFile UP-TO-DATE
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:preBuild UP-TO-DATE
+> Task :conversation-domain:preReleaseBuild UP-TO-DATE
+> Task :conversation-domain:generateReleaseResValues UP-TO-DATE
+> Task :conversation-domain:generateReleaseResources UP-TO-DATE
+> Task :conversation-domain:packageReleaseResources UP-TO-DATE
+> Task :conversation-domain:parseReleaseLocalResources UP-TO-DATE
+> Task :conversation-domain:generateReleaseRFile UP-TO-DATE
+> Task :conversation-domain:compileReleaseKotlin UP-TO-DATE
+> Task :conversation-domain:javaPreCompileRelease UP-TO-DATE
+> Task :conversation-domain:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-domain:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preReleaseBuild UP-TO-DATE
+> Task :gateway-client:generateReleaseResValues UP-TO-DATE
+> Task :gateway-client:generateReleaseResources UP-TO-DATE
+> Task :gateway-client:packageReleaseResources UP-TO-DATE
+> Task :gateway-client:parseReleaseLocalResources UP-TO-DATE
+> Task :gateway-client:generateReleaseRFile UP-TO-DATE
+> Task :gateway-client:compileReleaseKotlin UP-TO-DATE
+> Task :gateway-client:javaPreCompileRelease UP-TO-DATE
+> Task :gateway-client:compileReleaseJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :conversation-data:compileReleaseKotlin UP-TO-DATE
+> Task :conversation-data:javaPreCompileRelease UP-TO-DATE
+> Task :conversation-data:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-data:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :conversation-data:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :conversation-data:preReleaseUnitTestBuild UP-TO-DATE
+> Task :conversation-data:generateReleaseUnitTestStubRFile UP-TO-DATE
+> Task :conversation-data:javaPreCompileReleaseUnitTest UP-TO-DATE
+> Task :conversation-data:processReleaseJavaRes UP-TO-DATE
+> Task :conversation-domain:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :conversation-domain:processReleaseJavaRes UP-TO-DATE
+> Task :gateway-client:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :gateway-client:processReleaseJavaRes UP-TO-DATE
+> Task :conversation-data:compileReleaseUnitTestKotlin
+> Task :conversation-data:compileReleaseUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-data:processReleaseUnitTestJavaRes UP-TO-DATE
+
+> Task :conversation-data:testReleaseUnitTest FAILED
+
+GatewayGenerationReceiptTest > delayedCurrentGenerationSnapshotCannotReviveItsCompletedIdentity FAILED
+    java.lang.AssertionError: 旧 currentGeneration 快照不能复活已经完成的明确身份 expected null, but was:<gen_received>
+        at org.junit.Assert.fail(Assert.java:89)
+        at org.junit.Assert.failNotNull(Assert.java:756)
+        at org.junit.Assert.assertNull(Assert.java:738)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest$delayedCurrentGenerationSnapshotCannotReviveItsCompletedIdentity$1.invokeSuspend(GatewayGenerationReceiptTest.kt:63)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.test.TestDispatcher.processEvent$kotlinx_coroutines_test(TestDispatcher.kt:24)
+        at kotlinx.coroutines.test.TestCoroutineScheduler.tryRunNextTaskUnless$kotlinx_coroutines_test(TestCoroutineScheduler.kt:99)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt$runTest$2$1$workRunner$1.invokeSuspend(TestBuilders.kt:327)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+        at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+        at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:47)
+        at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersJvmKt.createTestResult(TestBuildersJvm.kt:10)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:310)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:168)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0$default(TestBuilders.kt:160)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0$default(Unknown Source)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.delayedCurrentGenerationSnapshotCannotReviveItsCompletedIdentity(GatewayGenerationReceiptTest.kt:48)
+
+GatewayGenerationReceiptTest > olderQueuedAndDeliveredEventsCannotReviveACompletedGeneration FAILED
+    java.lang.AssertionError: 旧 queued 事件不能复活已完成的生成 expected null, but was:<gen_received>
+        at org.junit.Assert.fail(Assert.java:89)
+        at org.junit.Assert.failNotNull(Assert.java:756)
+        at org.junit.Assert.assertNull(Assert.java:738)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest$olderQueuedAndDeliveredEventsCannotReviveACompletedGeneration$1.invokeSuspend(GatewayGenerationReceiptTest.kt:41)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.test.TestDispatcher.processEvent$kotlinx_coroutines_test(TestDispatcher.kt:24)
+        at kotlinx.coroutines.test.TestCoroutineScheduler.tryRunNextTaskUnless$kotlinx_coroutines_test(TestCoroutineScheduler.kt:99)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt$runTest$2$1$workRunner$1.invokeSuspend(TestBuilders.kt:327)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+        at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+        at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:47)
+        at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersJvmKt.createTestResult(TestBuildersJvm.kt:10)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:310)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:168)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0$default(TestBuilders.kt:160)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0$default(Unknown Source)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.olderQueuedAndDeliveredEventsCannotReviveACompletedGeneration(GatewayGenerationReceiptTest.kt:32)
+
+GatewayGenerationReceiptTest > completionBeforeBatchHttpReceiptCannotReviveTheGeneration FAILED
+    java.lang.AssertionError: 终态先于 HTTP 回执时，迟到回执不能重新建立生成身份 expected null, but was:<gen_received>
+        at org.junit.Assert.fail(Assert.java:89)
+        at org.junit.Assert.failNotNull(Assert.java:756)
+        at org.junit.Assert.assertNull(Assert.java:738)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.assertTerminalPrecedesReceipt(GatewayGenerationReceiptTest.kt:95)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.access$assertTerminalPrecedesReceipt(GatewayGenerationReceiptTest.kt:18)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest$assertTerminalPrecedesReceipt$1.invokeSuspend(GatewayGenerationReceiptTest.kt)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.test.TestDispatcher.processEvent$kotlinx_coroutines_test(TestDispatcher.kt:24)
+        at kotlinx.coroutines.test.TestCoroutineScheduler.tryRunNextTaskUnless$kotlinx_coroutines_test(TestCoroutineScheduler.kt:99)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt$runTest$2$1$workRunner$1.invokeSuspend(TestBuilders.kt:327)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+        at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+        at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:47)
+        at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersJvmKt.createTestResult(TestBuildersJvm.kt:10)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:310)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:168)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0$default(TestBuilders.kt:160)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0$default(Unknown Source)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.completionBeforeBatchHttpReceiptCannotReviveTheGeneration(GatewayGenerationReceiptTest.kt:20)
+
+GatewayGenerationReceiptTest > cancellationBeforeBatchHttpReceiptCannotReviveTheGeneration FAILED
+    java.lang.AssertionError: 终态先于 HTTP 回执时，迟到回执不能重新建立生成身份 expected null, but was:<gen_received>
+        at org.junit.Assert.fail(Assert.java:89)
+        at org.junit.Assert.failNotNull(Assert.java:756)
+        at org.junit.Assert.assertNull(Assert.java:738)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.assertTerminalPrecedesReceipt(GatewayGenerationReceiptTest.kt:95)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.access$assertTerminalPrecedesReceipt(GatewayGenerationReceiptTest.kt:18)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest$assertTerminalPrecedesReceipt$1.invokeSuspend(GatewayGenerationReceiptTest.kt)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.test.TestDispatcher.processEvent$kotlinx_coroutines_test(TestDispatcher.kt:24)
+        at kotlinx.coroutines.test.TestCoroutineScheduler.tryRunNextTaskUnless$kotlinx_coroutines_test(TestCoroutineScheduler.kt:99)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt$runTest$2$1$workRunner$1.invokeSuspend(TestBuilders.kt:327)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+        at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+        at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:47)
+        at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersJvmKt.createTestResult(TestBuildersJvm.kt:10)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:310)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:168)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0$default(TestBuilders.kt:160)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0$default(Unknown Source)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.cancellationBeforeBatchHttpReceiptCannotReviveTheGeneration(GatewayGenerationReceiptTest.kt:28)
+
+GatewayGenerationReceiptTest > failureBeforeBatchHttpReceiptCannotReviveTheGeneration FAILED
+    java.lang.AssertionError: 终态先于 HTTP 回执时，迟到回执不能重新建立生成身份 expected null, but was:<gen_received>
+        at org.junit.Assert.fail(Assert.java:89)
+        at org.junit.Assert.failNotNull(Assert.java:756)
+        at org.junit.Assert.assertNull(Assert.java:738)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.assertTerminalPrecedesReceipt(GatewayGenerationReceiptTest.kt:95)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.access$assertTerminalPrecedesReceipt(GatewayGenerationReceiptTest.kt:18)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest$assertTerminalPrecedesReceipt$1.invokeSuspend(GatewayGenerationReceiptTest.kt)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.test.TestDispatcher.processEvent$kotlinx_coroutines_test(TestDispatcher.kt:24)
+        at kotlinx.coroutines.test.TestCoroutineScheduler.tryRunNextTaskUnless$kotlinx_coroutines_test(TestCoroutineScheduler.kt:99)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt$runTest$2$1$workRunner$1.invokeSuspend(TestBuilders.kt:327)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+        at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+        at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+        at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+        at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source)
+        at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:47)
+        at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersJvmKt.createTestResult(TestBuildersJvm.kt:10)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:310)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0(TestBuilders.kt:168)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0(Unknown Source)
+        at kotlinx.coroutines.test.TestBuildersKt__TestBuildersKt.runTest-8Mi8wO0$default(TestBuilders.kt:160)
+        at kotlinx.coroutines.test.TestBuildersKt.runTest-8Mi8wO0$default(Unknown Source)
+        at com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest.failureBeforeBatchHttpReceiptCannotReviveTheGeneration(GatewayGenerationReceiptTest.kt:24)
+
+6 tests completed, 5 failed
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':conversation-data:testReleaseUnitTest'.
+> There were failing tests. See the report at: file:///mnt/data/projects/open-android-intelligence/apps/android/conversation-data/build/reports/tests/testReleaseUnitTest/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+BUILD FAILED in 16s
+35 actionable tasks: 2 executed, 33 up-to-date

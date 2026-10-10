@@ -10,6 +10,10 @@ import com.openandroidintelligence.conversation.model.ApprovalSubmissionResult
 import com.openandroidintelligence.conversation.model.ClientMessageId
 import com.openandroidintelligence.conversation.model.ComposerState
 import com.openandroidintelligence.conversation.model.AttachmentState
+import com.openandroidintelligence.conversation.model.AttachmentDraftId
+import com.openandroidintelligence.conversation.model.LocalSendAtom
+import com.openandroidintelligence.conversation.model.LocalSubmissionState
+import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -27,6 +31,7 @@ import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.TimelineMessage
+import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.conversation.ports.completeTimeline
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -59,6 +64,7 @@ data class TimelineEntry(
     val isStreaming: Boolean = false,
     val messageStatus: com.openandroidintelligence.conversation.ports.AgentMessageStatus? = null,
     val messageStatusErrorCode: com.openandroidintelligence.conversation.ports.AgentMessageErrorCode? = null,
+    val submissionFailureCode: String? = null,
     /**
      * The conversation this row navigates to, when it is a system row rather
      * than a message.
@@ -77,6 +83,8 @@ data class TimelineEntry(
      * duplicate-pruning never see it, and the card keeps its own state.
      */
     val approval: ApprovalCardState? = null,
+    /** 明确的客户端身份优先于旧历史的正文相似判断。 */
+    val clientMessageId: ClientMessageId? = null,
 )
 
 data class WorkbenchUiState(
@@ -126,6 +134,7 @@ data class WorkbenchUiState(
      */
     val approvalCardsSupported: Boolean = false,
     val isOnline: Boolean = true,
+    val hasRecoverableSubmissions: Boolean = false,
 ) {
     val canSend: Boolean get() = isOnline && (draft.isNotBlank() || attachments.isNotEmpty()) &&
         composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
@@ -229,6 +238,77 @@ class WorkbenchController(
     private val frozenBatches=LinkedHashMap<String,SavedBatch>()
     private val collectingUnits=LinkedHashMap<String,Pair<String,OutgoingMessage>>()
     private val mirrored = LinkedHashMap<String, TimelineMessage>()
+    private val sendAtomsByThread = LinkedHashMap<String, LinkedHashMap<String, LocalSendAtom>>()
+
+    private fun atomsFor(threadId: String): LinkedHashMap<String, LocalSendAtom> =
+        sendAtomsByThread.getOrPut(threadId) {
+            val saved = persistence?.loadSendAtoms(threadId).orEmpty()
+            val recovered = saved.map { atom ->
+                if (atom.submissionState == LocalSubmissionState.PREPARED) atom.copy(submissionState = LocalSubmissionState.OUTCOME_UNKNOWN)
+                else atom
+            }
+            if (recovered != saved) persistence?.saveSendAtoms(threadId, recovered)
+            recovered.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+        }
+
+    private fun changeSendAtom(threadId: String, clientId: String, change: (LocalSendAtom?) -> LocalSendAtom?) {
+        // 事件可能先于 HTTP 回执落盘；更新前读取其最新修订，不能用旧缓存倒退状态。
+        val existing = persistence?.loadSendAtoms(threadId)?.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+            ?: LinkedHashMap(atomsFor(threadId))
+        val updated = change(existing[clientId]) ?: return
+        require(updated.conversationId.value == threadId && updated.clientMessageId.value == clientId) { "SEND_ATOM_SCOPE_MISMATCH" }
+        existing[clientId] = updated
+        persistence?.saveSendAtoms(threadId, existing.values.toList())
+        sendAtomsByThread[threadId] = persistence?.loadSendAtoms(threadId)?.associateByTo(linkedMapOf()) { it.clientMessageId.value } ?: existing
+    }
+
+    private fun acceptSendAtom(threadId: String, clientId: String, messageId: String, batchId: String? = null) {
+        changeSendAtom(threadId, clientId) { old -> old?.accepted(messageId, batchId ?: old.batchId) }
+    }
+
+    private fun applySendEvent(event: VerifiedConversationEvent) {
+        when (event) {
+            is VerifiedConversationEvent.MessageStatus -> changeSendAtom(event.conversationId.value, event.clientMessageId.value) { old ->
+                old?.let { atom ->
+                    if (event.revision <= atom.statusRevision) atom else atom.accepted(event.messageId).copy(
+                        status = event.status, statusRevision = event.revision, errorCode = event.errorCode)
+                }
+            }
+            is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value?.let { threadId ->
+                val atom = (persistence?.loadSendAtoms(threadId) ?: atomsFor(threadId).values.toList()).firstOrNull {
+                    it.messageId == event.message.id || (event.message.clientMessageId != null && it.clientMessageId == event.message.clientMessageId)
+                }
+                atom?.let { known -> changeSendAtom(threadId, known.clientMessageId.value) { old ->
+                    old?.let {
+                        if (event.revision <= it.contentRevision || it.tombstoneRevision?.let { revision -> event.revision <= revision } == true) it
+                        else it.accepted(event.message.id).copy(parts = event.message.parts,
+                            contentRevision = event.revision, tombstoneRevision = null)
+                    }
+                } }
+            }
+            is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value?.let { threadId ->
+                val atom = (persistence?.loadSendAtoms(threadId) ?: atomsFor(threadId).values.toList()).firstOrNull { it.messageId == event.messageId }
+                atom?.let { known -> changeSendAtom(threadId, known.clientMessageId.value) { old ->
+                    old?.let {
+                        if (event.revision < it.contentRevision || event.revision <= (it.tombstoneRevision ?: -1L)) it
+                        else it.copy(parts = emptyList(), tombstoneRevision = event.revision)
+                    }
+                } }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun generationAfterAcceptance(threadId: String, clientIds: List<String>, current: GenerationState): GenerationState {
+        val statuses = clientIds.map { atomsFor(threadId)[it]?.status }
+        return when {
+            current in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED) -> current
+            statuses.isNotEmpty() && statuses.all { it == com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED } -> GenerationState.COMPLETED
+            statuses.any { it == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED } -> GenerationState.FAILED
+            statuses.any { it == com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED } || current == GenerationState.RUNNING -> GenerationState.RUNNING
+            else -> GenerationState.QUEUED
+        }
+    }
     private val mirroredRevisions = LinkedHashMap<String, Long>()
     private data class MessageStatusReceipt(
         val status: com.openandroidintelligence.conversation.ports.AgentMessageStatus,
@@ -371,6 +451,7 @@ class WorkbenchController(
     private var pendingSubmission: DraftSubmission? = null
     private var failedSubmission: DraftSubmission? = null
     private val userRenamedThreads = mutableSetOf<String>()
+    private val approvalCards = LinkedHashMap<String, ApprovalCardState>()
 
     val isCurrentThreadUserRenamed: Boolean
         get() = activeThreadId?.let { userRenamedThreads.contains(it) } ?: false
@@ -464,11 +545,14 @@ class WorkbenchController(
             userRenamedThreads.addAll(saved.renamedThreads)
             draftRevision = saved.draftRevision
             failedSubmission = saved.submission?.let { DraftSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) }
+            val restoredRows = renderTimeline()
             _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.threads),
                 activeThreadId = saved.threadId, activeThreadTitle = saved.title, draft = saved.draft.ifBlank { saved.submission?.text.orEmpty() },
-                attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,System.currentTimeMillis(),true,b.batchId) } }, timeline = if (saved.messages.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline()),
+                attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } }, timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
                 composer = if (saved.submission != null) ComposerState.FAILED else ComposerState.EDITING,
-                notice = if (saved.submission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else null)
+                hasRecoverableSubmissions = saved.batches.any { it.conversationId == saved.threadId } ||
+                    saved.threadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true,
+                notice = if (saved.submission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (saved.batches.isNotEmpty()) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
             attachmentCoordinator?.let { coordinator ->
                 _state.value.attachments.forEach { observeAttachment(coordinator,it.id.value) }
             }
@@ -587,6 +671,7 @@ class WorkbenchController(
         cancelPendingSubmission()
         activeThreadId = threadId
         onActiveThreadChanged(threadId)
+        atomsFor(threadId)
         mirrored.clear()
         mirroredRevisions.clear()
         messageStatusRevisions.clear()
@@ -607,7 +692,7 @@ class WorkbenchController(
             it.copy(
                 activeThreadId = threadId,
                 activeThreadTitle = threadTitleOf(threadId),
-                timeline = Loadable.Loading,
+                timeline = renderTimeline(emptyList()).takeIf { rows -> rows.isNotEmpty() }?.let { rows -> Loadable.Ready(rows) } ?: Loadable.Loading,
                 pendingBatch = emptyList(),
                 // Generation, composer and notice describe the conversation being
                 // left: a turn it was still running, or the failure that turn
@@ -642,7 +727,7 @@ class WorkbenchController(
                         if (!isActive || state.activeThreadId != threadId) state
                         else state.copy(
                             timeline = if (
-                                mirrored.isEmpty() &&
+                                renderTimeline(state.pendingBatch).isEmpty() &&
                                 creationReceiptRow(threadId) == null &&
                                 approvalRowsForActiveThread().isEmpty()
                             ) {
@@ -785,7 +870,6 @@ class WorkbenchController(
      * countdown and the same outcome, and a settled card must never come back as
      * a question. The map is bounded so a long session cannot grow without end.
      */
-    private val approvalCards = LinkedHashMap<String, ApprovalCardState>()
 
     /**
      * Records one approval the Gateway asked for (contract §7.2).
@@ -1369,9 +1453,20 @@ class WorkbenchController(
             return
         }
         val attachmentIds = current.attachments.map { it.id.value }
+        val remoteAttachmentIds = attachmentIds.map { attachmentCoordinator?.remoteAttachmentId(it) }
+        val recoverable = activeThreadId?.let(::recoverableOrdinaryAtoms).orEmpty().filter { atom ->
+            atom.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>().joinToString("") { it.value } == current.draft &&
+                atom.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>().map { it.draftId.value } == remoteAttachmentIds
+        }
+        if (recoverable.size > 1) {
+            update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:请先确认并查询未确认消息") }
+            return
+        }
         pendingSubmission = failedSubmission?.takeIf {
             it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId
-        }?.copy(revision = draftRevision) ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId)
+        }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
+            DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value)
+        } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId)
         update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null, generation = GenerationState.QUEUED) }
         submitWhenAttachmentsVerified()
     }
@@ -1402,13 +1497,8 @@ class WorkbenchController(
                 val target = submission.conversationId ?: activeThreadId
                     ?: bootstrapConversationForFirstMessage().await().getOrThrow()
                 sendTarget = target
-                failedSubmission = submission.copy(conversationId = target)
+                if (activeThreadId == target) failedSubmission = submission.copy(conversationId = target)
                 persistCheckpoint()
-                // Only clear the snapshot that was sent; typing during creation keeps the newer draft.
-                if (draftRevision == submission.revision) {
-                    update { it.copy(draft = "") }
-                    draftWasCleared = true
-                }
                 val submittedAttachments = submission.attachmentIds.map { id ->
                     val d = drafts[id]
                     val att = com.openandroidintelligence.conversation.model.TimelineAttachment(
@@ -1433,8 +1523,21 @@ class WorkbenchController(
                     attachments = submittedAttachments,
                 )
                 val message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
+                val previousAtom = atomsFor(target)[message.clientMessageId.value]
                 localEntryKey = entry.key
-                update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(it.timeline, entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
+                changeSendAtom(target, message.clientMessageId.value) { previous -> previous ?: LocalSendAtom(
+                    conversationId = ConversationId(target), clientMessageId = message.clientMessageId,
+                    parts = buildList {
+                        if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
+                        submittedAttachments.zip(remoteIds).forEach { (att, id) -> add(com.openandroidintelligence.conversation.model.MessagePart.Attachment(AttachmentDraftId(id), att.filename, att.mediaType)) }
+                    }, timestamp = entry.timestamp,
+                ) }
+                // 发送事实已经持久保存，再清空仍属于本次提交的草稿。
+                if (activeThreadId == target && draftRevision == submission.revision) {
+                    update { it.copy(draft = "") }
+                    draftWasCleared = true
+                }
+                if (activeThreadId == target) update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(it.timeline, entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
 
                 if (eventJob?.isActive != true) {
                     observeThreadEvents()
@@ -1469,10 +1572,31 @@ class WorkbenchController(
                     persistCheckpoint()
                     batcher.offer(scopeFactory(), target, message)
                 } else {
-                    val acceptance = repository.submitMessage(target, message)
+                    val acceptance = when {
+                        previousAtom?.submissionState == LocalSubmissionState.ACCEPTED ->
+                            com.openandroidintelligence.conversation.ports.MessageAcceptance(
+                                requireNotNull(previousAtom.messageId), message.clientMessageId.value,
+                            )
+                        previousAtom != null -> {
+                            // 用户确认重试后先查询原身份，不能把丢失回执当成请求未执行。
+                            val query = repository as? com.openandroidintelligence.conversation.ports.MessageOutcomeQuery
+                                ?: throw java.io.IOException("MESSAGE_QUERY_UNAVAILABLE")
+                            val known = try {
+                                query.queryMessage(target, message.clientMessageId)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (cause: Exception) {
+                                throw java.io.IOException("MESSAGE_QUERY_FAILED:${errorCodeOf(cause)}", cause)
+                            }
+                            if (known == null) repository.submitMessage(target, message)
+                            else com.openandroidintelligence.conversation.ports.MessageAcceptance(known.id, message.clientMessageId.value)
+                        }
+                        else -> repository.submitMessage(target, message)
+                    }
+                    acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId)
                     if (activeThreadId == target) {
                         val statusReceipt = messageStatusesByClientId[message.clientMessageId.value]
-                        mirrored[acceptance.messageId] = TimelineMessage(
+                        if (atomsFor(target)[message.clientMessageId.value]?.tombstoneRevision == null && !mirrored.containsKey(acceptance.messageId)) mirrored[acceptance.messageId] = TimelineMessage(
                             id = acceptance.messageId, sender = "user",
                             parts = buildList {
                                 if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
@@ -1487,6 +1611,7 @@ class WorkbenchController(
                             timestamp = entry.timestamp,
                             state = statusReceipt?.status?.wireValue ?: "queued",
                             errorCode = statusReceipt?.errorCode?.wireValue,
+                            clientMessageId = message.clientMessageId,
                         )
                         mirroredRevisions.putIfAbsent(acceptance.messageId, 0L)
                         statusReceipt?.let { receipt -> messageStatusRevisions.putIfAbsent(acceptance.messageId, receipt.revision) }
@@ -1496,26 +1621,33 @@ class WorkbenchController(
                                 timeline = Loadable.Ready(renderTimeline(remainingBatch)),
                                 pendingBatch = remainingBatch,
                                 notice = null,
-                                generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED,
+                                generation = generationAfterAcceptance(target, listOf(message.clientMessageId.value), state.generation),
                             )
                         }
-                        armReplyWatchdog(target)
+                        if (_state.value.generation !in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) armReplyWatchdog(target)
                     }
                 }
                 // Released only now: an attachment draft that was dropped
                 // before the Gateway accepted the message left a failed send
                 // with nothing to retry from.
                 submission.attachmentIds.forEach(::releaseSubmittedAttachment)
-                failedSubmission = null
+                if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
                 persistCheckpoint()
             } catch (cancelled: CancellationException) {
+                sendTarget?.let { target -> changeSendAtom(target, submission.clientMessageId) { old ->
+                    old?.takeIf { it.submissionState != LocalSubmissionState.ACCEPTED }?.copy(submissionState = LocalSubmissionState.OUTCOME_UNKNOWN)
+                } }
                 throw cancelled
             } catch (cause: Exception) {
-                failedSubmission = submission.copy(conversationId = sendTarget ?: submission.conversationId)
-                // A message the Gateway never accepted must not stay on screen
-                // as a pending send: the retry used to stack a second copy of
-                // the same text beside the one that had already failed, and the
-                // user saw the same message twice.
+                if (activeThreadId == sendTarget) failedSubmission = submission.copy(conversationId = sendTarget ?: submission.conversationId)
+                sendTarget?.let { target -> changeSendAtom(target, submission.clientMessageId) { old ->
+                    old?.takeIf { it.submissionState != LocalSubmissionState.ACCEPTED }?.copy(
+                        submissionState = if (cause is java.io.IOException) LocalSubmissionState.OUTCOME_UNKNOWN else LocalSubmissionState.FAILED,
+                        submissionErrorCode = errorCodeOf(cause))
+                } }
+                if (activeThreadId != sendTarget) { persistCheckpoint(); return@launch }
+                val unknown = cause is java.io.IOException
+                // 未知结果保留原消息；输入框和错误提示仅更新其所属会话。
                 update { state ->
                     val failedKey = localEntryKey
                     val remainingBatch = if (failedKey == null) {
@@ -1525,7 +1657,8 @@ class WorkbenchController(
                     }
                     state.copy(
                         composer = ComposerState.FAILED,
-                        notice = "SEND_FAILED:${errorCodeOf(cause)}",
+                        notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:${errorCodeOf(cause)}",
+                        generation = if (unknown) GenerationState.OUTCOME_UNKNOWN else GenerationState.IDLE,
                         // The timeline belongs to whichever thread is open now:
                         // a send that failed after a thread switch must not
                         // repaint the conversation the user moved to.
@@ -1538,7 +1671,7 @@ class WorkbenchController(
                         // The text returns to the composer while it is still
                         // untouched, so a retry sends it again instead of
                         // leaving the user with nothing to send.
-                        draft = if (draftWasCleared && state.draft.isEmpty()) {
+                        draft = if (state.activeThreadId == sendTarget && draftWasCleared && state.draft.isEmpty()) {
                             submission.text
                         } else {
                             state.draft
@@ -1557,77 +1690,196 @@ class WorkbenchController(
         if (messages.isEmpty()) return
         val batchId="batch_"+java.security.MessageDigest.getInstance("SHA-256").digest((conversationId+"\u0000"+messages.joinToString("\u0000") { it.clientMessageId.value }).toByteArray()).joinToString("") { "%02x".format(it) }
         if (!submittingBatches.add(batchId)) return
-        frozenBatches[batchId]=SavedBatch(batchId,conversationId,messages.toList())
-        messages.forEach { collectingUnits.remove(it.clientMessageId.value) }
-        persistCheckpoint()
         val flushedKeys = messages.map { "local_" + it.clientMessageId.value }.toSet()
-        Result.runCatching {
+        var remotelyAccepted = false
+        try {
+            frozenBatches[batchId]=SavedBatch(batchId,conversationId,messages.toList())
+            messages.forEach { msg -> changeSendAtom(conversationId, msg.clientMessageId.value) { old -> old?.copy(batchId = batchId) } }
+            messages.forEach { collectingUnits.remove(it.clientMessageId.value) }
+            persistCheckpoint()
             // The batch already carries its conversation: re-deriving the target
             // from a side map is how a member used to end up in the wrong thread.
-            repository.submitBatch(conversationId, com.openandroidintelligence.conversation.ports.MessageBatch(
+            val acceptance = repository.submitBatch(conversationId, com.openandroidintelligence.conversation.ports.MessageBatch(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
             ))
-        }.fold(
-            onSuccess = { acceptance ->
-                frozenBatches.remove(batchId)
-                val pendingEntries = _state.value.pendingBatch
-                messages.forEach { msg ->
-                    val localId = msg.clientMessageId.value
-                    // The Gateway's id is the only key the mirror may use: a
-                    // member mirrored under its own local id showed up a second
-                    // time as soon as the same message reached the phone under
-                    // the id the Gateway had issued for it.
-                    val id = acceptance.memberIds[localId]?.takeIf { it.isNotBlank() } ?: localId
-                    val entry = pendingEntries.firstOrNull { it.key == "local_$localId" || it.key == localId }
-                    val timestamp = entry?.timestamp ?: System.currentTimeMillis()
-                    val parts = buildList {
-                        if (msg.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(msg.text))
-                        entry?.attachments?.forEach { att ->
-                            add(
-                                com.openandroidintelligence.conversation.model.MessagePart.Attachment(
-                                    draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(att.draftId),
-                                    filename = att.filename,
-                                    mediaType = att.mediaType,
-                                )
+            remotelyAccepted = true
+            messages.forEach { msg ->
+                val id = acceptance.memberIds[msg.clientMessageId.value]?.takeIf { it.isNotBlank() } ?: error("SUBMIT_BATCH_FAILED:missing-member-ids")
+                acceptSendAtom(conversationId, msg.clientMessageId.value, id, acceptance.batchId)
+            }
+            frozenBatches.remove(batchId)
+            if (activeThreadId != conversationId) { persistCheckpoint(); refreshThreads(); return }
+            val pendingEntries = _state.value.pendingBatch
+            messages.forEach { msg ->
+                val localId = msg.clientMessageId.value
+                if (atomsFor(conversationId)[localId]?.tombstoneRevision != null) return@forEach
+                if (mirrored.containsKey(acceptance.memberIds.getValue(localId))) return@forEach
+                // The Gateway's id is the only key the mirror may use: a
+                // member mirrored under its own local id showed up a second
+                // time as soon as the same message reached the phone under
+                // the id the Gateway had issued for it.
+                val id = acceptance.memberIds.getValue(localId)
+                val entry = pendingEntries.firstOrNull { it.key == "local_$localId" || it.key == localId }
+                val timestamp = atomsFor(conversationId)[localId]?.timestamp ?: entry?.timestamp ?: 0L
+                val parts = buildList {
+                    if (msg.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(msg.text))
+                    entry?.attachments?.forEach { att ->
+                        add(
+                            com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                                draftId = com.openandroidintelligence.conversation.model.AttachmentDraftId(att.draftId),
+                                filename = att.filename,
+                                mediaType = att.mediaType,
                             )
-                        }
-                    }
-                    mirrored[id] = TimelineMessage(
-                        id = id,
-                        sender = "user",
-                        parts = parts,
-                        timestamp = timestamp,
-                    )
-                    if (!mirroredRevisions.containsKey(id)) {
-                        mirroredRevisions[id] = 0L
+                        )
                     }
                 }
-                update { state ->
-                    val remainingBatch = state.pendingBatch.filterNot { it.key in flushedKeys }
-                    state.copy(
-                        timeline = Loadable.Ready(renderTimeline(remainingBatch)),
-                        pendingBatch = remainingBatch,
-                        notice = null,
-                    )
+                mirrored[id] = TimelineMessage(
+                    id = id,
+                    sender = "user",
+                    parts = parts,
+                    timestamp = timestamp,
+                    state = atomsFor(conversationId)[localId]?.status?.wireValue ?: "queued",
+                    errorCode = atomsFor(conversationId)[localId]?.errorCode?.wireValue,
+                    batchId = acceptance.batchId,
+                    clientMessageId = msg.clientMessageId,
+                )
+                if (!mirroredRevisions.containsKey(id)) {
+                    mirroredRevisions[id] = 0L
                 }
-                activeThreadId?.let(::armReplyWatchdog)
-                refreshThreads()
-            },
-            onFailure = { cause ->
-                update { it.copy(notice = "SEND_FAILED:${errorCodeOf(cause)}") }
-            },
-        )
-        submittingBatches.remove(batchId)
+            }
+            update { state ->
+                val remainingBatch = state.pendingBatch.filterNot { it.key in flushedKeys }
+                state.copy(
+                    timeline = Loadable.Ready(renderTimeline(remainingBatch)),
+                    pendingBatch = remainingBatch,
+                    notice = null,
+                    generation = generationAfterAcceptance(conversationId, messages.map { it.clientMessageId.value }, state.generation),
+                )
+            }
+            if (_state.value.generation !in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) armReplyWatchdog(conversationId)
+            refreshThreads()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (cause: Exception) {
+            var unknown = remotelyAccepted || cause is java.io.IOException
+            var failureCode = errorCodeOf(cause)
+            try {
+                messages.forEach { msg ->
+                    changeSendAtom(conversationId, msg.clientMessageId.value) { old ->
+                        old?.takeIf { it.submissionState != LocalSubmissionState.ACCEPTED }?.copy(
+                            submissionState = if (unknown) LocalSubmissionState.OUTCOME_UNKNOWN else LocalSubmissionState.FAILED,
+                            submissionErrorCode = errorCodeOf(cause))
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (storageFailure: Exception) {
+                unknown = true
+                failureCode = "LOCAL_SEND_PERSIST_FAILED:${errorCodeOf(storageFailure)}"
+            }
+            if (activeThreadId == conversationId) {
+                disarmReplyWatchdog()
+                update { it.copy(notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:$failureCode", generation = if (unknown) GenerationState.OUTCOME_UNKNOWN else GenerationState.IDLE,
+                    timeline = Loadable.Ready(renderTimeline(it.pendingBatch))) }
+            }
+        } finally {
+            submittingBatches.remove(batchId)
+        }
     }
 
-    /** Explicit recovery after process death or a missing ACK; IDs and contents stay frozen. */
-    fun retryPendingBatches() {
+    private fun recoverableOrdinaryAtoms(threadId: String): List<LocalSendAtom> {
+        val batchMembers = collectingUnits.filterValues { it.first == threadId }.keys +
+            frozenBatches.values.filter { it.conversationId == threadId }.flatMap { batch -> batch.messages.map { it.clientMessageId.value } }
+        return atomsFor(threadId).values.filter {
+            it.batchId == null && it.clientMessageId.value !in batchMembers &&
+                it.submissionState in setOf(LocalSubmissionState.OUTCOME_UNKNOWN, LocalSubmissionState.FAILED)
+        }
+    }
+
+    /** 用户确认恢复当前会话；先查询原身份，保留原内容及批次归属。 */
+    fun retryPendingSubmissions() {
         if (!_state.value.isOnline) return
-        val ready=frozenBatches.values.toList()
-        val unsealed=collectingUnits.values.groupBy { it.first }
+        val current = activeThreadId ?: return
+        val ready=frozenBatches.values.filter { it.conversationId == current }
+        val unsealed=collectingUnits.values.filter { it.first == current }.groupBy { it.first }
+        val ordinary = recoverableOrdinaryAtoms(current).toList()
         scope.launch {
-            ready.forEach { b -> submitBatch(scopeFactory(),b.conversationId,b.messages) }
-            unsealed.forEach { (id,units) -> if (batcher.hasPending(id)) batcher.flush(id) else submitBatch(scopeFactory(),id,units.map { it.second }) }
+            ready.forEach { b -> recoverBatch(b.conversationId, b.messages, b.batchId) }
+            unsealed.forEach { (id,units) ->
+                if (batcher.hasPending(id)) batcher.flush(id) else recoverBatch(id, units.map { it.second }, null)
+            }
+            ordinary.forEach { atom -> recoverOrdinary(atom) }
+        }
+    }
+
+    private suspend fun recoverOrdinary(atom: LocalSendAtom) {
+        val threadId = atom.conversationId.value
+        var querying = true
+        var remotelyAccepted = false
+        try {
+            val query = repository as? com.openandroidintelligence.conversation.ports.MessageOutcomeQuery
+                ?: throw java.io.IOException("MESSAGE_QUERY_UNAVAILABLE")
+            val known = query.queryMessage(threadId, atom.clientMessageId)
+            querying = false
+            val text = atom.parts.joinToString("") { part -> when (part) {
+                is com.openandroidintelligence.conversation.model.MessagePart.Text -> part.value
+                is com.openandroidintelligence.conversation.model.MessagePart.Command -> part.rawText
+                else -> ""
+            } }
+            val attachmentIds = atom.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>().map { it.draftId.value }
+            val messageId = known?.id ?: repository.submitMessage(threadId, OutgoingMessage(atom.clientMessageId, text, attachmentIds)).messageId
+            remotelyAccepted = true
+            acceptSendAtom(threadId, atom.clientMessageId.value, messageId)
+            if (failedSubmission?.clientMessageId == atom.clientMessageId.value) failedSubmission = null
+            if (activeThreadId == threadId) {
+                val matchingDraft = _state.value.draft == text &&
+                    _state.value.attachments.map { attachmentCoordinator?.remoteAttachmentId(it.id.value) } == attachmentIds
+                update { state ->
+                    val pending = state.pendingBatch.filterNot { it.key == "local_${atom.clientMessageId.value}" }
+                    state.copy(timeline = Loadable.Ready(renderTimeline(pending)), pendingBatch = pending,
+                        draft = if (matchingDraft) "" else state.draft, composer = ComposerState.EDITING,
+                        generation = generationAfterAcceptance(threadId, listOf(atom.clientMessageId.value), state.generation), notice = null)
+                }
+                _state.value.attachments.filter { attachmentCoordinator?.remoteAttachmentId(it.id.value) in attachmentIds }
+                    .map { it.id.value }.forEach(::releaseSubmittedAttachment)
+            } else persistCheckpoint()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (cause: Exception) {
+            val unknown = querying || remotelyAccepted || cause is java.io.IOException
+            changeSendAtom(threadId, atom.clientMessageId.value) { old -> old?.takeIf { it.submissionState != LocalSubmissionState.ACCEPTED }?.copy(
+                submissionState = if (unknown) LocalSubmissionState.OUTCOME_UNKNOWN else LocalSubmissionState.FAILED,
+                submissionErrorCode = errorCodeOf(cause)) }
+            if (activeThreadId == threadId) update { it.copy(
+                notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:${errorCodeOf(cause)}",
+                generation = if (unknown) GenerationState.OUTCOME_UNKNOWN else GenerationState.IDLE,
+                timeline = Loadable.Ready(renderTimeline(it.pendingBatch))) }
+        }
+    }
+
+    private suspend fun recoverBatch(threadId: String, messages: List<OutgoingMessage>, frozenId: String?) {
+        val query = repository as? com.openandroidintelligence.conversation.ports.MessageOutcomeQuery
+        if (query == null) {
+            if (activeThreadId == threadId) update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:MESSAGE_QUERY_UNAVAILABLE") }
+            return
+        }
+        try {
+            val known = messages.map { query.queryMessage(threadId, it.clientMessageId) }
+            if (known.all { it != null }) {
+                messages.zip(known).forEach { (message, accepted) -> acceptSendAtom(threadId, message.clientMessageId.value, accepted!!.id) }
+                frozenId?.let(frozenBatches::remove)
+                messages.forEach { collectingUnits.remove(it.clientMessageId.value) }
+                persistCheckpoint()
+                if (activeThreadId == threadId) reloadTimeline(threadId)
+            } else if (known.any { it != null }) {
+                if (activeThreadId == threadId) update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:BATCH_CONFIRMATION_INCOMPLETE") }
+            } else {
+                submitBatch(scopeFactory(), threadId, messages)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (cause: Exception) {
+            if (activeThreadId == threadId) update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:${errorCodeOf(cause)}") }
         }
     }
 
@@ -1788,6 +2040,7 @@ class WorkbenchController(
                 }
                 .collect { event ->
                     if (!isActive) return@collect
+                    applySendEvent(event)
                     val currentActiveId = activeThreadId ?: run {
                         refreshThreads()
                         return@collect
@@ -2058,7 +2311,7 @@ class WorkbenchController(
                         val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
                         state.copy(
                             timeline = if (
-                                mirrored.isEmpty() &&
+                                renderTimeline(state.pendingBatch).isEmpty() &&
                                 creationReceiptRow(threadId) == null &&
                                 approvalRowsForActiveThread().isEmpty()
                             ) {
@@ -2195,7 +2448,9 @@ class WorkbenchController(
         } ?: message
 
     private fun renderTimeline(pendingBatch: List<TimelineEntry> = _state.value.pendingBatch): List<TimelineEntry> {
-        val mirroredEntries = mirrored.values
+        val activeAtoms = activeThreadId?.let { atomsFor(it).values.toList() }.orEmpty()
+        val mergedMessages = mergeLocalSendAtoms(mirrored.values.toList(), activeAtoms)
+        val mirroredEntries = mergedMessages
             .map { message ->
                 val messageAttachments = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
                     .map { att ->
@@ -2239,12 +2494,16 @@ class WorkbenchController(
                         com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.entries
                             .firstOrNull { it.wireValue == code }
                     },
+                    submissionFailureCode = message.localSubmissionFailure,
+                    clientMessageId = message.clientMessageId,
                 )
             }
 
-        val mirroredKeys = mirrored.keys
+        val mirroredKeys = mergedMessages.map { it.id }.toSet()
+        val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()
+        val deletedClientIds = activeAtoms.filter { it.tombstoneRevision != null }.map { it.clientMessageId.value }.toSet()
         val unconfirmedPending = pendingBatch.filterNot { entry ->
-            mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_"))
+            mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_")) || mirroredClientIds.contains(entry.key.removePrefix("local_")) || deletedClientIds.contains(entry.key.removePrefix("local_"))
         }
 
         val rawList = (mirroredEntries + unconfirmedPending).sortedWith(
@@ -2304,8 +2563,12 @@ class WorkbenchController(
             val entry = entries[i]
             if (entry.isUser) {
                 val lastEntry = result.lastOrNull()
+                val sameClientIdentity = entry.clientMessageId != null && entry.clientMessageId == lastEntry?.clientMessageId
+                val differentClientIdentities = entry.clientMessageId != null && lastEntry?.clientMessageId != null &&
+                    entry.clientMessageId != lastEntry.clientMessageId
                 val isDuplicateUser = lastEntry != null && lastEntry.isUser &&
-                    ((normalizeEntryKey(entry.key) == normalizeEntryKey(lastEntry.key)) ||
+                    !differentClientIdentities &&
+                    (sameClientIdentity || (normalizeEntryKey(entry.key) == normalizeEntryKey(lastEntry.key)) ||
                      (entry.text == lastEntry.text && entry.attachments == lastEntry.attachments &&
                       Math.abs(entry.timestamp - lastEntry.timestamp) <= 10_000L))
                 if (isDuplicateUser) {
@@ -2446,7 +2709,7 @@ class WorkbenchController(
     }
 
     /** Apply a freshly rebuilt baseline while preserving an unsent local draft. */
-    fun onMirrorRebuilt() { handledEventIds.clear(); mirrored.clear(); mirroredRevisions.clear(); refreshThreads(); activeThreadId?.let(::reloadTimeline) }
+    fun onMirrorRebuilt() { handledEventIds.clear(); mirrored.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear(); refreshThreads(); activeThreadId?.let(::reloadTimeline) }
 
     private fun update(transform: (WorkbenchUiState) -> WorkbenchUiState) {
         _state.update { current ->
@@ -2455,7 +2718,11 @@ class WorkbenchController(
             // only happens when the transform did not already carry that value,
             // which keeps the common path — one keystroke, one transform — free
             // of a second allocation.
-            val next = transform(current)
+            val transformed = transform(current)
+            val recoverable = frozenBatches.values.any { it.conversationId == transformed.activeThreadId } ||
+                collectingUnits.values.any { it.first == transformed.activeThreadId } ||
+                transformed.activeThreadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true
+            val next = transformed.copy(hasRecoverableSubmissions = recoverable)
             if (next.approvalCardsSupported == supportsApprovalCards) {
                 next
             } else {

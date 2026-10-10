@@ -19,6 +19,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -35,6 +36,7 @@ import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
+import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.workbench.FloatingConversationPanel
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
@@ -362,7 +364,8 @@ class MainActivity : ComponentActivity() {
                         if (phase is ConnectionPhase.OfflineMirror) {
                             TextButton(onClick=runtime::reconnectOfflineMirror) { Text("离线镜像 · 重新连接 Gateway") }
                         }
-                        Box(Modifier.weight(1f)) { WorkbenchScreen(
+                        Box(Modifier.weight(1f)) { GatewayWorkbenchScreen(
+                            runtime = runtime,
                             controller = activeController,
                             gatewayLabel = (phase as? ConnectionPhase.Connected)?.gatewayUrl ?: (phase as? ConnectionPhase.OfflineMirror)?.gatewayUrl.orEmpty(),
                             onOpenSettings = { showSettingsSheet = true },
@@ -430,5 +433,48 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+}
+
+/** 生产工作台的账号操作装配；界面测试与 Activity 使用同一条真实会话路径。 */
+@Composable
+internal fun GatewayWorkbenchScreen(
+    runtime: GatewayRuntime,
+    controller: com.openandroidintelligence.conversation.state.WorkbenchController,
+    gatewayLabel: String,
+    onOpenSettings: () -> Unit,
+    onPickCamera: () -> Unit,
+    onPickGallery: () -> Unit,
+    onPickDocument: () -> Unit,
+    onVoiceInput: () -> Unit,
+    modifier: Modifier = Modifier,
+    onOpenAssistant: (() -> Unit)? = null,
+    pluginCards: @Composable () -> Unit = {},
+) {
+    val operationNotice by runtime.operationNotice.collectAsState()
+    Column(modifier.fillMaxSize()) {
+        operationNotice?.let { notice ->
+            OperationNoticeBanner(
+                text = notice,
+                onDismiss = runtime::dismissOperationNotice,
+                modifier = Modifier.padding(
+                    horizontal = Dimensions.ScreenHorizontal,
+                    vertical = Dimensions.SpaceSmall,
+                ),
+            )
+        }
+        WorkbenchScreen(
+            controller = controller,
+            gatewayLabel = gatewayLabel,
+            onOpenSettings = onOpenSettings,
+            onPickCamera = onPickCamera,
+            onPickGallery = onPickGallery,
+            onPickDocument = onPickDocument,
+            onVoiceInput = onVoiceInput,
+            modifier = Modifier.weight(1f),
+            onOpenAssistant = onOpenAssistant,
+            onLogout = { runtime.logout(revokeRefresh = true) },
+            pluginCards = pluginCards,
+        )
     }
 }
