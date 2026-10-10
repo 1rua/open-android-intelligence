@@ -283,13 +283,29 @@ class ConversationClient(private val http: GatewayHttpClient) {
             ),
         )
         if (response.status != 200) {
+            response.requireData("MESSAGE_QUERY_FAILED")
             throw IllegalStateException("MESSAGE_QUERY_FAILED:${response.status}")
         }
-        val body = parsed(response) ?: return null
-        val raw = JsonFields.objects(body, "messages").firstOrNull()
-            ?: JsonFields.obj(JsonFields.field(body, "message"))
-            ?: return null
-        val messageId = JsonFields.string(raw, "messageId") ?: return null
+        val body = response.requireData("MESSAGE_QUERY_FAILED")
+        val raw = when {
+            body.fields.any { it.first == "messages" } -> {
+                val messages = JsonFields.array(JsonFields.field(body, "messages"))
+                    ?: error("MESSAGE_QUERY_FAILED:invalid-messages")
+                if (messages.items.isEmpty()) return null
+                check(messages.items.size == 1) { "MESSAGE_QUERY_FAILED:ambiguous-result" }
+                JsonFields.obj(messages.items.single()) ?: error("MESSAGE_QUERY_FAILED:invalid-message")
+            }
+            body.fields.any { it.first == "message" } -> {
+                val message = JsonFields.field(body, "message")
+                if (message == JsonValue.JNull) return null
+                JsonFields.obj(message) ?: error("MESSAGE_QUERY_FAILED:invalid-message")
+            }
+            else -> error("MESSAGE_QUERY_FAILED:missing-result")
+        }
+        val messageId = JsonFields.string(raw, "messageId")?.takeIf { it.isNotBlank() }
+            ?: error("MESSAGE_QUERY_FAILED:missing-message-id")
+        val queriedClientId = JsonFields.string(raw, "clientMessageId")
+        check(queriedClientId == null || queriedClientId == clientMessageId) { "MESSAGE_QUERY_FAILED:client-id-conflict" }
         val rawTimestamp = JsonFields.long(raw, "timestamp")
         val timestamp = if (rawTimestamp != null && rawTimestamp > 0L) {
             rawTimestamp

@@ -1,0 +1,72 @@
+{
+  "gateway-client": [
+    {
+      "name": "com.openandroidintelligence.gateway.conversations.BatchAcceptanceEvidenceTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-10-10T21:04:50"
+    },
+    {
+      "name": "com.openandroidintelligence.gateway.conversations.ConversationClientTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-10-10T21:04:50"
+    },
+    {
+      "name": "com.openandroidintelligence.gateway.conversations.QueryMessageEvidenceTest",
+      "tests": "7",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-10-10T21:04:49"
+    }
+  ],
+  "conversation-ui": [
+    {
+      "name": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+      "tests": "14",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-10-10T21:05:11"
+    },
+    {
+      "name": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+      "tests": "38",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-10-10T21:05:11"
+    }
+  ],
+  "conversation-data": [
+    {
+      "name": "com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-10-10T21:04:53"
+    },
+    {
+      "name": "com.openandroidintelligence.conversation.data.GatewayWireRegressionTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-10-10T21:04:53"
+    },
+    {
+      "name": "com.openandroidintelligence.conversation.data.HermesHttpInteropTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "timestamp": "2026-10-10T21:04:53"
+    }
+  ]
+}

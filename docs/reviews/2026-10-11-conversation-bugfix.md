@@ -68,6 +68,10 @@
 
 插件独立测试为 336 通过、1 个原生环境专用跳过，真实 Hermes 回归另有 8 项通过；两路独立审查均无剩余发现。插件修复及含审查报告提交的 CI 均通过：[源码修复 CI](https://github.com/1rua/hermes-gateway-plugin/actions/runs/38070753720)、[审查报告提交 CI](https://github.com/1rua/hermes-gateway-plugin/actions/runs/38084443175)。应用完整 CI、部署与手机验收状态单独记录，不以源码或隔离回答代替生产验收。
 
+应用首次修复提交为 `b5907815a212a0680fabcb2ee6ee35c2c1009939`。推送后独立规格审查进一步发现：查询接口的合法 HTTP 200 信封可能包含错误业务形状，旧客户端把这种响应解释为不存在，从而允许重发。新增 7 项查询回归先得到 **5 项失败**，见 [query-envelope-red.txt](evidence/2026-10-10-conversation-bugfix/query-envelope-red.txt)。修复仅把有效的 `messages=[]` 或兼容的 `message=null` 解释为不存在；错类型、缺少远端 ID、多个结果或不相关客户端身份均抛出稳定 `MESSAGE_QUERY_FAILED`，错误信封保留稳定错误码。
+
+修复后查询回归 7 项全部通过，同时通过现有客户端、工作台发送/恢复、生成及 Wire 回归和原生 Hermes HTTP/SSE 互通。追加结果见 [query-envelope-green.txt](evidence/2026-10-10-conversation-bugfix/query-envelope-green.txt) 及 [逐类计数](evidence/2026-10-10-conversation-bugfix/query-envelope-counts.txt)。该增量没有修改协议或 Schema。
+
 ## 数据迁移与手机验收
 
 迁移细节见 [发送记录迁移说明](../superpowers/plans/2026-10-11-conversation-send-ledger-migration.md)。两处部署只更新现有插件程序及必要依赖，再重启现有 Gateway 服务；保留账号目录、主密钥、配对与宿主绑定。
