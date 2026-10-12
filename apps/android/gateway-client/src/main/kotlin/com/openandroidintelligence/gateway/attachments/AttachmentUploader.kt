@@ -121,6 +121,7 @@ class AttachmentUploader(
                     attachmentId,
                     attachment.body,
                     mapOf(
+                        "Content-Type" to attachment.mediaType,
                         "Content-Length" to sizeBytes.toString(),
                         "Digest" to "sha-256=" + base64(hexToBytes(sha256)),
                     ),

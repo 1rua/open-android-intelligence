@@ -100,6 +100,7 @@ class AttachmentUploaderTest {
 
         uploader.upload(SelectedAttachment("f.bin", "application/octet-stream", GatewayRequestBody.fromBytes(content)))
 
+        assertEquals("application/octet-stream", client.contentHeaders?.get("Content-Type"))
         assertEquals(content.size.toLong(), client.contentHeaders?.get("Content-Length")?.toLong())
         assertEquals("sha-256=" + base64(content.sha256()), client.contentHeaders?.get("Digest"))
     }

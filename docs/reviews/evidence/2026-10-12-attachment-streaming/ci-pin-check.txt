@@ -1,0 +1,2 @@
+工作流 YAML 有效，两个 Hermes 联调入口均固定到 8a883b907dd46704de2946ff0e4edec26ed92d1f
+契约锁定 95f2e1702a6e 与 Android f82fc3390911 的输入一致，独立 pin 校验退出码 0。

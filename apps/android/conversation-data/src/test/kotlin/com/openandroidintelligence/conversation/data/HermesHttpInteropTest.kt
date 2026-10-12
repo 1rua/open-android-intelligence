@@ -11,6 +11,7 @@ import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.JsonFields
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.coroutineScope
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
@@ -42,6 +43,108 @@ import com.openandroidintelligence.gateway.events.GatewayEvent
  * 不会跳过——否则这条真实链路会退化成无人验证的绿。
  */
 class HermesHttpInteropTest {
+    @Test fun streamedReplyIsObservableBeforeCompletionOverTheDefaultWebSocket() = runBlocking {
+        assertStreamingReply(defaultWebSocket = true)
+    }
+
+    @Test fun streamedReplyIsObservableBeforeCompletionOverSse() = runBlocking {
+        assertStreamingReply(defaultWebSocket = false)
+    }
+
+    private suspend fun assertStreamingReply(defaultWebSocket: Boolean) = coroutineScope {
+        val root = File("../../..").canonicalFile
+        val pluginRoot = (System.getenv("HERMES_PLUGIN_ROOT")?.let(::File) ?: File(root, ".hermes-gateway-plugin")).canonicalFile
+        val fixture = File(pluginRoot, "tests/android_gateway_fixture.py")
+        check(fixture.isFile) { "HERMES_FIXTURE_MISSING" }
+        val channelName = if (defaultWebSocket) "websocket" else "sse"
+        val log = File(root, "tmp/conversation-bugfix/hermes-stream-$channelName.txt").also { it.parentFile!!.mkdirs() }
+        val process = ProcessBuilder("python3", fixture.path, "--stream-agent", "--contract-root",
+            System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT") ?: File(root, "gateway-contract").path)
+            .directory(pluginRoot).redirectError(log).start()
+        val control = process.outputStream.bufferedWriter()
+        try {
+            val baseUrl = process.inputStream.bufferedReader().readLine()
+            check(baseUrl?.startsWith("http://127.0.0.1:") == true) { "HERMES_STREAM_FIXTURE_START_FAILED" }
+            val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+            val auth = GatewayAuthClient(GatewayTransport(GatewayProfile("pre", "pre", "pre", baseUrl!!)), "install_stream_interop", "test", 35)
+            val negotiated = auth.negotiate("neg_stream_interop")
+            val session = auth.loginWithPassword(negotiated.negotiationId, "alice", "android-fixture-only".toCharArray(), "流式互通", ed25519WirePublicKey(keyPair.public))
+            val profile = GatewayProfile(session.accountId, session.deviceId, session.sessionId, baseUrl, accessToken = session.accessToken)
+            val health = EventStreamStatusSink()
+            val signer: (ByteArray) -> ByteArray = { bytes ->
+                Signature.getInstance("Ed25519").run { initSign(keyPair.private); update(bytes); sign() }
+            }
+            val http = if (defaultWebSocket) {
+                // 使用手机生产构造方式，保留默认 WebSocket 优先行为。
+                GatewayHttpClient(profile, GatewayTransport(profile), signer, InMemoryEventCursorStore(), statusSink = health)
+            } else {
+                GatewayHttpClient(profile, GatewayTransport(profile), signer, InMemoryEventCursorStore(), webSocketTransport = null, statusSink = health)
+            }
+            val repository = GatewayConversationRepository(ConversationClient(http))
+            val scope = ConversationScope("profile", baseUrl, session.accountId, "install_stream_interop")
+            val conversation = repository.createConversation(scope, "cc_stream_interop")
+            val events = Channel<VerifiedConversationEvent>(Channel.UNLIMITED)
+            val subscription = launch(start = CoroutineStart.UNDISPATCHED) {
+                repository.observeEvents(scope).collect { events.send(it) }
+            }
+            suspend fun nextTimelineEvent(): VerifiedConversationEvent.TimelineUpsert = withTimeout(10_000) {
+                var event = events.receive()
+                while (event !is VerifiedConversationEvent.TimelineUpsert) event = events.receive()
+                event
+            }
+            try {
+                http.execute(SignedGatewayRequest("GET", "/open-android-intelligence/v2/sync/snapshot")).requireData("SYNC_SNAPSHOT")
+                withTimeout(10_000) { health.status.first { it == EventStreamStatus.LIVE } }
+                val clientId = ClientMessageId("cm_stream_interop")
+                repository.submitMessage(conversation.id.value, OutgoingMessage(clientId, "流式测试"))
+                val replyIds = mutableSetOf<String>()
+                for (expected in listOf("fixture-agent-", "fixture-agent-reply:\n", "fixture-agent-reply:\n流式测试")) {
+                    val event = nextTimelineEvent()
+                    assertEquals("STREAMING", event.message.state)
+                    assertEquals("assistant", event.message.sender)
+                    assertEquals(conversation.id, event.message.conversationId)
+                    assertEquals(expected, (event.message.parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+                    assertTrue(event.message.timestamp > 0)
+                    replyIds += event.message.id
+                    // 只有 Android 已观察到当前非空增量，夹具才继续下一段生成。
+                    control.write("continue\n")
+                    control.flush()
+                }
+                val completed = nextTimelineEvent()
+                assertEquals("CONFIRMED", completed.message.state)
+                assertEquals("fixture-agent-reply:\n流式测试", (completed.message.parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+                replyIds += completed.message.id
+                assertEquals("三段增量与最终回复必须属于同一消息", 1, replyIds.size)
+                val terminal = withTimeout(10_000) {
+                    var event = events.receive()
+                    while (event !is VerifiedConversationEvent.MessageStatus || event.clientMessageId != clientId ||
+                        event.status !in setOf(AgentMessageStatus.COMPLETED, AgentMessageStatus.FAILED)) {
+                        event = events.receive()
+                    }
+                    event
+                }
+                assertEquals(AgentMessageStatus.COMPLETED, terminal.status)
+            } finally {
+                subscription.cancelAndJoin()
+                events.close()
+            }
+        } catch (failure: Throwable) {
+            runCatching { log.readText() }.getOrNull()?.let { System.err.println("Hermes 隔离流式互通夹具日志：\n$it") }
+            throw failure
+        } finally {
+            control.close()
+            process.destroy()
+            check(process.waitFor(10, TimeUnit.SECONDS)) { "HERMES_STREAM_FIXTURE_STOP_FAILED" }
+        }
+        val transports = log.readLines().mapNotNull { line ->
+            runCatching {
+                val entry = JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(line))
+                if (JsonFields.string(entry, "fixtureEvent") == "stream-transport") JsonFields.string(entry, "transport") else null
+            }.getOrNull()
+        }
+        assertEquals("应实际使用被验证的事件通道", listOf(channelName), transports)
+    }
+
     @Test fun batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary() = runBlocking {
         val root = File("../../..").canonicalFile
         val pluginRoot = (System.getenv("HERMES_PLUGIN_ROOT")?.let(::File) ?: File(root, ".hermes-gateway-plugin")).canonicalFile

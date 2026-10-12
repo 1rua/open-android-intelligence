@@ -1,0 +1,38 @@
+固定插件：8a883b907dd46704de2946ff0e4edec26ed92d1f
+实际宿主：75b083e9399115b12513385252811f09c3503c90
+定向日志中的两类合计 19 项，原生追加重新执行跨端类 4 项；不重复累加。
+
+TEST-com.openandroidintelligence.gateway.http.GatewayTransportSecurityTest.xml
+tests=15 failures=0 errors=0 skipped=0 timestamp=2026-10-12T03:50:07
+theFactoryAllowsZeroReadTimeoutForStreaming
+aPlaintextProfileIsBuiltWithoutPins
+theFactoryRefusesSchemesTheTransportCannotCarry
+aProfileCannotBeBuiltOnASchemeTheTransportCannotCarry
+theFactoryStillOpensTlsConnections
+addressesTheTransportCannotCarryAreRefused
+trailingSlashAndSurroundingSpaceAreNormalizedOnce
+aStreamedRequestUsesOneExactContentLengthAndSendsTheOriginalBytes
+aPlaintextConnectionIsClassifiedAsPlaintext
+tlsAddressIsPinnedOrSystemTrustedAndNeverPlaintext
+theFactoryOpensPlaintextWithoutTlsAndKeepsTheHardening
+aPlaintextRequestReachesALoopbackGatewayAndReturnsItsResponse
+plaintextAddressIsUsableAndReportedAsUnencrypted
+aPinnedProfileCannotBeBuiltOnAPlaintextAddress
+aPlaintextConnectionIsRefusedForAPinnedProfile
+
+TEST-com.openandroidintelligence.conversation.data.HermesHttpInteropTest.xml
+tests=4 failures=0 errors=0 skipped=0 timestamp=2026-10-12T03:52:45
+streamedReplyIsObservableBeforeCompletionOverSse
+streamedReplyIsObservableBeforeCompletionOverTheDefaultWebSocket
+passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes
+batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary
+
+原生夹具：websocket
+{"fixtureMode": "stream-agent", "host": "native"}
+{"fixtureEvent": "agent-turn", "conversationId": "conv_d7724910-584e-491f-8785-ac6bda589575", "clientMessageId": "cm_stream_interop"}
+{"fixtureEvent": "stream-transport", "transport": "websocket"}
+
+原生夹具：sse
+{"fixtureMode": "stream-agent", "host": "native"}
+{"fixtureEvent": "agent-turn", "conversationId": "conv_425c1ab2-4be6-4361-88d0-0eca743c64d8", "clientMessageId": "cm_stream_interop"}
+{"fixtureEvent": "stream-transport", "transport": "sse"}

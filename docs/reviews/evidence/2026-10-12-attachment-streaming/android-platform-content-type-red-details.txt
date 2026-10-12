@@ -1,0 +1,10 @@
+修复前 Android 平台 HTTP 互通结果摘录
+
+以下是 android-platform-content-type-red.txt 对应运行结束后，从 JUnit XML 实际读取的结果。
+原 XML 在后续 GREEN 执行时由 Gradle 更新；此文件保留当时读取的错误消息，不声称是原始 XML 副本。
+
+tests=4, failures=3, errors=0, skipped=0
+selectedPdfUploadsThroughAndroidWithItsDeclaredMediaType: java.lang.IllegalStateException: ATTACHMENT_UPLOAD_FAILED:ATTACHMENT_DIGEST_MISMATCH
+selectedJpegUploadsThroughAndroidWithItsDeclaredMediaType: java.lang.IllegalStateException: ATTACHMENT_UPLOAD_FAILED:ATTACHMENT_DIGEST_MISMATCH
+androidDefaultContentTypeIsRejectedEvenWhenPlainLengthAndDigestAreCorrect: PASS
+selectedEmptyFileUploadsThroughAndroidWithItsDeclaredMediaType: java.lang.IllegalStateException: ATTACHMENT_UPLOAD_FAILED:ATTACHMENT_DIGEST_MISMATCH

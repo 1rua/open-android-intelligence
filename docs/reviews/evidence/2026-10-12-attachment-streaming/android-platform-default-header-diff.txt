@@ -1,0 +1,4 @@
+attempt=0 contentType=application/x-www-form-urlencoded bodyLength=3
+response=200
+attempt=1 contentType=image/png bodyLength=3
+response=200

@@ -1,0 +1,7 @@
+实际 Android 平台 HTTP + Hermes 生产入口及附件既有回归，修复后结果
+AndroidAttachmentContentTypeTest: tests=4, failures=0, errors=0, skipped=0, timestamp=2026-10-12T03:43:32
+AttachmentKeystoreRegressionTest: tests=7, failures=0, errors=0, skipped=0, timestamp=2026-10-12T03:43:37
+AttachmentStreamEndToEndTest: tests=1, failures=0, errors=0, skipped=0, timestamp=2026-10-12T03:43:37
+AttachmentUploaderTest: tests=9, failures=0, errors=0, skipped=0, timestamp=2026-10-12T03:43:30
+EncryptedAttachmentStagingStoreTest: tests=8, failures=0, errors=0, skipped=0, timestamp=2026-10-12T03:43:09
+本次实际执行总计：29 项。

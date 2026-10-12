@@ -2,6 +2,7 @@ package com.openandroidintelligence.gateway.http
 
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLConnection
 
 /**
  * The single owned outbound transport surface of the mobile app.
@@ -19,14 +20,16 @@ import java.net.URL
  * canonical target, so a redirect could only move the request to a target the
  * signature does not describe.
  */
-class GatewayConnectionFactory {
+class GatewayConnectionFactory(
+    private val openConnection: (URL) -> URLConnection = { it.openConnection() },
+) {
 
     fun open(url: URL, readTimeoutMillis: Int = READ_TIMEOUT_MILLIS): HttpURLConnection {
         val scheme = url.protocol.lowercase()
         require(scheme == GatewayEndpoint.HTTP || scheme == GatewayEndpoint.HTTPS) {
             "gateway transport supports http or https, got $scheme"
         }
-        val connection = url.openConnection() as? HttpURLConnection
+        val connection = openConnection(url) as? HttpURLConnection
             ?: error("gateway transport requires an HTTP connection")
         connection.instanceFollowRedirects = false
         connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
