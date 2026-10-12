@@ -1,0 +1,27 @@
+固定插件：8a883b907dd46704de2946ff0e4edec26ed92d1f
+Python 3.11 独立环境仅具备安装包声明依赖及 CI 显式补齐的 aiohttp；取消 PYTHONPATH 和原生宿主要求。
+首次运行 App 测试任务 UP-TO-DATE，不计入新证据。最终使用每任务 --rerun，两个测试任务均真实执行。
+
+TEST-com.openandroidintelligence.mobile.AndroidAttachmentContentTypeTest.xml
+tests=4 failures=0 errors=0 skipped=0 timestamp=2026-10-12T09:12:12
+selectedPdfUploadsThroughAndroidWithItsDeclaredMediaType
+selectedJpegUploadsThroughAndroidWithItsDeclaredMediaType
+androidDefaultContentTypeIsRejectedEvenWhenPlainLengthAndDigestAreCorrect
+selectedEmptyFileUploadsThroughAndroidWithItsDeclaredMediaType
+
+TEST-com.openandroidintelligence.conversation.data.HermesHttpInteropTest.xml
+tests=4 failures=0 errors=0 skipped=0 timestamp=2026-10-12T09:12:18
+streamedReplyIsObservableBeforeCompletionOverSse
+streamedReplyIsObservableBeforeCompletionOverTheDefaultWebSocket
+passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes
+batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary
+
+实际独立夹具：websocket
+{"fixtureMode": "stream-agent", "host": "standalone"}
+{"fixtureEvent": "agent-turn", "conversationId": "conv_e8af6c9e-6f8f-4ba4-a712-bce36517f6a2", "clientMessageId": "cm_stream_interop"}
+{"fixtureEvent": "stream-transport", "transport": "websocket"}
+
+实际独立夹具：sse
+{"fixtureMode": "stream-agent", "host": "standalone"}
+{"fixtureEvent": "agent-turn", "conversationId": "conv_aad317c3-769a-4323-9f0f-e535cc70eb4c", "clientMessageId": "cm_stream_interop"}
+{"fixtureEvent": "stream-transport", "transport": "sse"}

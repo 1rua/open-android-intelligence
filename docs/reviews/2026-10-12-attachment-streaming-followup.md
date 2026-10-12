@@ -29,12 +29,15 @@ App CI 的 Node/协议任务和 Android 任务都固定插件上述 40 位提交
 | 连接工厂安全回归 | 15 项通过，0 失败、错误、跳过 | 默认平台连接、允许协议、超时、无重定向和 TLS/明文边界 |
 | Android 跨端互通 | 4 项通过，0 失败、错误、跳过 | 两项既有登录/附件/批次及两项新增逐段事件回归，显式插件 `8a883b9` |
 | 强制实际 Hermes 宿主 | 附件 4 项与跨端互通 4 项分别再次通过 | 宿主 `75b083e9399115b12513385252811f09c3503c90`，`OAI_REQUIRE_NATIVE_HERMES=1`；重复执行不累加项目数 |
+| CI 独立依赖环境 | 附件 4 项与跨端互通 4 项再次通过 | 取消宿主 `PYTHONPATH`，使用独立 Python 3.11 环境；实际通道均记录 `standalone`，不依赖本机 Hermes 安装 |
 
 本轮共 48 项不同定向测试通过。软件提供者密钥约束测试不能代替手机硬件密钥库；隔离确定性 Agent 不能代替用户账号调用真实模型。插件的 338 项 Python 回归及原生 11 项验证属于另一仓的证据，不累加到 Android 项目数。
 
 Android 流式与连接工厂的 19 项原始记录为 [定向日志](evidence/2026-10-12-attachment-streaming/android-streaming-and-transport-green.txt)。实际宿主再次运行整个跨端互通类的 4 项原始记录为 [原生日志](evidence/2026-10-12-attachment-streaming/android-native-streaming-green.txt)，JUnit 计数及实际事件通道见 [结果详情](evidence/2026-10-12-attachment-streaming/android-streaming-details.txt)。
 
 验证显式设置 `HERMES_PLUGIN_ROOT`、主仓契约路径和独立 Python 3.11，使用 `--no-build-cache --no-daemon`。两个定向测试任务均实际执行，没有测试任务 `FROM-CACHE` 或 `UP-TO-DATE`。未执行本机完整 Gradle `check` 或 APK 构建；完整检查及签名兼容 APK 由对应提交 CI 负责。
+
+CI 依赖环境追加复跑的首次尝试中，App 测试任务为 `UP-TO-DATE`，该次不能当作附件的新证据。随后使用每任务 `--rerun` 强制两项定向测试任务重新执行，8 项均通过，实际模式为独立夹具，重复项目不累加进 48 项。保留 [首次尝试](evidence/2026-10-12-attachment-streaming/ci-clean-fixture-interop-initial.txt)、[实际重跑日志](evidence/2026-10-12-attachment-streaming/ci-clean-fixture-interop-green.txt) 和 [结果详情](evidence/2026-10-12-attachment-streaming/ci-clean-fixture-interop-details.txt)。
 
 ## 后续交付与待验收项
 
@@ -44,6 +47,8 @@ Android 流式与连接工厂的 19 项原始记录为 [定向日志](evidence/2
 
 真实源码门禁先在原范围重现相同两处失败，窄路径修改后通过。再临时加入三处负对照：允许测试里的 `VpnService`、未列入测试里的 `OkHttpClient`、生产文件里的 `OkHttpClient`，全部仍被拒绝。随后恢复原测试，将临时探针移入回收暂存目录，再运行门禁通过。证据为 [原范围失败](evidence/2026-10-12-attachment-streaming/source-guard-red.txt)、[窄范围通过](evidence/2026-10-12-attachment-streaming/source-guard-green.txt)、[负对照拒绝](evidence/2026-10-12-attachment-streaming/source-guard-negative-controls.txt) 及 [结果详情](evidence/2026-10-12-attachment-streaming/source-guard-controls-details.txt)。
 
-推送后须完成 Android 独立审查及完整 CI，再更新两处现有插件安装并重启现有服务，只更新程序和必要依赖，保留配置、账号、密钥、配对及宿主会话。新 APK 对应修复提交，并核对既有调试签名后供用户覆盖安装。
+`ea7a15f...9dc4cc9` 的推送后 [独立双轴复审](2026-10-12-app-source-guard-post-push-review.md) 确认门禁及 TLS 文案问题均已解决，两个审查轴没有新增确证问题。随后程序修复提交 `9dc4cc9446ab27b531ac4f2f09f9e3adb2a82139` 的 [完整 CI 38227153418](https://github.com/1rua/open-android-intelligence/actions/runs/38227153418)、[APK 38227153499](https://github.com/1rua/open-android-intelligence/actions/runs/38227153499) 和 [Nightly 38227153457](https://github.com/1rua/open-android-intelligence/actions/runs/38227153457) 均通过。Node/跨宿主契约与 Android Build & Check 的成功元数据见 [CI 证据](evidence/2026-10-12-attachment-streaming/app-ci-9dc4cc9.json)。这些归档补充不修改程序与测试。
+
+CI 与程序审查已通过，接下来更新两处现有插件安装并重启现有服务，只更新程序和必要依赖，保留配置、账号、密钥、配对及宿主会话。新 APK 对应修复提交，并核对既有调试签名后供用户覆盖安装。最终运行版本、APK 摘要和两处部署的配置保留证据归档在独立插件仓的交付记录，避免为追加运行记录改变已验证程序。
 
 用户需分别验证图片或文件上传并让真实 Agent 接收、较长回复在最终完成前逐段显示，以及切换会话和清理后台后的消息保留。退出登录及普通回复已在上一版得到用户确认；附件和流式在新版本完成两处手机确认前保持待验收，不能报告整个任务已闭环。
