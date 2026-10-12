@@ -139,12 +139,10 @@ jobs:
           # The interpreter Hermes Agent ships, matching the plugin runtime.
           python-version: "3.11"
 
-      # Installed as a package so its declared dependencies come from the
-      # plugin own metadata. Listing them here instead let a required runtime
-      # dependency go missing, which showed up only as a 401 from the Gateway
-      # under test.
+      # 插件仍按安装包验证声明依赖；echo 夹具额外运行宿主提供的 aiohttp HTTP/SSE 入口。
+      # 此任务没有安装完整 Hermes，因此显式补齐该宿主依赖。
       - name: Install the Hermes Gateway plugin for the fixture
-        run: python -m pip install .hermes-gateway-plugin cryptography
+        run: python -m pip install .hermes-gateway-plugin cryptography aiohttp
 
       - name: Build real Rust WASM plugins for Android runtime regression
         run: |

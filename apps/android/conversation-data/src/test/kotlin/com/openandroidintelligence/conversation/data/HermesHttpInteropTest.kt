@@ -96,6 +96,13 @@ class HermesHttpInteropTest {
                 subscription.cancelAndJoin()
                 replies.close()
             }
+        } catch (failure: Throwable) {
+            // 隔离夹具只记录阶段及测试身份，启动失败时输出实际原因供 CI 定位。
+            runCatching { log.readText() }.getOrNull()?.let { diagnostics ->
+                System.err.println("Hermes 隔离批次互通夹具日志：")
+                System.err.println(diagnostics)
+            }
+            throw failure
         } finally {
             process.destroy()
             check(process.waitFor(10, TimeUnit.SECONDS)) { "HERMES_FIXTURE_STOP_FAILED" }

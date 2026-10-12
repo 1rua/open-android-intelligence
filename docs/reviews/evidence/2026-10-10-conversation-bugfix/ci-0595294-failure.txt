@@ -1,0 +1,6 @@
+提交：0595294ac2f9cbfb9464b5debc40c253a2aa70d9
+CI：https://github.com/1rua/open-android-intelligence/actions/runs/38087079095
+失败摘录：
+Android Build & Check	UNKNOWN STEP	2026-10-10T21:29:12.3829360Z HermesHttpInteropTest > batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary FAILED
+Android Build & Check	UNKNOWN STEP	2026-10-10T21:29:12.3831176Z     java.lang.IllegalStateException: HERMES_FIXTURE_START_FAILED
+Android Build & Check	UNKNOWN STEP	2026-10-10T21:29:12.3839877Z 50 tests completed, 1 failed

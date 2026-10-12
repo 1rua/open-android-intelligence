@@ -74,6 +74,12 @@
 
 增量审查再次补出混合 `messages`/`message` 结构及客户端身份类型错误两个边界，追加样本得到 **7 项中 2 项失败**，见 [query-shape-red.txt](evidence/2026-10-10-conversation-bugfix/query-shape-red.txt)。最终查询结果必须唯一选择一种结构；客户端身份字段缺省仍兼容，字段存在则必须为匹配原身份的字符串。修复后客户端 16 项、工作台 52 项、数据 12 项全部通过，含 7 项查询回归与真实原生 Hermes HTTP 互通，见 [query-shape-green.txt](evidence/2026-10-10-conversation-bugfix/query-shape-green.txt) 和 [计数](evidence/2026-10-10-conversation-bugfix/query-shape-counts.txt)。上述追加执行分阶段记录，不重复累加为新的总测试数。
 
+2026-10-12 完成 CI 环境失败闭合：`0595294` 的 APK、签名和 Nightly 构建通过，完整 CI 的 Android 互通用例报 `HERMES_FIXTURE_START_FAILED`，见 [失败摘录](evidence/2026-10-10-conversation-bugfix/ci-0595294-failure.txt)。在新 Python 3.11 环境仅安装插件声明依赖和 `cryptography` 后，实际复现 `aiohttp is not installed; cannot start HTTP gateway`，见 [干净环境 RED](evidence/2026-10-10-conversation-bugfix/ci-fixture-environment-red.txt)。
+
+echo 夹具使用生产平台适配器的 HTTP/SSE 入口，`aiohttp` 通常由 Hermes 宿主提供；Android CI 未安装整个宿主，现显式补齐该依赖。批次互通测试失败时输出隔离夹具诊断，避免只显示通用启动错误。补齐后在同一干净环境使用固定插件源码执行两个完整 HTTP/SSE 用例，**2 项通过、0 失败**，见 [干净环境 GREEN](evidence/2026-10-10-conversation-bugfix/ci-fixture-environment-green.txt)。该修正不改变应用产品逻辑、插件程序、协议或账号数据。
+
+最终源码逻辑 `0595294ac2f9cbfb9464b5debc40c253a2aa70d9` 的独立审查均无剩余发现：[规范轴](2026-10-11-app-post-push-standards.md)、[规格轴](2026-10-11-app-post-push-spec.md)。CI 环境修正随后仍按提交后的独立增量审查和完整 CI 复核执行。
+
 ## 数据迁移与手机验收
 
 迁移细节见 [发送记录迁移说明](../superpowers/plans/2026-10-11-conversation-send-ledger-migration.md)。两处部署只更新现有插件程序及必要依赖，再重启现有 Gateway 服务；保留账号目录、主密钥、配对与宿主绑定。

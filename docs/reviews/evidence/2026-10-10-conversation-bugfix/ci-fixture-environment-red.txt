@@ -1,0 +1,21 @@
+Python: 3.11.15
+Installed: plugin declared dependencies + cryptography
+Exit: 1
+[open_android] aiohttp is not installed; cannot start HTTP gateway
+Traceback (most recent call last):
+  File "/tmp/oai-ci-fixture-package/tests/android_gateway_fixture.py", line 197, in <module>
+    main()
+  File "/tmp/oai-ci-fixture-package/tests/android_gateway_fixture.py", line 152, in main
+    asyncio.run(run_echo_agent(core, admin, exposure, args.port))
+  File "/home/djbd/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/home/djbd/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/djbd/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/tmp/oai-ci-fixture-package/tests/android_gateway_fixture.py", line 107, in run_echo_agent
+    raise RuntimeError("隔离适配器未成功启动")
+RuntimeError: 隔离适配器未成功启动
