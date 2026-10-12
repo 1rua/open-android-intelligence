@@ -64,6 +64,16 @@ val testOnlyLoopbackFixtures = setOf(
 )
 
 /**
+ * 这两个 JVM 回归分别核对实际 Android HTTP 类和实际事件通道名称，
+ * 需要提及出站网络关键字。仅按完整测试路径允许这些断言；生产源码仍由
+ * 网络 owner 管理，VPN、路由、代理及通用监听/拨号禁令仍检查这两个文件。
+ */
+val testOnlyOutboundAssertions = setOf(
+    "app/src/test/kotlin/com/openandroidintelligence/mobile/AndroidAttachmentContentTypeTest.kt",
+    "conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/HermesHttpInteropTest.kt",
+)
+
+/**
  * 剥除代码中的单行/多行注释，将注释内容替换为空格并保留换行符，
  * 确保既过滤掉注释中的无关关键字，又精确保留原文件的行号与代码结构。
  */
@@ -220,12 +230,12 @@ tasks.register("noVpnSurfaceCheck") {
         // Derived from the registered modules so a newly included module is
         // covered by this gate the moment it is added, not by a manual list edit.
         val violations = rootProject.subprojects.flatMap { project ->
-            val banned = if (project.name in networkOwnerModules) {
-                alwaysForbidden
-            } else {
-                alwaysForbidden + forbiddenOutsideOwners
+            sourceFilesUnder(project.projectDir).flatMap { file ->
+                val allowsOutboundReferences = project.name in networkOwnerModules ||
+                    file.relativeTo(rootDir).path in testOnlyOutboundAssertions
+                val banned = if (allowsOutboundReferences) alwaysForbidden else alwaysForbidden + forbiddenOutsideOwners
+                scanNoVpnSurfaces(listOf(file), banned)
             }
-            scanNoVpnSurfaces(sourceFilesUnder(project.projectDir), banned)
         }
         check(violations.isEmpty()) { violations.joinToString("\n") }
     }
