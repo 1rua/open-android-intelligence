@@ -28,10 +28,18 @@ Gateway Protocol 2.1、核心 Schema 和既有附件分块格式不变；普通�
 | 真实跨端 HTTP | 基线 Android 1 项失败；确切修复插件上 5 项通过 | [6d14191 最终计数](evidence/2026-10-13-history-http/android-native-http-final-6d14191-counts.json)；真实上传、发送、事件、宿主历史、媒体授权与字节摘要，模型推理为确定性隔离处理器 |
 | 共享协议向量 | 66 / 66 通过 | [Hermes conformance](evidence/2026-10-13-history-delivery/hermes-conformance.txt)；明确使用本轮插件源码与主仓契约 |
 | 源码守卫 | 实际执行通过 | [守卫结果](evidence/2026-10-13-history-delivery/android-source-guard.txt) |
-| 提交、复核、CI、部署、APK | 插件补修已推送；Android 与部署尚待最终 CI | 前一版 a4a6acc CI 通过但独立审查发现 1 项 P1/4 项 P2，未部署；补修见下文 |
+| 提交、复核、CI、部署、APK | 两仓源码已推送；Android 完整检查及 APK 构建通过，原生历史 CI 停滞待定位 | 前一版 a4a6acc CI 通过但独立审查发现 1 项 P1/4 项 P2，未部署；最新状态见下文 |
 
 Android 初始定位与预览实施见 [Android 历史诊断](2026-10-12-android-history-diagnosis.md)，删除与批次恢复见 [删除屏障报告](2026-10-13-android-snapshot-deletion-barrier.md)，兼容字段见 [单条正文修订约定](../contracts/conversation-history-content-revision-v1.md)。旧正文已被更新事件记录后，再读到宿主明确新版时先更新 journal，较晚旧页不能倒退内容；没有把整页 hash 当消息修订。
 
 独立推送后审查发现真实压缩尾部、profile 清理、媒体撤回、同文归属及明确编辑边界问题。补修已改为宿主标准 KV、正确数据库归属、当前账号事务内只读核对撤回，以及明确本轮锚点与单条版本。中间 HTTP 完整矩阵捕获了事务重入的锁冲突，修正后才取得表中通过结果。用户最后明确要求不使用子 Agent，后续补修、复核与交付由主 Agent独立完成，不伪称进行了新的子 Agent 零问题复审。
 
 普通原生模型重写不被当成用户编辑；合并输入的任意宿主编辑没有逐成员拆分契约，不能猜测新的成员身份。本轮没有扩展快照撤销删除或大文件历史下载协议。后续还需记录两仓最终 CI、保留配置/数据的两处服务更新、匹配签名 APK 与手机验收，证据齐备前不宣称完整闭环。
+
+## 提交推送及 CI 排查状态
+
+Android 修复 `6594ccc316af826681b033e326fcb6311a3747fb` 与插件修复 `6d14191296a27c8bc735bc80d88a6a147f92de65` 已提交并推送远程 `main`。[Android CI](https://github.com/1rua/open-android-intelligence/actions/runs/38370671396) 的完整 `Android Build & Check`、[APK](https://github.com/1rua/open-android-intelligence/actions/runs/38370671346) 与 [Nightly](https://github.com/1rua/open-android-intelligence/actions/runs/38370671344) 通过；Node 任务与[插件 CI](https://github.com/1rua/hermes-gateway-plugin/actions/runs/38369449540) 均在强制原生历史步骤停滞。插件停滞运行已取消，不能记录为通过。
+
+本机使用干净 SDK、独立 CI 依赖与 Python 3.11.17，按默认输出捕获及相同四文件顺序执行，33 项全部通过，未重现 CI 停滞。插件 `76cff3efef302d6e162d1e0afa482d315098d110` 仅新增原始验证记录和流水线诊断；其程序与测试字节相对 `6d14191` 未改变，详见[插件排查报告](https://github.com/1rua/hermes-gateway-plugin/blob/76cff3efef302d6e162d1e0afa482d315098d110/docs/reviews/2026-10-13-history-ci-diagnosis.md)。本仓两处 CI checkout 同步固定到该提交。
+
+两仓原生步骤现在显示具体用例，并在 30 秒输出 faulthandler 调用栈，最长 5 分钟后明确失败；四文件范围、断言和强制原生 SDK 条件不变。完整 CI 尚未通过，因此本轮历史代码尚未部署；后续依据实际调用栈补修，保留两处现有配置与数据。用户明确要求不使用子 Agent，本次提交后由主 Agent 继续复核与跟踪。
