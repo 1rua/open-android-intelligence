@@ -1,0 +1,62 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.12/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :app
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :conversation-data:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-data:preBuild UP-TO-DATE
+> Task :conversation-data:preReleaseBuild UP-TO-DATE
+> Task :conversation-data:generateReleaseResValues
+> Task :conversation-data:generateReleaseResources
+> Task :conversation-data:packageReleaseResources
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:preBuild UP-TO-DATE
+> Task :conversation-domain:preReleaseBuild UP-TO-DATE
+> Task :conversation-domain:generateReleaseResValues
+> Task :conversation-domain:generateReleaseResources
+> Task :conversation-data:parseReleaseLocalResources
+> Task :conversation-domain:packageReleaseResources
+> Task :conversation-domain:parseReleaseLocalResources
+> Task :conversation-domain:javaPreCompileRelease
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preReleaseBuild UP-TO-DATE
+> Task :conversation-data:generateReleaseRFile
+> Task :gateway-client:generateReleaseResValues
+> Task :conversation-domain:generateReleaseRFile
+> Task :gateway-client:generateReleaseResources
+> Task :gateway-client:packageReleaseResources
+> Task :gateway-client:parseReleaseLocalResources
+> Task :gateway-client:javaPreCompileRelease
+> Task :conversation-data:javaPreCompileRelease
+> Task :conversation-data:preReleaseUnitTestBuild UP-TO-DATE
+> Task :conversation-data:javaPreCompileReleaseUnitTest
+> Task :gateway-client:generateReleaseRFile
+> Task :conversation-data:generateReleaseUnitTestStubRFile
+> Task :conversation-domain:compileReleaseKotlin
+> Task :conversation-domain:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-domain:processReleaseJavaRes
+> Task :conversation-domain:bundleLibRuntimeToJarRelease
+> Task :conversation-domain:bundleLibCompileToJarRelease
+
+> Task :gateway-client:compileReleaseKotlin
+w: file:///mnt/data/projects/open-android-intelligence/apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/schema/DispatchedSchemaRegistry.kt:15:28 Java type mismatch: inferred type is 'String?', but 'String' was expected.
+
+> Task :gateway-client:compileReleaseJavaWithJavac NO-SOURCE
+> Task :gateway-client:processReleaseJavaRes
+> Task :gateway-client:bundleLibCompileToJarRelease
+> Task :gateway-client:bundleLibRuntimeToJarRelease
+> Task :conversation-data:compileReleaseKotlin
+> Task :conversation-data:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-data:bundleLibRuntimeToJarRelease
+> Task :conversation-data:bundleLibCompileToJarRelease
+> Task :conversation-data:processReleaseJavaRes
+> Task :conversation-data:compileReleaseUnitTestKotlin
+> Task :conversation-data:compileReleaseUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-data:processReleaseUnitTestJavaRes
+> Task :conversation-data:testReleaseUnitTest
+
+BUILD SUCCESSFUL in 58s
+35 actionable tasks: 35 executed

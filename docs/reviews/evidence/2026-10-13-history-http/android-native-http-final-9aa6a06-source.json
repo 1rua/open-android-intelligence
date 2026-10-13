@@ -1,0 +1,19 @@
+{
+  "pluginRevision": "9aa6a0661e76c31c2b1078890a4b48ef002fee10",
+  "sdkRevision": "75b083e9399115b12513385252811f09c3503c90",
+  "counts": {
+    "tests": 5,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "files": {
+    "apps/android/conversation-data/build.gradle.kts": "61e5d41ad59de8850e7367388711097bf2edc51de2d26d7d45d76eadedcfe0af",
+    "apps/android/conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/HermesHttpInteropTest.kt": "6065af01d9103a0994274f98efe7a1433b54404755045171e5a15b237c9f3028",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/host_history.py": "97363a79cc98f7742bb68eb7120d2193d219db4398e02bab918f405d120a59de",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/history_media.py": "447a67074f1a6853d733297e34eb83650404929ebb6daf1bbae3ea4f04a089fc",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/adapter.py": "d20137476cad724aef23eaf1f67799676177b0d6094c26b410894b787e66cde7"
+  },
+  "taskExecuted": true,
+  "buildCacheEnabled": false
+}

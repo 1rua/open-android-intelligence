@@ -22,10 +22,10 @@ Gateway Protocol 2.1、核心 Schema 和既有附件分块格式不变；普通�
 
 | 层次 | 当前结果 | 证据与边界 |
 | --- | --- | --- |
-| 独立插件与真实宿主 | 341 项独立完整测试通过；32 项真实宿主/流式/HTTP 通过；另 1 项旧展示迁移通过 | 插件 `6d14191296a27c8bc735bc80d88a6a147f92de65`；9 项 HTTP 夹具在两个矩阵重叠，不把两集相加当独立数量 |
+| 独立插件与真实宿主 | 341 项独立完整测试、34 项真实宿主/迁移/流式/HTTP、24 项旧 SQLite 对照通过 | 插件 `9aa6a0661e76c31c2b1078890a4b48ef002fee10`；9 项 HTTP 夹具及旧 SQLite 用例与其他矩阵重叠，不相加当独立数量 |
 | Android 发送、删除、预览、事件解码与镜像 | 112 项通过，0 失败/错误/跳过 | [最终最小回归计数](evidence/2026-10-13-history-delivery/android-final-focused-counts.json)；包含单条正文版本、迟到页与明确空正文 |
 | 客户端时间线及原身份查询 | 14 项通过，0 失败/错误/跳过 | [结果](evidence/2026-10-13-history-delivery/client-wire-revision.txt)；可选 contentRevision 透传，旧字段缺省兼容 |
-| 真实跨端 HTTP | 基线 Android 1 项失败；确切修复插件上 5 项通过 | [6d14191 最终计数](evidence/2026-10-13-history-http/android-native-http-final-6d14191-counts.json)；真实上传、发送、事件、宿主历史、媒体授权与字节摘要，模型推理为确定性隔离处理器 |
+| 真实跨端 HTTP | 基线 Android 1 项失败；确切最终插件上 5 项通过 | [9aa6a06 最终计数](evidence/2026-10-13-history-http/android-native-http-final-9aa6a06-counts.json)；真实上传、发送、事件、宿主历史、媒体授权与字节摘要，模型推理为确定性隔离处理器 |
 | 共享协议向量 | 66 / 66 通过 | [Hermes conformance](evidence/2026-10-13-history-delivery/hermes-conformance.txt)；明确使用本轮插件源码与主仓契约 |
 | 源码守卫 | 实际执行通过 | [守卫结果](evidence/2026-10-13-history-delivery/android-source-guard.txt) |
 | 提交、复核、CI、部署、APK | 两仓源码已推送；Android 完整检查及 APK 构建通过，原生历史 CI 停滞待定位 | 前一版 a4a6acc CI 通过但独立审查发现 1 项 P1/4 项 P2，未部署；最新状态见下文 |
@@ -43,3 +43,11 @@ Android 修复 `6594ccc316af826681b033e326fcb6311a3747fb` 与插件修复 `6d141
 本机使用干净 SDK、独立 CI 依赖与 Python 3.11.17，按默认输出捕获及相同四文件顺序执行，33 项全部通过，未重现 CI 停滞。插件 `76cff3efef302d6e162d1e0afa482d315098d110` 仅新增原始验证记录和流水线诊断；其程序与测试字节相对 `6d14191` 未改变，详见[插件排查报告](https://github.com/1rua/hermes-gateway-plugin/blob/76cff3efef302d6e162d1e0afa482d315098d110/docs/reviews/2026-10-13-history-ci-diagnosis.md)。本仓两处 CI checkout 同步固定到该提交。
 
 两仓原生步骤现在显示具体用例，并在 30 秒输出 faulthandler 调用栈，最长 5 分钟后明确失败；四文件范围、断言和强制原生 SDK 条件不变。完整 CI 尚未通过，因此本轮历史代码尚未部署；后续依据实际调用栈补修，保留两处现有配置与数据。用户明确要求不使用子 Agent，本次提交后由主 Agent 继续复核与跟踪。
+
+## 原生清理锁补修与最终互通输入
+
+诊断 [插件 CI 38391980084](https://github.com/1rua/hermes-gateway-plugin/actions/runs/38391980084) 与 [Android CI 38392130901](https://github.com/1rua/open-android-intelligence/actions/runs/38392130901) 实际失败，调用栈确认插件在宿主写事务中调用独立读取接口，读取回退时重入同一把非重入锁。插件 `9aa6a0661e76c31c2b1078890a4b48ef002fee10` 已改为复用事务连接，按字面命名空间清理当前归属，保留模型行与其他账号；详见[补修及原始失败证据](https://github.com/1rua/hermes-gateway-plugin/blob/9aa6a0661e76c31c2b1078890a4b48ef002fee10/docs/reviews/2026-10-13-history-native-cleanup-lock.md)。
+
+本机独立插件 341 项、强制真实 SDK/流式/HTTP 34 项、旧 SQLite 对照 24 项以及 66 个共享协议向量通过。原实现的独立读取回退回归确实超时，修复后通过；本机失效临时契约路径造成的中间未通过结果在报告中单独保留。没有弱化断言或移除原生测试。
+
+Android CI 的两处插件 checkout 均固定到 `9aa6a06`，SDK 仍固定 `75b083e9399115b12513385252811f09c3503c90`。生产 Android HTTP 客户端在该确切插件提交上重新执行 [5 项互通用例](evidence/2026-10-13-history-http/android-native-http-final-9aa6a06-counts.json)，0 失败/错误/跳过；关闭构建缓存并重跑全部 35 个相关任务，[实际日志](evidence/2026-10-13-history-http/android-native-http-final-9aa6a06.txt)与[输入摘要](evidence/2026-10-13-history-http/android-native-http-final-9aa6a06-source.json)保留。完整 CI、两处更新及匹配 APK 仍按随后实际结果交付，手机验收没有被自动化结果替代。
