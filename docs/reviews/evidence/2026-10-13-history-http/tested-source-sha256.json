@@ -1,0 +1,9 @@
+{
+  "apps/android/conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/HermesHttpInteropTest.kt": "e9b5e73d8706580f348a61335e704d7c7909b4e821cd5eca84fce9a62a9498a2",
+  "tmp/hermes-history-worktree-20261012/tests/android_gateway_fixture.py": "be0f6d6cae7b23c7a36e21adca01c5f57ee2e8dbbe9769f7cef174dac59ab8ff",
+  "tmp/hermes-history-worktree-20261012/tests/test_android_echo_fixture.py": "5733e3b8da09f68190feb15016702a61f60bcf3eaa9a5e5ca7c2cdc79e4cc506",
+  "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/host_history.py": "34f80577ed47622998af0fe320cb1f384ed629743f39a6db7b85cd35ec8f1c6d",
+  "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/history_media.py": "9928f757e270252bf42d10dc009a7d826d27460addcbd51b551e160e0d7d18d1",
+  "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/adapter.py": "10da009039b15b0bd9cbdf88d702b5b319529ba81b5580f03b3f11fe36b35087",
+  "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/core.py": "635c0bff35f27dbccfa731068d7a95333ae527a56b5687e0383cca98d34f5b23"
+}

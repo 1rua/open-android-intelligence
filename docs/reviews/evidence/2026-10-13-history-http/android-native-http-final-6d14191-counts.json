@@ -1,0 +1,11 @@
+{
+  "tests": 5,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "pluginRevision": "6d14191296a27c8bc735bc80d88a6a147f92de65",
+  "sdkRevision": "75b083e9399115b12513385252811f09c3503c90",
+  "actualTaskExecution": true,
+  "rerun": true,
+  "buildCache": false
+}

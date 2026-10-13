@@ -11,6 +11,15 @@ import org.junit.Test
 
 /** 恢复查询只能把明确有效的空结果解释为未执行。 */
 class QueryMessageEvidenceTest {
+    @Test fun timelineAndRecoveryKeepTheOptionalMessageContentVersion() = runBlocking {
+        val data=mapOf("messages" to listOf(mapOf("messageId" to "msg_one", "clientMessageId" to "cm_original",
+            "sender" to "user", "timestamp" to 1000, "state" to "CONFIRMED", "contentRevision" to 7,
+            "parts" to listOf(mapOf("type" to "text", "text" to "新版原文")))))
+        assertEquals(7L,client(data).readTimeline("conv_a").messages.single().contentRevision)
+        assertEquals(7L,client(data).queryMessage("conv_a","cm_original")!!.contentRevision)
+        assertNull(client(mapOf("message" to mapOf("messageId" to "msg_legacy")))
+            .queryMessage("conv_a","cm_original")!!.contentRevision)
+    }
     private fun client(data: Any, status: Int = 200): ConversationClient {
         val transport = object : GatewayByteTransport {
             override suspend fun execute(request: WireRequest) = WireResponse(status, emptyList(),

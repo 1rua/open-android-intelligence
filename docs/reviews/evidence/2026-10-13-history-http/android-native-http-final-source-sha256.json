@@ -1,0 +1,13 @@
+{
+  "pluginRevision": "a4a6acc855e2499ef11857a0f9ca438e7f424f63",
+  "files": {
+    "apps/android/conversation-data/build.gradle.kts": "61e5d41ad59de8850e7367388711097bf2edc51de2d26d7d45d76eadedcfe0af",
+    "apps/android/conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/HermesHttpInteropTest.kt": "6065af01d9103a0994274f98efe7a1433b54404755045171e5a15b237c9f3028",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/adapter.py": "69bb834f93d14578e1850372db20c082b6c996189dee8690c525e434c1120099",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/host_history.py": "34f80577ed47622998af0fe320cb1f384ed629743f39a6db7b85cd35ec8f1c6d",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/history_media.py": "9928f757e270252bf42d10dc009a7d826d27460addcbd51b551e160e0d7d18d1",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/core.py": "635c0bff35f27dbccfa731068d7a95333ae527a56b5687e0383cca98d34f5b23",
+    "tmp/hermes-history-worktree-20261012/tests/android_gateway_fixture.py": "4e90f8c38905b3e306ee0e0d3faf25504e052e77778b90cb46d938f024302022",
+    "tmp/hermes-history-worktree-20261012/tests/test_android_echo_fixture.py": "6b3a70246278665b058efa43d02228e5e5bf7fa872b7ba4b1e0b10e4e7d4fd5c"
+  }
+}

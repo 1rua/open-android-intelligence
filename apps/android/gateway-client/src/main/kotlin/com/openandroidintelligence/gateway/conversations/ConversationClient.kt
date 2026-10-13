@@ -69,6 +69,8 @@ data class GatewayTimelineMessage(
     val state: String,
     val batchId:String?=null,
     val clientMessageId: String? = null,
+    /** 可选的单条正文修订；分页快照摘要与投递状态修订不参与该比较。 */
+    val contentRevision: Long? = null,
 )
 
 /** One page of `GET /conversations/{id}/messages`. */
@@ -267,6 +269,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
                     state = JsonFields.string(message, "state") ?: "CONFIRMED",
                     batchId=JsonFields.string(message,"batchId"),
                     clientMessageId=JsonFields.string(message,"clientMessageId"),
+                    contentRevision=JsonFields.long(message,"contentRevision")?.takeIf { it >= 0L },
                 )
             },
             nextCursor = JsonFields.string(body, "nextCursor"),
@@ -326,6 +329,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
             timestamp = timestamp,
             state = JsonFields.string(raw, "state") ?: "CONFIRMED",
             batchId=JsonFields.string(raw,"batchId"),
+            contentRevision=JsonFields.long(raw,"contentRevision")?.takeIf { it >= 0L },
             clientMessageId=JsonFields.string(raw,"clientMessageId"),
         )
     }

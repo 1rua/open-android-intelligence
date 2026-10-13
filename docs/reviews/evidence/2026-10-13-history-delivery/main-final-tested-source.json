@@ -1,0 +1,19 @@
+{
+  "sourceFiles": {
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/EncryptedConversationMirror.kt": "36a3f1f2ecfcd961375f7442ad6fe56deda8e38211b80b4816ebd87a55505bed",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/EncryptedSendAtomRecoveryTest.kt": "d20d24068b7b32316654d91ff62e916419df14137d6f67846916c3a6db50926e",
+    "apps/android/conversation-domain/src/main/kotlin/com/openandroidintelligence/conversation/model/LocalSendAtom.kt": "a942ff32df0b554144d66a05ec7238b74a56b82fbb2ecd821e21f7339d00f0a7",
+    "apps/android/conversation-domain/src/main/kotlin/com/openandroidintelligence/conversation/ports/ConversationPorts.kt": "9531d646a49b7c0439ac855636acbdf0e89d2269a260678a4ff8dcae95bf2de1",
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt": "ff82353fab98604f0f7f9a9d14d305c63394354958c749a3f45ccb863d78d703",
+    "apps/android/conversation-data/src/main/kotlin/com/openandroidintelligence/conversation/data/GatewayConversationRepository.kt": "93343e21657a37b5b9e857afbdd01d7df27bd204d6f3745252d07504f4353a8f",
+    "apps/android/conversation-data/src/main/kotlin/com/openandroidintelligence/conversation/data/GatewayEventDecoder.kt": "45cc478922c0b28e0f2bd9de5f6e8d749914d906e423dcc1ca8cde3793ebbf46",
+    "apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/conversations/ConversationClient.kt": "dded6e880be56eeb71b3e0cd43451a187413262e4251e6ad0f0a89bfbc35cc60",
+    "apps/android/conversation-data/build.gradle.kts": "61e5d41ad59de8850e7367388711097bf2edc51de2d26d7d45d76eadedcfe0af",
+    ".github/workflows/ci.yml": "93d733fbb794c2b9b3ebeef2b00c947a8fadbf85ec2f6f014618d80cce5cf911"
+  },
+  "focusedTests": 112,
+  "wireTests": 14,
+  "httpTests": 5,
+  "pluginRevision": "6d14191296a27c8bc735bc80d88a6a147f92de65",
+  "sdkRevision": "75b083e9399115b12513385252811f09c3503c90"
+}

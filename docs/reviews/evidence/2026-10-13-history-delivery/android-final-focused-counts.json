@@ -1,0 +1,60 @@
+{
+  "suites": [
+    {
+      "class": "EncryptedSendAtomRecoveryTest",
+      "task": "app/testFullReleaseUnitTest",
+      "tests": 21,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "class": "EncryptedMirrorRecoveryTest",
+      "task": "app/testFullReleaseUnitTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "class": "WorkbenchSendRegressionTest",
+      "task": "conversation-ui/testReleaseUnitTest",
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "class": "WorkbenchSendPersistenceTest",
+      "task": "conversation-ui/testReleaseUnitTest",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "class": "WorkbenchAttachmentPreviewRegressionTest",
+      "task": "conversation-ui/testReleaseUnitTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "class": "GatewayEventDecoderTest",
+      "task": "conversation-data/testReleaseUnitTest",
+      "tests": 29,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "totals": {
+    "tests": 112,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "rerun": true,
+  "buildCache": false
+}

@@ -219,6 +219,7 @@ class GatewayConversationRepository(
                     state = message.state,
                     batchId=message.batchId,
                     clientMessageId=message.clientMessageId?.let { com.openandroidintelligence.conversation.model.ClientMessageId(it) },
+                    contentRevision=message.contentRevision,
                 )
             },
             nextCursor = result.nextCursor,
@@ -285,7 +286,8 @@ class GatewayConversationRepository(
                 is WireMessagePart.AttachmentRef -> MessagePart.Attachment(AttachmentDraftId(part.attachmentId), part.filename, part.mediaType)
             }
         }, message.timestamp ?: 0L, message.state, conversationId = ConversationId(conversationId),
-            clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId(message.clientMessageId ?: clientMessageId.value))
+            clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId(message.clientMessageId ?: clientMessageId.value),
+            contentRevision = message.contentRevision)
     }
 
     /**

@@ -1,0 +1,96 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.12/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :app
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :capability-ports:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :capability-ports:preBuild UP-TO-DATE
+> Task :capability-ports:preDebugBuild UP-TO-DATE
+> Task :capability-ports:generateDebugResValues UP-TO-DATE
+> Task :capability-ports:generateDebugResources UP-TO-DATE
+> Task :capability-ports:packageDebugResources UP-TO-DATE
+> Task :capability-ports:parseDebugLocalResources UP-TO-DATE
+> Task :capability-ports:generateDebugRFile UP-TO-DATE
+> Task :core-model:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-model:preBuild UP-TO-DATE
+> Task :core-model:preDebugBuild UP-TO-DATE
+> Task :core-model:generateDebugResValues UP-TO-DATE
+> Task :core-model:generateDebugResources UP-TO-DATE
+> Task :core-model:packageDebugResources UP-TO-DATE
+> Task :core-model:parseDebugLocalResources UP-TO-DATE
+> Task :core-model:generateDebugRFile UP-TO-DATE
+> Task :core-model:compileDebugKotlin UP-TO-DATE
+> Task :core-model:javaPreCompileDebug UP-TO-DATE
+> Task :core-model:compileDebugJavaWithJavac NO-SOURCE
+> Task :core-model:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :capability-ports:compileDebugKotlin UP-TO-DATE
+> Task :capability-ports:javaPreCompileDebug UP-TO-DATE
+> Task :capability-ports:compileDebugJavaWithJavac NO-SOURCE
+> Task :capability-ports:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :capability-ports:processDebugJavaRes UP-TO-DATE
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:preBuild UP-TO-DATE
+> Task :conversation-domain:preDebugBuild UP-TO-DATE
+> Task :conversation-domain:generateDebugResValues UP-TO-DATE
+> Task :conversation-domain:generateDebugResources UP-TO-DATE
+> Task :conversation-domain:packageDebugResources UP-TO-DATE
+> Task :conversation-domain:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-domain:generateDebugRFile UP-TO-DATE
+> Task :conversation-domain:javaPreCompileDebug UP-TO-DATE
+> Task :capability-ports:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-ui:preBuild UP-TO-DATE
+> Task :conversation-ui:preDebugBuild UP-TO-DATE
+> Task :conversation-ui:generateDebugResValues UP-TO-DATE
+> Task :conversation-ui:generateDebugResources UP-TO-DATE
+> Task :conversation-ui:packageDebugResources UP-TO-DATE
+> Task :conversation-ui:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-ui:generateDebugRFile UP-TO-DATE
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preDebugBuild UP-TO-DATE
+> Task :gateway-client:generateDebugResValues UP-TO-DATE
+> Task :gateway-client:generateDebugResources UP-TO-DATE
+> Task :gateway-client:packageDebugResources UP-TO-DATE
+> Task :gateway-client:parseDebugLocalResources UP-TO-DATE
+> Task :gateway-client:generateDebugRFile UP-TO-DATE
+> Task :gateway-client:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-ui:javaPreCompileDebug UP-TO-DATE
+> Task :capability-ports:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-domain:compileDebugLibraryResources UP-TO-DATE
+> Task :capability-ports:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-domain:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-ui:preDebugUnitTestBuild UP-TO-DATE
+> Task :conversation-ui:writeDebugAarMetadata UP-TO-DATE
+> Task :core-model:writeDebugAarMetadata UP-TO-DATE
+> Task :gateway-client:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-ui:checkDebugUnitTestAarMetadata FAILED
+> Task :conversation-domain:compileDebugKotlin
+
+> Task :gateway-client:compileDebugKotlin
+w: file:///mnt/data/projects/open-android-intelligence/apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/schema/DispatchedSchemaRegistry.kt:15:28 Java type mismatch: inferred type is 'String?', but 'String' was expected.
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':conversation-ui:checkDebugUnitTestAarMetadata'.
+> Could not resolve all files for configuration ':conversation-ui:debugUnitTestRuntimeClasspath'.
+   > Could not resolve androidx.compose.ui:ui-tooling:1.7.6.
+     Required by:
+         project :conversation-ui
+      > No cached version of androidx.compose.ui:ui-tooling:1.7.6 available for offline mode.
+      > No cached version of androidx.compose.ui:ui-tooling:1.7.6 available for offline mode.
+      > No cached version of androidx.compose.ui:ui-tooling:1.7.6 available for offline mode.
+      > No cached version of androidx.compose.ui:ui-tooling:1.7.6 available for offline mode.
+> There are 4 more failures with identical causes.
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 19s
+46 actionable tasks: 3 executed, 43 up-to-date

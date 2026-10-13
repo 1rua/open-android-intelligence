@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.mobile.EncryptedMirrorRecoveryTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-10-13T02:50:42" hostname="djbd-cachyos" time="1.875">
+  <properties/>
+  <testcase name="reopensEncryptedDraftFrozenIdentitiesAllPagesAndGatewayPartitions" classname="com.openandroidintelligence.mobile.EncryptedMirrorRecoveryTest" time="1.847"/>
+  <testcase name="snapshotRecoveryRemovesObsoleteThreadsAndRetainsTheCompleteBaseline" classname="com.openandroidintelligence.mobile.EncryptedMirrorRecoveryTest" time="0.028"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

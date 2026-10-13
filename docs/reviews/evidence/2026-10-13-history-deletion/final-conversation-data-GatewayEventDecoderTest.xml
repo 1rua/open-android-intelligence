@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" tests="29" skipped="0" failures="0" errors="0" timestamp="2026-10-13T02:50:36" hostname="djbd-cachyos" time="0.098">
+  <properties/>
+  <testcase name="commandResultWithoutKnownOutcomeStaysUnknownInsteadOfBecomingASwitch" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.054"/>
+  <testcase name="decodesTimelineUpsertIntoDomainEvent" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.015"/>
+  <testcase name="approvalResolvedWithAnUnknownDecisionStaysUnknownInsteadOfBecomingAnAllow" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.003"/>
+  <testcase name="anUnmodelledEventNameStillCarriesItsGenerationIdOutOfThatSameRead" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="approvalRequestFallsBackToTheDocumentedTimeoutOnlyWhenTheGatewayOmitsIt" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.004"/>
+  <testcase name="decodesWithConversationIdInOuterBody" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="decodesWithChatIdInOuterBody" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="decodesGenerationCancelledAndSnapshotInvalidatedWithOuterBodyConversationId" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.002"/>
+  <testcase name="unknownEventNameStaysUnknown" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="decodesWithUnderscoreConversationIdInOuterBody" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="decodesTitleUpdateWithNewTitleField" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="decodesTitleUpdateWithConversationBinding" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="upsertRetainsTheExplicitClientIdentityBeforeHttpAcceptanceArrives" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="decodesApprovalRequestWithTheTiersTheGatewayOffered" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="decodesWithChatIdInPayload" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="historicalAttachmentReferenceAndAttachmentHaveTheSameEventProjection" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.003"/>
+  <testcase name="oneFrameYieldsItsEventAndItsGenerationIdFromASingleRead" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="decodesAgentMessageDeliveryStatusAndItsRevision" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="rejectsUnknownOrInconsistentAgentMessageStatusErrors" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="decodesApprovalResolvedIncludingTheOutcomesTheGatewayOwns" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="generationIdIsReadFromServerPayloadOnly" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="commandResultNamedClarifiesRefusals" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="decodesAttachmentWithFilenameAndMediaType" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="theGatewaysOwnDeadlineWinsOverLocallyDerivedArithmetic" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="decodesWithUnderscoreConversationIdInPayload" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <testcase name="approvalResolvedWithoutAnApprovalIdIsNotAnAnswer" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="malformedPayloadYieldsNullInsteadOfGuessing" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.003"/>
+  <testcase name="decodesCommandResultWithTheClosedOutcomeAndItsSource" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.0"/>
+  <testcase name="approvalRequestWithoutAUsableTierIsNotACard" classname="com.openandroidintelligence.conversation.data.GatewayEventDecoderTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

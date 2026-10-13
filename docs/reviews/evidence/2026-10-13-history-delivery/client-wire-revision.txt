@@ -1,0 +1,27 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.12/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preReleaseBuild UP-TO-DATE
+> Task :gateway-client:generateReleaseResValues UP-TO-DATE
+> Task :gateway-client:generateReleaseResources UP-TO-DATE
+> Task :gateway-client:packageReleaseResources UP-TO-DATE
+> Task :gateway-client:parseReleaseLocalResources UP-TO-DATE
+> Task :gateway-client:generateReleaseRFile UP-TO-DATE
+> Task :gateway-client:compileReleaseKotlin UP-TO-DATE
+> Task :gateway-client:javaPreCompileRelease UP-TO-DATE
+> Task :gateway-client:compileReleaseJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :gateway-client:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :gateway-client:preReleaseUnitTestBuild UP-TO-DATE
+> Task :gateway-client:generateReleaseUnitTestStubRFile UP-TO-DATE
+> Task :gateway-client:javaPreCompileReleaseUnitTest UP-TO-DATE
+> Task :gateway-client:processReleaseJavaRes UP-TO-DATE
+> Task :gateway-client:compileReleaseUnitTestKotlin
+> Task :gateway-client:compileReleaseUnitTestJavaWithJavac NO-SOURCE
+> Task :gateway-client:processReleaseUnitTestJavaRes UP-TO-DATE
+> Task :gateway-client:testReleaseUnitTest
+
+BUILD SUCCESSFUL in 19s
+15 actionable tasks: 2 executed, 13 up-to-date

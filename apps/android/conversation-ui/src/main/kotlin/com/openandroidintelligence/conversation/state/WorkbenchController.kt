@@ -14,6 +14,7 @@ import com.openandroidintelligence.conversation.model.AttachmentDraftId
 import com.openandroidintelligence.conversation.model.LocalSendAtom
 import com.openandroidintelligence.conversation.model.LocalSubmissionState
 import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
+import com.openandroidintelligence.conversation.model.reconcileSnapshotDeletions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -44,6 +45,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
+import androidx.collection.LruCache
 
 /**
  * One timeline entry for rendering: either a mirrored server message or a local
@@ -239,6 +241,7 @@ class WorkbenchController(
     private val collectingUnits=LinkedHashMap<String,Pair<String,OutgoingMessage>>()
     private val mirrored = LinkedHashMap<String, TimelineMessage>()
     private val sendAtomsByThread = LinkedHashMap<String, LinkedHashMap<String, LocalSendAtom>>()
+    private val snapshotDeletedIdsByThread = LinkedHashMap<String, MutableSet<String>>()
 
     private fun atomsFor(threadId: String): LinkedHashMap<String, LocalSendAtom> =
         sendAtomsByThread.getOrPut(threadId) {
@@ -262,11 +265,29 @@ class WorkbenchController(
         sendAtomsByThread[threadId] = persistence?.loadSendAtoms(threadId)?.associateByTo(linkedMapOf()) { it.clientMessageId.value } ?: existing
     }
 
+    /** 原批次成员身份不变；已删除成员清空正文，整个原批次只能查询，不能重发。 */
+    private fun reconcileDeletedRecoveryUnits(threadId: String) {
+        fun clean(message: OutgoingMessage) = if (atomsFor(threadId)[message.clientMessageId.value]?.isDeleted == true)
+            message.copy(text="",attachmentIds=emptyList(),command=null) else message
+        frozenBatches.entries.filter { it.value.conversationId == threadId }.forEach { (id,batch) ->
+            if (batch.messages.all { atomsFor(threadId)[it.clientMessageId.value]?.isDeleted == true }) frozenBatches.remove(id)
+            else frozenBatches[id]=batch.copy(messages=batch.messages.map(::clean))
+        }
+        collectingUnits.entries.filter { it.value.first == threadId }.forEach { (id,unit) ->
+            if (atomsFor(threadId)[id]?.isDeleted == true) collectingUnits.remove(id)
+            else collectingUnits[id]=threadId to clean(unit.second)
+        }
+        if (failedSubmission?.let { it.conversationId == threadId && atomsFor(threadId)[it.clientMessageId]?.isDeleted == true } == true) failedSubmission=null
+        if (pendingSubmission?.let { it.conversationId == threadId && atomsFor(threadId)[it.clientMessageId]?.isDeleted == true } == true) pendingSubmission=null
+    }
+
     private fun acceptSendAtom(threadId: String, clientId: String, messageId: String, batchId: String? = null) {
         changeSendAtom(threadId, clientId) { old -> old?.accepted(messageId, batchId ?: old.batchId) }
+        identifyHistoricalAttachments(threadId, ClientMessageId(clientId), messageId)
     }
 
     private fun applySendEvent(event: VerifiedConversationEvent) {
+        applyHistoricalAttachmentEvent(event)
         when (event) {
             is VerifiedConversationEvent.MessageStatus -> changeSendAtom(event.conversationId.value, event.clientMessageId.value) { old ->
                 old?.let { atom ->
@@ -275,12 +296,14 @@ class WorkbenchController(
                 }
             }
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value?.let { threadId ->
+                if (event.message.isDeleted) snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.add(event.message.id)
                 val atom = (persistence?.loadSendAtoms(threadId) ?: atomsFor(threadId).values.toList()).firstOrNull {
                     it.messageId == event.message.id || (event.message.clientMessageId != null && it.clientMessageId == event.message.clientMessageId)
                 }
                 atom?.let { known -> changeSendAtom(threadId, known.clientMessageId.value) { old ->
                     old?.let {
-                        if (event.revision <= it.contentRevision || it.tombstoneRevision?.let { revision -> event.revision <= revision } == true) it
+                        if (event.message.isDeleted) it.accepted(event.message.id).copy(parts=emptyList(),snapshotDeleted=true)
+                        else if (it.snapshotDeleted || event.revision <= it.contentRevision || it.tombstoneRevision?.let { revision -> event.revision <= revision } == true) it
                         else it.accepted(event.message.id).copy(parts = event.message.parts,
                             contentRevision = event.revision, tombstoneRevision = null)
                     }
@@ -335,9 +358,77 @@ class WorkbenchController(
 
     private val attachmentJobs = LinkedHashMap<String, Job>()
     private val attachmentPreviews = LinkedHashMap<String, ByteArray>()
-    private val historicalAttachments = object : LinkedHashMap<String, com.openandroidintelligence.conversation.model.TimelineAttachment>(32, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, com.openandroidintelligence.conversation.model.TimelineAttachment>?): Boolean {
-            return size > 30
+    private data class HistoricalAttachmentKey(val scope: ConversationScope, val threadId: String, val attachmentId: String)
+    private data class HistoricalAttachmentPreview(
+        val attachment: com.openandroidintelligence.conversation.model.TimelineAttachment,
+        val clientMessageId: ClientMessageId? = null,
+        val messageId: String? = null,
+        val contentRevision: Long = -1L,
+    )
+    /** 只保存有限的进程内缩略图；会话切换不能丢图，也不能借用其他账号或会话的图片。 */
+    private val historicalAttachments = object : LruCache<HistoricalAttachmentKey, HistoricalAttachmentPreview>(MAX_HISTORY_ATTACHMENT_PREVIEWS) {
+        override fun entryRemoved(evicted: Boolean, key: HistoricalAttachmentKey, oldValue: HistoricalAttachmentPreview, newValue: HistoricalAttachmentPreview?) {
+            oldValue.attachment.previewBytes?.takeIf { it !== newValue?.attachment?.previewBytes }?.fill(0)
+        }
+    }
+
+    private fun historicalAttachmentKey(threadId: String, attachmentId: String) =
+        HistoricalAttachmentKey(scopeFactory(), threadId, attachmentId)
+
+    private fun rememberHistoricalAttachment(threadId: String, attachment: com.openandroidintelligence.conversation.model.TimelineAttachment,
+        clientMessageId: ClientMessageId? = null, messageId: String? = null) {
+        val key = historicalAttachmentKey(threadId, attachment.draftId)
+        val previous = historicalAttachments[key]
+        // 与选图入口的缩略图边界一致；超出预算仅省略预览，不影响上传的文件字节。
+        val preview = attachment.previewBytes?.takeIf { it.size <= MAX_HISTORY_PREVIEW_BYTES }?.copyOf()
+        historicalAttachments.put(key, HistoricalAttachmentPreview(attachment.copy(previewBytes = preview),
+            clientMessageId ?: previous?.clientMessageId, messageId ?: previous?.messageId, previous?.contentRevision ?: -1L))
+    }
+
+    private fun identifyHistoricalAttachments(threadId: String, clientMessageId: ClientMessageId, messageId: String) {
+        val account = scopeFactory()
+        val atom = (persistence?.loadSendAtoms(threadId) ?: atomsFor(threadId).values.toList()).firstOrNull {
+            it.clientMessageId == clientMessageId && (it.messageId == null || it.messageId == messageId)
+        }
+        historicalAttachments.snapshot().forEach { (key, value) ->
+            if (key.scope == account && key.threadId == threadId && value.clientMessageId == clientMessageId &&
+                (value.messageId == null || value.messageId == messageId)) {
+                val contentRevision = maxOf(value.contentRevision, atom?.contentRevision ?: -1L)
+                // 删除可能先于回执落盘；补齐远端身份时同样遵守持久发送记录的删除屏障。
+                if (atom?.isDeleted == true) historicalAttachments.remove(key)
+                else historicalAttachments.put(key, value.copy(messageId = messageId, contentRevision = contentRevision))
+            }
+        }
+    }
+
+    /** 删除事件也可能属于当前未显示的会话，必须按消息身份及时释放缩略图。 */
+    private fun applyHistoricalAttachmentEvent(event: VerifiedConversationEvent) {
+        when (event) {
+            is VerifiedConversationEvent.MessageStatus ->
+                identifyHistoricalAttachments(event.conversationId.value, event.clientMessageId, event.messageId)
+            is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value?.let { threadId ->
+                if (event.message.sender != "user") return@let
+                val account = scopeFactory()
+                val attachments = event.message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
+                    .map { it.draftId.value }.toSet()
+                historicalAttachments.snapshot().forEach { (key, value) ->
+                    if (key.scope == account && key.threadId == threadId &&
+                        (value.messageId == event.message.id || (value.messageId == null && value.clientMessageId != null && value.clientMessageId == event.message.clientMessageId)) &&
+                        (event.message.isDeleted || event.revision > value.contentRevision)) {
+                        if (key.attachmentId in attachments) historicalAttachments.put(key, value.copy(messageId = event.message.id, contentRevision = event.revision))
+                        else historicalAttachments.remove(key)
+                    }
+                }
+            }
+            is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value?.let { threadId ->
+                val account = scopeFactory()
+                historicalAttachments.snapshot().forEach { (key, value) ->
+                    if (key.scope == account && key.threadId == threadId && value.messageId == event.messageId && event.revision >= value.contentRevision) {
+                        historicalAttachments.remove(key)
+                    }
+                }
+            }
+            else -> Unit
         }
     }
 
@@ -508,6 +599,8 @@ class WorkbenchController(
         timelineJob?.cancel()
         attachmentJobs.values.forEach { it.cancel() }
         attachmentJobs.clear()
+        attachmentPreviews.clear()
+        historicalAttachments.evictAll()
         bootstrapJob?.cancel()
         creationSendJob?.cancel()
         creationWatchdog?.cancel()
@@ -545,14 +638,15 @@ class WorkbenchController(
             userRenamedThreads.addAll(saved.renamedThreads)
             draftRevision = saved.draftRevision
             failedSubmission = saved.submission?.let { DraftSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) }
+            saved.threadId?.let(::reconcileDeletedRecoveryUnits)
             val restoredRows = renderTimeline()
             _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.threads),
-                activeThreadId = saved.threadId, activeThreadTitle = saved.title, draft = saved.draft.ifBlank { saved.submission?.text.orEmpty() },
-                attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } }, timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
-                composer = if (saved.submission != null) ComposerState.FAILED else ComposerState.EDITING,
-                hasRecoverableSubmissions = saved.batches.any { it.conversationId == saved.threadId } ||
+                activeThreadId = saved.threadId, activeThreadTitle = saved.title, draft = saved.draft.ifBlank { failedSubmission?.text.orEmpty() },
+                attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } }, timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
+                composer = if (failedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
+                hasRecoverableSubmissions = frozenBatches.values.any { it.conversationId == saved.threadId } || collectingUnits.values.any { it.first == saved.threadId } ||
                     saved.threadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true,
-                notice = if (saved.submission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (saved.batches.isNotEmpty()) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
+                notice = if (failedSubmission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (frozenBatches.isNotEmpty() || collectingUnits.isNotEmpty()) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
             attachmentCoordinator?.let { coordinator ->
                 _state.value.attachments.forEach { observeAttachment(coordinator,it.id.value) }
             }
@@ -677,10 +771,7 @@ class WorkbenchController(
         messageStatusRevisions.clear()
         messageStatusesById.clear()
         messageStatusesByClientId.clear()
-        // Rendering cache of the conversation being left: without this, a message
-        // of the newly opened thread could be rendered with an attachment's
-        // filename from another one.
-        historicalAttachments.clear()
+        // 缩略图以账号和会话作为键；切换只清活动消息，不清属于其他会话的有限预览。
         // Approval cards are deliberately NOT cleared here: they belong to the
         // account, not to the open thread. Coming back must show the same card
         // with the countdown it had, never a fresh one — and a card the Gateway
@@ -1463,7 +1554,8 @@ class WorkbenchController(
             return
         }
         pendingSubmission = failedSubmission?.takeIf {
-            it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId
+            it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId &&
+                it.conversationId?.let { id -> atomsFor(id)[it.clientMessageId]?.isDeleted } != true
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
             DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value)
         } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId)
@@ -1497,6 +1589,11 @@ class WorkbenchController(
                 val target = submission.conversationId ?: activeThreadId
                     ?: bootstrapConversationForFirstMessage().await().getOrThrow()
                 sendTarget = target
+                if (atomsFor(target)[submission.clientMessageId]?.isDeleted == true) {
+                    failedSubmission=null
+                    update { it.copy(composer=ComposerState.EDITING,timeline=Loadable.Ready(renderTimeline(it.pendingBatch))) }
+                    return@launch
+                }
                 if (activeThreadId == target) failedSubmission = submission.copy(conversationId = target)
                 persistCheckpoint()
                 val submittedAttachments = submission.attachmentIds.map { id ->
@@ -1507,13 +1604,10 @@ class WorkbenchController(
                         mediaType = d?.mediaType.orEmpty(),
                         previewBytes = attachmentPreviews[id],
                     )
-                    historicalAttachments[id] = att
                     att
                 }
-                submission.attachmentIds.zip(remoteIds).forEach { (draftId, remoteId) ->
-                    historicalAttachments[draftId]?.let { att ->
-                        historicalAttachments[remoteId] = att.copy(draftId = remoteId)
-                    }
+                submittedAttachments.zip(remoteIds).forEach { (attachment, remoteId) ->
+                    rememberHistoricalAttachment(target, attachment.copy(draftId = remoteId), ClientMessageId(submission.clientMessageId))
                 }
                 val entry = TimelineEntry(
                     key = "local_" + submission.clientMessageId, sender = "user",
@@ -1596,7 +1690,7 @@ class WorkbenchController(
                     acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId)
                     if (activeThreadId == target) {
                         val statusReceipt = messageStatusesByClientId[message.clientMessageId.value]
-                        if (atomsFor(target)[message.clientMessageId.value]?.tombstoneRevision == null && !mirrored.containsKey(acceptance.messageId)) mirrored[acceptance.messageId] = TimelineMessage(
+                        if (atomsFor(target)[message.clientMessageId.value]?.isDeleted != true && !mirrored.containsKey(acceptance.messageId)) mirrored[acceptance.messageId] = TimelineMessage(
                             id = acceptance.messageId, sender = "user",
                             parts = buildList {
                                 if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
@@ -1688,6 +1782,10 @@ class WorkbenchController(
         messages: List<OutgoingMessage>,
     ) {
         if (messages.isEmpty()) return
+        if (messages.any { atomsFor(conversationId)[it.clientMessageId.value]?.isDeleted == true }) {
+            recoverBatch(conversationId,messages,frozenBatches.values.firstOrNull { it.conversationId == conversationId && it.messages.map { m -> m.clientMessageId } == messages.map { m -> m.clientMessageId } }?.batchId)
+            return
+        }
         val batchId="batch_"+java.security.MessageDigest.getInstance("SHA-256").digest((conversationId+"\u0000"+messages.joinToString("\u0000") { it.clientMessageId.value }).toByteArray()).joinToString("") { "%02x".format(it) }
         if (!submittingBatches.add(batchId)) return
         val flushedKeys = messages.map { "local_" + it.clientMessageId.value }.toSet()
@@ -1712,7 +1810,7 @@ class WorkbenchController(
             val pendingEntries = _state.value.pendingBatch
             messages.forEach { msg ->
                 val localId = msg.clientMessageId.value
-                if (atomsFor(conversationId)[localId]?.tombstoneRevision != null) return@forEach
+                if (atomsFor(conversationId)[localId]?.isDeleted == true) return@forEach
                 if (mirrored.containsKey(acceptance.memberIds.getValue(localId))) return@forEach
                 // The Gateway's id is the only key the mirror may use: a
                 // member mirrored under its own local id showed up a second
@@ -1791,7 +1889,7 @@ class WorkbenchController(
         val batchMembers = collectingUnits.filterValues { it.first == threadId }.keys +
             frozenBatches.values.filter { it.conversationId == threadId }.flatMap { batch -> batch.messages.map { it.clientMessageId.value } }
         return atomsFor(threadId).values.filter {
-            it.batchId == null && it.clientMessageId.value !in batchMembers &&
+            !it.isDeleted && it.batchId == null && it.clientMessageId.value !in batchMembers &&
                 it.submissionState in setOf(LocalSubmissionState.OUTCOME_UNKNOWN, LocalSubmissionState.FAILED)
         }
     }
@@ -1800,6 +1898,7 @@ class WorkbenchController(
     fun retryPendingSubmissions() {
         if (!_state.value.isOnline) return
         val current = activeThreadId ?: return
+        reconcileDeletedRecoveryUnits(current)
         val ready=frozenBatches.values.filter { it.conversationId == current }
         val unsealed=collectingUnits.values.filter { it.first == current }.groupBy { it.first }
         val ordinary = recoverableOrdinaryAtoms(current).toList()
@@ -1814,13 +1913,21 @@ class WorkbenchController(
 
     private suspend fun recoverOrdinary(atom: LocalSendAtom) {
         val threadId = atom.conversationId.value
+        if (atom.isDeleted || atomsFor(threadId)[atom.clientMessageId.value]?.isDeleted == true) return
         var querying = true
         var remotelyAccepted = false
         try {
             val query = repository as? com.openandroidintelligence.conversation.ports.MessageOutcomeQuery
                 ?: throw java.io.IOException("MESSAGE_QUERY_UNAVAILABLE")
             val known = query.queryMessage(threadId, atom.clientMessageId)
+            persistence?.loadSendAtoms(threadId)?.let { sendAtomsByThread[threadId]=it.associateByTo(linkedMapOf()) { a -> a.clientMessageId.value } }
             querying = false
+            if (known?.isDeleted == true || atomsFor(threadId)[atom.clientMessageId.value]?.isDeleted == true) {
+                reconcileDeletedRecoveryUnits(threadId)
+                if (activeThreadId == threadId) update { it.copy(timeline=Loadable.Ready(renderTimeline(it.pendingBatch))) }
+                else persistCheckpoint()
+                return
+            }
             val text = atom.parts.joinToString("") { part -> when (part) {
                 is com.openandroidintelligence.conversation.model.MessagePart.Text -> part.value
                 is com.openandroidintelligence.conversation.model.MessagePart.Command -> part.rawText
@@ -1864,13 +1971,20 @@ class WorkbenchController(
             return
         }
         try {
-            val known = messages.map { query.queryMessage(threadId, it.clientMessageId) }
+            val liveMessages=messages.filterNot { atomsFor(threadId)[it.clientMessageId.value]?.isDeleted == true }
+            val known = liveMessages.map { query.queryMessage(threadId, it.clientMessageId) }
+            persistence?.loadSendAtoms(threadId)?.let { sendAtomsByThread[threadId]=it.associateByTo(linkedMapOf()) { a -> a.clientMessageId.value } }
+            val hasDeletedMember=messages.any { atomsFor(threadId)[it.clientMessageId.value]?.isDeleted == true }
             if (known.all { it != null }) {
-                messages.zip(known).forEach { (message, accepted) -> acceptSendAtom(threadId, message.clientMessageId.value, accepted!!.id) }
+                liveMessages.zip(known).forEach { (message, accepted) -> acceptSendAtom(threadId, message.clientMessageId.value, accepted!!.id) }
                 frozenId?.let(frozenBatches::remove)
                 messages.forEach { collectingUnits.remove(it.clientMessageId.value) }
                 persistCheckpoint()
                 if (activeThreadId == threadId) reloadTimeline(threadId)
+            } else if (hasDeletedMember) {
+                reconcileDeletedRecoveryUnits(threadId)
+                if (activeThreadId == threadId) update { it.copy(notice="SEND_OUTCOME_UNKNOWN:原批次含已删除消息，只能查询其余成员，禁止重发") }
+                else persistCheckpoint()
             } else if (known.any { it != null }) {
                 if (activeThreadId == threadId) update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:BATCH_CONFIRMATION_INCOMPLETE") }
             } else {
@@ -1943,18 +2057,21 @@ class WorkbenchController(
     }
     fun dismissMediaRetention() { update { it.copy(mediaRetention=null) } }
     fun clearRetainedMediaPreviews() {
-        historicalAttachments.entries.forEach { entry -> if(entry.value.savedOffline) {
-            entry.value.previewBytes?.fill(0)
-            entry.setValue(entry.value.copy(previewBytes=null,savedOffline=false))
-        } }
-        update { it.copy(timeline=if(mirrored.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline()),mediaRetention=null) }
+        historicalAttachments.evictAll()
+        val rows = renderTimeline()
+        update { it.copy(timeline=if(rows.isEmpty()) Loadable.Empty else Loadable.Ready(rows),mediaRetention=null) }
     }
     fun confirmMediaRetention() {
         val metadata=_state.value.mediaRetention ?: return
         dismissMediaRetention()
         scope.launch { try {
             media?.retain(metadata) ?: error("MEDIA_CACHE_UNAVAILABLE")
-            historicalAttachments[metadata.attachmentId]=com.openandroidintelligence.conversation.model.TimelineAttachment(metadata.attachmentId,metadata.filename,metadata.mediaType,media.preview(metadata.attachmentId),true)
+            val message = mirrored.values.firstOrNull { row -> row.parts.any {
+                it is com.openandroidintelligence.conversation.model.MessagePart.Attachment && it.draftId.value == metadata.attachmentId
+            } }
+            rememberHistoricalAttachment(metadata.conversationId,
+                com.openandroidintelligence.conversation.model.TimelineAttachment(metadata.attachmentId,metadata.filename,metadata.mediaType,media.preview(metadata.attachmentId),true),
+                message?.clientMessageId, message?.id)
             update { it.copy(timeline=Loadable.Ready(renderTimeline()),notice="已保留加密离线副本") }
         } catch (c:CancellationException) { throw c } catch (e:Exception) { update { it.copy(notice=errorCodeOf(e)) } } }
     }
@@ -2110,6 +2227,13 @@ class WorkbenchController(
                             val eventConvId = message.conversationId?.value
                             if (eventConvId != null && eventConvId != currentActiveId) {
                                 refreshThreads()
+                                return@collect
+                            }
+                            if (message.isDeleted || snapshotDeletedIdsByThread[currentActiveId]?.contains(message.id) == true) {
+                                mirrored.remove(message.id)
+                                mirroredRevisions.remove(message.id)
+                                update { it.copy(timeline=Loadable.Ready(renderTimeline(it.pendingBatch))) }
+                                markEventHandled(event.eventId)
                                 return@collect
                             }
                             val previousRevision = mirroredRevisions[message.id]
@@ -2279,10 +2403,25 @@ class WorkbenchController(
             if (!isActive || activeThreadId != threadId) return@launch
             result.onSuccess { page ->
                 if (!isActive || activeThreadId != threadId) return@launch
+                val deletedIds=page.deletedMessageIds + page.messages.filter { it.isDeleted }.map { it.id }
+                snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.addAll(deletedIds)
+                val latestAtoms=persistence?.loadSendAtoms(threadId) ?: atomsFor(threadId).values.toList()
+                val reconciled=reconcileSnapshotDeletions(page.messages,latestAtoms).map { atom ->
+                    if (atom.messageId in deletedIds) atom.copy(parts=emptyList(),snapshotDeleted=true) else atom
+                }
+                if (reconciled != latestAtoms) persistence?.saveSendAtoms(threadId,reconciled)
+                sendAtomsByThread[threadId]=(persistence?.loadSendAtoms(threadId) ?: reconciled).associateByTo(linkedMapOf()) { it.clientMessageId.value }
+                reconcileDeletedRecoveryUnits(threadId)
+                deletedIds.forEach { id -> mirrored.remove(id); mirroredRevisions.remove(id); messageStatusesById.remove(id) }
+                historicalAttachments.snapshot().forEach { (key,value) ->
+                    if (key.scope == scopeFactory() && key.threadId == threadId && (value.messageId in deletedIds ||
+                        value.clientMessageId?.value?.let { atomsFor(threadId)[it]?.isDeleted } == true)) historicalAttachments.remove(key)
+                }
                 var receivedConfirmedAssistantForCurrentTurn = false
                 page.messages.sortedWith(
                     compareBy<TimelineMessage> { it.timestamp }.thenBy { if (it.sender == "user") 0 else 1 }
                 ).forEach { rawMessage ->
+                    if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
                     val message = withLatestMessageStatus(rawMessage)
                     val currentRevision = mirroredRevisions[message.id] ?: 0L
                     if (!mirrored.containsKey(message.id) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
@@ -2443,7 +2582,7 @@ class WorkbenchController(
     }
 
     private fun withLatestMessageStatus(message: TimelineMessage): TimelineMessage =
-        messageStatusesById[message.id]?.let { receipt ->
+        if (message.isDeleted) message else messageStatusesById[message.id]?.let { receipt ->
             message.copy(state = receipt.status.wireValue, errorCode = receipt.errorCode?.wireValue)
         } ?: message
 
@@ -2455,7 +2594,9 @@ class WorkbenchController(
                 val messageAttachments = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
                     .map { att ->
                         val id = att.draftId.value
-                        historicalAttachments[id] ?: run {
+                        activeThreadId?.let { historicalAttachments[historicalAttachmentKey(it, id)]?.attachment }?.let { cached ->
+                            cached.copy(filename = att.filename.ifBlank { cached.filename }, mediaType = att.mediaType.ifBlank { cached.mediaType })
+                        } ?: run {
                             val d = _state.value.attachments.firstOrNull { it.id.value == id }
                             com.openandroidintelligence.conversation.model.TimelineAttachment(
                                 draftId = id,
@@ -2501,7 +2642,7 @@ class WorkbenchController(
 
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
         val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()
-        val deletedClientIds = activeAtoms.filter { it.tombstoneRevision != null }.map { it.clientMessageId.value }.toSet()
+        val deletedClientIds = activeAtoms.filter { it.isDeleted }.map { it.clientMessageId.value }.toSet()
         val unconfirmedPending = pendingBatch.filterNot { entry ->
             mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_")) || mirroredClientIds.contains(entry.key.removePrefix("local_")) || deletedClientIds.contains(entry.key.removePrefix("local_"))
         }
@@ -2736,6 +2877,10 @@ class WorkbenchController(
         command.trim().trimStart('/').equals(NEW_CONVERSATION_COMMAND.trimStart('/'), ignoreCase = true)
 
     private companion object {
+        /** 沿用最多 30 条媒体显示记录，每项至多 256 KiB 缩略图，总预览字节至多 7.5 MiB。 */
+        const val MAX_HISTORY_ATTACHMENT_PREVIEWS = 30
+        const val MAX_HISTORY_PREVIEW_BYTES = 256 * 1024
+
         /**
          * How long a replacement subscription waits for the one it replaces.
          *

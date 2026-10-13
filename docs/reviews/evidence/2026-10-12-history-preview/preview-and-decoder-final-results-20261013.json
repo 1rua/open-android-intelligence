@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-13",
+  "classes": [
+    {
+      "module": "conversation-ui",
+      "class": "com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "conversation-ui",
+      "class": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "conversation-ui",
+      "class": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "conversation-data",
+      "class": "com.openandroidintelligence.conversation.data.GatewayEventDecoderTest",
+      "tests": 29,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "totals": {
+    "tests": 89,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "test_tasks": [
+    "> Task :conversation-data:testReleaseUnitTest",
+    "> Task :conversation-ui:testReleaseUnitTest"
+  ],
+  "test_tasks_executed": true,
+  "gradle_flags": [
+    "--offline",
+    "--no-daemon",
+    "--no-build-cache",
+    "--console=plain",
+    "--rerun (each test task)"
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "sourceBaseline": "d5e1838a04e8508845bb4fc6529e8edfcb776330",
+  "commandLog": "final-focused-matrix.txt",
+  "scope": "本次未提交的删除屏障与并行历史修复工作区",
+  "suites": [
+    {
+      "module": "app",
+      "task": "testFullReleaseUnitTest",
+      "class": "com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest",
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "app",
+      "task": "testFullReleaseUnitTest",
+      "class": "com.openandroidintelligence.mobile.EncryptedMirrorRecoveryTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "conversation-ui",
+      "task": "testReleaseUnitTest",
+      "class": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "conversation-ui",
+      "task": "testReleaseUnitTest",
+      "class": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "conversation-ui",
+      "task": "testReleaseUnitTest",
+      "class": "com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "conversation-data",
+      "task": "testReleaseUnitTest",
+      "class": "com.openandroidintelligence.conversation.data.GatewayEventDecoderTest",
+      "tests": 29,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "totals": {
+    "tests": 110,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

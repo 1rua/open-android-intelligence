@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" tests="19" skipped="0" failures="0" errors="0" timestamp="2026-10-13T02:50:44" hostname="djbd-cachyos" time="0.618">
+  <properties/>
+  <testcase name="controllerKeepsBothSendsAcrossThreadSwitchAndEncryptedMirrorReopenWithEmptyHostHistory" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.173"/>
+  <testcase name="explicitEmptyRemoteEditDoesNotRestoreThePreviousLocalText" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.023"/>
+  <testcase name="olderNonEmptyHostSnapshotCannotOverwriteConfirmedEditedText" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.029"/>
+  <testcase name="deletedMemberInFrozenBatchIsNotResubmittedOrShownAsRecoverable" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.026"/>
+  <testcase name="explicitDeletedHostSnapshotDoesNotRestoreTheLocalMessageOrCompletedStatus" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.025"/>
+  <testcase name="tombstoneSuppressesLocalAndLegacyRowsAcrossOldUpsertsAndEmptySnapshotRecovery" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.032"/>
+  <testcase name="statusBeforeReceiptAndIndependentContentRevisionSurviveReopenAndOlderWrites" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.022"/>
+  <testcase name="deletionBeforeHttpAcceptanceStillSuppressesTheLateReceipt" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.021"/>
+  <testcase name="displayedUserAndAssistantDeletionClearsTheWorkbenchAndSurvivesReopen" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.027"/>
+  <testcase name="mixedDeletedFrozenBatchKeepsAllIdentitiesAndOnlyQueriesRemainingUnknownMembers" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.026"/>
+  <testcase name="emptyOutcomeQueryBindsOriginalIdentityWithoutLosingBodyOrSubmittingAgain" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.019"/>
+  <testcase name="olderNonEmptyHostSnapshotCannotRestoreTextAfterConfirmedEmptyEdit" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.019"/>
+  <testcase name="versionOneDeletedRowMigratesWithoutLosingReadableHistoryOrDraft" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.027"/>
+  <testcase name="higherContentRevisionStillRestoresAnOrdinaryRevisionedTombstone" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.028"/>
+  <testcase name="tombstoneRevisionWriteFailureCanReplayWithoutLosingDeletedAttachmentIds" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.032"/>
+  <testcase name="eventPersistenceFailureLeavesCursorReplayableAndRetryDurablyAppliesIt" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.019"/>
+  <testcase name="completedPaginationKeepsExplicitDeletionIdentitiesAndDiscardsAnExpiredAttempt" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.017"/>
+  <testcase name="versionOneMigrationRetriesAfterFinalCheckpointFailureAndPreservesNewerLedgerFacts" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.022"/>
+  <testcase name="snapshotDeletionSurvivesLateUpsertsStatusReceiptEmptyBaselineAndAssistantReopen" classname="com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest" time="0.027"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

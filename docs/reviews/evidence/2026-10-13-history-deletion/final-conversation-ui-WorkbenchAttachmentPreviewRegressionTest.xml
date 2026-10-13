@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" tests="9" skipped="0" failures="0" errors="0" timestamp="2026-10-13T02:50:47" hostname="djbd-cachyos" time="0.257">
+  <properties/>
+  <testcase name="sentImagePreviewSurvivesSwitchingAwayAfterTheAgentReply" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.193"/>
+  <testcase name="previewEvictionKeepsMessageTextAndAttachmentMetadata" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.032"/>
+  <testcase name="anotherConversationCannotBorrowAnImageWithTheSameAttachmentIdentity" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.004"/>
+  <testcase name="closingWorkbenchReleasesOnlyItsOwnedPreviewAndANewAccountHasNoCopy" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.004"/>
+  <testcase name="deletingAnInactiveMessageReleasesItsImagePreview" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.003"/>
+  <testcase name="clearingMediaAlsoReleasesAnInactiveConversationsPreview" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.003"/>
+  <testcase name="aRepeatedContentRevisionCannotDiscardTheCurrentImagePreview" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.005"/>
+  <testcase name="anOversizedPreviewIsOmittedWithoutRejectingTheAttachmentSend" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.004"/>
+  <testcase name="aLateAcceptanceCannotKeepAPreviewAfterTheDurableMessageDeletion" classname="com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest" time="0.008"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

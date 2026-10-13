@@ -1,0 +1,20 @@
+{
+  "suites": [
+    {
+      "class": "com.openandroidintelligence.gateway.conversations.ConversationClientTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "class": "com.openandroidintelligence.gateway.conversations.QueryMessageEvidenceTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "rerun": true,
+  "buildCache": false
+}

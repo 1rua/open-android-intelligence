@@ -226,6 +226,20 @@ class GatewayEventDecoderTest {
         assertEquals("image/png", part.mediaType)
     }
 
+    @Test fun historicalAttachmentReferenceAndAttachmentHaveTheSameEventProjection() {
+        val expected = listOf(com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+            com.openandroidintelligence.conversation.model.AttachmentDraftId("att_history"), "photo.png", "image/png",
+        ))
+        listOf("attachment_ref", "attachment").forEach { type ->
+            val event = SseParser().feed(frame("evt_history_$type", "conversation.timeline.upsert",
+                """{"payload":{"conversationId":"conv_a","messageId":"msg_image","sender":"user","revision":3,"parts":[{"type":"$type","attachmentId":"att_history","filename":"photo.png","mediaType":"image/png"}]}}"""
+            )).single()
+            val decoded = GatewayEventDecoder.decode(event) as VerifiedConversationEvent.TimelineUpsert
+            assertEquals("同一附件的 HTTP 历史形状不能在事件中丢失", expected, decoded.message.parts)
+            assertEquals("conv_a", decoded.message.conversationId?.value)
+        }
+    }
+
     @Test
     fun decodesWithUnderscoreConversationIdInPayload() {
         val parser = SseParser()

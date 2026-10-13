@@ -1,0 +1,15 @@
+{
+  "name": "com.openandroidintelligence.conversation.data.HermesHttpInteropTest",
+  "tests": "5",
+  "failures": "0",
+  "errors": "0",
+  "skipped": "0",
+  "time": "7.84",
+  "cases": [
+    "reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage",
+    "streamedReplyIsObservableBeforeCompletionOverSse",
+    "streamedReplyIsObservableBeforeCompletionOverTheDefaultWebSocket",
+    "passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes",
+    "batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary"
+  ]
+}

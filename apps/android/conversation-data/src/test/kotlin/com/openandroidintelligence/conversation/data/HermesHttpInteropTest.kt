@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.data
 
 import com.openandroidintelligence.conversation.model.ClientMessageId
+import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.gateway.attachments.*
 import com.openandroidintelligence.gateway.auth.GatewayAuthClient
@@ -16,6 +17,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
 import java.security.KeyPairGenerator
+import java.security.MessageDigest
 import java.security.Signature
 import java.util.Base64
 import java.util.concurrent.TimeUnit
@@ -43,6 +45,142 @@ import com.openandroidintelligence.gateway.events.GatewayEvent
  * 不会跳过——否则这条真实链路会退化成无人验证的绿。
  */
 class HermesHttpInteropTest {
+    @Test fun reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage() = runBlocking {
+        coroutineScope {
+            val root = File("../../..").canonicalFile
+            val pluginRoot = (System.getenv("HERMES_PLUGIN_ROOT")?.let(::File) ?: File(root, ".hermes-gateway-plugin")).canonicalFile
+            val fixture = File(pluginRoot, "tests/android_gateway_fixture.py")
+            check(fixture.isFile) { "HERMES_FIXTURE_MISSING" }
+            val sdkValue = System.getenv("HERMES_SDK_ROOT")?.takeIf { it.isNotBlank() }
+                ?: error("HERMES_SDK_ROOT_REQUIRED")
+            val sdkRoot = File(sdkValue).let { if (it.isAbsolute) it else File(root, sdkValue) }.canonicalFile
+            check(File(sdkRoot, "hermes_state.py").isFile) { "HERMES_SDK_SOURCE_MISSING" }
+            val log = File(root, "tmp/conversation-bugfix/hermes-history-http.txt").also { it.parentFile!!.mkdirs() }
+            val builder = ProcessBuilder("python3", fixture.path, "--history-agent", "--contract-root",
+                System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT") ?: File(root, "gateway-contract").path)
+                .directory(pluginRoot).redirectError(log)
+            // 明确解析 SDK 来源，Gradle 工作目录与夹具工作目录变化不能改变宿主选择。
+            builder.environment()["HERMES_SDK_ROOT"] = sdkRoot.path
+            val process = builder.start()
+            try {
+                val baseUrl = process.inputStream.bufferedReader().readLine()
+                check(baseUrl?.startsWith("http://127.0.0.1:") == true) { "HERMES_HISTORY_FIXTURE_START_FAILED" }
+                val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+                val auth = GatewayAuthClient(GatewayTransport(GatewayProfile("pre", "pre", "pre", baseUrl!!)),
+                    "install_history_interop", "test", 35)
+                val negotiated = auth.negotiate("neg_history_interop")
+                val session = auth.loginWithPassword(negotiated.negotiationId, "alice", "android-fixture-only".toCharArray(),
+                    "历史互通", ed25519WirePublicKey(keyPair.public))
+                val profile = GatewayProfile(session.accountId, session.deviceId, session.sessionId, baseUrl, accessToken = session.accessToken)
+                val health = EventStreamStatusSink()
+                val http = GatewayHttpClient(profile, GatewayTransport(profile), { bytes ->
+                    Signature.getInstance("Ed25519").run { initSign(keyPair.private); update(bytes); sign() }
+                }, InMemoryEventCursorStore(), statusSink = health)
+                val repository = GatewayConversationRepository(ConversationClient(http))
+                val scope = ConversationScope("profile", baseUrl, session.accountId, "install_history_interop")
+                val conversation = repository.createConversation(scope, "cc_history_interop")
+                // 一像素合成 PNG，不使用用户照片，也不需要图像/模型依赖。
+                val image = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+                val attachmentId = AttachmentUploader(HttpAttachmentTransport(http)).upload(
+                    SelectedAttachment("synthetic.png", "image/png", GatewayRequestBody.fromBytes(image)),
+                )
+                val clientId = ClientMessageId("cm_history_interop")
+                val original = "请说明这张合成图片\n保留这个原始文本。"
+                val events = Channel<VerifiedConversationEvent>(Channel.UNLIMITED)
+                val subscription = launch(start = CoroutineStart.UNDISPATCHED) {
+                    repository.observeEvents(scope).collect { events.send(it) }
+                }
+                val published = mutableListOf<TimelineMessage>()
+                val receipt = try {
+                    http.execute(SignedGatewayRequest("GET", "/open-android-intelligence/v2/sync/snapshot")).requireData("SYNC_SNAPSHOT")
+                    withTimeout(10_000) { health.status.first { it == EventStreamStatus.LIVE } }
+                    val accepted = repository.submitMessage(conversation.id.value, OutgoingMessage(clientId, original, listOf(attachmentId)))
+                    withTimeout(10_000) {
+                        var completed = false
+                        while (!completed || published.size < 2) {
+                            when (val event = events.receive()) {
+                                is VerifiedConversationEvent.TimelineUpsert -> if (event.message.sender == "assistant") published += event.message
+                                is VerifiedConversationEvent.MessageStatus -> if (event.clientMessageId == clientId) {
+                                    assertNotEquals(AgentMessageStatus.FAILED, event.status)
+                                    completed = event.status == AgentMessageStatus.COMPLETED
+                                }
+                                else -> Unit
+                            }
+                        }
+                    }
+                    accepted
+                } finally {
+                    subscription.cancelAndJoin()
+                    events.close()
+                }
+                assertEquals(listOf("正在查询合成测试图片信息", "这是一张合成测试图片，原始附件已经收到。"),
+                    published.map { (it.parts.single() as MessagePart.Text).value })
+                val other = repository.createConversation(scope, "cc_history_other")
+                assertTrue(repository.timeline(other.id.value, PageRequest()).messages.isEmpty())
+                var originalTimestamp: Long? = null
+                repeat(2) {
+                    val rows = repository.timeline(conversation.id.value, PageRequest()).messages
+                    val user = rows.single { it.clientMessageId == clientId }
+                    assertEquals(receipt.messageId, user.id)
+                    assertEquals(listOf(MessagePart.Text(original),
+                        MessagePart.Attachment(com.openandroidintelligence.conversation.model.AttachmentDraftId(attachmentId), "synthetic.png", "image/png")), user.parts)
+                    assertTrue(user.timestamp > 0)
+                    originalTimestamp?.let { assertEquals(it, user.timestamp) }
+                    originalTimestamp = user.timestamp
+                    for (live in published) {
+                        val restored = rows.single { it.id == live.id }
+                        assertEquals(live.parts, restored.parts)
+                        assertEquals(live.timestamp, restored.timestamp)
+                    }
+                    assertTrue(rows.filter { it.sender == "assistant" }.all { message ->
+                        message.parts.any { it !is MessagePart.Text || it.value.isNotBlank() }
+                    })
+                }
+                val mediaTarget = "/open-android-intelligence/v2/conversations/${conversation.id.value}/attachments/$attachmentId"
+                val metadataData = http.execute(SignedGatewayRequest("GET", "$mediaTarget/metadata")).requireData("HISTORY_MEDIA_METADATA")
+                val metadata = JsonFields.obj(JsonFields.field(metadataData, "metadata"))
+                val digest = MessageDigest.getInstance("SHA-256").digest(image).joinToString("") { "%02x".format(it) }
+                assertEquals(attachmentId, JsonFields.string(metadata, "attachmentId"))
+                assertEquals(conversation.id.value, JsonFields.string(metadata, "conversationId"))
+                assertEquals(image.size.toLong(), JsonFields.long(metadata, "sizeBytes"))
+                assertEquals("sha256:$digest", JsonFields.string(metadata, "sha256"))
+                assertEquals(true, JsonFields.bool(metadata, "remoteAvailable"))
+                val grant = http.execute(SignedGatewayRequest("POST", "$mediaTarget/cache-grant",
+                    headers = listOf(RawHeader("Content-Type", "application/json")), body = "{}".toByteArray())).requireData("HISTORY_MEDIA_GRANT")
+                val grantId = JsonFields.string(grant, "grantId") ?: error("HISTORY_MEDIA_GRANT_INVALID")
+                val contentTarget = "$mediaTarget/content?grantId=$grantId"
+                val content = http.execute(SignedGatewayRequest("GET", contentTarget)).requireData("HISTORY_MEDIA_CONTENT")
+                assertEquals("image/png", JsonFields.string(content, "mediaType"))
+                assertArrayEquals(image, Base64.getDecoder().decode(JsonFields.string(content, "contentBase64") ?: error("HISTORY_MEDIA_CONTENT_INVALID")))
+                val reused = http.execute(SignedGatewayRequest("GET", contentTarget))
+                assertEquals("媒体读取授权只能使用一次", 401, reused.status)
+                val reusedError = JsonFields.obj(JsonFields.field(JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(reused.body.decodeToString())), "error"))
+                assertEquals("AUTHENTICATION_FAILED", JsonFields.string(reusedError, "code"))
+                val foreignTarget = "/open-android-intelligence/v2/conversations/${other.id.value}/attachments/$attachmentId/metadata"
+                val foreign = http.execute(SignedGatewayRequest("GET", foreignTarget))
+                assertEquals("其它会话不能读取原会话图片", 400, foreign.status)
+                val foreignError = JsonFields.obj(JsonFields.field(JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(foreign.body.decodeToString())), "error"))
+                assertEquals("ATTACHMENT_NOT_FOUND", JsonFields.string(foreignError, "code"))
+                val diagnostics = log.readLines().filter { it.startsWith("{") }.mapNotNull {
+                    JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(it))
+                }
+                assertEquals("native", JsonFields.string(diagnostics.single { JsonFields.string(it, "fixtureMode") == "history-agent" }, "host"))
+                val persisted = diagnostics.single { JsonFields.string(it, "fixtureEvent") == "history-persisted" }
+                assertEquals(true, JsonFields.bool(persisted, "nativeSessionDb"))
+                assertEquals(true, JsonFields.bool(persisted, "modelInputPersisted"))
+                assertEquals(digest, JsonFields.string(persisted, "imageSha256"))
+                val released = diagnostics.single { JsonFields.string(it, "fixtureEvent") == "history-input-released" }
+                assertEquals("处理临时原件已经释放，历史图片仍能通过既有安全入口读取", true, JsonFields.bool(released, "released"))
+            } catch (failure: Throwable) {
+                System.err.println("Hermes 历史互通诊断：${log.readText()}")
+                throw failure
+            } finally {
+                process.destroy()
+                check(process.waitFor(10, TimeUnit.SECONDS)) { "HERMES_HISTORY_FIXTURE_STOP_FAILED" }
+            }
+        }
+    }
+
     @Test fun streamedReplyIsObservableBeforeCompletionOverTheDefaultWebSocket() = runBlocking {
         assertStreamingReply(defaultWebSocket = true)
     }

@@ -21,7 +21,11 @@ data class PageRequest(val cursor: String? = null, val limit: Int = 50)
 data class ConversationPage(val conversations: List<ConversationSummary>, val nextCursor: String?)
 data class ConversationSummary(val id: ConversationId, val title: String, val updatedAt: Long)
 data class Conversation(val id: ConversationId, val title: String, val createdAt: Long)
-data class TimelinePage(val messages: List<TimelineMessage>, val nextCursor: String?, val snapshotRevision: Long? = null)
+data class TimelinePage(
+    val messages: List<TimelineMessage>, val nextCursor: String?, val snapshotRevision: Long? = null,
+    /** 内部删除身份来自明确的宿主行；正文合并后仍需通知已显示的时间线。 */
+    val deletedMessageIds: Set<String> = emptySet(),
+)
 data class TimelineMessage(
     val id: String,
     val sender: String,
@@ -34,7 +38,12 @@ data class TimelineMessage(
     val batchId:String?=null,
     val clientMessageId: ClientMessageId? = null,
     val localSubmissionFailure: String? = null,
-)
+    /** 宿主明确发布的单条正文版本；缺少时沿用既有兼容路径。 */
+    val contentRevision: Long? = null,
+) {
+    /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
+    val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)
+}
 
 data class MessageBatch(
     val batchId: String,
@@ -408,6 +417,7 @@ interface MessageOutcomeQuery {
 suspend fun ConversationRepository.completeTimeline(conversationId: String): TimelinePage {
     repeat(3) { attempt ->
         val messages = linkedMapOf<String, TimelineMessage>()
+        val deletedMessageIds = linkedSetOf<String>()
         val cursors = mutableSetOf<String>()
         var cursor: String? = null
         var revision: Long? = null
@@ -417,10 +427,12 @@ suspend fun ConversationRepository.completeTimeline(conversationId: String): Tim
                 if (revision != null && page.snapshotRevision != revision) error("CURSOR_EXPIRED")
                 revision = page.snapshotRevision
                 page.messages.forEach { messages[it.id] = it }
+                deletedMessageIds.addAll(page.deletedMessageIds)
+                page.messages.filter { it.isDeleted }.forEach { deletedMessageIds.add(it.id) }
                 cursor = page.nextCursor
                 check(cursor == null || cursors.add(cursor)) { "TIMELINE_CURSOR_CYCLE" }
             } while (cursor != null)
-            return TimelinePage(messages.values.toList(), null, revision)
+            return TimelinePage(messages.values.toList(), null, revision, deletedMessageIds)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (cause: Exception) {

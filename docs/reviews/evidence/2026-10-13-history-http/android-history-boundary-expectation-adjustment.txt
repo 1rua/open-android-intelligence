@@ -1,0 +1,102 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.12/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :app
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :conversation-data:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-data:preBuild UP-TO-DATE
+> Task :conversation-data:preDebugBuild UP-TO-DATE
+> Task :conversation-data:generateDebugResValues UP-TO-DATE
+> Task :conversation-data:generateDebugResources UP-TO-DATE
+> Task :conversation-data:packageDebugResources UP-TO-DATE
+> Task :conversation-data:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-data:generateDebugRFile UP-TO-DATE
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:preBuild UP-TO-DATE
+> Task :conversation-domain:preDebugBuild UP-TO-DATE
+> Task :conversation-domain:generateDebugResValues UP-TO-DATE
+> Task :conversation-domain:generateDebugResources UP-TO-DATE
+> Task :conversation-domain:packageDebugResources UP-TO-DATE
+> Task :conversation-domain:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-domain:generateDebugRFile UP-TO-DATE
+> Task :conversation-domain:compileDebugKotlin UP-TO-DATE
+> Task :conversation-domain:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-domain:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-domain:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preDebugBuild UP-TO-DATE
+> Task :gateway-client:generateDebugResValues UP-TO-DATE
+> Task :gateway-client:generateDebugResources UP-TO-DATE
+> Task :gateway-client:packageDebugResources UP-TO-DATE
+> Task :gateway-client:parseDebugLocalResources UP-TO-DATE
+> Task :gateway-client:generateDebugRFile UP-TO-DATE
+> Task :gateway-client:compileDebugKotlin UP-TO-DATE
+> Task :gateway-client:javaPreCompileDebug UP-TO-DATE
+> Task :gateway-client:compileDebugJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-data:compileDebugKotlin UP-TO-DATE
+> Task :conversation-data:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-data:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-data:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-data:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-data:preDebugUnitTestBuild UP-TO-DATE
+> Task :conversation-data:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :conversation-data:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :conversation-data:processDebugJavaRes UP-TO-DATE
+> Task :conversation-domain:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-domain:processDebugJavaRes UP-TO-DATE
+> Task :gateway-client:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :gateway-client:processDebugJavaRes UP-TO-DATE
+> Task :conversation-data:compileDebugUnitTestKotlin
+> Task :conversation-data:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-data:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :conversation-data:testDebugUnitTest FAILED
+
+HermesHttpInteropTest > reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage STANDARD_ERROR
+    Hermes 历史互通诊断：{"fixtureMode": "history-agent", "host": "native"}
+    {"fixtureEvent": "history-persisted", "nativeSessionDb": true, "imageSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", "modelInputPersisted": true}
+    {"fixtureEvent": "history-input-released", "released": true}
+
+
+HermesHttpInteropTest > reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage FAILED
+    java.lang.AssertionError: 其它会话不能读取原会话图片 expected:<404> but was:<400>
+        at org.junit.Assert.fail(Assert.java:89)
+        at org.junit.Assert.failNotEquals(Assert.java:835)
+        at org.junit.Assert.assertEquals(Assert.java:120)
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage$1$1.invokeSuspend(HermesHttpInteropTest.kt:160)
+        at _COROUTINE._BOUNDARY._(CoroutineDebugging.kt:42)
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage$1.invokeSuspend(HermesHttpInteropTest.kt:49)
+
+        Caused by:
+        java.lang.AssertionError: 其它会话不能读取原会话图片 expected:<404> but was:<400>
+            at org.junit.Assert.fail(Assert.java:89)
+            at org.junit.Assert.failNotEquals(Assert.java:835)
+            at org.junit.Assert.assertEquals(Assert.java:120)
+            at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage$1$1.invokeSuspend(HermesHttpInteropTest.kt:160)
+            at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+            at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+            at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+            at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+            at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+            at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source)
+            at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:47)
+            at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source)
+            at com.openandroidintelligence.conversation.data.HermesHttpInteropTest.reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage(HermesHttpInteropTest.kt:48)
+
+1 test completed, 1 failed
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':conversation-data:testDebugUnitTest'.
+> There were failing tests. See the report at: file:///mnt/data/projects/open-android-intelligence/apps/android/conversation-data/build/reports/tests/testDebugUnitTest/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+BUILD FAILED in 15s
+35 actionable tasks: 2 executed, 33 up-to-date

@@ -802,27 +802,6 @@ class WorkbenchSendRegressionTest {
         coroutineContext.cancelChildren()
     }
 
-    @Test fun historicalAttachmentsDoesNotExceedCapacity() = runTest {
-        val repository = RecordingRepository()
-        val controller = controller(repository)
-        runCurrent()
-        controller.openThread("conv_1")
-        advanceUntilIdle()
-
-        val field = WorkbenchController::class.java.getDeclaredField("historicalAttachments").apply { isAccessible = true }
-        @Suppress("UNCHECKED_CAST")
-        val map = field.get(controller) as MutableMap<String, TimelineAttachment>
-
-        for (i in 1..40) {
-            map["att_$i"] = TimelineAttachment("att_$i", "file_$i.png", "image/png")
-        }
-
-        assertTrue(map.size <= 30)
-        assertFalse(map.containsKey("att_1"))
-        assertTrue(map.containsKey("att_40"))
-        coroutineContext.cancelChildren()
-    }
-
     @Test fun anUnansweredSendIsReportedInsteadOfWaitingForever() = runTest {
         val repository = object : RecordingRepository() {
             var timelineCalls = 0

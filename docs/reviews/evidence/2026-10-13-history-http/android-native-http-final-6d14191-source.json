@@ -1,0 +1,11 @@
+{
+  "pluginRevision": "6d14191296a27c8bc735bc80d88a6a147f92de65",
+  "files": {
+    "apps/android/conversation-data/build.gradle.kts": "61e5d41ad59de8850e7367388711097bf2edc51de2d26d7d45d76eadedcfe0af",
+    "apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/conversations/ConversationClient.kt": "dded6e880be56eeb71b3e0cd43451a187413262e4251e6ad0f0a89bfbc35cc60",
+    "apps/android/conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/HermesHttpInteropTest.kt": "6065af01d9103a0994274f98efe7a1433b54404755045171e5a15b237c9f3028",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/host_history.py": "b31c377f2bc7b330a512801660231c88decd0c75c04e91ad6e48e4280268b75f",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/history_media.py": "447a67074f1a6853d733297e34eb83650404929ebb6daf1bbae3ea4f04a089fc",
+    "tmp/hermes-history-worktree-20261012/open_android_intelligence_gateway/adapter.py": "d20137476cad724aef23eaf1f67799676177b0d6094c26b410894b787e66cde7"
+  }
+}

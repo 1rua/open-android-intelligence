@@ -1,0 +1,10 @@
+{
+  "repository": "1rua/hermes-gateway-plugin",
+  "revision": "a4a6acc855e2499ef11857a0f9ca438e7f424f63",
+  "runId": 38338770721,
+  "status": "completed",
+  "conclusion": "success",
+  "url": "https://github.com/1rua/hermes-gateway-plugin/actions/runs/38338770721",
+  "deploymentAllowed": false,
+  "reason": "独立推送后审查另有1项P1与4项P2需补修；该CI不是最终交付证据"
+}

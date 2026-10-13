@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" tests="37" skipped="0" failures="0" errors="0" timestamp="2026-10-13T02:50:48" hostname="djbd-cachyos" time="0.107">
+  <properties/>
+  <testcase name="activeConversationTimelineUpsertUpdatesImmediately" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.008"/>
+  <testcase name="failedConversationCreationKeepsTheDraftForRetry" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.006"/>
+  <testcase name="timelineWithIdenticalTimestampsPreservesStableArrivalOrder" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.003"/>
+  <testcase name="streamingTimelineUpsertEventsTransitionState" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.003"/>
+  <testcase name="renderTimelineMergesPendingLocalBatchWithMirroredMessages" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.004"/>
+  <testcase name="openThreadResetsGenerationToIdleWhenNotStreaming" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="timelineWithZeroTimestampsPreservesChronologicalOrderAndDoesNotGroupAtTop" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="switchingThreadsKeepsASingleEventSubscription" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="aNetworkFailureKeepsTheUnconfirmedMessageAndRestoresTheDraft" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="oldConfirmedEventWhileQueuedDoesNotPrematurelyCompleteGeneration" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="reloadTimelineAndStreamingEventRaceDoesNotDuplicateAssistantReply" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="stopGenerationWithoutGenerationIdSetsUnsupportedAndNotice" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="firstSendCreatesOneConversationAndSendsTheOriginalDraft" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="anArrivingAssistantMessageDisarmsTheWatchdog" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="delayedStreamingChunkDoesNotReintroduceDuplicateAfterConfirmedReply" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="aFailedSendWithAnAttachmentKeepsTheDraftAndItsAttachment" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.005"/>
+  <testcase name="identicalAssistantReplyInSubsequentTurnWithin60sIsNotPruned" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.004"/>
+  <testcase name="streamingReplyStartingWithPreviousConfirmedStepTextIsNotPruned" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.003"/>
+  <testcase name="batchMembersAreMirroredUnderTheGatewaysMessageId" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.003"/>
+  <testcase name="confirmedEventFollowedByReloadWithDifferentIdDoesNotDuplicateReply" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="streamingTimelineEventSetsIsStreamingOnEntry" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.003"/>
+  <testcase name="stopGenerationCancelsInFlightGenerationAndStreamingMessages" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="reloadTimelineWithHistoricalConfirmedRepliesDoesNotKillCurrentStreamingReply" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="sendDraftImmediatelyTransitionsToQueuedGeneration" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.001"/>
+  <testcase name="streamingReplyAfterToolExecutionConfirmedMessageIsPreserved" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.001"/>
+  <testcase name="outOfOrderTimelineUpsertLowerRevisionDoesNotOverwrite" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.001"/>
+  <testcase name="streamingWithTempIdFollowedByConfirmedWithPermanentIdDoesNotDuplicate" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="anUnansweredSendIsReportedInsteadOfWaitingForever" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="switchingThreadsCancelsPreviousTimelineJob" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="reloadTimelinePullingConfirmedReplyDisarmsWatchdog" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="acceptedHttpMessageRemainsQueuedUntilMonotonicAgentStatusArrives" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.003"/>
+  <testcase name="otherConversationTimelineUpsertDoesNotPolluteActiveTimeline" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="messageAcceptedRequiresExactMatchAndNotBlankCorrelationId" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.003"/>
+  <testcase name="restoredAttachmentStatusAndRetryContinueToUpdateTheWorkbench" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.006"/>
+  <testcase name="aReplayedEventIdIsAppliedOnlyOnce" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.003"/>
+  <testcase name="unownedEventWithoutConversationIdIsIntercepted" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.002"/>
+  <testcase name="observeThreadEventsRetriesOnException" classname="com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest" time="0.007"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

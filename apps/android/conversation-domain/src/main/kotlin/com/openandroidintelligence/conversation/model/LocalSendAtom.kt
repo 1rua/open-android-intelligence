@@ -22,7 +22,11 @@ data class LocalSendAtom(
     val submissionErrorCode: String? = null,
     val contentRevision: Long = -1L,
     val tombstoneRevision: Long? = null,
+    /** 快照明确删除属于身份事实；分页摘要不能用作单条内容修订。 */
+    val snapshotDeleted: Boolean = false,
 ) {
+    val isDeleted: Boolean get() = snapshotDeleted || tombstoneRevision != null
+
     fun accepted(serverId: String, serverBatchId: String? = batchId): LocalSendAtom {
         require(serverId.isNotBlank()) { "MESSAGE_ID_MISSING" }
         check(messageId == null || messageId == serverId) { "MESSAGE_ID_CONFLICT" }
@@ -32,6 +36,17 @@ data class LocalSendAtom(
     }
 }
 
+/** 只认明确删除与稳定身份，不将空页或缺正文的受理查询当作删除。 */
+fun reconcileSnapshotDeletions(remote: List<TimelineMessage>, atoms: List<LocalSendAtom>): List<LocalSendAtom> =
+    atoms.map { atom ->
+        val deleted = remote.firstOrNull { row -> row.isDeleted &&
+            (row.conversationId == null || row.conversationId == atom.conversationId) &&
+            ((atom.messageId != null && row.id == atom.messageId) || row.clientMessageId == atom.clientMessageId)
+        }
+        if (deleted == null) atom else atom.accepted(deleted.id, deleted.batchId ?: atom.batchId)
+            .copy(parts = emptyList(), snapshotDeleted = true)
+    }
+
 /** 仅凭明确身份回并发送事实；空快照和无正文的受理查询不能抹掉本地内容。 */
 fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom>): List<TimelineMessage> {
     val rows = remote.associateByTo(linkedMapOf()) { it.id }
@@ -39,7 +54,7 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
         val matching = rows.values.firstOrNull { row ->
             (atom.messageId != null && row.id == atom.messageId) || row.clientMessageId == atom.clientMessageId
         }
-        if (atom.tombstoneRevision != null) {
+        if (atom.isDeleted || matching?.isDeleted == true) {
             matching?.let { rows.remove(it.id) }
             return@forEach
         }
@@ -59,7 +74,9 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
             batchId = atom.batchId ?: matching?.batchId,
             clientMessageId = atom.clientMessageId,
             localSubmissionFailure = atom.submissionErrorCode.takeIf { atom.submissionState == LocalSubmissionState.FAILED },
+            contentRevision = atom.contentRevision.takeIf { it >= 0L } ?: matching?.contentRevision,
         )
     }
-    return rows.values.sortedWith(compareBy<TimelineMessage> { it.timestamp }.thenBy { if (it.sender == "user") 0 else 1 })
+    return rows.values.filterNot { it.isDeleted }
+        .sortedWith(compareBy<TimelineMessage> { it.timestamp }.thenBy { if (it.sender == "user") 0 else 1 })
 }

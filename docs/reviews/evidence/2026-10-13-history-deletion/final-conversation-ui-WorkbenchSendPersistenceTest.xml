@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" tests="14" skipped="0" failures="0" errors="0" timestamp="2026-10-13T02:50:48" hostname="djbd-cachyos" time="0.066">
+  <properties/>
+  <testcase name="anotherThreadsLateReceiptCannotEraseAnUnknownSendIdentity" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.014"/>
+  <testcase name="aFailedOutcomeQueryCannotSendTheUnknownMessageAgain" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.002"/>
+  <testcase name="anUnknownOrdinarySendIsQueriedBeforeRetryAfterRestart" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.004"/>
+  <testcase name="ordinaryRecoveryDoesNotReplaceANewerDraft" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.002"/>
+  <testcase name="anExplicitlyAbsentOrdinaryMessageRetriesWithTheOriginalIdentity" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.001"/>
+  <testcase name="recoveryQueriesAcceptedBatchInsteadOfExecutingItAgain" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.009"/>
+  <testcase name="completionBeforeHttpAcceptanceIsNotDowngradedByTheLateReceipt" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.004"/>
+  <testcase name="acceptanceStorageFailureKeepsTheFrozenBatchForQueryRecovery" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.003"/>
+  <testcase name="cancellationBeforeAcceptanceStaysTerminalAndANewSendCanStart" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.005"/>
+  <testcase name="preparedBatchSurvivesRestartWithoutAutomaticallySending" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.005"/>
+  <testcase name="delayedBatchAcceptanceBelongsToTheOriginalConversation" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.006"/>
+  <testcase name="acceptedMessageSurvivesSwitchingAwayBeforeHostHistoryIsAvailable" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.003"/>
+  <testcase name="cancelledTransportReleasesTheBatchGuardForConfirmedRecovery" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.004"/>
+  <testcase name="anotherThreadsLateFailureCannotChangeTheCurrentComposerOrNotice" classname="com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

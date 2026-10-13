@@ -34,6 +34,224 @@ class EncryptedSendAtomRecoveryTest {
     }
     private val accountScope = ConversationScope("profile_atoms", "https://gateway.example", "acct_atoms", "install_atoms")
 
+    @Test fun explicitNewerMessageContentVersionUpdatesTheJournalAndRejectsAnOlderPage() = runBlocking {
+        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        mirror.saveSendAtoms("conv_a",listOf(atom("cm_one","旧的可读原文").accepted("msg_cm_one").copy(contentRevision=1)))
+        val host=Host().apply { rows=listOf(row("msg_cm_one","宿主明确编辑的新原文","cm_one").copy(contentRevision=2,
+            parts=listOf(MessagePart.Text("宿主明确编辑的新原文"),MessagePart.Attachment(AttachmentDraftId("att_edited"),"新原图.png","image/png")))) }
+        val repository=MirroredConversationRepository(host,mirror)
+        val current=repository.timeline("conv_a",PageRequest()).messages.single()
+        assertEquals("宿主明确编辑的新原文",(current.parts.first() as MessagePart.Text).value)
+        assertEquals(2L,mirror.loadSendAtoms("conv_a").single().contentRevision)
+        host.rows=listOf(row("msg_cm_one","晚到的旧页","cm_one").copy(contentRevision=1))
+        assertEquals(current.parts,repository.timeline("conv_a",PageRequest()).messages.single().parts)
+        val reopened=EncryptedConversationMirror(context,accountScope,key)
+        assertEquals(current.parts,MirroredConversationRepository(Host(),reopened).timeline("conv_a",PageRequest()).messages.single().parts)
+    }
+
+    @Test fun explicitEmptyContentVersionClearsTheBodyWithoutInventingDeletion() = runBlocking {
+        val mirror=EncryptedConversationMirror(context,accountScope,key)
+        mirror.saveSendAtoms("conv_a",listOf(atom("cm_one","被明确清空的正文").accepted("msg_cm_one").copy(contentRevision=1)))
+        val updated=mirror.reconcileQuery("conv_a",ClientMessageId("cm_one"),row("msg_cm_one","","cm_one")
+            .copy(parts=emptyList(),contentRevision=2))
+        assertTrue(updated.parts.isEmpty())
+        assertFalse(mirror.loadSendAtoms("conv_a").single().isDeleted)
+        assertEquals(2L,mirror.loadSendAtoms("conv_a").single().contentRevision)
+    }
+
+    @Test fun explicitDeletedHostSnapshotDoesNotRestoreTheLocalMessageOrCompletedStatus() = runBlocking {
+        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val original = atom("cm_one", "宿主明确删除的原始正文").accepted("msg_cm_one").copy(parts = listOf(
+            MessagePart.Text("宿主明确删除的原始正文"),
+            MessagePart.Attachment(AttachmentDraftId("att_one"), "原始图片.png", "image/png"),
+        ))
+        mirror.saveSendAtoms("conv_a", listOf(original))
+        mirror.apply(status("evt_complete", "cm_one", AgentMessageStatus.COMPLETED, 8))
+        val host = Host().apply { rows = listOf(row("msg_cm_one", "", "cm_one").copy(parts = emptyList(), state = "DELETED")) }
+
+        val visible = MirroredConversationRepository(host, mirror).timeline("conv_a", PageRequest())
+
+        assertTrue("明确删除的宿主行不能被本地正文或完成状态复活", visible.messages.isEmpty())
+        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        assertTrue("删除后不能在 journal 中保留隐藏正文与附件", reopened.loadSendAtoms("conv_a").single().parts.isEmpty())
+        assertEquals(setOf("att_one"), reopened.deletedMediaIds("conv_a", "msg_cm_one").toSet())
+        assertEquals("分页摘要不能伪装成内容修订", -1L, reopened.loadSendAtoms("conv_a").single().contentRevision)
+        assertTrue(MirroredConversationRepository(Host(), reopened).timeline("conv_a", PageRequest()).messages.isEmpty())
+    }
+
+    @Test fun displayedUserAndAssistantDeletionClearsTheWorkbenchAndSurvivesReopen() = runBlocking {
+        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val original = atom("cm_one", "已显示的用户消息").accepted("msg_cm_one")
+        mirror.saveSendAtoms("conv_a", listOf(original))
+        val host = Host().apply { rows = listOf(row("msg_cm_one", "已显示的用户消息", "cm_one"),
+            row("assistant_one", "已显示的助手回复").copy(sender = "assistant")) }
+        val job = SupervisorJob()
+        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
+        try {
+            controller.openThread("conv_a"); yield()
+            assertEquals(2, (controller.state.value.timeline as Loadable.Ready).value.size)
+            controller.editDraft("删除历史时保留当前草稿")
+            host.rows = host.rows.map { it.copy(parts = emptyList(), state = "DELETED") }
+            controller.onForegrounded(); yield()
+
+            assertTrue("正在显示的用户与助手旧缓存必须遵守明确删除", (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().isEmpty())
+            assertEquals("删除历史时保留当前草稿", controller.state.value.draft)
+        } finally {
+            controller.close(); job.cancel()
+        }
+
+        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val restartJob = SupervisorJob()
+        val restarted = controller(CoroutineScope(restartJob + Dispatchers.Unconfined), Host(), reopened)
+        try {
+            yield(); restarted.openThread("conv_a"); yield()
+            assertTrue((restarted.state.value.timeline as? Loadable.Ready)?.value.orEmpty().isEmpty())
+            assertEquals("删除历史时保留当前草稿", restarted.state.value.draft)
+        } finally {
+            restarted.close(); restartJob.cancel()
+        }
+    }
+
+    @Test fun deletedMemberInFrozenBatchIsNotResubmittedOrShownAsRecoverable() = runBlocking {
+        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val frozen = SavedBatch("cb_frozen", "conv_a", listOf(OutgoingMessage(ClientMessageId("cm_one"), "已删除的冻结提交正文")))
+        mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "已删除的冻结提交正文").copy(
+            batchId = "cb_frozen", submissionState = LocalSubmissionState.OUTCOME_UNKNOWN,
+        )))
+        mirror.save(WorkbenchCheckpoint(emptyList(), "conv_a", "会话", emptyList(), emptyMap(), "独立的新草稿", 3,
+            emptyList(), null, emptySet(), emptySet(), listOf(frozen)))
+        mirror.saveTimeline("conv_a", TimelinePage(listOf(row("msg_cm_one", "", "cm_one").copy(parts = emptyList(), state = "DELETED")), null))
+        val host = Host()
+        val job = SupervisorJob()
+        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
+        try {
+            yield(); controller.retryPendingSubmissions(); yield()
+
+            assertEquals("已删除的批次成员不能因查询空结果而重复提交", 0, host.submissionCount)
+            assertFalse(controller.state.value.hasRecoverableSubmissions)
+            assertTrue(userTexts(controller).isEmpty())
+            assertEquals("独立的新草稿", controller.state.value.draft)
+        } finally {
+            controller.close(); job.cancel()
+        }
+    }
+
+    @Test fun snapshotDeletionSurvivesLateUpsertsStatusReceiptEmptyBaselineAndAssistantReopen() = runBlocking {
+        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val original = atom("cm_one", "迟到回执不得补回原文")
+        mirror.saveSendAtoms("conv_a", listOf(original))
+        mirror.saveTimeline("conv_a", TimelinePage(listOf(
+            row("msg_cm_one", "", "cm_one").copy(parts = emptyList(), state = "DELETED"),
+            row("assistant_one", "").copy(sender = "assistant", parts = emptyList(), state = "DELETED"),
+        ), null, Long.MAX_VALUE))
+        val late = listOf(
+            VerifiedConversationEvent.TimelineUpsert("evt_late_user", 900, 900, row("msg_cm_one", "迟到的用户旧内容", "cm_one")),
+            VerifiedConversationEvent.TimelineUpsert("evt_late_assistant", 901, 901, row("assistant_one", "迟到的助手旧内容").copy(sender = "assistant")),
+            status("evt_late_status", "cm_one", AgentMessageStatus.COMPLETED, 999),
+        )
+        val projected = MirroredConversationRepository(Host(late), mirror).observeEvents(accountScope).toList()
+        assertTrue(projected.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().all { it.message.isDeleted && it.message.parts.isEmpty() })
+        mirror.saveSendAtoms("conv_a", listOf(original.accepted("msg_cm_one")))
+        mirror.installBaseline(emptyList(), mapOf("conv_a" to TimelinePage(emptyList(), null, 1)), "evt_empty_baseline")
+        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        reopened.finishBaselineRecovery()
+        val durable = reopened.loadSendAtoms("conv_a").single()
+        assertTrue(durable.snapshotDeleted)
+        assertTrue(durable.parts.isEmpty())
+        assertEquals(-1L, durable.contentRevision)
+        assertEquals(AgentMessageStatus.COMPLETED, durable.status)
+        val job = SupervisorJob()
+        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), Host(late), reopened)
+        try {
+            controller.openThread("conv_a"); yield()
+            assertTrue((controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().isEmpty())
+            controller.retryPendingSubmissions(); yield()
+            assertFalse(controller.state.value.hasRecoverableSubmissions)
+        } finally {
+            controller.close(); job.cancel()
+        }
+    }
+
+    @Test fun mixedDeletedFrozenBatchKeepsAllIdentitiesAndOnlyQueriesRemainingUnknownMembers() = runBlocking {
+        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val members = listOf(OutgoingMessage(ClientMessageId("cm_deleted"), "已删除成员的原稿"),
+            OutgoingMessage(ClientMessageId("cm_unknown"), "仍未知成员的原稿"))
+        mirror.saveSendAtoms("conv_a", members.map { atom(it.clientMessageId.value, it.text).copy(
+            batchId = "cb_original", submissionState = LocalSubmissionState.OUTCOME_UNKNOWN,
+        ) })
+        mirror.save(WorkbenchCheckpoint(emptyList(), "conv_a", "会话", emptyList(), emptyMap(), "独立草稿", 7,
+            emptyList(), null, emptySet(), emptySet(), listOf(SavedBatch("cb_original", "conv_a", members))))
+        mirror.saveTimeline("conv_a", TimelinePage(listOf(row("msg_cm_deleted", "", "cm_deleted").copy(parts = emptyList(), state = "DELETED")), null))
+        val host = Host()
+        val job = SupervisorJob()
+        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
+        try {
+            yield(); controller.retryPendingSubmissions(); yield()
+            assertEquals(0, host.submissionCount)
+            assertEquals(listOf(ClientMessageId("cm_unknown")), host.queryIds)
+            assertTrue(controller.state.value.hasRecoverableSubmissions)
+            assertTrue(controller.state.value.notice?.contains("禁止重发") == true)
+            assertEquals(listOf("仍未知成员的原稿"), userTexts(controller))
+            assertEquals("独立草稿", controller.state.value.draft)
+            val restored = EncryptedConversationMirror(context, accountScope, key)
+            val frozen = restored.load()!!.batches.single()
+            assertEquals("cb_original", frozen.batchId)
+            assertEquals(members.map { it.clientMessageId }, frozen.messages.map { it.clientMessageId })
+            assertEquals("", frozen.messages.first().text)
+            assertEquals("仍未知成员的原稿", frozen.messages.last().text)
+            assertEquals(LocalSubmissionState.OUTCOME_UNKNOWN, restored.loadSendAtoms("conv_a").single { it.clientMessageId.value == "cm_unknown" }.submissionState)
+        } finally {
+            controller.close(); job.cancel()
+        }
+    }
+
+    @Test fun higherContentRevisionStillRestoresAnOrdinaryRevisionedTombstone() = runBlocking {
+        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "删除之前").accepted("msg_cm_one")))
+        val events = listOf(
+            VerifiedConversationEvent.TimelineTombstoned("evt_revision_delete", 7, "msg_cm_one", 7, ConversationId("conv_a")),
+            VerifiedConversationEvent.TimelineUpsert("evt_revision_restore", 8, 8, row("msg_cm_one", "更高修订的远端正文", "cm_one")),
+        )
+        MirroredConversationRepository(Host(events), mirror).observeEvents(accountScope).toList()
+        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val atom = reopened.loadSendAtoms("conv_a").single()
+        assertFalse(atom.snapshotDeleted)
+        assertNull(atom.tombstoneRevision)
+        assertEquals(8L, atom.contentRevision)
+        assertEquals("更高修订的远端正文", (MirroredConversationRepository(Host(), reopened).timeline("conv_a", PageRequest()).messages.single().parts.single() as MessagePart.Text).value)
+    }
+
+    @Test fun versionOneDeletedRowMigratesWithoutLosingReadableHistoryOrDraft() = runBlocking {
+        val deleted = row("msg_cm_one", "已删除的旧版正文").copy(state = "DELETED")
+        writeVersionOne(listOf(deleted, row("msg_legacy", "仍可读的旧版消息")), null)
+        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "已删除的旧版正文").accepted("msg_cm_one")))
+        val loaded = mirror.load()!!
+        assertEquals("保留的草稿", loaded.draft)
+        assertEquals(listOf("msg_legacy"), loaded.messages.map { it.id })
+        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        assertTrue(reopened.loadSendAtoms("conv_a").single().snapshotDeleted)
+        assertTrue(reopened.loadSendAtoms("conv_a").single().parts.isEmpty())
+        assertEquals("仍可读的旧版消息", (MirroredConversationRepository(Host(), reopened).timeline("conv_a", PageRequest()).messages.single().parts.single() as MessagePart.Text).value)
+    }
+
+    @Test fun completedPaginationKeepsExplicitDeletionIdentitiesAndDiscardsAnExpiredAttempt() = runBlocking {
+        val deleted = row("msg_deleted", "").copy(parts = emptyList(), state = "DELETED")
+        val completed = Host().apply { pages = mutableListOf(TimelinePage(listOf(deleted), "next", 10),
+            TimelinePage(listOf(row("assistant_one", "正常回复").copy(sender = "assistant")), null, 10)) }.completeTimeline("conv_a")
+        assertEquals(setOf("msg_deleted"), completed.deletedMessageIds)
+        assertEquals(10L, completed.snapshotRevision)
+        assertEquals(2, completed.messages.size)
+
+        val restarted = Host().apply { pages = mutableListOf(
+            TimelinePage(listOf(deleted), "next", 10), TimelinePage(emptyList(), null, 11),
+            TimelinePage(listOf(row("msg_current", "最新快照")), "next", 12), TimelinePage(emptyList(), null, 12),
+        ) }.completeTimeline("conv_a")
+        assertTrue("过期分页中的删除事实不能混入尚未接受的另一代快照", restarted.deletedMessageIds.isEmpty())
+        assertEquals(listOf("msg_current"), restarted.messages.map { it.id })
+        assertEquals(12L, restarted.snapshotRevision)
+    }
+
     @Test fun explicitEmptyRemoteEditDoesNotRestoreThePreviousLocalText() {
         val mirror = EncryptedConversationMirror(context, accountScope, key)
         val original = atom("cm_one", "必须被远端编辑清空的正文").accepted("msg_cm_one")
@@ -320,12 +538,14 @@ class EncryptedSendAtomRecoveryTest {
         override val generationId = MutableStateFlow<String?>(null)
         override val streamHealth = MutableStateFlow(StreamHealth.LIVE)
         var rows = emptyList<TimelineMessage>()
+        var pages: MutableList<TimelinePage>? = null
         var query: TimelineMessage? = null
+        val queryIds = mutableListOf<ClientMessageId>()
         var cursor = "evt_before"
         var submissionCount = 0
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(
             listOf("conv_a", "conv_b").mapIndexed { i, id -> ConversationSummary(ConversationId(id), id, i.toLong()) }, null)
-        override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(rows, null, 0)
+        override suspend fun timeline(conversationId: String, page: PageRequest) = pages?.removeAt(0) ?: TimelinePage(rows, null, 0)
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_a"), "conv_a", 0)
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
             submissionCount++
@@ -335,7 +555,10 @@ class EncryptedSendAtomRecoveryTest {
             submissionCount++
             return BatchAcceptance("server_${batch.batchId}", batch.messages.associate { it.clientMessageId.value to "msg_${it.clientMessageId.value}" })
         }
-        override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId) = query
+        override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? {
+            queryIds += clientMessageId
+            return query
+        }
         override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = flow {
             events.forEach { emit(it); cursor = it.eventId }
         }

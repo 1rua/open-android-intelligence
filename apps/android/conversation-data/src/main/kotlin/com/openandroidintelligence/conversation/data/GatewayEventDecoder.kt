@@ -403,8 +403,8 @@ object GatewayEventDecoder {
                 "text" -> MessagePart.Text(
                     JsonFields.string(part, "text").orEmpty(),
                 )
-                "attachment" -> {
-                    val draftId = JsonFields.string(part, "draftId") ?: JsonFields.string(part, "attachmentId")
+                "attachment", "attachment_ref" -> {
+                    val draftId = JsonFields.string(part, "draftId") ?: JsonFields.string(part, "attachmentId") ?: JsonFields.string(part, "id")
                     val filename = JsonFields.string(part, "filename").orEmpty()
                     val mediaType = JsonFields.string(part, "mediaType").orEmpty()
                     draftId?.let {
