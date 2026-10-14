@@ -1,0 +1,72 @@
+{
+  "baseline": "d0fbfaeb9c0acda04dbe72fa9306d9109c54bdf1",
+  "core": "sha256:63223ba149355032800eeae8a9f0827d542bbde7ca9e4eeb19f93df30e7febde",
+  "sourceSha256": {
+    "gateway-contract/schemas/event.schema.json": "b80e4f4ff275563eaeaf064744ec4c6a7c5ade1cb9b9d10caece77a320bad094",
+    "gateway-contract/core-dispatched-schemas.json": "6bd42021e38f339e8df7bea70af0fd902574021c0b16129d7b5f09b6fd9fb29b",
+    "gateway-contract/vectors/dispatched-schema-fixtures.json": "3c087da32521571e805f8231133dfed6e63fe50cabbc913c413ba97a5efdef35",
+    "gateway-contract/vectors/sse-events.json": "233856d41ebbae544d229e0e1a5cf83b5ac14e77b9d3beda54e22a9c10948ea0",
+    "gateway-contract/test/dispatched-schema-validator.test.ts": "b3ab8236776eeaaa40b210f8213e8f81a2740f5ea6ed0b855d0540abebb6da0f",
+    "apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/schema/SchemaContractHash.kt": "4dd96cad4cd611d23f90e2a06cece3aa0f5f3b2b40ced90bf1814c4a9f054811"
+  },
+  "androidFreshResults": [
+    {
+      "file": "TEST-com.openandroidintelligence.gateway.http.GatewayResponseStreamingTest.xml",
+      "name": "com.openandroidintelligence.gateway.http.GatewayResponseStreamingTest",
+      "tests": "1",
+      "skipped": "0",
+      "failures": "0",
+      "errors": "0",
+      "timestamp": "2026-10-14T15:14:26",
+      "hostname": "djbd-cachyos",
+      "time": "0.127"
+    },
+    {
+      "file": "TEST-com.openandroidintelligence.gateway.http.RawHeadersTest.xml",
+      "name": "com.openandroidintelligence.gateway.http.RawHeadersTest",
+      "tests": "9",
+      "skipped": "0",
+      "failures": "0",
+      "errors": "0",
+      "timestamp": "2026-10-14T15:14:26",
+      "hostname": "djbd-cachyos",
+      "time": "0.002"
+    },
+    {
+      "file": "TEST-com.openandroidintelligence.gateway.schema.CapabilitySchemaValidatorTest.xml",
+      "name": "com.openandroidintelligence.gateway.schema.CapabilitySchemaValidatorTest",
+      "tests": "4",
+      "skipped": "0",
+      "failures": "0",
+      "errors": "0",
+      "timestamp": "2026-10-14T15:14:26",
+      "hostname": "djbd-cachyos",
+      "time": "0.039"
+    },
+    {
+      "file": "TEST-com.openandroidintelligence.gateway.schema.DispatchedSchemaVectorTest.xml",
+      "name": "com.openandroidintelligence.gateway.schema.DispatchedSchemaVectorTest",
+      "tests": "8",
+      "skipped": "0",
+      "failures": "0",
+      "errors": "0",
+      "timestamp": "2026-10-14T15:14:26",
+      "hostname": "djbd-cachyos",
+      "time": "0.064"
+    },
+    {
+      "file": "TEST-com.openandroidintelligence.gateway.schema.SchemaContractHashTest.xml",
+      "name": "com.openandroidintelligence.gateway.schema.SchemaContractHashTest",
+      "tests": "2",
+      "skipped": "0",
+      "failures": "0",
+      "errors": "0",
+      "timestamp": "2026-10-14T15:14:26",
+      "hostname": "djbd-cachyos",
+      "time": "0.015"
+    }
+  ],
+  "nodeTests": 117,
+  "hermesSharedCases": 70,
+  "typecheckExitCode": 0
+}

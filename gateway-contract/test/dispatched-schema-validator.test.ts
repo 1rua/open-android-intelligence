@@ -33,6 +33,19 @@ type FixtureRegistry = {
 
 const registry = fixtureRegistry as unknown as FixtureRegistry;
 
+describe("附件完成事件", () => {
+  it("纯附件完成事件可以通过已绑定的封闭 Schema", () => {
+    const validator = createFixtureValidator();
+    expect(validator.validate({ kind: "event", eventType: "conversation.message.completed" }, {
+      correlationId: "correlation_media", occurredAt: "2026-10-14T00:00:00.000Z",
+      payload: { conversationId: "conv_media", messageId: "msg_media", sender: "assistant",
+        text: "", timestamp: 1791936000000, revision: 1,
+        parts: [{ type: "attachment", attachmentId: "media_original", filename: "报告.pdf",
+          mediaType: "application/pdf", sizeBytes: 0, sha256: "sha256:" + "e".repeat(64) }] },
+    })).toEqual({ ok: true });
+  });
+});
+
 const expectedFixtureIds = [
   "event.gateway-notice.v1",
   "device.sms-query.v1",
@@ -60,8 +73,8 @@ const expectedFixtureDigests = [
   "sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce",
   "sha256:bce36a217163c4626595ffef4b0ac4456ae95bee57646b0a586ea4413b59d663",
   "sha256:2f455f22f1e50d730a80e22a2e9f93e1259a6920747f527041942451bd377916",
-  "sha256:0e4302bc076d9c2f1282f5abdc84b10b42af64ab402cc3c9b1870451135a453f",
-  "sha256:0e4302bc076d9c2f1282f5abdc84b10b42af64ab402cc3c9b1870451135a453f",
+  "sha256:57b3dc6bfe46ebab8a97da7dc615a2ec7d5c3070091e026a3b41ab6f464b2c42",
+  "sha256:57b3dc6bfe46ebab8a97da7dc615a2ec7d5c3070091e026a3b41ab6f464b2c42",
   "sha256:4fc6ab881fad0203ca84c11103c8d713a3f46818c0df3f0e03acd56b54154714",
   "sha256:7dcc1ce17e2a105149a9e1a80c3971225f73b0d46361e31134c76a32c292a0e4",
   "sha256:650aaf6bf78f01339e044b67c524614eff7eb3a03afc359f74bfa20d8e78067e",
