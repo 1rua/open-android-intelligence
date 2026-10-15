@@ -73,15 +73,15 @@ const expectedFixtureDigests = [
   "sha256:df7548ff7d994373e2a2f204b389145c6040196be309df0f322ef418be48b1ce",
   "sha256:bce36a217163c4626595ffef4b0ac4456ae95bee57646b0a586ea4413b59d663",
   "sha256:2f455f22f1e50d730a80e22a2e9f93e1259a6920747f527041942451bd377916",
-  "sha256:57b3dc6bfe46ebab8a97da7dc615a2ec7d5c3070091e026a3b41ab6f464b2c42",
-  "sha256:57b3dc6bfe46ebab8a97da7dc615a2ec7d5c3070091e026a3b41ab6f464b2c42",
+  "sha256:8ab1a176d26799ce6d35077012041ffdf5b1e4436deab828b1eeab94d8641894",
+  "sha256:8ab1a176d26799ce6d35077012041ffdf5b1e4436deab828b1eeab94d8641894",
   "sha256:4fc6ab881fad0203ca84c11103c8d713a3f46818c0df3f0e03acd56b54154714",
   "sha256:7dcc1ce17e2a105149a9e1a80c3971225f73b0d46361e31134c76a32c292a0e4",
   "sha256:650aaf6bf78f01339e044b67c524614eff7eb3a03afc359f74bfa20d8e78067e",
   "sha256:dc74b1f738e6f1d5171930d0591da7b70bdebb94a8416826d736ac0127fd46d0",
   "sha256:533930dd454ec07392982a48ca2a64cf01c17471322c31373bd1825911e4a67a",
   "sha256:1dfc04f9fff6e8f528e29c58926bead33f735e26f1a12880d004a4431d41f7d6",
-  "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d",
+  "sha256:c0273af35da27dc35cdd0b74564323d957711a88c11cc8dcc7cea55cc7393fb1",
 ] as const;
 
 const expectedFixtureLogicalKeys: GatewayLogicalSubschemaKey[] = [
@@ -421,7 +421,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       payload: {
         noticeCode: "maintenance",
         type: "some-other-event",
-        digest: "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d",
+        digest: "sha256:c0273af35da27dc35cdd0b74564323d957711a88c11cc8dcc7cea55cc7393fb1",
       },
     };
 
@@ -534,11 +534,11 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
     const validator = createFixtureValidator();
     const injectedDispatch = {
       ...eventDispatch,
-      schemaSha256: "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d",
+      schemaSha256: "sha256:c0273af35da27dc35cdd0b74564323d957711a88c11cc8dcc7cea55cc7393fb1",
       schema: { type: "object", additionalProperties: true },
       resolver: () => ({ ok: true }),
       validator: () => true,
-      binding: { schemaSha256: "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d" },
+      binding: { schemaSha256: "sha256:c0273af35da27dc35cdd0b74564323d957711a88c11cc8dcc7cea55cc7393fb1" },
     } as unknown as TrustedGatewayDispatch;
 
     expect(validator.validate(injectedDispatch, validEvent)).toMatchObject({ ok: false });
@@ -568,7 +568,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
     expect(() =>
       createGatewayDispatchedValidator(
         [entryFor(entry.key.schemaSha256)],
-        { core: [bindingFor("sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d")], device: [] },
+        { core: [bindingFor("sha256:c0273af35da27dc35cdd0b74564323d957711a88c11cc8dcc7cea55cc7393fb1")], device: [] },
       ),
     ).toThrow();
 
@@ -588,7 +588,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
       ),
     ).toThrow();
 
-    const mismatchedKey = { ...entry.key, schemaSha256: "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d" };
+    const mismatchedKey = { ...entry.key, schemaSha256: "sha256:c0273af35da27dc35cdd0b74564323d957711a88c11cc8dcc7cea55cc7393fb1" };
     expect(() =>
       createGatewayDispatchedValidator(
         [{ key: mismatchedKey, schema: entry.schema }],
@@ -631,7 +631,7 @@ describe("Gateway Protocol v2 dispatched Schema validation", () => {
 
     expect(Object.isFrozen(validator)).toBe(true);
     schema.properties.value = { type: "number" };
-    binding.schemaSha256 = "sha256:abc4431159960c4887471250ecff3580f2f7df32fe8a29b407af55bc3a35d12d";
+    binding.schemaSha256 = "sha256:c0273af35da27dc35cdd0b74564323d957711a88c11cc8dcc7cea55cc7393fb1";
     const eventValue = {
       correlationId: "correlation_1",
       occurredAt: "2026-08-27T00:00:00.000Z",
