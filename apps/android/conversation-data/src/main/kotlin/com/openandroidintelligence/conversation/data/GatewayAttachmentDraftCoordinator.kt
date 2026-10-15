@@ -23,11 +23,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.withContext
 
 /** Stages bytes locally before upload so length, digest and retry use identical content. */
@@ -243,6 +245,85 @@ class GatewayAttachmentDraftCoordinator(
         drafts.remove(draftId)
         ephemeral.remove(draftId)
         persist()
+    }
+
+    override suspend fun archiveSubmitted(conversationId: String, draftId: String,
+        media: com.openandroidintelligence.conversation.ports.HistoricalMediaPort) {
+        val original = media.submittedMetadata(conversationId, draftId)
+        val remoteId = remoteIds[draftId] ?: original?.attachmentId ?: error("ATTACHMENT_NOT_VERIFIED")
+        if (original != null && original.attachmentId == remoteId) return
+        ensureSubmittedSource(conversationId, draftId, media)
+        val content = staged[draftId] ?: error("ATTACHMENT_STAGING_NOT_FOUND")
+        val draft = drafts[draftId] ?: error("ATTACHMENT_STAGING_NOT_FOUND")
+        media.archiveSubmitted(conversationId, remoteId, draft.filename, draft.mediaType,
+            object : com.openandroidintelligence.conversation.ports.AttachmentContentSource {
+                override fun openStream() = staging.openStream(content.id)
+            }, content.sizeBytes, content.sha256Hex, draftId)
+    }
+
+    override suspend fun ensureSubmittedSource(conversationId: String, draftId: String,
+        media: com.openandroidintelligence.conversation.ports.HistoricalMediaPort) {
+        jobs.remove(draftId)?.cancelAndJoin()
+        val existing = staged[draftId]
+        if (existing != null && sourceIsUsable(existing)) return
+        val original = media.submittedMetadata(conversationId, draftId)
+            ?: remoteIds[draftId]?.let { media.localMetadata(conversationId, it) }
+            ?: error("ATTACHMENT_RECOVERY_UNAVAILABLE")
+        val source = media.openOriginal(conversationId, original.attachmentId)
+        val restored = withContext(ioDispatcher) {
+            source.use {
+                staging.stage(LocalAttachmentSelection(original.filename, original.mediaType,
+                    object : com.openandroidintelligence.conversation.ports.AttachmentContentSource {
+                        override fun openStream() = source
+                    }))
+            }
+        }
+        check(restored.sizeBytes == original.sizeBytes && restored.sha256Hex == original.sha256.removePrefix("sha256:")) {
+            "MEDIA_INTEGRITY_FAILED"
+        }
+        staged[draftId] = restored
+        drafts.computeIfAbsent(draftId) {
+            remoteIds[draftId] = original.attachmentId
+            uploadAttemptIds.putIfAbsent(draftId, "att_client_$draftId")
+            AttachmentDraft(AttachmentDraftId(draftId), original.filename, original.mediaType, restored.sizeBytes,
+                restored.sha256Hex, AttachmentState.RETRYABLE_FAILURE)
+        }
+        stateFlowFor(draftId).value = AttachmentDraftState(AttachmentDraftId(draftId), drafts.getValue(draftId).state)
+        persist()
+    }
+
+    private suspend fun sourceIsUsable(content: StagedAttachmentContent): Boolean = withContext(ioDispatcher) {
+        try {
+            val context = currentCoroutineContext()
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            var bytes = 0L
+            staging.openStream(content.id).use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    context.ensureActive()
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    if (read == 0) continue
+                    digest.update(buffer, 0, read)
+                    bytes = Math.addExact(bytes, read.toLong())
+                }
+            }
+            bytes == content.sizeBytes && digest.digest().joinToString("") { "%02x".format(it) } == content.sha256Hex
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
+    }
+
+    override suspend fun retrySubmittedSource(conversationId: String, draftId: String,
+        media: com.openandroidintelligence.conversation.ports.HistoricalMediaPort): AttachmentDraft {
+        ensureSubmittedSource(conversationId, draftId, media)
+        retry(draftId)
+        val attempt = jobs[draftId] ?: error("ATTACHMENT_RETRY_UNAVAILABLE")
+        attempt.join()
+        currentCoroutineContext().ensureActive()
+        check(!attempt.isCancelled) { "ATTACHMENT_ATTEMPT_CANCELLED" }
+        val draft = drafts[draftId] ?: error("ATTACHMENT_STAGING_NOT_FOUND")
+        check(draft.state == AttachmentState.VERIFIED && remoteIds[draftId] != null) { "ATTACHMENT_RETRY_FAILED" }
+        return draft
     }
 
     override suspend fun releaseAfterSubmit(draftId: String) {

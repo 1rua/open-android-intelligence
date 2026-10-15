@@ -30,6 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.AttachmentLocalState
+import com.openandroidintelligence.conversation.model.AttachmentDownloadState
+import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.state.TimelineEntry
@@ -73,14 +76,14 @@ fun MessageTimeline(
     entries: List<TimelineEntry>,
     onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
-    onRetainMedia: (String)->Unit = {},
+    onDownloadAttachment: ((String) -> Unit)? = null,
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
     ) {
         entries.forEach { entry ->
-            TimelineRow(entry = entry, onDecide = onDecide,onRetainMedia=onRetainMedia)
+            TimelineRow(entry = entry, onDecide = onDecide, onDownloadAttachment = onDownloadAttachment)
         }
     }
 }
@@ -96,23 +99,8 @@ fun TimelineRow(
     entry: TimelineEntry,
     onDecide: (String, ApprovalChoice) -> Unit,
     modifier: Modifier = Modifier,
-    onRetainMedia: (String)->Unit = {},
+    onDownloadAttachment: ((String) -> Unit)? = null,
 ) {
-    if (entry.approval == null && entry.attachments.any { it.draftId.startsWith("media_") }) {
-        Column(modifier) {
-            TimelineRow(entry.copy(attachments=entry.attachments.filterNot { it.draftId.startsWith("media_") }),onDecide)
-            entry.attachments.filter { it.draftId.startsWith("media_") }.forEach { attachment ->
-                Text(attachment.filename.ifBlank { "历史媒体附件" })
-                if (attachment.savedOffline) Text("已保留加密离线副本")
-                else TextButton(onClick={ onRetainMedia(attachment.draftId) }) { Text("保留离线副本") }
-                attachment.previewBytes?.let { bytes ->
-                    val image=remember(bytes) { BitmapFactory.decodeByteArray(bytes,0,bytes.size)?.asImageBitmap() }
-                    if (image!=null) Image(image,contentDescription=attachment.filename,modifier=Modifier.fillMaxWidth().heightIn(max=240.dp))
-                }
-            }
-        }
-        return
-    }
     val approval = entry.approval
     if (approval != null) {
         // A request the Gateway made, not something anyone said: it owns
@@ -123,16 +111,16 @@ fun TimelineRow(
             modifier = modifier.fillMaxWidth(0.85f),
         )
     } else if (entry.isUser) {
-        UserMessageBubble(entry = entry, modifier = modifier)
+        UserMessageBubble(entry = entry, modifier = modifier, onDownloadAttachment = onDownloadAttachment)
     } else {
-        AssistantMessageRow(entry = entry, modifier = modifier.semantics {
+        AssistantMessageRow(entry = entry, onDownloadAttachment = onDownloadAttachment, modifier = modifier.semantics {
             contentDescription = "OaiMessage:${entry.key}:${if (entry.isStreaming) "streaming" else "completed"}"
         })
     }
 }
 
 @Composable
-private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifier) {
+private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifier, onDownloadAttachment: ((String) -> Unit)? = null) {
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
@@ -154,47 +142,7 @@ private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifie
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                // Attachments preview strip (Images thumbnail or Document chip)
-                if (entry.attachments.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        entry.attachments.forEach { attachment ->
-                            if (attachment.isImage && attachment.previewBytes != null) {
-                                val bitmap = remember(attachment.previewBytes) {
-                                    runCatching {
-                                        BitmapFactory.decodeByteArray(
-                                            attachment.previewBytes,
-                                            0,
-                                            attachment.previewBytes.size,
-                                        )?.asImageBitmap()
-                                    }.getOrNull()
-                                }
-                                if (bitmap != null) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(max = 240.dp)
-                                            .clip(RoundedCornerShape(AppRadius.Small))
-                                            .background(MaterialTheme.colorScheme.surface),
-                                    ) {
-                                        Image(
-                                            bitmap = bitmap,
-                                            contentDescription = attachment.filename.ifBlank { "图片预览" },
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxWidth(),
-                                        )
-                                    }
-                                } else {
-                                    AttachmentFallbackChip(attachment.filename.ifBlank { "图片附件" }, isImage = true)
-                                }
-                            } else {
-                                AttachmentFallbackChip(attachment.filename.ifBlank { "附件文件" }, isImage = attachment.isImage)
-                            }
-                        }
-                    }
-                }
+                MessageAttachments(entry.attachments, onDownloadAttachment)
 
                 if (entry.text.isNotBlank()) {
                     SelectionContainer {
@@ -318,8 +266,44 @@ private fun AttachmentFallbackChip(filename: String, isImage: Boolean) {
     }
 }
 
+/** 所有发送者和附件身份都使用同一种卡片，正文为空时仍保留附件内容。 */
 @Composable
-private fun AssistantMessageRow(entry: TimelineEntry, modifier: Modifier = Modifier) {
+private fun MessageAttachments(attachments: List<TimelineAttachment>, onDownload: ((String) -> Unit)?) {
+    attachments.forEach { HistoricalAttachmentCard(it, onDownload) }
+}
+
+@Composable
+fun HistoricalAttachmentCard(attachment: TimelineAttachment, onDownload: ((String) -> Unit)?, modifier: Modifier = Modifier) {
+    OutlinedCard(modifier.fillMaxWidth()) {
+        Column(Modifier.padding(Dimensions.SpaceMedium), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            AttachmentFallbackChip(attachment.filename.ifBlank { if (attachment.isImage) "图片附件" else "附件文件" }, attachment.isImage)
+            val bytes = attachment.previewBytes
+            val image = remember(bytes) {
+                bytes?.let { runCatching { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }.getOrNull() }
+            }
+            if (image != null) Image(image, contentDescription = attachment.filename.ifBlank { "图片预览" },
+                contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp))
+            when (attachment.localState) {
+                AttachmentLocalState.PENDING -> Text("正在保存到本机…", style = MaterialTheme.typography.bodySmall)
+                AttachmentLocalState.UNAVAILABLE -> Text("原件不可用，附件信息仍保留", style = MaterialTheme.typography.bodySmall)
+                AttachmentLocalState.FAILED -> Text("本地保存失败，请检查手机存储空间或连接", style = MaterialTheme.typography.bodySmall)
+                AttachmentLocalState.SAVED -> Unit
+            }
+            when (attachment.downloadState) {
+                AttachmentDownloadState.SAVED -> Text("已保存到下载目录", style = MaterialTheme.typography.bodySmall)
+                AttachmentDownloadState.FAILED -> Text("下载失败，请重试", style = MaterialTheme.typography.bodySmall)
+                else -> Unit
+            }
+            TextButton(onClick = { onDownload?.invoke(attachment.draftId) }, enabled =
+                onDownload != null && attachment.localState != AttachmentLocalState.UNAVAILABLE && attachment.downloadState != AttachmentDownloadState.DOWNLOADING) {
+                Text(if (attachment.downloadState == AttachmentDownloadState.DOWNLOADING) "下载中…" else "下载")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistantMessageRow(entry: TimelineEntry, modifier: Modifier = Modifier, onDownloadAttachment: ((String) -> Unit)? = null) {
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Start,
@@ -338,8 +322,9 @@ private fun AssistantMessageRow(entry: TimelineEntry, modifier: Modifier = Modif
                 .padding(vertical = 2.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            MessageAttachments(entry.attachments, onDownloadAttachment)
             val content = entry.text.ifBlank {
-                if (entry.isStreaming) "" else "此消息没有可显示的文本"
+                if (entry.isStreaming || entry.attachments.isNotEmpty()) "" else "此消息没有可显示的文本"
             }
 
             if (content.isBlank() && entry.isStreaming) {
@@ -349,7 +334,7 @@ private fun AssistantMessageRow(entry: TimelineEntry, modifier: Modifier = Modif
                 ) {
                     StreamingCursor()
                 }
-            } else {
+            } else if (content.isNotBlank()) {
                 val blocks = remember(content) { parseMarkdownBlocks(content) }
                 MarkdownDocumentView(
                     blocks = blocks,

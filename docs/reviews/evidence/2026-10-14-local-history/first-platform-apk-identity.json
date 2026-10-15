@@ -1,0 +1,15 @@
+{
+  "note": "首次真实平台验证APK；后续源码仍有审查补修，非最终发布验证。",
+  "artifacts": {
+    "app": {
+      "path": "apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk",
+      "sha256": "a380acd0651101cd09151eb4d2a087ff4c425c4b2efab643d07e70156596870a",
+      "bytes": 61994242
+    },
+    "test": {
+      "path": "apps/android/app/build/outputs/apk/androidTest/full/debug/app-full-debug-androidTest.apk",
+      "sha256": "1a8a5beb7b6cdd9a55de29ff311fad51531a454c1fdbd8411505f2f4c917de62",
+      "bytes": 882787
+    }
+  }
+}

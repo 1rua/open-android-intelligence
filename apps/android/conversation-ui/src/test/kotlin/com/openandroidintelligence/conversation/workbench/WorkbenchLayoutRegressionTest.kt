@@ -175,6 +175,7 @@ class WorkbenchLayoutRegressionTest {
                         parts = listOf(MessagePart.Text("助理正在回答中")),
                         timestamp = 1000L,
                         state = "STREAMING",
+                        conversationId = ConversationId("conv_streaming"),
                     ),
                 ),
             )
@@ -198,6 +199,7 @@ class WorkbenchLayoutRegressionTest {
                         parts = listOf(MessagePart.Text("助理正在回答中，回答完毕。")),
                         timestamp = 1000L,
                         state = "CONFIRMED",
+                        conversationId = ConversationId("conv_streaming"),
                     ),
                 ),
             )

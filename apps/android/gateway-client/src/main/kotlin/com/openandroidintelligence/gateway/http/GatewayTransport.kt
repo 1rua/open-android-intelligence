@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -38,6 +39,32 @@ class GatewayTransport(
 
     private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
         ?: error("GATEWAY_ENDPOINT_INVALID: ${profile.gatewayBaseUrl}")
+
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+    override suspend fun <T> consumeResponse(
+        request: WireRequest,
+        consume: suspend (Int, List<RawHeader>, InputStream) -> T,
+    ): T = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        val connection = open(request)
+        val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion(onCancelling = true) {
+            connection.disconnect()
+        }
+        try {
+            require(request.body.isEmpty() && request.streamBody == null && request.method == "GET") {
+                "RESPONSE_STREAM_REQUIRES_READ_REQUEST"
+            }
+            connection.connect()
+            GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
+            val status = connection.responseCode
+            val headers = RawHeaders.validate(readHeaders(connection))
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+                ?: java.io.ByteArrayInputStream(ByteArray(0))
+            stream.use { consume(status, headers, it) }
+        } finally {
+            cancelHandle?.dispose()
+            connection.disconnect()
+        }
+    }
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override suspend fun execute(request: WireRequest): WireResponse = kotlinx.coroutines.withContext(Dispatchers.IO) {

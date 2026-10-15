@@ -18,6 +18,7 @@ class MessageTimelineImagePreviewTest {
             previewBytes = byteArrayOf(1, 2, 3),
         )
         assertTrue(jpgAttachment.isImage)
+        assertTrue(TimelineAttachment("att_case", "photo.dat", "Image/AVIF; profile=WideGamut").isImage)
 
         val docAttachment = TimelineAttachment(
             draftId = "att_2",

@@ -1,0 +1,8 @@
+
+com.openandroidintelligence.mobile.ConversationMirrorInstrumentedTest:.
+
+Time: 9.931
+
+OK (1 test)
+
+

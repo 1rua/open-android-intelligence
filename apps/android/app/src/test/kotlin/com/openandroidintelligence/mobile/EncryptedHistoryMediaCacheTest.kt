@@ -33,8 +33,8 @@ class EncryptedHistoryMediaCacheTest {
         val transport=object:GatewayByteTransport {
             override suspend fun execute(request:WireRequest):WireResponse {
                 val data=when {
-                    request.target.endsWith("/cache-grant") -> "{\"grantId\":\"${"G".repeat(43)}\"}"
-                    request.target.contains("/content?grantId=") -> "{\"mediaType\":\"text/plain\",\"contentBase64\":\"${Base64.getEncoder().encodeToString(bytes)}\"}"
+                    request.target.endsWith("/cache-grant?format=stream-v1") -> "{\"grantId\":\"${"G".repeat(43)}\"}"
+                    request.target.contains("/content?format=stream-v1&grantId=") -> "{\"mediaType\":\"text/plain\",\"contentBase64\":\"${Base64.getEncoder().encodeToString(bytes)}\"}"
                     else -> error("UNEXPECTED_REQUEST")
                 }
                 return WireResponse(200,emptyList(),"{\"data\":$data}".toByteArray())
@@ -55,10 +55,11 @@ class EncryptedHistoryMediaCacheTest {
         File(context.noBackupFilesDir,"private-documents").walkTopDown().filter{it.isFile}.forEach{assertFalse(it.readBytes().decodeToString().contains("PRIVATE HISTORICAL MEDIA"))}
         cache.clearMedia();assertFalse(offline.isRetained(metadata.attachmentId))
     }
-    @Test fun hardQuotaRejectsNewMediaWithoutEvictingRetainedItems()=runBlocking {
-        val cache=EncryptedHistoryMediaCache(context,scope,http(),key);cache.setQuota(8);cache.retain(metadata)
-        val rejected=runCatching {cache.retain(metadata.copy(attachmentId="media_large",sizeBytes=8L*1024*1024,estimatedLocalBytes=12L*1024*1024))}.exceptionOrNull()
-        assertTrue(rejected?.message?.startsWith("MEDIA_CACHE_QUOTA_EXCEEDED")==true)
-        assertTrue(cache.isRetained(metadata.attachmentId));cache.clearMedia()
+    @Test fun anotherConversationCannotOpenOrDeleteARetainedOriginal()=runBlocking {
+        val cache=EncryptedHistoryMediaCache(context,scope,http(),key);cache.retain(metadata)
+        assertNull(cache.localMetadata("conv_other",metadata.attachmentId))
+        cache.remove("conv_other",metadata.attachmentId)
+        assertArrayEquals(bytes,cache.openOriginal(metadata.conversationId,metadata.attachmentId).use { it.readBytes() })
+        cache.clearMedia()
     }
 }

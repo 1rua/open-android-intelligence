@@ -34,7 +34,9 @@ class EncryptedMirrorRecoveryTest {
         assertEquals(121,restored.timeline("conv_one")!!.messages.size);assertEquals("batch_one",restored.timeline("conv_one")!!.messages.first().batchId)
         assertNull(EncryptedConversationMirror(context,scope.copy(gatewayId="https://second.example"),key).load())
         File(context.noBackupFilesDir,"private-documents").walkTopDown().filter{it.isFile}.forEach { assertFalse(it.readBytes().decodeToString().contains("private-draft")) }
-        restored.wipe();assertNull(mirror.load())
+        restored.wipe()
+        assertEquals("MIRROR_CLOSED", runCatching { mirror.load() }.exceptionOrNull()?.message)
+        assertNull(EncryptedConversationMirror(context,scope,key).load())
     }
     @Test fun snapshotRecoveryRemovesObsoleteThreadsAndRetainsTheCompleteBaseline() {
         val mirror=EncryptedConversationMirror(context,scope,key)

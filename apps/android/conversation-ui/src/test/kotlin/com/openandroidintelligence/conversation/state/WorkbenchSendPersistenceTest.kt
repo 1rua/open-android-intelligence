@@ -285,6 +285,7 @@ class WorkbenchSendPersistenceTest {
         },
         { ConversationScope("profile", "gateway", "account", "install") },
         persistence = persistence,
+        persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
         supportsMessageBatches = batched,
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
     )

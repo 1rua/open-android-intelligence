@@ -172,6 +172,27 @@ class GatewayHttpClient(
     }
 
     suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
+        val wire = signedWireRequest(request)
+        return withContext(Dispatchers.IO) {
+            val response = transport.execute(wire)
+            GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
+        }
+    }
+
+    /** 先验证响应原始头，再将尚未预读的原件流交给账号范围内的消费者。 */
+    suspend fun <T> consumeResponse(
+        request: SignedGatewayRequest,
+        consume: suspend (Int, List<RawHeader>, java.io.InputStream) -> T,
+    ): T {
+        val wire = signedWireRequest(request)
+        return withContext(Dispatchers.IO) {
+            transport.consumeResponse(wire) { status, headers, stream ->
+                consume(status, RawHeaders.validate(headers), stream)
+            }
+        }
+    }
+
+    private fun signedWireRequest(request: SignedGatewayRequest): WireRequest {
         val validatedHeaders = RawHeaders.validate(request.headers)
         require(request.streamBody == null || request.body.isEmpty()) { "REQUEST_BODY_INVALID:multiple-bodies" }
         val input = request.streamBody?.let { body ->
@@ -179,12 +200,7 @@ class GatewayHttpClient(
         } ?: signedInput(request.method, request.target, request.body, requestId = request.requestId)
         val headers = validatedHeaders + authenticationHeaders(input, signatureOf(input), request.method)
 
-        return withContext(Dispatchers.IO) {
-            val response = transport.execute(
-                WireRequest(input.method, input.target, headers, request.body, request.streamBody),
-            )
-            GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
-        }
+        return WireRequest(input.method, input.target, headers, request.body, request.streamBody)
     }
 
     /**

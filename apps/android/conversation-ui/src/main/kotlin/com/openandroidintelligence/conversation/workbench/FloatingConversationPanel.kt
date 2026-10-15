@@ -63,7 +63,7 @@ fun FloatingConversationPanel(
                 // the command behind it stays blocked. Sharing the screen's
                 // method reference keeps that path single.
                 MessageTimeline(
-                    onRetainMedia=controller::proposeMediaRetention,
+                    onDownloadAttachment=controller::downloadAttachment,
                     entries = last,
                     onDecide = controller::decideApproval,
                 )

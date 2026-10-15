@@ -123,7 +123,8 @@ class HermesHttpInteropTest {
                     val user = rows.single { it.clientMessageId == clientId }
                     assertEquals(receipt.messageId, user.id)
                     assertEquals(listOf(MessagePart.Text(original),
-                        MessagePart.Attachment(com.openandroidintelligence.conversation.model.AttachmentDraftId(attachmentId), "synthetic.png", "image/png")), user.parts)
+                        MessagePart.Attachment(com.openandroidintelligence.conversation.model.AttachmentDraftId(attachmentId), "synthetic.png", "image/png",
+                            sizeBytes = image.size.toLong(), sha256 = "sha256:" + MessageDigest.getInstance("SHA-256").digest(image).joinToString("") { "%02x".format(it) })), user.parts)
                     assertTrue(user.timestamp > 0)
                     originalTimestamp?.let { assertEquals(it, user.timestamp) }
                     originalTimestamp = user.timestamp

@@ -21,7 +21,7 @@ fun AttachmentLibraryScreen(
     modifier: Modifier = Modifier,
     onClose: (() -> Unit)? = null,
     historical:List<com.openandroidintelligence.conversation.model.TimelineAttachment> = emptyList(),
-    onRetainHistorical:(String)->Unit = {},
+    onDownloadHistorical:((String) -> Unit)? = null,
 ) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         LazyColumn(Modifier.widthIn(max = Dimensions.ReadingWidth).fillMaxSize(),
@@ -79,10 +79,7 @@ fun AttachmentLibraryScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = Dimensions.SpaceSmall))
             }
             items(historical,key={ "history_"+it.draftId }) { media ->
-                OutlinedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(Dimensions.SpaceMedium)) {
-                    Text(media.filename.ifBlank { "附件" });Text(media.mediaType,style=MaterialTheme.typography.bodySmall)
-                    TextButton(onClick={onRetainHistorical(media.draftId)}) { Text(if(media.savedOffline) "已保留离线副本 · 查看信息" else "查看原件信息并保留") }
-                } }
+                HistoricalAttachmentCard(media, onDownloadHistorical)
             }
         }
     }

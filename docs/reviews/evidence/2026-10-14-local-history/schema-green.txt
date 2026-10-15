@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 /tmp/oai-contract-verification
+
+
+ Test Files  2 passed (2)
+      Tests  117 passed (117)
+   Start at  01:13:43
+   Duration  6.94s (transform 338ms, setup 0ms, import 4.43s, tests 2.47s, environment 0ms)
+

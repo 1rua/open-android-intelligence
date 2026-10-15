@@ -1,0 +1,145 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.12/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+> Task :capability-ports:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :capability-ports:preBuild UP-TO-DATE
+> Task :capability-ports:preDebugBuild UP-TO-DATE
+> Task :capability-ports:generateDebugResValues UP-TO-DATE
+> Task :capability-ports:generateDebugResources UP-TO-DATE
+> Task :capability-ports:packageDebugResources UP-TO-DATE
+> Task :capability-ports:parseDebugLocalResources UP-TO-DATE
+> Task :capability-ports:generateDebugRFile UP-TO-DATE
+> Task :core-model:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-model:preBuild UP-TO-DATE
+> Task :core-model:preDebugBuild UP-TO-DATE
+> Task :core-model:generateDebugResValues UP-TO-DATE
+> Task :core-model:generateDebugResources UP-TO-DATE
+> Task :core-model:packageDebugResources UP-TO-DATE
+> Task :core-model:parseDebugLocalResources UP-TO-DATE
+> Task :core-model:generateDebugRFile UP-TO-DATE
+> Task :core-model:compileDebugKotlin UP-TO-DATE
+> Task :core-model:javaPreCompileDebug UP-TO-DATE
+> Task :core-model:compileDebugJavaWithJavac NO-SOURCE
+> Task :core-model:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :capability-ports:compileDebugKotlin UP-TO-DATE
+> Task :capability-ports:javaPreCompileDebug UP-TO-DATE
+> Task :capability-ports:compileDebugJavaWithJavac NO-SOURCE
+> Task :capability-ports:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :capability-ports:processDebugJavaRes UP-TO-DATE
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:preBuild UP-TO-DATE
+> Task :conversation-domain:preDebugBuild UP-TO-DATE
+> Task :conversation-domain:generateDebugResValues UP-TO-DATE
+> Task :conversation-domain:generateDebugResources UP-TO-DATE
+> Task :conversation-domain:packageDebugResources UP-TO-DATE
+> Task :conversation-domain:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-domain:generateDebugRFile UP-TO-DATE
+> Task :conversation-domain:javaPreCompileDebug UP-TO-DATE
+> Task :capability-ports:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-ui:preBuild UP-TO-DATE
+> Task :conversation-ui:preDebugBuild UP-TO-DATE
+> Task :conversation-ui:generateDebugResValues UP-TO-DATE
+> Task :conversation-ui:generateDebugResources UP-TO-DATE
+> Task :conversation-ui:packageDebugResources UP-TO-DATE
+> Task :conversation-ui:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-ui:generateDebugRFile UP-TO-DATE
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preDebugBuild UP-TO-DATE
+> Task :gateway-client:generateDebugResValues UP-TO-DATE
+> Task :gateway-client:generateDebugResources UP-TO-DATE
+> Task :gateway-client:packageDebugResources UP-TO-DATE
+> Task :gateway-client:parseDebugLocalResources UP-TO-DATE
+> Task :gateway-client:generateDebugRFile UP-TO-DATE
+> Task :gateway-client:compileDebugKotlin UP-TO-DATE
+> Task :gateway-client:javaPreCompileDebug UP-TO-DATE
+> Task :gateway-client:compileDebugJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-ui:javaPreCompileDebug UP-TO-DATE
+> Task :capability-ports:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-domain:compileDebugLibraryResources UP-TO-DATE
+> Task :capability-ports:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-domain:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-ui:preDebugUnitTestBuild UP-TO-DATE
+> Task :conversation-ui:writeDebugAarMetadata UP-TO-DATE
+> Task :core-model:writeDebugAarMetadata UP-TO-DATE
+> Task :gateway-client:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-ui:checkDebugUnitTestAarMetadata UP-TO-DATE
+> Task :conversation-ui:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-ui:generateDebugUnitTestResValues UP-TO-DATE
+> Task :conversation-ui:mapDebugUnitTestSourceSetPaths UP-TO-DATE
+> Task :conversation-ui:generateDebugUnitTestResources UP-TO-DATE
+> Task :conversation-ui:mergeDebugUnitTestResources UP-TO-DATE
+> Task :capability-ports:extractDeepLinksDebug UP-TO-DATE
+> Task :capability-ports:processDebugManifest UP-TO-DATE
+> Task :conversation-domain:extractDeepLinksDebug UP-TO-DATE
+> Task :conversation-domain:processDebugManifest UP-TO-DATE
+> Task :conversation-ui:extractDeepLinksDebug UP-TO-DATE
+> Task :conversation-ui:processDebugManifest UP-TO-DATE
+> Task :core-model:extractDeepLinksDebug UP-TO-DATE
+> Task :core-model:processDebugManifest UP-TO-DATE
+> Task :gateway-client:extractDeepLinksDebug UP-TO-DATE
+> Task :gateway-client:processDebugManifest UP-TO-DATE
+> Task :conversation-ui:processDebugUnitTestManifest UP-TO-DATE
+> Task :core-model:compileDebugLibraryResources UP-TO-DATE
+> Task :gateway-client:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-ui:processDebugUnitTestResources UP-TO-DATE
+> Task :conversation-ui:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :capability-ports:mergeDebugShaders UP-TO-DATE
+> Task :capability-ports:compileDebugShaders NO-SOURCE
+> Task :capability-ports:generateDebugAssets UP-TO-DATE
+> Task :capability-ports:mergeDebugAssets UP-TO-DATE
+> Task :conversation-domain:mergeDebugShaders UP-TO-DATE
+> Task :conversation-domain:compileDebugShaders NO-SOURCE
+> Task :conversation-domain:generateDebugAssets UP-TO-DATE
+> Task :conversation-domain:mergeDebugAssets UP-TO-DATE
+> Task :conversation-ui:generateDebugUnitTestAssets UP-TO-DATE
+> Task :conversation-ui:mergeDebugShaders UP-TO-DATE
+> Task :conversation-ui:compileDebugShaders NO-SOURCE
+> Task :conversation-ui:generateDebugAssets UP-TO-DATE
+> Task :conversation-ui:mergeDebugAssets UP-TO-DATE
+> Task :core-model:mergeDebugShaders UP-TO-DATE
+> Task :core-model:compileDebugShaders NO-SOURCE
+> Task :core-model:generateDebugAssets UP-TO-DATE
+> Task :core-model:mergeDebugAssets UP-TO-DATE
+> Task :gateway-client:mergeDebugShaders UP-TO-DATE
+> Task :gateway-client:compileDebugShaders NO-SOURCE
+> Task :gateway-client:generateDebugAssets UP-TO-DATE
+> Task :gateway-client:mergeDebugAssets UP-TO-DATE
+> Task :conversation-ui:mergeDebugUnitTestAssets UP-TO-DATE
+> Task :conversation-ui:packageDebugUnitTestForUnitTest UP-TO-DATE
+> Task :conversation-ui:generateDebugUnitTestConfig UP-TO-DATE
+> Task :core-model:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core-model:processDebugJavaRes UP-TO-DATE
+> Task :gateway-client:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :gateway-client:processDebugJavaRes UP-TO-DATE
+> Task :conversation-domain:compileDebugKotlin
+> Task :conversation-domain:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-domain:processDebugJavaRes UP-TO-DATE
+> Task :conversation-domain:bundleLibRuntimeToJarDebug
+> Task :conversation-domain:bundleLibCompileToJarDebug
+> Task :conversation-ui:compileDebugKotlin
+> Task :conversation-ui:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-ui:processDebugJavaRes UP-TO-DATE
+> Task :conversation-ui:bundleLibRuntimeToJarDebug
+> Task :conversation-ui:bundleLibCompileToJarDebug
+
+> Task :conversation-ui:compileDebugUnitTestKotlin FAILED
+e: file:///mnt/data/projects/open-android-intelligence/apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchLocalMediaRegressionTest.kt:335:90 Smart cast to 'Long' is impossible, because 'revision' is a public API property declared in different module.
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':conversation-ui:compileDebugUnitTestKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+   > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 34s
+92 actionable tasks: 7 executed, 85 up-to-date

@@ -48,7 +48,7 @@ jobs:
         with:
           repository: 1rua/hermes-gateway-plugin
           # 固定本轮宿主历史修复，保证联调不会随插件 main 漂移。
-          ref: 9aa6a0661e76c31c2b1078890a4b48ef002fee10
+          ref: 30b2847ba65c95c4e434445a0a0c577b5603db4f
           path: .hermes-gateway-plugin
 
       - name: Install the Hermes Gateway plugin
@@ -161,7 +161,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 1rua/hermes-gateway-plugin
-          ref: 9aa6a0661e76c31c2b1078890a4b48ef002fee10
+          ref: 30b2847ba65c95c4e434445a0a0c577b5603db4f
           path: .hermes-gateway-plugin
 
       - name: Check out the pinned Hermes native SDK
@@ -198,4 +198,4 @@ jobs:
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT: ${{ github.workspace }}/gateway-contract
         run: |
           chmod +x gradlew
-          ./gradlew check :app:assembleFullDebug --stacktrace
+          ./gradlew check :app:assembleFullDebug --stacktrace --no-build-cache

@@ -1,0 +1,108 @@
+{
+  "日期": "2026-10-15",
+  "说明": "主代理统一运行Gradle后，只读整理真实XML；61项媒体相关回归在分批优化前通过。最后Mirror待办读取优化须另以受影响回归补证，不把此结果绑定到后续源码。",
+  "源码快照": "media-download-before-batched-transitions-source-snapshot.json",
+  "结果": [
+    {
+      "用例": "com.openandroidintelligence.mobile.RevisionedMediaRecoveryTest",
+      "数量": 8,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:48:58",
+      "XML路径": "apps/android/app/build/test-results/testFullDebugUnitTest/TEST-com.openandroidintelligence.mobile.RevisionedMediaRecoveryTest.xml",
+      "XML摘要": "b0950e0b205024f89ee2b525882c4befeb1174f735d8ef6ac43dafbb8f93bac5"
+    },
+    {
+      "用例": "com.openandroidintelligence.mobile.AndroidAttachmentDownloadsTest",
+      "数量": 16,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:48:48",
+      "XML路径": "apps/android/app/build/test-results/testFullDebugUnitTest/TEST-com.openandroidintelligence.mobile.AndroidAttachmentDownloadsTest.xml",
+      "XML摘要": "82df019df5ced308513d4ed23a1dbb4d3685e5965efdcb4e0e266fd5db7f5c89"
+    },
+    {
+      "用例": "com.openandroidintelligence.mobile.PersistentHistoryMediaTest",
+      "数量": 8,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:48:57",
+      "XML路径": "apps/android/app/build/test-results/testFullDebugUnitTest/TEST-com.openandroidintelligence.mobile.PersistentHistoryMediaTest.xml",
+      "XML摘要": "af2be3856c587db1101802eddcdf409208b60266a72c75f80cd255e2cf643d22"
+    },
+    {
+      "用例": "com.openandroidintelligence.mobile.EncryptedHistoryMediaCacheTest",
+      "数量": 2,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:48:49",
+      "XML路径": "apps/android/app/build/test-results/testFullDebugUnitTest/TEST-com.openandroidintelligence.mobile.EncryptedHistoryMediaCacheTest.xml",
+      "XML摘要": "2d8cb2291072b4c82bc5b9ed401beef66e6176f8fdb91e71ae419a904dacde5d"
+    },
+    {
+      "用例": "com.openandroidintelligence.mobile.SubmittedOriginalRecoveryTest",
+      "数量": 2,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:49:00",
+      "XML路径": "apps/android/app/build/test-results/testFullDebugUnitTest/TEST-com.openandroidintelligence.mobile.SubmittedOriginalRecoveryTest.xml",
+      "XML摘要": "3af772f11bc8d65c9daaf4dfd3060f80bb033e71856ed7607cbdfa5af3956cca"
+    },
+    {
+      "用例": "com.openandroidintelligence.mobile.HermesHistoryMediaHttpTest",
+      "数量": 1,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:48:56",
+      "XML路径": "apps/android/app/build/test-results/testFullDebugUnitTest/TEST-com.openandroidintelligence.mobile.HermesHistoryMediaHttpTest.xml",
+      "XML摘要": "eb8cb7f971922489939543b3b271cf4c2c9e97e37c326b7ac65188bff27417f8"
+    },
+    {
+      "用例": "com.openandroidintelligence.conversation.state.WorkbenchLocalMediaRegressionTest",
+      "数量": 14,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:45:28",
+      "XML路径": "apps/android/conversation-ui/build/test-results/testDebugUnitTest/TEST-com.openandroidintelligence.conversation.state.WorkbenchLocalMediaRegressionTest.xml",
+      "XML摘要": "655b4d592dd50572414a981b8f3ef3bb7b591bd9cea8c1b01aa56ec5b1a660b3"
+    },
+    {
+      "用例": "com.openandroidintelligence.conversation.workbench.AttachmentOnlyTimelineTest",
+      "数量": 4,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:45:28",
+      "XML路径": "apps/android/conversation-ui/build/test-results/testDebugUnitTest/TEST-com.openandroidintelligence.conversation.workbench.AttachmentOnlyTimelineTest.xml",
+      "XML摘要": "7a243ded51e230d473004f458f7dbc8b977aae22c208f102ea1fa148a4e40f61"
+    },
+    {
+      "用例": "com.openandroidintelligence.conversation.workbench.MessageTimelineImagePreviewTest",
+      "数量": 2,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:45:33",
+      "XML路径": "apps/android/conversation-ui/build/test-results/testDebugUnitTest/TEST-com.openandroidintelligence.conversation.workbench.MessageTimelineImagePreviewTest.xml",
+      "XML摘要": "6695dd021a6ed30a0bbd64436fd9f183b37b990564cd62bb48aa987d3d069759"
+    },
+    {
+      "用例": "com.openandroidintelligence.conversation.workbench.MessageTimelineStreamingTest",
+      "数量": 4,
+      "失败": 0,
+      "错误": 0,
+      "跳过": 0,
+      "执行时间UTC": "2026-10-15T06:45:33",
+      "XML路径": "apps/android/conversation-ui/build/test-results/testDebugUnitTest/TEST-com.openandroidintelligence.conversation.workbench.MessageTimelineStreamingTest.xml",
+      "XML摘要": "6b80015a5e47572ed73c44f493e4e078abb74d2683eefdc4e2278090301d8e5c"
+    }
+  ],
+  "阶段": "按资源类型分批读取待办之前"
+}

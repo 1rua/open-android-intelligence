@@ -1,0 +1,59 @@
+
+com.openandroidintelligence.mobile.ConversationMirrorInstrumentedTest:
+Error in aLegalMessageBeyondTheCursorWindowReopensWithTheSameContent(com.openandroidintelligence.mobile.ConversationMirrorInstrumentedTest):
+android.database.sqlite.SQLiteBlobTooBigException: Row too big to fit into CursorWindow requiredPos=1, totalRows=2
+	at android.database.sqlite.SQLiteConnection.nativeExecuteForCursorWindow(Native Method)
+	at android.database.sqlite.SQLiteConnection.executeForCursorWindow(SQLiteConnection.java:1024)
+	at android.database.sqlite.SQLiteSession.executeForCursorWindow(SQLiteSession.java:838)
+	at android.database.sqlite.SQLiteQuery.fillWindow(SQLiteQuery.java:62)
+	at android.database.sqlite.SQLiteCursor.fillWindow(SQLiteCursor.java:153)
+	at android.database.sqlite.SQLiteCursor.onMove(SQLiteCursor.java:123)
+	at android.database.AbstractCursor.moveToPosition(AbstractCursor.java:255)
+	at android.database.AbstractCursor.moveToNext(AbstractCursor.java:287)
+	at com.openandroidintelligence.mobile.conversations.SqliteConversationRecords.refreshRecords(SqliteConversationRecords.kt:67)
+	at com.openandroidintelligence.mobile.conversations.SqliteConversationRecords.<init>(SqliteConversationRecords.kt:50)
+	at com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror.<init>(EncryptedConversationMirror.kt:26)
+	at com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror.<init>(EncryptedConversationMirror.kt:19)
+	at com.openandroidintelligence.mobile.ConversationMirrorInstrumentedTest$aLegalMessageBeyondTheCursorWindowReopensWithTheSameContent$1.invokeSuspend(ConversationMirrorInstrumentedTest.kt:31)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:47)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at com.openandroidintelligence.mobile.ConversationMirrorInstrumentedTest.aLegalMessageBeyondTheCursorWindowReopensWithTheSameContent(ConversationMirrorInstrumentedTest.kt:21)
+
+
+Time: 1.126
+There was 1 failure:
+1) aLegalMessageBeyondTheCursorWindowReopensWithTheSameContent(com.openandroidintelligence.mobile.ConversationMirrorInstrumentedTest)
+android.database.sqlite.SQLiteBlobTooBigException: Row too big to fit into CursorWindow requiredPos=1, totalRows=2
+	at android.database.sqlite.SQLiteConnection.nativeExecuteForCursorWindow(Native Method)
+	at android.database.sqlite.SQLiteConnection.executeForCursorWindow(SQLiteConnection.java:1024)
+	at android.database.sqlite.SQLiteSession.executeForCursorWindow(SQLiteSession.java:838)
+	at android.database.sqlite.SQLiteQuery.fillWindow(SQLiteQuery.java:62)
+	at android.database.sqlite.SQLiteCursor.fillWindow(SQLiteCursor.java:153)
+	at android.database.sqlite.SQLiteCursor.onMove(SQLiteCursor.java:123)
+	at android.database.AbstractCursor.moveToPosition(AbstractCursor.java:255)
+	at android.database.AbstractCursor.moveToNext(AbstractCursor.java:287)
+	at com.openandroidintelligence.mobile.conversations.SqliteConversationRecords.refreshRecords(SqliteConversationRecords.kt:67)
+	at com.openandroidintelligence.mobile.conversations.SqliteConversationRecords.<init>(SqliteConversationRecords.kt:50)
+	at com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror.<init>(EncryptedConversationMirror.kt:26)
+	at com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror.<init>(EncryptedConversationMirror.kt:19)
+	at com.openandroidintelligence.mobile.ConversationMirrorInstrumentedTest$aLegalMessageBeyondTheCursorWindowReopensWithTheSameContent$1.invokeSuspend(ConversationMirrorInstrumentedTest.kt:31)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:101)
+	at kotlinx.coroutines.EventLoopImplBase.processNextEvent(EventLoop.common.kt:263)
+	at kotlinx.coroutines.BlockingCoroutine.joinBlocking(Builders.kt:95)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking(Builders.kt:69)
+	at kotlinx.coroutines.BuildersKt.runBlocking(Unknown Source:1)
+	at kotlinx.coroutines.BuildersKt__BuildersKt.runBlocking$default(Builders.kt:47)
+	at kotlinx.coroutines.BuildersKt.runBlocking$default(Unknown Source:1)
+	at com.openandroidintelligence.mobile.ConversationMirrorInstrumentedTest.aLegalMessageBeyondTheCursorWindowReopensWithTheSameContent(ConversationMirrorInstrumentedTest.kt:21)
+
+FAILURES!!!
+Tests run: 1,  Failures: 1
+
+

@@ -1,2 +1,2 @@
-# 原始验证日志保留字节内容，测试工具产生的行尾空白不做格式归一化。
-docs/reviews/evidence/**/*.txt whitespace=-blank-at-eol
+# 本轮原始验证证据保留工具输出的末尾空行；其他路径仍使用默认空白检查。
+docs/reviews/evidence/2026-10-14-local-history/** whitespace=-blank-at-eol,-blank-at-eof

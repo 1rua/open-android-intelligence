@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile
 
 import android.app.Application
+import android.database.sqlite.SQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
@@ -35,7 +36,7 @@ class EncryptedSendAtomRecoveryTest {
     private val accountScope = ConversationScope("profile_atoms", "https://gateway.example", "acct_atoms", "install_atoms")
 
     @Test fun explicitNewerMessageContentVersionUpdatesTheJournalAndRejectsAnOlderPage() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         mirror.saveSendAtoms("conv_a",listOf(atom("cm_one","旧的可读原文").accepted("msg_cm_one").copy(contentRevision=1)))
         val host=Host().apply { rows=listOf(row("msg_cm_one","宿主明确编辑的新原文","cm_one").copy(contentRevision=2,
             parts=listOf(MessagePart.Text("宿主明确编辑的新原文"),MessagePart.Attachment(AttachmentDraftId("att_edited"),"新原图.png","image/png")))) }
@@ -45,12 +46,12 @@ class EncryptedSendAtomRecoveryTest {
         assertEquals(2L,mirror.loadSendAtoms("conv_a").single().contentRevision)
         host.rows=listOf(row("msg_cm_one","晚到的旧页","cm_one").copy(contentRevision=1))
         assertEquals(current.parts,repository.timeline("conv_a",PageRequest()).messages.single().parts)
-        val reopened=EncryptedConversationMirror(context,accountScope,key)
+        val reopened=EncryptedConversationMirror(context,accountScope,key,Dispatchers.Unconfined)
         assertEquals(current.parts,MirroredConversationRepository(Host(),reopened).timeline("conv_a",PageRequest()).messages.single().parts)
     }
 
     @Test fun explicitEmptyContentVersionClearsTheBodyWithoutInventingDeletion() = runBlocking {
-        val mirror=EncryptedConversationMirror(context,accountScope,key)
+        val mirror=EncryptedConversationMirror(context,accountScope,key,Dispatchers.Unconfined)
         mirror.saveSendAtoms("conv_a",listOf(atom("cm_one","被明确清空的正文").accepted("msg_cm_one").copy(contentRevision=1)))
         val updated=mirror.reconcileQuery("conv_a",ClientMessageId("cm_one"),row("msg_cm_one","","cm_one")
             .copy(parts=emptyList(),contentRevision=2))
@@ -60,7 +61,7 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun explicitDeletedHostSnapshotDoesNotRestoreTheLocalMessageOrCompletedStatus() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val original = atom("cm_one", "宿主明确删除的原始正文").accepted("msg_cm_one").copy(parts = listOf(
             MessagePart.Text("宿主明确删除的原始正文"),
             MessagePart.Attachment(AttachmentDraftId("att_one"), "原始图片.png", "image/png"),
@@ -72,7 +73,7 @@ class EncryptedSendAtomRecoveryTest {
         val visible = MirroredConversationRepository(host, mirror).timeline("conv_a", PageRequest())
 
         assertTrue("明确删除的宿主行不能被本地正文或完成状态复活", visible.messages.isEmpty())
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         assertTrue("删除后不能在 journal 中保留隐藏正文与附件", reopened.loadSendAtoms("conv_a").single().parts.isEmpty())
         assertEquals(setOf("att_one"), reopened.deletedMediaIds("conv_a", "msg_cm_one").toSet())
         assertEquals("分页摘要不能伪装成内容修订", -1L, reopened.loadSendAtoms("conv_a").single().contentRevision)
@@ -80,7 +81,7 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun displayedUserAndAssistantDeletionClearsTheWorkbenchAndSurvivesReopen() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val original = atom("cm_one", "已显示的用户消息").accepted("msg_cm_one")
         mirror.saveSendAtoms("conv_a", listOf(original))
         val host = Host().apply { rows = listOf(row("msg_cm_one", "已显示的用户消息", "cm_one"),
@@ -100,7 +101,7 @@ class EncryptedSendAtomRecoveryTest {
             controller.close(); job.cancel()
         }
 
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val restartJob = SupervisorJob()
         val restarted = controller(CoroutineScope(restartJob + Dispatchers.Unconfined), Host(), reopened)
         try {
@@ -113,7 +114,7 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun deletedMemberInFrozenBatchIsNotResubmittedOrShownAsRecoverable() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val frozen = SavedBatch("cb_frozen", "conv_a", listOf(OutgoingMessage(ClientMessageId("cm_one"), "已删除的冻结提交正文")))
         mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "已删除的冻结提交正文").copy(
             batchId = "cb_frozen", submissionState = LocalSubmissionState.OUTCOME_UNKNOWN,
@@ -137,7 +138,7 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun snapshotDeletionSurvivesLateUpsertsStatusReceiptEmptyBaselineAndAssistantReopen() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val original = atom("cm_one", "迟到回执不得补回原文")
         mirror.saveSendAtoms("conv_a", listOf(original))
         mirror.saveTimeline("conv_a", TimelinePage(listOf(
@@ -153,7 +154,7 @@ class EncryptedSendAtomRecoveryTest {
         assertTrue(projected.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().all { it.message.isDeleted && it.message.parts.isEmpty() })
         mirror.saveSendAtoms("conv_a", listOf(original.accepted("msg_cm_one")))
         mirror.installBaseline(emptyList(), mapOf("conv_a" to TimelinePage(emptyList(), null, 1)), "evt_empty_baseline")
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         reopened.finishBaselineRecovery()
         val durable = reopened.loadSendAtoms("conv_a").single()
         assertTrue(durable.snapshotDeleted)
@@ -173,7 +174,7 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun mixedDeletedFrozenBatchKeepsAllIdentitiesAndOnlyQueriesRemainingUnknownMembers() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val members = listOf(OutgoingMessage(ClientMessageId("cm_deleted"), "已删除成员的原稿"),
             OutgoingMessage(ClientMessageId("cm_unknown"), "仍未知成员的原稿"))
         mirror.saveSendAtoms("conv_a", members.map { atom(it.clientMessageId.value, it.text).copy(
@@ -193,7 +194,7 @@ class EncryptedSendAtomRecoveryTest {
             assertTrue(controller.state.value.notice?.contains("禁止重发") == true)
             assertEquals(listOf("仍未知成员的原稿"), userTexts(controller))
             assertEquals("独立草稿", controller.state.value.draft)
-            val restored = EncryptedConversationMirror(context, accountScope, key)
+            val restored = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
             val frozen = restored.load()!!.batches.single()
             assertEquals("cb_original", frozen.batchId)
             assertEquals(members.map { it.clientMessageId }, frozen.messages.map { it.clientMessageId })
@@ -206,14 +207,14 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun higherContentRevisionStillRestoresAnOrdinaryRevisionedTombstone() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "删除之前").accepted("msg_cm_one")))
         val events = listOf(
             VerifiedConversationEvent.TimelineTombstoned("evt_revision_delete", 7, "msg_cm_one", 7, ConversationId("conv_a")),
             VerifiedConversationEvent.TimelineUpsert("evt_revision_restore", 8, 8, row("msg_cm_one", "更高修订的远端正文", "cm_one")),
         )
         MirroredConversationRepository(Host(events), mirror).observeEvents(accountScope).toList()
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val atom = reopened.loadSendAtoms("conv_a").single()
         assertFalse(atom.snapshotDeleted)
         assertNull(atom.tombstoneRevision)
@@ -224,12 +225,12 @@ class EncryptedSendAtomRecoveryTest {
     @Test fun versionOneDeletedRowMigratesWithoutLosingReadableHistoryOrDraft() = runBlocking {
         val deleted = row("msg_cm_one", "已删除的旧版正文").copy(state = "DELETED")
         writeVersionOne(listOf(deleted, row("msg_legacy", "仍可读的旧版消息")), null)
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "已删除的旧版正文").accepted("msg_cm_one")))
         val loaded = mirror.load()!!
         assertEquals("保留的草稿", loaded.draft)
         assertEquals(listOf("msg_legacy"), loaded.messages.map { it.id })
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         assertTrue(reopened.loadSendAtoms("conv_a").single().snapshotDeleted)
         assertTrue(reopened.loadSendAtoms("conv_a").single().parts.isEmpty())
         assertEquals("仍可读的旧版消息", (MirroredConversationRepository(Host(), reopened).timeline("conv_a", PageRequest()).messages.single().parts.single() as MessagePart.Text).value)
@@ -253,24 +254,24 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun explicitEmptyRemoteEditDoesNotRestoreThePreviousLocalText() {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val original = atom("cm_one", "必须被远端编辑清空的正文").accepted("msg_cm_one")
         mirror.saveSendAtoms("conv_a", listOf(original))
         mirror.apply(VerifiedConversationEvent.TimelineUpsert("evt_empty_edit", 2, 2,
             row("msg_cm_one", "", "cm_one").copy(parts = emptyList())))
         mirror.saveSendAtoms("conv_a", listOf(original))
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         assertTrue("明确的空内容编辑不能回退旧正文", reopened.loadSendAtoms("conv_a").single().parts.isEmpty())
         assertTrue(reopened.mergeTimeline("conv_a", TimelinePage(emptyList(), null)).messages.single().parts.isEmpty())
     }
 
     @Test fun olderNonEmptyHostSnapshotCannotRestoreTextAfterConfirmedEmptyEdit() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "编辑前的正文").accepted("msg_cm_one")))
         mirror.apply(VerifiedConversationEvent.TimelineUpsert("evt_confirmed_empty", 4, 4,
             row("msg_cm_one", "", "cm_one").copy(parts = emptyList())))
 
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val host = Host().apply { rows = listOf(row("msg_cm_one", "过期快照仍含旧正文", "cm_one")) }
         val visible = MirroredConversationRepository(host, reopened).timeline("conv_a", PageRequest()).messages.single()
 
@@ -279,12 +280,12 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun olderNonEmptyHostSnapshotCannotOverwriteConfirmedEditedText() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "编辑前的正文").accepted("msg_cm_one")))
         mirror.apply(VerifiedConversationEvent.TimelineUpsert("evt_confirmed_edit", 4, 4,
             row("msg_cm_one", "远端已确认的新正文", "cm_one")))
 
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val host = Host().apply { rows = listOf(row("msg_cm_one", "过期快照仍含旧正文", "cm_one")) }
         val visible = MirroredConversationRepository(host, reopened).timeline("conv_a", PageRequest()).messages.single()
 
@@ -293,16 +294,14 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun tombstoneRevisionWriteFailureCanReplayWithoutLosingDeletedAttachmentIds() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val localParts = listOf(MessagePart.Text("删除前的本地正文"),
             MessagePart.Attachment(AttachmentDraftId("att_local"), "本地附件.txt", "text/plain"))
         val remoteParts = listOf(MessagePart.Text("删除前的远端正文"),
             MessagePart.Attachment(AttachmentDraftId("att_remote"), "远端附件.txt", "text/plain"))
         mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "").accepted("msg_cm_one").copy(parts = localParts)))
         mirror.saveTimeline("conv_a", TimelinePage(listOf(row("msg_cm_one", "", "cm_one").copy(parts = remoteParts)), null))
-        val documentRoot = File(context.noBackupFilesDir, "private-documents/${digest(documentScope())}")
-        val blockedRevisionWrite = File(documentRoot, digest("event-revision:conv_a:msg_cm_one") + ".tmp")
-        assertTrue(blockedRevisionWrite.mkdir())
+        failRecordWrites("event-revision")
         val event = VerifiedConversationEvent.TimelineTombstoned("evt_deleted_with_media", 1000,
             "msg_cm_one", 9, ConversationId("conv_a"))
         val host = Host(listOf(event))
@@ -310,9 +309,9 @@ class EncryptedSendAtomRecoveryTest {
 
         assertTrue(runCatching { firstAttempt.observeEvents(accountScope).toList() }.exceptionOrNull() is IOException)
         assertEquals("evt_before", host.cursor)
-        assertTrue(blockedRevisionWrite.renameTo(File(context.cacheDir, "tombstone-revision-write-failure-backup")))
+        allowRecordWrites()
 
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         MirroredConversationRepository(host, reopened).observeEvents(accountScope).toList()
         assertEquals("evt_deleted_with_media", host.cursor)
         assertEquals("删除事件写入中断后，重放仍须保留全部待清理附件身份",
@@ -322,7 +321,7 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun controllerKeepsBothSendsAcrossThreadSwitchAndEncryptedMirrorReopenWithEmptyHostHistory() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val host = Host()
         val job = SupervisorJob()
         val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
@@ -347,7 +346,7 @@ class EncryptedSendAtomRecoveryTest {
             job.cancel()
         }
 
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val restartJob = SupervisorJob()
         val restarted = controller(CoroutineScope(restartJob + Dispatchers.Unconfined), host, reopened)
         try {
@@ -368,7 +367,7 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun statusBeforeReceiptAndIndependentContentRevisionSurviveReopenAndOlderWrites() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val original = atom("cm_one", "原正文")
         mirror.saveSendAtoms("conv_a", listOf(original))
         val events = listOf(
@@ -381,7 +380,7 @@ class EncryptedSendAtomRecoveryTest {
         assertEquals("evt_old", host.cursor)
         mirror.saveSendAtoms("conv_a", listOf(original.accepted("msg_cm_one")))
 
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val durable = reopened.loadSendAtoms("conv_a").single()
         assertEquals(AgentMessageStatus.COMPLETED, durable.status)
         assertEquals(8L, durable.statusRevision)
@@ -399,7 +398,7 @@ class EncryptedSendAtomRecoveryTest {
             submission = mapOf("text" to "待确认消息", "ids" to emptyList<String>(), "revision" to 3,
                 "conversationId" to "conv_a", "clientMessageId" to "cm_one"),
         )
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         mirror.load()
         mirror.saveSendAtoms("conv_a", mirror.loadSendAtoms("conv_a").map { it.accepted("msg_cm_one") })
         val events = listOf(
@@ -411,7 +410,7 @@ class EncryptedSendAtomRecoveryTest {
         MirroredConversationRepository(Host(events), mirror).observeEvents(accountScope).toList()
         mirror.installBaseline(listOf(ConversationSummary(ConversationId("conv_a"), "会话", 1)),
             mapOf("conv_a" to TimelinePage(emptyList(), null, 5)), "evt_snapshot")
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         reopened.finishBaselineRecovery()
         val durable = reopened.loadSendAtoms("conv_a").single()
         assertEquals(3L, durable.tombstoneRevision)
@@ -419,7 +418,7 @@ class EncryptedSendAtomRecoveryTest {
         val staleHost = Host().apply { rows = listOf(row("msg_legacy", "旧快照正文"), row("msg_cm_one", "旧快照正文", "cm_one")) }
         assertTrue(MirroredConversationRepository(staleHost, reopened).timeline("conv_a", PageRequest()).messages.isEmpty())
         assertTrue(reopened.timeline("conv_a")!!.messages.isEmpty())
-        assertTrue(JsonFields.objects(rawWorkbench(), "messages").isEmpty())
+        assertTrue(EncryptedConversationMirror(context,accountScope,key,Dispatchers.Unconfined).load()!!.messages.isEmpty())
     }
 
     @Test fun versionOneMigrationRetriesAfterFinalCheckpointFailureAndPreservesNewerLedgerFacts() {
@@ -430,21 +429,18 @@ class EncryptedSendAtomRecoveryTest {
             "members" to listOf(mapOf("id" to "cm_batch", "text" to "冻结批次正文"))))
         writeVersionOne(legacyRows, mapOf("text" to "未知结果的正文", "ids" to listOf("att_one"), "revision" to 7,
             "conversationId" to "conv_a", "clientMessageId" to "cm_one"), attachments, batches)
-        val documentRoot = File(context.noBackupFilesDir, "private-documents/${digest(documentScope())}")
-        val blockedCheckpoint = File(documentRoot, digest("workbench") + ".tmp")
-        assertTrue(blockedCheckpoint.mkdir())
-        assertNotNull(runCatching { EncryptedConversationMirror(context, accountScope, key).load() }.exceptionOrNull())
+        failRecordWrites("workbench")
+        assertNotNull(runCatching { EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined).load() }.exceptionOrNull())
         assertEquals(1, JsonFields.int(rawWorkbench(), "version"))
-        assertTrue(blockedCheckpoint.renameTo(File(documentRoot, "migration-failure-marker")))
+        allowRecordWrites()
 
-        val partiallyMigrated = EncryptedConversationMirror(context, accountScope, key)
+        val partiallyMigrated = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val confirmed = partiallyMigrated.loadSendAtoms("conv_a").single().accepted("msg_cm_one").copy(
             status = AgentMessageStatus.COMPLETED, statusRevision = 6,
         )
         partiallyMigrated.saveSendAtoms("conv_a", listOf(confirmed))
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val saved = reopened.load()!!
-        assertEquals(2, JsonFields.int(rawWorkbench(), "version"))
         assertEquals("保留的草稿", saved.draft)
         assertEquals("cm_one", saved.submission!!.clientMessageId)
         assertEquals("证据.txt", saved.attachments.single().filename)
@@ -459,19 +455,19 @@ class EncryptedSendAtomRecoveryTest {
     }
 
     @Test fun deletionBeforeHttpAcceptanceStillSuppressesTheLateReceipt() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val prepared = atom("cm_one", "删除前尚未取得回执的正文")
         mirror.saveSendAtoms("conv_a", listOf(prepared))
         mirror.apply(VerifiedConversationEvent.TimelineTombstoned("evt_deleted", 1000, "msg_cm_one", 5, ConversationId("conv_a")))
         mirror.saveSendAtoms("conv_a", listOf(prepared.accepted("msg_cm_one")))
-        val reopened = EncryptedConversationMirror(context, accountScope, key)
+        val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         assertEquals(5L, reopened.loadSendAtoms("conv_a").single().tombstoneRevision)
         assertTrue(reopened.loadSendAtoms("conv_a").single().parts.isEmpty())
         assertTrue(MirroredConversationRepository(Host(), reopened).timeline("conv_a", PageRequest()).messages.isEmpty())
     }
 
     @Test fun emptyOutcomeQueryBindsOriginalIdentityWithoutLosingBodyOrSubmittingAgain() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "不能丢失的正文").copy(submissionState = LocalSubmissionState.OUTCOME_UNKNOWN)))
         val host = Host().apply { query = row("msg_cm_one", "").copy(parts = emptyList(), timestamp = 0, state = "accepted") }
         val repository = MirroredConversationRepository(host, mirror)
@@ -480,25 +476,23 @@ class EncryptedSendAtomRecoveryTest {
         assertEquals(ConversationId("conv_a"), recovered.conversationId)
         assertEquals("不能丢失的正文", (recovered.parts.single() as MessagePart.Text).value)
         assertEquals(1000L, recovered.timestamp)
-        assertEquals("msg_cm_one", EncryptedConversationMirror(context, accountScope, key).loadSendAtoms("conv_a").single().messageId)
+        assertEquals("msg_cm_one", EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined).loadSendAtoms("conv_a").single().messageId)
         assertEquals(0, host.submissionCount)
     }
 
     @Test fun eventPersistenceFailureLeavesCursorReplayableAndRetryDurablyAppliesIt() = runBlocking {
-        val mirror = EncryptedConversationMirror(context, accountScope, key)
+        val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         mirror.saveSendAtoms("conv_a", listOf(atom("cm_one", "原正文")))
-        val documentRoot = File(context.noBackupFilesDir, "private-documents/${digest(documentScope())}")
-        val blockedLedgerWrite = File(documentRoot, digest("send-atoms:conv_a") + ".tmp")
-        assertTrue(blockedLedgerWrite.mkdir())
+        failRecordWrites("send-atom-record")
         val host = Host(listOf(status("evt_complete", "cm_one", AgentMessageStatus.COMPLETED, 1)))
         val repository = MirroredConversationRepository(host, mirror)
         assertTrue(runCatching { repository.observeEvents(accountScope).toList() }.exceptionOrNull() is IOException)
         assertEquals("evt_before", host.cursor)
         assertEquals(LocalSubmissionState.PREPARED, mirror.loadSendAtoms("conv_a").single().submissionState)
-        assertTrue(blockedLedgerWrite.renameTo(File(documentRoot, "event-write-failure-marker")))
+        allowRecordWrites()
         repository.observeEvents(accountScope).toList()
         assertEquals("evt_complete", host.cursor)
-        assertEquals(AgentMessageStatus.COMPLETED, EncryptedConversationMirror(context, accountScope, key).loadSendAtoms("conv_a").single().status)
+        assertEquals(AgentMessageStatus.COMPLETED, EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined).loadSendAtoms("conv_a").single().status)
     }
 
     private fun controller(scope: CoroutineScope, host: Host, mirror: EncryptedConversationMirror) = WorkbenchController(
@@ -506,6 +500,7 @@ class EncryptedSendAtomRecoveryTest {
             override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("test"), emptyList())
         }, { accountScope }, debouncePolicy = DebouncePolicy(delay = Duration.ZERO), supportsMessageBatches = true,
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false), clock = { 1000 }, persistence = mirror,
+        persistenceDispatcher = Dispatchers.Unconfined,
     )
 
     private fun userTexts(controller: WorkbenchController) =
@@ -521,6 +516,21 @@ class EncryptedSendAtomRecoveryTest {
         listOf(accountScope.profileId, accountScope.gatewayId, accountScope.accountId, accountScope.installId)))
     private fun digest(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun rawWorkbench() = JsonFields.obj(Json.parse(EncryptedDocuments(context, documentScope(), key).read("workbench")!!.decodeToString()))!!
+    private fun testDatabase(): SQLiteDatabase {
+        val directory=File(context.noBackupFilesDir,"conversation-mirror/${digest(documentScope())}")
+        check(directory.isDirectory || directory.mkdirs())
+        return SQLiteDatabase.openOrCreateDatabase(File(directory,"mirror-v1.db"),null).also { db ->
+            db.execSQL("CREATE TABLE IF NOT EXISTS records(row_id TEXT PRIMARY KEY,resource_type TEXT NOT NULL,lookup_key TEXT NOT NULL UNIQUE,revision INTEGER NOT NULL,sort_key INTEGER NOT NULL,tombstone INTEGER NOT NULL,payload BLOB)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY)")
+            db.version=1
+        }
+    }
+    /** 用真实 SQLite 写失败验证回滚与重放，避免依赖旧文件写入路径。 */
+    private fun failRecordWrites(resourceType: String) {
+        require(resourceType.matches(Regex("[a-z-]+")))
+        testDatabase().use { db -> db.execSQL("CREATE TRIGGER fail_test_write BEFORE INSERT ON records WHEN NEW.resource_type='$resourceType' BEGIN SELECT RAISE(ABORT,'TEST_COMMIT_FAILURE'); END") }
+    }
+    private fun allowRecordWrites() { testDatabase().use { it.execSQL("DROP TRIGGER fail_test_write") } }
     private fun writeVersionOne(
         messages: List<TimelineMessage>, submission: Map<String, Any?>?,
         attachments: List<Map<String, Any?>> = emptyList(), batches: List<Map<String, Any?>> = emptyList(),

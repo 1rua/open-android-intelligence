@@ -212,6 +212,8 @@ class GatewayConversationRepository(
                                     draftId = AttachmentDraftId(part.attachmentId),
                                     filename = part.filename,
                                     mediaType = part.mediaType,
+                                    sizeBytes = part.sizeBytes,
+                                    sha256 = part.sha256,
                                 )
                         }
                     },

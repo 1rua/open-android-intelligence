@@ -1,0 +1,50 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.12/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :app
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preDebugBuild UP-TO-DATE
+> Task :gateway-client:generateDebugResValues UP-TO-DATE
+> Task :gateway-client:generateDebugResources UP-TO-DATE
+> Task :gateway-client:packageDebugResources UP-TO-DATE
+> Task :gateway-client:parseDebugLocalResources UP-TO-DATE
+> Task :gateway-client:generateDebugRFile UP-TO-DATE
+> Task :gateway-client:javaPreCompileDebug UP-TO-DATE
+> Task :gateway-client:preDebugUnitTestBuild UP-TO-DATE
+> Task :gateway-client:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :gateway-client:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :gateway-client:compileDebugKotlin
+w: file:///mnt/data/projects/open-android-intelligence/apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/schema/DispatchedSchemaRegistry.kt:15:28 Java type mismatch: inferred type is 'String?', but 'String' was expected.
+
+> Task :gateway-client:compileDebugJavaWithJavac NO-SOURCE
+> Task :gateway-client:processDebugJavaRes UP-TO-DATE
+> Task :gateway-client:bundleLibRuntimeToJarDebug
+> Task :gateway-client:bundleLibCompileToJarDebug
+> Task :gateway-client:compileDebugUnitTestKotlin
+> Task :gateway-client:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :gateway-client:processDebugUnitTestJavaRes UP-TO-DATE
+
+> Task :gateway-client:testDebugUnitTest
+
+RawHeadersTest > duplicatedHistoryMediaFormatFailsClosed FAILED
+    java.lang.AssertionError at RawHeadersTest.kt:22
+
+9 tests completed, 1 failed
+
+> Task :gateway-client:testDebugUnitTest FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':gateway-client:testDebugUnitTest'.
+> There were failing tests. See the report at: file:///mnt/data/projects/open-android-intelligence/apps/android/gateway-client/build/reports/tests/testDebugUnitTest/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+BUILD FAILED in 4m 42s
+15 actionable tasks: 5 executed, 10 up-to-date

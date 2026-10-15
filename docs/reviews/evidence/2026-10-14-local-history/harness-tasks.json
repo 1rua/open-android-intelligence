@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "created": "2026-10-14T03:41:10.904125+00:00",
+  "session_config": {
+    "concurrency_mode": "exclusive",
+    "max_tasks_per_session": 20,
+    "max_sessions": 50
+  },
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "Android本地双向镜像与媒体下载",
+      "status": "in_progress",
+      "priority": "P0",
+      "depends_on": [],
+      "attempts": 1,
+      "max_attempts": 10,
+      "started_at_commit": "d0fbfaeb9c0acda04dbe72fa9306d9109c54bdf1",
+      "validation": {
+        "command": "本轮最小Gradle矩阵及Android14/15真实MediaStore",
+        "timeout_seconds": 900
+      },
+      "checkpoints": [
+        "协议117项与当前gateway41项通过；UI81项中1失败已修待复核；App上次未执行，单独矩阵测试编译错误正在修，不能引用旧XML。",
+        "最新真实App矩阵77项/54失败，SQLite PRAGMA API错误导致镜像与登录失败；媒体原件8+下载11+旧缓存2已绿。UI生命周期SupervisorJob测试清理待修；DEX旧路径构建缓存已移入/tmp复核后重建。没有提交。",
+        "2026-10-15恢复后新执行：UI133通过；App84/5失败，5项旧存储/异步夹具已修保留原断言，84项与平台APK重验进行中。日志全部直接写仓库。",
+        "复核夹具后App84全部通过，UI133全部通过。独立审查新增3个P2：SQLite大BLOB/全库明文加载/高修订恢复附件。Android14已真复现3MiB冷重开SQLiteBlobTooBigException，存储改按需有界读取修复中，媒体恢复待修。新增真实kill与新进程恢复脚本、平台探针已经编译；后续需按最终源码重验。",
+        "2026-10-15 SQLite9新绿；新媒体修订4+UI1真实RED（3个App和UI高修订失败，snapshot保护通过），已开始媒体outbox/epoch与Controller IO hydration并行修复。正式CI gradle check关闭build cache。"
+      ]
+    },
+    {
+      "id": "task-002",
+      "title": "Hermes与OpenClaw附件原件流",
+      "status": "in_progress",
+      "priority": "P0",
+      "depends_on": [],
+      "attempts": 1,
+      "max_attempts": 10,
+      "started_at_commit": null,
+      "validation": {
+        "command": "两种Gateway源码矩阵、固定SDK原生历史、真实HTTP附件流、共享向量",
+        "timeout_seconds": 900
+      },
+      "checkpoints": [
+        "OpenClaw133项全绿与build；Hermes原生33项绿，普通源码矩阵11失败正在修；插件均在/tmp独立Git副本，未提交。",
+        "2026-10-15环境回收/tmp，未推插件提交无法直接取回；恢复到主仓.worktrees两个持久clone并分工重建，用新源码重新验证，不沿用丢失源码SHA。SDK实际Git75b与Python3.11环境已恢复到.toolchains/local-history。",
+        "Hermes持久重建源码冻结：普通370/固定SDK34/媒体30/shared70均新绿，source manifest a98ad415...；Android数据模块54（含真实HermesHTTP）新绿。OC重建146新绿、runtime70/type/build/raw快照已绿，原生load同进程权限隔离复核进行中。"
+      ]
+    },
+    {
+      "id": "task-003",
+      "title": "不可变契约固定与提交审查CI闭环",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-001",
+        "task-002"
+      ],
+      "attempts": 0,
+      "max_attempts": 10,
+      "started_at_commit": null,
+      "validation": {
+        "command": "中文提交推送、独立审查、三仓CI与匹配APK",
+        "timeout_seconds": 3600
+      },
+      "checkpoints": [
+        "核心Schema新摘要63223ba149355032800eeae8a9f0827d542bbde7ca9e4eeb19f93df30e7febde；尚未commit/push/升级任何真实服务。",
+        "契约851abc44e7ebf5a5aa0ea7ffe311d59be1538058已推协同分支并独立审查117/117无P1/P2；主仓默认分支尚未推，插件c91/869临时本地提交已丢失且未推。"
+      ]
+    }
+  ],
+  "session_count": 2,
+  "last_session": "2026-10-15T01:00:05.563490+00:00"
+}

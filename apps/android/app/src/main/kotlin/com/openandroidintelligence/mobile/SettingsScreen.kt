@@ -447,20 +447,6 @@ private fun SettingsOverviewScreen(
                 }
             }
             // 模块 1: 外观与动效
-            val mediaRuntime=(androidx.compose.ui.platform.LocalContext.current.applicationContext as? OpenAndroidIntelligenceApplication)?.gatewayRuntime
-            mediaRuntime?.activeMediaCache?.let { cache ->
-                var used by remember(cache) { mutableStateOf(cache.usedBytes) }
-                var quota by remember(cache) { mutableStateOf((cache.quotaBytes/(1024*1024)).toInt()) }
-                SectionLabel("加密离线媒体")
-                SettingsSectionCard {
-                    Text("已用 ${used/(1024*1024)} MiB / $quota MiB；配额不足时保留现有副本。")
-                    Row {
-                        TextButton(onClick={ quota=(quota-8).coerceAtLeast(8); cache.setQuota(quota) }) { Text("减少配额") }
-                        TextButton(onClick={ quota=(quota+8).coerceAtMost(256); cache.setQuota(quota) }) { Text("增加配额") }
-                        TextButton(onClick={ cache.clearMedia();mediaRuntime.controller.value?.clearRetainedMediaPreviews();used=0L }) { Text("只清媒体") }
-                    }
-                }
-            }
             SectionLabel("外观与动效")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {

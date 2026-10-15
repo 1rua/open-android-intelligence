@@ -1,17 +1,22 @@
 package com.openandroidintelligence.conversation.model
 
-/**
- * Metadata and an optional bounded preview for an attachment associated with a timeline entry.
- */
+enum class AttachmentLocalState { PENDING, SAVED, UNAVAILABLE, FAILED }
+enum class AttachmentDownloadState { IDLE, DOWNLOADING, SAVED, FAILED }
+
+/** 消息附件元数据、有限缩略图以及独立的本地保存与用户下载状态。 */
 data class TimelineAttachment(
     val draftId: String,
     val filename: String = "",
     val mediaType: String = "",
     val previewBytes: ByteArray? = null,
     val savedOffline: Boolean = false,
+    val localState: AttachmentLocalState = if (savedOffline) AttachmentLocalState.SAVED else AttachmentLocalState.PENDING,
+    val downloadState: AttachmentDownloadState = AttachmentDownloadState.IDLE,
+    val localError: String? = null,
+    val downloadError: String? = null,
 ) {
     val isImage: Boolean
-        get() = mediaType.startsWith("image/") ||
+        get() = mediaType.startsWith("image/", ignoreCase = true) ||
             filename.endsWith(".jpg", ignoreCase = true) ||
             filename.endsWith(".jpeg", ignoreCase = true) ||
             filename.endsWith(".png", ignoreCase = true) ||
@@ -26,6 +31,8 @@ data class TimelineAttachment(
 
         other as TimelineAttachment
         if (savedOffline != other.savedOffline) return false
+        if (localState != other.localState || downloadState != other.downloadState ||
+            localError != other.localError || downloadError != other.downloadError) return false
         if (draftId != other.draftId) return false
         if (filename != other.filename) return false
         if (mediaType != other.mediaType) return false
@@ -42,6 +49,10 @@ data class TimelineAttachment(
         result = 31 * result + filename.hashCode()
         result = 31 * result + mediaType.hashCode()
         result = 31 * result + (previewBytes?.contentHashCode() ?: 0)
+        result = 31 * result + localState.hashCode()
+        result = 31 * result + downloadState.hashCode()
+        result = 31 * result + (localError?.hashCode() ?: 0)
+        result = 31 * result + (downloadError?.hashCode() ?: 0)
         return result
     }
 }

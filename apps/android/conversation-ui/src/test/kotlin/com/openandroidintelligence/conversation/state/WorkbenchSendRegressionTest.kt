@@ -34,7 +34,8 @@ class WorkbenchSendRegressionTest {
         val controller=WorkbenchController(this,repository,object: AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String,languageCode: String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
         },{ConversationScope("profile","gateway","account","install")},attachmentCoordinator=coordinator,
-            persistence=persistence,replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
+            persistence=persistence,persistenceDispatcher=UnconfinedTestDispatcher(testScheduler),
+            replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
         runCurrent()
         state.value=AttachmentDraftState(restored.id,AttachmentState.RETRYABLE_FAILURE,errorMessage="ATTACHMENT_EXPIRED")
         runCurrent()
@@ -221,6 +222,7 @@ class WorkbenchSendRegressionTest {
                     parts = listOf(MessagePart.Text("Thinking and typing...")),
                     timestamp = 1000L,
                     state = "STREAMING",
+                    conversationId = ConversationId("conv_1"),
                 ),
             ),
         )
@@ -245,6 +247,7 @@ class WorkbenchSendRegressionTest {
                     parts = listOf(MessagePart.Text("Thinking and typing... done!")),
                     timestamp = 1000L,
                     state = "STREAMING",
+                    conversationId = ConversationId("conv_1"),
                 ),
             ),
         )
@@ -269,6 +272,7 @@ class WorkbenchSendRegressionTest {
                     parts = listOf(MessagePart.Text("Thinking and typing... done!")),
                     timestamp = 1000L,
                     state = "CONFIRMED",
+                    conversationId = ConversationId("conv_1"),
                 ),
             ),
         )
@@ -1430,7 +1434,8 @@ class WorkbenchSendRegressionTest {
                 eventId = "evt_u1",
                 occurredAt = 1000L,
                 revision = 1L,
-                message = TimelineMessage(id = "msg_u1", sender = "user", parts = listOf(MessagePart.Text("你好")), timestamp = 1000L),
+                message = TimelineMessage(id = "msg_u1", sender = "user", parts = listOf(MessagePart.Text("你好")), timestamp = 1000L,
+                    conversationId = ConversationId("conv_multi_turn")),
             ),
         )
         runCurrent()
@@ -1459,7 +1464,8 @@ class WorkbenchSendRegressionTest {
                 eventId = "evt_u2",
                 occurredAt = 1020L,
                 revision = 3L,
-                message = TimelineMessage(id = "msg_u2", sender = "user", parts = listOf(MessagePart.Text("在吗")), timestamp = 1020L),
+                message = TimelineMessage(id = "msg_u2", sender = "user", parts = listOf(MessagePart.Text("在吗")), timestamp = 1020L,
+                    conversationId = ConversationId("conv_multi_turn")),
             ),
         )
         runCurrent()
@@ -1695,7 +1701,7 @@ class WorkbenchSendRegressionTest {
         repository: RecordingRepository,
         coordinator: AttachmentDraftCoordinator,
     ) = WorkbenchController(
-        this, repository,
+        workbenchTestScope(), repository,
         object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
         },
@@ -1746,7 +1752,7 @@ class WorkbenchSendRegressionTest {
         repository: RecordingRepository,
         replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
     ) = WorkbenchController(
-        this, repository,
+        workbenchTestScope(), repository,
         object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
         },
@@ -1759,7 +1765,7 @@ class WorkbenchSendRegressionTest {
         repository: RecordingRepository,
         replyTimeouts: WorkbenchController.ReplyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
     ) = WorkbenchController(
-        this, repository,
+        workbenchTestScope(), repository,
         object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
         },

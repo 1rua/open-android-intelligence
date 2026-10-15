@@ -1,0 +1,44 @@
+
+ RUN  v4.1.10 /tmp/oai-history-red-baseline
+
+ ❯ gateway-contract/test/dispatched-schema-validator.test.ts (41 tests | 1 failed | 40 skipped) 159ms
+     × 纯附件完成事件可以通过已绑定的封闭 Schema 158ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  gateway-contract/test/dispatched-schema-validator.test.ts > 附件完成事件 > 纯附件完成事件可以通过已绑定的封闭 Schema
+AssertionError: expected { ok: false, errors: [ …(7) ] } to deeply equal { ok: true }
+
+- Expected
++ Received
+
+  {
+-   "ok": true,
++   "errors": [
++     "/parts/0	#/properties/parts/items/additionalProperties	additionalProperties	{\"additionalProperty\":\"attachmentId\"}",
++     "/parts/0	#/properties/parts/items/additionalProperties	additionalProperties	{\"additionalProperty\":\"filename\"}",
++     "/parts/0	#/properties/parts/items/additionalProperties	additionalProperties	{\"additionalProperty\":\"mediaType\"}",
++     "/parts/0	#/properties/parts/items/additionalProperties	additionalProperties	{\"additionalProperty\":\"sha256\"}",
++     "/parts/0	#/properties/parts/items/additionalProperties	additionalProperties	{\"additionalProperty\":\"sizeBytes\"}",
++     "/parts/0	#/properties/parts/items/required	required	{\"missingProperty\":\"text\"}",
++     "/parts/0/type	#/properties/parts/items/properties/type/const	const	{\"allowedValue\":\"text\"}",
++   ],
++   "ok": false,
+  }
+
+ ❯ gateway-contract/test/dispatched-schema-validator.test.ts:45:9
+     43|         parts: [{ type: "attachment", attachmentId: "media_original", …
+     44|           mediaType: "application/pdf", sizeBytes: 0, sha256: "sha256:…
+     45|     })).toEqual({ ok: true });
+       |         ^
+     46|   });
+     47| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 40 skipped (41)
+   Start at  00:57:42
+   Duration  8.52s (transform 285ms, setup 0ms, import 4.08s, tests 159ms, environment 0ms)
+

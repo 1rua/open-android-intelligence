@@ -7,6 +7,42 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// 原件回取使用生产 HTTP 与固定 SDK，源码变动必须使测试失效，不能复用旧互通缓存。
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    val repositoryRoot = rootProject.projectDir.resolve("../..").canonicalFile
+    val pluginRoot = providers.environmentVariable("HERMES_PLUGIN_ROOT").orNull
+        ?.takeIf { it.isNotBlank() }?.let { repositoryRoot.resolve(it).canonicalFile }
+        ?: repositoryRoot.resolve(".hermes-gateway-plugin")
+    val contractRoot = providers.environmentVariable("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT").orNull
+        ?.takeIf { it.isNotBlank() }?.let { repositoryRoot.resolve(it).canonicalFile }
+        ?: repositoryRoot.resolve("gateway-contract")
+    val sdkRoot = providers.environmentVariable("HERMES_SDK_ROOT").orNull
+        ?.takeIf { it.isNotBlank() }?.let { repositoryRoot.resolve(it).canonicalFile }
+    environment("HERMES_PLUGIN_ROOT", pluginRoot.path)
+    environment("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT", contractRoot.path)
+    environment("HERMES_SDK_ROOT", sdkRoot?.path ?: "")
+    val historyPython = providers.environmentVariable("OAI_HERMES_PYTHON").orNull?.takeIf { it.isNotBlank() } ?: "python3"
+    environment("OAI_HERMES_PYTHON", historyPython)
+    inputs.property("historyMediaPythonExecutable", historyPython)
+    if (historyPython == "python3") {
+        inputs.property("historyMediaPythonSearchPath", providers.environmentVariable("PATH").orNull.orEmpty())
+    } else {
+        val pythonFile = repositoryRoot.resolve(historyPython)
+        if (pythonFile.isFile) inputs.file(pythonFile).withPropertyName("historyMediaPythonBinary")
+            .withPathSensitivity(org.gradle.api.tasks.PathSensitivity.NONE)
+    }
+    inputs.files(fileTree(pluginRoot) {
+        include("open_android_intelligence_gateway/**/*.py", "tests/**/*.py", "plugin.yaml", "pyproject.toml", "contract-pin.json")
+    }).withPropertyName("historyMediaGatewaySources").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+    inputs.files(fileTree(contractRoot) {
+        include("schemas/**/*.json", "vectors/**/*.json", "src/**/*.ts", "core-dispatched-schemas.json")
+    }).withPropertyName("historyMediaContract").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+    if (sdkRoot != null) inputs.files(fileTree(sdkRoot) {
+        include("**/*.py", "pyproject.toml", "requirements*.txt")
+        exclude(".git/**", "**/__pycache__/**", "tests/**", "docs/**", "**/.venv/**", "**/node_modules/**")
+    }).withPropertyName("historyMediaNativeSources").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+}
+
 tasks.withType<Test>().configureEach {
     inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/sms.wasm"))
         .withPropertyName("compiledSmsReference")
@@ -21,7 +57,7 @@ android {
     namespace = "com.openandroidintelligence.mobile"
     defaultConfig {
         applicationId = "com.openandroidintelligence.mobile"
-        versionName = "2.1.0"
+        versionName = "2.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

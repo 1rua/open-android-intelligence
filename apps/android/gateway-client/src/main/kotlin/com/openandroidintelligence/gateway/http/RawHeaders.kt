@@ -26,6 +26,7 @@ object RawHeaders {
         "if-match",
         "content-encoding",
         "transfer-encoding",
+        "x-open-android-intelligence-media-format",
     )
 
     fun validate(headers: List<RawHeader>): List<RawHeader> {

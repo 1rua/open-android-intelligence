@@ -1,0 +1,31 @@
+{
+  "日期": "2026-10-14",
+  "说明": "第三项媒体修订P2修复后的未提交冻结源码；包含持久待办、原件代数、旧流与导出发布保护及新增真实边界回归。生产修改前RED已真实取得，本快照覆盖的源码仍待主代理统一执行最终矩阵与平台验证，不引用旧绿作为本轮通过。",
+  "head": "851abc44e7ebf5a5aa0ea7ffe311d59be1538058",
+  "sha256": {
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/EncryptedHistoryMediaCache.kt": "878ded94297c1be8f2036459b9ab1fce1bffbb52912b51ab44af1f825984878b",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/AndroidAttachmentDownloads.kt": "b30954fdcb16508826aa8da246880d7b8f72f12c24726358cb4bb647d86f205e",
+    "apps/android/conversation-domain/src/main/kotlin/com/openandroidintelligence/conversation/ports/ConversationPorts.kt": "eb1391e34aeb66802b63163318f61496dc911e3a769e0e2dd38d45fbe9539283",
+    "apps/android/conversation-data/src/main/kotlin/com/openandroidintelligence/conversation/data/GatewayAttachmentDraftCoordinator.kt": "d086ca6f92006e2a647c208b4280efa294e8c230fb68a2ca8d2584ae35d50288",
+    "apps/android/encrypted-store/src/main/kotlin/com/openandroidintelligence/encrypted/store/EncryptedAttachmentStagingStore.kt": "5d99378da3eb1d30e5ebb38345a26932361483f45f0d06f7ce009d956d909f42",
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/model/TimelineAttachment.kt": "f77630e7efb63c93eb59bb3562157fede3c2b6d41c15210c088d86420e52fa8f",
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/MessageTimeline.kt": "2b09bfffa34f300cb348abd4a177022256360e2e252075f2e166bca591b76077",
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt": "849f8d4f706edfb8fd3b1d71900e8568f2f72e349ffe220a2c635f049557ba25",
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/AttachmentLibraryScreen.kt": "03cc592575d0091ee200debc325a4d5aef94d616279fae95ab710fc13ebf1773",
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/FloatingConversationPanel.kt": "d44bf62c0d440f6eabce6233a63b8a8a2444a9fbfb85acc7c6e3caf13a90eb18",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/EncryptedHistoryMediaCacheTest.kt": "10159648173426d351e9c35d7f4eba2b2e036538952be04894422667367ec02c",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/PersistentHistoryMediaTest.kt": "996060121af276700ee075fa46c85c436305b9085694e2fb4d31f32e63f289fb",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/AndroidAttachmentDownloadsTest.kt": "2ce0afe84d9bab9f8786e51609a53e36814fce9a34bce04c988195e7267db9b0",
+    "apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/workbench/AttachmentOnlyTimelineTest.kt": "b5c100f8951f15e05edee61975e22cb4e384d844bb09bf65b7e0ae478591f585",
+    "apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/workbench/MessageTimelineImagePreviewTest.kt": "0740055392b4f5e00e2ec30ea892e213a5d778801567488ebedc11b90712266f",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/SubmittedOriginalRecoveryTest.kt": "6d146a42046c98a1d0bfdc4d844f9f8571caecc36a4868682484028090012718",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/HermesHistoryMediaHttpTest.kt": "d12f993290e9958a16076a022be992fc525318416956ab42183d4528a7ca0491",
+    "apps/android/app/build.gradle.kts": "3c4f0b56d5b10ceafdcf56cbd63c62850a6579b3fd7011eb321721bfd25ed6cf",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/EncryptedConversationMirror.kt": "d7347f938ff79b98bb9ca5a93b9d2d66edaab3148d9f35f5682af84c7a817f8d",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/GatewayRuntime.kt": "e4b3b9edffbcc60bda7eaecc7a3bfcab603a1827fa1b434864c50f5f1a711848",
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt": "2bc23f508b7a53a94ac7b63ab9fadeac4730d4474259c6246b7121645b30c385",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/RevisionedMediaRecoveryTest.kt": "a458319d81557cd71e794387829270b26a5e76ba8d289732ddbd2c3582fec68e",
+    "apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchLocalMediaRegressionTest.kt": "5a186c93dea9c5d997d3c7f5d640358609771fe4f56d00cbd1064a20df11bb9c"
+  },
+  "更新日期": "2026-10-15"
+}

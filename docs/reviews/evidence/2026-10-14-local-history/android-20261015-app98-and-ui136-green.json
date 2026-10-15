@@ -1,0 +1,198 @@
+{
+  "note": "最后小型媒体队列索引优化之前的整轮绿；后续对受影响子集与平台APK另行复验",
+  "results": {
+    "app": [
+      {
+        "name": "com.openandroidintelligence.mobile.AndroidAttachmentDownloadsTest",
+        "tests": "16",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:48"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.EncryptedHistoryMediaCacheTest",
+        "tests": "2",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:49"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.EncryptedMirrorRecoveryTest",
+        "tests": "2",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:45"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest",
+        "tests": "21",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:50"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.GatewaySessionRefreshTest",
+        "tests": "21",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:51"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.HermesHistoryMediaHttpTest",
+        "tests": "1",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:56"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.LocalConversationFirstFrameTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:57"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.PersistentHistoryMediaTest",
+        "tests": "8",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:57"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.PlatformSnapshotRecoveryTest",
+        "tests": "2",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:58"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.RevisionedMediaRecoveryTest",
+        "tests": "8",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:58"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.SqliteConversationMigrationTest",
+        "tests": "9",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:48:59"
+      },
+      {
+        "name": "com.openandroidintelligence.mobile.SubmittedOriginalRecoveryTest",
+        "tests": "2",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:49:00"
+      }
+    ],
+    "conversation-ui": [
+      {
+        "name": "com.openandroidintelligence.conversation.components.StateViewsTest",
+        "tests": "11",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:27"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.NewConversationAuthorityTest",
+        "tests": "1",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:27"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.TimelineTurnDedupTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:27"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest",
+        "tests": "9",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:28"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchForegroundResumeTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:28"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchLocalMediaRegressionTest",
+        "tests": "14",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:28"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchPersistenceThreadTest",
+        "tests": "1",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:27"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+        "tests": "14",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:28"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+        "tests": "37",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:28"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.state.WorkbenchTitleRegressionTest",
+        "tests": "6",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:28"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.workbench.AttachmentOnlyTimelineTest",
+        "tests": "4",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:28"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.workbench.MessageTimelineImagePreviewTest",
+        "tests": "2",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:33"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.workbench.MessageTimelineStreamingTest",
+        "tests": "4",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:33"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.workbench.MessageTimelineTest",
+        "tests": "14",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:33"
+      },
+      {
+        "name": "com.openandroidintelligence.conversation.workbench.WorkbenchLayoutRegressionTest",
+        "tests": "7",
+        "failures": "0",
+        "errors": "0",
+        "timestamp": "2026-10-15T06:45:34"
+      }
+    ]
+  }
+}

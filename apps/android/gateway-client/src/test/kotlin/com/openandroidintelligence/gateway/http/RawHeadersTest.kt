@@ -11,6 +11,17 @@ import org.junit.Test
  */
 class RawHeadersTest {
 
+    @Test
+    fun duplicatedHistoryMediaFormatFailsClosed() {
+        val failure = runCatching {
+            RawHeaders.validate(headers(
+                "X-Open-Android-Intelligence-Media-Format" to "stream-v1",
+                "x-open-android-intelligence-media-format" to "legacy-json",
+            ))
+        }.exceptionOrNull()
+        assertTrue("重复格式标记不能让原始 JSON 附件被当作协议外壳", failure?.message?.startsWith("DUPLICATE_HEADER") == true)
+    }
+
     private fun headers(vararg pairs: Pair<String, String>) =
         pairs.map { (name, value) -> RawHeader(name, value) }
 

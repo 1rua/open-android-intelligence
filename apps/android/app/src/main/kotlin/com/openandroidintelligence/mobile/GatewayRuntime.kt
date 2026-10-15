@@ -186,8 +186,6 @@ class GatewayRuntime(
     private var connectionJob: Job? = null
     private var sessionJob: Job? = null
     private var gatewayGrantRevision = -1L
-    var activeMediaCache: com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache? = null
-        private set
     private var activeAttachmentStaging: LocalAttachmentStagingStore? = null
 
     private val activeThread = java.util.concurrent.atomic.AtomicReference<String?>(null)
@@ -291,6 +289,7 @@ class GatewayRuntime(
         val accessToken = accessTokenHolder ?: return
         _operationNotice.value = null
         connectionJob = scope.launch {
+            if (!flushWorkbenchBeforeLeaving()) return@launch
             try {
                 authClientFor(current.gatewayUrl, setOfNotNull(current.tlsSpkiSha256)).logout(
                     accessToken = accessToken,
@@ -318,6 +317,9 @@ class GatewayRuntime(
                     _operationNotice.value = "Gateway 已登出，但本机凭据清理失败，请检查设备存储。"
                 }
             }
+            try { _controller.value?.closeAndAwait() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { _operationNotice.value = "Gateway 已登出，本机保存未完成，历史资料已保留。" }
             teardown()
         }
     }
@@ -325,31 +327,57 @@ class GatewayRuntime(
     /** Leave the active workbench without revoking another saved account's credentials. */
     fun reconnectOfflineMirror() {
         if (connectionJob?.isActive == true || _phase.value !is ConnectionPhase.OfflineMirror) return
-        teardown()
-        restoreSessionIfAvailable()
+        leaveWorkbench { restoreSessionIfAvailable() }
     }
 
     fun chooseAnotherAccount() {
         if (connectionJob?.isActive == true) return
-        teardown()
-        clearLastProfile()
+        leaveWorkbench { clearLastProfile() }
     }
 
     fun selectSavedAccount(profileId: String) {
         if (connectionJob?.isActive == true) return
         val profile = accountProfiles.find(profileId) ?: return
         val binding = accountProfiles.binding(profileId) ?: return
-        teardown()
-        val edit = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
-            .putString(KEY_LAST_GATEWAY, profile.gatewayBaseUrl).putString(KEY_LAST_USER, profile.username)
-            .putString(KEY_LAST_PROFILE, profileId).putString(KEY_LAST_ACCOUNT, binding.accountId)
-            .putString(KEY_LAST_DEVICE, binding.deviceId).putString(KEY_LAST_SESSION, binding.sessionId)
-            .putInt(KEY_DEVICE_KEY_ENCODING, binding.keyEncoding)
-        if (!edit.commit()) {
-            _operationNotice.value = "账号选择未能保存，请检查本机存储后重试。"
-            return
+        leaveWorkbench {
+            val edit = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_LAST_GATEWAY, profile.gatewayBaseUrl).putString(KEY_LAST_USER, profile.username)
+                .putString(KEY_LAST_PROFILE, profileId).putString(KEY_LAST_ACCOUNT, binding.accountId)
+                .putString(KEY_LAST_DEVICE, binding.deviceId).putString(KEY_LAST_SESSION, binding.sessionId)
+                .putInt(KEY_DEVICE_KEY_ENCODING, binding.keyEncoding)
+            if (!edit.commit()) {
+                _operationNotice.value = "账号选择未能保存，请检查本机存储后重试。"
+                return@leaveWorkbench
+            }
+            restoreSessionIfAvailable()
         }
-        restoreSessionIfAvailable()
+    }
+
+    private suspend fun flushWorkbenchBeforeLeaving(): Boolean = try {
+        _controller.value?.flushPendingPersistence()
+        true
+    } catch (cancelled: CancellationException) { throw cancelled }
+      catch (_: Exception) {
+        _operationNotice.value = "本地会话保存失败，请检查手机存储后重试。"
+        false
+    }
+
+    /** 先持久保存草稿与发送状态，再关闭旧账号；新连接不会被旧任务的收尾覆盖。 */
+    private fun leaveWorkbench(action: () -> Unit) {
+        lateinit var owned: Job
+        owned = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            try {
+                if (!flushWorkbenchBeforeLeaving()) return@launch
+                _controller.value?.closeAndAwait()
+                teardown()
+                connectionJob = null
+                action()
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (_: Exception) { _operationNotice.value = "账号切换未完成，请检查手机存储后重试。" }
+            finally { if (connectionJob === owned) connectionJob = null }
+        }
+        connectionJob = owned
+        owned.start()
     }
 
     /** Called only by the login form's explicit local identity confirmation. */
@@ -375,6 +403,12 @@ class GatewayRuntime(
         connectionJob = scope.launch {
             var refresh: ByteArray? = null
             try {
+                val offline = _phase.value as? ConnectionPhase.OfflineMirror
+                if (offline?.gatewayUrl == profile.gatewayBaseUrl && offline.username == profile.username) {
+                    if (!flushWorkbenchBeforeLeaving()) return@launch
+                    _controller.value?.closeAndAwait()
+                    teardown()
+                }
                 refresh = credentialStore.loadRefresh(profileId)
                 if (refresh != null && refresh.isNotEmpty() && binding != null) {
                     val endpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl) ?: error("PROFILE_INVALID")
@@ -392,6 +426,9 @@ class GatewayRuntime(
                     credentialStore.clearDeviceKey(profileId)
                     deviceKeys.delete(profileId)
                     if (accountId != null) {
+                        val localScope = ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId())
+                        val localMedia = com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,localScope,keyProvider=localDocumentKeyProvider)
+                        com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,localMedia,localScope,keyProvider=localDocumentKeyProvider).wipePrivateDownloadJournal()
                         pairingGrants.clearFor(PairingGrantBinding(profile.gatewayBaseUrl, accountId, installationId()))
                         attachmentStagingStore(profile.gatewayBaseUrl, accountId, installationId()).cleanup()
                         com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),localDocumentKeyProvider).wipe()
@@ -423,6 +460,7 @@ class GatewayRuntime(
         val staging = activeAttachmentStaging
         val binding = PairingGrantBinding(current.gatewayUrl, accountId, installationId())
         connectionJob = scope.launch {
+            if (!flushWorkbenchBeforeLeaving()) return@launch
             try {
                 PairingRevocationClient(http).revoke(deviceId)
             } catch (cancelled: CancellationException) {
@@ -431,7 +469,16 @@ class GatewayRuntime(
                 _operationNotice.value = "解除配对未获 Gateway 确认，本机凭据已保留，请检查连接后重试。"
                 return@launch
             }
+            try { _controller.value?.closeAndAwait() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { _operationNotice.value = "Gateway 已解除配对，本机任务收尾失败，请重试本机账号清理。" }
             teardown()
+            val localScope = ConversationScope(profileId,current.gatewayUrl,accountId,installationId())
+            try {
+                val localMedia = com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,localScope,keyProvider=localDocumentKeyProvider)
+                com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,localMedia,localScope,keyProvider=localDocumentKeyProvider).wipePrivateDownloadJournal()
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (_: Exception) { _operationNotice.value = "Gateway 已解除配对，未完成下载的本机恢复记录清理失败，请重试本机账号清理。" }
             val cleanup = listOf<() -> Unit>(
                 { pairingGrants.clearFor(binding) },
                 { credentialStore.clearRefresh(profileId) },
@@ -572,20 +619,31 @@ class GatewayRuntime(
         _controller.value?.updateDebouncePolicy(preferences.read(gateway))
     }
 
-    private fun showOfflineMirror(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,cause:Throwable) {
+    private suspend fun showOfflineMirror(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,cause:Throwable) {
         if (cause !is java.io.IOException || cause is javax.net.ssl.SSLException) return
         val mirrorScope=ConversationScope(profileId,endpoint.baseUrl,accountId,installationId())
-        val mirror=com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,mirrorScope,localDocumentKeyProvider)
-        mirror.finishBaselineRecovery()
-        if (mirror.load()==null) return
+        val mirror=kotlinx.coroutines.withContext(Dispatchers.IO) {
+            com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,mirrorScope,localDocumentKeyProvider)
+                .also { it.finishBaselineRecovery() }
+        }
+        if (kotlinx.coroutines.withContext(Dispatchers.IO) { mirror.load() } == null) {
+            mirror.closeStore()
+            return
+        }
+        val media = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,mirrorScope,keyProvider=localDocumentKeyProvider)
+        }
+        val downloads = com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,media,mirrorScope,keyProvider=localDocumentKeyProvider)
+        val mediaReady = prepareMediaTransitions(mirror,media)
+        val downloadNotice = if (mediaReady) recoverDownloads(downloads) else MEDIA_RECOVERY_NOTICE
         val owned=SupervisorJob(scope.coroutineContext[Job]); sessionJob=owned
-        _controller.value=WorkbenchController(CoroutineScope(owned+Dispatchers.Main.immediate),
+        _controller.value=kotlinx.coroutines.withContext(Dispatchers.IO) { WorkbenchController(CoroutineScope(owned+Dispatchers.Main.immediate),
             com.openandroidintelligence.mobile.conversations.OfflineMirrorRepository(mirror),
             object:com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository {
                 override suspend fun get(gatewayId:String,languageCode:String):com.openandroidintelligence.conversation.ports.AgentCommandCatalog=throw java.io.IOException("OFFLINE_MIRROR")
-            },{ mirrorScope },persistence=mirror,media=com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,mirrorScope,keyProvider=localDocumentKeyProvider),allowSending=false)
+            },{ mirrorScope },persistence=mirror,media=media,downloads=downloads,allowSending=false) }
         _phase.value=ConnectionPhase.OfflineMirror(endpoint.baseUrl,username)
-        _operationNotice.value="离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
+        _operationNotice.value=downloadNotice ?: "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
     }
 
     /** Attempts silent session recovery on cold start if valid credentials exist. */
@@ -681,7 +739,7 @@ class GatewayRuntime(
         }
     }
 
-    private fun establish(
+    private suspend fun establish(
         endpoint: GatewayEndpoint,
         username: String,
         profileId: String,
@@ -707,13 +765,31 @@ class GatewayRuntime(
             )
         initializePostLogin(InitializationStage.PAIRING_STATE) { pairingGrants.bind(binding) }
         gatewayGrantRevision = session.grantRevision.toLong()
+        val conversationScope = ConversationScope(profileId,endpoint.baseUrl,session.accountId,installationId())
+        val mirror = initializePostLogin(InitializationStage.MIRROR_RECOVERY) {
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,conversationScope,localDocumentKeyProvider)
+                    .also { it.finishBaselineRecovery() }
+            }
+        }
+        val legacyCursor = AndroidEventCursorStore(context, profileId)
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            if (mirror.loadCursor(session.accountId) == null) legacyCursor.load(session.accountId)?.let { cursor ->
+                mirror.saveCursor(session.accountId,cursor)
+                legacyCursor.clear(session.accountId)
+            }
+        }
         val transport = GatewayTransport(profile)
         val eventStreamStatus = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
         val http = GatewayHttpClient(
             profile = profile,
             transport = transport,
             signer = { preimage -> deviceKeys.sign(profileId, preimage) },
-            cursorStore = AndroidEventCursorStore(context, profileId),
+            cursorStore = object : com.openandroidintelligence.gateway.events.EventCursorStore {
+                override fun load(accountId: String) = mirror.loadCursor(accountId)
+                override fun save(accountId: String, cursor: String) = mirror.saveCursor(accountId,cursor)
+                override fun clear(accountId: String) = mirror.clearCursor(accountId)
+            },
             statusSink = eventStreamStatus,
             // Platform lifecycle is consumed independently of the selected thread.
             handlePlatformEvent = { event -> event.event in PLATFORM_EVENTS },
@@ -817,21 +893,16 @@ class GatewayRuntime(
             )
         }
 
-        val conversationScope = ConversationScope(
-            profileId = profileId,
-            gatewayId = endpoint.baseUrl,
-            accountId = session.accountId,
-            installId = installationId(),
-        )
-
         val mediaCache = initializePostLogin(InitializationStage.MEDIA_CACHE) {
-            com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,conversationScope,http,localDocumentKeyProvider)
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,conversationScope,http,localDocumentKeyProvider)
+            }
         }
-        activeMediaCache=mediaCache
-        val mirror = initializePostLogin(InitializationStage.MIRROR_RECOVERY) {
-            com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,conversationScope,localDocumentKeyProvider)
-                .also { it.finishBaselineRecovery() }
+        val downloads = initializePostLogin(InitializationStage.MEDIA_CACHE) {
+            com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,mediaCache,conversationScope,keyProvider=localDocumentKeyProvider)
         }
+        if (prepareMediaTransitions(mirror,mediaCache)) recoverDownloads(downloads)?.let { _operationNotice.value = it }
+        else _operationNotice.value = MEDIA_RECOVERY_NOTICE
         val mirroredRepository = com.openandroidintelligence.mobile.conversations.MirroredConversationRepository(workbenchRepository,mirror,mediaCache)
         http.setCursorRecovery {
             val response = http.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest("GET","/open-android-intelligence/v2/sync/snapshot"))
@@ -839,17 +910,32 @@ class GatewayRuntime(
             val envelope = JsonFields.obj(Json.parse(response.body.decodeToString())) ?: error("SNAPSHOT_INVALID")
             val data = JsonFields.obj(JsonFields.field(envelope,"data")) ?: error("SNAPSHOT_INVALID")
             val baseline = JsonFields.string(data,"baselineCursor") ?: error("SNAPSHOT_INVALID")
-            val threads = workbenchRepository.listConversations(conversationScope,com.openandroidintelligence.conversation.ports.PageRequest()).conversations
+            val threads = mutableListOf<com.openandroidintelligence.conversation.ports.ConversationSummary>()
+            val seen = mutableSetOf<String>()
+            var cursor: String? = null
+            do {
+                val page = workbenchRepository.listConversations(conversationScope,com.openandroidintelligence.conversation.ports.PageRequest(cursor))
+                threads += page.conversations
+                cursor = page.nextCursor
+                check(cursor == null || seen.add(cursor)) { "CONVERSATION_CURSOR_LOOP" }
+            } while (cursor != null)
             val pages = linkedMapOf<String,com.openandroidintelligence.conversation.ports.TimelinePage>()
-            threads.forEach { thread -> pages[thread.id.value] = workbenchRepository.completeTimeline(thread.id.value) }
-            mirror.installBaseline(threads,pages,baseline)
-            mediaCache.reconcile(pages.values.flatMap { it.messages }.flatMap { it.parts }.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>().map { it.draftId.value }.toSet())
-            mirror.finishBaselineRecovery()
+            // 只补本机已经保存或当前打开的线程，从未打开的旧历史仍在首次打开时读取。
+            val known = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                threads.filter { thread -> thread.id.value == activeThread.get() || mirror.timeline(thread.id.value) != null || mirror.loadSendAtoms(thread.id.value).isNotEmpty() }
+            }
+            known.forEach { thread -> pages[thread.id.value] = workbenchRepository.completeTimeline(thread.id.value) }
+            mirror.installBaselineAndCommit(threads,pages,baseline)
+            // 同事务保存的媒体修订先补做；缺行本身不生成删除，旧导出不能越过未应用的屏障。
+            mirror.applyPendingMediaTransitions(mediaCache)
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                mirror.finishBaselineRecovery()
+            }
             _controller.value?.onMirrorRebuilt()
             baseline
         }
         _controller.value = initializePostLogin(InitializationStage.WORKBENCH) {
-            WorkbenchController(
+            kotlinx.coroutines.withContext(Dispatchers.IO) { WorkbenchController(
                 scope = sessionScope,
                 repository = mirroredRepository,
                 catalogRepository = catalogRepository,
@@ -866,7 +952,8 @@ class GatewayRuntime(
                 streamHealthSource = workbenchRepository,
                 persistence = mirror,
                 media = mediaCache,
-            )
+                downloads = downloads,
+            ) }
         }
         _phase.value = ConnectionPhase.Connected(
             gatewayUrl = endpoint.baseUrl,
@@ -918,6 +1005,22 @@ class GatewayRuntime(
         }
     }
 
+    /** 附件状态失败保留正文；媒体端口保持锁定，不能先恢复旧导出再补做删除。 */
+    private suspend fun prepareMediaTransitions(
+        mirror: com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror,
+        media: com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache,
+    ): Boolean = try {
+        mirror.applyPendingMediaTransitions(media)
+        true
+    } catch (cancelled: CancellationException) { throw cancelled }
+      catch (_: Exception) { false }
+
+    private suspend fun recoverDownloads(downloads: com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads): String? = try {
+        downloads.recoverPendingDownloads()
+        null
+    } catch (cancelled: CancellationException) { throw cancelled }
+      catch (_: Exception) { "未完成的下载恢复失败，已保留恢复记录，可在附件卡片重试。" }
+
     /** 本机初始化的失败只清理本次运行态，账号资料、密钥、刷新凭据和历史文件全部保留。 */
     private inline fun <T> initializePostLogin(stage: InitializationStage, operation: () -> T): T {
         GatewayLog.d("OaiConnection", "stage=${stage.name} state=starting")
@@ -958,7 +1061,6 @@ class GatewayRuntime(
 
     private fun teardown() {
         _controller.value?.close()
-        activeMediaCache = null
         executionDriver?.cancelAll()
         executionDriver = null
         capabilityPublisher = null
@@ -1150,6 +1252,7 @@ class GatewayRuntime(
     }
 
     private companion object {
+        const val MEDIA_RECOVERY_NOTICE = "本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。"
         val PLATFORM_EVENTS = setOf("session.revoked", "pairing.grant.changed", "device.requested", "device.request.cancel.requested")
         const val PREFS_NAME = "open_android_intelligence_runtime"
         const val KEY_INSTALL = "installation_id"

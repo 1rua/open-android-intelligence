@@ -62,18 +62,21 @@ class EncryptedAttachmentStagingStore private constructor(
     private val scopeId: String,
     private val chunkBytes: Int,
     private val operations: AttachmentStageOperations,
+    private val persistent: Boolean,
 ) : LocalAttachmentStagingStore {
     constructor(
         directory: File,
         key: SecretKey,
         scopeId: String,
         chunkBytes: Int = DEFAULT_CHUNK_BYTES,
+        persistent: Boolean = false,
     ) : this(
         directory,
         key,
         scopeId,
         chunkBytes,
         AttachmentStageOperations({ descriptor -> descriptor.sync() }, { partial, complete -> partial.renameTo(complete) }),
+        persistent,
     )
 
     internal constructor(
@@ -88,6 +91,7 @@ class EncryptedAttachmentStagingStore private constructor(
         scopeId,
         chunkBytes,
         AttachmentStageOperations(syncFileDescriptor, { partial, complete -> partial.renameTo(complete) }),
+        false,
     )
 
     internal constructor(
@@ -97,7 +101,7 @@ class EncryptedAttachmentStagingStore private constructor(
         chunkBytes: Int,
         syncFileDescriptor: (FileDescriptor) -> Unit,
         promotePartial: (File, File) -> Boolean,
-    ) : this(directory, key, scopeId, chunkBytes, AttachmentStageOperations(syncFileDescriptor, promotePartial))
+    ) : this(directory, key, scopeId, chunkBytes, AttachmentStageOperations(syncFileDescriptor, promotePartial), false)
 
     init {
         require(key.algorithm.equals("AES", ignoreCase = true)) { "attachment staging key must use AES" }
@@ -106,7 +110,7 @@ class EncryptedAttachmentStagingStore private constructor(
         require(chunkBytes in 1..MAX_CHUNK_BYTES) { "attachment staging chunk size is invalid" }
         ensureDirectory()
         cleanupIncomplete(System.currentTimeMillis())
-        cleanupExpired(System.currentTimeMillis(), DEFAULT_STAGE_TTL_MILLIS)
+        if (!persistent) cleanupExpired(System.currentTimeMillis(), DEFAULT_STAGE_TTL_MILLIS)
     }
 
     /** Reads once, encrypts each chunk, and derives metadata from those exact bytes. */

@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -280,6 +281,7 @@ class WorkbenchAttachmentPreviewRegressionTest {
         { ConversationScope("profile", "gateway", account, "install") },
         attachmentCoordinator = VerifiedImages(uniqueRemoteIds),
         persistence = persistence,
+        persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
     )
 

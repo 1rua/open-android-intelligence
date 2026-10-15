@@ -461,8 +461,19 @@ interface AttachmentDraftCoordinator {
     fun observe(draftId: String): Flow<AttachmentDraftState>
     fun retry(draftId: String)
     suspend fun discard(draftId: String)
-    /** Releases local ciphertext after the Gateway accepts the message. */
+    /** 远端受理且历史原件保存成功后，释放上传临时内容。 */
     suspend fun releaseAfterSubmit(draftId: String)
+    /** 使用已核验的本地源保存历史原件，成功后才可释放上传暂存。 */
+    suspend fun archiveSubmitted(conversationId: String, draftId: String, media: HistoricalMediaPort) {
+        error("ATTACHMENT_ARCHIVE_UNAVAILABLE")
+    }
+    /** 重建本地上传源，不代表重新上传、重新确认或重新发送消息。 */
+    suspend fun ensureSubmittedSource(conversationId: String, draftId: String, media: HistoricalMediaPort) {
+        error("ATTACHMENT_RECOVERY_UNAVAILABLE")
+    }
+    /** 仅供用户明确重试；等待本次远端核验/上传结束，不发送消息。 */
+    suspend fun retrySubmittedSource(conversationId: String, draftId: String, media: HistoricalMediaPort): AttachmentDraft =
+        error("ATTACHMENT_RECOVERY_UNAVAILABLE")
     fun remoteAttachmentId(draftId: String): String?
 }
 
@@ -487,10 +498,38 @@ interface GenerationTracker {
 
 data class HistoricalMediaMetadata(val conversationId:String,val attachmentId:String,val filename:String,val mediaType:String,
     val sizeBytes:Long,val sha256:String,val remoteAvailable:Boolean,val estimatedLocalBytes:Long)
+/** 正文权威提交后产生的媒体变更；没有单条修订的删除是永久屏障。 */
+data class HistoricalMediaTransition(val conversationId: String, val messageId: String, val revision: Long?,
+    val attachmentIds: List<String>, val deleted: Boolean) {
+    init { require(revision == null || revision >= 0); require(deleted || revision != null) }
+}
 interface HistoricalMediaPort {
     suspend fun metadata(conversationId:String,attachmentId:String):HistoricalMediaMetadata
     suspend fun retain(metadata:HistoricalMediaMetadata)
     fun isRetained(attachmentId:String):Boolean
     fun preview(attachmentId:String):ByteArray?
     fun remove(attachmentId:String)
+    fun remove(conversationId: String, attachmentId: String) = remove(attachmentId)
+    suspend fun localMetadata(conversationId: String, attachmentId: String): HistoricalMediaMetadata? = null
+    suspend fun ensureLocal(conversationId: String, attachmentId: String): HistoricalMediaMetadata =
+        metadata(conversationId, attachmentId).also { retain(it) }
+    suspend fun archiveSubmitted(conversationId: String, attachmentId: String, filename: String, mediaType: String,
+        content: AttachmentContentSource, sizeBytes: Long, sha256: String, localDraftId: String? = null) {
+        error("ATTACHMENT_ARCHIVE_UNAVAILABLE")
+    }
+    suspend fun submittedMetadata(conversationId: String, localDraftId: String): HistoricalMediaMetadata? = null
+    suspend fun submittedDraftIds(conversationId: String, attachmentId: String): List<String> = emptyList()
+    suspend fun openOriginal(conversationId: String, attachmentId: String): InputStream = error("LOCAL_MEDIA_UNAVAILABLE")
+    fun preview(conversationId: String, attachmentId: String): ByteArray? = preview(attachmentId)
+    suspend fun applyTransition(transition: HistoricalMediaTransition) { error("MEDIA_REVISION_UNSUPPORTED") }
+    /** 在任何等待或读取之前取得原件代数；删除、恢复和账号清理都会使旧值失效。 */
+    fun originalEpoch(conversationId: String, attachmentId: String): String = error("MEDIA_REVISION_UNSUPPORTED")
+    /** 与媒体变更共用提交锁，保证最终发布不能跨越已接受的删除或恢复。 */
+    fun <T> withOriginalEpoch(conversationId: String, attachmentId: String, epoch: String, commit: () -> T): T =
+        error("MEDIA_REVISION_UNSUPPORTED")
+}
+
+data class AttachmentDownloadResult(val uri: String, val filename: String, val recoveryWarningCode: String? = null)
+interface AttachmentDownloadPort {
+    suspend fun download(conversationId: String, attachmentId: String): AttachmentDownloadResult
 }

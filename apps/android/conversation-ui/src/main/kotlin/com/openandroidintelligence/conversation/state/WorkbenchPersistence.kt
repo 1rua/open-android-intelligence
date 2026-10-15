@@ -27,3 +27,13 @@ interface WorkbenchPersistence {
     /** 按线程原子保存；成功返回后才允许向 Gateway 提交该发送。 */
     fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>)
 }
+
+/** 真实磁盘适配器提供可等待的 IO 提交；内存测试仓库继续使用基础端口。 */
+interface AwaitableWorkbenchPersistence : WorkbenchPersistence {
+    suspend fun loadTimeline(conversationId: String): com.openandroidintelligence.conversation.ports.TimelinePage?
+    suspend fun loadKnownMediaMessages(): List<TimelineMessage>
+    suspend fun saveCheckpoint(checkpoint: WorkbenchCheckpoint)
+    suspend fun saveSendAtomsDurably(conversationId: String, atoms: List<LocalSendAtom>)
+    suspend fun flush()
+    suspend fun closeStore()
+}

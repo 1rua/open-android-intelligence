@@ -1,0 +1,5 @@
+等价的跨宿主对照（与 cross-host-conformance.test.ts 相同断言，本地 vitest 无法启动时的替代执行）
+两宿主向量数：70
+同一向量 ID 顺序一致：通过
+每条 (vectorId, operation, resultHash) 完全一致：通过
+全部状态为 pass：通过

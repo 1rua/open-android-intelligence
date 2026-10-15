@@ -1,0 +1,356 @@
+{
+  "app": [
+    {
+      "suite": "com.openandroidintelligence.mobile.AndroidAttachmentDownloadsTest",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:04",
+      "mtime": 1792046777.1326354
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.EncryptedHistoryMediaCacheTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:05",
+      "mtime": 1792046777.1325881
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.EncryptedMirrorRecoveryTest",
+      "tests": 2,
+      "failures": 1,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:05",
+      "mtime": 1792046777.1346765
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest",
+      "tests": 21,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:06",
+      "mtime": 1792046777.1605167
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.GatewaySessionRefreshTest",
+      "tests": 21,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:07",
+      "mtime": 1792046777.1572502
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.HermesHistoryMediaHttpTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:12",
+      "mtime": 1792046777.150855
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.LocalConversationFirstFrameTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:13",
+      "mtime": 1792046777.1513479
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.PersistentHistoryMediaTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:13",
+      "mtime": 1792046777.151267
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.PlatformSnapshotRecoveryTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:14",
+      "mtime": 1792046777.1323507
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.RevisionedMediaRecoveryTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:01",
+      "mtime": 1792046777.1326218
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.SqliteConversationMigrationTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:15",
+      "mtime": 1792046777.1550426
+    },
+    {
+      "suite": "com.openandroidintelligence.mobile.SubmittedOriginalRecoveryTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:46:16",
+      "mtime": 1792046777.1323855
+    }
+  ],
+  "conversation-ui": [
+    {
+      "suite": "com.openandroidintelligence.conversation.components.StateViewsTest",
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:27",
+      "mtime": 1792046735.8462386
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.NewConversationAuthorityTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:27",
+      "mtime": 1792046735.8466184
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.TimelineTurnDedupTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:27",
+      "mtime": 1792046735.8463144
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:28",
+      "mtime": 1792046735.8466308
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.WorkbenchForegroundResumeTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:28",
+      "mtime": 1792046735.8458002
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.WorkbenchLocalMediaRegressionTest",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:28",
+      "mtime": 1792046735.8459766
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.WorkbenchPersistenceThreadTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:27",
+      "mtime": 1792046735.8462203
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:28",
+      "mtime": 1792046735.846022
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:28",
+      "mtime": 1792046735.84675
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.state.WorkbenchTitleRegressionTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:28",
+      "mtime": 1792046735.8458962
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.workbench.AttachmentOnlyTimelineTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:28",
+      "mtime": 1792046735.8470626
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.workbench.MessageTimelineImagePreviewTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:33",
+      "mtime": 1792046735.8468246
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.workbench.MessageTimelineStreamingTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:33",
+      "mtime": 1792046735.8467088
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.workbench.MessageTimelineTest",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:33",
+      "mtime": 1792046735.845932
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.workbench.WorkbenchLayoutRegressionTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:34",
+      "mtime": 1792046735.846641
+    }
+  ],
+  "conversation-data": [
+    {
+      "suite": "com.openandroidintelligence.conversation.data.AttachmentPhaseTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:02",
+      "mtime": 1792046710.6203425
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.data.AttachmentRecoveryTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:03",
+      "mtime": 1792046710.6203725
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.data.GatewayEventDecoderTest",
+      "tests": 29,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:03",
+      "mtime": 1792046710.6205564
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:03",
+      "mtime": 1792046710.6204255
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.data.GatewayWireRegressionTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:03",
+      "mtime": 1792046710.6202962
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.data.HermesHttpInteropTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:03",
+      "mtime": 1792046710.6204119
+    },
+    {
+      "suite": "com.openandroidintelligence.conversation.data.StreamHealthBridgeTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:45:10",
+      "mtime": 1792046710.6204028
+    }
+  ],
+  "gateway-client": [
+    {
+      "suite": "com.openandroidintelligence.gateway.conversations.ConversationClientTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:46",
+      "mtime": 1792046687.4749546
+    },
+    {
+      "suite": "com.openandroidintelligence.gateway.http.GatewayResponseStreamingTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:46",
+      "mtime": 1792046687.475003
+    },
+    {
+      "suite": "com.openandroidintelligence.gateway.http.GatewayTransportSecurityTest",
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:47",
+      "mtime": 1792046687.474978
+    },
+    {
+      "suite": "com.openandroidintelligence.gateway.http.RawHeadersTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:47",
+      "mtime": 1792046687.4749658
+    },
+    {
+      "suite": "com.openandroidintelligence.gateway.schema.CapabilitySchemaValidatorTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:47",
+      "mtime": 1792046687.474937
+    },
+    {
+      "suite": "com.openandroidintelligence.gateway.schema.DispatchedSchemaVectorTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:47",
+      "mtime": 1792046687.4749892
+    },
+    {
+      "suite": "com.openandroidintelligence.gateway.schema.SchemaContractHashTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:47",
+      "mtime": 1792046687.4746952
+    }
+  ],
+  "encrypted-store": [
+    {
+      "suite": "com.openandroidintelligence.encrypted.store.AesGcmEncryptedBlobStoreTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:58",
+      "mtime": 1792046699.7244637
+    },
+    {
+      "suite": "com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStoreTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "timestamp": "2026-10-15T06:44:59",
+      "mtime": 1792046699.7244475
+    }
+  ]
+}

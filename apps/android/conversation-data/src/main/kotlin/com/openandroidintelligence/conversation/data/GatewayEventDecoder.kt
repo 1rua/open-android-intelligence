@@ -412,6 +412,8 @@ object GatewayEventDecoder {
                             draftId = AttachmentDraftId(it),
                             filename = filename,
                             mediaType = mediaType,
+                            sizeBytes = JsonFields.long(part, "sizeBytes"),
+                            sha256 = JsonFields.string(part, "sha256"),
                         )
                     }
                 }

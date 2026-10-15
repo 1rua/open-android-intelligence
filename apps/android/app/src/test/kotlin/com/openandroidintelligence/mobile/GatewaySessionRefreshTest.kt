@@ -11,7 +11,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
@@ -135,12 +137,30 @@ class GatewaySessionRefreshTest {
             val runtime = runtime(keys)
             runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
             awaitConnected(runtime)
-            assertNotNull(runtime.controller.value)
-            assertTrue("工作台首次更新必须实际写入加密镜像", ApplicationProvider.getApplicationContext<Application>()
-                .noBackupFilesDir.resolve("private-documents").walkTopDown().any { it.isFile && it.length() > 0 })
+            val controller=requireNotNull(runtime.controller.value)
+            assertNull("会话密钥必须保持不可导出",key.encoded)
+            awaitWorkbenchCommit(controller)
+            val context=ApplicationProvider.getApplicationContext<Application>()
+            val installId=requireNotNull(context.getSharedPreferences("open_android_intelligence_runtime",Context.MODE_PRIVATE)
+                .getString("installation_id",null))
+            fun reopen()=com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,
+                com.openandroidintelligence.conversation.ports.ConversationScope(profileId(),gateway.baseUrl,"acc_stub",installId),keys)
+            val initial=reopen()
+            try {
+                assertNotNull("工作台首次提交必须能由新存储实例认证并恢复",initial.load())
+            } finally { awaitAction("初始镜像实例必须完成关闭") { initial.closeStore() } }
+            controller.editDraft("不可导出密钥保护的持久草稿")
+            awaitWorkbenchCommit(controller)
+            val restored=reopen()
+            try {
+                assertEquals("不可导出密钥保护的持久草稿",requireNotNull(restored.load()).draft)
+            } finally { awaitAction("草稿镜像实例必须完成关闭") { restored.closeStore() } }
+            assertTrue("加密镜像必须使用新的 SQLite 分记录存储",context.noBackupFilesDir.resolve("conversation-mirror")
+                .walkTopDown().any { it.isFile && it.name=="mirror-v1.db" && it.length()>0 })
             assertTrue(credentialStore.hasRefresh(profileId()))
             assertTrue(deviceKeys.hasKey(profileId()))
             runtime.chooseAnotherAccount()
+            awaitAccountChooser(runtime)
         } finally {
             Security.removeProvider(RandomizedEncryptionRequiredProvider.NAME)
         }
@@ -198,7 +218,8 @@ class GatewaySessionRefreshTest {
 
         assertTrue(awaitCondition(AWAIT_MILLIS) { !runtime.isRefreshingSession.value && credentialStore.loadRefresh(profileId())?.decodeToString() == "refresh_2" })
         assertTrue("续期成功而本机重建失败必须报告失败，实际阶段 ${runtime.phase.value}", runtime.phase.value is ConnectionPhase.Failed)
-        assertEquals("POST_LOGIN_INITIALIZATION_FAILED:ATTACHMENT_RECOVERY", (runtime.phase.value as ConnectionPhase.Failed).code)
+        // 续期重建先认证已有的 SQLite 密文，故本轮密钥故障属于镜像恢复阶段。
+        assertEquals("POST_LOGIN_INITIALIZATION_FAILED:MIRROR_RECOVERY", (runtime.phase.value as ConnectionPhase.Failed).code)
         assertFalse("连接已经停止，不能再声称有效", runtime.operationNotice.value.orEmpty().contains("当前连接仍然有效"))
         assertNull(runtime.controller.value)
         assertNull(runtime.connectedAccountId)
@@ -456,7 +477,8 @@ class GatewaySessionRefreshTest {
         )
         val history = com.openandroidintelligence.conversation.ports.TimelinePage(
             listOf(TimelineMessage("msg_kept", "user",
-                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("退出后保留的历史")), 1L, "CONFIRMED")),
+                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("退出后保留的历史")), 1L, "CONFIRMED",
+                conversationId=com.openandroidintelligence.conversation.model.ConversationId("conv_kept"))),
             null,
             1L,
         )
@@ -484,7 +506,10 @@ class GatewaySessionRefreshTest {
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
-        requireNotNull(runtime.controller.value).editDraft("离线草稿仍需保留")
+        val onlineController=requireNotNull(runtime.controller.value)
+        onlineController.editDraft("离线草稿仍需保留")
+        // 以真实关键提交完成模拟退出，不能把取消作用域当成同步落盘。
+        awaitWorkbenchCommit(onlineController)
         runtimeScope.cancel()
         gateway.closed()
         val offlineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -519,10 +544,12 @@ class GatewaySessionRefreshTest {
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
         runtime.chooseAnotherAccount()
+        awaitAccountChooser(runtime)
         runtime.login(gateway.baseUrl, "bob", "secret".toCharArray())
-        awaitConnected(runtime)
+        assertEquals("bob",awaitConnected(runtime).username)
         credentialStore.saveRefresh(profileId("bob"), "bob_refresh".toByteArray())
         runtime.chooseAnotherAccount()
+        awaitAccountChooser(runtime)
         runtime.selectSavedAccount(profileId())
         assertEquals("operator", awaitConnected(runtime).username)
         assertTrue(gateway.requests.last { it.target == REFRESH_PATH }.body.contains("refresh_1"))
@@ -557,6 +584,25 @@ class GatewaySessionRefreshTest {
         }
         fail("登录没有在 ${AWAIT_MILLIS}ms 内完成，最后阶段是 ${runtime.phase.value}")
         error("unreachable")
+    }
+
+    private fun awaitWorkbenchCommit(controller:com.openandroidintelligence.conversation.state.WorkbenchController) {
+        awaitAction("草稿和工作台必须等待真实关键提交完成") { controller.flushPendingPersistence() }
+    }
+
+    private fun awaitAction(message:String,action:suspend () -> Unit) {
+        val completion=runtimeScope.async { action() }
+        assertTrue(message,awaitCondition(AWAIT_MILLIS) { completion.isCompleted })
+        runBlocking { completion.await() }
+    }
+
+    private fun awaitAccountChooser(runtime:GatewayRuntime) {
+        val prefs=ApplicationProvider.getApplicationContext<Application>()
+            .getSharedPreferences("open_android_intelligence_runtime",Context.MODE_PRIVATE)
+        assertTrue("旧账号完成提交、关闭和取消默认恢复后才能继续选择账号",awaitCondition(AWAIT_MILLIS) {
+            runtime.phase.value is ConnectionPhase.Disconnected && runtime.controller.value==null &&
+                runtime.connectedAccountId==null && !prefs.contains("last_profile_id")
+        })
     }
 
     private fun awaitCondition(timeoutMillis: Long, block: () -> Boolean): Boolean {

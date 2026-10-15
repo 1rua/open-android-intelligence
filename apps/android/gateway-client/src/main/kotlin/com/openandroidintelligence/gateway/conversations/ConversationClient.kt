@@ -39,6 +39,8 @@ sealed class MessagePart {
         val filename: String = "",
         val mediaType: String = "",
         val visualContext: VisualContext? = null,
+        val sizeBytes: Long? = null,
+        val sha256: String? = null,
     ) : MessagePart()
 }
 
@@ -512,6 +514,8 @@ class ConversationClient(private val http: GatewayHttpClient) {
                             attachmentId = it,
                             filename = filename,
                             mediaType = mediaType,
+                            sizeBytes = JsonFields.long(part, "sizeBytes"),
+                            sha256 = JsonFields.string(part, "sha256"),
                         )
                     }
                 }

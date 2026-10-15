@@ -413,6 +413,16 @@ Gateway 随后校验账号、设备、配对 generation、时间窗、nonce、�
 
 ## 7. 对话
 
+### 历史媒体流式读取与本地保存（2026-10-14）
+
+现有历史媒体 metadata、cache-grant、content 路径支持可选查询参数 `format=stream-v1`，参数进入 canonical target 并参与签名；格式必须唯一且已知。metadata/grant 对该格式不沿用旧 JSON 整体读取的内存大小限制。grant 仍短期、单用途，绑定已验证账号、会话、附件、设备、配对 generation 与授权 revision。
+
+指定流格式的成功 content 响应返回原始附件字节，并携带唯一 `X-Open-Android-Intelligence-Media-Format: stream-v1`、原媒体 `Content-Type`、确切 `Content-Length` 和 `Digest: sha-256=<base64>`。客户端使用 metadata 的长度与摘要核对实际内容；流开始前的失败采用现有错误外壳，流开始后的来源变化、授权撤销或读取失败中断传输，半文件不能提交为成功。媒体类型不得形成非法 HTTP 头。JSON 原件也必须通过格式标记与协议外壳区分。
+
+不指定格式继续返回旧 JSON/Base64 外壳；新客户端遇到无标记的旧响应只使用有界兼容读取，不能无界读入内存。历史原件由 Agent 宿主拥有，不得靠延长 Gateway 暂存 TTL 保留。原件不存在时返回明确不可用状态，附件身份和元数据仍可显示。
+
+Android 按 ADR 0053 默认保存已同步会话的附件原件，用户发送直接采用本地已校验字节；用户主动下载才导出普通文件至系统公共目录。完成事件 parts 是封闭的文本／附件联合，附件包含不透明 attachmentId 及可选文件名、媒体类型、长度和 SHA-256，不含路径、URL 或附件字节。此 Schema 修订改变核心摘要，App 与两种插件同步固定与发布；保留旧外壳不承诺旧核心摘要客户端可以登录新版插件。
+
 端点：
 
 ```text

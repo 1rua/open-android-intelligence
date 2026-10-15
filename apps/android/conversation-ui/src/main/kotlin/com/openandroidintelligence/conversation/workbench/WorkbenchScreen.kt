@@ -66,12 +66,6 @@ fun WorkbenchScreen(
     pluginCards:@Composable ()->Unit = {},
 ) {
     val state by controller.state.collectAsState()
-    state.mediaRetention?.let { media ->
-        AlertDialog(onDismissRequest=controller::dismissMediaRetention,title={ Text("保留离线副本") },
-            text={ Text("${media.filename}\n${media.mediaType} · ${media.sizeBytes} 字节\n预计加密缓存占用 ${media.estimatedLocalBytes} 字节"+if (!media.remoteAvailable) "\nREMOTE_UNAVAILABLE" else "") },
-            confirmButton={ TextButton(onClick=controller::confirmMediaRetention,enabled=media.remoteAvailable) { Text("保留") } },
-            dismissButton={ TextButton(onClick=controller::dismissMediaRetention) { Text("取消") } })
-    }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
@@ -302,7 +296,7 @@ fun WorkbenchScreen(
                                                             onClick = { controller.openThread(jumpTarget) },
                                                         )
                                                     } else {
-                                                        TimelineRow(entry = entry, onDecide = controller::decideApproval,onRetainMedia=controller::proposeMediaRetention)
+                                                        TimelineRow(entry = entry, onDecide = controller::decideApproval,onDownloadAttachment=controller::downloadAttachment)
                                                     }
                                                 }
                                                 if (state.creatingThread &&
@@ -435,7 +429,7 @@ fun WorkbenchScreen(
                     onRetryAttachment = controller::retryAttachment,
                     onClose = { showAttachmentLibrary = false },
                     historical=entries.flatMap { it.attachments }.distinctBy { it.draftId },
-                    onRetainHistorical=controller::proposeMediaRetention,
+                    onDownloadHistorical=controller::downloadAttachment,
                 )
             }
         }

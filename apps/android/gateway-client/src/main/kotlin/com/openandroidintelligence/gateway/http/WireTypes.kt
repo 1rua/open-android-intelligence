@@ -1,6 +1,7 @@
 package com.openandroidintelligence.gateway.http
 
 import kotlinx.coroutines.flow.Flow
+import java.io.InputStream
 
 data class WireRequest(
     val method: String,
@@ -26,6 +27,15 @@ data class WireResponse(
  */
 interface GatewayByteTransport {
     suspend fun execute(request: WireRequest): WireResponse
+
+    /** 字节实现的兼容入口；生产 HTTP 实现直接消费网络流，关闭责任属于传输层。 */
+    suspend fun <T> consumeResponse(
+        request: WireRequest,
+        consume: suspend (Int, List<RawHeader>, InputStream) -> T,
+    ): T {
+        val response = execute(request)
+        return response.body.inputStream().use { consume(response.status, response.headers, it) }
+    }
 
     fun eventStream(request: WireRequest): Flow<ByteArray>
 }
