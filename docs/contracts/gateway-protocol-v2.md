@@ -134,7 +134,7 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 
 `messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`agent-approval-cards-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
 
-`agent-command-new-v1` 表示该 Gateway 服务 `/new` 命令入口：能接收以普通文本形式送达的 `/new`，由宿主命令层原子创建新会话、保存绑定，并通过 `conversation.command.result` 返回权威 `conversationId`（第 7 节）。未实现该入口的 Gateway **不得**声明该能力，也不得以任何本地构造的会话标识冒充已知会话；客户端在能力缺失时必须明示不可用，而不是退化为自建会话。
+`agent-command-new-v1` 表示该 Gateway 服务用户手动发送的 `/new` 命令入口：能接收以普通文本形式送达的 `/new`，由宿主命令层原子创建新会话、保存绑定，并通过 `conversation.command.result` 返回权威 `conversationId`（第 7 节）。未实现该入口的 Gateway **不得**声明该能力。App 的“新建对话”按钮直接请求基础端点 `POST /conversations`，不自动发送 `/new`，也不依赖该命令能力位；两条入口均只能切换到 Gateway 返回的权威会话，客户端不得本地构造会话。
 
 声明该能力同时意味着承担第 7.1 节的全部义务：命令入口独占 `/new`（不得再把同一文本作为普通用户回合交给 Agent 运行时的命令解析器）、在创建新会话时为新会话创建宿主自己的 agent 会话并持久化绑定、以及在打开既有会话时复用该会话已绑定的 agent 会话。绑定是账号级事实：同一 `conversationId` 在任何时刻只能绑定一个 agent 会话，且不得因客户端切换、重连或重放而改变。
 
@@ -443,7 +443,11 @@ POST /conversations/{conversationId}/attachments/{attachmentId}/cache-grant
 GET  /conversations/{conversationId}/attachments/{attachmentId}/content
 ```
 
-创建对话请求包含客户端生成的 `clientConversationId` 和可选显示标题。发送消息请求：
+创建对话请求包含客户端生成的 `clientConversationId` 和可选显示标题。Gateway 为新线程建立独立、空上下文的宿主会话并持久化绑定；成功后 App 使用响应中的 `conversationId` 打开线程，不向旧线程或新线程注入用户消息。同一账号内重复提交同一 `clientConversationId` 必须返回原会话，不能因 HTTP request ID 更换而重复创建。失败时保留原线程和草稿。用户手动发送 `/new` 的行为仍遵循第 7.1 节。
+
+`GET /commands?languageCode=<bcp47>` 返回 `command-catalog.schema.json#/$defs/catalog`：`format`、`catalogVersion`、`languageCode` 以及包含 `id`、`invocation`、`title`、`description`、`acceptsArguments`、`availability` 的命令列表。`argumentHint` 可选，只能来自宿主实际参数提示。目录应从当前宿主命令注册表获取，包括可用的插件和技能命令，版本随内容变化；无法获取时如实失败或返回空目录，客户端不补入预设命令。未列出的斜杠命令仍可由用户原样发送。此响应与遗留 `conversation.commandCatalog` 测试形状分别验证，不混用字段别名。
+
+发送消息请求：
 
 ```json
 {
@@ -456,6 +460,10 @@ GET  /conversations/{conversationId}/attachments/{attachmentId}/content
 ```
 
 Gateway 返回 `accepted` 及服务端 message ID；该状态表示消息已由 Gateway 持久接收。Agent 送达、完成或失败通过 `conversation.message.status` 发出；Agent 回复正文通过 SSE 发送 `conversation.message.delta` 和 `conversation.message.completed`。每个 conversation 只属于当前逻辑 Gateway，服务端拒绝跨账号、跨 Gateway 或跨 conversation 附件引用。
+
+上述三个事件可携带 Gateway 签发的 `generationId`，用于把用户状态、助手正文和进度输出关联到同一轮生成。单条 `conversation.message.completed` 只结束该消息，不能推断整轮 Agent 已结束；只有该轮用户消息的终态 status、取消确认或权威 current-generation 查询才能结束生成状态。宿主运行结束时必须完成本轮全部仍在 streaming 的进度消息，再发出该轮终态；后续轮次不能被旧轮次的迟到事件关闭。Android 对成功停止和已完成结果分别显示，缺少生成 ID 应先恢复真实状态，不能直接等同于 Gateway 不支持停止。
+
+用户主动录制的语音作为 `audio/mp4` AAC/M4A 附件沿现有附件协议上传和发送，原始音频透传到 Agent 宿主。Android 不要求系统语音识别服务，也不把本地转写作为发送前置条件。
 
 重命名请求体是封闭的 `{"title": "<非空显示标题>"}`，成功时返回：
 
@@ -510,7 +518,7 @@ created-conversation | rejected | unsupported | outcome-unknown
 - 未实现该命令入口的宿主不得声明 `agent-command-new-v1`；`/new` 在此类宿主上仅作为普通文本被接受与透传，不得产生创建会话的响应或事件。
 - **命令入口独占**：命令入口处理过的 `/new` 不得再作为普通用户回合交给 Agent 运行时。宿主必须避免让 Agent 自己的新开会话语义作用在**来源会话**上——那会清空用户仍在阅读的上下文。
 - **新会话必须拥有自己的 agent 会话**：宿主在创建新会话时，为其创建一个不继承任何旧上下文的 agent 会话，并把「`conversationId` ↔ agent 会话」绑定持久化；`agentSessionId` 仍为宿主内部概念，不下发客户端。宿主没有 Agent 运行时能力时，绑定行必须保留为空并如实标注来源，不得编造标识。
-- **切换即路由**：客户端打开某个会话、读取其时间线或投递消息时，宿主必须确保该会话已有绑定并复用既有绑定；只有 `/new` 创建的新会话允许获得一个全新的 agent 会话。同一 `conversationId` 不得因重连、重放或切换而更换 agent 会话。
+- **切换即路由**：客户端打开某个会话、读取其时间线或投递消息时，宿主必须确保该会话已有绑定并复用既有绑定；通过 `POST /conversations` 或 `/new` 创建的新会话均获得独立 agent 会话。同一 `conversationId` 不得因重连、重放或切换而更换 agent 会话。
 - `conversation.command.result` 的 `payload` 是封闭对象：`outcome` 为 `created-conversation` 时必须携带非空 `conversationId`，其他 `outcome` 不得携带 `conversationId`（共享向量 `sse-events.json` 锁定该形状）。
 
 ### 7.2 命令执行审批卡片 (`agent-approval-cards-v1`)
