@@ -311,6 +311,30 @@ class WorkbenchController(
         sendAtomsByThread[threadId]=latest.associateByTo(linkedMapOf()) { it.clientMessageId.value }
     }
 
+    private var cancelledSendPersistenceFailure: Throwable? = null
+
+    /** Cancellation settles durable send facts even after the UI has closed; closeAndAwait joins this write. */
+    private suspend fun persistCancelledSendOutcomes(threadId: String, clientIds: Collection<String>) = withContext(NonCancellable) {
+        try {
+            sendAtomsMutex.withLock {
+                val latest = loadSendAtomsOnIo(threadId)
+                val updated = latest.map { atom ->
+                    if (atom.clientMessageId.value in clientIds && !atom.isDeleted && atom.submissionState != LocalSubmissionState.ACCEPTED)
+                        atom.copy(submissionState=LocalSubmissionState.OUTCOME_UNKNOWN)
+                    else atom
+                }
+                if (updated != latest) saveAtoms(threadId,updated)
+                val durable = if (persistence != null) loadSendAtomsOnIo(threadId) else updated
+                sendAtomsByThread[threadId] = durable.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+            }
+        } catch (failure: Exception) {
+            if (!closed) throw failure
+            val priorFailure = cancelledSendPersistenceFailure
+            if (priorFailure == null) cancelledSendPersistenceFailure=failure
+            else if (priorFailure !== failure) priorFailure.addSuppressed(failure)
+        }
+    }
+
     /** 原批次成员身份不变；已删除成员清空正文，整个原批次只能查询，不能重发。 */
     private fun reconcileDeletedRecoveryUnits(threadId: String) {
         fun clean(message: OutgoingMessage) = if (atomsFor(threadId)[message.clientMessageId.value]?.isDeleted == true)
@@ -632,6 +656,9 @@ class WorkbenchController(
             pendingCreation?.let { it.sourceThreadId == activeThreadId } == true
 
     private var draftRevision = 0L
+    private val finishedGenerations = LinkedHashSet<Pair<String,String>>()
+    private val legacyTerminalBarriers = LinkedHashMap<String,Long>()
+    private val retiredLegacyMessageIds = LinkedHashSet<Pair<String,String>>()
     private var generationFactRevision = 0L
     private var lastObservedGenerationId: String? = null
     private fun observeGenerationIdentity(generationId: String?) {
@@ -745,6 +772,9 @@ class WorkbenchController(
         close()
         withContext(NonCancellable) {
             closingJobs.distinct().filter { it !== caller }.forEach { it.join() }
+            cancelledSendPersistenceFailure?.let { cause ->
+                if (failure == null) failure=cause else if (failure !== cause) failure?.addSuppressed(cause)
+            }
             try { (persistence as? AwaitableWorkbenchPersistence)?.let { store -> withContext(persistenceDispatcher) { store.closeStore() } } }
             catch (cause: Throwable) { if (failure == null) failure=cause else failure?.addSuppressed(cause) }
         }
@@ -1587,6 +1617,14 @@ class WorkbenchController(
         }
     }
 
+    /** The same live gate is used before recording and before submitting its attachment. */
+    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean =
+        attachmentCoordinator != null && !closed && allowSending && activeThreadId == expectedThreadId &&
+            (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
+            !creationBlocksActiveThread() && pendingSubmission == null &&
+            _state.value.composer !in setOf(ComposerState.SUBMITTING,ComposerState.WAITING_ATTACHMENTS) &&
+            _state.value.generation !in setOf(GenerationState.QUEUED,GenerationState.RUNNING,GenerationState.CANCEL_REQUESTED,GenerationState.OUTCOME_UNKNOWN)
+
     /** A voice recording is one attachment-only submission and never consumes the text draft. */
     suspend fun sendVoiceAttachment(
         selection: com.openandroidintelligence.conversation.ports.LocalAttachmentSelection,
@@ -1594,11 +1632,7 @@ class WorkbenchController(
     ): Boolean {
         val coordinator = attachmentCoordinator ?: return false
         val epoch = threadEpoch
-        fun ready() = !closed && allowSending && activeThreadId == expectedThreadId && threadEpoch == epoch &&
-            (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
-            !creationBlocksActiveThread() && pendingSubmission == null &&
-            _state.value.composer !in setOf(ComposerState.SUBMITTING,ComposerState.WAITING_ATTACHMENTS) &&
-            _state.value.generation !in setOf(GenerationState.QUEUED,GenerationState.RUNNING,GenerationState.CANCEL_REQUESTED,GenerationState.OUTCOME_UNKNOWN)
+        fun ready() = canSendVoiceAttachment(expectedThreadId) && threadEpoch == epoch
         if (!ready()) return false
         var draftId: String? = null
         var sendJob: Job? = null
@@ -1625,7 +1659,8 @@ class WorkbenchController(
                     generation=if (threadEpoch == epoch) previousGeneration else state.generation,
                     timeline=if (state.timeline is Loadable.Ready) Loadable.Ready(renderTimeline(pending)) else state.timeline)
             }
-            coordinator.discard(id)
+            // Once closing starts, a prepared identity may already be durable; keep its only source for recovery.
+            if (!closed || attempt.conversationId == null) coordinator.discard(id)
             persistCheckpoint()
         }
         try {
@@ -1642,6 +1677,7 @@ class WorkbenchController(
             update { it.copy(attachments=it.attachments + currentDraft.copy(state=AttachmentState.VERIFIED)) }
             val submission = DraftSubmission("",listOf(draftId),-1L,expectedThreadId,isolatedThreadEpoch=epoch,voiceAttempt=attempt)
             voiceClientId = submission.clientMessageId
+            beginLegacyTurn(expectedThreadId)
             generationFactRevision++
             pendingSubmission = submission
             submitted = true
@@ -1911,6 +1947,7 @@ class WorkbenchController(
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
             DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value)
         } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId)
+        beginLegacyTurn(activeThreadId)
         generationFactRevision++
         update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null, generation = GenerationState.QUEUED) }
         submitWhenAttachmentsVerified()
@@ -2117,13 +2154,7 @@ class WorkbenchController(
                 if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
                 persistCheckpoint()
             } catch (cancelled: CancellationException) {
-                withContext(NonCancellable) {
-                    if (!closed) sendTarget?.let { target ->
-                        try { changeSendAtom(target, submission.clientMessageId) { old ->
-                            old?.takeIf { it.submissionState != LocalSubmissionState.ACCEPTED }?.copy(submissionState = LocalSubmissionState.OUTCOME_UNKNOWN)
-                        } } catch (failure: Exception) { if (!closed) throw failure }
-                    }
-                }
+                sendTarget?.let { persistCancelledSendOutcomes(it,listOf(submission.clientMessageId)) }
                 throw cancelled
             } catch (cause: Exception) {
                 if (activeThreadId == sendTarget) failedSubmission = submission.copy(conversationId = sendTarget ?: submission.conversationId)
@@ -2193,6 +2224,7 @@ class WorkbenchController(
             ensureArchivedMessageParts(conversationId,messages.flatMap { it.attachmentIds })
             // The batch already carries its conversation: re-deriving the target
             // from a side map is how a member used to end up in the wrong thread.
+            beginLegacyTurn(conversationId)
             if (activeThreadId == conversationId) generationFactRevision++
             val acceptance = repository.submitBatch(conversationId, com.openandroidintelligence.conversation.ports.MessageBatch(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
@@ -2254,6 +2286,7 @@ class WorkbenchController(
             if (_state.value.generation !in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) armReplyWatchdog(conversationId)
             refreshThreads()
         } catch (cancelled: CancellationException) {
+            persistCancelledSendOutcomes(conversationId,messages.map { it.clientMessageId.value })
             throw cancelled
         } catch (cause: Exception) {
             var unknown = remotelyAccepted || cause is java.io.IOException
@@ -2344,6 +2377,7 @@ class WorkbenchController(
             }
             val acceptedFromEvent=atomsFor(threadId)[atom.clientMessageId.value]?.takeIf { it.submissionState==LocalSubmissionState.ACCEPTED }?.messageId
             val messageId = known?.id ?: acceptedFromEvent ?: run {
+                beginLegacyTurn(threadId)
                 if (activeThreadId == threadId) generationFactRevision++
                 repository.submitMessage(threadId, OutgoingMessage(atom.clientMessageId, text, attachmentIds)).messageId
             }
@@ -2364,6 +2398,7 @@ class WorkbenchController(
             } else persistCheckpoint()
             if (activeThreadId != threadId) retried.localDraftIds.forEach { releaseSubmittedAttachment(threadId,it) }
         } catch (cancelled: CancellationException) {
+            if (!querying) persistCancelledSendOutcomes(threadId,listOf(atom.clientMessageId.value))
             throw cancelled
         } catch (cause: Exception) {
             val unknown = querying || remotelyAccepted || cause is java.io.IOException
@@ -2439,16 +2474,31 @@ class WorkbenchController(
     }
 
     private var threadEpoch = 0L
-    private val finishedGenerations = LinkedHashSet<Pair<String,String>>()
+
+    private fun beginLegacyTurn(threadId: String?) { threadId?.let(legacyTerminalBarriers::remove) }
+
+    private fun retireLegacyMessage(threadId: String, messageId: String) {
+        retiredLegacyMessageIds.add(threadId to messageId)
+        while (retiredLegacyMessageIds.size > 4096) retiredLegacyMessageIds.remove(retiredLegacyMessageIds.first())
+    }
 
     /** Retire progress for the exact turn; a final response may have another message id. */
-    private fun finishStreaming(threadId: String, generationId: String?, terminal: GenerationState) {
+    private fun finishStreaming(threadId: String, generationId: String?, terminal: GenerationState, occurredAt: Long = 0L) {
         if (generationId != null) {
             finishedGenerations.add(threadId to generationId)
             while (finishedGenerations.size > 4096) finishedGenerations.remove(finishedGenerations.first())
         }
         val activeGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
         val allowLegacy = generationId == null || activeGeneration == null || activeGeneration == generationId
+        if (allowLegacy) {
+            val terminalTime = occurredAt.takeIf { it > 0L }
+                ?: mirrored.values.filter { it.sender == "assistant" }.maxOfOrNull { it.timestamp } ?: 0L
+            legacyTerminalBarriers.remove(threadId)
+            legacyTerminalBarriers[threadId] = terminalTime
+            while (legacyTerminalBarriers.size > 4096) legacyTerminalBarriers.remove(legacyTerminalBarriers.keys.first())
+            mirrored.values.filter { it.sender == "assistant" && it.generationId == null }
+                .forEach { retireLegacyMessage(threadId,it.id) }
+        }
         val finals = mirrored.values.filter { it.sender == "assistant" && it.state == "CONFIRMED" }
         mirrored.values.filter { it.sender == "assistant" && it.state == "STREAMING" &&
             (it.generationId == generationId || (allowLegacy && it.generationId == null))
@@ -2809,7 +2859,7 @@ class WorkbenchController(
                             val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
                             val settlesCurrent = event.generationId == null || currentGeneration == null || currentGeneration == event.generationId
                             if (terminal == null || settlesCurrent) observeGenerationIdentity(event.generationId)
-                            if (terminal != null) finishStreaming(currentActiveId,event.generationId,terminal)
+                            if (terminal != null) finishStreaming(currentActiveId,event.generationId,terminal,event.occurredAt)
                             val localKey = "local_${event.clientMessageId.value}"
                             update { state ->
                                 val pending = state.pendingBatch.map { row ->
@@ -2850,12 +2900,22 @@ class WorkbenchController(
                                 markEventHandled(event.eventId)
                                 return@collect
                             }
+                            if (message.sender == "assistant" && message.state == "STREAMING" && message.generationId == null &&
+                                ((currentActiveId to message.id) in retiredLegacyMessageIds || currentActiveId in legacyTerminalBarriers)) {
+                                retireLegacyMessage(currentActiveId,message.id)
+                                return@collect
+                            }
                             val previousRevision = mirroredRevisions[message.id]
                             // A reply newer than the thread's pre-command state is
                             // the Agent's turn ending.
                             maybeArmCreationGrace(eventConvId, message)
                             if (previousRevision != null && event.revision < previousRevision) {
                                 return@collect
+                            }
+                            if (message.sender == "user" && currentActiveId in legacyTerminalBarriers &&
+                                message.timestamp > legacyTerminalBarriers.getValue(currentActiveId) &&
+                                message.id !in mirrored && message.clientMessageId?.value?.let { it in atomsFor(currentActiveId) } != true) {
+                                beginLegacyTurn(currentActiveId)
                             }
                             var matchedCurrentTurn = false
                             if (message.sender == "assistant") {
@@ -2934,7 +2994,7 @@ class WorkbenchController(
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.GenerationCancelled -> {
                             val eventConvId = event.conversationId?.value
                             if (eventConvId == currentActiveId) {
-                                finishStreaming(currentActiveId,event.generationId,GenerationState.CANCELLED)
+                                finishStreaming(currentActiveId,event.generationId,GenerationState.CANCELLED,event.occurredAt)
                                 val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
                                 if (currentGeneration == null || currentGeneration == event.generationId) observeGenerationIdentity(event.generationId)
                                 update { state ->
@@ -3516,7 +3576,8 @@ class WorkbenchController(
         val pending = pendingSubmission ?: failedSubmission
         val checkpoint = WorkbenchCheckpoint(
             (ui.threads as? Loadable.Ready)?.value.orEmpty(), activeThreadId, ui.activeThreadTitle,
-            mirrored.values.toList(), mirroredRevisions.toMap(), ui.draft, draftRevision, ui.attachments,
+            mirrored.values.toList(), mirroredRevisions.toMap(), ui.draft, draftRevision,
+            ui.attachments.filterNot { draft -> pending?.voiceAttempt != null && draft.id.value in pending.attachmentIds },
             pending?.let { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) },
             userRenamedThreads.toSet(), handledEventIds.toSet(), frozenBatches.values.toList()+collectingUnits.values.groupBy { it.first }.map { (id,units) -> SavedBatch("collecting",id,units.map { it.second },false) })
         pendingCheckpoint = checkpoint

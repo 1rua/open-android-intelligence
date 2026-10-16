@@ -155,6 +155,8 @@ class MainActivity : ComponentActivity() {
                 val beginRecording: (Pair<WorkbenchController, String?>) -> Unit = { target ->
                     if (runtime.controller.value !== target.first || target.first.state.value.activeThreadId != target.second) {
                         Toast.makeText(this@MainActivity, "对话已切换，请重新开始录音", Toast.LENGTH_SHORT).show()
+                    } else if (!target.first.canSendVoiceAttachment(target.second)) {
+                        Toast.makeText(this@MainActivity, "当前对话暂不能发送语音，请等待处理完成后重试", Toast.LENGTH_SHORT).show()
                     } else if (recording == null && !sendingVoice) {
                         try {
                             val capture = VoiceRecording.create(this@MainActivity)
@@ -181,6 +183,8 @@ class MainActivity : ComponentActivity() {
                     val active = controller
                     if (active == null) {
                         Toast.makeText(this@MainActivity, "对话尚未就绪", Toast.LENGTH_SHORT).show()
+                    } else if (!active.canSendVoiceAttachment(active.state.value.activeThreadId)) {
+                        Toast.makeText(this@MainActivity, "当前对话暂不能发送语音，请等待处理完成后重试", Toast.LENGTH_SHORT).show()
                     } else if (recording == null && !sendingVoice && permissionTarget == null) {
                         val target = active to active.state.value.activeThreadId
                         if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {

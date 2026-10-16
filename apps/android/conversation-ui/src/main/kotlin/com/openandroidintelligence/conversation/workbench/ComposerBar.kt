@@ -66,6 +66,7 @@ fun ComposerBar(
     modifier: Modifier = Modifier,
     applyImePadding: Boolean = true,
     onQuickChip: ((String) -> Unit)? = null,
+    voiceInputEnabled: Boolean = true,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
@@ -162,7 +163,7 @@ fun ComposerBar(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(CircleShape)
-                    .clickable(onClick = onVoiceInput),
+                    .clickable(enabled = voiceInputEnabled, onClick = onVoiceInput),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Box(
@@ -174,7 +175,7 @@ fun ComposerBar(
                     Icon(
                         imageVector = Icons.Default.Mic,
                         contentDescription = "语音输入",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (voiceInputEnabled) 1f else 0.38f),
                         modifier = Modifier.size(20.dp),
                     )
                 }

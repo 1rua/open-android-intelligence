@@ -25,6 +25,8 @@ data class TimelinePage(
     val messages: List<TimelineMessage>, val nextCursor: String?, val snapshotRevision: Long? = null,
     /** 内部删除身份来自明确的宿主行；正文合并后仍需通知已显示的时间线。 */
     val deletedMessageIds: Set<String> = emptySet(),
+    /** Local fence for a verified idle-generation receipt; distinct from the Gateway history revision. */
+    val idleGenerationRevision: Long? = null,
 )
 data class TimelineMessage(
     val id: String,
@@ -364,6 +366,8 @@ interface ConversationRepository {
     suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage
     suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation
     suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage
+    /** Only the repository which verified the idle receipt may validate its local fact revision. */
+    fun isIdleGenerationReceiptCurrent(conversationId: String, revision: Long): Boolean = false
     suspend fun submitBatch(batch: MessageBatch): BatchAcceptance
     /** Scoped overload used by delayed batches so a thread switch cannot retarget a send. */
     suspend fun submitBatch(conversationId: String, batch: MessageBatch): BatchAcceptance =
@@ -424,18 +428,27 @@ suspend fun ConversationRepository.completeTimeline(conversationId: String): Tim
         val cursors = mutableSetOf<String>()
         var cursor: String? = null
         var revision: Long? = null
+        var idleGenerationRevision: Long? = null
         try {
             do {
                 val page = timeline(conversationId, PageRequest(cursor, 100))
                 if (revision != null && page.snapshotRevision != revision) error("CURSOR_EXPIRED")
                 revision = page.snapshotRevision
+                idleGenerationRevision = page.idleGenerationRevision
                 page.messages.forEach { messages[it.id] = it }
                 deletedMessageIds.addAll(page.deletedMessageIds)
                 page.messages.filter { it.isDeleted }.forEach { deletedMessageIds.add(it.id) }
                 cursor = page.nextCursor
                 check(cursor == null || cursors.add(cursor)) { "TIMELINE_CURSOR_CYCLE" }
             } while (cursor != null)
-            return TimelinePage(messages.values.toList(), null, revision, deletedMessageIds)
+            val idleReceiptIsCurrent = idleGenerationRevision?.let {
+                isIdleGenerationReceiptCurrent(conversationId, it)
+            } == true
+            val completeMessages = messages.values.map { message ->
+                if (idleReceiptIsCurrent && message.sender == "assistant" && message.state == "STREAMING")
+                    message.copy(state = "CONFIRMED") else message
+            }
+            return TimelinePage(completeMessages, null, revision, deletedMessageIds, idleGenerationRevision)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (cause: Exception) {

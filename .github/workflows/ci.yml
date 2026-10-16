@@ -48,7 +48,7 @@ jobs:
         with:
           repository: 1rua/hermes-gateway-plugin
           # 固定配套的宿主桥接修复，保证联调不会随插件 main 漂移。
-          ref: bbfb2751bf13c73d499ef3165a14f171751c53e5
+          ref: 03aaab2015e219b855cc73cad416664a67a95473
           path: .hermes-gateway-plugin
 
       - name: Install the Hermes Gateway plugin
@@ -137,6 +137,9 @@ jobs:
             .hermes-gateway-plugin/tests/test_native_history_projection.py \
             .hermes-gateway-plugin/tests/test_native_streaming_delivery.py \
             .hermes-gateway-plugin/tests/test_native_turn_lifecycle.py \
+            .hermes-gateway-plugin/tests/test_native_turn_review_boundaries.py \
+            .hermes-gateway-plugin/tests/test_native_binding_http_failures.py \
+            .hermes-gateway-plugin/tests/test_legacy_conversation_canonical.py \
             .hermes-gateway-plugin/tests/test_android_echo_fixture.py
 
   android:
@@ -162,7 +165,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 1rua/hermes-gateway-plugin
-          ref: bbfb2751bf13c73d499ef3165a14f171751c53e5
+          ref: 03aaab2015e219b855cc73cad416664a67a95473
           path: .hermes-gateway-plugin
 
       - name: Check out the pinned Hermes native SDK

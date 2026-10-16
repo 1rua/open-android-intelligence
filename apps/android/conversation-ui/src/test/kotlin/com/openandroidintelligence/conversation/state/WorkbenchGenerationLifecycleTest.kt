@@ -188,10 +188,51 @@ class WorkbenchGenerationLifecycleTest {
         }
     }
 
+    @Test fun legacyTerminalBlocksLateUnidentifiedProgressButAllowsTheNextLocalTurn() = runTest {
+        for (status in listOf(AgentMessageStatus.COMPLETED,AgentMessageStatus.FAILED)) {
+            val repository=Repository()
+            val controller=controller(repository)
+            runCurrent()
+            repository.events.emit(stream("legacy_first",null,"旧轮部分输出")); runCurrent()
+            repository.events.emit(terminal(null,status)); runCurrent()
+            val terminalState=controller.state.value.generation
+            repository.events.emit(stream("legacy_first",null,"旧轮追加输出").copy(eventId="late_same_id",revision=2)); runCurrent()
+            repository.events.emit(stream("legacy_late_new_id",null,"旧轮另一迟到分片")); runCurrent()
+            assertEquals(terminalState,controller.state.value.generation)
+            assertFalse(rows(controller).any { it.isStreaming })
+            controller.editDraft("明确开始下一轮"); controller.sendDraft(); runCurrent()
+            repository.events.emit(stream("legacy_next_turn",null,"新轮合法输出")); runCurrent()
+            assertEquals(GenerationState.RUNNING,controller.state.value.generation)
+            assertTrue(rows(controller).any { it.text=="新轮合法输出" && it.isStreaming })
+            repository.events.emit(stream("legacy_first",null,"新轮开始后重放旧消息").copy(eventId="late_old_turn",revision=3)); runCurrent()
+            assertFalse(rows(controller).any { it.text=="新轮开始后重放旧消息" })
+            controller.close()
+        }
+    }
+
+    @Test fun legacyTerminalBarrierIsThreadScopedAndANewerRemoteUserMessageCanOpenTheNextTurn() = runTest {
+        val repository=Repository()
+        val controller=controller(repository)
+        runCurrent()
+        repository.events.emit(stream("old_a",null,"A旧输出")); runCurrent()
+        repository.events.emit(terminal(null,AgentMessageStatus.COMPLETED)); runCurrent()
+        controller.openThread("conv_b"); runCurrent()
+        val b=stream("new_b",null,"B合法输出")
+        repository.events.emit(b.copy(message=b.message.copy(conversationId=ConversationId("conv_b")))); runCurrent()
+        assertTrue(rows(controller).any { it.text=="B合法输出" && it.isStreaming })
+        controller.openThread("conv_a"); runCurrent()
+        repository.events.emit(stream("replayed_a",null,"A切回后旧输出")); runCurrent()
+        assertFalse((controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().any { it.isStreaming })
+        repository.events.emit(VerifiedConversationEvent.TimelineUpsert("remote_user",10,1,
+            TimelineMessage("remote_user","user",listOf(MessagePart.Text("远端新问题")),10,conversationId=ConversationId("conv_a")))); runCurrent()
+        repository.events.emit(stream("remote_answer",null,"远端新轮输出").let { it.copy(message=it.message.copy(timestamp=11)) }); runCurrent()
+        assertTrue(rows(controller).any { it.text=="远端新轮输出" && it.isStreaming })
+    }
+
     private fun rows(controller:WorkbenchController)=(controller.state.value.timeline as Loadable.Ready).value
-    private fun stream(id:String,generation:String,text:String,state:String="STREAMING")=VerifiedConversationEvent.TimelineUpsert(
+    private fun stream(id:String,generation:String?,text:String,state:String="STREAMING")=VerifiedConversationEvent.TimelineUpsert(
         "event_$id",2,1,TimelineMessage(id,"assistant",listOf(MessagePart.Text(text)),2,state,ConversationId("conv_a"),generationId=generation))
-    private fun terminal(generation:String,status:AgentMessageStatus)=VerifiedConversationEvent.MessageStatus(
+    private fun terminal(generation:String?,status:AgentMessageStatus)=VerifiedConversationEvent.MessageStatus(
         "terminal_$generation",3,ConversationId("conv_a"),"msg_question",ClientMessageId("cm_question"),status,2,
         if(status==AgentMessageStatus.FAILED) AgentMessageErrorCode.AGENT_UNAVAILABLE else null,generation)
     private fun TestScope.controller(repository:Repository,batches:Boolean=false)=WorkbenchController(

@@ -30,8 +30,8 @@ Sol 负责 Android 状态机、录音生命周期、Hermes 和 OpenClaw 宿主�
 
 | 仓库 | 修复提交 | PR |
 | --- | --- | --- |
-| Hermes 插件 | `bbfb2751bf13c73d499ef3165a14f171751c53e5` | [#1](https://github.com/1rua/hermes-gateway-plugin/pull/1) |
-| OpenClaw 插件 | `66b20e56da7131a1acc084d733a4329ec782efaf` | [#1](https://github.com/1rua/openclaw-gateway-plugin/pull/1) |
+| Hermes 插件 | `03aaab2015e219b855cc73cad416664a67a95473` | [#1](https://github.com/1rua/hermes-gateway-plugin/pull/1) |
+| OpenClaw 插件 | `432e7c0545ecfe36af25fd4c451d777d434ae8fc` | [#1](https://github.com/1rua/openclaw-gateway-plugin/pull/1) |
 
 ## 验证记录
 
