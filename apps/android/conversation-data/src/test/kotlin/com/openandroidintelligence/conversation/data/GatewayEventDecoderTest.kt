@@ -28,6 +28,18 @@ class GatewayEventDecoderTest {
         assertEquals("cm_1", decoded.message.clientMessageId?.value)
     }
 
+    @Test fun liveProgressAndTerminalStatusKeepTheSameGenerationIdentity() {
+        val progress = SseParser().feed(frame("progress", "conversation.message.delta",
+            """{"conversationId":"conv_a","payload":{"messageId":"msg_progress","generationId":"gen_a","sender":"assistant","text":"处理中"}}""")).single()
+        val decoded = GatewayEventDecoder.decodeWithGenerationId(progress)
+        assertEquals("conv_a",decoded.conversationId)
+        assertEquals("gen_a",decoded.generationId)
+        assertEquals("gen_a",(decoded.event as VerifiedConversationEvent.TimelineUpsert).message.generationId)
+        val terminal = SseParser().feed(frame("terminal", "conversation.message.status",
+            """{"payload":{"conversationId":"conv_a","messageId":"msg_user","clientMessageId":"cm_user","generationId":"gen_a","status":"completed","revision":3,"errorCode":null}}""")).single()
+        assertEquals("gen_a",(GatewayEventDecoder.decode(terminal) as VerifiedConversationEvent.MessageStatus).generationId)
+    }
+
     private fun frame(id: String, event: String, data: String): String =
         "id: $id\nevent: $event\ndata: $data\n\n"
 

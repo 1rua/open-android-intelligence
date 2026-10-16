@@ -218,7 +218,7 @@ sealed interface MessagePart {
 - 插件贡献的受保护对话动作；
 - Developer Trust 原生 UI 扩展。
 
-普通命令点击后先填入输入框，用户可补参数再发送；顶部“新建对话”直接发送无参数 `/new`。离线命令目录可以显示并标注可能过期，但发送按钮不可用。
+普通命令点击后先填入输入框，用户可补参数再发送；顶部“新建对话”直接调用 Gateway 的 `POST /conversations`，由插件创建独立宿主会话，不自动发送 `/new`。用户手动输入的 `/new` 仍作为命令透传。命令目录仅展示宿主实际返回的条目；离线、加载或失败均显示真实状态，不补入预设命令。
 
 ## 8. 消息防抖与批次
 
@@ -481,7 +481,11 @@ RUNNING
 
 目录只影响发现和显示。未列入目录的命令仍原样发送，由 Agent 返回未知、拒绝或完成结果。
 
-### 14.2 `/new`
+### 14.2 新建按钮与用户发送的 `/new`（2026-10-15 修订）
+
+App 新建按钮生成 `clientConversationId` 并调用 `POST /conversations`；插件创建独立空宿主会话并返回权威 `conversationId` 后，App 才切换。该操作不产生用户消息，不要求来源线程，也不依赖 `agent-command-new-v1`。失败时保留原线程与草稿。
+
+用户手动发送 `/new` 保持以下命令流程：
 
 ```text
 Android 生成 clientConversationId + requestId

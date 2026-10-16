@@ -94,7 +94,7 @@ class GatewayWorkbenchLogoutTest {
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
         compose.onNodeWithText("退出登录").assertIsDisplayed().performClick()
 
-        compose.waitUntil(AWAIT_MILLIS) { runtime.operationNotice.value != null }
+        awaitRuntimeCondition { runtime.operationNotice.value != null }
         compose.onNodeWithText("登出未获 Gateway 确认，请检查连接后重试。").assertIsDisplayed()
         assertTrue("未经确认的退出必须保留当前会话", runtime.phase.value is ConnectionPhase.Connected)
         assertFalse(settingsOpened)
@@ -127,7 +127,7 @@ class GatewayWorkbenchLogoutTest {
 
     private fun clickLogoutAndAwaitDisconnected() {
         compose.onNodeWithText("退出登录").assertIsDisplayed().performClick()
-        compose.waitUntil(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Disconnected }
+        awaitRuntimeCondition { runtime.phase.value is ConnectionPhase.Disconnected }
         assertNull(runtime.controller.value)
         assertFalse("退出不得变成打开设置", settingsOpened)
     }
@@ -145,6 +145,18 @@ class GatewayWorkbenchLogoutTest {
             })
         }
         assertFalse(gateway.requests.any { it.target.contains("pairings/current") })
+    }
+
+    /** Runtime IO resumes on Android's looper independently of Compose's frame clock. */
+    private fun awaitRuntimeCondition(condition: () -> Boolean) {
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(AWAIT_MILLIS)
+        while (System.nanoTime() < deadline) {
+            ShadowLooper.idleMainLooper(20, java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (condition()) return
+            Thread.sleep(20)
+        }
+        assertTrue("phase=${runtime.phase.value}, notice=${runtime.operationNotice.value}, " +
+            "requests=${gateway.requests.map { "${it.method} ${it.target}" }}", condition())
     }
 
     private companion object {

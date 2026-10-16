@@ -9,21 +9,7 @@ import com.openandroidintelligence.conversation.model.StreamHealthSource
 import com.openandroidintelligence.gateway.conversations.ConversationClient
 import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
 
-/**
- * generation-cancel-v1 的宿主接线层：把协商派生的取消门禁接进工作台链路。
- *
- * 背景：A2 给 `ConversationClient.cancelGeneration` 追加了 fail-closed 门禁
- * （缺省 [GenerationCancelCapability.NotNegotiated] ⇒ 不发请求、如实返回
- * UNSUPPORTED）。但 `GatewayConversationRepository` 与 `WorkbenchController`
- * 都不感知协商结果，工作台的「停止生成」因此从「永远可用」变成了「永远
- * UNSUPPORTED」的临时回归。
- *
- * 两个模块都不可修改，所以宿主在装配处包一层：除取消外的所有端口调用都
- * 原样委托给上游仓储，仅 `cancelGeneration` 在这里带上协商门禁转发给
- * 真实的 [ConversationClient]。门禁由
- * [GenerationCancelCapability.fromNegotiation] 从协商结果派生——没有协商
- * 结果时装配缺省值，门依然是关着的。
- */
+/** Applies the negotiated cancel capability while preserving the caller's thread and generation. */
 class CapabilityGatedConversationRepository(
     private val upstream: GatewayConversationRepository,
     private val client: ConversationClient,
@@ -36,7 +22,15 @@ class CapabilityGatedConversationRepository(
     com.openandroidintelligence.conversation.ports.MessageOutcomeQuery by upstream {
     override suspend fun timeline(conversationId:String,page:com.openandroidintelligence.conversation.ports.PageRequest):com.openandroidintelligence.conversation.ports.TimelinePage {
         val result=upstream.timeline(conversationId,page)
-        if (page.cursor==null && capability.agreed) upstream.installCurrentGeneration(conversationId,client.currentGeneration(conversationId))
+        if (page.cursor==null && capability.agreed) {
+            val revision=upstream.generationRevision(conversationId)
+            val current=client.currentGeneration(conversationId)
+            val installed=upstream.installCurrentGeneration(conversationId,current,expectedRevision=revision)
+            // A successful, unchanged null snapshot is evidence that old progress is no longer live.
+            if (installed && current == null) return result.copy(messages=result.messages.map { message ->
+                if (message.sender == "assistant" && message.state == "STREAMING") message.copy(state="CONFIRMED") else message
+            })
+        }
         return result
     }
 
@@ -45,12 +39,17 @@ class CapabilityGatedConversationRepository(
         requestId: String,
     ): CancelGenerationResult {
         val conversationId = activeConversationId()
-            ?: return CancelGenerationResult(
-                outcome = CancelGenerationOutcome.UNSUPPORTED,
-                message = "NO_ACTIVE_CONVERSATION",
-            )
+            ?: return CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED, "NO_ACTIVE_CONVERSATION")
+        return cancelGeneration(conversationId, generationId, requestId)
+    }
+
+    override suspend fun cancelGeneration(
+        conversationId: String,
+        generationId: String,
+        requestId: String,
+    ): CancelGenerationResult {
         val outcome = client.cancelGeneration(conversationId, generationId, requestId, capability)
-        if (outcome=="CANCELLED" || outcome=="ALREADY_COMPLETED") upstream.installCurrentGeneration(conversationId,null)
+        if (outcome=="CANCELLED" || outcome=="ALREADY_COMPLETED") upstream.finishGeneration(conversationId,generationId)
         return CancelGenerationResult(
             outcome = when (outcome) {
                 "CANCELLED" -> CancelGenerationOutcome.CANCELLED

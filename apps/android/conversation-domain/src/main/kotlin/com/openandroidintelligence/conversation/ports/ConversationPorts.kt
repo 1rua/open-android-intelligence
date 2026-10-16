@@ -40,6 +40,8 @@ data class TimelineMessage(
     val localSubmissionFailure: String? = null,
     /** 宿主明确发布的单条正文版本；缺少时沿用既有兼容路径。 */
     val contentRevision: Long? = null,
+    /** Gateway generation identity, when supplied by a live event. */
+    val generationId: String? = null,
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)
@@ -261,6 +263,7 @@ sealed interface VerifiedConversationEvent {
         val status: AgentMessageStatus,
         val revision: Long,
         val errorCode: AgentMessageErrorCode?,
+        val generationId: String? = null,
     ) : VerifiedConversationEvent
 
     data class GenerationCancelled(

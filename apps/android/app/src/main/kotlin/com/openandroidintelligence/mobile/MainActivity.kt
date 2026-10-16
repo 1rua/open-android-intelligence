@@ -4,7 +4,14 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.content.Intent
 import android.os.Bundle
-import android.speech.RecognizerIntent
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.openandroidintelligence.conversation.state.WorkbenchController
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -134,28 +141,125 @@ class MainActivity : ComponentActivity() {
                 var showSettingsSheet by remember { mutableStateOf(false) }
                 var showAssistant by remember { mutableStateOf(false) }
 
-                val voiceInputLauncher = rememberLauncherForActivityResult(
-                    contract = ActivityResultContracts.StartActivityForResult(),
-                ) { result ->
-                    if (result.resultCode == RESULT_OK) {
-                        val spokenText = result.data
-                            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                            ?.firstOrNull { it.isNotBlank() }
-                        if (spokenText != null) {
-                            controller?.let { active ->
-                                val current = active.state.value.draft
-                                active.editDraft(if (current.isBlank()) spokenText else "$current $spokenText")
-                            }
+                var recording by remember { mutableStateOf<VoiceRecording?>(null) }
+                var recordingTarget by remember { mutableStateOf<Pair<WorkbenchController, String?>?>(null) }
+                var permissionTarget by remember { mutableStateOf<Pair<WorkbenchController, String?>?>(null) }
+                var sendingVoice by remember { mutableStateOf(false) }
+                var voiceSendJob by remember { mutableStateOf<Job?>(null) }
+                var voiceSendController by remember { mutableStateOf<WorkbenchController?>(null) }
+                val cancelRecording: () -> Unit = {
+                    recording?.close()
+                    recording = null
+                    recordingTarget = null
+                }
+                val beginRecording: (Pair<WorkbenchController, String?>) -> Unit = { target ->
+                    if (runtime.controller.value !== target.first || target.first.state.value.activeThreadId != target.second) {
+                        Toast.makeText(this@MainActivity, "对话已切换，请重新开始录音", Toast.LENGTH_SHORT).show()
+                    } else if (recording == null && !sendingVoice) {
+                        try {
+                            val capture = VoiceRecording.create(this@MainActivity)
+                            capture.start()
+                            recordingTarget = target
+                            recording = capture
+                        } catch (_: Exception) {
+                            Toast.makeText(this@MainActivity, "无法开始录音，请检查麦克风权限及占用情况", Toast.LENGTH_LONG).show()
                         }
                     }
                 }
-
+                val audioPermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { granted ->
+                    val target = permissionTarget
+                    permissionTarget = null
+                    if (granted && target != null && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                        beginRecording(target)
+                    } else if (!granted) {
+                        Toast.makeText(this@MainActivity, "需要麦克风权限才能发送语音", Toast.LENGTH_SHORT).show()
+                    }
+                }
                 val startVoiceInput: () -> Unit = {
-                    launchVoiceInput(
-                        launch = { voiceInputLauncher.launch(it) },
-                        onUnavailable = {
-                            Toast.makeText(this@MainActivity, "未安装可用的系统语音识别服务，请使用键盘语音输入", Toast.LENGTH_LONG).show()
+                    val active = controller
+                    if (active == null) {
+                        Toast.makeText(this@MainActivity, "对话尚未就绪", Toast.LENGTH_SHORT).show()
+                    } else if (recording == null && !sendingVoice && permissionTarget == null) {
+                        val target = active to active.state.value.activeThreadId
+                        if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            beginRecording(target)
+                        } else {
+                            permissionTarget = target
+                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                }
+                DisposableEffect(Unit) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_STOP) {
+                            permissionTarget = null
+                            cancelRecording()
+                        }
+                    }
+                    lifecycle.addObserver(observer)
+                    onDispose {
+                        lifecycle.removeObserver(observer)
+                        voiceSendJob?.cancel()
+                        permissionTarget = null
+                        cancelRecording()
+                    }
+                }
+                LaunchedEffect(controller) {
+                    if (recordingTarget?.first?.let { it !== controller } == true) cancelRecording()
+                    if (voiceSendController?.let { it !== controller } == true) voiceSendJob?.cancel()
+                }
+                if (recording != null) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = cancelRecording,
+                        title = { Text("正在录音") },
+                        text = { Text("录音结束后会将原始音频直接发送给 Agent。当前草稿和附件会保留。离开应用将取消录音。") },
+                        dismissButton = { TextButton(onClick = cancelRecording) { Text("取消") } },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                val capture = recording
+                                val target = recordingTarget
+                                // Consume this recording before scheduling work: repeated clicks cannot resend it.
+                                recording = null
+                                recordingTarget = null
+                                if (capture != null && target != null) {
+                                    sendingVoice = true
+                                    voiceSendController = target.first
+                                    voiceSendJob = lifecycleScope.launch {
+                                        var voice: RecordedVoice? = null
+                                        try {
+                                            val completed = withContext(Dispatchers.IO) { capture.finish() }
+                                            voice = completed
+                                            if (runtime.controller.value !== target.first) {
+                                                Toast.makeText(this@MainActivity, "对话已切换，语音未发送", Toast.LENGTH_SHORT).show()
+                                            } else if (!target.first.sendVoiceAttachment(completed.selection(), target.second)) {
+                                                Toast.makeText(this@MainActivity, "语音未发送，请查看对话提示后重试", Toast.LENGTH_LONG).show()
+                                            }
+                                        } catch (cause: CancellationException) {
+                                            throw cause
+                                        } catch (_: Exception) {
+                                            Toast.makeText(this@MainActivity, "录音或发送失败，请重试", Toast.LENGTH_LONG).show()
+                                        } finally {
+                                            voice?.close()
+                                            capture.close()
+                                            sendingVoice = false
+                                            voiceSendController = null
+                                            voiceSendJob = null
+                                        }
+                                    }
+                                }
+                            }) { Text("结束并发送") }
                         },
+                    )
+                }
+                if (sendingVoice) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { voiceSendJob?.cancel() },
+                        title = { Text("正在发送语音") },
+                        text = { CircularProgressIndicator() },
+                        dismissButton = { TextButton(onClick = { voiceSendJob?.cancel() }) { Text("停止等待") } },
+                        confirmButton = {},
                     )
                 }
 

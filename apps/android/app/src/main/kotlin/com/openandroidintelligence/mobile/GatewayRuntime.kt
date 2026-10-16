@@ -939,13 +939,13 @@ class GatewayRuntime(
                 scope = sessionScope,
                 repository = mirroredRepository,
                 catalogRepository = catalogRepository,
+                languageCode = java.util.Locale.getDefault().toLanguageTag(),
                 scopeFactory = { conversationScope },
                 attachmentCoordinator = attachmentCoordinator,
                 supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
                 debouncePolicy=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
-                // Whether this Gateway serves the `/new` command entry. Without it
-                // the workbench refuses to create a thread at all rather than
-                // building one only the phone knows about.
+                // This describes manually submitted `/new`; the new-thread button
+                // uses the authoritative POST /conversations endpoint directly.
                 supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
                 supportsApprovalCards = approvalClient != null,
                 onActiveThreadChanged = { threadId -> activeThread.set(threadId);repository.activeConversationChanged() },

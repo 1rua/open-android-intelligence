@@ -119,8 +119,12 @@ data class BatchAcceptance(
  */
 class ConversationClient(private val http: GatewayHttpClient) {
     suspend fun currentGeneration(conversationId:String):Pair<String,String>? {
-        val data=execute("GET","/open-android-intelligence/v2/conversations/$conversationId/generations/current").requireData("GENERATION_CURRENT")
-        val generation=JsonFields.obj(JsonFields.field(data,"generation")) ?: return null
+        val response=execute("GET","/open-android-intelligence/v2/conversations/$conversationId/generations/current")
+        check(response.status == 200) { "GENERATION_CURRENT:${response.status}" }
+        val data=response.requireData("GENERATION_CURRENT")
+        val rawGeneration=JsonFields.field(data,"generation") ?: error("GENERATION_INVALID")
+        if (rawGeneration == JsonValue.JNull) return null
+        val generation=JsonFields.obj(rawGeneration) ?: error("GENERATION_INVALID")
         check(JsonFields.string(generation,"conversationId")==conversationId) { "GENERATION_SCOPE_MISMATCH" }
         val id=JsonFields.string(generation,"generationId") ?: error("GENERATION_INVALID")
         val state=JsonFields.string(generation,"state")?.takeIf { it in setOf("queued","running","unknown") } ?: error("GENERATION_INVALID")

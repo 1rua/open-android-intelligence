@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,76 +41,9 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
-/**
- * 标准内置通用命令（当网关离线、目录为空或加载中时的兜底命令集合）。
- */
-val BuiltInCommands: List<AgentCommand> = listOf(
-    AgentCommand(
-        command = "/models",
-        description = "切换或查看活动大模型与参数",
-        argumentHint = "[provider]",
-    ),
-    AgentCommand(
-        command = "/status",
-        description = "查看当前网关连通性、时延与配对状态",
-        argumentHint = null,
-    ),
-    AgentCommand(
-        command = "/review",
-        description = "审查代码变更、规范或当前文档",
-        argumentHint = "[diff]",
-    ),
-    AgentCommand(
-        command = "/gateway",
-        description = "切换或添加连接的 Agent Gateway",
-        argumentHint = "<url>",
-    ),
-    AgentCommand(
-        command = "/clear",
-        description = "清空当前时间线临时渲染状态",
-        argumentHint = null,
-    ),
-    AgentCommand(
-        command = "/help",
-        description = "查看所有可用指令与使用指南",
-        argumentHint = "[command]",
-    ),
-    AgentCommand(
-        command = "/new",
-        description = "结束当前会话并创建全新对话线程",
-        argumentHint = null,
-    ),
-)
-
-/**
- * 将网关目录命令与内置兜底命令合并。网关命令优先，且同名指令去重。
- */
-fun mergeCommandCatalogs(
-    catalogCommands: List<AgentCommand>?,
-    builtInCommands: List<AgentCommand> = BuiltInCommands,
-): List<AgentCommand> {
-    if (catalogCommands.isNullOrEmpty()) return builtInCommands
-    val normalizedCatalog = catalogCommands.map { cmd ->
-        if (cmd.command.startsWith("/")) cmd else cmd.copy(command = "/${cmd.command}")
-    }
-    val existingKeys = normalizedCatalog.map { it.command.lowercase() }.toSet()
-    val missingBuiltIns = builtInCommands.filter { it.command.lowercase() !in existingKeys }
-    return normalizedCatalog + missingBuiltIns
-}
-
-/**
- * 根据网关加载状态解析最终可用指令列表。
- */
-fun resolveCommands(
-    catalogState: Loadable<AgentCommandCatalog>,
-    builtInCommands: List<AgentCommand> = BuiltInCommands,
-): List<AgentCommand> {
-    val catalogCommands = when (catalogState) {
-        is Loadable.Ready -> catalogState.value.commands
-        else -> emptyList()
-    }
-    return mergeCommandCatalogs(catalogCommands, builtInCommands)
-}
+/** Only commands actually reported by the selected Agent are suggested. */
+fun resolveCommands(catalogState: Loadable<AgentCommandCatalog>): List<AgentCommand> =
+    (catalogState as? Loadable.Ready)?.value?.commands.orEmpty()
 
 /**
  * 提取输入框中首个空格前的子串作为搜索前缀，执行忽略大小写的前缀匹配。
@@ -140,6 +74,14 @@ fun CommandAutocompletePopup(
     val commands = remember(catalogState) {
         resolveCommands(catalogState)
     }
+    val catalogStatus = when (catalogState) {
+        Loadable.Idle -> "尚未加载 Agent 命令目录"
+        Loadable.Loading -> "正在加载 Agent 命令目录…"
+        Loadable.Empty -> "Agent 尚未提供可用命令，回车可原样发送"
+        is Loadable.Failed -> "无法加载 Agent 命令目录（${catalogState.code}）"
+        is Loadable.Ready -> null
+    }
+    val retryAvailable = (catalogState as? Loadable.Failed)?.retryable == true
     CommandAutocompletePopup(
         commands = commands,
         query = query,
@@ -147,6 +89,9 @@ fun CommandAutocompletePopup(
         modifier = modifier,
         visible = visible,
         onDismissRequest = onDismissRequest,
+        catalogStatus = catalogStatus,
+        onRetry = onRetry,
+        retryAvailable = retryAvailable,
     )
 }
 
@@ -158,6 +103,9 @@ fun CommandAutocompletePopup(
     modifier: Modifier = Modifier,
     visible: Boolean = query.startsWith("/"),
     onDismissRequest: (() -> Unit)? = null,
+    catalogStatus: String? = null,
+    onRetry: (() -> Unit)? = null,
+    retryAvailable: Boolean = false,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     var dismissedLocally by remember { mutableStateOf(false) }
@@ -209,7 +157,25 @@ fun CommandAutocompletePopup(
                     .fillMaxWidth()
                     .padding(8.dp),
             ) {
-                if (matchedCommands.isEmpty()) {
+                if (catalogStatus != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = catalogStatus,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (retryAvailable && onRetry != null) {
+                            TextButton(onClick = onRetry) { Text("重试") }
+                        }
+                    }
+                } else if (matchedCommands.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -217,7 +183,7 @@ fun CommandAutocompletePopup(
                         contentAlignment = Alignment.CenterStart,
                     ) {
                         Text(
-                            text = "未找到匹配命令，回车可原样发送",
+                            text = "Agent 目录中没有匹配命令，回车可原样发送",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -315,7 +281,7 @@ fun CommandMenu(
     catalogState: Loadable<AgentCommandCatalog>,
     query: String,
     onSelect: (String) -> Unit,
-    onRetry: () -> Unit = {},
+    onRetry: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     visible: Boolean = query.startsWith("/"),
     onDismissRequest: (() -> Unit)? = null,

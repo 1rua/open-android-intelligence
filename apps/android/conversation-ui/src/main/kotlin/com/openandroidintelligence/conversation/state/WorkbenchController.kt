@@ -19,6 +19,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
@@ -113,20 +114,9 @@ data class WorkbenchUiState(
     /** Batch members collected by the debounce window, newest last. */
     val pendingBatch: List<TimelineEntry> = emptyList(),
     val notice: String? = null,
-    /**
-     * True while the phone is waiting for the Agent's own new conversation.
-     *
-     * Nothing else has changed yet: the switch happens only once the Gateway
-     * names the conversation it created, so this flag describes a request in
-     * flight rather than a conversation that already exists.
-     */
+    /** True while the Gateway's create-conversation request is in flight. */
     val creatingThread: Boolean = false,
-    /**
-     * The thread a `/new` in flight was sent from, when there is one.
-     *
-     * The wait belongs to that thread: switching away must not make the newly
-     * opened conversation look like it is waiting for something of its own.
-     */
+    /** The thread the create request started from, when there is one. */
     val creationSourceThreadId: String? = null,
     /** Whether the inbound reply channel is alive; a dead one explains silence. */
     val streamHealth: com.openandroidintelligence.conversation.model.StreamHealth =
@@ -170,14 +160,8 @@ class WorkbenchController(
     private val attachmentCoordinator: com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator? = null,
     debouncePolicy: DebouncePolicy = DebouncePolicy(),
     private val supportsMessageBatches: Boolean = false,
-    /**
-     * Whether this Gateway agreed to serve the `/new` command entry.
-     *
-     * Without it the workbench refuses to "create" anything at all: a
-     * conversation the phone invented would exist only here, and every message
-     * sent afterwards would be filed under an id the Agent has never heard of.
-     */
-    private val supportsAgentCommandNew: Boolean = false,
+    /** Legacy slash-command capability; the new-thread button uses the Gateway endpoint. */
+    @Suppress("unused") private val supportsAgentCommandNew: Boolean = false,
     /** How long the phone waits for the Agent to answer `/new`. */
     private val newConversationTimeouts: NewConversationTimeouts = NewConversationTimeouts(),
     /** Reports the active thread so cancellation and events scope to the right conversation. */
@@ -202,6 +186,7 @@ class WorkbenchController(
     private val mediaDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val persistenceDispatcher: CoroutineDispatcher = mediaDispatcher,
     private val allowSending: Boolean = true,
+    private val languageCode: String = "zh-CN",
 ) : AutoCloseable {
     private val controllerJob=SupervisorJob(scope.coroutineContext[Job])
     private val workScope=CoroutineScope(scope.coroutineContext+controllerJob)
@@ -626,23 +611,18 @@ class WorkbenchController(
 
     private val creationReceipts = LinkedHashMap<String, CreationReceipt>()
 
-    /**
-     * The zero-conversation bootstrap still talks to the Gateway directly.
-     *
-     * `/new` is a message, so it needs a thread to travel in. When an account
-     * has none yet there is nowhere to send it, and the first user message
-     * would otherwise have no thread to be filed under either. This is the one
-     * place a conversation may be created by the endpoint instead of the Agent,
-     * and it exists solely so that "nothing exists yet" is not a dead end.
-     */
+    /** Shares a Gateway-created conversation between simultaneous first-message sends. */
     private var bootstrapJob: Deferred<Result<String>>? = null
     private var draftRevision = 0L
+    private class VoiceAttempt(var conversationId: String? = null, var requestStarted: Boolean = false)
     private data class DraftSubmission(
         val text: String,
         val attachmentIds: List<String>,
         val revision: Long,
         val conversationId: String?,
         val clientMessageId: String = "cm_" + UUID.randomUUID().toString(),
+        val isolatedThreadEpoch: Long? = null,
+        val voiceAttempt: VoiceAttempt? = null,
     )
     private var pendingSubmission: DraftSubmission? = null
     private var failedSubmission: DraftSubmission? = null
@@ -908,14 +888,19 @@ class WorkbenchController(
         }
     }
 
+    private var catalogRequestEpoch = 0L
     fun loadCatalog() {
         if (closed) return
+        val epoch = ++catalogRequestEpoch
+        val requestedScope = scopeFactory()
         update { it.copy(catalog = Loadable.Loading) }
         workScope.launch {
-            val result = Result
-                .runCatching { catalogRepository.get(gatewayId = scopeFactory().gatewayId, languageCode = "zh-CN") }
-                .toLoadable { catalog -> catalog.commands.isEmpty() }
-            update { it.copy(catalog = result) }
+            val result = try {
+                Result.success(catalogRepository.get(gatewayId=requestedScope.gatewayId,languageCode=languageCode))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { Result.failure(failure) }
+            if (epoch != catalogRequestEpoch || scopeFactory() != requestedScope) return@launch
+            update { it.copy(catalog=result.toLoadable { catalog -> catalog.commands.isEmpty() }) }
         }
     }
 
@@ -923,6 +908,7 @@ class WorkbenchController(
         if (closed) return
         if (activeThreadId == threadId) return
         cancelPendingSubmission()
+        threadEpoch++
         activeThreadId = threadId
         onActiveThreadChanged(threadId)
         if (persistence==null) sendAtomsByThread.putIfAbsent(threadId,linkedMapOf())
@@ -989,7 +975,8 @@ class WorkbenchController(
                             } else {
                                 Loadable.Ready(renderTimeline(state.pendingBatch))
                             },
-                            generation = if (hasStreaming) GenerationState.RUNNING else GenerationState.IDLE,
+                            generation = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationState?.value
+                                ?.takeUnless { it == GenerationState.IDLE } ?: if (hasStreaming) GenerationState.RUNNING else GenerationState.IDLE,
                         )
                     }
                 },
@@ -1006,83 +993,37 @@ class WorkbenchController(
         observeThreadEvents()
     }
 
-    /**
-     * Asks the Agent for a new conversation.
-     *
-     * The phone does not decide the new conversation's identity: it sends
-     * `/new` into the thread it is leaving and waits for the Gateway to name
-     * what it created. Until that named answer arrives nothing here moves — the
-     * timeline, the title and the send target all still belong to the thread
-     * the user can see, which is exactly why a failure needs no rollback of a
-     * state that was never claimed.
-     */
+    /** Creates a Gateway-owned conversation without sending a slash command. */
     fun createThread() {
-        if (closed) return
-        if (pendingCreation != null || bootstrapJob?.isActive == true) return
-        if (!supportsAgentCommandNew) {
-            // Refusing is the honest answer. Manufacturing a thread here would
-            // put the user in a conversation the Gateway cannot serve, and the
-            // first message would be filed under an id only this phone knows.
-            update { it.copy(notice = "CONVERSATION_CREATE_UNSUPPORTED:GATEWAY_UNSUPPORTED") }
-            return
-        }
+        if (closed || _state.value.creatingThread || bootstrapJob?.isActive == true) return
         val sourceThreadId = activeThreadId
-        if (sourceThreadId == null) {
-            // `/new` travels as a message, so it needs the thread it leaves.
-            // With no thread there is nothing to send it into.
-            update { it.copy(notice = "CONVERSATION_CREATE_UNAVAILABLE:NO_SOURCE_CONVERSATION") }
-            return
-        }
+        val sourceEpoch = threadEpoch
         cancelPendingSubmission()
-        // A retry supersedes what this thread was given up on before: the
-        // answer to an abandoned request cannot keep shadowing a new one.
-        settledCreations.removeAll { it.sourceThreadId == sourceThreadId }
-        val clientMessageId = ClientMessageId("cmd_" + UUID.randomUUID().toString().replace("-", ""))
-        pendingCreation = PendingCreation(
-            sourceThreadId = sourceThreadId,
-            clientMessageId = clientMessageId,
-            // Read before the command is mirrored, so the echo of `/new` itself
-            // cannot raise the baseline above the reply we are waiting for.
-            replyBaselineTimestamp = mirrored.values.maxOfOrNull { it.timestamp } ?: 0L,
-        )
-        update { it.copy(creatingThread = true, creationSourceThreadId = sourceThreadId, notice = null) }
-        armCreationWatchdog()
-        observeThreadEvents()
-        creationSendJob?.cancel()
+        update { it.copy(creatingThread=true,creationSourceThreadId=sourceThreadId,notice=null) }
         creationSendJob = workScope.launch {
-            Result.runCatching { repository.submitMessage(sourceThreadId, OutgoingMessage(clientMessageId, NEW_CONVERSATION_COMMAND)) }
-                .onFailure { cause ->
-                    if (cause is CancellationException) throw cause
-                    // Nothing to undo beyond the wait: no local thread was made.
-                    abandonAgentThreadCreation("CONVERSATION_CREATE_FAILED:${errorCodeOf(cause)}")
+            try {
+                val conversation = repository.createConversation(scopeFactory(), "cconv_" + UUID.randomUUID().toString().replace("-", ""))
+                currentCoroutineContext().ensureActive()
+                update { it.copy(creatingThread=false,creationSourceThreadId=null) }
+                refreshThreads()
+                // Navigation while HTTP is in flight belongs to the user.
+                if (threadEpoch == sourceEpoch && activeThreadId == sourceThreadId) {
+                    openThread(conversation.id.value)
+                    update { it.copy(activeThreadTitle=conversation.title) }
                 }
-                .onSuccess { acceptance ->
-                    val waiting = pendingCreation
-                    if (waiting == null || waiting.clientMessageId.value != clientMessageId.value) return@onSuccess
-                    // Recorded so a later command result can be tied to this
-                    // very request instead of to any other `/new` on the account.
-                    waiting.sourceMessageId = acceptance.messageId
-                    // Only now can the results that beat this reply be judged.
-                    replayParkedCreationResults(waiting)
-                    // The command stays visible in the thread it was sent from,
-                    // mirrored under the id the Gateway issued for it.
-                    mirrorCommandInSourceThread(sourceThreadId, clientMessageId.value, acceptance.messageId)
-                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (cause: Exception) {
+                update { it.copy(creatingThread=false,creationSourceThreadId=null,
+                    notice="CONVERSATION_CREATE_FAILED:${errorCodeOf(cause)}") }
+            }
         }
     }
 
-    /**
-     * Stops waiting for the Agent's answer to `/new`.
-     *
-     * The in-flight request is cancelled, so the Agent may never create anything
-     * from it at all. If it did create something before noticing, that answer is
-     * treated like any other abandoned one — it may still enrich the thread list,
-     * but it must not move the screen after the wait was reported over.
-     */
     fun cancelThreadCreation() {
-        if (pendingCreation == null) return
+        if (!_state.value.creatingThread) return
         creationSendJob?.cancel()
-        abandonAgentThreadCreation("CONVERSATION_CREATE_CANCELLED:USER_CANCELLED")
+        if (pendingCreation != null) abandonAgentThreadCreation("CONVERSATION_CREATE_CANCELLED:USER_CANCELLED")
+        update { it.copy(creatingThread=false,creationSourceThreadId=null,notice="CONVERSATION_CREATE_CANCELLED:USER_CANCELLED") }
     }
 
     /**
@@ -1555,15 +1496,7 @@ class WorkbenchController(
         }
     }
 
-    /**
-     * The one sanctioned place a conversation is created by endpoint.
-     *
-     * Reachable only from the first send on an account that has no thread:
-     * `/new` is a message, so it needs somewhere to travel, and a first message
-     * needs a thread to be filed under. The "new conversation" entry point
-     * never calls this — it asks the Agent, which is what makes the resulting
-     * id authoritative on both sides.
-     */
+    /** Creates the first thread through the same authoritative Gateway endpoint. */
     private fun bootstrapConversationForFirstMessage(): Deferred<Result<String>> {
         bootstrapJob?.takeIf { it.isActive }?.let { return it }
         return workScope.async {
@@ -1591,9 +1524,11 @@ class WorkbenchController(
     }
 
     fun editDraft(text: String) {
+        val opensCommands = text.startsWith("/") && !_state.value.draft.startsWith("/")
         cancelPendingSubmission()
         draftRevision++
         update { it.copy(draft = text) }
+        if (opensCommands) loadCatalog()
     }
 
     fun cancelPendingSubmission() {
@@ -1621,6 +1556,102 @@ class WorkbenchController(
                 state.copy(attachments = state.attachments + draft)
             }
             observeAttachment(coordinator,draftId)
+        }
+    }
+
+    /** A voice recording is one attachment-only submission and never consumes the text draft. */
+    suspend fun sendVoiceAttachment(
+        selection: com.openandroidintelligence.conversation.ports.LocalAttachmentSelection,
+        expectedThreadId: String?,
+    ): Boolean {
+        val coordinator = attachmentCoordinator ?: return false
+        val epoch = threadEpoch
+        fun ready() = !closed && allowSending && activeThreadId == expectedThreadId && threadEpoch == epoch &&
+            (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
+            !_state.value.creatingThread && pendingSubmission == null &&
+            _state.value.composer !in setOf(ComposerState.SUBMITTING,ComposerState.WAITING_ATTACHMENTS) &&
+            _state.value.generation !in setOf(GenerationState.QUEUED,GenerationState.RUNNING,GenerationState.CANCEL_REQUESTED,GenerationState.OUTCOME_UNKNOWN)
+        if (!ready()) return false
+        var draftId: String? = null
+        var sendJob: Job? = null
+        var submitted = false
+        var voiceClientId: String? = null
+        val previousGeneration = _state.value.generation
+        val attempt = VoiceAttempt()
+        suspend fun cleanUnsentVoice() {
+            val id = draftId ?: return
+            val clientId = voiceClientId
+            if (!closed && clientId != null) attempt.conversationId?.let { target ->
+                sendAtomsMutex.withLock {
+                    val latest = loadSendAtomsOnIo(target)
+                    val remaining = latest.filterNot { it.clientMessageId.value == clientId && it.submissionState != LocalSubmissionState.ACCEPTED }
+                    if (latest != remaining) saveAtoms(target,remaining)
+                    sendAtomsByThread[target] = remaining.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+                }
+            }
+            if (failedSubmission?.clientMessageId == clientId) failedSubmission = null
+            update { state ->
+                val pending = state.pendingBatch.filterNot { it.key == "local_$clientId" }
+                state.copy(attachments=state.attachments.filterNot { it.id.value == id },pendingBatch=pending,
+                    composer=if (threadEpoch == epoch) ComposerState.EDITING else state.composer,
+                    generation=if (threadEpoch == epoch) previousGeneration else state.generation,
+                    timeline=if (state.timeline is Loadable.Ready) Loadable.Ready(renderTimeline(pending)) else state.timeline)
+            }
+            coordinator.discard(id)
+            persistCheckpoint()
+        }
+        try {
+            val draft = coordinator.prepare(selection)
+            draftId = draft.id.value
+            val verified = coordinator.observe(draftId).first { it.state in setOf(
+                AttachmentState.VERIFIED,AttachmentState.RETRYABLE_FAILURE,AttachmentState.TERMINAL_FAILURE,
+                AttachmentState.OUTCOME_UNKNOWN,AttachmentState.CANCELLED,
+            ) }
+            if (verified.state != AttachmentState.VERIFIED) error(verified.errorMessage ?: "VOICE_UPLOAD_FAILED")
+            if (!ready()) return false
+            val currentDraft = coordinator.restoredDrafts().firstOrNull { it.id == draft.id }
+                ?: draft.copy(state=AttachmentState.VERIFIED)
+            update { it.copy(attachments=it.attachments + currentDraft.copy(state=AttachmentState.VERIFIED)) }
+            val submission = DraftSubmission("",listOf(draftId),-1L,expectedThreadId,isolatedThreadEpoch=epoch,voiceAttempt=attempt)
+            voiceClientId = submission.clientMessageId
+            pendingSubmission = submission
+            submitted = true
+            sendJob = submitWhenAttachmentsVerified()
+            sendJob?.join()
+            val target = attempt.conversationId ?: expectedThreadId ?: activeThreadId
+            return target?.let { atomsFor(it)[submission.clientMessageId]?.submissionState == LocalSubmissionState.ACCEPTED } == true
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable) {
+                sendJob?.cancelAndJoin()
+                val target = attempt.conversationId ?: expectedThreadId ?: activeThreadId
+                val atom = target?.let { thread -> voiceClientId?.let { atomsFor(thread)[it] } }
+                // An uncertain POST still needs its original for an explicit recovery.
+                // Only an archived original (or a request never sent) permits deleting staging.
+                if (submitted && attempt.requestStarted) draftId?.let { id ->
+                    val archived = target?.let { thread -> coordinator.remoteAttachmentId(id)?.let { remote ->
+                        historicalAttachmentKey(thread,remote) in preSubmittedMedia
+                    } } == true
+                    if (atom == null || atom.submissionState == LocalSubmissionState.ACCEPTED || archived) coordinator.discard(id)
+                }
+                if (threadEpoch == epoch) update { state ->
+                    val pending = state.pendingBatch.filterNot { it.key == "local_$voiceClientId" }
+                    state.copy(attachments=state.attachments.filterNot { it.id.value==draftId },
+                        composer=ComposerState.EDITING,pendingBatch=pending,
+                        timeline=if (state.timeline is Loadable.Ready) Loadable.Ready(renderTimeline(pending)) else state.timeline,
+                        generation=if (atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN) GenerationState.OUTCOME_UNKNOWN
+                            else if (atom == null) previousGeneration else state.generation,
+                        notice=if (atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN) "VOICE_SEND_OUTCOME_UNKNOWN" else "VOICE_SEND_CANCELLED")
+                }
+                else update { state -> state.copy(attachments=state.attachments.filterNot { it.id.value==draftId }) }
+            }
+            throw cancelled
+        } catch (failure: Exception) {
+            if (activeThreadId == expectedThreadId && threadEpoch == epoch)
+                update { it.copy(notice="VOICE_SEND_FAILED:${errorCodeOf(failure)}") }
+            return false
+        } finally {
+            if (!submitted) draftId?.let { id -> withContext(NonCancellable) { coordinator.discard(id) } }
+            else if (!attempt.requestStarted) withContext(NonCancellable) { cleanUnsentVoice() }
         }
     }
 
@@ -1819,7 +1850,7 @@ class WorkbenchController(
             return
         }
         if (!current.canSend) return
-        if (pendingCreation != null) {
+        if (current.creatingThread || pendingCreation != null) {
             // A send during the wait would land in the thread being left —
             // exactly the mismatch this flow exists to prevent.
             update { it.copy(notice = "CONVERSATION_CREATING:SEND_BLOCKED") }
@@ -1846,21 +1877,21 @@ class WorkbenchController(
     }
 
     /** A click freezes the draft; upload progress can release that same submission only once. */
-    private fun submitWhenAttachmentsVerified() {
-        val submission = pendingSubmission ?: return
+    private fun submitWhenAttachmentsVerified(): Job? {
+        val submission = pendingSubmission ?: return null
         val drafts = _state.value.attachments.associateBy { it.id.value }
-        if (submission.attachmentIds.any { drafts[it]?.state != AttachmentState.VERIFIED }) return
+        if (submission.attachmentIds.any { drafts[it]?.state != AttachmentState.VERIFIED }) return null
         var remoteIds = submission.attachmentIds.map { id ->
             attachmentCoordinator?.remoteAttachmentId(id) ?: run {
                 pendingSubmission = null
                 update { it.copy(composer = ComposerState.FAILED, notice = "ATTACHMENT_NOT_VERIFIED:请重新选择附件") }
-                return
+                return null
             }
         }
         failedSubmission = submission
         pendingSubmission = null
         update { it.copy(composer = ComposerState.SUBMITTING) }
-        workScope.launch {
+        return workScope.launch {
             var localEntryKey: String? = null
             var sendTarget: String? = null
             // Whether this send emptied the composer: only then may a failure
@@ -1868,9 +1899,12 @@ class WorkbenchController(
             // because releasing the attachment drafts below advances it too.
             var draftWasCleared = false
             try {
+                if (submission.isolatedThreadEpoch != null &&
+                    (threadEpoch != submission.isolatedThreadEpoch || activeThreadId != submission.conversationId)) return@launch
                 val target = submission.conversationId ?: activeThreadId
                     ?: bootstrapConversationForFirstMessage().await().getOrThrow()
                 sendTarget = target
+                submission.voiceAttempt?.conversationId = target
                 hydrateSendAtoms(target)
                 if (atomsFor(target)[submission.clientMessageId]?.isDeleted == true) {
                     failedSubmission=null
@@ -1911,6 +1945,8 @@ class WorkbenchController(
                 ) }
                 flushPendingPersistence()
                 archiveBeforeMessageSubmit(target,submission.attachmentIds)
+                if (submission.isolatedThreadEpoch != null &&
+                    (threadEpoch != submission.isolatedThreadEpoch || activeThreadId != target)) return@launch
                 // 发送事实已经持久保存，再清空仍属于本次提交的草稿。
                 if (activeThreadId == target && draftRevision == submission.revision) {
                     update { it.copy(draft = "") }
@@ -1923,7 +1959,7 @@ class WorkbenchController(
                 }
 
                 val currentTitle = _state.value.activeThreadTitle
-                val needsAutoTitle = (currentTitle.isBlank() || currentTitle == "新对话") && !userRenamedThreads.contains(target)
+                val needsAutoTitle = activeThreadId == target && (currentTitle.isBlank() || currentTitle == "新对话") && !userRenamedThreads.contains(target)
                 if (needsAutoTitle) {
                     val autoTitle = com.openandroidintelligence.conversation.title.ConversationTitlePolicy.generateTitle(
                         firstMessage = message,
@@ -1997,7 +2033,12 @@ class WorkbenchController(
                             if (acceptedId != null) com.openandroidintelligence.conversation.ports.MessageAcceptance(acceptedId,message.clientMessageId.value)
                             else repository.submitMessage(target,message)
                         }
-                        else -> repository.submitMessage(target, message)
+                        else -> {
+                            if (submission.isolatedThreadEpoch != null &&
+                                (threadEpoch != submission.isolatedThreadEpoch || activeThreadId != target)) return@launch
+                            submission.voiceAttempt?.requestStarted = true
+                            repository.submitMessage(target, message)
+                        }
                     }
                     acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId)
                     if (activeThreadId == target) {
@@ -2036,9 +2077,13 @@ class WorkbenchController(
                 if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
                 persistCheckpoint()
             } catch (cancelled: CancellationException) {
-                sendTarget?.let { target -> changeSendAtom(target, submission.clientMessageId) { old ->
-                    old?.takeIf { it.submissionState != LocalSubmissionState.ACCEPTED }?.copy(submissionState = LocalSubmissionState.OUTCOME_UNKNOWN)
-                } }
+                withContext(NonCancellable) {
+                    if (!closed) sendTarget?.let { target ->
+                        try { changeSendAtom(target, submission.clientMessageId) { old ->
+                            old?.takeIf { it.submissionState != LocalSubmissionState.ACCEPTED }?.copy(submissionState = LocalSubmissionState.OUTCOME_UNKNOWN)
+                        } } catch (failure: Exception) { if (!closed) throw failure }
+                    }
+                }
                 throw cancelled
             } catch (cause: Exception) {
                 if (activeThreadId == sendTarget) failedSubmission = submission.copy(conversationId = sendTarget ?: submission.conversationId)
@@ -2349,45 +2394,64 @@ class WorkbenchController(
         }
     }
 
+    private var threadEpoch = 0L
+    private val finishedGenerations = LinkedHashSet<Pair<String,String>>()
+
+    /** Retire progress for the exact turn; a final response may have another message id. */
+    private fun finishStreaming(threadId: String, generationId: String?, terminal: GenerationState) {
+        if (generationId != null) {
+            finishedGenerations.add(threadId to generationId)
+            while (finishedGenerations.size > 4096) finishedGenerations.remove(finishedGenerations.first())
+        }
+        val activeGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
+        val allowLegacy = generationId == null || activeGeneration == null || activeGeneration == generationId
+        val finals = mirrored.values.filter { it.sender == "assistant" && it.state == "CONFIRMED" }
+        mirrored.values.filter { it.sender == "assistant" && it.state == "STREAMING" &&
+            (it.generationId == generationId || (allowLegacy && it.generationId == null))
+        }.toList().forEach { streaming ->
+            if (finals.any { final -> generationId != null && final.generationId == generationId }) {
+                mirrored.remove(streaming.id)
+                mirroredRevisions.remove(streaming.id)
+            } else mirrored[streaming.id] = streaming.copy(state=when (terminal) {
+                GenerationState.CANCELLED -> "CANCELLED"
+                GenerationState.FAILED -> "FAILED"
+                else -> "CONFIRMED"
+            })
+        }
+        if (allowLegacy) disarmReplyWatchdog()
+    }
+
     fun stopGeneration() {
-        val generationId = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)
-            ?.generationId?.value
+        if (closed || _state.value.generation == GenerationState.CANCEL_REQUESTED) return
+        val threadId = activeThreadId ?: return
+        val epoch = threadEpoch
+        val tracker = repository as? com.openandroidintelligence.conversation.ports.GenerationTracker
+        val generationId = tracker?.generationId?.value
         if (generationId == null) {
-            update { it.copy(generation = GenerationState.UNSUPPORTED, notice = "STOP_UNAVAILABLE:NO_GENERATION") }
+            update { it.copy(notice = "STOP_UNAVAILABLE:NO_GENERATION") }
             return
         }
         update { it.copy(generation = GenerationState.CANCEL_REQUESTED) }
         workScope.launch {
-            Result.runCatching {
-                repository.cancelGeneration(generationId, "req_" + UUID.randomUUID().toString().replace("-", ""))
-            }.fold(
-                onSuccess = { result ->
-                    if (result.outcome == com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED) {
-                        mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
-                            mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
-                        }
-                    }
-                    update { state ->
-                        state.copy(
-                            timeline = Loadable.Ready(renderTimeline(state.pendingBatch)),
-                            generation = when (result.outcome) {
-                                com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED ->
-                                    GenerationState.CANCELLED
-                                com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.ALREADY_COMPLETED ->
-                                    GenerationState.COMPLETED
-                                com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.UNSUPPORTED ->
-                                    GenerationState.UNSUPPORTED
-                                com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.OUTCOME_UNKNOWN ->
-                                    GenerationState.OUTCOME_UNKNOWN
-                            },
-                            notice = result.message,
-                        )
-                    }
-                },
-                onFailure = { cause ->
-                    update { it.copy(generation = GenerationState.OUTCOME_UNKNOWN, notice = errorCodeOf(cause)) }
-                },
-            )
+            try {
+                val result = repository.cancelGeneration(threadId,generationId,"req_" + UUID.randomUUID().toString().replace("-", ""))
+                if (activeThreadId != threadId || threadEpoch != epoch) return@launch
+                val currentId = tracker.generationId.value
+                if (currentId != null && currentId != generationId) return@launch
+                if (currentId == null && _state.value.generation in setOf(GenerationState.QUEUED,GenerationState.RUNNING)) return@launch
+                val terminal = when (result.outcome) {
+                    com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED -> GenerationState.CANCELLED
+                    com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.ALREADY_COMPLETED -> GenerationState.COMPLETED
+                    com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.UNSUPPORTED -> GenerationState.UNSUPPORTED
+                    com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.OUTCOME_UNKNOWN -> GenerationState.OUTCOME_UNKNOWN
+                }
+                if (terminal in setOf(GenerationState.CANCELLED,GenerationState.COMPLETED)) finishStreaming(threadId,generationId,terminal)
+                update { it.copy(timeline=Loadable.Ready(renderTimeline(it.pendingBatch)),generation=terminal,notice=result.message) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (cause: Exception) {
+                if (activeThreadId == threadId && threadEpoch == epoch && tracker.generationId.value == generationId)
+                    update { it.copy(generation=GenerationState.OUTCOME_UNKNOWN,notice=errorCodeOf(cause)) }
+            }
         }
     }
 
@@ -2690,6 +2754,14 @@ class WorkbenchController(
                                     errorCode = event.errorCode?.wireValue,
                                 )
                             }
+                            val terminal = when (event.status) {
+                                com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED -> GenerationState.COMPLETED
+                                com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED -> GenerationState.FAILED
+                                else -> null
+                            }
+                            val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
+                            val settlesCurrent = event.generationId == null || currentGeneration == null || currentGeneration == event.generationId
+                            if (terminal != null) finishStreaming(currentActiveId,event.generationId,terminal)
                             val localKey = "local_${event.clientMessageId.value}"
                             update { state ->
                                 val pending = state.pendingBatch.map { row ->
@@ -2705,7 +2777,8 @@ class WorkbenchController(
                                         Loadable.Ready(renderTimeline(pending))
                                     } else state.timeline,
                                     pendingBatch = pending,
-                                    notice = if (event.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED) {
+                                    generation = if (terminal != null && settlesCurrent) terminal else state.generation,
+                                    notice = if (settlesCurrent && event.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED) {
                                         "AGENT_MESSAGE_FAILED:${event.errorCode?.wireValue}"
                                     } else if (state.notice?.startsWith("AGENT_MESSAGE_FAILED:") == true) {
                                         null
@@ -2716,6 +2789,7 @@ class WorkbenchController(
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
                             val message = withLatestMessageStatus(event.message)
+                            if (message.state == "STREAMING" && message.generationId?.let { currentActiveId to it in finishedGenerations } == true) return@collect
                             val eventConvId = message.conversationId?.value
                             if (eventConvId != null && eventConvId != currentActiveId) {
                                 refreshThreads()
@@ -2750,7 +2824,8 @@ class WorkbenchController(
                                         return@collect
                                     }
                                     // Prune any other older streaming assistant message with different id
-                                    val oldStreamingKeys = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" && it.id != message.id }.keys.toList()
+                                    val oldStreamingKeys = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" && it.id != message.id &&
+                                        (it.generationId == null || message.generationId == null || it.generationId == message.generationId) }.keys.toList()
                                     for (k in oldStreamingKeys) {
                                         mirrored.remove(k)
                                         mirroredRevisions.remove(k)
@@ -2772,7 +2847,7 @@ class WorkbenchController(
                                     generation = if (message.sender == "assistant" && message.state == "STREAMING") {
                                         GenerationState.RUNNING
                                     } else if (message.sender == "assistant" && message.state == "CONFIRMED") {
-                                        if (matchedCurrentTurn && (state.generation == GenerationState.RUNNING || state.generation == GenerationState.QUEUED)) {
+                                        if (message.generationId == null && matchedCurrentTurn && (state.generation == GenerationState.RUNNING || state.generation == GenerationState.QUEUED)) {
                                             GenerationState.COMPLETED
                                         } else {
                                             state.generation
@@ -2810,12 +2885,11 @@ class WorkbenchController(
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.GenerationCancelled -> {
                             val eventConvId = event.conversationId?.value
                             if (eventConvId == currentActiveId) {
-                                mirrored.values.filter { it.state == "STREAMING" }.forEach { streamingMsg ->
-                                    mirrored[streamingMsg.id] = streamingMsg.copy(state = "CANCELLED")
-                                }
+                                finishStreaming(currentActiveId,event.generationId,GenerationState.CANCELLED)
+                                val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
                                 update { state ->
                                     state.copy(
-                                        generation = GenerationState.CANCELLED,
+                                        generation = if (currentGeneration != null && currentGeneration != event.generationId) state.generation else GenerationState.CANCELLED,
                                         timeline = Loadable.Ready(renderTimeline(state.pendingBatch)),
                                     )
                                 }
@@ -2962,7 +3036,7 @@ class WorkbenchController(
                             },
                             generation = if (hasStreaming) {
                                 GenerationState.RUNNING
-                            } else if (receivedConfirmedAssistantForCurrentTurn && (state.generation == GenerationState.RUNNING || state.generation == GenerationState.QUEUED)) {
+                            } else if ((repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null && receivedConfirmedAssistantForCurrentTurn && (state.generation == GenerationState.RUNNING || state.generation == GenerationState.QUEUED)) {
                                 GenerationState.COMPLETED
                             } else {
                                 state.generation
@@ -3090,7 +3164,8 @@ class WorkbenchController(
             mirrored.values.filter { it.sender == "user" }.maxOfOrNull { it.timestamp } ?: 0L,
             _state.value.pendingBatch.filter { it.isUser }.maxOfOrNull { it.timestamp } ?: 0L,
         )
-        val streamingEntries = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" }
+        val streamingEntries = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" &&
+            (it.generationId == null || message.generationId == null || it.generationId == message.generationId) }
         var supersededActiveStreaming = false
         for ((k, s) in streamingEntries) {
             val sameNormalizedKey = normalizeEntryKey(s.id).isNotBlank() &&

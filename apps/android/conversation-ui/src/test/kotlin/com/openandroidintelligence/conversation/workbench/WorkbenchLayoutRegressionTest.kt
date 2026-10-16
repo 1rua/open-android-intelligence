@@ -213,7 +213,9 @@ class WorkbenchLayoutRegressionTest {
 
     @Test
     fun thinkingIndicatorDisappearsWhenGenerationIsStopped() {
-        val gateway = object : ConversationRepository {
+        var cancellationCalls = 0
+        val gateway = object : ConversationRepository, GenerationTracker {
+            override val generationId = kotlinx.coroutines.flow.MutableStateFlow<String?>("gen_stop")
             override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
             override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
             override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
@@ -222,8 +224,12 @@ class WorkbenchLayoutRegressionTest {
                 MessageAcceptance("msg_user_1", message.clientMessageId.value)
             override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
             override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
-            override suspend fun cancelGeneration(generationId: String, requestId: String) =
-                CancelGenerationResult(CancelGenerationOutcome.CANCELLED)
+            override suspend fun cancelGeneration(generationId: String, requestId: String): CancelGenerationResult {
+                assertEquals("gen_stop", generationId)
+                cancellationCalls++
+                this.generationId.value = null
+                return CancelGenerationResult(CancelGenerationOutcome.CANCELLED)
+            }
         }
         val controller = WorkbenchController(
             scope,
@@ -249,6 +255,10 @@ class WorkbenchLayoutRegressionTest {
 
         compose.runOnIdle {
             controller.stopGeneration()
+        }
+        compose.runOnIdle {
+            assertEquals(1, cancellationCalls)
+            assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
         }
         compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
     }

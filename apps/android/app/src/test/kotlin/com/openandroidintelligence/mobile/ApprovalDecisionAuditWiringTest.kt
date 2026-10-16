@@ -4,12 +4,15 @@ import android.app.Application
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.state.ApprovalCardState
+import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -51,7 +54,7 @@ class ApprovalDecisionAuditWiringTest {
         gateway.respond(CONVERSATIONS_PATH, CONVERSATIONS_BODY)
         gateway.respond(TIMELINE_PATH, TIMELINE_BODY)
         gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
-        gateway.respond(EVENTS_PATH, APPROVAL_EVENT_SSE, contentType = "text/event-stream")
+        gateway.respond(EVENTS_PATH, approvalEventSse(), contentType = "text/event-stream")
         gateway.respond(
             DECISION_PATH,
             """{"protocol":"2.1","data":{"approval":{"approvalId":"appr_1","decision":"once"}}}""",
@@ -60,13 +63,14 @@ class ApprovalDecisionAuditWiringTest {
 
     @After
     fun tearDown() {
+        runtimeScope.cancel()
         gateway.closed()
     }
 
     @Test
     fun aSubmittedApprovalDecisionIsAuditedThroughTheHostBridge() {
         val runtime = GatewayRuntime(
-        localDocumentKeyProvider = TestDocumentKeys,
+            localDocumentKeyProvider = TestDocumentKeys,
             context = ApplicationProvider.getApplicationContext(),
             scope = runtimeScope,
             pairingGrants = pairingGrants,
@@ -80,7 +84,12 @@ class ApprovalDecisionAuditWiringTest {
             controller != null && controller.state.value.activeThreadId == ACTIVE_THREAD
         }
         val controller = runtime.controller.value!!
-        awaitCondition { controller.state.value.streamHealth == com.openandroidintelligence.conversation.model.StreamHealth.LIVE }
+        assertTrue("审批卡必须已投影到活动线程后才能确认", awaitCondition {
+            (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().any {
+                val approval = it.approval
+                approval is ApprovalCardState.Waiting && approval.request.approvalId.value == APPROVAL_ID
+            }
+        })
 
         controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
 
@@ -151,13 +160,13 @@ class ApprovalDecisionAuditWiringTest {
             """{"protocol":"2.1","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}"""
 
         /** 一帧审批请求事件：请求此刻开始、五分钟后过期。data 必须单行。 */
-        val APPROVAL_EVENT_SSE = run {
+        fun approvalEventSse(): String {
             val now = System.currentTimeMillis()
-            val data = """{"payload":{"approvalId":"appr_1","command":"重启服务","timeoutSeconds":300,""" +
+            val data = """{"payload":{"approvalId":"appr_1","conversationId":"$ACTIVE_THREAD","command":"重启服务","reason":"应用服务重启需要用户确认","timeoutSeconds":300,""" +
                 """"requestedAt":$now,"expiresAt":${now + 300_000L},""" +
                 """"options":[{"choice":"once","label":"允许一次","style":"primary"},""" +
                 """{"choice":"deny","label":"拒绝","style":"danger"}]}}"""
-            "event: conversation.approval.requested\n" +
+            return "event: conversation.approval.requested\n" +
                 "id: evt_a1\n" +
                 "data: $data\n\n"
         }

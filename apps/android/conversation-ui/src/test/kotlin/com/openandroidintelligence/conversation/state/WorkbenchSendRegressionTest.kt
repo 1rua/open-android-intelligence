@@ -518,7 +518,7 @@ class WorkbenchSendRegressionTest {
         coroutineContext.cancelChildren()
     }
 
-    @Test fun stopGenerationWithoutGenerationIdSetsUnsupportedAndNotice() = runTest {
+    @Test fun missingGenerationIdentityDoesNotClaimTheGatewayLacksCancellation() = runTest {
         val repository = object : RecordingRepository() {
             override val generationId = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
         }
@@ -528,9 +528,11 @@ class WorkbenchSendRegressionTest {
         controller.sendDraft()
         advanceUntilIdle()
 
+        val previousGeneration = controller.state.value.generation
         controller.stopGeneration()
         runCurrent()
-        assertEquals(GenerationState.UNSUPPORTED, controller.state.value.generation)
+        assertEquals(previousGeneration, controller.state.value.generation)
+        assertNotEquals(GenerationState.UNSUPPORTED, controller.state.value.generation)
         assertEquals("STOP_UNAVAILABLE:NO_GENERATION", controller.state.value.notice)
         coroutineContext.cancelChildren()
     }
