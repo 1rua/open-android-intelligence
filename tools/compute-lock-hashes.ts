@@ -1,6 +1,55 @@
 import { sha256Evidence } from "../mvp-contract/tools/check-lock.ts";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const rows = [
+export type OpenClawPluginPin = Readonly<{
+  repository: string;
+  version: string;
+  ref: string;
+  revision: string;
+}>;
+
+/** Build every plugin-lock field from the repository's single pin document. */
+export const openClawPluginLockFields = (pin: OpenClawPluginPin) => {
+  if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(pin.repository)) {
+    throw new Error("openclaw-plugin-pin.json has an invalid repository");
+  }
+  if (!pin.version.trim() || !pin.ref.trim() || !/^[a-f0-9]{40}$/.test(pin.revision)) {
+    throw new Error("openclaw-plugin-pin.json must contain a version, ref and lowercase 40-hex revision");
+  }
+
+  const checkout = ".openclaw-gateway-plugin";
+  const installRef = `git:github.com/${pin.repository}@${pin.revision}`;
+  const verifyCommand = [
+    `if git -C ${checkout} rev-parse --git-dir >/dev/null 2>&1; then git -C ${checkout} diff --quiet && git -C ${checkout} diff --cached --quiet && test -z "$(git -C ${checkout} ls-files --others --exclude-standard)"; else git clone https://github.com/${pin.repository}.git ${checkout}; fi`,
+    `git -C ${checkout} fetch origin ${pin.revision}`,
+    `test "$(git -C ${checkout} rev-parse FETCH_HEAD)" = ${pin.revision}`,
+    `git -C ${checkout} checkout --detach ${pin.revision}`,
+    `npm ci --prefix ${checkout} --ignore-scripts`,
+    `OPENCLAW_PLUGIN_ROOT=${checkout} python3 tools/check-openclaw-plugin-pin.py`,
+    `OPEN_ANDROID_GATEWAY_CONTRACT_ROOT="$PWD/gateway-contract" npm --prefix ${checkout} run contract:check`,
+    `npm --prefix ${checkout} run typecheck`,
+    `npm --prefix ${checkout} test`,
+    `npm --prefix ${checkout} run build`,
+    `git -C ${checkout} diff --exit-code -- runtime`,
+    `test -z "$(git -C ${checkout} ls-files --others -- runtime)"`,
+    `OPENCLAW_HOME=/tmp/oai-openclaw-home OPENCLAW_STATE_DIR=/tmp/oai-openclaw-state ${checkout}/node_modules/.bin/openclaw plugins install ${installRef} --force`,
+    `OPENCLAW_HOME=/tmp/oai-openclaw-home OPENCLAW_STATE_DIR=/tmp/oai-openclaw-state ${checkout}/node_modules/.bin/openclaw plugins inspect open-android-intelligence-gateway --runtime --json > /tmp/oai-openclaw-runtime.json`,
+    `node ${checkout}/tools/assert-openclaw-runtime.mjs < /tmp/oai-openclaw-runtime.json`,
+  ].join(" && ");
+
+  return {
+    official_reference: `https://github.com/${pin.repository}`,
+    immutable_version: `openclaw-gateway-plugin@${pin.version}; ref ${pin.ref}; commit ${pin.revision}`,
+    verify_command: verifyCommand,
+  };
+};
+
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const pluginPin = JSON.parse(readFileSync(resolve(projectRoot, "openclaw-plugin-pin.json"), "utf8")) as OpenClawPluginPin;
+
+export const buildLockRows = (pin: OpenClawPluginPin) => [
   {
     decision_id: "MVP-DEP-ANDROID",
     official_reference: "https://developer.android.com/studio/releases/gradle-plugin",
@@ -63,13 +112,11 @@ const rows = [
   },
   {
     decision_id: "MVP-DEP-OPENCLAW-PLUGIN",
-    official_reference: "https://github.com/1rua/openclaw-gateway-plugin",
-    immutable_version: "openclaw-gateway-plugin@v1.0.2; commit 9b81b977dc8190536b1ac2944d97fbb004b450b9; contract pin 851abc44e7ebf5a5aa0ea7ffe311d59be1538058",
+    ...openClawPluginLockFields(pin),
     integrity: "PLACEHOLDER",
     license_review: "MIT; reviewed",
     reviewer_time: "2026-10-08T16:06:37Z",
     evidence_expires_at: "2026-11-07T16:06:37Z",
-    verify_command: "if git -C .openclaw-gateway-plugin rev-parse --git-dir >/dev/null 2>&1; then git -C .openclaw-gateway-plugin diff --quiet && git -C .openclaw-gateway-plugin diff --cached --quiet && test -z \"$(git -C .openclaw-gateway-plugin ls-files --others --exclude-standard)\" && git -C .openclaw-gateway-plugin fetch --tags origin; else git clone https://github.com/1rua/openclaw-gateway-plugin.git .openclaw-gateway-plugin; fi && test \"$(git -C .openclaw-gateway-plugin rev-parse 'refs/tags/v1.0.2^{}')\" = 9b81b977dc8190536b1ac2944d97fbb004b450b9 && git -C .openclaw-gateway-plugin checkout --detach f4a04a28d4cc419de4c544d7c99bb08d62a3ee97 && npm ci --prefix .openclaw-gateway-plugin --ignore-scripts && OPENCLAW_PLUGIN_ROOT=.openclaw-gateway-plugin python3 tools/check-openclaw-plugin-pin.py && OPEN_ANDROID_GATEWAY_CONTRACT_ROOT=\"$PWD/gateway-contract\" npm --prefix .openclaw-gateway-plugin run contract:check && npm --prefix .openclaw-gateway-plugin run typecheck && npm --prefix .openclaw-gateway-plugin test && npm --prefix .openclaw-gateway-plugin run build && git -C .openclaw-gateway-plugin diff --exit-code -- runtime && test -z \"$(git -C .openclaw-gateway-plugin ls-files --others -- runtime)\" && OPENCLAW_HOME=/tmp/oai-openclaw-home OPENCLAW_STATE_DIR=/tmp/oai-openclaw-state .openclaw-gateway-plugin/node_modules/.bin/openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@v1.0.2 --force && OPENCLAW_HOME=/tmp/oai-openclaw-home OPENCLAW_STATE_DIR=/tmp/oai-openclaw-state .openclaw-gateway-plugin/node_modules/.bin/openclaw plugins inspect open-android-intelligence-gateway --runtime --json > /tmp/oai-openclaw-runtime.json && node .openclaw-gateway-plugin/tools/assert-openclaw-runtime.mjs < /tmp/oai-openclaw-runtime.json",
     status: "locked",
     blocks: "WP-07,WP-09",
   },
@@ -99,7 +146,11 @@ const rows = [
   },
 ];
 
-for (const row of rows) {
-  const hash = sha256Evidence(row);
-  console.log(`${row.decision_id}: sha256:${hash}`);
+const rows = buildLockRows(pluginPin);
+
+if (process.argv[1]?.endsWith("tools/compute-lock-hashes.ts")) {
+  for (const row of rows) {
+    const hash = sha256Evidence(row);
+    console.log(`${row.decision_id}: sha256:${hash}`);
+  }
 }

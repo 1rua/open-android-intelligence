@@ -460,7 +460,7 @@ class ConversationClient(private val http: GatewayHttpClient) {
         val response = execute(
             method = "POST",
             target = "/open-android-intelligence/v2/conversations/$conversationId/generations/$generationId/cancel",
-            body = Json.canonical(Json.of(mapOf("requestId" to requestId))).toByteArray(Charsets.UTF_8),
+            body = Json.canonical(Json.of(mapOf("clientMessageId" to requestId))).toByteArray(Charsets.UTF_8),
             requestId=requestId,
         )
         when (response.status) {

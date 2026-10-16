@@ -464,6 +464,8 @@ Gateway 返回 `accepted` 及服务端 message ID；该状态表示消息已由 
 
 上述三个事件可携带 Gateway 签发的 `generationId`，用于把用户状态、助手正文和进度输出关联到同一轮生成。单条 `conversation.message.completed` 只结束该消息，不能推断整轮 Agent 已结束；只有该轮用户消息的终态 status、取消确认或权威 current-generation 查询才能结束生成状态。宿主运行结束时必须完成本轮全部仍在 streaming 的进度消息，再发出该轮终态；后续轮次不能被旧轮次的迟到事件关闭。Android 对成功停止和已完成结果分别显示，缺少生成 ID 应先恢复真实状态，不能直接等同于 Gateway 不支持停止。
 
+停止生成的规范请求体由 `conversation.generationCancel` 定义，为 `{"clientMessageId":"<opaqueId>"}`；目标线程与生成由 URL 指定，HTTP 幂等键仍绑定经过认证的 `requestId`。请求体的 `clientMessageId` 不要求等于该 HTTP 请求身份。Gateway 兼容旧 App 的精确单字段 `{"requestId":"<与认证请求相同的身份>"}`，但必须拒绝混合字段、额外字段或身份不一致，不得改写请求体或其幂等摘要。新客户端使用规范请求体。
+
 `GET /conversations/{conversationId}/generations/current` 的成功数据必须明确包含 `generation`：无活动生成时为 `null`，否则包含实际 `conversationId`、`generationId` 和 `queued`、`running` 或 `unknown` 状态。只有成功的空快照且查询期间没有新生成事实时，客户端才能结束历史遗留的 streaming 标记；查询失败、字段缺失或迟到快照均不能被解释为已完成。
 
 用户主动录制的语音作为 `audio/mp4` AAC/M4A 附件沿现有附件协议上传和发送，原始音频透传到 Agent 宿主。Android 不要求系统语音识别服务，也不把本地转写作为发送前置条件。

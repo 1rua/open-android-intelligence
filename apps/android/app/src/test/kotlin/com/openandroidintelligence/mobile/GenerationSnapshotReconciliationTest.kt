@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile
 
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
 import com.openandroidintelligence.conversation.ports.PageRequest
+import com.openandroidintelligence.conversation.ports.completeTimeline
 import com.openandroidintelligence.gateway.conversations.ConversationClient
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.*
@@ -44,26 +45,72 @@ class GenerationSnapshotReconciliationTest {
         assertNotNull(failure)
     }
 
-    private class Fixture {
+    @Test fun anEmptyGenerationSnapshotSettlesHistoricalProgressBeyondTheFirstPage() = runTest {
+        val fixture=Fixture().apply { transport.paginated=true }
+        val timeline=fixture.repository.completeTimeline("conv_a")
+        assertEquals(setOf("msg_new","msg_old"),timeline.messages.map { it.id }.toSet())
+        assertTrue(timeline.messages.all { it.state == "CONFIRMED" })
+        assertNull(fixture.upstream.generationId.value)
+    }
+
+    @Test fun aGenerationArrivingWhileALaterPageLoadsCannotBeClearedByAnEmptySnapshot() = runTest {
+        val fixture=Fixture().apply { transport.paginated=true }
+        fixture.transport.onTimelineRead={ page ->
+            if (page == 2) fixture.upstream.installCurrentGeneration("conv_a","gen_new" to "running")
+        }
+        val timeline=fixture.repository.completeTimeline("conv_a")
+        assertEquals("STREAMING",timeline.messages.single { it.id == "msg_old" }.state)
+        assertEquals("gen_new",fixture.upstream.generationId.value)
+    }
+
+    @Test fun aGenerationArrivingDuringALaterEmptySnapshotKeepsItsProgress() = runTest {
+        val fixture=Fixture().apply { transport.paginated=true }
+        fixture.transport.onSnapshotRead={ request ->
+            if (request == 2) fixture.upstream.installCurrentGeneration("conv_a","gen_new" to "running")
+        }
+        val timeline=fixture.repository.completeTimeline("conv_a")
+        assertEquals("STREAMING",timeline.messages.single { it.id == "msg_old" }.state)
+        assertEquals("gen_new",fixture.upstream.generationId.value)
+    }
+
+    @Test fun anUnnegotiatedGatewayCannotSettleAnyPageOfHistoricalProgress() = runTest {
+        val fixture=Fixture(negotiated=false).apply { transport.paginated=true }
+        val timeline=fixture.repository.completeTimeline("conv_a")
+        assertEquals(2,timeline.messages.size)
+        assertTrue(timeline.messages.all { it.state == "STREAMING" })
+        assertEquals(0,fixture.transport.snapshotRequests)
+    }
+
+    private class Fixture(negotiated: Boolean = true) {
         val transport=Transport()
         val client=ConversationClient(GatewayHttpClient(
             GatewayProfile("account","device","session","https://gateway.example",accessToken="token"),
             transport,{ByteArray(64)},InMemoryEventCursorStore()))
         val upstream=GatewayConversationRepository(client,activeConversationId={"conv_a"})
-        val repository=CapabilityGatedConversationRepository(upstream,client,GenerationCancelCapability(true),{"conv_a"})
+        val repository=CapabilityGatedConversationRepository(upstream,client,GenerationCancelCapability(negotiated),{"conv_a"})
     }
     private class Transport : GatewayByteTransport {
         val snapshotStarted=CompletableDeferred<Unit>()
         var snapshotGate:CompletableDeferred<Unit>?=null
         var snapshotBody="""{"protocol":"2.1","data":{"generation":null}}"""
+        var paginated=false
+        var snapshotRequests=0
+        var onTimelineRead: (Int) -> Unit = {}
+        var onSnapshotRead: (Int) -> Unit = {}
         override suspend fun execute(request:WireRequest):WireResponse {
             val body=if(request.target.endsWith("/generations/current")) {
+                onSnapshotRead(++snapshotRequests)
                 snapshotStarted.complete(Unit)
                 snapshotGate?.await()
                 snapshotBody
             } else {
                 assertTrue(request.target.startsWith("/open-android-intelligence/v2/conversations/conv_a/messages"))
-                """{"protocol":"2.1","data":{"messages":[{"messageId":"msg_old","sender":"assistant","state":"STREAMING","text":"旧的进度","timestamp":1}],"nextCursor":null,"snapshotRevision":1}}"""
+                val page=if(request.target.contains("cursor=older")) 2 else 1
+                onTimelineRead(page)
+                val firstPage=paginated && page == 1
+                val id=if(firstPage) "msg_new" else "msg_old"
+                val nextCursor=if(firstPage) "\"older\"" else "null"
+                """{"protocol":"2.1","data":{"messages":[{"messageId":"$id","sender":"assistant","state":"STREAMING","text":"旧的进度","timestamp":$page}],"nextCursor":$nextCursor,"snapshotRevision":1}}"""
             }
             return WireResponse(200,emptyList(),body.toByteArray())
         }

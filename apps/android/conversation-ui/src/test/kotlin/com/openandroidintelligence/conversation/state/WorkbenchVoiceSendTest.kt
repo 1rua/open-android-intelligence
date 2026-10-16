@@ -186,6 +186,76 @@ class WorkbenchVoiceSendTest {
         controller.cancel()
     }
 
+    @Test fun definitiveMessageRejectionRemovesOnlyVoiceBeforeSendingThePreservedDraft() = runTest {
+        val uploads=Uploads()
+        val repository=Repository().apply { submitFailure=IllegalStateException("SEND_MESSAGE_FAILED:400") }
+        val controller=controller(repository,uploads)
+        runCurrent(); controller.openThread("thread_a"); runCurrent()
+        controller.editDraft("保留的文字")
+        controller.addAttachment(selection("notes.txt","text/plain")); runCurrent()
+        val existing=controller.state.value.attachments.single().id
+        val voice=async { controller.sendVoiceAttachment(selection(),"thread_a") }
+        runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
+        assertFalse(voice.await())
+        assertEquals("保留的文字",controller.state.value.draft)
+        assertEquals("A rejected recording must leave the original composer attachments intact",listOf(existing),controller.state.value.attachments.map { it.id })
+        assertTrue("Keep the failed recording's original for an explicit recovery",uploads.discarded.isEmpty())
+        assertTrue(controller.state.value.hasRecoverableSubmissions)
+        val rejectedVoice=repository.sent.single().second
+        repository.submitFailure=null
+        controller.sendDraft(); runCurrent()
+        assertEquals("保留的文字",repository.sent.last().second.text)
+        assertEquals(listOf("remote_existing"),repository.sent.last().second.attachmentIds)
+        controller.editDraft("稍后再发的草稿")
+        controller.addAttachment(selection("later.txt","text/plain")); runCurrent()
+        val preservedAttachments=controller.state.value.attachments.map { it.id }
+        controller.retryPendingSubmissions(); runCurrent()
+        assertEquals(rejectedVoice.clientMessageId,repository.sent.last().second.clientMessageId)
+        assertEquals(listOf("remote_voice"),repository.sent.last().second.attachmentIds)
+        assertEquals("",repository.sent.last().second.text)
+        assertEquals("稍后再发的草稿",controller.state.value.draft)
+        assertEquals(preservedAttachments,controller.state.value.attachments.map { it.id })
+        assertFalse(controller.state.value.hasRecoverableSubmissions)
+        controller.cancel()
+    }
+
+    @Test fun lostVoiceMessageReceiptRetainsRecoverySourceOutsideThePreservedComposer() = runTest {
+        val uploads=Uploads()
+        val repository=Repository().apply { submitFailure=java.io.IOException("response lost") }
+        val controller=controller(repository,uploads)
+        runCurrent(); controller.openThread("thread_a"); runCurrent()
+        controller.editDraft("保留的文字")
+        controller.addAttachment(selection("notes.txt","text/plain")); runCurrent()
+        val existing=controller.state.value.attachments.single().id
+        val voice=async { controller.sendVoiceAttachment(selection(),"thread_a") }
+        runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
+        assertFalse(voice.await())
+        assertEquals("保留的文字",controller.state.value.draft)
+        assertEquals(listOf(existing),controller.state.value.attachments.map { it.id })
+        assertTrue("An unknown POST still needs its staged original",uploads.discarded.isEmpty())
+        assertEquals(GenerationState.OUTCOME_UNKNOWN,controller.state.value.generation)
+        assertTrue(controller.state.value.hasRecoverableSubmissions)
+        controller.cancel()
+    }
+
+    @Test fun pendingCreationBlocksVoiceOnlyInItsSourceThread() = runTest {
+        val uploads=Uploads()
+        val repository=Repository().apply { createGate=CompletableDeferred() }
+        val controller=controller(repository,uploads)
+        runCurrent(); controller.openThread("thread_a"); runCurrent()
+        controller.createThread(); runCurrent()
+        assertFalse(controller.sendVoiceAttachment(selection(),"thread_a"))
+        assertEquals(0,uploads.voicePrepares)
+        controller.openThread("thread_b"); runCurrent()
+        val voice=async { controller.sendVoiceAttachment(selection(),"thread_b") }
+        runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
+        assertTrue(voice.await())
+        assertEquals("thread_b",repository.sent.single().first)
+        repository.createGate!!.complete(Unit); runCurrent()
+        assertEquals("thread_b",controller.state.value.activeThreadId)
+        controller.cancel()
+    }
+
     @Test fun voiceCanBeTheFirstMessageWithoutAnExistingThread() = runTest {
         val uploads = Uploads()
         val repository = Repository()
@@ -243,16 +313,23 @@ class WorkbenchVoiceSendTest {
         override fun remoteAttachmentId(draftId: String) = "remote_$draftId"
     }
 
-    private class Repository : ConversationRepository {
+    private class Repository : ConversationRepository, MessageOutcomeQuery {
+        override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage?=null
         val sent = mutableListOf<Pair<String, OutgoingMessage>>()
         var submitGate: CompletableDeferred<Unit>? = null
+        var submitFailure: Throwable? = null
+        var createGate: CompletableDeferred<Unit>? = null
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
-        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("created"), "新对话", 0)
+        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
+            createGate?.await()
+            return Conversation(ConversationId("created"), "新对话", 0)
+        }
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance = error("UNSCOPED_SEND")
         override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
             sent += conversationId to message
             submitGate?.await()
+            submitFailure?.let { throw it }
             return MessageAcceptance("message_${sent.size}", message.clientMessageId.value)
         }
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance = error("UNEXPECTED_BATCH")
