@@ -64,7 +64,7 @@ object GatewayEventDecoder {
         return DecodedFrame(
             event = decodedEventOf(event, frame),
             generationId = generationIdOf(frame),
-            conversationId=JsonFields.string(frame.payload,"conversationId"),
+            conversationId=conversationIdOf(frame.payload,frame.body)?.value,
         )
     }
 
@@ -300,6 +300,7 @@ object GatewayEventDecoder {
                 state = state,
                 conversationId = conversationIdOf(payload, body),
                 clientMessageId = clientMessageId,
+                generationId = JsonFields.string(payload, "generationId")?.takeIf { it.isNotBlank() },
             ),
         )
     }
@@ -346,6 +347,7 @@ object GatewayEventDecoder {
             status = status,
             revision = revision,
             errorCode = errorCode,
+            generationId = JsonFields.string(payload, "generationId")?.takeIf { it.isNotBlank() },
         )
     }
 

@@ -77,6 +77,28 @@ class GatewayGenerationReceiptTest {
         assertEquals(GenerationState.QUEUED, fixture.repository.generationState.value)
     }
 
+    @Test fun stoppingOneGenerationPreservesTheNextQueuedGeneration() = runTest {
+        val fixture = Fixture(this)
+        fixture.repository.installCurrentGeneration("conv_a","gen_first" to "running")
+        fixture.transport.batchReceipt.complete(Unit)
+        fixture.repository.submitBatch("conv_a",batch())
+        assertEquals("gen_first",fixture.repository.generationId.value)
+        fixture.repository.finishGeneration("conv_a","gen_first")
+        assertEquals("gen_received",fixture.repository.generationId.value)
+        assertEquals(GenerationState.QUEUED,fixture.repository.generationState.value)
+        fixture.repository.installCurrentGeneration("conv_a","gen_first" to "running")
+        assertEquals("gen_received",fixture.repository.generationId.value)
+    }
+
+    @Test fun staleEmptySnapshotCannotClearAGenerationAcceptedWhileTheRequestWasInFlight() = runTest {
+        val fixture = Fixture(this)
+        val revision = fixture.repository.generationRevision("conv_a")
+        fixture.transport.batchReceipt.complete(Unit)
+        fixture.repository.submitBatch("conv_a",batch())
+        fixture.repository.installCurrentGeneration("conv_a",null,expectedRevision=revision)
+        assertEquals("gen_received",fixture.repository.generationId.value)
+    }
+
     private suspend fun TestScope.assertTerminalPrecedesReceipt(terminal: String) {
         val fixture = Fixture(this)
         val submission = async { fixture.repository.submitBatch("conv_a", batch()) }

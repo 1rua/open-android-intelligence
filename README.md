@@ -172,10 +172,10 @@ hermes open-android-intelligence status
 hermes open-android-intelligence contract status   # 协议契约是否就绪
 ```
 
-OpenClaw Gateway 插件源码位于独立仓库 [`1rua/openclaw-gateway-plugin`](https://github.com/1rua/openclaw-gateway-plugin)。应用主仓在 `openclaw-plugin-pin.json` 中锁定插件提交；插件仓按 `contract-pin.json` 固定本仓唯一维护的 Gateway Protocol 契约。首个独立发行版本为 `v1.0.0`，当前固定版本为 `v1.0.2`；协议版本保持 `2.1.0`，宿主 API 范围保持 `2026.7.1`：
+OpenClaw Gateway 插件源码位于独立仓库 [`1rua/openclaw-gateway-plugin`](https://github.com/1rua/openclaw-gateway-plugin)。应用主仓在 `openclaw-plugin-pin.json` 中锁定插件提交；插件仓按 `contract-pin.json` 固定本仓唯一维护的 Gateway Protocol 契约。当前固定源码为 `1.0.2` 的对话修复提交 `9ad6456`，旧 `v1.0.2` 标签不含本轮修复；协议版本保持 `2.1.0`，宿主 API 范围保持 `2026.7.1`。安装固定提交：
 
 ```bash
-openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@v1.0.2
+openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@9ad64561552810c05dd61c18ea3bf2383ac46de4
 openclaw plugins inspect open-android-intelligence-gateway --runtime --json
 ```
 

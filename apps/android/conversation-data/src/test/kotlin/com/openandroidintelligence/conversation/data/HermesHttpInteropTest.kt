@@ -397,7 +397,11 @@ class HermesHttpInteropTest {
             val http = GatewayHttpClient(profile, GatewayTransport(profile), { bytes ->
                 Signature.getInstance("Ed25519").run { initSign(keyPair.private); update(bytes); sign() }
             }, InMemoryEventCursorStore())
-            assertTrue(CommandCatalogClient(http).get("zh-CN").commands.any { it.invocation == "/new" })
+            // This HTTP-only fixture has no Agent registry; discovery may be empty.
+            val catalog = CommandCatalogClient(http).get("zh-CN")
+            assertEquals("agent-command-catalog-1.0", catalog.format)
+            assertEquals("zh-CN", catalog.languageCode)
+            assertTrue(catalog.catalogVersion.isNotBlank())
             val repository = GatewayConversationRepository(ConversationClient(http))
             val scope = ConversationScope("profile", baseUrl, session.accountId, "install_interop")
             val conversation = repository.createConversation(scope, "cconv_interop")

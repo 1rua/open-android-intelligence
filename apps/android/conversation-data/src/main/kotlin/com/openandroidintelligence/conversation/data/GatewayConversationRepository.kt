@@ -76,6 +76,11 @@ class GatewayConversationRepository(
     override val generationId: StateFlow<String?> = _generationId
     private val generations=mutableMapOf<String,LinkedHashMap<String,com.openandroidintelligence.conversation.model.GenerationState>>()
     private val terminalGenerations=LinkedHashSet<Pair<String,String>>()
+    private val generationRevisions=mutableMapOf<String,Long>()
+    @Synchronized fun generationRevision(conversationId: String): Long = generationRevisions[conversationId] ?: 0L
+    private fun generationChanged(conversationId: String) {
+        generationRevisions[conversationId] = generationRevision(conversationId) + 1L
+    }
     private companion object {
         // 与 HTTP 事件身份窗口采用相同容量，终态记录不会无限积累。
         private const val MAX_TERMINAL_GENERATIONS = 4096
@@ -88,11 +93,13 @@ class GatewayConversationRepository(
         _generationId.value=current?.key
         _generationState.value=current?.value ?: com.openandroidintelligence.conversation.model.GenerationState.IDLE
     }
-    @Synchronized fun installCurrentGeneration(conversationId:String,current:Pair<String,String>?) {
+    @Synchronized fun installCurrentGeneration(conversationId:String,current:Pair<String,String>?,expectedRevision:Long?=null): Boolean {
+        if (expectedRevision != null && generationRevision(conversationId) != expectedRevision) return false
         if (current != null && (conversationId to current.first) in terminalGenerations) {
             activeConversationChanged()
-            return
+            return false
         }
+        generationChanged(conversationId)
         generations.remove(conversationId)
         current?.let { generations[conversationId]=linkedMapOf(it.first to when(it.second) {
             "queued" -> com.openandroidintelligence.conversation.model.GenerationState.QUEUED
@@ -100,9 +107,21 @@ class GatewayConversationRepository(
             else -> com.openandroidintelligence.conversation.model.GenerationState.RUNNING
         }) }
         activeConversationChanged()
+        return true
+    }
+    /** A cancellation acknowledgement settles only the generation that was requested. */
+    @Synchronized fun finishGeneration(conversationId: String, generationId: String) {
+        generationChanged(conversationId)
+        rememberTerminalGeneration(conversationId,generationId)
+        generations[conversationId]?.let { entries ->
+            entries.remove(generationId)
+            if (entries.isEmpty()) generations.remove(conversationId)
+        }
+        activeConversationChanged()
     }
     @Synchronized private fun acceptGeneration(conversationId:String,id:String?) {
         id?.takeUnless { (conversationId to it) in terminalGenerations }?.let {
+            generationChanged(conversationId)
             generations.getOrPut(conversationId) { linkedMapOf() }.putIfAbsent(it,com.openandroidintelligence.conversation.model.GenerationState.QUEUED)
         }
         activeConversationChanged()
@@ -119,6 +138,7 @@ class GatewayConversationRepository(
         val id=decoded.generationId ?: return
         // 同一明确生成的终态不可逆，旧事件或较晚的 HTTP 回执只能补充受理身份。
         if ((conversation to id) in terminalGenerations) return
+        generationChanged(conversation)
         val entries=generations.getOrPut(conversation) { linkedMapOf() }
         when(val e=decoded.event) {
             is VerifiedConversationEvent.MessageStatus -> when(e.status) {
@@ -426,7 +446,7 @@ class GatewayCommandCatalogRepository(
                 AgentCommand(
                     command = entry.invocation,
                     description = entry.description.ifBlank { entry.title },
-                    argumentHint = entry.title.takeIf { entry.acceptsArguments },
+                    argumentHint = entry.argumentHint,
                 )
             },
         )

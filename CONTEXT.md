@@ -215,7 +215,7 @@ _Avoid_: Android 权限目录、插件授权、远程界面代码
 _Avoid_: App 本地命令、设备自动化 DSL、插件权限
 
 **新建对话（Create Conversation）**:
-统一的 Agent `/new` 命令所创建的不继承原对话上下文的新对话线程与 Agent 对话会话；它不改变 Gateway 账号登录会话、配对或插件授权。
+由 Gateway 创建接口或用户主动发送的 Agent `/new` 命令建立的不继承原对话上下文的新对话线程与 Agent 对话会话；App 新建按钮直接调用 Gateway 创建接口，它不改变 Gateway 账号登录会话、配对或插件授权。
 _Avoid_: 重新登录、重置 Gateway sessionId、删除旧对话
 
 **本地对话镜像（Local Conversation Mirror）**:
