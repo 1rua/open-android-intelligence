@@ -28,12 +28,20 @@ class CapabilityGatedConversationRepository(
             val current=client.currentGeneration(conversationId)
             val installed=upstream.installCurrentGeneration(conversationId,current,expectedRevision=revision)
             // Every page needs its own unchanged receipt before retiring old progress.
-            if (installed && current == null) return result.copy(messages=result.messages.map { message ->
-                if (message.sender == "assistant" && message.state == "STREAMING") message.copy(state="CONFIRMED") else message
-            })
+            if (installed && current == null) return result.copy(
+                messages=result.messages.map { message ->
+                    if (message.sender == "assistant" && message.state == "STREAMING") message.copy(state="CONFIRMED") else message
+                },
+                // A successful install increments the captured revision exactly once.
+                // Reading the revision again here could accidentally capture a newer event.
+                idleGenerationRevision=revision + 1,
+            )
         }
         return result
     }
+
+    override fun isIdleGenerationReceiptCurrent(conversationId: String, revision: Long): Boolean =
+        capability.agreed && upstream.generationRevision(conversationId) == revision
 
     override suspend fun cancelGeneration(
         generationId: String,

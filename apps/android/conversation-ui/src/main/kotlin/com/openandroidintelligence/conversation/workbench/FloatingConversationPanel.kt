@@ -84,6 +84,7 @@ fun FloatingConversationPanel(
                 onSend = controller::sendDraft, onStop = controller::stopGeneration,
                 onPickCamera = onPickCamera, onPickGallery = onPickGallery, onPickDocument = onPickDocument,
                 onVoiceInput = onVoiceInput, attachments = state.attachments,
+                voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
                 onRemoveAttachment = controller::removeAttachment, onRetryAttachment = controller::retryAttachment,
                 applyImePadding = false)
             Text("浮动对话仅在此 App 内显示", style = MaterialTheme.typography.labelSmall,

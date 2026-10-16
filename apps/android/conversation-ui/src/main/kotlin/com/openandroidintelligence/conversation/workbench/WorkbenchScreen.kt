@@ -365,6 +365,7 @@ fun WorkbenchScreen(
                                     onPickGallery = onPickGallery,
                                     onPickDocument = onPickDocument,
                                     onVoiceInput = onVoiceInput,
+                                    voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
                                     attachments = state.attachments,
                                     onRemoveAttachment = controller::removeAttachment,
                                     onRetryAttachment = controller::retryAttachment,

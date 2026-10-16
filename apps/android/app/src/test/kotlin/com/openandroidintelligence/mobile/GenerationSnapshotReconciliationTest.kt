@@ -2,6 +2,8 @@ package com.openandroidintelligence.mobile
 
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
 import com.openandroidintelligence.conversation.ports.PageRequest
+import com.openandroidintelligence.conversation.ports.ConversationRepository
+import com.openandroidintelligence.conversation.ports.TimelinePage
 import com.openandroidintelligence.conversation.ports.completeTimeline
 import com.openandroidintelligence.gateway.conversations.ConversationClient
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
@@ -51,6 +53,38 @@ class GenerationSnapshotReconciliationTest {
         assertEquals(setOf("msg_new","msg_old"),timeline.messages.map { it.id }.toSet())
         assertTrue(timeline.messages.all { it.state == "CONFIRMED" })
         assertNull(fixture.upstream.generationId.value)
+    }
+
+    @Test fun aLaterEmptyReceiptAlsoSettlesProgressAccumulatedFromAnEarlierRunningPage() = runTest {
+        val fixture=Fixture().apply { transport.paginated=true }
+        fixture.transport.onSnapshotRead={ request ->
+            fixture.transport.snapshotBody=if (request == 1)
+                """{"protocol":"2.1","data":{"generation":{"conversationId":"conv_a","generationId":"gen_old","state":"running"}}}"""
+            else """{"protocol":"2.1","data":{"generation":null}}"""
+        }
+        val timeline=fixture.repository.completeTimeline("conv_a")
+        assertEquals(2,timeline.messages.size)
+        assertTrue(timeline.messages.all { it.state == "CONFIRMED" })
+        assertNull(fixture.upstream.generationId.value)
+    }
+
+    @Test fun aNewGenerationAfterTheFinalPageInvalidatesItsIdleReceiptBeforeCombiningEarlierPages() = runTest {
+        val fixture=Fixture().apply { transport.paginated=true }
+        fixture.transport.onSnapshotRead={ request ->
+            fixture.transport.snapshotBody=if (request == 1)
+                """{"protocol":"2.1","data":{"generation":{"conversationId":"conv_a","generationId":"gen_old","state":"running"}}}"""
+            else """{"protocol":"2.1","data":{"generation":null}}"""
+        }
+        val racingRepository=object : ConversationRepository by fixture.repository {
+            override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
+                val result=fixture.repository.timeline(conversationId,page)
+                if (page.cursor != null) fixture.upstream.installCurrentGeneration("conv_a","gen_new" to "running")
+                return result
+            }
+        }
+        val timeline=racingRepository.completeTimeline("conv_a")
+        assertEquals("STREAMING",timeline.messages.single { it.id == "msg_new" }.state)
+        assertEquals("gen_new",fixture.upstream.generationId.value)
     }
 
     @Test fun aGenerationArrivingWhileALaterPageLoadsCannotBeClearedByAnEmptySnapshot() = runTest {
