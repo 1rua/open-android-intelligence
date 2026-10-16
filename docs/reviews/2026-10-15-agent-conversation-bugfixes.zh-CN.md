@@ -4,6 +4,8 @@
 
 最终集成与 PR 交付日期：2026-10-16。
 
+后续 Codex review 的意见及复核证据见 [PR 审查修复记录](2026-10-16-codex-pr-review-fixes.zh-CN.md)。
+
 ## 行为变更
 
 1. 麦克风入口改为前台录制 AAC/M4A，结束后将 `audio/mp4` 原始附件上传给 Agent；不再依赖系统语音识别。取消、离开应用和录制失败释放麦克风并清理录音。单独发送语音不消耗已有文字和附件草稿；上传未完成不发送消息，结果未知时先恢复受理事实。
@@ -28,8 +30,8 @@ Sol 负责 Android 状态机、录音生命周期、Hermes 和 OpenClaw 宿主�
 
 | 仓库 | 修复提交 | PR |
 | --- | --- | --- |
-| Hermes 插件 | `3488f57c1c3ac70b41b06ea281910a78bf4e930a` | [#1](https://github.com/1rua/hermes-gateway-plugin/pull/1) |
-| OpenClaw 插件 | `9ad64561552810c05dd61c18ea3bf2383ac46de4` | [#1](https://github.com/1rua/openclaw-gateway-plugin/pull/1) |
+| Hermes 插件 | `bbfb2751bf13c73d499ef3165a14f171751c53e5` | [#1](https://github.com/1rua/hermes-gateway-plugin/pull/1) |
+| OpenClaw 插件 | `66b20e56da7131a1acc084d733a4329ec782efaf` | [#1](https://github.com/1rua/openclaw-gateway-plugin/pull/1) |
 
 ## 验证记录
 

@@ -1,8 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { buildLockRows, openClawPluginLockFields } from "../../tools/compute-lock-hashes.ts";
 import {
   EXPECTED_BLOCKS,
   EXPECTED_LOCK_IDS,
   canonicalEvidence,
+  parseDependencyLock,
   sha256Evidence,
   validateDependencyLock,
 } from "../tools/check-lock.ts";
@@ -105,5 +108,65 @@ describe("MVP dependency lock gate", () => {
   it("keeps the canonical evidence tuple independent from the integrity cell", () => {
     const value = completeRows()[0]!;
     expect(canonicalEvidence({ ...value, integrity: "sha256:" + "f".repeat(64) })).toBe(canonicalEvidence(value));
+  });
+
+  it("generates the OpenClaw plugin lock and install command from the supplied pin", () => {
+    const revision = "a".repeat(40);
+    const plugin = buildLockRows({
+      repository: "1rua/openclaw-gateway-plugin",
+      version: "1.0.3",
+      ref: "v1.0.3",
+      revision,
+    }).find((value) => value.decision_id === "MVP-DEP-OPENCLAW-PLUGIN");
+
+    expect(plugin?.official_reference).toBe("https://github.com/1rua/openclaw-gateway-plugin");
+    expect(plugin?.immutable_version).toBe(`openclaw-gateway-plugin@1.0.3; ref v1.0.3; commit ${revision}`);
+    expect(plugin?.verify_command).toContain(`checkout --detach ${revision}`);
+    expect(plugin?.verify_command).toContain(`plugins install git:github.com/1rua/openclaw-gateway-plugin@${revision}`);
+    expect(plugin?.verify_command).not.toContain("v1.0.2");
+    expect(plugin?.verify_command).not.toContain("9b81b977dc8190536b1ac2944d97fbb004b450b9");
+    expect(plugin?.verify_command).not.toContain("f4a04a28d4cc419de4c544d7c99bb08d62a3ee97");
+  });
+
+  it("uses the fixed revision even when the pin ref is a tag", () => {
+    const revision = "a".repeat(40);
+    const fields = openClawPluginLockFields({
+      repository: "1rua/openclaw-gateway-plugin",
+      version: "1.0.3",
+      ref: "v1.0.3",
+      revision,
+    });
+    expect(fields.verify_command).toContain(`fetch origin ${revision}`);
+    expect(fields.verify_command).toContain(`checkout --detach ${revision}`);
+    expect(fields.verify_command).toContain(`plugins install git:github.com/1rua/openclaw-gateway-plugin@${revision}`);
+    expect(fields.verify_command).not.toContain("@v1.0.3");
+  });
+
+  it("rejects a plugin pin without a valid fixed revision", () => {
+    expect(() => buildLockRows({
+      repository: "1rua/openclaw-gateway-plugin",
+      version: "1.0.3",
+      ref: "v1.0.3",
+      revision: "not-a-commit",
+    })).toThrow("40-hex revision");
+  });
+
+  it("keeps the checked-in OpenClaw plugin lock row synchronized with the pin", () => {
+    const pin = JSON.parse(readFileSync(new URL("../../openclaw-plugin-pin.json", import.meta.url), "utf8")) as {
+      repository: string;
+      version: string;
+      ref: string;
+      revision: string;
+    };
+    const generated = buildLockRows(pin).find((value) => value.decision_id === "MVP-DEP-OPENCLAW-PLUGIN");
+    const lockMarkdown = readFileSync(new URL("../../docs/mvp/mvp-dependency-lock.md", import.meta.url), "utf8");
+    const locked = parseDependencyLock(lockMarkdown).rows.find((value) => value.decision_id === "MVP-DEP-OPENCLAW-PLUGIN");
+
+    if (!generated) throw new Error("OpenClaw plugin row is missing from the lock generator");
+    if (!locked) throw new Error("OpenClaw plugin row is missing from the checked-in dependency lock");
+    expect(locked.official_reference).toBe(generated.official_reference);
+    expect(locked.immutable_version).toBe(generated.immutable_version);
+    expect(locked.verify_command).toBe(generated.verify_command);
+    expect(locked.integrity).toBe(`sha256:${sha256Evidence(locked)}`);
   });
 });

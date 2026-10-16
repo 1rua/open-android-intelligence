@@ -192,7 +192,7 @@ class ConversationClientTest {
     }
 
     @Test
-    fun cancelWithTheAgreedCapabilitySendsTheCancelRequestAsBefore() = runBlocking {
+    fun agreedCancellationSendsThePublishedClientMessageIdBody() = runBlocking {
         val transport = RecordingTransport().apply {
             responseToReturn = WireResponse(
                 status = 200,
@@ -219,6 +219,6 @@ class ConversationClientTest {
             "/open-android-intelligence/v2/conversations/conv_123/generations/gen_1/cancel",
             recorded?.target,
         )
-        assertTrue(String(recorded!!.body, Charsets.UTF_8).contains("req_1"))
+        assertEquals("""{"clientMessageId":"req_1"}""", String(recorded!!.body, Charsets.UTF_8))
     }
 }

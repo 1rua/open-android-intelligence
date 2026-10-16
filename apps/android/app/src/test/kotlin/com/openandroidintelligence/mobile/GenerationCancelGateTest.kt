@@ -4,14 +4,15 @@ import android.app.Application
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.model.GenerationState
-import com.openandroidintelligence.conversation.model.StreamHealth
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -56,6 +57,7 @@ class GenerationCancelGateTest {
 
     @After
     fun tearDown() {
+        runtimeScope.cancel()
         gateway.closed()
     }
 
@@ -72,8 +74,7 @@ class GenerationCancelGateTest {
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         val controller = awaitWorkbench(runtime)
-        // 事件帧发布 generationId 与流 LIVE 状态在同一同步块内，LIVE 即保守就绪信号。
-        awaitCondition { controller.state.value.streamHealth == StreamHealth.LIVE }
+        assertTrue("停止前必须已恢复真实生成", awaitCondition { controller.state.value.generation == GenerationState.RUNNING })
 
         controller.stopGeneration()
 
@@ -85,7 +86,11 @@ class GenerationCancelGateTest {
             gateway.targetsOf("POST").any { it.startsWith(CANCEL_PATH) },
         )
         val cancelRequest = gateway.requests.last { it.target.startsWith(CANCEL_PATH) }
-        assertTrue("取消请求必须携带 requestId", cancelRequest.body.contains("requestId"))
+        val requestId=cancelRequest.headers.single {
+            it.substringBefore(':').equals("Idempotency-Key",ignoreCase=true)
+        }.substringAfter(':').trim()
+        assertEquals("取消请求遵循已发布 Schema，幂等身份仍由 HTTP 头绑定",
+            """{"clientMessageId":"$requestId"}""",cancelRequest.body)
     }
 
     @Test
@@ -98,7 +103,7 @@ class GenerationCancelGateTest {
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         val controller = awaitWorkbench(runtime)
-        awaitCondition { controller.state.value.streamHealth == StreamHealth.LIVE }
+        assertTrue("门禁测试必须已有可取消的真实生成", awaitCondition { controller.state.value.generation == GenerationState.RUNNING })
 
         controller.stopGeneration()
 

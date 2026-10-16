@@ -613,7 +613,33 @@ class WorkbenchController(
 
     /** Shares a Gateway-created conversation between simultaneous first-message sends. */
     private var bootstrapJob: Deferred<Result<String>>? = null
+    private data class ConversationCreationAttempt(val scope: ConversationScope, val clientId: String)
+    private var unconfirmedConversationCreation: ConversationCreationAttempt? = null
+    private suspend fun createGatewayConversation(): com.openandroidintelligence.conversation.ports.Conversation {
+        val requestedScope = scopeFactory()
+        val attempt = unconfirmedConversationCreation?.takeIf { it.scope == requestedScope }
+            ?: ConversationCreationAttempt(requestedScope, "cconv_" + UUID.randomUUID().toString().replace("-", ""))
+                .also { unconfirmedConversationCreation = it }
+        val conversation = repository.createConversation(attempt.scope, attempt.clientId)
+        currentCoroutineContext().ensureActive()
+        // A lost or cancelled receipt retains the identity until a retry confirms it.
+        if (unconfirmedConversationCreation === attempt) unconfirmedConversationCreation = null
+        return conversation
+    }
+
+    private fun creationBlocksActiveThread(): Boolean =
+        (_state.value.creatingThread && _state.value.creationSourceThreadId == activeThreadId) ||
+            pendingCreation?.let { it.sourceThreadId == activeThreadId } == true
+
     private var draftRevision = 0L
+    private var generationFactRevision = 0L
+    private var lastObservedGenerationId: String? = null
+    private fun observeGenerationIdentity(generationId: String?) {
+        if (generationId != null && generationId != lastObservedGenerationId) {
+            lastObservedGenerationId = generationId
+            generationFactRevision++
+        }
+    }
     private class VoiceAttempt(var conversationId: String? = null, var requestStarted: Boolean = false)
     private data class DraftSubmission(
         val text: String,
@@ -772,10 +798,13 @@ class WorkbenchController(
         observeStreamHealth()
         recoverKnownMedia()
         (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationState?.let { source ->
-            generationJob=workScope.launch { source.collect { generation -> update { state ->
-                if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
-                else state.copy(generation=generation)
-            } } }
+            generationJob=workScope.launch { source.collect { generation ->
+                observeGenerationIdentity((repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value)
+                update { state ->
+                    if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
+                    else state.copy(generation=generation)
+                }
+            } }
         }
     }
 
@@ -1002,7 +1031,7 @@ class WorkbenchController(
         update { it.copy(creatingThread=true,creationSourceThreadId=sourceThreadId,notice=null) }
         creationSendJob = workScope.launch {
             try {
-                val conversation = repository.createConversation(scopeFactory(), "cconv_" + UUID.randomUUID().toString().replace("-", ""))
+                val conversation = createGatewayConversation()
                 currentCoroutineContext().ensureActive()
                 update { it.copy(creatingThread=false,creationSourceThreadId=null) }
                 refreshThreads()
@@ -1501,8 +1530,7 @@ class WorkbenchController(
         bootstrapJob?.takeIf { it.isActive }?.let { return it }
         return workScope.async {
             try {
-                val clientId = "cconv_" + UUID.randomUUID().toString().replace("-", "")
-                val conversation = repository.createConversation(scopeFactory(), clientId)
+                val conversation = createGatewayConversation()
                 activeThreadId = conversation.id.value
                 onActiveThreadChanged(conversation.id.value)
                 mirrored.clear()
@@ -1568,7 +1596,7 @@ class WorkbenchController(
         val epoch = threadEpoch
         fun ready() = !closed && allowSending && activeThreadId == expectedThreadId && threadEpoch == epoch &&
             (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
-            !_state.value.creatingThread && pendingSubmission == null &&
+            !creationBlocksActiveThread() && pendingSubmission == null &&
             _state.value.composer !in setOf(ComposerState.SUBMITTING,ComposerState.WAITING_ATTACHMENTS) &&
             _state.value.generation !in setOf(GenerationState.QUEUED,GenerationState.RUNNING,GenerationState.CANCEL_REQUESTED,GenerationState.OUTCOME_UNKNOWN)
         if (!ready()) return false
@@ -1614,6 +1642,7 @@ class WorkbenchController(
             update { it.copy(attachments=it.attachments + currentDraft.copy(state=AttachmentState.VERIFIED)) }
             val submission = DraftSubmission("",listOf(draftId),-1L,expectedThreadId,isolatedThreadEpoch=epoch,voiceAttempt=attempt)
             voiceClientId = submission.clientMessageId
+            generationFactRevision++
             pendingSubmission = submission
             submitted = true
             sendJob = submitWhenAttachmentsVerified()
@@ -1652,6 +1681,16 @@ class WorkbenchController(
         } finally {
             if (!submitted) draftId?.let { id -> withContext(NonCancellable) { coordinator.discard(id) } }
             else if (!attempt.requestStarted) withContext(NonCancellable) { cleanUnsentVoice() }
+            else {
+                // The voice message owns its recovery source; the shared composer owns only its original draft.
+                // Failed/unknown send atoms keep the source for an explicit retry, never a later text send.
+                val ownsFailure = failedSubmission?.clientMessageId == voiceClientId
+                update { state -> state.copy(
+                    attachments=state.attachments.filterNot { it.id.value == draftId },
+                    composer=if (threadEpoch == epoch && ownsFailure && state.composer == ComposerState.FAILED) ComposerState.EDITING else state.composer,
+                ) }
+                persistCheckpoint()
+            }
         }
     }
 
@@ -1850,7 +1889,7 @@ class WorkbenchController(
             return
         }
         if (!current.canSend) return
-        if (current.creatingThread || pendingCreation != null) {
+        if (creationBlocksActiveThread()) {
             // A send during the wait would land in the thread being left —
             // exactly the mismatch this flow exists to prevent.
             update { it.copy(notice = "CONVERSATION_CREATING:SEND_BLOCKED") }
@@ -1872,6 +1911,7 @@ class WorkbenchController(
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
             DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value)
         } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId)
+        generationFactRevision++
         update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null, generation = GenerationState.QUEUED) }
         submitWhenAttachmentsVerified()
     }
@@ -2153,6 +2193,7 @@ class WorkbenchController(
             ensureArchivedMessageParts(conversationId,messages.flatMap { it.attachmentIds })
             // The batch already carries its conversation: re-deriving the target
             // from a side map is how a member used to end up in the wrong thread.
+            if (activeThreadId == conversationId) generationFactRevision++
             val acceptance = repository.submitBatch(conversationId, com.openandroidintelligence.conversation.ports.MessageBatch(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
             ))
@@ -2302,7 +2343,10 @@ class WorkbenchController(
                 return
             }
             val acceptedFromEvent=atomsFor(threadId)[atom.clientMessageId.value]?.takeIf { it.submissionState==LocalSubmissionState.ACCEPTED }?.messageId
-            val messageId = known?.id ?: acceptedFromEvent ?: repository.submitMessage(threadId, OutgoingMessage(atom.clientMessageId, text, attachmentIds)).messageId
+            val messageId = known?.id ?: acceptedFromEvent ?: run {
+                if (activeThreadId == threadId) generationFactRevision++
+                repository.submitMessage(threadId, OutgoingMessage(atom.clientMessageId, text, attachmentIds)).messageId
+            }
             remotelyAccepted = true
             acceptSendAtom(threadId, atom.clientMessageId.value, messageId)
             if (failedSubmission?.clientMessageId == atom.clientMessageId.value) failedSubmission = null
@@ -2431,6 +2475,8 @@ class WorkbenchController(
             update { it.copy(notice = "STOP_UNAVAILABLE:NO_GENERATION") }
             return
         }
+        observeGenerationIdentity(generationId)
+        val requestedFactRevision = generationFactRevision
         update { it.copy(generation = GenerationState.CANCEL_REQUESTED) }
         workScope.launch {
             try {
@@ -2438,7 +2484,7 @@ class WorkbenchController(
                 if (activeThreadId != threadId || threadEpoch != epoch) return@launch
                 val currentId = tracker.generationId.value
                 if (currentId != null && currentId != generationId) return@launch
-                if (currentId == null && _state.value.generation in setOf(GenerationState.QUEUED,GenerationState.RUNNING)) return@launch
+                if (generationFactRevision != requestedFactRevision) return@launch
                 val terminal = when (result.outcome) {
                     com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED -> GenerationState.CANCELLED
                     com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.ALREADY_COMPLETED -> GenerationState.COMPLETED
@@ -2449,7 +2495,8 @@ class WorkbenchController(
                 update { it.copy(timeline=Loadable.Ready(renderTimeline(it.pendingBatch)),generation=terminal,notice=result.message) }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (cause: Exception) {
-                if (activeThreadId == threadId && threadEpoch == epoch && tracker.generationId.value == generationId)
+                if (activeThreadId == threadId && threadEpoch == epoch && tracker.generationId.value == generationId &&
+                    generationFactRevision == requestedFactRevision)
                     update { it.copy(generation=GenerationState.OUTCOME_UNKNOWN,notice=errorCodeOf(cause)) }
             }
         }
@@ -2761,6 +2808,7 @@ class WorkbenchController(
                             }
                             val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
                             val settlesCurrent = event.generationId == null || currentGeneration == null || currentGeneration == event.generationId
+                            if (terminal == null || settlesCurrent) observeGenerationIdentity(event.generationId)
                             if (terminal != null) finishStreaming(currentActiveId,event.generationId,terminal)
                             val localKey = "local_${event.clientMessageId.value}"
                             update { state ->
@@ -2823,6 +2871,7 @@ class WorkbenchController(
                                     if (isAlreadyCoveredByConfirmedReply(message, messageText)) {
                                         return@collect
                                     }
+                                    observeGenerationIdentity(message.generationId)
                                     // Prune any other older streaming assistant message with different id
                                     val oldStreamingKeys = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" && it.id != message.id &&
                                         (it.generationId == null || message.generationId == null || it.generationId == message.generationId) }.keys.toList()
@@ -2887,6 +2936,7 @@ class WorkbenchController(
                             if (eventConvId == currentActiveId) {
                                 finishStreaming(currentActiveId,event.generationId,GenerationState.CANCELLED)
                                 val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
+                                if (currentGeneration == null || currentGeneration == event.generationId) observeGenerationIdentity(event.generationId)
                                 update { state ->
                                     state.copy(
                                         generation = if (currentGeneration != null && currentGeneration != event.generationId) state.generation else GenerationState.CANCELLED,

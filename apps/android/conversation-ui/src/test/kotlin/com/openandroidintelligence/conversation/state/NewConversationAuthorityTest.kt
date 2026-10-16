@@ -103,6 +103,53 @@ class NewConversationAuthorityTest {
         assertFalse(controller.state.value.creatingThread)
     }
 
+    @Test fun lostCreateReceiptRetriesTheSameIdentityAndOnlySuccessStartsANewCreation() = runTest {
+        val repository = Repository().apply { createReceiptFailure=java.io.IOException("response lost after creation") }
+        val controller = controller(repository)
+        runCurrent()
+        controller.createThread(); runCurrent()
+        assertEquals("conv_source",controller.state.value.activeThreadId)
+        assertEquals(1,repository.createdByIdentity.size)
+        repository.createReceiptFailure=null
+        controller.createThread(); runCurrent()
+        assertEquals("A retry must recover the same Gateway creation",repository.creations[0],repository.creations[1])
+        assertEquals(1,repository.createdByIdentity.size)
+        assertEquals("conv_created",controller.state.value.activeThreadId)
+        controller.createThread(); runCurrent()
+        assertNotEquals("An acknowledged creation permits a genuinely new identity",repository.creations[1],repository.creations[2])
+        assertEquals(2,repository.createdByIdentity.size)
+    }
+
+    @Test fun cancellingAfterServerCreationPreservesItsIdentityForTheNextAttempt() = runTest {
+        val repository = Repository().apply { createGate=CompletableDeferred() }
+        val controller = controller(repository)
+        runCurrent()
+        controller.createThread(); runCurrent()
+        assertEquals(1,repository.createdByIdentity.size)
+        controller.cancelThreadCreation(); runCurrent()
+        repository.createGate=null
+        controller.createThread(); runCurrent()
+        assertEquals(repository.creations[0],repository.creations[1])
+        assertEquals("Cancellation of the response must not create a second server conversation",1,repository.createdByIdentity.size)
+        assertEquals("conv_created",controller.state.value.activeThreadId)
+    }
+
+    @Test fun creationInAnotherThreadDoesNotBlockSendingInTheSelectedThread() = runTest {
+        val repository = Repository().apply { createGate=CompletableDeferred() }
+        val controller = controller(repository)
+        runCurrent()
+        controller.createThread(); runCurrent()
+        controller.openThread("conv_other"); runCurrent()
+        controller.editDraft("发给当前线程")
+        controller.sendDraft(); runCurrent()
+        assertEquals("conv_other",repository.messages.single().first)
+        assertEquals("发给当前线程",repository.messages.single().second.text)
+        assertTrue(controller.state.value.creatingThread)
+        assertEquals("conv_source",controller.state.value.creationSourceThreadId)
+        repository.createGate!!.complete(Unit); runCurrent()
+        assertEquals("conv_other",controller.state.value.activeThreadId)
+    }
+
     @Test fun explicitlyTypedNewIsStillAnOutgoingUserCommand() = runTest {
         val repository = Repository()
         val controller = controller(repository)
@@ -132,13 +179,19 @@ class NewConversationAuthorityTest {
         val events=MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity=16)
         var createGate:CompletableDeferred<Unit>?=null
         var createFailure=false
+        var createReceiptFailure: Throwable?=null
+        val createdByIdentity=linkedMapOf<String,Conversation>()
         override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=ConversationPage(
             if(emptyAccount) emptyList() else listOf(ConversationSummary(ConversationId("conv_source"),"来源",1)),null)
         override suspend fun createConversation(scope:ConversationScope,clientConversationId:String):Conversation {
             creations+=clientConversationId
+            val created=createdByIdentity.getOrPut(clientConversationId) {
+                Conversation(ConversationId(if (createdByIdentity.isEmpty()) "conv_created" else "conv_created_${createdByIdentity.size+1}"),"Gateway新会话",2)
+            }
             createGate?.await()
             if(createFailure) error("CREATE_FAILED")
-            return Conversation(ConversationId("conv_created"),"Gateway新会话",2)
+            createReceiptFailure?.let { throw it }
+            return created
         }
         override suspend fun timeline(conversationId:String,page:PageRequest)=TimelinePage(emptyList(),null)
         override suspend fun submitMessage(message:OutgoingMessage)=submitMessage("conv_source",message)

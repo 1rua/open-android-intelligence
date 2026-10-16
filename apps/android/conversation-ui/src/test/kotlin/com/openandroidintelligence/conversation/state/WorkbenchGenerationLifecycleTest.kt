@@ -43,6 +43,85 @@ class WorkbenchGenerationLifecycleTest {
         assertEquals(GenerationState.RUNNING,controller.state.value.generation)
     }
 
+    @Test fun successfulStopStillSettlesTheSameGenerationWhenALateDeltaArrivesBeforeItsReceipt() = runTest {
+        for (outcome in listOf(CancelGenerationOutcome.CANCELLED,CancelGenerationOutcome.ALREADY_COMPLETED)) {
+            val repository=Repository()
+            val controller=controller(repository)
+            runCurrent()
+            repository.generationId.value="gen_a"
+            controller.stopGeneration(); runCurrent()
+            // The HTTP wrapper clears the tracker before returning the authoritative acknowledgement.
+            repository.generationId.value=null
+            repository.events.emit(stream("late_a","gen_a","同轮迟到的输出")); runCurrent()
+            repository.cancelResult.complete(CancelGenerationResult(outcome)); runCurrent()
+            assertEquals(if (outcome==CancelGenerationOutcome.CANCELLED) GenerationState.CANCELLED else GenerationState.COMPLETED,controller.state.value.generation)
+            assertFalse(rows(controller).any { it.isStreaming })
+            repository.events.emit(stream("after_ack_a","gen_a","回执后的过时输出")); runCurrent()
+            assertFalse(rows(controller).any { it.isStreaming || it.text=="回执后的过时输出" })
+            controller.close()
+        }
+    }
+
+    @Test fun aStopReceiptDoesNotCloseAnUnacknowledgedNewLocalSubmission() = runTest {
+        val repository=Repository().apply { sendGate=CompletableDeferred() }
+        val controller=controller(repository)
+        runCurrent()
+        repository.generationId.value="gen_a"
+        controller.stopGeneration(); runCurrent()
+        repository.generationId.value=null
+        controller.editDraft("下一轮问题")
+        controller.sendDraft(); runCurrent()
+        assertEquals(GenerationState.QUEUED,controller.state.value.generation)
+        repository.cancelResult.complete(CancelGenerationResult(CancelGenerationOutcome.CANCELLED)); runCurrent()
+        assertEquals(GenerationState.QUEUED,controller.state.value.generation)
+        repository.sendGate!!.complete(Unit); runCurrent()
+    }
+
+    @Test fun aStopReceiptDoesNotOverwriteANewerRemoteGenerationAfterItsTrackerWasCleared() = runTest {
+        val repository=Repository()
+        val controller=controller(repository)
+        runCurrent()
+        repository.generationId.value="gen_a"
+        controller.stopGeneration(); runCurrent()
+        repository.generationId.value=null
+        repository.events.emit(stream("progress_b","gen_b","下一轮输出")); runCurrent()
+        repository.events.emit(terminal("gen_b",AgentMessageStatus.COMPLETED)); runCurrent()
+        assertEquals(GenerationState.COMPLETED,controller.state.value.generation)
+        repository.cancelResult.complete(CancelGenerationResult(CancelGenerationOutcome.CANCELLED)); runCurrent()
+        assertEquals("An acknowledgement for A must not replace B's terminal outcome",GenerationState.COMPLETED,controller.state.value.generation)
+    }
+
+    @Test fun aStopReceiptDoesNotOverwriteAnExplicitOrdinaryMessageRetry() = runTest {
+        assertStopDoesNotOverwriteRetry(batch=false)
+    }
+
+    @Test fun aStopReceiptDoesNotOverwriteAnExplicitBatchRetry() = runTest {
+        assertStopDoesNotOverwriteRetry(batch=true)
+    }
+
+    private suspend fun TestScope.assertStopDoesNotOverwriteRetry(batch: Boolean) {
+        val repository=Repository().apply { submitFailure=IllegalStateException("SEND_MESSAGE_FAILED:400") }
+        val controller=controller(repository,batches=batch)
+        runCurrent()
+        controller.editDraft("先前失败的消息")
+        controller.sendDraft(); advanceTimeBy(1501); runCurrent()
+        assertTrue(controller.state.value.hasRecoverableSubmissions)
+        repository.submitFailure=null
+        repository.sendGate=CompletableDeferred()
+        repository.generationId.value="gen_a"
+        repository.generationState.value=GenerationState.RUNNING
+        runCurrent()
+        controller.stopGeneration(); runCurrent()
+        repository.generationId.value=null
+        controller.retryPendingSubmissions(); runCurrent()
+        val awaitingRetry=controller.state.value.generation
+        repository.cancelResult.complete(CancelGenerationResult(CancelGenerationOutcome.CANCELLED)); runCurrent()
+        assertEquals("The stop receipt belongs to A, not the retry waiting for its own receipt",awaitingRetry,controller.state.value.generation)
+        assertNotEquals(GenerationState.CANCELLED,controller.state.value.generation)
+        repository.sendGate!!.complete(Unit); runCurrent()
+        controller.close()
+    }
+
     @Test fun unknownCancellationKeepsProgressAndReportsUncertainty() = runTest {
         val repository=Repository()
         val controller=controller(repository)
@@ -115,25 +194,37 @@ class WorkbenchGenerationLifecycleTest {
     private fun terminal(generation:String,status:AgentMessageStatus)=VerifiedConversationEvent.MessageStatus(
         "terminal_$generation",3,ConversationId("conv_a"),"msg_question",ClientMessageId("cm_question"),status,2,
         if(status==AgentMessageStatus.FAILED) AgentMessageErrorCode.AGENT_UNAVAILABLE else null,generation)
-    private fun TestScope.controller(repository:Repository)=WorkbenchController(
+    private fun TestScope.controller(repository:Repository,batches:Boolean=false)=WorkbenchController(
         workbenchTestScope(),repository,object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
         },{ ConversationScope("p","g","a","i") },
+        supportsMessageBatches=batches,
         onActiveThreadChanged={ repository.generationId.value=null; repository.generationState.value=GenerationState.IDLE },
         replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
 
-    private class Repository : ConversationRepository,GenerationTracker {
+    private class Repository : ConversationRepository,GenerationTracker,MessageOutcomeQuery {
+        override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage?=null
         override val generationId=MutableStateFlow<String?>(null)
         override val generationState=MutableStateFlow(GenerationState.IDLE)
         val events=MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity=16)
         val cancelResult=CompletableDeferred<CancelGenerationResult>()
         val cancellations=mutableListOf<Pair<String,String>>()
+        var sendGate:CompletableDeferred<Unit>?=null
+        var submitFailure:Throwable?=null
         override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=ConversationPage(
             listOf(ConversationSummary(ConversationId("conv_a"),"A",1)),null)
         override suspend fun createConversation(scope:ConversationScope,clientConversationId:String)=Conversation(ConversationId("conv_new"),"新对话",1)
         override suspend fun timeline(conversationId:String,page:PageRequest)=TimelinePage(emptyList(),null)
-        override suspend fun submitMessage(message:OutgoingMessage)=MessageAcceptance("message",message.clientMessageId.value)
-        override suspend fun submitBatch(batch:MessageBatch)=BatchAcceptance(batch.batchId,emptyMap())
+        override suspend fun submitMessage(message:OutgoingMessage):MessageAcceptance {
+            sendGate?.await()
+            submitFailure?.let { throw it }
+            return MessageAcceptance("message",message.clientMessageId.value)
+        }
+        override suspend fun submitBatch(batch:MessageBatch):BatchAcceptance {
+            sendGate?.await()
+            submitFailure?.let { throw it }
+            return BatchAcceptance(batch.batchId,batch.messages.associate { it.clientMessageId.value to "message_${it.clientMessageId.value}" })
+        }
         override fun observeEvents(scope:ConversationScope):Flow<VerifiedConversationEvent> = events
         override suspend fun cancelGeneration(generationId:String,requestId:String):CancelGenerationResult=error("unscoped cancellation")
         override suspend fun cancelGeneration(conversationId:String,generationId:String,requestId:String):CancelGenerationResult {

@@ -21,12 +21,13 @@ class CapabilityGatedConversationRepository(
     StreamHealthSource by upstream,
     com.openandroidintelligence.conversation.ports.MessageOutcomeQuery by upstream {
     override suspend fun timeline(conversationId:String,page:com.openandroidintelligence.conversation.ports.PageRequest):com.openandroidintelligence.conversation.ports.TimelinePage {
+        // Include changes received while the history page itself was in flight.
+        val revision=upstream.generationRevision(conversationId)
         val result=upstream.timeline(conversationId,page)
-        if (page.cursor==null && capability.agreed) {
-            val revision=upstream.generationRevision(conversationId)
+        if (capability.agreed) {
             val current=client.currentGeneration(conversationId)
             val installed=upstream.installCurrentGeneration(conversationId,current,expectedRevision=revision)
-            // A successful, unchanged null snapshot is evidence that old progress is no longer live.
+            // Every page needs its own unchanged receipt before retiring old progress.
             if (installed && current == null) return result.copy(messages=result.messages.map { message ->
                 if (message.sender == "assistant" && message.state == "STREAMING") message.copy(state="CONFIRMED") else message
             })
