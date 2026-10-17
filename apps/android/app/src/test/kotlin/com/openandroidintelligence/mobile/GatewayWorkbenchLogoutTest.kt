@@ -124,6 +124,36 @@ class GatewayWorkbenchLogoutTest {
         assertTrue(runtime.nativeConversationNotifications.sessions.value.isEmpty())
     }
 
+    @Test fun runningConversationKeepsItsBubbleAndBackgroundServiceUntilTheTaskCompletes() {
+        runtime.onAppForegrounded()
+        val manager = postRunningReplyNotification()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val serviceIntent = requireNotNull(org.robolectric.Shadows.shadowOf(context).nextStartedService)
+        assertEquals(AgentSessionForegroundService::class.java.name, serviceIntent.component!!.className)
+
+        runtime.onAppBackgrounded()
+        val profile = runtime.savedProfiles.value.single()
+        val occurredAt = java.time.Instant.ofEpochMilli(System.currentTimeMillis())
+        runtime.nativeConversationNotifications.accept(profile.localProfileId, "acc_stub", com.openandroidintelligence.gateway.events.GatewayEvent(
+            "evt_background_delta", "conversation.message.delta",
+            """{"accountId":"acc_stub","occurredAt":"$occurredAt","payload":{"conversationId":"conv_runtime_notification","generationId":"gen_runtime_notification","messageId":"reply_runtime_notification","sender":"assistant","text":"Background reply","revision":2}}""",
+        ))
+        // The process going off-screen must not detach the native session or its bubble.
+        runtime.nativeConversationNotifications.refreshActive()
+        val running = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
+        assertTrue(running.flags and android.app.Notification.FLAG_ONGOING_EVENT != 0)
+        assertTrue(running.bubbleMetadata != null)
+        val style = android.app.Notification.Builder.recoverBuilder(context, running).style as android.app.Notification.MessagingStyle
+        assertEquals("Background reply", style.messages.single().text.toString())
+
+        runtime.nativeConversationNotifications.accept(profile.localProfileId, "acc_stub", com.openandroidintelligence.gateway.events.GatewayEvent(
+            "evt_background_complete", "conversation.message.status",
+            """{"accountId":"acc_stub","occurredAt":"${java.time.Instant.now()}","payload":{"conversationId":"conv_runtime_notification","generationId":"gen_runtime_notification","messageId":"user_runtime_notification","clientMessageId":"client_runtime_notification","status":"completed","revision":1,"errorCode":null}}""",
+        ))
+        awaitRuntimeCondition { org.robolectric.Shadows.shadowOf(context).nextStoppedService?.component?.className == AgentSessionForegroundService::class.java.name }
+        assertFalse(runtime.nativeConversationNotifications.sessions.value.single().isRunning)
+    }
+
     private fun postRunningReplyNotification(): android.app.NotificationManager {
         val context = ApplicationProvider.getApplicationContext<Application>()
         org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)

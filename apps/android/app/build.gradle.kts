@@ -159,7 +159,8 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.14.1")
+    // API 36 tests require JDK 21; application bytecode remains Java 17.
+    testImplementation("org.robolectric:robolectric:4.16")
     testImplementation("androidx.test:core:1.6.1")
     // Compose 界面语义测试：禁用态条目的点击门控只在组件层保证，
     // 需要在界面层用语义树验证「点了没反应」。

@@ -112,7 +112,9 @@ class GatewayGenerationReceiptTest {
         assertEquals(2, fixture.observed.size)
 
         fixture.transport.batchReceipt.complete(Unit)
-        assertEquals("msg_cm_one", submission.await().memberIds.getValue("cm_one"))
+        val receipt = submission.await()
+        assertEquals("msg_cm_one", receipt.memberIds.getValue("cm_one"))
+        assertEquals("The exact submitted generation must survive the domain boundary", "gen_received", receipt.generationId)
 
         assertNull("终态先于 HTTP 回执时，迟到回执不能重新建立生成身份", fixture.repository.generationId.value)
         assertEquals(GenerationState.IDLE, fixture.repository.generationState.value)

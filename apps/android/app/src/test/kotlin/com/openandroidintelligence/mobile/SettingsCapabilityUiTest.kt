@@ -49,6 +49,23 @@ class SettingsCapabilityUiTest {
         assertEquals(context.packageName, intent.getStringExtra(android.provider.Settings.EXTRA_APP_PACKAGE))
     }
 
+    @Test
+    @Config(sdk = [36])
+    fun liveUpdatesSettingsEntryOpensTheAndroid16PromotionControls() {
+        setContent { LiveUpdatesSettingsItem() }
+        compose.onNodeWithText("Android 16 实时活动").performClick()
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val intent = org.robolectric.Shadows.shadowOf(context).nextStartedActivity
+        assertEquals(android.provider.Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS, intent.action)
+        assertEquals(context.packageName, intent.getStringExtra(android.provider.Settings.EXTRA_APP_PACKAGE))
+    }
+
+    @Test
+    fun liveUpdatesSettingsEntryIsAbsentOnOlderAndroid() {
+        setContent { LiveUpdatesSettingsItem() }
+        compose.onNodeWithText("Android 16 实时活动").assertDoesNotExist()
+    }
+
     // ------------------------------------------------------------------
     // 协商能力分组（条目 3-15）
     // ------------------------------------------------------------------

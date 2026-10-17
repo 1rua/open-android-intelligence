@@ -132,6 +132,9 @@ class OpenAndroidIntelligenceApplication : Application() {
                 override fun onStart(owner: LifecycleOwner) {
                     gatewayRuntime.onAppForegrounded()
                 }
+                override fun onStop(owner: LifecycleOwner) {
+                    gatewayRuntime.onAppBackgrounded()
+                }
             },
         )
     }

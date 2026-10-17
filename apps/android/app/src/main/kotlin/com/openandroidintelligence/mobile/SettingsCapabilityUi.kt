@@ -81,6 +81,30 @@ internal fun ConversationBubbleSettingsItem() {
     )
 }
 
+@Composable
+internal fun LiveUpdatesSettingsItem() {
+    if (android.os.Build.VERSION.SDK_INT < 36) return
+    val context = LocalContext.current
+    SettingsNavigationItem(
+        headline = "Android 16 实时活动",
+        supporting = "允许系统突出显示运行中的 Agent 任务，具体展示位置由设备决定",
+        onClick = {
+            val settings = ReplyNotificationSettings(context).liveUpdatesSettingsIntent()
+                ?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            val fallback = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            try { context.startActivity(settings ?: fallback) }
+            catch (_: android.content.ActivityNotFoundException) {
+                try { context.startActivity(fallback) }
+                catch (_: android.content.ActivityNotFoundException) {
+                    android.widget.Toast.makeText(context, "系统未提供通知设置入口", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        },
+    )
+}
+
 /**
  * 设置页「屏幕上下文分析与圈选」条目的呈现结论：
  * 能力可用需要「宿主接入了截图来源」+「网关同意回传圈选结果」+「存在活动配对」
