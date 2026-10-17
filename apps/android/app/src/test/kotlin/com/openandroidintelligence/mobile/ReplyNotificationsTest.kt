@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.Application
 import android.app.NotificationManager
 import android.content.Context
+import android.content.SharedPreferences
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.events.SseParser
@@ -22,6 +25,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowShortcutManager
 import java.time.Instant
 
 @RunWith(RobolectricTestRunner::class)
@@ -162,6 +169,71 @@ class ReplyNotificationsTest {
         assertTrue(posts.isEmpty())
     }
 
+    @Test fun freshInstallPermissionIsAllowedBeforeTheFirstReplyCreatesAChannel() {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        assertNull(manager.getNotificationChannel(REPLY_CHANNEL_ID))
+        shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val settings = ReplyNotificationSettings(context)
+        assertFalse(settings.allowed.value)
+
+        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        settings.refreshPermission()
+        assertTrue(settings.isAllowed())
+        assertTrue(settings.allowed.value)
+        assertTrue(settings.enabled.value)
+        assertNull(manager.getNotificationChannel(REPLY_CHANNEL_ID))
+    }
+
+    @Test fun completionMetadataPruningIsBoundedDuringLongReplyAndStillExpiresOldRounds() {
+        val preferences = CountingPreferences(context.getSharedPreferences("completion-test", Context.MODE_PRIVATE))
+        val observer = ReplyCompletionObserver(preferences, "profile-a", "account-a", { _, _ -> }, { clock })
+        repeat(500) { index ->
+            observer.accept(message("conversation.message.completed", generation = "round-$index"))
+        }
+        assertTrue("A reply burst must not scan all stored rounds per message", preferences.allReads <= 1)
+
+        clock += 8L * 24 * 60 * 60 * 1000
+        observer.accept(status("delivered", generation = "new-round"))
+        assertFalse(preferences.contains("reply." + replyDigest("conv-a\u0000round-0")))
+        assertTrue(preferences.allReads <= 2)
+    }
+
+    @Test
+    @Config(shadows = [CachedShortcutManagerShadow::class])
+    fun accountRemovalFindsCachedAndPinnedShortcutsAfterDynamicEvictionAndRestart() {
+        val settings = ReplyNotificationSettings(context)
+        val publisher = AndroidReplyNotificationPublisher(context, settings)
+        val manager = context.getSystemService(ShortcutManager::class.java)
+        val shadow = Shadow.extract<CachedShortcutManagerShadow>(manager)
+        val notificationManager = context.getSystemService(NotificationManager::class.java)
+        val ownTargets = listOf("dynamic", "cached", "pinned").map { ReplyNotificationTarget("profile-a", "account-a", it) }
+        val otherTarget = ReplyNotificationTarget("profile-a", "other-account", "other-conversation")
+        (ownTargets + otherTarget).forEach { publisher.post(it, "generation") }
+        val shortcuts = manager.dynamicShortcuts.associateBy { BubbleConversationActivity.targetFromIntent(it.intent!!)!! }
+        val cached = shortcuts.getValue(ownTargets[1])
+        manager.removeDynamicShortcuts(listOf(cached.id))
+        shadow.cachedShortcuts[cached.id] = cached
+        val pinned = shortcuts.getValue(ownTargets[2])
+        assertTrue(manager.requestPinShortcut(pinned, null))
+        assertTrue(manager.dynamicShortcuts.none { it.id == cached.id || it.id == pinned.id })
+
+        // System caches survive process recreation; the publisher's in-memory map does not.
+        AndroidReplyNotificationPublisher(context, settings).eraseAccount("profile-a", "account-a")
+
+        val ownIds = ownTargets.map { shortcuts.getValue(it).id }.toSet()
+        assertEquals(ownIds, shadow.removedLongLivedIds.toSet())
+        assertTrue(shadow.cachedShortcuts.isEmpty())
+        assertEquals(listOf(shortcuts.getValue(otherTarget).id), manager.dynamicShortcuts.map { it.id })
+        assertEquals(1, notificationManager.activeNotifications.size)
+        assertEquals(otherTarget, ReplyNotificationTarget.from(shadowOf(notificationManager.activeNotifications.single().notification.contentIntent).savedIntent))
+        assertTrue("A user-owned launcher pin must be disabled after account removal",
+            runCatching { manager.createShortcutResultIntent(pinned) }.exceptionOrNull() is IllegalArgumentException)
+
+        // Re-adding the account can publish the same conversation ID again.
+        AndroidReplyNotificationPublisher(context, settings).post(ownTargets[2], "new-generation")
+        assertNotNull(manager.createShortcutResultIntent(pinned))
+    }
+
     @Test fun deniedPermissionConsumesCompletionAndDoesNotReplayAfterPermissionGranted() {
         shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
         val settings = ReplyNotificationSettings(context)
@@ -257,4 +329,26 @@ class ReplyNotificationsTest {
     private fun event(type: String, payload: String, account: String = "account-a"): GatewayEvent = SseParser().feed(
         "id: event-${++eventNumber}\nevent: $type\ndata: {\"accountId\":\"$account\",\"occurredAt\":\"${Instant.ofEpochMilli(clock)}\",\"payload\":$payload}\n\n",
     ).single()
+
+    private class CountingPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {
+        var allReads = 0
+        override fun getAll(): Map<String, *> = delegate.all.also { allReads++ }
+    }
+
+    /** Robolectric 4.14 does not retain cached shortcuts or implement their removal. */
+    @Implements(ShortcutManager::class)
+    class CachedShortcutManagerShadow : ShadowShortcutManager() {
+        val cachedShortcuts = mutableMapOf<String, ShortcutInfo>()
+        val removedLongLivedIds = mutableListOf<String>()
+
+        @Implementation(minSdk = 30)
+        override fun getShortcuts(matchFlags: Int): List<ShortcutInfo> =
+            (super.getShortcuts(matchFlags) + if (matchFlags and ShortcutManager.FLAG_MATCH_CACHED != 0) cachedShortcuts.values else emptyList()).distinctBy { it.id }
+
+        @Implementation(minSdk = 30)
+        override fun removeLongLivedShortcuts(shortcutIds: List<String>) {
+            removedLongLivedIds.addAll(shortcutIds)
+            shortcutIds.forEach(cachedShortcuts::remove)
+        }
+    }
 }

@@ -107,6 +107,38 @@ class GatewayWorkbenchLogoutTest {
         assertEquals(2, gateway.requests.count { it.method == "DELETE" && it.target.startsWith(LOGOUT_PATH) })
     }
 
+    @Test fun confirmedLogoutCancelsTheActualOngoingReplyNotification() {
+        val manager = postRunningReplyNotification()
+        runtime.logout(revokeRefresh = true)
+        awaitRuntimeCondition { runtime.phase.value is ConnectionPhase.Disconnected }
+        assertTrue("Confirmed logout must remove the old ongoing conversation", manager.activeNotifications.none { it.notification.channelId == REPLY_CHANNEL_ID })
+        assertTrue(runtime.nativeConversationNotifications.sessions.value.isEmpty())
+        assertLogoutRequest()
+    }
+
+    @Test fun choosingAnotherAccountCancelsTheActualOngoingReplyNotification() {
+        val manager = postRunningReplyNotification()
+        runtime.chooseAnotherAccount()
+        awaitRuntimeCondition { runtime.phase.value is ConnectionPhase.Disconnected }
+        assertTrue("The account chooser must not retain the previous account's ongoing bubble", manager.activeNotifications.none { it.notification.channelId == REPLY_CHANNEL_ID })
+        assertTrue(runtime.nativeConversationNotifications.sessions.value.isEmpty())
+    }
+
+    private fun postRunningReplyNotification(): android.app.NotificationManager {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        runtime.replyNotifications.refreshPermission()
+        val profile = runtime.savedProfiles.value.single()
+        val occurredAt = java.time.Instant.ofEpochMilli(System.currentTimeMillis())
+        runtime.nativeConversationNotifications.accept(profile.localProfileId, "acc_stub", com.openandroidintelligence.gateway.events.GatewayEvent(
+            "evt_running_notification", "conversation.message.delta",
+            """{"accountId":"acc_stub","occurredAt":"$occurredAt","payload":{"conversationId":"conv_runtime_notification","generationId":"gen_runtime_notification","messageId":"reply_runtime_notification","sender":"assistant","text":"Still working","revision":1}}""",
+        ))
+        val manager = context.getSystemService(android.app.NotificationManager::class.java)
+        assertTrue(manager.activeNotifications.any { it.notification.channelId == REPLY_CHANNEL_ID && it.notification.flags and android.app.Notification.FLAG_ONGOING_EVENT != 0 })
+        return manager
+    }
+
     private fun showWorkbench() {
         val controller = requireNotNull(runtime.controller.value)
         compose.setContent {

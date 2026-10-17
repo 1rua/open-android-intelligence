@@ -5,6 +5,7 @@ import android.app.Application
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.pm.ShortcutManager
+import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import kotlinx.coroutines.CoroutineScope
@@ -137,6 +138,199 @@ class NativeConversationNotificationsTest {
         assertFalse(coordinator.sessions.value.single().isRunning)
     }
 
+    @Test fun completionPreservesQueuedOrRunningNextGenerationInBothBodyStatusOrders() {
+        listOf(false, true).forEach { statusBeforeBody ->
+            listOf("queued", "delivered").forEach { nextStatus ->
+                coordinator.leave()
+                replyCompletionPreferences(context, "profile", "account").edit().clear().commit()
+                coordinator = coordinator()
+                coordinator.bind("profile", "account")
+                publications.clear()
+                accept(status("delivered", 1, generation = "first"))
+                if (statusBeforeBody) accept(status("completed", 2, generation = "first"))
+                else accept(message("conversation.message.completed", "First final", 1, generation = "first"))
+                accept(status(nextStatus, 1, generation = "next"))
+                if (statusBeforeBody) accept(message("conversation.message.completed", "First final", 1, generation = "first"))
+                else accept(status("completed", 2, generation = "first"))
+
+                val remaining = coordinator.sessions.value.single()
+                assertEquals("Completion must retain the remaining generation", "next", remaining.generationId)
+                assertEquals(if (nextStatus == "queued") NativeConversationStatus.QUEUED else NativeConversationStatus.RUNNING, remaining.status)
+                assertEquals(NativeConversationStatus.COMPLETED, remaining.lastOutcome)
+                assertTrue(remaining.isRunning)
+                assertEquals(1, publications.count { it.second })
+                accept(status("delivered", 2, generation = "next"))
+                accept(event("conversation.generation.cancelled", """{"conversationId":"conversation","generationId":"next"}"""))
+                assertFalse(coordinator.sessions.value.single().isRunning)
+                assertEquals(NativeConversationStatus.CANCELLED, coordinator.sessions.value.single().status)
+            }
+        }
+    }
+
+    @Test fun firstFrameInitializesCutoffBeforeRejectingOldQueuedDeltaOrTerminal() {
+        val firstFrames = listOf(
+            status("queued", 1),
+            message("conversation.message.delta", "Historical reply", 1),
+            status("completed", 2),
+            status("failed", 2),
+        )
+        firstFrames.forEach { frame ->
+            val preferences = replyCompletionPreferences(context, "profile", "account")
+            preferences.edit().clear().commit()
+            coordinator = coordinator()
+            coordinator.bind("profile", "account")
+            publications.clear()
+            val staleBody = frame.data.replace(Regex("\"occurredAt\":\"[^\"]+\""), "\"occurredAt\":\"${Instant.ofEpochMilli(clock - 600_000)}\"")
+            accept(frame.copy(data = staleBody))
+            assertTrue("The first historical ${frame.event} must not publish", publications.isEmpty())
+            assertTrue(coordinator.sessions.value.isEmpty())
+            assertEquals(clock, preferences.getLong("first-enabled-at", 0L))
+        }
+    }
+
+    @Test fun recoverableDisconnectResumesButExplicitLeaveAndAccountSwitchCancelOngoing() = runBlocking {
+        val cancelled = mutableListOf<ReplyNotificationTarget>()
+        coordinator = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert },
+            cancel = { cancelled += it }, now = { clock }, throttleMillis = 40)
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        accept(message("conversation.message.delta", "First snapshot", 1))
+        val target = coordinator.sessions.value.single().target
+        coordinator.disconnect()
+        assertEquals(NativeConversationStatus.DISCONNECTED, coordinator.sessions.value.single().status)
+        assertTrue(coordinator.sessions.value.single().isRunning)
+        assertTrue(cancelled.isEmpty())
+        accept(message("conversation.message.delta", "Resumed snapshot", 2))
+        assertEquals(NativeConversationStatus.RUNNING, coordinator.sessions.value.single().status)
+        assertEquals("Resumed snapshot", coordinator.sessions.value.single().latestReply)
+
+        coordinator.leave()
+        assertEquals(listOf(target), cancelled)
+        assertTrue(coordinator.sessions.value.isEmpty())
+        val countAfterLeave = publications.size
+        coordinator.refreshActive()
+        accept(message("conversation.message.delta", "Late old frame", 3))
+        delay(100)
+        assertEquals(countAfterLeave, publications.size)
+
+        coordinator.bind("profile", "account")
+        accept(message("conversation.message.delta", "Running again", 4))
+        coordinator.bind("other-profile", "other-account")
+        assertEquals(listOf(target, target), cancelled)
+        assertTrue(coordinator.sessions.value.isEmpty())
+        accept(message("conversation.message.delta", "Old account", 5))
+        delay(100)
+        assertTrue(coordinator.sessions.value.isEmpty())
+    }
+
+    @Test fun leavingRetainsFinishedNotificationsWhileRemovingOnlyOngoingTargets() {
+        val cancelled = mutableListOf<ReplyNotificationTarget>()
+        coordinator = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert },
+            cancel = { cancelled += it }, now = { clock })
+        coordinator.bind("profile", "account")
+        accept(message("conversation.message.completed", "Final", 1))
+        accept(status("completed", 1))
+        assertFalse(coordinator.sessions.value.single().isRunning)
+        coordinator.leave()
+        assertTrue(cancelled.isEmpty())
+    }
+
+    @Test fun longReplyBatchesMetadataAndBoundsFullScansWhileKeepingTerminalReplayFence() {
+        val delegate = replyCompletionPreferences(context, "profile", "account")
+        val preferences = RealtimeCountingPreferences(delegate)
+        coordinator = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert },
+            now = { clock }, throttleMillis = 60_000, metadataFlushMillis = 60_000,
+            preferencesFor = { _, _ -> preferences })
+        coordinator.bind("profile", "account")
+        repeat(1_000) { revision -> accept(message("conversation.message.delta", "Snapshot $revision", revision.toLong())) }
+        assertEquals("Snapshot 999", coordinator.sessions.value.single().latestReply)
+        assertEquals("One initial native cleanup scan, not one scan per delta", 1, preferences.allReads)
+        assertEquals("No per-token preference writes", 0, preferences.applies)
+
+        accept(message("conversation.message.completed", "Final snapshot", 1_000))
+        accept(status("completed", 1))
+        assertTrue("Native and observer maintenance must both be bounded", preferences.allReads <= 2)
+        assertTrue("Streaming writes must be batched before terminal durability", preferences.applies <= 2)
+        assertEquals(1, publications.count { it.second })
+        val count = publications.size
+        coordinator = coordinator()
+        coordinator.bind("profile", "account")
+        accept(message("conversation.message.delta", "Old replay", 1_000))
+        accept(status("completed", 2))
+        assertEquals("A new process must honor the durable terminal fence", count, publications.size)
+    }
+
+    @Test fun periodicMaintenanceExpiresOldEventAndRevisionMetadata() {
+        val preferences = RealtimeCountingPreferences(replyCompletionPreferences(context, "profile", "account"))
+        val expiredAt = clock - 8L * 24 * 60 * 60 * 1_000
+        preferences.edit().putLong("realtime.event.expired", expiredAt)
+            .putLong("realtime.revisionTime.expired", expiredAt).putLong("realtime.revision.expired", 5).commit()
+        coordinator = NativeConversationNotifications(context, scope, { _, _ -> }, now = { clock }, preferencesFor = { _, _ -> preferences })
+        coordinator.bind("profile", "account")
+        accept(message("conversation.message.delta", "Current", 1))
+        assertFalse(preferences.contains("realtime.event.expired"))
+        assertFalse(preferences.contains("realtime.revision.expired"))
+        assertEquals(1, preferences.allReads)
+        repeat(100) { index -> accept(message("conversation.message.delta", "Current $index", index + 2L)) }
+        assertEquals(1, preferences.allReads)
+        clock += 31L * 60 * 1_000
+        accept(message("conversation.message.delta", "Later", 200))
+        assertEquals(2, preferences.allReads)
+    }
+
+    @Test fun failureAndCancellationPersistBufferedGuardsBeforeTerminalPublishCanCrash() {
+        listOf(NativeConversationStatus.FAILED, NativeConversationStatus.CANCELLED).forEach { outcome ->
+            val preferences = replyCompletionPreferences(context, "profile", "account")
+            preferences.edit().clear().commit()
+            val originalScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val crash = IllegalStateException("Simulated process death after terminal publication")
+            val terminalSnapshots = mutableListOf<Map<String, *>>()
+            val delta = message("conversation.message.delta", "Before terminal", 1)
+            val terminal = if (outcome == NativeConversationStatus.FAILED) status("failed", 1)
+                else event("conversation.generation.cancelled", """{"conversationId":"conversation","generationId":"generation"}""")
+            val original = NativeConversationNotifications(context, originalScope, { session, _ ->
+                if (session.status == outcome) {
+                    terminalSnapshots += preferences.all
+                    throw crash
+                }
+            }, now = { clock }, throttleMillis = 60_000, metadataFlushMillis = 60_000)
+            try {
+                original.bind("profile", "account")
+                original.accept("profile", "account", delta)
+                assertFalse("The delta must still be buffered before the terminal", preferences.contains("realtime.event." + replyDigest(delta.id!!)))
+                try {
+                    original.accept("profile", "account", terminal)
+                    fail("Terminal publication must simulate process death before accept's trailing metadata flush")
+                } catch (failure: IllegalStateException) {
+                    assertSame(crash, failure)
+                }
+            } finally {
+                // Pending jobs from the old process must not repair its disk state.
+                originalScope.cancel()
+            }
+
+            val snapshotAtPublication = terminalSnapshots.single()
+            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(delta.id!!)))
+            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(terminal.id!!)))
+            assertEquals(1L, snapshotAtPublication["realtime.revision." + replyDigest("body\u0000conversation\u0000reply")])
+            assertTrue(snapshotAtPublication.containsKey("realtime.terminal." + replyDigest("conversation\u0000generation")))
+
+            val replayScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val replayPublications = mutableListOf<NativeConversationSession>()
+            val restarted = NativeConversationNotifications(context, replayScope, { session, _ -> replayPublications += session },
+                now = { clock }, throttleMillis = 60_000, metadataFlushMillis = 60_000)
+            try {
+                restarted.bind("profile", "account")
+                restarted.accept("profile", "account", delta)
+                restarted.accept("profile", "account", terminal)
+                assertTrue("A completed terminal must not replay a running notification after a crash", replayPublications.none { it.isRunning })
+                assertTrue(restarted.sessions.value.none { it.isRunning })
+            } finally {
+                replayScope.cancel()
+            }
+        }
+    }
+
     @Test fun statusRevisionsAreMonotonicAndAccountSwitchCancelsPendingPublications() = runBlocking {
         accept(status("delivered", 5))
         accept(message("conversation.message.delta", "Latest", 1))
@@ -229,5 +423,17 @@ class NativeConversationNotificationsTest {
     private fun event(type: String, payload: String): GatewayEvent {
         clock++
         return GatewayEvent("realtime-${++sequence}", type, """{"accountId":"account","occurredAt":"${Instant.ofEpochMilli(clock)}","payload":$payload}""")
+    }
+
+    private class RealtimeCountingPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {
+        var allReads = 0
+        var applies = 0
+        override fun getAll(): MutableMap<String, *> { allReads++; return delegate.all }
+        override fun edit(): SharedPreferences.Editor = CountingEditor(delegate.edit())
+        private inner class CountingEditor(private val editor: SharedPreferences.Editor) : SharedPreferences.Editor by editor {
+            override fun putLong(key: String, value: Long): SharedPreferences.Editor { editor.putLong(key, value); return this }
+            override fun remove(key: String): SharedPreferences.Editor { editor.remove(key); return this }
+            override fun apply() { applies++; editor.apply() }
+        }
     }
 }
