@@ -54,8 +54,10 @@ class ReplyNotificationSettings(private val context: Context) {
 
     fun isAllowed(): Boolean {
         val manager = context.getSystemService(NotificationManager::class.java)
+        // A missing channel on a fresh install has not been blocked by the user.
+        val channel = manager.getNotificationChannel(REPLY_CHANNEL_ID)
         return ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED &&
-            manager.areNotificationsEnabled() && manager.getNotificationChannel(REPLY_CHANNEL_ID)?.importance != NotificationManager.IMPORTANCE_NONE
+            manager.areNotificationsEnabled() && (channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE)
     }
 }
 
@@ -90,13 +92,17 @@ internal class AndroidReplyNotificationPublisher(
         update(NativeConversationSession(target, generationId, status = NativeConversationStatus.COMPLETED, updatedAt = System.currentTimeMillis()), true)
     }
 
+    fun cancel(target: ReplyNotificationTarget) {
+        context.getSystemService(NotificationManager::class.java).cancel(notificationTag(target), 0)
+    }
+
     fun update(session: NativeConversationSession, alert: Boolean) {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(REPLY_CHANNEL_ID, "Agent 任务回复", NotificationManager.IMPORTANCE_DEFAULT)
             .apply { description = "Agent 处理中实时显示公开回复，并在任务结束时提醒"; setAllowBubbles(true) })
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
-        val tag = replyDigest("${target.profileId}\u0000${target.accountId}\u0000${target.conversationId}")
+        val tag = notificationTag(target)
         val shortcutId = "agent-conversation-$tag"
         val icon = Icon.createWithResource(context, R.drawable.ic_agent_bubble)
         val agent = Person.Builder().setName("Agent").setKey("agent-" + replyDigest(target.profileId + target.accountId))
@@ -113,6 +119,7 @@ internal class AndroidReplyNotificationPublisher(
         // A device may disable shortcuts/bubbles. The notification still works.
         val bubbleMetadata = try {
             if (publishedShortcuts[shortcutId] != session.title) {
+                shortcutManager.enableShortcuts(listOf(shortcutId))
                 shortcutManager.pushDynamicShortcut(shortcut)
                 publishedShortcuts[shortcutId] = session.title
             }
@@ -169,11 +176,21 @@ internal class AndroidReplyNotificationPublisher(
         manager.activeNotifications.filter { it.notification.extras.getString("reply-account") == replyAccountGroup(profileId, accountId) }
             .forEach { manager.cancel(it.tag, it.id) }
         val shortcuts = context.getSystemService(ShortcutManager::class.java)
-        val ids = shortcuts.dynamicShortcuts.filter { it.extras?.getString("reply-account") == replyAccountGroup(profileId, accountId) }.map { it.id }
-        shortcuts.removeDynamicShortcuts(ids)
-        shortcuts.removeLongLivedShortcuts(ids)
+        // Evicted long-lived conversations can survive only in the system cache
+        // or a launcher pin, independently of this publisher's process lifetime.
+        val ids = shortcuts.getShortcuts(ShortcutManager.FLAG_MATCH_DYNAMIC or ShortcutManager.FLAG_MATCH_CACHED or ShortcutManager.FLAG_MATCH_PINNED)
+            .filter { it.extras?.getString("reply-account") == replyAccountGroup(profileId, accountId) }.map { it.id }.distinct()
+        if (ids.isNotEmpty()) {
+            // User-owned launcher pins cannot be deleted by the app; disable them.
+            shortcuts.disableShortcuts(ids)
+            shortcuts.removeDynamicShortcuts(ids)
+            shortcuts.removeLongLivedShortcuts(ids)
+        }
         ids.forEach(publishedShortcuts::remove)
     }
+
+    private fun notificationTag(target: ReplyNotificationTarget) =
+        replyDigest("${target.profileId}\u0000${target.accountId}\u0000${target.conversationId}")
 }
 
 /**
@@ -191,6 +208,7 @@ internal class ReplyCompletionObserver(
 ) {
     private val firstEnabledAt = preferences.getLong("first-enabled-at", 0L).takeIf { it > 0L }
         ?: now().also { check(preferences.edit().putLong("first-enabled-at", it).commit()) }
+    private var nextPruneAt = Long.MIN_VALUE
 
     @Synchronized fun accept(event: GatewayEvent) {
         if (event.event !in REPLY_EVENTS) return
@@ -303,8 +321,11 @@ internal class ReplyCompletionObserver(
     }
 
     private fun pruneExpired() {
+        val currentTime = now()
+        if (currentTime < nextPruneAt) return
+        nextPruneAt = currentTime + PRUNE_INTERVAL_MILLIS
         val expired = preferences.all.filter { (name, value) ->
-            !name.startsWith("realtime.") && name != "first-enabled-at" && value is Long && value < now() - RETENTION_MILLIS
+            !name.startsWith("realtime.") && name != "first-enabled-at" && value is Long && value < currentTime - RETENTION_MILLIS
         }.keys
         if (expired.isNotEmpty()) {
             val edit = preferences.edit()
@@ -319,6 +340,7 @@ internal class ReplyCompletionObserver(
     companion object {
         private const val RETENTION_MILLIS = 7L * 24 * 60 * 60 * 1000
         private const val CLOCK_SKEW_MILLIS = 5L * 60 * 1000
+        private const val PRUNE_INTERVAL_MILLIS = 30L * 60 * 1000
         private val REPLY_EVENTS = setOf("conversation.message.completed", "conversation.message.status", "conversation.generation.cancelled")
     }
 }

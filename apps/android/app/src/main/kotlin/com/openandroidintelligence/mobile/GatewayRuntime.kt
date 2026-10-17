@@ -148,6 +148,7 @@ class GatewayRuntime(
     val replyNotifications = ReplyNotificationSettings(context)
     private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications)
     internal val nativeConversationNotifications = NativeConversationNotifications(context, scope, replyPublisher::update,
+        cancel = replyPublisher::cancel,
         titleFor = { target ->
             (_controller.value?.state?.value?.threads as? com.openandroidintelligence.conversation.state.Loadable.Ready)
                 ?.value?.firstOrNull { it.id.value == target.conversationId }?.title
@@ -1064,6 +1065,7 @@ class GatewayRuntime(
                     return@launch
                 } catch (cause: Exception) {
                     logConnectionFailure("EVENT_STREAM", "EVENT_STREAM_RETRY", cause)
+                    if (activeHttpClient === http && sessionJob === ownedJob) nativeConversationNotifications.disconnect()
                     delay(1_000)
                 }
             }
@@ -1125,7 +1127,7 @@ class GatewayRuntime(
     private class PostLoginInitializationException(code: String) : IllegalStateException(code)
 
     private fun teardown() {
-        nativeConversationNotifications.disconnect()
+        nativeConversationNotifications.leave()
         bubbleWorkspace?.close()
         bubbleWorkspace = null
         _controller.value?.close()
