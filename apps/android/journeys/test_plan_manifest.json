@@ -9,7 +9,7 @@
     "buildVariant": "fullDebug",
     "apkRelativePath": "apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk",
     "mainActivity": "com.openandroidintelligence.mobile.MainActivity",
-    "minSdk": 34,
+    "minSdk": 31,
     "targetSdk": 35,
     "distributionFlavor": "full"
   },

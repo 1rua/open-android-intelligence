@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile
 
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.content.Intent
 import android.os.Bundle
 import android.Manifest
@@ -156,6 +157,7 @@ class MainActivity : ComponentActivity() {
                     runtime.nativeConversationNotifications.refreshActive()
                     if (phase is ConnectionPhase.Connected && runtime.replyNotifications.enabled.value &&
                         !runtime.replyNotifications.permissionRequested &&
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                         ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                         runtime.replyNotifications.markPermissionRequested()
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)

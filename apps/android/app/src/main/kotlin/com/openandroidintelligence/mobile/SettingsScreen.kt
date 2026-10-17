@@ -163,7 +163,8 @@ fun SettingsScreen(
     val setReplyNotifications: (Boolean) -> Unit = { enabled ->
         viewModel.setNotificationsGrant(enabled)
         if (enabled) {
-            if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
                 !viewModel.replyNotificationPermissionRequested()) {
                 viewModel.markReplyNotificationPermissionRequested()
                 notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)

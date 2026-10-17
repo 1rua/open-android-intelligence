@@ -52,7 +52,12 @@ class AssistantBridgeService : Service() {
                     require(threads.any { it.id.value == id }) { "THREAD_UNKNOWN" }; controller.openThread(id)
                 }
                 "screen" -> {
-                    val fd = b.getParcelable("content",ParcelFileDescriptor::class.java) ?: error("CONTENT_REQUIRED")
+                    val fd = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        b.getParcelable("content", ParcelFileDescriptor::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        b.getParcelable("content") as? ParcelFileDescriptor
+                    } ?: error("CONTENT_REQUIRED")
                     val size = b.getInt("size"); if (size !in 1..(8*1024*1024)) { fd.close();error("CONTENT_TOO_LARGE") }
                     jobs.launch(Dispatchers.IO) {
                         var bytes:ByteArray?=null;var transferred=false
