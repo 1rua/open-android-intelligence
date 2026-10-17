@@ -56,7 +56,12 @@ class ReplyNotificationSettings(private val context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
         // A missing channel on a fresh install has not been blocked by the user.
         val channel = manager.getNotificationChannel(REPLY_CHANNEL_ID)
-        return ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED &&
+        val postNotificationGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+        return postNotificationGranted &&
             manager.areNotificationsEnabled() && (channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE)
     }
 }

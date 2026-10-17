@@ -12,7 +12,7 @@
 
 - 上位规格固定为 `docs/superpowers/specs/2026-08-14-call-log-android-adapter-design.md`；发现实现所需语义与规格冲突时停止相关 task，先修订 spec 与 plan 并取得用户确认。
 - 本计划只交付通话记录适配器；联系人、日历/闹钟、传感器、屏幕和后台命令继续作为后续独立垂直切片。
-- 目标平台是 Android 13（API 33）及以上；compile/target SDK 保持 35，minSdk 调整为 33，Java/JVM target 保持 17。
+- 目标平台是 Android 12（API 31）及以上；compile/target SDK 保持 35，minSdk 调整为 31，Java/JVM target 保持 17。
 - 主 APK 唯一新增的电话相关权限是 `android.permission.READ_CALL_LOG`；`android.hardware.telephony` 必须保持 `required=false`。
 - 禁止声明或使用 `WRITE_CALL_LOG`、`CALL_PHONE`、`ANSWER_PHONE_CALLS`、`READ_PHONE_STATE`、`READ_PRECISE_PHONE_STATE`、`READ_VOICEMAIL`、`WRITE_VOICEMAIL`、`RECORD_AUDIO`、`PROCESS_OUTGOING_CALLS`。
 - 唯一 Provider URI 是 `CallLog.Calls.CONTENT_URI`；禁止 `CONTENT_URI_WITH_VOICEMAIL`、`CONTENT_FILTER_URI`、`CallLog.CONTENT_URI` 和任何厂商 URI。

@@ -156,6 +156,7 @@ class MainActivity : ComponentActivity() {
                     runtime.nativeConversationNotifications.refreshActive()
                     if (phase is ConnectionPhase.Connected && runtime.replyNotifications.enabled.value &&
                         !runtime.replyNotifications.permissionRequested &&
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                         ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                         runtime.replyNotifications.markPermissionRequested()
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
