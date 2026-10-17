@@ -36,16 +36,20 @@ class AndroidSmsInboxReader private constructor(
             arguments += it.messageAtEpochMs.toString()
             arguments += it.providerId.toString()
         }
+        if (request.senders.isNotEmpty()) {
+            clauses += "address IN (${request.senders.joinToString(",") { "?" }})"
+            arguments += request.senders
+        }
         return queryExecutor.query(
             SmsProviderTarget.INBOX,
             PROJECTION,
             clauses.joinToString(" AND ").ifEmpty { null },
             arguments.toTypedArray().takeIf { it.isNotEmpty() },
-            "date DESC, _id DESC LIMIT ${request.history.maxRecords}",
-        )?.use(::readRows).orEmpty()
+            "date DESC, _id DESC",
+        )?.use { readRows(it, request.history.maxRecords, request.textQuery) }.orEmpty()
     }
 
-    private fun readRows(cursor: Cursor): List<SmsInboxRow> {
+    private fun readRows(cursor: Cursor, limit: Int, textQuery: String): List<SmsInboxRow> {
         val providerId = cursor.getColumnIndexOrThrow("_id")
         val threadId = cursor.getColumnIndexOrThrow("thread_id")
         val address = cursor.getColumnIndexOrThrow("address")
@@ -54,13 +58,17 @@ class AndroidSmsInboxReader private constructor(
         val read = cursor.getColumnIndexOrThrow("read")
         val subscriptionId = cursor.getColumnIndexOrThrow("sub_id")
         return buildList {
-            while (cursor.moveToNext()) {
+            while (size < limit && cursor.moveToNext()) {
+                val text = cursor.getString(body)
+                // SQLite LIKE only folds ASCII. Keep the public literal Unicode
+                // substring semantics, and apply the limit after matching rows.
+                if (textQuery.isNotEmpty() && !text.orEmpty().contains(textQuery, ignoreCase = true)) continue
                 add(
                     SmsInboxRow(
                         providerId = cursor.getLong(providerId),
                         threadId = cursor.getString(threadId),
                         address = cursor.getString(address),
-                        body = cursor.getString(body),
+                        body = text,
                         messageAtEpochMs = cursor.getLong(date),
                         read = cursor.getInt(read) != 0,
                         subscriptionId = if (cursor.isNull(subscriptionId)) null else cursor.getInt(subscriptionId),

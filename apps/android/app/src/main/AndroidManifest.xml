@@ -41,6 +41,16 @@
                 <data android:scheme="oai" android:host="pair" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".BubbleConversationActivity"
+            android:label="Agent 会话"
+            android:exported="false"
+            android:resizeableActivity="true"
+            android:allowEmbedded="true"
+            android:documentLaunchMode="always"
+            android:launchMode="standard"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.OpenAndroidIntelligence" />
         <service
             android:name="com.openandroidintelligence.capability.MediaProjectionCaptureService"
             android:exported="false"

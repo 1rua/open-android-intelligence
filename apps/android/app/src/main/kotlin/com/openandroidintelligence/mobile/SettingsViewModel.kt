@@ -36,6 +36,9 @@ data class SettingsUiState(
     val operationNotice: String? = null,
     /** 「刷新网关凭据」是否正在进行，界面据此阻止重复触发。 */
     val isRefreshingSession: Boolean = false,
+    val replyNotificationsWired: Boolean = false,
+    val replyNotificationsEnabled: Boolean = false,
+    val replyNotificationsAllowed: Boolean = false,
 ) {
     val isGatewayConnected: Boolean
         get() = connectionPhase is ConnectionPhase.Connected
@@ -62,7 +65,7 @@ data class SettingsUiState(
         get() = pairingGrants?.screenSelectionEnabled == true
 
     val isNotificationsGranted: Boolean
-        get() = pairingGrants?.granted?.contains(PairingGrantCapabilities.NOTIFICATIONS) == true
+        get() = replyNotificationsEnabled && replyNotificationsAllowed
 
     /**
      * 对话界面协商能力的三态投影：`true`=双方同意、`false`=客户端声明但
@@ -112,6 +115,8 @@ private data class ControlSettings(
     val trustEnabled: Boolean,
     val emergencyStopped: Boolean,
     val stoppedCount: Int,
+    val replyEnabled: Boolean,
+    val replyAllowed: Boolean,
 )
 
 /**
@@ -159,8 +164,10 @@ class SettingsViewModel(
         _trustModeEnabled,
         _emergencyStopped,
         _stoppedCount,
-    ) { trustEnabled, emergencyStopped, stoppedCount ->
-        ControlSettings(trustEnabled, emergencyStopped, stoppedCount)
+        runtime?.replyNotifications?.enabled ?: MutableStateFlow(false),
+        runtime?.replyNotifications?.allowed ?: MutableStateFlow(false),
+    ) { trustEnabled, emergencyStopped, stoppedCount, replyEnabled, replyAllowed ->
+        ControlSettings(trustEnabled, emergencyStopped, stoppedCount, replyEnabled, replyAllowed)
     }
 
     /** 会话级操作提示与续期进行中状态；runtime 缺席时保持空态。 */
@@ -190,6 +197,9 @@ class SettingsViewModel(
             auditLines = base.auditEvents.map { environment.audit.render(it) },
             operationNotice = operations.first,
             isRefreshingSession = operations.second,
+            replyNotificationsWired = runtime != null,
+            replyNotificationsEnabled = control.replyEnabled,
+            replyNotificationsAllowed = control.replyAllowed,
         )
     }.stateIn(
         scope = scope,
@@ -208,6 +218,9 @@ class SettingsViewModel(
             auditLines = environment.auditSink.eventsFlow.value.map { environment.audit.render(it) },
             operationNotice = runtime?.operationNotice?.value,
             isRefreshingSession = runtime?.isRefreshingSession?.value ?: false,
+            replyNotificationsWired = runtime != null,
+            replyNotificationsEnabled = runtime?.replyNotifications?.enabled?.value ?: false,
+            replyNotificationsAllowed = runtime?.replyNotifications?.allowed?.value ?: false,
         ),
     )
 
@@ -232,8 +245,16 @@ class SettingsViewModel(
     }
 
     fun setNotificationsGrant(enabled: Boolean) {
-        environment.pairingGrants.updatePrimitive(PairingGrantCapabilities.NOTIFICATIONS, enabled)
+        runtime?.replyNotifications?.setEnabled(enabled)
+        if (enabled) runtime?.nativeConversationNotifications?.refreshActive()
     }
+
+    fun refreshReplyNotificationPermission() {
+        runtime?.replyNotifications?.refreshPermission()
+        runtime?.nativeConversationNotifications?.refreshActive()
+    }
+    fun replyNotificationPermissionRequested(): Boolean = runtime?.replyNotifications?.permissionRequested == true
+    fun markReplyNotificationPermissionRequested() { runtime?.replyNotifications?.markPermissionRequested() }
 
     fun enableTrustMode(
         acknowledgementText: String = DeveloperTrustMode.Acknowledgement.REQUIRED_TEXT,

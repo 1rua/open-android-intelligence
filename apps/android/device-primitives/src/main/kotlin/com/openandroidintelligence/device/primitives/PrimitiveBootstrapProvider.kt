@@ -13,7 +13,6 @@ import com.openandroidintelligence.calls.*
 import com.openandroidintelligence.capability.*
 import com.openandroidintelligence.notifications.*
 import com.openandroidintelligence.notification.host.NotificationHostInstaller
-import com.openandroidintelligence.core.model.NotificationFieldAccess
 import java.time.Instant
 
 /** Collector implementation stays outside the App's compile-time surface. */
@@ -21,15 +20,9 @@ class PrimitiveBootstrapProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         val app = context?.applicationContext ?: return false
         if (android.app.Application.getProcessName() != app.packageName) return true
-        register(app, "kernel.sms.read") { request, _ ->
-            permission(app, android.Manifest.permission.READ_SMS)
-            val senders = JsonFields.strings(request, "senders").toSet()
-            val query = JsonFields.string(request, "query").orEmpty()
-            AndroidSmsInboxReader(app.contentResolver).query(SmsInboxQuery(SmsHistoryPolicy(since(request), limit(request))))
-                .filter { (senders.isEmpty() || it.address in senders) && (query.isEmpty() || it.body.orEmpty().contains(query, true)) }
-                .map { mapOf("id" to it.providerId.toString(), "sender" to it.address, "text" to it.body,
-                    "timestamp" to it.messageAtEpochMs, "read" to it.read) }
-        }
+        KernelPrimitiveRegistry.register(SmsReadPrimitive(AndroidSmsInboxReader(app.contentResolver)) {
+            app.checkSelfPermission(android.Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
+        })
         register(app, "kernel.call-log.read") { request, _ ->
             permission(app, android.Manifest.permission.READ_CALL_LOG)
             val directions = JsonFields.strings(request, "directions").map { CallDirection.valueOf(it.uppercase()) }.toSet()
@@ -40,22 +33,12 @@ class PrimitiveBootstrapProvider : ContentProvider() {
                 .map { mapOf("id" to it.providerId.toString(), "direction" to it.direction.name.lowercase(),
                     "timestamp" to it.startedAtEpochMs, "durationSeconds" to it.durationSeconds, "number" to it.number) }
         }
-        register(app, "kernel.notifications.read") { request, context ->
-            val collector = NotificationRuntimeFactoryRegistry.activeCollector ?: throw CapabilityDenied("NOTIFICATION_LISTENER_UNAVAILABLE")
-            val composition = NotificationHostInstaller.install(app)
-            val policy = composition.policyPort.snapshot()
-            val result = NotificationAgentQueryGateway(collector, composition.authority).query(NotificationAgentQueryRequest(
-                operationId = context.correlationId, policyRevision = policy.revision, limit = limit(request),
-                filter = NotificationQueryFilter(JsonFields.strings(request, "packageIds").distinct().sorted(), policy.fieldAccess),
-            ))
-            if (result.failureReason != null) throw CapabilityDenied(result.failureReason!!)
-            val query = JsonFields.string(request,"query").orEmpty()
-            val receivedAfter = since(request)
-            result.records.filter { receivedAfter == null || (it.metadata?.postedAtEpochMs ?: Long.MIN_VALUE) >= receivedAfter }
-                .filter { query.isEmpty() || it.content?.title.orEmpty().contains(query,true) || it.content?.body.orEmpty().contains(query,true) }
-                .map { mapOf("id" to it.occurrenceId, "packageName" to it.metadata?.packageName,
-                    "title" to it.content?.title, "text" to it.content?.body, "timestamp" to it.metadata?.postedAtEpochMs) }
-        }
+        val notifications = NotificationHostInstaller.install(app)
+        KernelPrimitiveRegistry.register(NotificationsReadPrimitive(
+            collector = { NotificationRuntimeFactoryRegistry.connectedCollector() },
+            authority = notifications.authority,
+            permissionGranted = { notifications.bindingPort.isListenerBound() },
+        ))
         return true
     }
 

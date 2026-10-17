@@ -145,6 +145,39 @@ class GatewayRuntime(
     private var capabilityPublisher: com.openandroidintelligence.mobile.plugins.CapabilityPublisher? = null
     val deviceConfirmation = MutableStateFlow<com.openandroidintelligence.mobile.plugins.DeviceConfirmation?>(null)
     val connectedAccountId: String? get() = lastAccountId.takeIf { activeHttpClient != null }
+    val replyNotifications = ReplyNotificationSettings(context)
+    private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications)
+    internal val nativeConversationNotifications = NativeConversationNotifications(context, scope, replyPublisher::update,
+        titleFor = { target ->
+            (_controller.value?.state?.value?.threads as? com.openandroidintelligence.conversation.state.Loadable.Ready)
+                ?.value?.firstOrNull { it.id.value == target.conversationId }?.title
+        })
+    private var bubbleWorkspace: BubbleConversationWorkspace? = null
+
+    internal fun isBubbleTargetCurrent(target: ReplyNotificationTarget): Boolean {
+        val connected = _phase.value as? ConnectionPhase.Connected ?: return false
+        return connectedAccountId == target.accountId &&
+            profileIdFor(connected.gatewayUrl, connected.username) == target.profileId &&
+            bubbleWorkspace?.accepts(target) == true
+    }
+
+    internal fun createBubbleConversation(target: ReplyNotificationTarget): WorkbenchController? =
+        if (isBubbleTargetCurrent(target)) bubbleWorkspace?.open(target) else null
+
+    internal fun releaseBubbleConversation(controller: WorkbenchController) {
+        bubbleWorkspace?.release(controller)
+        // A session replacement may have already retired the owning workspace.
+        controller.close()
+    }
+
+    /** A notification never borrows another account's currently open workbench. */
+    internal fun openReplyNotification(target: ReplyNotificationTarget): Boolean {
+        val connected = _phase.value as? ConnectionPhase.Connected ?: return false
+        if (target.accountId != connectedAccountId || target.profileId != profileIdFor(connected.gatewayUrl, connected.username)) return false
+        val workbench = _controller.value ?: return false
+        workbench.openThread(target.conversationId)
+        return true
+    }
     fun decideDeviceRequest(id: String, approved: Boolean) { executionDriver?.decide(id,approved) }
 
     private val _phase = MutableStateFlow<ConnectionPhase>(ConnectionPhase.Disconnected)
@@ -180,6 +213,8 @@ class GatewayRuntime(
      * missing workbench is a no-op rather than something to invent.
      */
     fun onAppForegrounded() {
+        replyNotifications.refreshPermission()
+        nativeConversationNotifications.refreshActive()
         _controller.value?.onForegrounded()
     }
 
@@ -435,6 +470,8 @@ class GatewayRuntime(
                         com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),localDocumentKeyProvider).wipe()
                         com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),keyProvider=localDocumentKeyProvider).clearMedia()
                         pluginHost?.eraseAccount(accountId,PairingGrantBinding(profile.gatewayBaseUrl,accountId,installationId()).pairingId)
+                        replyPublisher.eraseAccount(profileId, accountId)
+                        nativeConversationNotifications.eraseAccount(profileId, accountId)
                     }
                     AndroidEventCursorStore(context, profileId).clearProfile()
                     AndroidEventCursorStore(context, platformCursorProfile(profileId)).clearProfile()
@@ -489,6 +526,8 @@ class GatewayRuntime(
                 { com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
                 { com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),keyProvider=localDocumentKeyProvider).clearMedia() },
                 { pluginHost?.eraseAccount(accountId,binding.pairingId); Unit },
+                { replyPublisher.eraseAccount(profileId, accountId) },
+                { nativeConversationNotifications.eraseAccount(profileId, accountId) },
                 { AndroidEventCursorStore(context, profileId).clear(accountId) },
                 { AndroidEventCursorStore(context, platformCursorProfile(profileId)).clear(accountId) },
                 { clearLastProfile() },
@@ -955,6 +994,25 @@ class GatewayRuntime(
                 downloads = downloads,
             ) }
         }
+        bubbleWorkspace?.close()
+        bubbleWorkspace = BubbleConversationWorkspace(profileId, session.accountId) { conversationId ->
+            if (activeHttpClient !== http || sessionJob !== ownedJob || !ownedJob.isActive) null
+            else {
+                val bubbleStatus = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
+                val bubbleHttp = GatewayHttpClient(
+                    profile = profile,
+                    transport = transport,
+                    signer = { preimage -> deviceKeys.sign(profileId, preimage) },
+                    cursorStore = com.openandroidintelligence.gateway.events.InMemoryEventCursorStore(),
+                    statusSink = bubbleStatus,
+                    handlePlatformEvent = { event -> event.event in PLATFORM_EVENTS },
+                )
+                createBubbleWorkbench(sessionScope, conversationScope, conversationId, bubbleHttp, bubbleStatus,
+                    approvalClient, generationCancelCapability, conversationUi.toSet(),
+                    com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                    mediaCache, downloads)
+            }
+        }
         _phase.value = ConnectionPhase.Connected(
             gatewayUrl = endpoint.baseUrl,
             username = username,
@@ -968,13 +1026,20 @@ class GatewayRuntime(
             deviceRequests = deviceRequests,
         )
         GatewayLog.d("OaiConnection", "stage=CONNECTED state=ready")
+        nativeConversationNotifications.bind(profileId, session.accountId)
         val platformHttp = GatewayHttpClient(
             profile = profile,
             transport = transport,
             signer = { preimage -> deviceKeys.sign(profileId, preimage) },
             cursorStore = AndroidEventCursorStore(context, platformCursorProfile(profileId)),
             webSocketTransport = null,
-            handlePlatformEvent = { event -> handlePlatformEvent(event, session.sessionId, session.deviceId, binding) },
+            handlePlatformEvent = { event ->
+                if (activeHttpClient !== http || sessionJob !== ownedJob) true
+                else {
+                    nativeConversationNotifications.accept(profileId, session.accountId, event)
+                    handlePlatformEvent(event, session.sessionId, session.deviceId, binding)
+                }
+            },
         )
         platformHttp.setCursorRecovery {
             recoverPlatformSnapshot(platformHttp,
@@ -1060,6 +1125,9 @@ class GatewayRuntime(
     private class PostLoginInitializationException(code: String) : IllegalStateException(code)
 
     private fun teardown() {
+        nativeConversationNotifications.disconnect()
+        bubbleWorkspace?.close()
+        bubbleWorkspace = null
         _controller.value?.close()
         executionDriver?.cancelAll()
         executionDriver = null

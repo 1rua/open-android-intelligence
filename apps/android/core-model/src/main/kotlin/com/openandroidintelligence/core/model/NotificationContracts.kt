@@ -205,6 +205,9 @@ data class OnDemandNotificationRead(
     val operationId: String,
     val policyRevision: ULong,
     val limit: Int,
+    val packageIds: List<String> = emptyList(),
+    val receivedAfterEpochMs: Long? = null,
+    val textQuery: String = "",
 ) {
     init {
         require(operationId.isNotBlank()) { "operation ID must not be blank" }

@@ -79,6 +79,7 @@ fun PluginManagementScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     store: PluginInstallStore? = null,
+    onOpenNotificationSettings: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     // 未显式给 store 时按应用上下文自建（真实存储：filesDir/plugins）。
@@ -130,7 +131,11 @@ fun PluginManagementScreen(
         }
     }
     fun grantNow(id: String) { runCatching { host?.grant(id,true) ?: error("RUNTIME_UNAVAILABLE") }.fold(
-        onSuccess = { notice = "已为当前配对授权并选择此提供者。" },onFailure = { notice = "授权失败，请先登录 Gateway 并检查插件状态。" }) }
+        onSuccess = {
+            notice = if (host?.entries(id).orEmpty().any { "kernel.notifications.read" in it.primitives }) {
+                "已为当前配对授权。请在通知采集设置中允许采集、配置应用白名单，并授予系统通知使用权。"
+            } else "已为当前配对授权并选择此提供者。"
+        },onFailure = { notice = "授权失败，请先登录 Gateway 并检查插件状态。" }) }
     var permissionPlugin by remember { mutableStateOf<String?>(null) }
     val requestPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val id = permissionPlugin; permissionPlugin = null
@@ -274,9 +279,20 @@ fun PluginManagementScreen(
                                     TextButton(onClick = { runCatching { resolvedStore.rollback(id); refresh() }.fold(onSuccess={notice="已回滚到上一版本。"},onFailure={notice="没有可回滚的有效版本。"}) }) { Text("回滚") }
                                     TextButton(onClick = { runCatching { host.uninstall(id); refresh() }.fold(onSuccess={notice="已卸载并清理插件数据。"},onFailure={notice="卸载未完成，请检查存储。"}) }) { Text("卸载") }
                                 }
+                                TextButton(onClick = {
+                                    runCatching { host.grant(id, false) }.fold(
+                                        onSuccess = { notice = "已撤销此插件对当前配对的授权。" },
+                                        onFailure = { notice = "撤销失败，请先登录对应的 Gateway 账号。" },
+                                    )
+                                }) { Text("撤销当前配对授权") }
                                 if (host.hasNativeUi(id)) TextButton(onClick = { runCatching { host.selectNativeUi(id) }.fold(onSuccess={notice="原生界面已启用，可随时恢复宿主界面。"},onFailure={notice="请先开启信任模式并启用插件。"}) }) { Text("使用原生界面") }
                                 if (host.isQuarantined(id)) TextButton(onClick = { host.recoverNative(id); refresh() }) { Text("解除安全模式（保持停用）") }
-                                if (host.entries(id).any { "kernel.notifications.read" in it.primitives }) TextButton(onClick = { context.startActivity(android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }) { Text("打开通知访问设置") }
+                                if (host.entries(id).any { "kernel.notifications.read" in it.primitives }) {
+                                    onOpenNotificationSettings?.let { openSettings ->
+                                        TextButton(onClick = openSettings) { Text("通知采集与访问范围") }
+                                    }
+                                    TextButton(onClick = { context.startActivity(android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }) { Text("打开通知访问设置") }
+                                }
                             }
                         }
                     }

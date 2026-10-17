@@ -20,9 +20,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import com.openandroidintelligence.conversation.components.SettingsListItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.SettingsSwitchItem
+import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 
@@ -47,6 +49,37 @@ const val SCREENSHOT_SOURCE_WIRED = true
  * 端口 deny-first，设置子页如实呈现「未装配」）。
  */
 const val PUSH_CHANNEL_WIRED = true
+
+fun replyNotificationPresentation(wired: Boolean, systemAllowed: Boolean): CapabilityPresentation = when {
+    !wired -> CapabilityPresentation(false, "任务回复通知未装配")
+    !systemAllowed -> CapabilityPresentation(true, "系统通知未获允许；开启以请求权限或前往系统通知设置")
+    else -> CapabilityPresentation(true, "运行时更新中间回复与最终回复，可在会话气泡内查看和回复")
+}
+
+@Composable
+internal fun ConversationBubbleSettingsItem() {
+    val context = LocalContext.current
+    SettingsNavigationItem(
+        headline = "原生会话气泡",
+        supporting = "在系统中允许气泡，展开后可查看运行中会话并直接回复",
+        onClick = {
+            val settings = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_BUBBLE_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                context.startActivity(settings)
+            } catch (_: android.content.ActivityNotFoundException) {
+                val fallback = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                try { context.startActivity(fallback) }
+                catch (_: android.content.ActivityNotFoundException) {
+                    android.widget.Toast.makeText(context, "系统未提供通知设置入口", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        },
+    )
+}
 
 /**
  * 设置页「屏幕上下文分析与圈选」条目的呈现结论：

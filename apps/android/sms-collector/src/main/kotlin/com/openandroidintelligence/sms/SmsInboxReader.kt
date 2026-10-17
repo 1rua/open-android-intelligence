@@ -17,7 +17,12 @@ data class SmsInboxRow(
     }
 }
 
-data class SmsInboxQuery(val history: SmsHistoryPolicy, val cursor: SmsCursor? = null)
+data class SmsInboxQuery(
+    val history: SmsHistoryPolicy,
+    val cursor: SmsCursor? = null,
+    val senders: Set<String> = emptySet(),
+    val textQuery: String = "",
+)
 
 fun interface SmsInboxReader {
     fun query(request: SmsInboxQuery): List<SmsInboxRow>

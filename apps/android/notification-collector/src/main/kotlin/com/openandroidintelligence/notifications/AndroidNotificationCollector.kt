@@ -94,12 +94,18 @@ class AndroidNotificationCollector(
                 "request revision ${request.policyRevision} does not match ${policy.policyRevision}",
             )
         }
+        val receivedAfter = request.receivedAfterEpochMs
         val records = active.values.asSequence()
+            .filter { request.packageIds.isEmpty() || it.raw.packageName in request.packageIds }
+            .filter { receivedAfter == null || it.raw.postedAtEpochMs >= receivedAfter }
+            .sortedByDescending { it.raw.postedAtEpochMs }
             .mapNotNull { accepted ->
                 val decision = evaluator.evaluate(accepted.raw.packageName)
                 if (!decision.accepted) return@mapNotNull null
                 toUpsert(accepted, policy, decision.fieldAccess!!)
             }
+            .filter { request.textQuery.isEmpty() || it.content?.title.orEmpty().contains(request.textQuery, true) ||
+                it.content?.body.orEmpty().contains(request.textQuery, true) }
             .take(request.limit)
             .toList()
         NotificationCaptureResult(
@@ -110,6 +116,23 @@ class AndroidNotificationCollector(
     }
 
     override fun observeAutoSend(): Flow<NotificationCaptureResult> = autoSend
+
+    /** Refresh an OS snapshot without retaining notifications removed while disconnected. */
+    fun reconcileActive(notifications: List<RawNotification>) = synchronized(lock) {
+        val keys = notifications.mapTo(HashSet()) { it.notificationKey }
+        active.keys.toList().filter { it !in keys }.forEach(::onRemoved)
+        notifications.forEach { notification ->
+            val previous = active[notification.notificationKey]?.raw
+            // Metadata-only storage cannot be compared with raw title/body fields.
+            val comparable = if (evaluator.policy.fieldAccess == NotificationFieldAccess.METADATA) {
+                notification.copy(title = null, body = null)
+            } else notification
+            if (previous != comparable) onPosted(notification)
+        }
+    }
+
+    /** Disconnect/revocation must not leave an accessible stale snapshot. */
+    fun clearActive() = synchronized(lock) { active.clear() }
 
     /** Feed a NotificationListenerService callback through the policy gate. */
     fun onPosted(notification: RawNotification): Boolean = synchronized(lock) {
@@ -221,6 +244,8 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
     private var runtime: NotificationRuntime? = null
     private var runtimeScope: CoroutineScope? = null
     private var preinstalledCollector: AndroidNotificationCollector? = null
+    private var session: NotificationListenerSession? = null
+    private var listenerConnected = false
 
     override fun onCreate() {
         super.onCreate()
@@ -230,19 +255,48 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
         runtime = created
         preinstalledCollector?.let(created::replaceCollector)
         collector = created.currentCollector()
-        NotificationRuntimeFactoryRegistry.activeCollector = collector
         runtime?.start()
+        installSession()
     }
 
     fun installCollector(value: AndroidNotificationCollector) {
         preinstalledCollector = value
         runtime?.replaceCollector(value)
         collector = value
-        NotificationRuntimeFactoryRegistry.activeCollector = value
+        installSession()
+    }
+
+    private fun installSession() {
+        session?.disconnect()
+        session = collector?.let { value ->
+            NotificationListenerSession(value) { activeNotifications?.map { it.toRawNotification() } }
+        }
+        if (listenerConnected) {
+            session?.connect()
+            NotificationRuntimeFactoryRegistry.activeSession = session
+        }
+    }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        listenerConnected = true
+        session?.connect()
+        NotificationRuntimeFactoryRegistry.activeSession = session
+        session?.refresh()
+    }
+
+    override fun onListenerDisconnected() {
+        listenerConnected = false
+        if (NotificationRuntimeFactoryRegistry.activeSession === session) NotificationRuntimeFactoryRegistry.activeSession = null
+        session?.disconnect()
+        super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
-        if (NotificationRuntimeFactoryRegistry.activeCollector === collector) NotificationRuntimeFactoryRegistry.activeCollector = null
+        if (NotificationRuntimeFactoryRegistry.activeSession === session) NotificationRuntimeFactoryRegistry.activeSession = null
+        session?.disconnect()
+        session = null
+        listenerConnected = false
         runtime?.stop()
         runtime = null
         collector = null
@@ -253,21 +307,23 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
     }
 
     override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification) {
-        val extras = sbn.notification.extras
-        collector?.onPosted(
-            RawNotification(
-                packageName = sbn.packageName,
-                notificationKey = sbn.key,
-                appLabel = null,
-                title = extras?.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString(),
-                body = extras?.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString(),
-                channelId = sbn.notification.channelId,
-                postedAtEpochMs = sbn.postTime,
-            ),
+        session?.posted(sbn.toRawNotification())
+    }
+
+    private fun android.service.notification.StatusBarNotification.toRawNotification(): RawNotification {
+        val extras = notification.extras
+        return RawNotification(
+            packageName = packageName,
+            notificationKey = key,
+            appLabel = null,
+            title = extras?.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString(),
+            body = extras?.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString(),
+            channelId = notification.channelId,
+            postedAtEpochMs = postTime,
         )
     }
 
     override fun onNotificationRemoved(sbn: android.service.notification.StatusBarNotification) {
-        collector?.onRemoved(sbn.key)
+        session?.removed(sbn.key)
     }
 }

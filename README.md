@@ -213,7 +213,7 @@ Hermes 插件在加载时按 `contract-pin.json` 锁定的提交获取协议契�
 
 ### 4. 构建官方设备插件包（.alp）
 
-先用固定 Rust 工具链编译真实 WASM，再提供由发行者保管的原始 32 字节 Ed25519 seed 文件。参考插件业务目前仍为 echo，以下步骤验证编译、ABI 和封装，不代表通知/短信/通话查询已可执行。
+先用固定 Rust 工具链编译真实 WASM，再提供由发行者保管的原始 32 字节 Ed25519 seed 文件。参考插件通过平台内核调用设备读取原语；安装后仍需启用插件并授权当前 Gateway 配对。短信、通知读取以及实时回复通知、原生会话气泡的配置及验证步骤见[使用说明](docs/mvp/device-reads-and-reply-notifications.md)。
 
 ```bash
 cargo build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml
@@ -260,7 +260,7 @@ apps/android/tools/verify-debug-signing.sh \
 | **Hermes 网关适配器** | pytest 与真实 aiohttp SSE/WS 签名、撤销测试 | 已覆盖；宿主历史/工具结果交付仍不完整 |
 | **OpenClaw 适配器插件** | 独立仓固定版本、宿主运行时加载与 66 个共享向量 | 固定版安装/加载及协议向量已验证；Android 真机闭环未执行 |
 | **设备插件打包与运行时库** | 确定性签名封装、真实 WASM ABI、预算和安装恢复测试 | 库验证通过；App 执行链路待装配 |
-| **官方参考插件业务** | 通知、短信、通话记录实现当前为 echo | 未完成，不能执行查询业务 |
+| **官方参考插件业务** | 通知、短信、通话记录通过平台内核查询；受系统权限与本机授权限制 | 需安装并授权设备插件；真机闭环仍需单独验证 |
 | **Android 账户与界面** | 编译、Robolectric 与模块测试 | 账户/身份/事件逻辑已覆盖；加密离线镜像待接通 |
 | **Companion 私网通道** | 未完成 tsnet pump 与可信 IPC token 签发 | 入口关闭，拒绝创建通道 |
 | **物理真机端到端** | Android Keystore、证书轮换、SAF 取消和真实宿主 | 本轮未执行 |

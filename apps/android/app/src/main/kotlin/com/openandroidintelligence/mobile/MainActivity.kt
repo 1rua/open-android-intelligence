@@ -70,7 +70,13 @@ import kotlinx.coroutines.withContext
  */
 class MainActivity : ComponentActivity() {
     private val pendingInvitation = androidx.compose.runtime.mutableStateOf<String?>(null)
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString() }
+    private val pendingReply = androidx.compose.runtime.mutableStateOf<ReplyNotificationTarget?>(null)
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
+        ReplyNotificationTarget.from(intent)?.let { pendingReply.value = it }
+    }
 
     private val handoffGate: AssistantHandoffGate = DefaultAssistantHandoffGate()
     private var lastHandoffDecision: AssistantHandoffDecision =
@@ -106,6 +112,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
+        pendingReply.value = ReplyNotificationTarget.from(intent)
         enableEdgeToEdge()
 
         val app = application as OpenAndroidIntelligenceApplication
@@ -140,6 +147,32 @@ class MainActivity : ComponentActivity() {
                 val operationNotice by runtime.operationNotice.collectAsState()
                 var showSettingsSheet by remember { mutableStateOf(false) }
                 var showAssistant by remember { mutableStateOf(false) }
+                val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+                    runtime.replyNotifications.refreshPermission()
+                    runtime.nativeConversationNotifications.refreshActive()
+                }
+                LaunchedEffect(phase) {
+                    runtime.replyNotifications.refreshPermission()
+                    runtime.nativeConversationNotifications.refreshActive()
+                    if (phase is ConnectionPhase.Connected && runtime.replyNotifications.enabled.value &&
+                        !runtime.replyNotifications.permissionRequested &&
+                        ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        runtime.replyNotifications.markPermissionRequested()
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+                LaunchedEffect(phase, controller, pendingReply.value) {
+                    pendingReply.value?.let { target ->
+                        if (runtime.openReplyNotification(target)) {
+                            showSettingsSheet = false
+                            showAssistant = false
+                            pendingReply.value = null
+                            intent.data = null
+                        } else if (phase is ConnectionPhase.Connected) {
+                            Toast.makeText(this@MainActivity, "请切换到收到回复的账号后查看会话", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
 
                 var recording by remember { mutableStateOf<VoiceRecording?>(null) }
                 var recordingTarget by remember { mutableStateOf<Pair<WorkbenchController, String?>?>(null) }
