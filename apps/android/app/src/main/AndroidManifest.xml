@@ -10,8 +10,10 @@
         系统授权对话框显式授予；未授权时圈选明确降级为不可用，绝无静默采集。
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
 
     <!--
         usesCleartextTraffic 允许用户显式输入的 http:// 明文 Gateway（ADR 0047）。
@@ -51,6 +53,10 @@
             android:launchMode="standard"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.OpenAndroidIntelligence" />
+        <service
+            android:name=".AgentSessionForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <service
             android:name="com.openandroidintelligence.capability.MediaProjectionCaptureService"
             android:exported="false"

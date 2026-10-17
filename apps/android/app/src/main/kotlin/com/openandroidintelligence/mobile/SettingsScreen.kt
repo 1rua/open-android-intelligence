@@ -646,6 +646,10 @@ private fun SettingsOverviewScreen(
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     ConversationBubbleSettingsItem()
+                    if (android.os.Build.VERSION.SDK_INT >= 36) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        LiveUpdatesSettingsItem()
+                    }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
                         headline = "通知采集设置",
@@ -1068,6 +1072,10 @@ private fun PairingSubScreen(
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     ConversationBubbleSettingsItem()
+                    if (android.os.Build.VERSION.SDK_INT >= 36) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        LiveUpdatesSettingsItem()
+                    }
                 }
             }
 

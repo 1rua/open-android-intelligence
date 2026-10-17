@@ -100,7 +100,9 @@ cd apps/android
 ```
 
 The source scaffold currently declares provisional Gradle 8.12, AGP 8.9.2,
-Kotlin 2.1.20, compile/target SDK 35 and min SDK 34 values. The Gradle wrapper JAR
+Kotlin 2.1.20, app compile SDK 36, target SDK 35 and min SDK 34 values. Library
+modules retain compile SDK 35. Builds and CI use JDK 21; app bytecode remains
+Java 17. API 36 Robolectric tests require JDK 21. The Gradle wrapper JAR
 is included; the Android SDK and native AAR are external. Actual build results
 are recorded separately from controller approval under `MVP-DEP-ANDROID` and
 `MVP-DEP-TSNET`; the historical dependency evidence needs renewal.

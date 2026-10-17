@@ -73,6 +73,7 @@ data class OutgoingMessage(
 data class BatchAcceptance(
     val batchId: String,
     val memberIds: Map<String, String> = emptyMap(),
+    val generationId: String? = null,
 ) {
     /**
      * The ids the Gateway issued for the accepted members.
@@ -82,7 +83,7 @@ data class BatchAcceptance(
      */
     val acceptedMessageIds: List<String> get() = memberIds.values.toList()
 }
-data class MessageAcceptance(val messageId: String, val correlationId: String)
+data class MessageAcceptance(val messageId: String, val correlationId: String, val generationId: String? = null)
 
 enum class CancelGenerationOutcome {
     CANCELLED,
