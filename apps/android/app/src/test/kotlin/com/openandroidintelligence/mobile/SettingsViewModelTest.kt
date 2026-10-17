@@ -144,10 +144,40 @@ class SettingsViewModelTest {
         assertTrue(viewModel.uiState.value.isScreenSelectionGranted)
 
         viewModel.setNotificationsGrant(true)
-        assertTrue(viewModel.uiState.value.isNotificationsGranted)
+        assertFalse("没有回复通知装配时不得伪造系统通知授权", viewModel.uiState.value.isNotificationsGranted)
+        assertFalse(pairingGrants.state.value!!.granted.contains(PairingGrantCapabilities.NOTIFICATIONS))
 
         viewModel.setSmsGrant(false)
         assertFalse(viewModel.uiState.value.isSmsGranted)
+    }
+
+    @Test
+    fun replyNotificationSwitchControlsAppPreferenceWithoutGrantingNotificationCollection() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val runtime = GatewayRuntime(
+            context = context,
+            scope = testScope,
+            pairingGrants = pairingGrants,
+            credentialStore = InMemoryCredentialStore(),
+            deviceKeys = InMemoryDeviceKeySource(),
+            localDocumentKeyProvider = TestDocumentKeys,
+        )
+        val viewModel = viewModelFor(runtime)
+        val originalGrants = pairingGrants.state.value
+        viewModel.setNotificationsGrant(false)
+        assertFalse(runtime.replyNotifications.enabled.value)
+        assertFalse(viewModel.uiState.value.isNotificationsGranted)
+        viewModel.setNotificationsGrant(true)
+        assertTrue(runtime.replyNotifications.enabled.value)
+        assertTrue(viewModel.uiState.value.isNotificationsGranted)
+        assertEquals("任务通知不授予读取其他应用通知的能力", originalGrants, pairingGrants.state.value)
+        assertTrue(ReplyNotificationSettings(context).enabled.value)
+
+        org.robolectric.Shadows.shadowOf(context).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        viewModel.refreshReplyNotificationPermission()
+        assertFalse(viewModel.uiState.value.isNotificationsGranted)
+        assertTrue("系统拒绝权限不会丢失用户的开关偏好", runtime.replyNotifications.enabled.value)
     }
 
     @Test

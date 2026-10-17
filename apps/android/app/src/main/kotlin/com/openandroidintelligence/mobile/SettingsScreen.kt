@@ -1,6 +1,13 @@
 package com.openandroidintelligence.mobile
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -140,6 +147,32 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val navController = rememberNavController()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        viewModel.refreshReplyNotificationPermission()
+    }
+    DisposableEffect(viewModel, lifecycleOwner) {
+        viewModel.refreshReplyNotificationPermission()
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshReplyNotificationPermission()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val setReplyNotifications: (Boolean) -> Unit = { enabled ->
+        viewModel.setNotificationsGrant(enabled)
+        if (enabled) {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                !viewModel.replyNotificationPermissionRequested()) {
+                viewModel.markReplyNotificationPermissionRequested()
+                notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            } else if (!uiState.replyNotificationsAllowed) {
+                context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
+            }
+        }
+    }
 
     var showTrustModeDialog by remember { mutableStateOf(false) }
     var showEmergencyDialog by remember { mutableStateOf(false) }
@@ -168,9 +201,8 @@ fun SettingsScreen(
                 onSetTheme = viewModel::setTheme,
                 onSetDynamicColor = viewModel::setDynamicColor,
                 onSetReduceMotion = viewModel::setReduceMotion,
-                onSetSmsGrant = viewModel::setSmsGrant,
                 onSetScreenSelectionGrant = viewModel::setScreenSelectionGrant,
-                onSetNotificationsGrant = viewModel::setNotificationsGrant,
+                onSetNotificationsGrant = setReplyNotifications,
                 onToggleTrustMode = { enable ->
                     if (enable) showTrustModeDialog = true else viewModel.disableTrustMode()
                 },
@@ -205,9 +237,9 @@ fun SettingsScreen(
             PairingSubScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
-                onSetSmsGrant = viewModel::setSmsGrant,
+                onNavigate = { route -> navController.navigate(route) { launchSingleTop = true } },
                 onSetScreenSelectionGrant = viewModel::setScreenSelectionGrant,
-                onSetNotificationsGrant = viewModel::setNotificationsGrant,
+                onSetNotificationsGrant = setReplyNotifications,
             )
         }
 
@@ -234,6 +266,7 @@ fun SettingsScreen(
                 allowRuntimePlugins = uiState.allowRuntimePlugins,
                 pluginRuntimesWired = uiState.pluginRuntimesWired,
                 onBack = { navController.popBackStack() },
+                onOpenNotificationSettings = { navController.navigate(SettingsRoutes.NOTIFICATIONS) { launchSingleTop = true } },
             )
         }
 
@@ -381,7 +414,6 @@ private fun SettingsOverviewScreen(
     onSetTheme: (ThemePreference) -> Unit,
     onSetDynamicColor: (Boolean) -> Unit,
     onSetReduceMotion: (Boolean) -> Unit,
-    onSetSmsGrant: (Boolean) -> Unit,
     onSetScreenSelectionGrant: (Boolean) -> Unit,
     onSetNotificationsGrant: (Boolean) -> Unit,
     onToggleTrustMode: (Boolean) -> Unit,
@@ -586,15 +618,11 @@ private fun SettingsOverviewScreen(
                         onClick = { onNavigate(SettingsRoutes.PAIRING) },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "读取与发送短信",
-                        // 裁决 D5：这是本机授权（内核裁决用）；当前 Gateway 契约
-                        // 没有授权上行同步端点，不得宣称「每次交互须经手机确认」。
-                        supporting = "本机授权（内核裁决用），授权变更不经 Gateway 同步",
-                        checked = uiState.isSmsGranted,
-                        enabled = uiState.pairingGrants != null,
+                    SettingsNavigationItem(
+                        headline = "短信读取",
+                        supporting = "在插件管理中安装、启用短信插件，并为当前 Gateway 配对授权",
                         icon = Icons.Default.Sms,
-                        onCheckedChange = onSetSmsGrant,
+                        onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     ScreenSelectionCapabilityItem(
@@ -609,13 +637,15 @@ private fun SettingsOverviewScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     NotificationPushCapabilityItem(
                         checked = uiState.isNotificationsGranted,
-                        presentation = notificationPushCapabilityPresentation(
-                            grantsBound = uiState.pairingGrants != null,
-                            mirrorAgreed = uiState.conversationUi["conversation-mirror-v1"],
+                        presentation = replyNotificationPresentation(
+                            wired = uiState.replyNotificationsWired,
+                            systemAllowed = uiState.replyNotificationsAllowed,
                         ),
                         icon = Icons.Default.Notifications,
                         onCheckedChange = onSetNotificationsGrant,
                     )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    ConversationBubbleSettingsItem()
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
                         headline = "通知采集设置",
@@ -968,7 +998,7 @@ private fun GatewaySubScreen(
 private fun PairingSubScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
-    onSetSmsGrant: (Boolean) -> Unit,
+    onNavigate: (String) -> Unit,
     onSetScreenSelectionGrant: (Boolean) -> Unit,
     onSetNotificationsGrant: (Boolean) -> Unit,
 ) {
@@ -1010,14 +1040,11 @@ private fun PairingSubScreen(
                         modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "读取与发送短信",
-                        // 裁决 D5：本机授权；授权变更不经 Gateway 同步。
-                        supporting = "org.openandroidintelligence.sms.query@1.0.0 (本机授权，不经 Gateway 同步)",
-                        checked = uiState.isSmsGranted,
-                        enabled = uiState.pairingGrants != null,
+                    SettingsNavigationItem(
+                        headline = "短信读取",
+                        supporting = "在插件管理中安装、启用短信插件，并为当前 Gateway 配对授权",
                         icon = Icons.Default.Sms,
-                        onCheckedChange = onSetSmsGrant,
+                        onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     ScreenSelectionCapabilityItem(
@@ -1032,14 +1059,24 @@ private fun PairingSubScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     NotificationPushCapabilityItem(
                         checked = uiState.isNotificationsGranted,
-                        presentation = notificationPushCapabilityPresentation(
-                            grantsBound = uiState.pairingGrants != null,
-                            mirrorAgreed = uiState.conversationUi["conversation-mirror-v1"],
+                        presentation = replyNotificationPresentation(
+                            wired = uiState.replyNotificationsWired,
+                            systemAllowed = uiState.replyNotificationsAllowed,
                         ),
                         icon = Icons.Default.Notifications,
                         onCheckedChange = onSetNotificationsGrant,
                     )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    ConversationBubbleSettingsItem()
                 }
+            }
+
+            SettingsSectionCard {
+                SettingsNavigationItem(
+                    headline = "通知采集设置",
+                    supporting = "配置允许读取的应用与内容范围；在插件管理中授权当前 Gateway",
+                    onClick = { onNavigate(SettingsRoutes.NOTIFICATIONS) },
+                )
             }
 
             SectionLabel("配对元数据")

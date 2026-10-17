@@ -26,7 +26,7 @@ class AndroidSmsInboxReaderTest {
         assertArrayEquals(arrayOf("_id", "thread_id", "address", "body", "date", "read", "sub_id"), query.projection)
         assertEquals("date >= ?", query.selection)
         assertArrayEquals(arrayOf("1700"), query.selectionArgs)
-        assertEquals("date DESC, _id DESC LIMIT 3", query.sortOrder)
+        assertEquals("date DESC, _id DESC", query.sortOrder)
     }
 
     @Test
@@ -47,7 +47,31 @@ class AndroidSmsInboxReaderTest {
         val query = requireNotNull(actual)
         assertEquals("date >= ? AND (date > ? OR (date = ? AND _id > ?))", query.selection)
         assertArrayEquals(arrayOf("1000", "1500", "1500", "42"), query.selectionArgs)
-        assertEquals("date DESC, _id DESC LIMIT 2", query.sortOrder)
+        assertEquals("date DESC, _id DESC", query.sortOrder)
+    }
+
+    @Test
+    fun query_binds_sender_and_matches_literal_unicode_text_before_limiting_results() {
+        var actual: RecordedQuery? = null
+        val cursor = CursorDouble(
+            columns = listOf("_id", "thread_id", "address", "body", "date", "read", "sub_id"),
+            rows = listOf(
+                listOf(43L, "9", "bank", "new unrelated message", 1800L, 1, null),
+                listOf(42L, "9", "bank", "CAFÉ 10%_\\", 1700L, 1, null),
+                listOf(41L, "9", "bank", "CAFÉ 10%_\\", 1600L, 1, null),
+            ),
+        )
+        val reader = AndroidSmsInboxReader { target, projection, selection, args, sort ->
+            actual = RecordedQuery(target, projection, selection, args, sort)
+            cursor.value
+        }
+
+        val rows = reader.query(SmsInboxQuery(SmsHistoryPolicy(null, 1), senders = setOf("bank", "friend"), textQuery = "café 10%_\\"))
+
+        assertEquals("address IN (?,?)", actual!!.selection)
+        assertArrayEquals(arrayOf("bank", "friend"), actual!!.selectionArgs)
+        assertEquals(listOf(42L), rows.map { it.providerId })
+        assertTrue(cursor.closed)
     }
 
     @Test

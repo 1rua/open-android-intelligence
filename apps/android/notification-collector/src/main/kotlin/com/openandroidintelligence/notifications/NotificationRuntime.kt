@@ -149,8 +149,10 @@ fun interface NotificationRuntimeFactory {
  * has no outbox, so an unconfigured install cannot emit notification data.
  */
 object NotificationRuntimeFactoryRegistry {
-    @Volatile var activeCollector: AndroidNotificationCollector? = null
-        internal set
+    @Volatile internal var activeSession: NotificationListenerSession? = null
+
+    /** Refresh from the connected OS listener; a created or disconnected service is unavailable. */
+    fun connectedCollector(): AndroidNotificationCollector? = activeSession?.refresh()
     private val defaultFactory = NotificationRuntimeFactory { scope ->
         NotificationRuntime(
             initialCollector = AndroidNotificationCollector(
@@ -174,5 +176,7 @@ object NotificationRuntimeFactoryRegistry {
 
     fun reset() {
         factory = defaultFactory
+        activeSession?.disconnect()
+        activeSession = null
     }
 }

@@ -39,6 +39,16 @@ class SettingsCapabilityUiTest {
         }
     }
 
+    @Test
+    fun bubbleSettingsEntryOpensTheSystemBubbleControlsForThisApp() {
+        setContent { ConversationBubbleSettingsItem() }
+        compose.onNodeWithText("原生会话气泡").performClick()
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val intent = org.robolectric.Shadows.shadowOf(context).nextStartedActivity
+        assertEquals(android.provider.Settings.ACTION_APP_NOTIFICATION_BUBBLE_SETTINGS, intent.action)
+        assertEquals(context.packageName, intent.getStringExtra(android.provider.Settings.EXTRA_APP_PACKAGE))
+    }
+
     // ------------------------------------------------------------------
     // 协商能力分组（条目 3-15）
     // ------------------------------------------------------------------

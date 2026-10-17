@@ -16,6 +16,8 @@ import kotlinx.coroutines.sync.withLock
 data class NotificationQueryFilter(
     val packageIds: List<String> = emptyList(),
     val fieldAccess: NotificationFieldAccess = NotificationFieldAccess.METADATA,
+    val receivedAfterEpochMs: Long? = null,
+    val textQuery: String = "",
 ) {
     init {
         if (packageIds.any { !PACKAGE_NAME.matches(it) }) {
@@ -91,7 +93,8 @@ class NotificationAgentQueryGateway(
         }
 
         val captured = collector.captureOnDemand(
-            OnDemandNotificationRead(request.operationId, request.policyRevision, request.limit),
+            OnDemandNotificationRead(request.operationId, request.policyRevision, request.limit,
+                request.filter.packageIds, request.filter.receivedAfterEpochMs, request.filter.textQuery),
         )
         val current = authority.snapshot()
         val currentFailure = authorizationFailure(request, current)
@@ -158,7 +161,13 @@ class NotificationAgentQueryGateway(
                     if (request.filter.packageIds.isEmpty()) record else null
                 }
             }
-        })
+        }.filter { record ->
+            val after = request.filter.receivedAfterEpochMs
+            val query = request.filter.textQuery
+            (after == null || (record.metadata?.postedAtEpochMs ?: Long.MIN_VALUE) >= after) &&
+                (query.isEmpty() || record.content?.title.orEmpty().contains(query, true) ||
+                    record.content?.body.orEmpty().contains(query, true))
+        }.take(request.limit))
     }
 
     private fun failed(reason: String, revision: ULong): NotificationCaptureResult = NotificationCaptureResult(
