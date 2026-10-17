@@ -13,6 +13,7 @@ import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.content.pm.PackageManager
 import android.content.LocusId
+import android.os.Build
 import android.graphics.drawable.Icon
 import android.net.Uri
 import androidx.core.content.ContextCompat
