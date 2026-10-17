@@ -15,6 +15,8 @@ import android.content.pm.PackageManager
 import android.content.LocusId
 import android.graphics.drawable.Icon
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.openandroidintelligence.conversation.data.GatewayEventDecoder
 import com.openandroidintelligence.conversation.model.MessagePart
@@ -36,13 +38,16 @@ class ReplyNotificationSettings(private val context: Context) {
     val enabled = _enabled.asStateFlow()
     private val _allowed = MutableStateFlow(isAllowed())
     val allowed = _allowed.asStateFlow()
+    private val _liveUpdatesAllowed = MutableStateFlow(canPostLiveUpdates())
+    val liveUpdatesAllowed = _liveUpdatesAllowed.asStateFlow()
+    val liveUpdatesSupported: Boolean get() = Build.VERSION.SDK_INT >= 36
     val permissionRequested: Boolean get() = preferences.getBoolean("permission-requested", false)
 
     fun setEnabled(enabled: Boolean) {
         check(preferences.edit().putBoolean("enabled", enabled).commit())
         _enabled.value = enabled
         if (!enabled) context.getSystemService(NotificationManager::class.java).let { manager ->
-            manager.activeNotifications.filter { it.notification.channelId == REPLY_CHANNEL_ID }.forEach { manager.cancel(it.tag, it.id) }
+            manager.activeNotifications.filter { it.notification.channelId in setOf(REPLY_CHANNEL_ID, LIVE_UPDATE_CHANNEL_ID) }.forEach { manager.cancel(it.tag, it.id) }
         }
     }
 
@@ -50,7 +55,22 @@ class ReplyNotificationSettings(private val context: Context) {
         check(preferences.edit().putBoolean("permission-requested", true).commit())
     }
 
-    fun refreshPermission() { _allowed.value = isAllowed() }
+    fun refreshPermission() {
+        _allowed.value = isAllowed()
+        _liveUpdatesAllowed.value = canPostLiveUpdates()
+        if (!enabled.value || !_liveUpdatesAllowed.value) cancelLiveUpdateNotifications(context)
+    }
+
+    fun canPostLiveUpdates(): Boolean {
+        if (Build.VERSION.SDK_INT < 36 || !isAllowed()) return false
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val channel = manager.getNotificationChannel(LIVE_UPDATE_CHANNEL_ID)
+        return (channel == null || channel.importance > NotificationManager.IMPORTANCE_MIN) && manager.canPostPromotedNotifications()
+    }
+
+    fun liveUpdatesSettingsIntent(): Intent? = if (Build.VERSION.SDK_INT >= 36) {
+        Intent(Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    } else null
 
     fun isAllowed(): Boolean {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -88,24 +108,29 @@ internal class AndroidReplyNotificationPublisher(
     private val settings: ReplyNotificationSettings,
 ) {
     private val publishedShortcuts = mutableMapOf<String, String>()
+    private val liveUpdates = LiveUpdateNotifications(context, settings)
     fun post(target: ReplyNotificationTarget, generationId: String) {
         update(NativeConversationSession(target, generationId, status = NativeConversationStatus.COMPLETED, updatedAt = System.currentTimeMillis()), true)
     }
 
     fun cancel(target: ReplyNotificationTarget) {
         context.getSystemService(NotificationManager::class.java).cancel(notificationTag(target), 0)
+        liveUpdates.cancel(target)
     }
 
     fun update(session: NativeConversationSession, alert: Boolean) {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(REPLY_CHANNEL_ID, "Agent 任务回复", NotificationManager.IMPORTANCE_DEFAULT)
             .apply { description = "Agent 处理中实时显示公开回复，并在任务结束时提醒"; setAllowBubbles(true) })
+        liveUpdates.update(session)
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
         val tag = notificationTag(target)
         val shortcutId = "agent-conversation-$tag"
         val icon = Icon.createWithResource(context, R.drawable.ic_agent_bubble)
-        val agent = Person.Builder().setName("Agent").setKey("agent-" + replyDigest(target.profileId + target.accountId))
+        val participantKey = replyDigest("${target.profileId}\u0000${target.accountId}")
+        val localUser = Person.Builder().setName("我").setKey("user-$participantKey").setBot(false).build()
+        val agent = Person.Builder().setName("Agent").setKey("agent-$participantKey")
             .setBot(true).setIcon(icon).build()
         val bubbleIntent = target.bubbleIntent(context)
         val shortcutManager = context.getSystemService(ShortcutManager::class.java)
@@ -113,7 +138,7 @@ internal class AndroidReplyNotificationPublisher(
         val shortcut = ShortcutInfo.Builder(context, shortcutId).setShortLabel(session.title)
             .setActivity(android.content.ComponentName(context, MainActivity::class.java))
             .setCategories(setOf("android.shortcut.conversation"))
-            .setLongLived(true).setPersons(arrayOf(agent)).setIcon(icon)
+            .setLongLived(true).setPersons(arrayOf(localUser, agent)).setIcon(icon)
             .setExtras(android.os.PersistableBundle().apply { putString("reply-account", accountGroup) })
             .setLocusId(LocusId(shortcutId)).setIntent(bubbleIntent).build()
         // A device may disable shortcuts/bubbles. The notification still works.
@@ -147,7 +172,7 @@ internal class AndroidReplyNotificationPublisher(
             NativeConversationStatus.CANCELLED -> "任务已取消"
             NativeConversationStatus.DISCONNECTED -> "重新连接后同步任务状态"
         } }
-        val style = Notification.MessagingStyle(Person.Builder().setName("我").build())
+        val style = Notification.MessagingStyle(localUser)
             .setConversationTitle(session.title).addMessage(preview, session.updatedAt, agent)
         val notification = Notification.Builder(context, REPLY_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_agent_reply)
@@ -351,7 +376,7 @@ internal fun replyDigest(value: String): String = MessageDigest.getInstance("SHA
 internal fun replyCompletionPreferences(context: Context, profileId: String, accountId: String): SharedPreferences =
     context.getSharedPreferences("agent-reply-completions-" + replyDigest("$profileId\u0000$accountId"), Context.MODE_PRIVATE)
 
-private fun replyAccountGroup(profileId: String, accountId: String) = "agent-replies." + replyDigest("$profileId\u0000$accountId")
+internal fun replyAccountGroup(profileId: String, accountId: String) = "agent-replies." + replyDigest("$profileId\u0000$accountId")
 
 internal fun isPublicAssistantPayload(payload: JsonValue.JObject): Boolean =
     JsonFields.string(payload, "sender") == "assistant" &&

@@ -95,7 +95,7 @@
 
 ```text
 open-android-intelligence/
-├── apps/android/                     # Android 原生宿主工程（AGP 8.9.2, SDK 35, Kotlin 2.1.20）
+├── apps/android/                     # Android 原生宿主工程（AGP 8.9.2, SDK 36, Kotlin 2.1.20）
 │   ├── app/                          # 主入口 APK（宿主交互、平台设置、网关连接）
 │   ├── platform-kernel/              # 不可卸载平台内核（权限仲裁、插件生命周期、安全原语）
 │   ├── plugin-package/               # .alp 插件包解析、Ed25519 验签与安装器
@@ -130,8 +130,8 @@ open-android-intelligence/
 
 - **Node.js / npm**：验证使用固定 `24.18.0 / 11.16.0`；仓库 `tools/run-node24` 可管理本地固定工具链
 - **Python**：`>= 3.12`
-- **JDK**：`JDK 17` 或更高
-- **Android SDK**：`compileSdk 35`, `minSdk 34`
+- **JDK**：`JDK 21`（Android 16 Robolectric 验证需要；应用字节码仍为 Java 17）
+- **Android SDK**：App `compileSdk 36`、`targetSdk 35`、`minSdk 34`
 
 ### 2. 协议契约与跨宿主一致性校验
 

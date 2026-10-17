@@ -364,7 +364,11 @@ class NativeConversationNotificationsTest {
         assertEquals(target, BubbleConversationActivity.targetFromIntent(shortcut.intent!!))
         assertTrue(org.robolectric.util.ReflectionHelpers.callInstanceMethod<Boolean>(shortcut, "isLongLived"))
         val persons = org.robolectric.util.ReflectionHelpers.callInstanceMethod<Array<android.app.Person>>(shortcut, "getPersons")
-        assertEquals("Agent", persons.single().name.toString())
+        assertEquals(2, persons.size)
+        assertEquals("Agent", persons.single { it.isBot }.name.toString())
+        val localUser = persons.single { !it.isBot }
+        assertEquals("我", localUser.name.toString())
+        assertEquals(firstStyle.user.key, localUser.key)
         assertEquals(setOf("android.shortcut.conversation"), shortcut.categories)
         assertEquals("Agent", firstStyle.messages.single().senderPerson!!.name.toString())
 

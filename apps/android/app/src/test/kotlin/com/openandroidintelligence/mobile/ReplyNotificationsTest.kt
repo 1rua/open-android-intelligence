@@ -277,6 +277,28 @@ class ReplyNotificationsTest {
         assertFalse(settings.isAllowed())
     }
 
+    @Test fun bubbleShortcutContainsTheRealLocalUserAlongsideTheBotAndTargetsEmbeddedActivity() {
+        val publisher = AndroidReplyNotificationPublisher(context, ReplyNotificationSettings(context))
+        val target = ReplyNotificationTarget("profile-a", "account-a", "conv-a")
+        publisher.post(target, "generation")
+        val notification = context.getSystemService(NotificationManager::class.java).activeNotifications.single().notification
+        val style = android.app.Notification.Builder.recoverBuilder(context, notification).style as android.app.Notification.MessagingStyle
+        val shortcut = context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.single { it.id == notification.shortcutId }
+        val participants = org.robolectric.util.ReflectionHelpers.callInstanceMethod<Array<android.app.Person>>(shortcut, "getPersons")
+        assertEquals(2, participants.size)
+        assertTrue("Android excludes only-bot shortcuts from conversation/bubble eligibility", participants.any { !it.isBot && it.key == style.user.key })
+        assertTrue("The assistant must remain accurately identified as a bot", participants.any { it.isBot && it.key == style.messages.single().senderPerson!!.key })
+        assertFalse(style.user.isBot)
+        assertEquals(MainActivity::class.java.name, requireNotNull(shortcut.activity).className)
+        assertEquals(BubbleConversationActivity::class.java.name, shortcut.intent!!.component!!.className)
+        assertEquals(target, BubbleConversationActivity.targetFromIntent(shortcut.intent!!))
+        assertEquals(shortcut.id, notification.bubbleMetadata!!.shortcutId)
+        assertNull("Shortcut bubbles use the shortcut launch intent, not an app PendingIntent", notification.bubbleMetadata!!.intent)
+        assertTrue("The separate normal notification tap remains immutable", notification.contentIntent.isImmutable)
+        assertFalse(ReplyNotificationSettings(context).liveUpdatesSupported)
+        assertNull(ReplyNotificationSettings(context).liveUpdatesSettingsIntent())
+    }
+
     @Test fun authenticatedRuntimeReceivesSseAndPublishesThenTapOpensMatchingConversationOnly() {
         clock = System.currentTimeMillis()
         val gateway = LoopbackGatewayStub()

@@ -51,6 +51,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.openandroidintelligence.gateway.http.EventSessionRejectedException
 import java.io.File
 import java.io.InputStream
@@ -147,6 +150,14 @@ class GatewayRuntime(
     val connectedAccountId: String? get() = lastAccountId.takeIf { activeHttpClient != null }
     val replyNotifications = ReplyNotificationSettings(context)
     private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications)
+    private val sessionKeepAlive = AgentSessionKeepAlive(context)
+    private val backgroundOwnershipLock = Any()
+    @Volatile private var appVisible = false
+    @Volatile private var backgroundSessionActive = false
+    private val bubbleWorkJobs = java.util.concurrent.ConcurrentHashMap<WorkbenchController, Job>()
+    private val bubbleWorkOwners = mutableMapOf<WorkbenchController, BubbleConversationWorkspace>()
+    private val activeBubbleWork = mutableSetOf<WorkbenchController>()
+    private val hasBubbleWork = MutableStateFlow(false)
     internal val nativeConversationNotifications = NativeConversationNotifications(context, scope, replyPublisher::update,
         cancel = replyPublisher::cancel,
         titleFor = { target ->
@@ -162,13 +173,69 @@ class GatewayRuntime(
             bubbleWorkspace?.accepts(target) == true
     }
 
-    internal fun createBubbleConversation(target: ReplyNotificationTarget): WorkbenchController? =
-        if (isBubbleTargetCurrent(target)) bubbleWorkspace?.open(target) else null
+    internal fun createBubbleConversation(target: ReplyNotificationTarget): WorkbenchController? {
+        val workspace = bubbleWorkspace ?: return null
+        val created = if (isBubbleTargetCurrent(target)) workspace.open(target) else null
+        if (created != null) {
+            val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                created.hasActiveWork.collect {
+                    synchronized(bubbleWorkJobs) {
+                        if (bubbleWorkJobs.containsKey(created)) {
+                            if (created.hasActiveWork.value) activeBubbleWork += created
+                            else activeBubbleWork -= created
+                            hasBubbleWork.value = activeBubbleWork.isNotEmpty()
+                        }
+                    }
+                    if (workspace.releaseIfIdle(created)) untrackBubbleWork(created)
+                }
+            }
+            synchronized(bubbleWorkJobs) {
+                bubbleWorkJobs[created] = job
+                bubbleWorkOwners[created] = workspace
+            }
+            job.start()
+        }
+        return created
+    }
 
     internal fun releaseBubbleConversation(controller: WorkbenchController) {
-        bubbleWorkspace?.release(controller)
-        // A session replacement may have already retired the owning workspace.
-        controller.close()
+        val owner = synchronized(bubbleWorkJobs) { bubbleWorkOwners[controller] }
+        if (owner == null || owner.release(controller)) {
+            untrackBubbleWork(controller)
+            // A session replacement may have already retired the owning workspace.
+            controller.close()
+        } else {
+            // Read the synchronous submission fact here as well: a send followed
+            // immediately by UI disposal may precede the StateFlow collector.
+            synchronized(bubbleWorkJobs) {
+                if (bubbleWorkJobs.containsKey(controller)) {
+                    activeBubbleWork += controller
+                    hasBubbleWork.value = true
+                }
+            }
+        }
+        refreshBackgroundWork()
+    }
+
+    private fun untrackBubbleWork(controller: WorkbenchController) {
+        synchronized(bubbleWorkJobs) {
+            bubbleWorkJobs.remove(controller)?.cancel()
+            bubbleWorkOwners.remove(controller)
+            activeBubbleWork -= controller
+            hasBubbleWork.value = activeBubbleWork.isNotEmpty()
+        }
+    }
+
+    private fun clearBubbleWorkTracking() {
+        val retired = synchronized(bubbleWorkJobs) {
+            val jobs = bubbleWorkJobs.values.toList()
+            bubbleWorkJobs.clear()
+            bubbleWorkOwners.clear()
+            activeBubbleWork.clear()
+            hasBubbleWork.value = false
+            jobs
+        }
+        retired.forEach(Job::cancel)
     }
 
     /** A notification never borrows another account's currently open workbench. */
@@ -201,6 +268,21 @@ class GatewayRuntime(
             runCatching { EncryptedAttachmentStagingStore.cleanupExpiredRoot(stagingRoot) }
                 .onFailure { _operationNotice.value = "ATTACHMENT_CLEANUP_FAILED:ATTACHMENT_STORAGE_UNAVAILABLE" }
         }
+        scope.launch {
+            _controller.collectLatest { workbench ->
+                if (workbench == null) refreshBackgroundWork()
+                else workbench.hasActiveWork.collect { refreshBackgroundWork() }
+            }
+        }
+        scope.launch {
+            combine(
+                nativeConversationNotifications.sessions.map { sessions -> sessions.any { it.isRunning } }.distinctUntilChanged(),
+                hasBubbleWork,
+                replyNotifications.enabled,
+                replyNotifications.allowed,
+                phase,
+            ) { _, _, _, _, _ -> Unit }.collect { refreshBackgroundWork() }
+        }
     }
 
     /** 是否正在向 Gateway 轮换凭据；界面据此展示进行中并阻止重复点击。 */
@@ -214,9 +296,37 @@ class GatewayRuntime(
      * missing workbench is a no-op rather than something to invent.
      */
     fun onAppForegrounded() {
+        synchronized(backgroundOwnershipLock) { appVisible = true }
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
+        refreshBackgroundWork(foregrounded = true)
         _controller.value?.onForegrounded()
+    }
+
+    fun onAppBackgrounded() {
+        // Start while leaving a visible activity, never as an arbitrary background
+        // restart. The service then keeps already submitted work receiving replies.
+        refreshBackgroundWork()
+        synchronized(backgroundOwnershipLock) { appVisible = false }
+        replyNotifications.refreshPermission()
+        nativeConversationNotifications.refreshActive()
+    }
+
+    private fun backgroundWorkSnapshot(): Boolean =
+        phase.value is ConnectionPhase.Connected && replyNotifications.enabled.value && replyNotifications.allowed.value &&
+        // A bubble can stop before its asynchronous observer is scheduled.
+        // Read its owned submission facts without acquiring the tracking lock.
+        (nativeConversationNotifications.sessions.value.any { it.isRunning } || bubbleWorkJobs.keys.any { it.hasActiveWork.value } ||
+            _controller.value?.hasActiveWork?.value == true)
+
+    private fun refreshBackgroundWork(foregrounded: Boolean = false) {
+        synchronized(backgroundOwnershipLock) {
+            // Read only atomic StateFlow values here, never Native's synchronized
+            // methods. A stale pre-teardown snapshot cannot restart the service.
+            val hasWork = backgroundSessionActive && backgroundWorkSnapshot()
+            if (foregrounded) sessionKeepAlive.onForegrounded(hasWork)
+            else sessionKeepAlive.update(hasWork, appVisible)
+        }
     }
 
     private var connectionJob: Job? = null
@@ -995,6 +1105,7 @@ class GatewayRuntime(
                 downloads = downloads,
             ) }
         }
+        clearBubbleWorkTracking()
         bubbleWorkspace?.close()
         bubbleWorkspace = BubbleConversationWorkspace(profileId, session.accountId) { conversationId ->
             if (activeHttpClient !== http || sessionJob !== ownedJob || !ownedJob.isActive) null
@@ -1027,7 +1138,9 @@ class GatewayRuntime(
             deviceRequests = deviceRequests,
         )
         GatewayLog.d("OaiConnection", "stage=CONNECTED state=ready")
+        synchronized(backgroundOwnershipLock) { backgroundSessionActive = true }
         nativeConversationNotifications.bind(profileId, session.accountId)
+        refreshBackgroundWork()
         val platformHttp = GatewayHttpClient(
             profile = profile,
             transport = transport,
@@ -1127,6 +1240,11 @@ class GatewayRuntime(
     private class PostLoginInitializationException(code: String) : IllegalStateException(code)
 
     private fun teardown() {
+        synchronized(backgroundOwnershipLock) {
+            backgroundSessionActive = false
+            sessionKeepAlive.stop()
+        }
+        clearBubbleWorkTracking()
         nativeConversationNotifications.leave()
         bubbleWorkspace?.close()
         bubbleWorkspace = null

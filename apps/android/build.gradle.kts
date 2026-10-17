@@ -31,7 +31,9 @@ allprojects {
 subprojects {
     plugins.withId("com.android.application") {
         extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
-            compileSdk = 35
+            // Native Android 16 Live Updates are guarded at runtime; targeting
+            // Android 15 keeps the existing app behaviour on older devices.
+            compileSdk = 36
             defaultConfig {
                 minSdk = 34
                 targetSdk = 35

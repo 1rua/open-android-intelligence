@@ -236,6 +236,9 @@ class WorkbenchController(
     // otherwise read as one that never offered them until the first update ran.
     private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,isOnline=allowSending))
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
+    private val activeWork = WorkbenchActiveWork()
+    /** Live sends across every conversation, including work not yet acknowledged by the Gateway. */
+    val hasActiveWork: StateFlow<Boolean> = activeWork.active
 
     /** Server-mirrored messages for the active thread, by message id. */
     private val submittingBatches=mutableSetOf<String>()
@@ -278,6 +281,7 @@ class WorkbenchController(
             currentCoroutineContext().ensureActive()
             check(!closed) { "WORKBENCH_CLOSED" }
             sendAtomsByThread[threadId]=latest.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+            latest.forEach(activeWork::atomChanged)
             break
         }
     }
@@ -309,6 +313,7 @@ class WorkbenchController(
         currentCoroutineContext().ensureActive()
         check(!closed) { "WORKBENCH_CLOSED" }
         sendAtomsByThread[threadId]=latest.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+        latest.forEach(activeWork::atomChanged)
     }
 
     private var cancelledSendPersistenceFailure: Throwable? = null
@@ -326,6 +331,7 @@ class WorkbenchController(
                 if (updated != latest) saveAtoms(threadId,updated)
                 val durable = if (persistence != null) loadSendAtomsOnIo(threadId) else updated
                 sendAtomsByThread[threadId] = durable.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+                durable.forEach(activeWork::atomChanged)
             }
         } catch (failure: Exception) {
             if (!closed) throw failure
@@ -351,12 +357,25 @@ class WorkbenchController(
         if (pendingSubmission?.let { it.conversationId == threadId && atomsFor(threadId)[it.clientMessageId]?.isDeleted == true } == true) pendingSubmission=null
     }
 
-    private suspend fun acceptSendAtom(threadId: String, clientId: String, messageId: String, batchId: String? = null) {
+    private suspend fun acceptSendAtom(threadId: String, clientId: String, messageId: String, batchId: String? = null, generationId: String? = null) {
+        activeWork.accepted(clientId, threadId, generationId)
         changeSendAtom(threadId, clientId) { old -> old?.accepted(messageId, batchId ?: old.batchId) }
         identifyHistoricalAttachments(threadId, ClientMessageId(clientId), messageId)
     }
 
     private suspend fun applySendEvent(event: VerifiedConversationEvent) {
+        when (event) {
+            is VerifiedConversationEvent.MessageStatus -> {
+                activeWork.accepted(event.clientMessageId.value, event.conversationId.value, event.generationId)
+                if (event.status in setOf(com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
+                        com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED)) {
+                    activeWork.settledClient(event.conversationId.value, event.clientMessageId.value)
+                    event.generationId?.let { activeWork.terminal(event.conversationId.value, it) }
+                }
+            }
+            is VerifiedConversationEvent.GenerationCancelled -> event.conversationId?.value?.let { activeWork.terminal(it, event.generationId) }
+            else -> Unit
+        }
         val threadId=when (event) {
             is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value
@@ -736,6 +755,7 @@ class WorkbenchController(
         if (closed) return
         closingJobs=controllerJob.children.toList()
         closed = true
+        activeWork.clear()
         _state.update { it.copy(isOnline=false) }
         controllerJob.cancel()
         timelineJob?.cancel()
@@ -1590,6 +1610,7 @@ class WorkbenchController(
     }
 
     fun cancelPendingSubmission() {
+        pendingSubmission?.let { activeWork.cancelPending(it.clientMessageId) }
         pendingSubmission = null
         if (_state.value.composer == ComposerState.WAITING_ATTACHMENTS) {
             update { it.copy(composer = ComposerState.EDITING, notice = null) }
@@ -1649,6 +1670,7 @@ class WorkbenchController(
                     val remaining = latest.filterNot { it.clientMessageId.value == clientId && it.submissionState != LocalSubmissionState.ACCEPTED }
                     if (latest != remaining) saveAtoms(target,remaining)
                     sendAtomsByThread[target] = remaining.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+                    activeWork.finishSubmission(clientId, remaining.firstOrNull { atom -> atom.clientMessageId.value == clientId })
                 }
             }
             if (failedSubmission?.clientMessageId == clientId) failedSubmission = null
@@ -1680,6 +1702,7 @@ class WorkbenchController(
             beginLegacyTurn(expectedThreadId)
             generationFactRevision++
             pendingSubmission = submission
+            activeWork.begin(submission.clientMessageId, submission.conversationId)
             submitted = true
             sendJob = submitWhenAttachmentsVerified()
             sendJob?.join()
@@ -1947,6 +1970,7 @@ class WorkbenchController(
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
             DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value)
         } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId)
+        pendingSubmission?.let { activeWork.begin(it.clientMessageId, it.conversationId) }
         beginLegacyTurn(activeThreadId)
         generationFactRevision++
         update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null, generation = GenerationState.QUEUED) }
@@ -1960,6 +1984,7 @@ class WorkbenchController(
         if (submission.attachmentIds.any { drafts[it]?.state != AttachmentState.VERIFIED }) return null
         var remoteIds = submission.attachmentIds.map { id ->
             attachmentCoordinator?.remoteAttachmentId(id) ?: run {
+                activeWork.cancelPending(submission.clientMessageId)
                 pendingSubmission = null
                 update { it.copy(composer = ComposerState.FAILED, notice = "ATTACHMENT_NOT_VERIFIED:请重新选择附件") }
                 return null
@@ -1967,6 +1992,7 @@ class WorkbenchController(
         }
         failedSubmission = submission
         pendingSubmission = null
+        activeWork.started(submission.clientMessageId)
         update { it.copy(composer = ComposerState.SUBMITTING) }
         return workScope.launch {
             var localEntryKey: String? = null
@@ -2117,7 +2143,7 @@ class WorkbenchController(
                             repository.submitMessage(target, message)
                         }
                     }
-                    acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId)
+                    acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId, generationId = acceptance.generationId)
                     if (activeThreadId == target) {
                         val statusReceipt = messageStatusesByClientId[message.clientMessageId.value]
                         if (atomsFor(target)[message.clientMessageId.value]?.isDeleted != true && !mirrored.containsKey(acceptance.messageId)) mirrored[acceptance.messageId] = TimelineMessage(
@@ -2196,6 +2222,8 @@ class WorkbenchController(
                         },
                     )
                 }
+            } finally {
+                activeWork.finishSubmission(submission.clientMessageId, sendTarget?.let { atomsFor(it)[submission.clientMessageId] })
             }
         }
     }
@@ -2206,7 +2234,13 @@ class WorkbenchController(
         messages: List<OutgoingMessage>,
     ) {
         if (messages.isEmpty()) return
-        hydrateSendAtoms(conversationId)
+        messages.forEach { activeWork.started(it.clientMessageId.value) }
+        try {
+            hydrateSendAtoms(conversationId)
+        } catch (failure: Exception) {
+            messages.forEach { activeWork.finishSubmission(it.clientMessageId.value, atomsFor(conversationId)[it.clientMessageId.value]) }
+            throw failure
+        }
         if (messages.any { atomsFor(conversationId)[it.clientMessageId.value]?.isDeleted == true }) {
             recoverBatch(conversationId,messages,frozenBatches.values.firstOrNull { it.conversationId == conversationId && it.messages.map { m -> m.clientMessageId } == messages.map { m -> m.clientMessageId } }?.batchId)
             return
@@ -2232,7 +2266,7 @@ class WorkbenchController(
             remotelyAccepted = true
             messages.forEach { msg ->
                 val id = acceptance.memberIds[msg.clientMessageId.value]?.takeIf { it.isNotBlank() } ?: error("SUBMIT_BATCH_FAILED:missing-member-ids")
-                acceptSendAtom(conversationId, msg.clientMessageId.value, id, acceptance.batchId)
+                acceptSendAtom(conversationId, msg.clientMessageId.value, id, acceptance.batchId, acceptance.generationId)
             }
             frozenBatches.remove(batchId)
             if (activeThreadId != conversationId) { persistCheckpoint(); refreshThreads(); return }
@@ -2312,6 +2346,7 @@ class WorkbenchController(
             }
         } finally {
             submittingBatches.remove(batchId)
+            messages.forEach { activeWork.finishSubmission(it.clientMessageId.value, atomsFor(conversationId)[it.clientMessageId.value]) }
         }
     }
 
@@ -2332,6 +2367,10 @@ class WorkbenchController(
         val ready=frozenBatches.values.filter { it.conversationId == current }
         val unsealed=collectingUnits.values.filter { it.first == current }.groupBy { it.first }
         val ordinary = recoverableOrdinaryAtoms(current).toList()
+        (ready.flatMap { it.messages } + unsealed.values.flatten().map { it.second }).forEach {
+            activeWork.begin(it.clientMessageId.value, current); activeWork.started(it.clientMessageId.value)
+        }
+        ordinary.forEach { activeWork.begin(it.clientMessageId.value, current); activeWork.started(it.clientMessageId.value) }
         workScope.launch {
             ready.forEach { b -> recoverBatch(b.conversationId, b.messages, b.batchId) }
             unsealed.forEach { (id,units) ->
@@ -2409,6 +2448,8 @@ class WorkbenchController(
                 notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:${errorCodeOf(cause)}",
                 generation = if (unknown) GenerationState.OUTCOME_UNKNOWN else GenerationState.IDLE,
                 timeline = Loadable.Ready(renderTimeline(it.pendingBatch))) }
+        } finally {
+            activeWork.finishSubmission(atom.clientMessageId.value, atomsFor(threadId)[atom.clientMessageId.value])
         }
     }
 
@@ -2416,6 +2457,7 @@ class WorkbenchController(
         val query = repository as? com.openandroidintelligence.conversation.ports.MessageOutcomeQuery
         if (query == null) {
             if (activeThreadId == threadId) update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:MESSAGE_QUERY_UNAVAILABLE") }
+            messages.forEach { activeWork.finishSubmission(it.clientMessageId.value, atomsFor(threadId)[it.clientMessageId.value]) }
             return
         }
         try {
@@ -2460,6 +2502,8 @@ class WorkbenchController(
             throw cancelled
         } catch (cause: Exception) {
             if (activeThreadId == threadId) update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:${errorCodeOf(cause)}") }
+        } finally {
+            messages.forEach { activeWork.finishSubmission(it.clientMessageId.value, atomsFor(threadId)[it.clientMessageId.value]) }
         }
     }
 
@@ -2485,6 +2529,7 @@ class WorkbenchController(
     /** Retire progress for the exact turn; a final response may have another message id. */
     private fun finishStreaming(threadId: String, generationId: String?, terminal: GenerationState, occurredAt: Long = 0L) {
         if (generationId != null) {
+            activeWork.terminal(threadId, generationId)
             finishedGenerations.add(threadId to generationId)
             while (finishedGenerations.size > 4096) finishedGenerations.remove(finishedGenerations.first())
         }
@@ -3096,6 +3141,7 @@ class WorkbenchController(
                     while (epoch!=sendAtomsEpoch) { epoch=sendAtomsEpoch; latest=loadSendAtomsOnIo(threadId) }
                     currentCoroutineContext().ensureActive()
                     if (!closed) sendAtomsByThread[threadId]=latest.associateByTo(linkedMapOf()) { it.clientMessageId.value }
+                    latest.forEach(activeWork::atomChanged)
                 }
                 reconcileDeletedRecoveryUnits(threadId)
                 deletedIds.forEach { id -> mirrored.remove(id); mirroredRevisions.remove(id); messageStatusesById.remove(id) }
@@ -3109,6 +3155,9 @@ class WorkbenchController(
                 ).forEach { rawMessage ->
                     if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
                     val message = withLatestMessageStatus(rawMessage)
+                    if (message.sender == "user" && message.state.lowercase() in setOf("completed", "failed", "cancelled")) {
+                        message.clientMessageId?.value?.let { activeWork.settledClient(threadId, it) }
+                    }
                     val currentRevision = mirroredRevisions[message.id] ?: 0L
                     if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
                         if (message.sender == "assistant" && message.state == "CONFIRMED") {

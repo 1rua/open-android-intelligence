@@ -27,6 +27,7 @@ internal class BubbleConversationWorkspace(
 ) : AutoCloseable {
     private var closed = false
     private val controllers = mutableSetOf<WorkbenchController>()
+    private val detached = mutableSetOf<WorkbenchController>()
 
     @Synchronized fun open(target: ReplyNotificationTarget): WorkbenchController? {
         if (closed || !accepts(target)) return null
@@ -36,14 +37,29 @@ internal class BubbleConversationWorkspace(
     fun accepts(target: ReplyNotificationTarget): Boolean =
         target.profileId == profileId && target.accountId == accountId && target.conversationId.isNotBlank()
 
-    @Synchronized fun release(controller: WorkbenchController) {
-        if (controllers.remove(controller)) controller.close()
+    /** UI disposal cannot cancel a submission that this session still owns. */
+    @Synchronized fun release(controller: WorkbenchController): Boolean {
+        if (controller !in controllers) return true
+        if (controller.hasActiveWork.value) {
+            detached += controller
+            return false
+        }
+        detached -= controller
+        controllers.remove(controller)
+        controller.close()
+        return true
+    }
+
+    @Synchronized fun releaseIfIdle(controller: WorkbenchController): Boolean {
+        if (controller !in detached || controller.hasActiveWork.value) return false
+        return release(controller)
     }
 
     @Synchronized override fun close() {
         closed = true
         controllers.forEach(WorkbenchController::close)
         controllers.clear()
+        detached.clear()
     }
 }
 

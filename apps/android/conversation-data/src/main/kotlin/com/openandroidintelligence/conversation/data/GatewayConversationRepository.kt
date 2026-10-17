@@ -270,7 +270,7 @@ class GatewayConversationRepository(
         // The mapping travels upward unchanged: it is the only way a caller can
         // key a mirrored member by the id the Gateway will use for it.
         acceptGeneration(conversationId,acceptance.generationId)
-        return BatchAcceptance(batchId = acceptance.batchId, memberIds = acceptance.memberIds)
+        return BatchAcceptance(batchId = acceptance.batchId, memberIds = acceptance.memberIds, generationId = acceptance.generationId)
     }
 
     override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance = submitMessage(
@@ -296,7 +296,7 @@ class GatewayConversationRepository(
             throw cause
         }
         acceptGeneration(conversationId,response.generationId)
-        return MessageAcceptance(response.messageId, message.clientMessageId.value)
+        return MessageAcceptance(response.messageId, message.clientMessageId.value, response.generationId)
     }
 
     override suspend fun queryMessage(conversationId: String, clientMessageId: com.openandroidintelligence.conversation.model.ClientMessageId): TimelineMessage? {
