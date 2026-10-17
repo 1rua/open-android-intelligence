@@ -131,7 +131,7 @@ open-android-intelligence/
 - **Node.js / npm**：验证使用固定 `24.18.0 / 11.16.0`；仓库 `tools/run-node24` 可管理本地固定工具链
 - **Python**：`>= 3.12`
 - **JDK**：`JDK 17` 或更高
-- **Android SDK**：`compileSdk 35`, `minSdk 34`
+- **Android SDK**：`compileSdk 35`, `minSdk 33`
 
 ### 2. 协议契约与跨宿主一致性校验
 

@@ -33,7 +33,7 @@ subprojects {
         extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
             compileSdk = 35
             defaultConfig {
-                minSdk = 34
+                minSdk = 33
                 targetSdk = 35
                 testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
             }
@@ -67,7 +67,7 @@ subprojects {
         extensions.configure<com.android.build.api.dsl.LibraryExtension> {
             compileSdk = 35
             defaultConfig {
-                minSdk = 34
+                minSdk = 33
                 // Without this a library test APK silently runs under the legacy
                 // `android.test.InstrumentationTestRunner`, which ignores JUnit4
                 // @Test methods: the build reports SUCCESSFUL while executing
