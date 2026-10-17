@@ -1,0 +1,73 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "manifest",
+      "ok": true,
+      "detail": "plugin.yaml parses"
+    },
+    {
+      "name": "manifest fields",
+      "ok": true,
+      "detail": "name, version, description present"
+    },
+    {
+      "name": "requires_hermes",
+      "ok": true,
+      "detail": "spec '>=0.20.0' parses"
+    },
+    {
+      "name": "config schema",
+      "ok": true,
+      "detail": "not declared"
+    },
+    {
+      "name": "requires_env",
+      "ok": true,
+      "detail": "all entries UPPER_SNAKE"
+    },
+    {
+      "name": "loadable",
+      "ok": true,
+      "detail": "entry: __init__.py"
+    },
+    {
+      "name": "python dependencies",
+      "ok": true,
+      "detail": "2 installable from pyproject"
+    },
+    {
+      "name": "capability probe",
+      "ok": true,
+      "detail": "register() ran in isolation"
+    },
+    {
+      "name": "declared tools",
+      "ok": true,
+      "detail": "matches registrations"
+    },
+    {
+      "name": "declared hooks",
+      "ok": true,
+      "detail": "matches registrations"
+    },
+    {
+      "name": "declared middleware",
+      "ok": true,
+      "detail": "matches registrations"
+    },
+    {
+      "name": "built-in tool collisions",
+      "ok": true,
+      "detail": "no collisions"
+    },
+    {
+      "name": "security scan",
+      "ok": true,
+      "detail": "caution"
+    }
+  ],
+  "warnings": [
+    "security scan caution: invisible_unicode (plugin-ci-76cff3e-failed.txt:1)"
+  ]
+}

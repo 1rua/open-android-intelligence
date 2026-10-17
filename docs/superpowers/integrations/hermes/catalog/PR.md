@@ -12,31 +12,31 @@ Intelligence 的手机端网关适配器。
 |---|---|
 | `name` | `open-android-intelligence-gateway` |
 | `repo` | `https://github.com/1rua/hermes-gateway-plugin` |
-| `sha` | `9d642b4f517243213cb3bfddddf3f4ae7b27339f` |
+| `sha` | `3b113cadc0526f0475233e7c41790d4a8fdd9fc7` |
 | `category` | `platform` |
 | `tier` | `community` |
 
 ## 锁定提交上的校验结果
 
-条目锁定提交上的 `hermes plugins validate .` 实测输出（与本 PR 的 CI 门禁同一命令）：
+条目锁定插件 `2.1.2`，替换会返回固定命令且无法识别宿主包装回调的 `9d642b4`。
+新版本透传 Hermes 原生停止路径，并从当前宿主注册表发现命令、别名、插件及技能。
+
+在固定 Hermes SDK `75b083e9399115b12513385252811f09c3503c90` 上调用
+`hermes plugins validate .` 使用的同一实现 `validate_plugin_dir`：13 项检查均通过。
 
 ```
 ok: True
-  ✓ manifest: plugin.yaml parses
-  ✓ manifest fields: name, version, description present
-  ✓ requires_hermes: spec >=0.20.0 parses
-  ✓ loadable: entry: __init__.py
-  ✓ python dependencies: 1 installable from pyproject
-  ✓ capability probe: register() ran in isolation
-  ✓ declared tools: matches registrations
-  ✓ declared hooks: matches registrations
-  ✓ declared middleware: matches registrations
-  ✓ built-in tool collisions: no collisions
-  ✓ security scan: safe
+checks: 13
+python dependencies: 2 installable from pyproject
+capability probe: register() ran in isolation
+security scan: caution (existing historical log contains invisible Unicode)
 ```
 
 `capability probe` 是关键项：它真实加载插件并执行 `register(ctx)`，因此通过即证明插件在
 隔离环境中可被宿主加载。
+
+插件常规测试 417 项通过；真实 Hermes 集成测试 82 项通过；共享协议向量 70/70。
+具体覆盖范围与环境限制见[修复记录](../../../../reviews/2026-10-17-hermes-stop-command-catalog.zh-CN.md)。
 
 ## 依赖与环境变量
 
@@ -63,6 +63,6 @@ ok: True
 ```bash
 git clone https://github.com/1rua/hermes-gateway-plugin
 cd hermes-gateway-plugin
-git checkout 9d642b4f517243213cb3bfddddf3f4ae7b27339f
+git checkout 3b113cadc0526f0475233e7c41790d4a8fdd9fc7
 hermes plugins validate .
 ```
