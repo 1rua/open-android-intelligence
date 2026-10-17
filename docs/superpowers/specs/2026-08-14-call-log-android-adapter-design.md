@@ -2,7 +2,7 @@
 
 - 日期：2026-08-14
 - 状态：四节设计与本文书面规格均已获用户确认
-- 目标平台：Android 14（API 34）及以上
+- 目标平台：Android 13（API 33）及以上
 - 分发前提：受控设备私有分发或侧载；Google Play 上架不属于本切片验收范围
 - 上位规格：`docs/superpowers/specs/2026-08-08-agent-bridge-android-design.md`
 

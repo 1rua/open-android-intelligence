@@ -11,7 +11,7 @@ Open Android Intelligence 是一套让 Android 设备连接**用户自有的** A
 
 通信走 Gateway Protocol v2：直接 HTTPS + SSE，基路径 `/open-android-intelligence/v2`。每个已认证请求都带九个单例头（Bearer Authorization 与 `X-Open-Android-Intelligence-` 前缀的 Protocol / Account / Device / Session / Request-Id / Timestamp / Nonce / Signature），变更请求还要带与 Request-Id 绑定的 `Idempotency-Key`；query 参数必须客户端预排序后再签名发送。这些是硬约束，界面设计时不需要重述，但接口对接说明必须与之一致。
 
-Android 端的技术栈是 Kotlin + Jetpack Compose + Material 3（AGP 8.9.2 / Kotlin 2.1.20 / compileSdk 35 / minSdk 34）。产品的主导航向只有三个：账号/Gateway、对话、附件；插件、权限与审计一律放在设置的平台管理界面，不得成为顶级入口。这条边界由代码里的 `CoreNavigation` 与 `ArchitectureBoundaryTest` 守着。
+Android 端的技术栈是 Kotlin + Jetpack Compose + Material 3（AGP 8.9.2 / Kotlin 2.1.20 / compileSdk 35 / minSdk 33）。产品的主导航向只有三个：账号/Gateway、对话、附件；插件、权限与审计一律放在设置的平台管理界面，不得成为顶级入口。这条边界由代码里的 `CoreNavigation` 与 `ArchitectureBoundaryTest` 守着。
 
 ## 二、前端现状
 

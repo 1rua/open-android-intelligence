@@ -16,7 +16,7 @@
 | Thread Drawer | `1070718f9596bbdc4c4c56e2f451869306d939495869623f22b41f9b85e48922` |
 | Workbench | `702c26b5166c5ab047c6e2c6c8b63a826c43cb497561dd6aa13c1e09e09c835f` |
 
-总规格、`CONTEXT.md`、ADR 和 `docs/contracts/gateway-protocol-v2.md` 约束身份、权限和数据。不改变协议或新增服务端事实。栈保持 AGP 8.9.2、Kotlin 2.1.20、minSdk 34、compile/targetSdk 35。默认助手系统角色与屏幕截图权限不是界面控件能够创造的能力。
+总规格、`CONTEXT.md`、ADR 和 `docs/contracts/gateway-protocol-v2.md` 约束身份、权限和数据。不改变协议或新增服务端事实。栈保持 AGP 8.9.2、Kotlin 2.1.20、minSdk 33、compile/targetSdk 35。默认助手系统角色与屏幕截图权限不是界面控件能够创造的能力。
 
 ## 唯一视觉系统
 
