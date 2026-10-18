@@ -2,6 +2,7 @@ package com.openandroidintelligence.gateway.auth
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.AtomicFile
 import java.io.File
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -27,16 +28,28 @@ class AndroidKeystoreGatewayCredentialStore(
     private val storageDir: File,
 ) : GatewayCredentialStore {
 
+    @Synchronized
     override fun saveRefresh(profileId: String, credential: ByteArray) {
         require(credential.isNotEmpty()) { "refresh credential must not be empty" }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, wrappingKey(profileId))
         val ciphertext = cipher.doFinal(credential.copyOf())
-        fileFor(profileId).writeBytes(cipher.iv + ciphertext)
+        val file = AtomicFile(fileFor(profileId))
+        val output = file.startWrite()
+        try {
+            output.write(cipher.iv + ciphertext)
+            file.finishWrite(output)
+        } catch (cause: Throwable) {
+            file.failWrite(output)
+            throw cause
+        }
     }
 
+    @Synchronized
     override fun loadRefresh(profileId: String): ByteArray? {
-        val envelope = fileFor(profileId).takeIf { it.exists() }?.readBytes() ?: return null
+        val file = AtomicFile(fileFor(profileId))
+        val envelope = try { file.openRead().use { it.readBytes() } }
+        catch (_: java.io.FileNotFoundException) { return null }
         if (envelope.size <= IV_BYTES) return null
         val iv = envelope.copyOfRange(0, IV_BYTES)
         val ciphertext = envelope.copyOfRange(IV_BYTES, envelope.size)
@@ -47,7 +60,7 @@ class AndroidKeystoreGatewayCredentialStore(
     }
 
     override fun clearRefresh(profileId: String) {
-        fileFor(profileId).delete()
+        AtomicFile(fileFor(profileId)).delete()
     }
 
     override fun clearDeviceKey(profileId: String) {
@@ -55,7 +68,7 @@ class AndroidKeystoreGatewayCredentialStore(
             deleteEntry(deviceKeyAlias(profileId))
             deleteEntry(wrappingKeyAlias(profileId))
         }
-        fileFor(profileId).delete()
+        AtomicFile(fileFor(profileId)).delete()
     }
 
     /** Device identity key pair, generated on first use and non-exportable. */

@@ -1,6 +1,7 @@
 package com.openandroidintelligence.gateway.negotiation
 
 import com.openandroidintelligence.gateway.http.GatewayResponse
+import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
@@ -12,6 +13,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NegotiationClientTest {
+    @Test fun refreshReplayRequiresAnUnambiguousExplicitGatewayCapability() = runBlocking {
+        org.junit.Assert.assertFalse(clientWithVersion("2", "1").negotiate("neg_legacy").refreshReplaySupported)
+        assertTrue(clientWithVersion("2", "1", listOf(RawHeader(REFRESH_REPLAY_HEADER, "v1")))
+            .negotiate("neg_replay").refreshReplaySupported)
+        org.junit.Assert.assertFalse(clientWithVersion("2", "1", listOf(RawHeader(REFRESH_REPLAY_HEADER, "v2")))
+            .negotiate("neg_unknown").refreshReplaySupported)
+        assertTrue(runCatching { clientWithVersion("2", "1", listOf(RawHeader(REFRESH_REPLAY_HEADER, "v1"), RawHeader(REFRESH_REPLAY_HEADER, "v1")))
+            .negotiate("neg_duplicate") }.exceptionOrNull() is IllegalArgumentException)
+    }
     @Test fun batchSendingRequiresBothTheBatchAndJoinModeAgreement() {
         for (features in listOf(emptyList(),listOf("message-batches-v1"),listOf("newline-v1"))) {
             org.junit.Assert.assertFalse(result(features).messageBatchesAgreed)
@@ -34,8 +44,8 @@ class NegotiationClientTest {
         }
     }
 
-    private fun clientWithVersion(major: String, minor: String) = NegotiationClient(
-        execute = { GatewayResponse(200, emptyList(), """
+    private fun clientWithVersion(major: String, minor: String, headers: List<RawHeader> = emptyList()) = NegotiationClient(
+        execute = { GatewayResponse(200, headers, """
             {"protocol":"2.1","data":{"protocol":{"major":$major,"minor":$minor},
             "features":{"auth":["password","refresh"],"messages":"chat-v1","attachments":"staged-sha256-v1","events":"sse-cursor-v1","deviceRequests":"risk-queue-v1"},
             "limits":{"attachmentTtlSeconds":3600,"eventRetentionSeconds":86400,"maxClockSkewSeconds":120},

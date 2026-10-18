@@ -15,6 +15,8 @@ import com.openandroidintelligence.conversation.model.LocalSendAtom
 import com.openandroidintelligence.conversation.model.LocalSubmissionState
 import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import com.openandroidintelligence.conversation.model.reconcileSnapshotDeletions
+import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
+import com.openandroidintelligence.gateway.http.EventSessionRejectedException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -2846,9 +2848,18 @@ class WorkbenchController(
                         false
                     } else {
                         update { it.copy(notice = "EVENTS_FAILED:${errorCodeOf(cause)}") }
-                        delay(1000L)
-                        true
+                        if (cause is EventSessionRejectedException || cause is SessionRecoveryPausedException) {
+                            false
+                        } else {
+                            delay(1000L)
+                            true
+                        }
                     }
+                }
+                .catch { cause ->
+                    // The client already attempted authenticated recovery. Keep
+                    // the workbench and wait for a new session or explicit wakeup.
+                    if (cause !is EventSessionRejectedException && cause !is SessionRecoveryPausedException) throw cause
                 }
                 .collect { event ->
                     if (!isActive) return@collect

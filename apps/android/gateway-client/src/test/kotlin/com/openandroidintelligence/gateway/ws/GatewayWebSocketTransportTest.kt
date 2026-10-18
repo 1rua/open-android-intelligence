@@ -24,6 +24,40 @@ import kotlin.concurrent.thread
 
 class GatewayWebSocketTransportTest {
 
+    @Test
+    fun `each handshake uses the shared complete session snapshot`() = kotlinx.coroutines.test.runTest {
+        val initial = testProfile(1234)
+        val outputs = mutableListOf<ByteArrayOutputStream>()
+        val renewal = com.openandroidintelligence.gateway.auth.GatewaySessionRenewal(initial, backgroundScope) {
+            it.copy(sessionId = "session_rotated", accessToken = "token_rotated")
+        }
+        val transport = GatewayWebSocketTransport(
+            initial, { ByteArray(64) },
+            socketFactory = { _, _, _ ->
+                val output = ByteArrayOutputStream().also { outputs += it }
+                object : Socket() {
+                    override fun getOutputStream(): OutputStream = output
+                    override fun getInputStream(): InputStream = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".byteInputStream()
+                    override fun close() {}
+                }
+            },
+            sessionRenewal = renewal,
+        )
+        val first = runCatching { transport.events().toList() }.exceptionOrNull()
+        assertTrue(first is com.openandroidintelligence.gateway.http.EventSessionRejectedException)
+        assertEquals(initial, (first as com.openandroidintelligence.gateway.http.EventSessionRejectedException).rejectedProfile)
+        renewal.refresh(initial)
+        val second = runCatching { transport.events().toList() }.exceptionOrNull()
+        assertTrue(second is com.openandroidintelligence.gateway.http.EventSessionRejectedException)
+        assertEquals(renewal.current, (second as com.openandroidintelligence.gateway.http.EventSessionRejectedException).rejectedProfile)
+        val old = outputs[0].toString(Charsets.US_ASCII.name())
+        val rotated = outputs[1].toString(Charsets.US_ASCII.name())
+        assertTrue(old.contains("Authorization: Bearer test_token\r\n"))
+        assertTrue(old.contains("X-Open-Android-Intelligence-Session: sess_test\r\n"))
+        assertTrue(rotated.contains("Authorization: Bearer token_rotated\r\n"))
+        assertTrue(rotated.contains("X-Open-Android-Intelligence-Session: session_rotated\r\n"))
+    }
+
     private fun testProfile(port: Int, pins: Set<String> = emptySet()) = GatewayProfile(
         accountId = "acc_test",
         deviceId = "dev_test",

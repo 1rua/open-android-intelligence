@@ -38,6 +38,8 @@ data class NegotiationResult(
     val deviceRequests: String?,
     /** Conversation-surface features this connection actually agreed on. */
     val conversationUi: List<String> = emptyList(),
+    /** Optional pre-auth refresh result replay, negotiated outside the closed JSON schema. */
+    val refreshReplaySupported: Boolean = false,
 ) {
     /**
      * 双方都同意可用的对话面能力：客户端声明过的 ∩ 网关确实同意的。
@@ -122,6 +124,7 @@ class NegotiationClient(
                 headers = listOf(
                     RawHeader("Content-Type", "application/json"),
                     RawHeader("Accept", "application/json"),
+                    RawHeader(REFRESH_REPLAY_HEADER, "v1"),
                 ),
                 body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
             ),
@@ -179,6 +182,9 @@ class NegotiationClient(
             events = JsonFields.string(features, "events"),
             deviceRequests = JsonFields.string(features, "deviceRequests"),
             conversationUi = conversationUi,
+            refreshReplaySupported = com.openandroidintelligence.gateway.http.RawHeaders.single(
+                com.openandroidintelligence.gateway.http.RawHeaders.validate(response.headers), REFRESH_REPLAY_HEADER,
+            ) == "v1",
         )
     }
 
@@ -226,3 +232,5 @@ class NegotiationClient(
         val CONVERSATION_UI_FEATURES = DECLARED_CONVERSATION_UI_FEATURES
     }
 }
+
+const val REFRESH_REPLAY_HEADER = "X-Open-Android-Intelligence-Refresh-Replay"

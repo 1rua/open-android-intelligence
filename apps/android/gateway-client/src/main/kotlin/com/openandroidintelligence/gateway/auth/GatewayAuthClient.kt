@@ -127,6 +127,7 @@ class GatewayAuthClient(
         deviceId: String,
         negotiationId: String,
         refreshCredential: ByteArray,
+        requestId: String? = null,
     ): SessionCredentials = withContext(Dispatchers.IO) {
         val payload = mapOf(
             "negotiationId" to negotiationId,
@@ -135,7 +136,9 @@ class GatewayAuthClient(
             "deviceId" to deviceId,
             "refreshCredential" to String(refreshCredential, Charsets.ISO_8859_1),
         )
-        val body = postJson("/open-android-intelligence/v2/sessions/refresh", payload)
+        requestId?.let { require(GatewayHttpClient.CURSOR_ALPHABET.matches(it)) { "REQUEST_ID_INVALID" } }
+        val body = postJson("/open-android-intelligence/v2/sessions/refresh", payload,
+            requestId?.let { listOf(RawHeader("Idempotency-Key", it)) }.orEmpty())
         parseSessionCredentials(body, "REFRESH_FAILED")
     }
 
@@ -165,12 +168,12 @@ class GatewayAuthClient(
                 ),
             )
             if (response.status !in 200..299) {
-                throw IllegalStateException("LOGOUT_FAILED:${response.status}")
+                throw authError("LOGOUT_FAILED", response)
             }
         }
     }
 
-    private suspend fun postJson(target: String, payload: Map<String, Any?>): JsonValue.JObject {
+    private suspend fun postJson(target: String, payload: Map<String, Any?>, extraHeaders: List<RawHeader> = emptyList()): JsonValue.JObject {
         val response = transport.execute(
             WireRequest(
                 method = "POST",
@@ -178,7 +181,7 @@ class GatewayAuthClient(
                 headers = listOf(
                     RawHeader("Content-Type", "application/json"),
                     RawHeader("Accept", "application/json"),
-                ),
+                ) + extraHeaders,
                 body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
             ),
         )

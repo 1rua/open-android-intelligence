@@ -39,6 +39,9 @@ data class GatewayEvent(
  */
 class SseParser(private val onEvent: (GatewayEvent) -> Unit = {}) {
 
+    /** A complete comment heartbeat proves the authenticated stream is live. */
+    internal var onHeartbeat: () -> Unit = {}
+
     private val buffer = java.io.ByteArrayOutputStream()
     private var cursor: String? = null
     private var eventName: String? = null
@@ -121,10 +124,11 @@ class SseParser(private val onEvent: (GatewayEvent) -> Unit = {}) {
 
     private fun parseFrame(frame: String): GatewayEvent? {
         resetFrameState()
+        var heartbeat = false
         for (rawLine in frame.split('\n')) {
             val line = rawLine.removeSuffix("\r")
             if (line.isEmpty()) continue
-            if (line.startsWith(":")) continue
+            if (line.startsWith(":")) { heartbeat = true; continue }
 
             val separator = line.indexOf(':')
             val field = if (separator == -1) line else line.substring(0, separator)
@@ -139,7 +143,10 @@ class SseParser(private val onEvent: (GatewayEvent) -> Unit = {}) {
         }
 
         // A frame with no data line carries no event, but still resets state.
-        if (dataLines.isEmpty()) return null
+        if (dataLines.isEmpty()) {
+            if (heartbeat) onHeartbeat()
+            return null
+        }
 
         val event = GatewayEvent(
             id = cursor,
