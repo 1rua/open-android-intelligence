@@ -26,13 +26,13 @@ Gateway 源码位于独立仓库，因此完整服务端改动以 [OpenClaw 补�
 | 后台服务与系统限制 | API 34/36 服务行为、条件 sticky、恢复租约、超时及过期 Intent 拒绝 |
 | 主动退出与设备安全 | 过期 Access 的退出先续期一次；退出后不能自动恢复；设备签名、TLS、reuse 与撤销回归 |
 
-验证使用主仓基线 `5641a68`、固定版本的 OpenClaw `432e7c0545ecfe36af25fd4c451d777d434ae8fc` 与 Hermes `3b113cadc0526f0475233e7c41790d4a8fdd9fc7`。自动化结果如下：
+验证使用主仓基线 `5641a68`、固定版本的 OpenClaw `432e7c0545ecfe36af25fd4c451d777d434ae8fc` 与 Hermes `3b113cadc0526f0475233e7c41790d4a8fdd9fc7`。Android 结果已在处理下述 PR Review 后重新验证；服务端与补丁工具未变更，保留首轮验证结果：
 
 | 验证 | 结果 |
 | --- | --- |
-| `:gateway-client:testDebugUnitTest` 全量 | 237 项通过 |
+| `:gateway-client:testDebugUnitTest` 全量 | 242 项通过 |
 | `:conversation-ui:testDebugUnitTest` 相关 4 类 | 62 项通过 |
-| `:app:testFullDebugUnitTest` 相关 15 类 | 157 项通过 |
+| `:app:testFullDebugUnitTest` 相关 15 类 | 167 项通过 |
 | `:conversation-data:testDebugUnitTest` 全量（含真实 Hermes HTTP 互通） | 58 项通过 |
 | OpenClaw 刷新、会话、退出、备份及撤销回归 | 22 项通过 |
 | Hermes 刷新、备份、事件撤销及配对撤销回归 | 41 项通过 |
@@ -43,8 +43,19 @@ Gateway 源码位于独立仓库，因此完整服务端改动以 [OpenClaw 补�
 
 工作台定向验证包含 `WorkbenchForegroundResumeTest`、`WorkbenchActiveWorkLifecycleTest`、`WorkbenchGenerationLifecycleTest` 和 `WorkbenchSendRegressionTest`。App 定向验证包含会话刷新、刷新日志、后台服务、保活资格、网络监控、工作台退出、气泡、身份信任、登录输入处理、账号存储、平台快照、原生通知、生成取消及状态核对等 15 类测试。服务端命令见补丁说明中的“回归验证”。
 
-上述目标回归合计 582 项通过。数据层测试使用 CI 固定的 Hermes SDK `75b083e9399115b12513385252811f09c3503c90`，未用跳过测试代替真实 HTTP 互通验证。
+本轮重新运行 529 项 Android 目标回归，均通过且无跳过；另 68 项未变更的服务端与工具测试沿用首轮通过结果，合计 597 项。数据层测试使用 CI 固定的 Hermes SDK `75b083e9399115b12513385252811f09c3503c90`，未用跳过测试代替真实 HTTP 互通验证。
 
 额外运行的 `test_transport_boundary.py` 为 14 项中 10 项通过、4 项失败；已在原始 `5641a68` 的干净工作树复测，失败集合完全相同，涉及旧 Assistant/闭合契约模块装配断言。本次未修改这些无关边界，也不把整个仓库的 `check` 描述为通过。
 
 未进行真实设备数小时待机或厂商后台策略测试；Robolectric、JVM 和真实回环 HTTP 测试不能证明永久在线。Doze、系统回收、用户强行停止、通知设置、厂商省电策略以及 Android 15 的 `dataSync` 时间预算仍可能中断后台连接；再次打开应用后恢复登录和连接是验收行为。
+
+PR #13 的 Codex Review `5564153377`（审查版本 `2ed7d83`）共 4 条意见，逐项代码复核与失败测试均确认属实：
+
+| 审查意见 | 复现证据 | 修复与回归边界 |
+| --- | --- | --- |
+| [恢复租约到期未停止恢复任务](https://github.com/1rua/open-android-intelligence/pull/13#discussion_r4308063986) | 租约过期后协商请求由 2 次增至 4 次；迟到协商仍刷新、迟到落盘仍发布连接 | 标记服务重建的恢复所有者，服务停止时取消；请求、旋转后及发布连接前检查资格，清理被取消的部分会话。前台恢复等待旧所有者完成凭据落盘，再安全接续；到期网络回调不能重新授予后台资格，旧服务超时不能取消已回前台的恢复。 |
+| [兄弟通道活动重置共享续期额度](https://github.com/1rua/open-android-intelligence/pull/13#discussion_r4308063989) | 健康 SSE 心跳后重复新建坏 SSE/WS 客户端，轮换 3 次而非 1 次 | 恢复 episode 绑定消费它的客户端身份；兄弟通道的活动仍可更新自身健康状态，但不能重置该共享额度。保留原客户端真实恢复、并发单飞、取消等待者与旧会话活动回归。 |
+| [旧 Gateway 明确 404 后遗留刷新日志](https://github.com/1rua/open-android-intelligence/pull/13#discussion_r4308063991) | 返回 404 后升级 Gateway，同一有效刷新凭据被日志阻止，无法再续期 | 旧 Gateway 明确 404 且非 `OUTCOME_UNKNOWN` 时清日志；响应丢失、含糊 503、即使 HTTP 404 携带明确 `OUTCOME_UNKNOWN` 时仍保留日志，禁止盲目重投旧凭据。 |
+| [仅心跳的 SSE 未报告 LIVE](https://github.com/1rua/open-android-intelligence/pull/13#discussion_r4308063995) | 完整心跳后仍为 CONNECTING；既有失败计数导致健康心跳后的重连提前耗尽 | 完整注释心跳报告 LIVE、归零连续失败并重置退避；不完整帧不算健康证据，心跳不推进业务事件游标。 |
+
+补充安全回归还复现并修正了租约清理与权威撤销的交互：撤销完成后不能再次以“租约失效”清理来覆盖 `REAUTHENTICATION_REQUIRED`、`UNAVAILABLE` 和失败原因。该测试等待恢复所有者实际结束后再检查状态，避免将中间态当作最终结果。此次新增共 15 个测试，完整 Android 定向回归及 Full Debug 构建均通过；既有静态边界检查仍为同一组 4 项基线失败。

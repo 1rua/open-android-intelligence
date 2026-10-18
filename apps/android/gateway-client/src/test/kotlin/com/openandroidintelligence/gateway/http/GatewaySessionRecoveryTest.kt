@@ -2,6 +2,8 @@ package com.openandroidintelligence.gateway.http
 
 import com.openandroidintelligence.gateway.auth.GatewaySessionRenewal
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
+import com.openandroidintelligence.gateway.events.EventStreamStatus
+import com.openandroidintelligence.gateway.events.EventStreamStatusSink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -242,6 +244,96 @@ class GatewaySessionRecoveryTest {
             assertTrue(runCatching { broken.events().toList() }.exceptionOrNull() is EventSessionRejectedException)
         }
         assertEquals(1, refreshes)
+    }
+
+    @Test fun healthySiblingHeartbeatCannotRechargeNewRejectedSseClients() = runTest {
+        val initial = profile()
+        var refreshes = 0
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            refreshes++
+            it.copy(accessToken = "new_$refreshes", sessionId = "session_$refreshes")
+        }
+        val rejecting = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow { throw EventSessionRejectedException() }
+        }
+        val healthy = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow { emit(": heartbeat\n\n".toByteArray()) }
+        }
+        val sibling = GatewayHttpClient(initial, healthy, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+        repeat(3) {
+            val broken = GatewayHttpClient(initial, rejecting, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+            assertTrue(runCatching { broken.events().toList() }.exceptionOrNull() is EventSessionRejectedException)
+            sibling.events(autoReconnect = false).toList()
+        }
+        assertEquals("New clients cannot turn sibling heartbeats into fresh rotation attempts", 1, refreshes)
+    }
+
+    @Test fun healthySiblingHeartbeatCannotRechargeNewRejectedWebSocketClients() = runTest {
+        val initial = profile()
+        var refreshes = 0
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            refreshes++
+            it.copy(accessToken = "new_$refreshes", sessionId = "session_$refreshes")
+        }
+        val healthy = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow { emit(": heartbeat\n\n".toByteArray()) }
+        }
+        val sibling = GatewayHttpClient(initial, healthy, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+        repeat(3) {
+            val websocket = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(initial, { ByteArray(64) }) {
+                override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+                    throw EventSessionRejectedException(requireNotNull(sessionSnapshot))
+                }
+            }
+            val broken = GatewayHttpClient(initial, healthy, { ByteArray(64) }, InMemoryEventCursorStore(),
+                webSocketTransport = websocket, sessionRenewal = renewal)
+            assertTrue(runCatching { broken.events().toList() }.exceptionOrNull() is EventSessionRejectedException)
+            sibling.events(autoReconnect = false).toList()
+        }
+        assertEquals(1, refreshes)
+    }
+
+    @Test fun anIdleSseHeartbeatReportsLiveOnlyAfterTheWholeFrameAndKeepsTheCursor() = runTest {
+        val status = EventStreamStatusSink()
+        val cursors = InMemoryEventCursorStore().apply { save("account", "before") }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                assertEquals(EventStreamStatus.CONNECTING, status.status.value)
+                emit(": heart".toByteArray())
+                assertEquals(EventStreamStatus.CONNECTING, status.status.value)
+                emit("beat\n".toByteArray())
+                assertEquals(EventStreamStatus.CONNECTING, status.status.value)
+                emit("\n".toByteArray())
+            }
+        }
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, cursors, statusSink = status)
+        assertTrue(client.events(autoReconnect = false).toList().isEmpty())
+        assertEquals(EventStreamStatus.LIVE, status.status.value)
+        assertEquals("before", cursors.load("account"))
+    }
+
+    @Test fun anAuthenticatedHeartbeatResetsNetworkFailuresAndReconnectBackoff() = runTest {
+        var attempts = 0
+        val delays = mutableListOf<Long>()
+        val status = EventStreamStatusSink()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attempts++
+                if (attempts == 3) emit(": heartbeat\n\n".toByteArray())
+                if (attempts < 4) throw IOException("network changed")
+                emit("id: recovered\nevent: notice\ndata: {}\n\n".toByteArray())
+            }
+        }
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, InMemoryEventCursorStore(),
+            delayFn = { delays += it }, maxConsecutiveFailures = 3, statusSink = status)
+        assertEquals("recovered", client.events().take(1).toList().single().id)
+        assertEquals(listOf(1_000L, 2_000L, 1_000L), delays)
+        assertEquals(EventStreamStatus.LIVE, status.status.value)
     }
 
     @Test fun cancellingAndRecollectingTheStreamJoinsItsOngoingRotation() = runTest {

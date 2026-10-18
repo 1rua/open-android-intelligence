@@ -90,6 +90,7 @@ class AgentSessionForegroundService : Service() {
     }
 
     private fun finishReceiving() {
+        (application as? OpenAndroidIntelligenceApplication)?.onBackgroundSessionStopped()
         recovery.clear()
         handler.removeCallbacks(recoveryTimeout)
         try {

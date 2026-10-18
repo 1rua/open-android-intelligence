@@ -52,6 +52,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -164,11 +165,14 @@ class GatewayRuntime(
     val replyNotifications = ReplyNotificationSettings(context)
     private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications)
     private val sessionKeepAlive = AgentSessionKeepAlive(context)
+    private val sessionRecovery = AgentSessionRecoveryState(context)
     private val refreshJournal = GatewayRefreshJournal(context)
     private val sessionOperationMutex = Mutex()
     private var sessionRenewal: GatewaySessionRenewal? = null
     private val recoveryWakeup = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var restoringSession = false
+    @Volatile private var backgroundRecoveryOnly = false
+    @Volatile private var backgroundRestoreJob: Job? = null
     private var restartPlatformStream: (() -> Unit)? = null
     private val pendingRotations = mutableMapOf<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
@@ -324,7 +328,10 @@ class GatewayRuntime(
      * missing workbench is a no-op rather than something to invent.
      */
     fun onAppForegrounded() {
-        synchronized(backgroundOwnershipLock) { appVisible = true }
+        synchronized(backgroundOwnershipLock) {
+            appVisible = true
+            backgroundRecoveryOnly = false
+        }
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
@@ -334,8 +341,10 @@ class GatewayRuntime(
     /** Network changes wake the existing owner; they never start an Android service. */
     fun onNetworkAvailable() {
         recoveryWakeup.trySend(Unit)
+        if (backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease) return
         if (_loginStatus.value == GatewayLoginStatus.REAUTHENTICATION_REQUIRED) return
         if (_phase.value is ConnectionPhase.Disconnected) restoreSessionIfAvailable()
+        else if (!restoringSession && _phase.value is ConnectionPhase.OfflineMirror) reconnectOfflineMirror()
         else if (!restoringSession && _phase.value is ConnectionPhase.Connected) {
             restartPlatformStream?.invoke()
             resumeWorkbench()
@@ -353,8 +362,21 @@ class GatewayRuntime(
 
     /** Called only after Android legally recreates an eligible foreground service. */
     fun onBackgroundSessionRestarted() {
+        synchronized(backgroundOwnershipLock) {
+            if (!appVisible && !restoringSession && _phase.value !is ConnectionPhase.Connected) {
+                backgroundRecoveryOnly = true
+            }
+        }
         restoreSessionIfAvailable()
         if (!restoringSession && _phase.value !is ConnectionPhase.Connected) sessionKeepAlive.stop()
+    }
+
+    /** Only the service-restart owner depends on the service's recovery authorization. */
+    @Synchronized
+    internal fun onBackgroundSessionStopped() {
+        synchronized(backgroundOwnershipLock) {
+            if (backgroundRecoveryOnly && !appVisible) backgroundRestoreJob?.cancel()
+        }
     }
 
     fun onAppBackgrounded() {
@@ -582,6 +604,10 @@ class GatewayRuntime(
     }
 
     private fun cancelRestoration() {
+        synchronized(backgroundOwnershipLock) {
+            backgroundRecoveryOnly = false
+            backgroundRestoreJob = null
+        }
         if (!restoringSession) return
         connectionJob?.cancel()
         connectionJob = null
@@ -776,13 +802,16 @@ class GatewayRuntime(
     private suspend fun rotateStoredSession(
         endpoint: GatewayEndpoint, username: String, profileId: String,
         accountId: String, deviceId: String, pins: Set<String>,
+        checkOwner: () -> Unit = {},
     ): Pair<SessionCredentials, NegotiationResult> {
+        checkOwner()
         pendingRotations[profileId]?.let { pending ->
             persistRotation(endpoint, username, profileId, pending.first)
             pendingRotations.remove(profileId)
             return pending
         }
         val negotiated = authClientFor(endpoint.baseUrl, pins).negotiate("neg_" + newToken())
+        checkOwner()
         val tlsPin = identityTrust.verifyNegotiation(endpoint, username, negotiated)
         val refresh = credentialStore.loadRefresh(profileId)?.takeIf { it.isNotEmpty() }
             ?: error("NO_REFRESH_CREDENTIAL")
@@ -796,8 +825,10 @@ class GatewayRuntime(
             } catch (cause: GatewayAuthException) {
                 // An explicit retryable refusal is a completed unsuccessful exchange.
                 // Transport loss/unknown outcome retains the same journal identity.
-                if (!operation.replayable && cause.retryable == true &&
-                    cause.code in setOf("RATE_LIMITED", "GATEWAY_UNAVAILABLE", "SERVICE_UNAVAILABLE")) {
+                val definitelyRefused = cause.code != "OUTCOME_UNKNOWN" &&
+                    (cause.httpStatus == 404 || (cause.retryable == true &&
+                        cause.code in setOf("RATE_LIMITED", "GATEWAY_UNAVAILABLE", "SERVICE_UNAVAILABLE")))
+                if (!operation.replayable && definitelyRefused) {
                     refreshJournal.clear(profileId)
                 }
                 throw cause
@@ -882,6 +913,7 @@ class GatewayRuntime(
     /** One retrying cold-start owner; network failures never erase the saved login. */
     @Synchronized
     fun restoreSessionIfAvailable() {
+        if (backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease) return
         if (connectionJob?.isActive == true || _phase.value !is ConnectionPhase.Disconnected ||
             _loginStatus.value == GatewayLoginStatus.REAUTHENTICATION_REQUIRED) return
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -898,21 +930,32 @@ class GatewayRuntime(
         val endpoint = GatewayEndpoint.parse(lastUrl) ?: return
         val hasCredential = runCatching { credentialStore.loadRefresh(profileId)?.let { it.isNotEmpty().also { _ -> it.fill(0) } } }.getOrDefault(false)
         if (hasCredential != true) return
+        val backgroundOwner = backgroundRecoveryOnly
         restoringSession = true
         _loginStatus.value = GatewayLoginStatus.RESTORING
         _credentialStatus.value = GatewayCredentialStatus.AVAILABLE
         _phase.value = ConnectionPhase.Negotiating
         lateinit var ownedRestore: Job
+        fun checkOwner() {
+            ownedRestore.ensureActive()
+            synchronized(backgroundOwnershipLock) {
+                if (backgroundOwner && backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease) {
+                    throw CancellationException("BACKGROUND_RECOVERY_STOPPED")
+                }
+            }
+        }
         ownedRestore = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var backoff = 1_000L
             try {
                 while (isActive) {
                     try {
+                        checkOwner()
                         val pins = identityTrust.pinsBeforeConnect(endpoint, lastUser, restoring = true)
                         val (session, negotiated) = sessionOperationMutex.withLock {
                             _credentialStatus.value = GatewayCredentialStatus.REFRESHING
-                            rotateStoredSession(endpoint, lastUser, profileId, accountId, deviceId, pins)
+                            rotateStoredSession(endpoint, lastUser, profileId, accountId, deviceId, pins, ::checkOwner)
                         }
+                        checkOwner()
                         val tlsPin = identityTrust.verifyNegotiation(endpoint, lastUser, negotiated)
                         if (_phase.value is ConnectionPhase.OfflineMirror) {
                             if (!flushWorkbenchBeforeLeaving()) return@launch
@@ -921,7 +964,7 @@ class GatewayRuntime(
                             _controller.value = null
                         }
                         establish(endpoint, lastUser, profileId, session, tlsPin,
-                            negotiated.conversationUi, negotiated.deviceRequests, GenerationCancelCapability.fromNegotiation(negotiated))
+                            negotiated.conversationUi, negotiated.deviceRequests, GenerationCancelCapability.fromNegotiation(negotiated), ::checkOwner)
                         return@launch
                     } catch (cancelled: CancellationException) { throw cancelled }
                       catch (cause: Exception) {
@@ -929,6 +972,7 @@ class GatewayRuntime(
                             requireReauthentication(profileId, errorCode(cause))
                             return@launch
                         }
+                        checkOwner()
                         _credentialStatus.value = GatewayCredentialStatus.RECOVERY_PENDING
                         _connectionStatus.value = EventStreamStatus.RECONNECTING
                         if (!isTransientConnectionFailure(cause)) {
@@ -943,9 +987,33 @@ class GatewayRuntime(
                         backoff = minOf(backoff * 2, 60_000L)
                     }
                 }
-            } finally { if (connectionJob === ownedRestore) restoringSession = false }
+            } finally {
+                if (connectionJob === ownedRestore) {
+                    restoringSession = false
+                    if (backgroundOwner && _loginStatus.value != GatewayLoginStatus.REAUTHENTICATION_REQUIRED &&
+                        (!isActive || (_phase.value !is ConnectionPhase.Connected &&
+                        backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease))) {
+                        if (_phase.value !is ConnectionPhase.OfflineMirror || activeHttpClient != null) teardown()
+                        _credentialStatus.value = GatewayCredentialStatus.RECOVERY_PENDING
+                        _connectionStatus.value = EventStreamStatus.IDLE
+                    }
+                }
+            }
         }
         connectionJob = ownedRestore
+        synchronized(backgroundOwnershipLock) {
+            if (backgroundOwner) backgroundRestoreJob = ownedRestore
+        }
+        ownedRestore.invokeOnCompletion { cause ->
+            synchronized(backgroundOwnershipLock) {
+                if (backgroundRestoreJob === ownedRestore) backgroundRestoreJob = null
+            }
+            // Cancellation may finish only after NonCancellable credential persistence.
+            // A visible app waits for that owner before starting another recovery.
+            if (cause is CancellationException && scope.isActive && appVisible && connectionJob === ownedRestore) {
+                onNetworkAvailable()
+            }
+        }
         ownedRestore.start()
     }
 
@@ -967,7 +1035,9 @@ class GatewayRuntime(
         conversationUi: List<String>,
         deviceRequests: String?,
         generationCancelCapability: GenerationCancelCapability = GenerationCancelCapability.NotNegotiated,
+        checkOwner: () -> Unit = {},
     ): Unit = initializePostLogin(InitializationStage.SESSION_SETUP) {
+        checkOwner()
         val pins = setOfNotNull(tlsSpkiSha256)
         val profile = GatewayProfile(
             accountId = session.accountId,
@@ -1197,25 +1267,28 @@ class GatewayRuntime(
             baseline
         }
         _controller.value = initializePostLogin(InitializationStage.WORKBENCH) {
-            kotlinx.coroutines.withContext(Dispatchers.IO) { WorkbenchController(
-                scope = sessionScope,
-                repository = mirroredRepository,
-                catalogRepository = catalogRepository,
-                languageCode = java.util.Locale.getDefault().toLanguageTag(),
-                scopeFactory = { conversationScope },
-                attachmentCoordinator = attachmentCoordinator,
-                supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
-                debouncePolicy=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
-                // This describes manually submitted `/new`; the new-thread button
-                // uses the authoritative POST /conversations endpoint directly.
-                supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
-                supportsApprovalCards = approvalClient != null,
-                onActiveThreadChanged = { threadId -> activeThread.set(threadId);repository.activeConversationChanged() },
-                streamHealthSource = workbenchRepository,
-                persistence = mirror,
-                media = mediaCache,
-                downloads = downloads,
-            ) }
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                checkOwner()
+                WorkbenchController(
+                    scope = sessionScope,
+                    repository = mirroredRepository,
+                    catalogRepository = catalogRepository,
+                    languageCode = java.util.Locale.getDefault().toLanguageTag(),
+                    scopeFactory = { conversationScope },
+                    attachmentCoordinator = attachmentCoordinator,
+                    supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
+                    debouncePolicy=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                    // This describes manually submitted `/new`; the new-thread button
+                    // uses the authoritative POST /conversations endpoint directly.
+                    supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
+                    supportsApprovalCards = approvalClient != null,
+                    onActiveThreadChanged = { threadId -> activeThread.set(threadId);repository.activeConversationChanged() },
+                    streamHealthSource = workbenchRepository,
+                    persistence = mirror,
+                    media = mediaCache,
+                    downloads = downloads,
+                )
+            }
         }
         clearBubbleWorkTracking()
         bubbleWorkspace?.close()
@@ -1238,22 +1311,25 @@ class GatewayRuntime(
                     mediaCache, downloads)
             }
         }
-        _phase.value = ConnectionPhase.Connected(
-            gatewayUrl = endpoint.baseUrl,
-            username = username,
-            pairingSummary = session.pairingSummary,
-            tlsSpkiSha256 = tlsSpkiSha256,
-            transportSecurity = endpoint.securityFor(pins),
-            // 协商交集：只保留客户端真的声明过并实现的能力。网关回了一个
-            // 客户端没有的键，客户端无法兑现，不能让它以「已同意」的面目出现。
-            conversationUi = CLIENT_CONVERSATION_UI_OFFER intersect conversationUi.toSet(),
-            requestedConversationUi = CLIENT_CONVERSATION_UI_OFFER,
-            deviceRequests = deviceRequests,
-        )
-        _loginStatus.value = GatewayLoginStatus.SIGNED_IN
-        _credentialStatus.value = GatewayCredentialStatus.AVAILABLE
+        synchronized(backgroundOwnershipLock) {
+            checkOwner()
+            _phase.value = ConnectionPhase.Connected(
+                gatewayUrl = endpoint.baseUrl,
+                username = username,
+                pairingSummary = session.pairingSummary,
+                tlsSpkiSha256 = tlsSpkiSha256,
+                transportSecurity = endpoint.securityFor(pins),
+                // 协商交集：只保留客户端真的声明过并实现的能力。网关回了一个
+                // 客户端没有的键，客户端无法兑现，不能让它以「已同意」的面目出现。
+                conversationUi = CLIENT_CONVERSATION_UI_OFFER intersect conversationUi.toSet(),
+                requestedConversationUi = CLIENT_CONVERSATION_UI_OFFER,
+                deviceRequests = deviceRequests,
+            )
+            _loginStatus.value = GatewayLoginStatus.SIGNED_IN
+            _credentialStatus.value = GatewayCredentialStatus.AVAILABLE
+            backgroundSessionActive = true
+        }
         GatewayLog.d("OaiConnection", "stage=CONNECTED state=ready")
-        synchronized(backgroundOwnershipLock) { backgroundSessionActive = true }
         nativeConversationNotifications.bind(profileId, session.accountId)
         refreshBackgroundWork()
         val platformStatus = EventStreamStatusSink()
@@ -1337,8 +1413,11 @@ class GatewayRuntime(
                 }
             }
         }
-        restartPlatformStream = startPlatform
-        startPlatform()
+        synchronized(backgroundOwnershipLock) {
+            checkOwner()
+            restartPlatformStream = startPlatform
+            startPlatform()
+        }
     }
 
     /** 附件状态失败保留正文；媒体端口保持锁定，不能先恢复旧导出再补做删除。 */
