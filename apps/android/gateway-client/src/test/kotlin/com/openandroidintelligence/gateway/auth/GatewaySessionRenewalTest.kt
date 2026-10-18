@@ -74,6 +74,7 @@ class GatewaySessionRenewalTest {
 
     @Test fun oldStreamActivityDuringRotationCannotRechargeTheReplacementSession() = runTest {
         val initial = profile()
+        val client = Any()
         val release = CompletableDeferred<Unit>()
         val entered = CompletableDeferred<Unit>()
         var calls = 0
@@ -83,14 +84,30 @@ class GatewaySessionRenewalTest {
             release.await()
             it.copy(accessToken = "new", sessionId = "session_new")
         }
-        val recovering = async { renewal.recoverEventSession(initial, allowRefresh = true) {} }
+        val recovering = async { renewal.recoverEventSession(initial, client, allowRefresh = true) {} }
         entered.await()
         assertEquals(1, calls)
-        assertFalse(renewal.recordEventActivity(initial))
+        assertFalse(renewal.recordEventActivity(initial, client))
         release.complete(Unit)
         assertTrue(recovering.await())
-        assertFalse(renewal.recoverEventSession(renewal.current, allowRefresh = true) {})
+        assertFalse(renewal.recoverEventSession(renewal.current, client, allowRefresh = true) {})
         assertEquals(1, calls)
+    }
+
+    @Test fun onlyTheClientThatConsumedTheEpisodeCanRestoreTheSharedBudget() = runTest {
+        val recoveringClient = Any()
+        val sibling = Any()
+        var rotations = 0
+        val renewal = GatewaySessionRenewal(profile(), backgroundScope) {
+            rotations++
+            it.copy(sessionId = "session_$rotations", accessToken = "token_$rotations")
+        }
+        assertTrue(renewal.recoverEventSession(renewal.current, recoveringClient, allowRefresh = true) {})
+        assertTrue("A sibling is healthy, but has not proven the failed client recovered", renewal.recordEventActivity(renewal.current, sibling))
+        assertFalse(renewal.recoverEventSession(renewal.current, sibling, allowRefresh = true) {})
+        assertTrue(renewal.recordEventActivity(renewal.current, recoveringClient))
+        assertTrue(renewal.recoverEventSession(renewal.current, sibling, allowRefresh = true) {})
+        assertEquals(2, rotations)
     }
 
     @Test fun rotationCannotChangeIdentityEndpointOrTrust() = runTest {

@@ -61,7 +61,7 @@ class OpenAndroidIntelligenceApplication : Application() {
     val emergencyStoppedCount = kotlinx.coroutines.flow.MutableStateFlow(0)
 
     /** 进程级连接运行时：登录、协商、会话建立与工作台装配。 */
-    val gatewayRuntime: GatewayRuntime by lazy {
+    private val gatewayRuntimeOwner = lazy {
         GatewayRuntime(
             context = this,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
@@ -70,6 +70,7 @@ class OpenAndroidIntelligenceApplication : Application() {
             pluginHost = pluginHost,
         )
     }
+    val gatewayRuntime: GatewayRuntime by gatewayRuntimeOwner
 
     val pluginRuntimesWired: Boolean get() = ::pluginHost.isInitialized && pluginHost.runtimes.isNotEmpty()
 
@@ -79,8 +80,12 @@ class OpenAndroidIntelligenceApplication : Application() {
 
     /** Only an eligible, already foregrounded service reaches this recovery path. */
     internal fun onBackgroundSessionRestarted() {
-        gatewayNetworkMonitor.start()
         gatewayRuntime.onBackgroundSessionRestarted()
+        gatewayNetworkMonitor.start()
+    }
+
+    internal fun onBackgroundSessionStopped() {
+        if (gatewayRuntimeOwner.isInitialized()) gatewayRuntime.onBackgroundSessionStopped()
     }
 
     fun platformSettingsEnvironment(): PlatformSettingsEnvironment = PlatformSettingsEnvironment(

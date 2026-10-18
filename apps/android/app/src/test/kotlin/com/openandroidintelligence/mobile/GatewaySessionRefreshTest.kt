@@ -211,6 +211,242 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
+    fun anExpiredBackgroundRecoveryCannotRefreshAfterALateNegotiationAndResumesWhenVisible() {
+        saveLoginBeforeProcessDeath()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val recovery = AgentSessionRecoveryState(context)
+        assertTrue(recovery.markPendingWork())
+        assertNotNull(recovery.beginRecovery())
+        val previousAttempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
+        val release = gateway.holdResponse(NEGOTIATE_PATH, NEGOTIATE_BODY)
+        val restored = runtime()
+        try {
+            restored.onBackgroundSessionRestarted()
+            assertTrue(awaitCondition(AWAIT_MILLIS) { gateway.requests.count { it.target == NEGOTIATE_PATH } > previousAttempts })
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+            release.countDown()
+            assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value !is ConnectionPhase.Negotiating })
+            assertFalse("过期租约不能在迟到的协商后刷新凭据", gateway.requests.any { it.target == REFRESH_PATH })
+            assertFalse(restored.phase.value is ConnectionPhase.Connected)
+            repeat(3) { restored.onNetworkAvailable() }
+            Thread.sleep(100)
+            assertEquals("后台网络回调不能重新授予恢复资格", previousAttempts + 1,
+                gateway.requests.count { it.target == NEGOTIATE_PATH })
+            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
+            restored.onAppForegrounded()
+            awaitConnected(restored)
+            assertEquals("refresh_2", credentialStore.loadRefresh(profileId())?.decodeToString())
+        } finally { release.countDown() }
+    }
+
+    @Test
+    fun aBackgroundRecoveryStopsRetryingAtLeaseExpiryAndForegroundingRestartsIt() {
+        saveLoginBeforeProcessDeath()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val recovery = AgentSessionRecoveryState(context)
+        assertTrue(recovery.markPendingWork())
+        assertNotNull(recovery.beginRecovery())
+        gateway.respond(NEGOTIATE_PATH, """{"error":{"code":"GATEWAY_UNAVAILABLE","retryable":true}}""", 503)
+        val previousAttempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
+        val restored = runtime()
+        restored.onBackgroundSessionRestarted()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value is ConnectionPhase.OfflineMirror })
+        val attempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
+        assertTrue(attempts > previousAttempts)
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+        repeat(3) { restored.onNetworkAvailable() }
+        Thread.sleep(1_100)
+        assertEquals("租约过期后恢复循环不得继续发网络请求", attempts,
+            gateway.requests.count { it.target == NEGOTIATE_PATH })
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
+        restored.onAppForegrounded()
+        awaitConnected(restored)
+        assertEquals(1, gateway.requests.count { it.target == PASSWORD_PATH })
+    }
+
+    @Test
+    fun aStoppedBackgroundRecoveryPersistsALateRotationWithoutPublishingAConnection() {
+        assertStoppedRecoveryPersistsRotation(foregroundBeforeCommit = false)
+    }
+
+    @Test
+    fun foregroundingWaitsForTheCancelledRecoveryToPersistItsRotatedCredential() {
+        assertStoppedRecoveryPersistsRotation(foregroundBeforeCommit = true)
+    }
+
+    private fun assertStoppedRecoveryPersistsRotation(foregroundBeforeCommit: Boolean) {
+        saveLoginBeforeProcessDeath()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val recovery = AgentSessionRecoveryState(context)
+        assertTrue(recovery.markPendingWork())
+        assertNotNull(recovery.beginRecovery())
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val blockingStore = object : com.openandroidintelligence.gateway.auth.GatewayCredentialStore by credentialStore {
+            override fun saveRefresh(profileId: String, credential: ByteArray) {
+                if (credential.decodeToString() == "refresh_2") {
+                    entered.countDown()
+                    check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                }
+                credentialStore.saveRefresh(profileId, credential)
+            }
+        }
+        val restored = GatewayRuntime(context, runtimeScope, pairingGrants, credentialStore = blockingStore,
+            deviceKeys = deviceKeys, localDocumentKeyProvider = TestDocumentKeys)
+        val serviceController = org.robolectric.Robolectric.buildService(AgentSessionForegroundService::class.java).create()
+        try {
+            restored.onBackgroundSessionRestarted()
+            assertTrue(awaitCondition(AWAIT_MILLIS) { entered.count == 0L })
+            serviceController.get().onTimeout(1, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            // This test Application is not the production composition root.
+            restored.onBackgroundSessionStopped()
+            if (foregroundBeforeCommit) {
+                restored.onAppForegrounded()
+                assertEquals("旧owner完成凭据落盘之前不能启动第二次刷新", 1,
+                    gateway.requests.count { it.target == REFRESH_PATH })
+            }
+            release.countDown()
+            if (!foregroundBeforeCommit) {
+                assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value !is ConnectionPhase.Negotiating })
+                assertEquals("服务停止也必须保管已轮换凭据", "refresh_2", credentialStore.loadRefresh(profileId())?.decodeToString())
+                assertFalse("持久化完成不得复活后台连接", restored.phase.value is ConnectionPhase.Connected)
+                assertFalse(gateway.requests.any { it.target.startsWith("/open-android-intelligence/v2/events") &&
+                    it.headers.any { header -> header.equals("Authorization: Bearer token_2", true) } })
+                restored.onAppForegrounded()
+            }
+            awaitConnected(restored)
+            gateway.respond(REFRESH_PATH, REFRESH_BODY.replace("refresh_2", "refresh_3"))
+            restored.refreshSession()
+            assertTrue(awaitCondition(AWAIT_MILLIS) { credentialStore.loadRefresh(profileId())?.decodeToString() == "refresh_3" })
+            assertTrue(gateway.requests.last { it.target == REFRESH_PATH }.body.contains("refresh_2"))
+            assertEquals("refresh_3", credentialStore.loadRefresh(profileId())?.decodeToString())
+        } finally {
+            release.countDown()
+            serviceController.destroy()
+        }
+    }
+
+    @Test
+    fun aForegroundRecoverySurvivesTheOldBackgroundServiceTimingOut() {
+        saveLoginBeforeProcessDeath()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val recovery = AgentSessionRecoveryState(context)
+        assertTrue(recovery.markPendingWork())
+        assertNotNull(recovery.beginRecovery())
+        credentialStore.saveRefresh(profileId("bob"), "bob_refresh".toByteArray())
+        val attempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
+        val release = gateway.holdResponse(NEGOTIATE_PATH, NEGOTIATE_BODY)
+        val restored = runtime()
+        val serviceController = org.robolectric.Robolectric.buildService(AgentSessionForegroundService::class.java).create()
+        try {
+            restored.onBackgroundSessionRestarted()
+            assertTrue(awaitCondition(AWAIT_MILLIS) { gateway.requests.count { it.target == NEGOTIATE_PATH } > attempts })
+            restored.onAppForegrounded()
+            serviceController.get().onTimeout(1, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            restored.onBackgroundSessionStopped()
+            release.countDown()
+            awaitConnected(restored)
+            assertEquals("refresh_2", credentialStore.loadRefresh(profileId())?.decodeToString())
+            assertEquals("bob_refresh", credentialStore.loadRefresh(profileId("bob"))?.decodeToString())
+        } finally {
+            release.countDown()
+            serviceController.destroy()
+        }
+    }
+
+    @Test
+    fun backgroundRecoveryCleanupPreservesAnAuthoritativeCredentialRevocation() {
+        saveLoginBeforeProcessDeath()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val recovery = AgentSessionRecoveryState(context)
+        assertTrue(recovery.markPendingWork())
+        assertNotNull(recovery.beginRecovery())
+        gateway.respond(REFRESH_PATH, """{"error":{"code":"SESSION_REVOKED"}}""", 401)
+        val release = gateway.holdResponse(NEGOTIATE_PATH, NEGOTIATE_BODY)
+        val restored = runtime()
+        val scopeOwner = requireNotNull(runtimeScope.coroutineContext[Job])
+        val previousJobs = scopeOwner.children.toSet()
+        val attempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
+        try {
+            restored.onBackgroundSessionRestarted()
+            assertTrue(awaitCondition(AWAIT_MILLIS) { gateway.requests.count { it.target == NEGOTIATE_PATH } > attempts })
+            val restoreOwner = scopeOwner.children.single { it !in previousJobs }
+            release.countDown()
+            runBlocking { kotlinx.coroutines.withTimeout(AWAIT_MILLIS) { restoreOwner.join() } }
+            assertEquals(GatewayLoginStatus.REAUTHENTICATION_REQUIRED, restored.loginStatus.value)
+            assertEquals(GatewayCredentialStatus.UNAVAILABLE, restored.credentialStatus.value)
+            assertTrue(restored.phase.value is ConnectionPhase.Failed)
+            assertFalse(credentialStore.hasRefresh(profileId()))
+            assertTrue(deviceKeys.hasKey(profileId()))
+        } finally { release.countDown() }
+    }
+
+    @Test
+    fun aLegacy404DoesNotStrandTheValidCredentialAfterGatewayUpgrade() {
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        gateway.respond(REFRESH_PATH, """{"error":{"code":"NOT_FOUND"}}""", 404)
+        runtime.refreshSession()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { !runtime.isRefreshingSession.value && runtime.operationNotice.value != null })
+        assertEquals("refresh_1", credentialStore.loadRefresh(profileId())?.decodeToString())
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-Open-Android-Intelligence-Refresh-Replay" to "v1"))
+        gateway.respond(REFRESH_PATH, REFRESH_BODY)
+        runtime.refreshSession()
+        assertTrue("明确404之后的升级恢复必须可继续轮换", awaitCondition(AWAIT_MILLIS) {
+            credentialStore.loadRefresh(profileId())?.decodeToString() == "refresh_2"
+        })
+        assertEquals(2, gateway.requests.count { it.target == REFRESH_PATH })
+        assertTrue(gateway.requests.filter { it.target == REFRESH_PATH }.all { it.body.contains("refresh_1") })
+        assertEquals(1, gateway.requests.count { it.target == PASSWORD_PATH })
+    }
+
+    @Test
+    fun ambiguousLegacyRefreshFailuresRetainTheirJournalEvenAfterGatewayUpgrade() {
+        assertLegacyUnknownOutcomeRetainsJournal(503, """{"error":{"code":"INTERNAL_ERROR"}}""")
+    }
+
+    @Test
+    fun aLostLegacyRefreshResponseRetainsItsJournalEvenAfterGatewayUpgrade() {
+        assertLegacyUnknownOutcomeRetainsJournal(0, "")
+    }
+
+    @Test
+    fun aStructuredLegacyUnknownOutcomeRetainsItsJournalEvenWithA404Status() {
+        assertLegacyUnknownOutcomeRetainsJournal(404, """{"error":{"code":"OUTCOME_UNKNOWN","retryable":true}}""")
+    }
+
+    private fun assertLegacyUnknownOutcomeRetainsJournal(status: Int, body: String) {
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        gateway.respond(REFRESH_PATH, body, status)
+        runtime.refreshSession()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { !runtime.isRefreshingSession.value && runtime.operationNotice.value != null })
+        val journal = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("gateway_refresh_operations", Context.MODE_PRIVATE).all
+        assertFalse(journal.isEmpty())
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-Open-Android-Intelligence-Refresh-Replay" to "v1"))
+        gateway.respond(REFRESH_PATH, REFRESH_BODY)
+        runtime.refreshSession()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { !runtime.isRefreshingSession.value })
+        assertEquals(1, gateway.requests.count { it.target == REFRESH_PATH })
+        assertEquals(journal, ApplicationProvider.getApplicationContext<Application>()
+            .getSharedPreferences("gateway_refresh_operations", Context.MODE_PRIVATE).all)
+        assertEquals("refresh_1", credentialStore.loadRefresh(profileId())?.decodeToString())
+    }
+
+    private fun saveLoginBeforeProcessDeath() {
+        val originalScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val original = GatewayRuntime(ApplicationProvider.getApplicationContext(), originalScope, pairingGrants,
+            credentialStore = credentialStore, deviceKeys = deviceKeys, localDocumentKeyProvider = TestDocumentKeys)
+        original.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(original)
+        awaitWorkbenchCommit(requireNotNull(original.controller.value))
+        awaitAction("进程回收前释放数据库句柄") { requireNotNull(original.controller.value).closeAndAwait() }
+        originalScope.cancel()
+    }
+
+    @Test
     fun aLostRefreshResponseIsReplayedWithTheSameDurableOperationAfterProcessDeath() {
         gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-Open-Android-Intelligence-Refresh-Replay" to "v1"))
         gateway.respond("/open-android-intelligence/v2/events", ": heartbeat\n\n", contentType = "text/event-stream")

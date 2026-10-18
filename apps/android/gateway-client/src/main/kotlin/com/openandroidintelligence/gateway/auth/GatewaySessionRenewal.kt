@@ -21,7 +21,8 @@ class GatewaySessionRenewal(
     @Volatile private var snapshot = initial
     private var closed = false
     private var inFlight: Deferred<GatewayProfile>? = null
-    private var eventRecoveryMarker: Any? = null
+    private class EventRecoveryEpisode(val client: Any)
+    private var eventRecoveryMarker: EventRecoveryEpisode? = null
 
     val current: GatewayProfile get() = snapshot
 
@@ -69,6 +70,7 @@ class GatewaySessionRenewal(
     /** All event clients share one recovery episode, independent of ordinary HTTP renewal. */
     internal suspend fun recoverEventSession(
         rejected: GatewayProfile,
+        client: Any,
         allowRefresh: Boolean,
         onFailure: () -> Unit,
     ): Boolean {
@@ -78,7 +80,7 @@ class GatewaySessionRenewal(
             if (snapshot != rejected) return true
             val existing = inFlight
             if (existing == null && (!allowRefresh || eventRecoveryMarker != null)) return false
-            if (allowRefresh && eventRecoveryMarker == null) eventRecoveryMarker = Any()
+            if (allowRefresh && eventRecoveryMarker == null) eventRecoveryMarker = EventRecoveryEpisode(client)
             (existing ?: refreshTask(rejected)) to eventRecoveryMarker
         }
         task.invokeOnCompletion { cause ->
@@ -93,10 +95,10 @@ class GatewaySessionRenewal(
         return true
     }
 
-    /** A stale connection cannot replenish the replacement session's recovery budget. */
-    internal fun recordEventActivity(profile: GatewayProfile): Boolean = synchronized(lock) {
+    /** Only the recovering client can prove its shared recovery episode healthy. */
+    internal fun recordEventActivity(profile: GatewayProfile, client: Any): Boolean = synchronized(lock) {
         if (closed || !owner.isActive || inFlight != null || snapshot != profile) return false
-        eventRecoveryMarker = null
+        if (eventRecoveryMarker?.client === client) eventRecoveryMarker = null
         true
     }
 

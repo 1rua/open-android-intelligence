@@ -19,7 +19,7 @@ enum class EventStreamStatus {
     /** Opening a channel (WebSocket handshake or SSE request). */
     CONNECTING,
 
-    /** A channel is open and has delivered at least one event. */
+    /** An authenticated channel has delivered a complete event or heartbeat. */
     LIVE,
 
     /** The last attempt failed and another one is already scheduled. */

@@ -98,11 +98,12 @@ class GatewayHttpClient(
 
     // A healthy sibling stream cannot repeatedly replenish a broken client's
     // authentication attempts. This fence also survives Flow re-collection.
+    private val eventRecoveryOwner = Any()
     private val localEventRecoveryMarker = java.util.concurrent.atomic.AtomicReference<Any?>(null)
     private val failedEventSession = java.util.concurrent.atomic.AtomicReference<Pair<GatewayProfile, Throwable>?>(null)
 
     private fun recordEventActivity(snapshot: GatewayProfile) {
-        if (sessionRenewal?.recordEventActivity(snapshot) == true) localEventRecoveryMarker.set(null)
+        if (sessionRenewal?.recordEventActivity(snapshot, eventRecoveryOwner) == true) localEventRecoveryMarker.set(null)
     }
 
     private suspend fun recoverEventAuthentication(rejected: GatewayProfile): Boolean {
@@ -111,7 +112,7 @@ class GatewayHttpClient(
         val allowRefresh = localEventRecoveryMarker.compareAndSet(null, marker)
         val attemptedMarker = if (allowRefresh) marker else localEventRecoveryMarker.get()
         val recovered = try {
-            renewal.recoverEventSession(rejected, allowRefresh) {
+            renewal.recoverEventSession(rejected, eventRecoveryOwner, allowRefresh) {
                 // Completion belongs to the shared operation, not its cancellable
                 // waiter. A later operation's fence must survive an older failure.
                 if (attemptedMarker != null) localEventRecoveryMarker.compareAndSet(attemptedMarker, null)
@@ -375,7 +376,16 @@ class GatewayHttpClient(
                         "$EVENTS_TARGET?cursor=$sseCursor"
                     }
 
-                    val parser = SseParser().also { it.onHeartbeat = { recordEventActivity(attemptedProfile) } }
+                    val parser = SseParser().also { parser ->
+                        parser.onHeartbeat = {
+                            if (!receivedAnyEventInAttempt) GatewayLog.d(TAG, "event stream live over sse heartbeat")
+                            receivedAnyEventInAttempt = true
+                            backoffMillis = 1000L
+                            consecutiveFailures = 0
+                            statusSink?.report(EventStreamStatus.LIVE)
+                            recordEventActivity(attemptedProfile)
+                        }
+                    }
 
                     val headers = RawHeaders.validate(
                         listOf(
