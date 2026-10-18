@@ -25,6 +25,49 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchForegroundResumeTest {
 
+    @Test fun exhaustedEventAuthenticationPausesAutomaticSubscriptionsUntilAnExplicitWakeup() = runTest {
+        for (failure in listOf(
+            com.openandroidintelligence.gateway.http.EventSessionRejectedException(),
+            com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException("REFRESH_OUTCOME_UNKNOWN"),
+        )) {
+            val repository = RecordingRepository(eventsFor = { flow { throw failure } })
+            val controller = controller(repository)
+            try {
+                runCurrent()
+                controller.openThread("conv_1")
+                runCurrent()
+                assertEquals(1, repository.subscriptions)
+                advanceTimeBy(60_000)
+                runCurrent()
+                assertEquals("A rejected session must not be retried on a timer", 1, repository.subscriptions)
+                assertTrue(controller.state.value.notice?.startsWith("EVENTS_FAILED:") == true)
+                controller.onForegrounded()
+                runCurrent()
+                assertEquals(2, repository.subscriptions)
+            } finally { controller.cancel() }
+        }
+    }
+
+    @Test fun aTemporaryNetworkFailureStillAutomaticallyRestoresTheSubscription() = runTest {
+        val repository = RecordingRepository(eventsFor = { attempt ->
+            flow {
+                if (attempt == 1) throw java.io.IOException("network changed")
+                awaitCancellation()
+            }
+        })
+        val controller = controller(repository)
+        try {
+            runCurrent()
+            controller.openThread("conv_1")
+            runCurrent()
+            assertEquals(1, repository.subscriptions)
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals(2, repository.subscriptions)
+            assertEquals(1, repository.maxConcurrentSubscriptions)
+        } finally { controller.cancel() }
+    }
+
     @Test fun foregroundReturnReopensTheSubscriptionWhileTheRunningOneIsStillAlive() = runTest {
         val repository = RecordingRepository()
         val controller = controller(repository)

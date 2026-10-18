@@ -21,6 +21,17 @@ import org.junit.Test
  */
 class GatewayAuthErrorTest {
 
+    @Test
+    fun refreshCarriesTheDurableReplayIdentityOutsideTheClosedJsonPayload() = runBlocking {
+        val transport = StubTransport(json(200, """{"data":{"accountId":"account","deviceId":"device","sessionId":"session","accessToken":"access","refreshCredential":"next"}}"""))
+        val auth = GatewayAuthClient(transport, "installation", "test", 35)
+        auth.refresh("account", "device", "negotiation", "old".toByteArray(), requestId = "refresh_same_operation")
+        val sent = requireNotNull(transport.lastRequest)
+        assertEquals("refresh_same_operation", sent.headers.single { it.name.equals("Idempotency-Key", true) }.value)
+        assertFalse(sent.body.decodeToString().contains("refresh_same_operation"))
+        assertTrue(sent.body.decodeToString().contains("negotiation"))
+    }
+
     private class StubTransport(private val response: WireResponse) : GatewayByteTransport {
         var lastRequest: WireRequest? = null
         override suspend fun execute(request: WireRequest): WireResponse {

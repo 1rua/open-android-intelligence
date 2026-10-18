@@ -7,17 +7,26 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 
 internal const val AGENT_SESSION_FOREGROUND_CHANNEL_ID = "agent-session-background"
 internal const val AGENT_SESSION_FOREGROUND_NOTIFICATION_ID = 2401
 
 /**
  * Raises the importance of the process that already owns the Gateway SSE.
- * It holds no credentials and creates no connection. Conversation bubbles and
+ * The runtime owns credentials and connections, including recovery after system
+ * recreation of an eligible ongoing task. Conversation bubbles and
  * Live Updates use separate notifications: an FGS notification cannot bubble.
  */
 class AgentSessionForegroundService : Service() {
+    private val recovery by lazy { AgentSessionRecoveryState(this) }
+    private val handler = Handler(Looper.getMainLooper())
+    private val recoveryTimeout = Runnable {
+        if (recovery.isRecovering) finishReceiving()
+    }
+
     override fun onCreate() {
         super.onCreate()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -31,16 +40,37 @@ class AgentSessionForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!recovery.isStartEligible) {
+            finishReceiving()
+            return START_NOT_STICKY
+        }
+        val recoveryDelay = if (intent == null) recovery.beginRecovery() else null
+        if (intent == null && recoveryDelay == null) {
+            finishReceiving()
+            return START_NOT_STICKY
+        }
         try {
             startForeground(AGENT_SESSION_FOREGROUND_NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } catch (_: IllegalStateException) {
             finishReceiving()
+            return START_NOT_STICKY
         } catch (_: SecurityException) {
             finishReceiving()
+            return START_NOT_STICKY
         }
-        // System recreation cannot silently resume work after task completion,
-        // logout or a dataSync timeout. A visible task must request a new start.
-        return START_NOT_STICKY
+        if (recoveryDelay != null) {
+            handler.removeCallbacks(recoveryTimeout)
+            handler.postDelayed(recoveryTimeout, recoveryDelay)
+            // Foreground first: loading credentials or opening sockets must not
+            // consume Android's short startForeground deadline.
+            try {
+                (application as? OpenAndroidIntelligenceApplication)?.onBackgroundSessionRestarted()
+            } catch (_: RuntimeException) {
+                finishReceiving()
+                return START_NOT_STICKY
+            }
+        }
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -51,6 +81,7 @@ class AgentSessionForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(recoveryTimeout)
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } finally {
@@ -59,6 +90,8 @@ class AgentSessionForegroundService : Service() {
     }
 
     private fun finishReceiving() {
+        recovery.clear()
+        handler.removeCallbacks(recoveryTimeout)
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } finally {

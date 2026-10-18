@@ -1,5 +1,6 @@
 package com.openandroidintelligence.gateway.ws
 
+import com.openandroidintelligence.gateway.auth.GatewaySessionRenewal
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.events.SseParser
@@ -48,11 +49,30 @@ open class GatewayWebSocketTransport(
     private val signer: (ByteArray) -> ByteArray,
     private val socketFactory: ((host: String, port: Int, isTls: Boolean) -> Socket)? = null,
     private val verifyAcceptHeader: Boolean = true,
+    private var sessionRenewal: GatewaySessionRenewal? = null,
 ) {
+    init { sessionRenewal?.requireScope(profile) }
+
+    internal fun bindSessionRenewal(renewal: GatewaySessionRenewal) {
+        renewal.requireScope(profile)
+        check(sessionRenewal == null || sessionRenewal === renewal) { "WEBSOCKET_SESSION_OWNER_CHANGED" }
+        sessionRenewal = renewal
+    }
+
     private val secureRandom = SecureRandom()
 
+    open fun events(cursor: String? = null): Flow<GatewayEvent> = events(cursor, {})
+
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
-    open fun events(cursor: String? = null): Flow<GatewayEvent> = flow {
+    open fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile? = null): Flow<GatewayEvent> = flow {
+        // The HTTP owner attributes activity to the same snapshot used on wire,
+        // even if another request rotates the session before IO starts.
+        val profile = sessionSnapshot ?: sessionRenewal?.current ?: this@GatewayWebSocketTransport.profile
+        val bound = this@GatewayWebSocketTransport.profile
+        require(profile.accountId == bound.accountId && profile.deviceId == bound.deviceId &&
+            profile.gatewayBaseUrl == bound.gatewayBaseUrl && profile.pinnedSpkiSha256 == bound.pinnedSpkiSha256) {
+            "WEBSOCKET_SESSION_SCOPE_CHANGED"
+        }
         val uri = URI(profile.gatewayBaseUrl)
         val scheme = uri.scheme?.lowercase() ?: "http"
         val isTls = scheme == "wss" || scheme == "https"
@@ -107,7 +127,7 @@ open class GatewayWebSocketTransport(
 
             // Build authenticated handshake
             try {
-                performHandshake(outputStream, inputStream, hostHeader, target)
+                performHandshake(profile, outputStream, inputStream, hostHeader, target)
             } catch (e: java.net.SocketException) {
                 if (!currentCoroutineContext().isActive || socket.isClosed) return@flow
                 throw e
@@ -137,9 +157,11 @@ open class GatewayWebSocketTransport(
                 }
                 when (frame.opcode) {
                     OPCODE_PING -> {
+                        onActivity()
                         sendPong(outputStream, frame.payload)
                     }
                     OPCODE_PONG -> {
+                        onActivity()
                         // Heartbeat response, no action required
                     }
                     OPCODE_CLOSE -> {
@@ -190,6 +212,7 @@ open class GatewayWebSocketTransport(
     }.flowOn(Dispatchers.IO)
 
     private fun performHandshake(
+        profile: GatewayProfile,
         output: OutputStream,
         input: InputStream,
         hostHeader: String,
@@ -222,7 +245,7 @@ open class GatewayWebSocketTransport(
             ?: throw IOException("WEBSOCKET_HANDSHAKE_FAILED: unexpected end of stream")
         if (!statusLine.contains(" 101 ") && !statusLine.endsWith(" 101")) {
             if (Regex("HTTP/1\\.[01] 410(?: .*|$)").matches(statusLine)) throw com.openandroidintelligence.gateway.http.EventCursorExpiredException()
-            if (Regex("HTTP/1\\.[01] 401(?: .*|$)").matches(statusLine)) throw com.openandroidintelligence.gateway.http.EventSessionRejectedException()
+            if (Regex("HTTP/1\\.[01] 401(?: .*|$)").matches(statusLine)) throw com.openandroidintelligence.gateway.http.EventSessionRejectedException(profile)
             throw IOException("WEBSOCKET_HANDSHAKE_FAILED: $statusLine")
         }
 

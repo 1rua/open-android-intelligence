@@ -73,6 +73,16 @@ class OpenAndroidIntelligenceApplication : Application() {
 
     val pluginRuntimesWired: Boolean get() = ::pluginHost.isInitialized && pluginHost.runtimes.isNotEmpty()
 
+    private val gatewayNetworkMonitor by lazy {
+        GatewayNetworkMonitor(this) { gatewayRuntime.onNetworkAvailable() }
+    }
+
+    /** Only an eligible, already foregrounded service reaches this recovery path. */
+    internal fun onBackgroundSessionRestarted() {
+        gatewayNetworkMonitor.start()
+        gatewayRuntime.onBackgroundSessionRestarted()
+    }
+
     fun platformSettingsEnvironment(): PlatformSettingsEnvironment = PlatformSettingsEnvironment(
         trustMode = trustMode,
         audit = auditStore,
@@ -130,6 +140,7 @@ class OpenAndroidIntelligenceApplication : Application() {
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
+                    gatewayNetworkMonitor.start()
                     gatewayRuntime.onAppForegrounded()
                 }
                 override fun onStop(owner: LifecycleOwner) {

@@ -79,6 +79,10 @@ class GatewayTransport(
             if (streamBody != null) {
                 validateStreamHeaders(request.headers, streamBody)
                 connection.setFixedLengthStreamingMode(streamBody.contentLength)
+            } else if (request.body.isNotEmpty()) {
+                // Buffered HttpURLConnection POSTs may be transparently resent
+                // after EOF. Refresh rotation must be retried only by its journal.
+                connection.setFixedLengthStreamingMode(request.body.size)
             }
             if (request.body.isNotEmpty() || streamBody != null) {
                 connection.doOutput = true

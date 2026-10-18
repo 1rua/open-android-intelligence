@@ -1,0 +1,307 @@
+diff --git a/src/core/account-store.ts b/src/core/account-store.ts
+index d6c0bd1..5efd1d8 100644
+--- a/src/core/account-store.ts
++++ b/src/core/account-store.ts
+@@ -64,6 +64,12 @@ const migrate = (database: DatabaseSync): void => {
+       replaced_by_hash TEXT
+     );
+ 
++    CREATE TABLE IF NOT EXISTS refresh_replay (
++      installation_id TEXT NOT NULL, device_id TEXT NOT NULL, operation_id TEXT NOT NULL,
++      input_hash TEXT NOT NULL, outcome_json TEXT NOT NULL,
++      PRIMARY KEY (installation_id, device_id, operation_id)
++    );
++
+     CREATE TABLE IF NOT EXISTS request_nonces (
+       device_id TEXT NOT NULL, nonce_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
+       PRIMARY KEY (device_id, nonce_hash)
+diff --git a/src/core/gateway-core.ts b/src/core/gateway-core.ts
+index 3f0112c..7e266ca 100644
+--- a/src/core/gateway-core.ts
++++ b/src/core/gateway-core.ts
+@@ -103,6 +103,7 @@ export type VerifiedGatewayRequest = Readonly<{
+ export type GatewayResponse = Readonly<{
+   /** 仅供原生 HTTP 层消费，不参与 JSON 序列化或幂等结果保存。 */
+   bodyStream?: HistoryMediaStream;
++  responseHeaders?: Readonly<Record<string, string>>;
+   requestId: string;
+   correlationId: string;
+   protocol: "2.1";
+@@ -637,6 +638,8 @@ export const createGatewayCore = (options: GatewayCoreOptions = {}): GatewayCore
+     }
+     if (request.method === "POST" && request.target === "/open-android-intelligence/v2/negotiate") {
+       try {
++        const replay = request.headers?.["x-open-android-intelligence-refresh-replay"];
++        if (replay !== undefined && replay !== "v1") throw new Error("SCHEMA_INVALID");
+         admit(false, now.getTime());
+         for (const [id, pending] of pendingNegotiations) if (pending.expiresAt <= now.getTime()) pendingNegotiations.delete(id);
+         const body = bodyRecord(request.body);
+@@ -658,7 +661,11 @@ export const createGatewayCore = (options: GatewayCoreOptions = {}): GatewayCore
+           expiresAt: now.getTime() + 5 * 60 * 1000,
+           inputHash,
+         });
+-        return success(request, response as Readonly<Record<string, unknown>>);
++        const result = { ...success(request, response as Readonly<Record<string, unknown>>) };
++        if (request.headers?.["x-open-android-intelligence-refresh-replay"] === "v1" && attachmentMasterKey.bytes !== undefined) {
++          Object.defineProperty(result, "responseHeaders", { value: Object.freeze({ "x-open-android-intelligence-refresh-replay": "v1" }) });
++        }
++        return Object.freeze(result);
+       } catch (error) {
+         return failure(request, gatewayErrorCode(error));
+       }
+@@ -750,7 +757,10 @@ export const createGatewayCore = (options: GatewayCoreOptions = {}): GatewayCore
+         if (!accountExistsIn(resolveRoot(), accountId)) return failure(request, "AUTHENTICATION_FAILED");
+         const account = await openAccount(accountId);
+         try {
++          const operationId = request.headers?.["idempotency-key"] ?? request.idempotencyKey;
++          if (operationId !== undefined && !/^[A-Za-z0-9._~-]{1,128}$/.test(operationId)) throw new Error("SCHEMA_INVALID");
+           const bundle = account.sessions.refresh({
++            ...(operationId === undefined ? {} : { operationId }),
+             refreshCredential: String(body["refreshCredential"]),
+             installationId: String(body["installationId"]),
+             deviceId: String(body["deviceId"]),
+diff --git a/src/core/session-service.ts b/src/core/session-service.ts
+index 305bad9..e0e6acf 100644
+--- a/src/core/session-service.ts
++++ b/src/core/session-service.ts
+@@ -153,13 +153,21 @@ export class SessionService {
+ 
+   refresh(input: Readonly<{
+     refreshCredential: string;
++    operationId?: string;
+     installationId: string;
+     deviceId: string;
+     correlationId: string;
+     now?: Date;
+   }>): SessionBundle {
+     return this.store.transaction(() => {
++      if (input.operationId !== undefined && !/^[A-Za-z0-9._~-]{1,128}$/.test(input.operationId)) throw new Error("SCHEMA_INVALID");
+       const credentialHash = digestSecret(input.refreshCredential);
++      const fingerprint = digestSecret(JSON.stringify([this.accountId, input.installationId, input.deviceId, credentialHash]));
++      const purpose = `refresh-replay:${JSON.stringify([this.accountId, input.installationId, input.deviceId, input.operationId])}`;
++      const replay = input.operationId === undefined ? undefined : this.store.database.prepare(
++        "SELECT input_hash, outcome_json FROM refresh_replay WHERE installation_id=? AND device_id=? AND operation_id=?",
++      ).get(input.installationId, input.deviceId, input.operationId) as { input_hash: string; outcome_json: string } | undefined;
++      if (replay !== undefined && !sameDigest(replay.input_hash, fingerprint)) throw new Error("IDEMPOTENCY_CONFLICT");
+       const row = this.store.database
+         .prepare("SELECT * FROM refresh_credentials WHERE credential_hash = ?")
+         .get(credentialHash) as Record<string, unknown> | undefined;
+@@ -170,6 +178,16 @@ export class SessionService {
+       ) {
+         throw new Error("AUTHENTICATION_FAILED");
+       }
++      if (replay !== undefined && String(row.status) === "used") {
++        const live = this.store.database.prepare(`
++          SELECT 1 FROM refresh_credentials r
++          JOIN access_sessions s ON s.session_id=r.session_id
++          JOIN device_keys k ON k.device_id=r.device_id AND k.installation_id=r.installation_id
++          WHERE r.credential_hash=? AND r.status='active' AND s.status='active'
++            AND r.installation_id=? AND r.device_id=?
++        `).get(String(row.replaced_by_hash), input.installationId, input.deviceId);
++        if (live !== undefined) return Object.freeze(this.store.openJson(replay.outcome_json, purpose) as SessionBundle);
++      }
+       if (String(row.status) !== "active") {
+         this.recordRefreshReuse(input);
+       }
+@@ -178,6 +196,14 @@ export class SessionService {
+       this.store.database
+         .prepare("UPDATE refresh_credentials SET status = 'used', replaced_by_hash = ? WHERE credential_hash = ?")
+         .run(digestSecret(bundle.refreshCredential), credentialHash);
++      // Seal before commit: no usable secret is written outside the account AEAD.
++      // Only the latest successor of this device can be replayed, bounding storage.
++      this.store.database.prepare("DELETE FROM refresh_replay WHERE installation_id=? AND device_id=?")
++        .run(input.installationId, input.deviceId);
++      if (input.operationId !== undefined) {
++        this.store.database.prepare("INSERT INTO refresh_replay VALUES (?, ?, ?, ?, ?)")
++          .run(input.installationId, input.deviceId, input.operationId, fingerprint, this.store.sealJson(bundle, purpose));
++      }
+       this.audit.append({
+         eventType: "session.refresh.rotated",
+         actor: { accountId: this.accountId, deviceId: input.deviceId, installationId: input.installationId },
+diff --git a/src/http/routes.ts b/src/http/routes.ts
+index 885e69e..8a511fe 100644
+--- a/src/http/routes.ts
++++ b/src/http/routes.ts
+@@ -381,6 +381,17 @@ const rawHeaderValues = (rawHeaders: readonly string[], wanted: string): string[
+   return values;
+ };
+ 
++const validRefreshReplayHeaders = (request: IncomingMessage, target: string): boolean => {
++  const name = target === "/open-android-intelligence/v2/negotiate"
++    ? "x-open-android-intelligence-refresh-replay"
++    : target === "/open-android-intelligence/v2/sessions/refresh" ? "idempotency-key" : undefined;
++  if (name === undefined) return true;
++  const values = rawHeaderValues(request.rawHeaders, name);
++  if (values.length > 1) return false;
++  if (values.length === 0) return request.headers[name] === undefined;
++  return name === "idempotency-key" ? /^[A-Za-z0-9._~-]{1,128}$/.test(values[0]!) : values[0] === "v1";
++};
++
+ const parseSingletonAttachmentHeaders = (
+   request: IncomingMessage,
+ ): Readonly<{ contentLength: number; sha256: string }> | undefined => {
+@@ -649,7 +660,7 @@ const createRoute = (
+     const body = await services.core.handle(verifiedRequest);
+     return Object.freeze({
+       statusCode: errorStatus(body),
+-      headers: responseHeaders,
++      headers: Object.freeze({ ...responseHeaders, ...body.responseHeaders }),
+       body,
+     });
+   };
+@@ -711,6 +722,7 @@ const createRoute = (
+     if (isPreAuthRequest(method, target)) {
+       // No verifier is involved: these endpoints exist to establish the session
+       // the verifier will later require.
++      if (!validRefreshReplayHeaders(request, target)) return rawFailureResponse(emptyRequest, "SCHEMA_INVALID");
+       let preAuthBody: unknown;
+       try {
+         preAuthBody = decodePreAuthBody(body, request.headers);
+@@ -760,7 +772,7 @@ const createRoute = (
+     }
+     return Object.freeze({
+       statusCode: errorStatus(coreResponse),
+-      headers: responseHeaders,
++      headers: Object.freeze({ ...responseHeaders, ...coreResponse.responseHeaders }),
+       body: coreResponse,
+     });
+   };
+diff --git a/test/refresh-replay.test.ts b/test/refresh-replay.test.ts
+new file mode 100644
+index 0000000..a96be51
+--- /dev/null
++++ b/test/refresh-replay.test.ts
+@@ -0,0 +1,133 @@
++import { mkdtempSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { expect, it } from "vitest";
++import { createGatewayCore } from "../src/core/gateway-core.js";
++
++const key = Buffer.alloc(32, 0x42);
++const setup = async () => {
++  const root = mkdtempSync(join(tmpdir(), "refresh-replay-"));
++  const core = createGatewayCore({ storageRoot: root, attachmentMasterKey: key });
++  const account = await core.openGatewayAccount("acct_alice");
++  account.credentials.setPassword("password");
++  const first = account.sessions.createPasswordSession({ username: "alice", password: "password", installation: {
++    installationId: "install_one", displayName: "phone", devicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
++  }, correlationId: "login" });
++  const input = { refreshCredential: first.refreshCredential, installationId: "install_one", deviceId: first.deviceId, correlationId: "refresh", operationId: "refresh_operation" };
++  return { root, account, first, input };
++};
++it("replays an encrypted refresh after restart, conflicts on changed input, and bounds the ledger", async () => {
++  const { root, account, first, input } = await setup();
++  const rotated = account.sessions.refresh(input);
++  const disk = JSON.stringify(account.store.database.prepare("SELECT * FROM refresh_replay").all());
++  expect(disk).toContain("aead-v1:");
++  expect(disk).not.toContain(rotated.refreshCredential);
++  expect(disk).not.toContain(rotated.accessToken);
++  account.close();
++  const reopened = await createGatewayCore({ storageRoot: root, attachmentMasterKey: key }).openGatewayAccount("acct_alice");
++  expect(reopened.sessions.refresh(input)).toEqual(rotated);
++  expect(() => reopened.sessions.refresh({ ...input, refreshCredential: rotated.refreshCredential })).toThrow("IDEMPOTENCY_CONFLICT");
++  expect(reopened.sessions.activeRefreshCredentialCount(first.deviceId)).toBe(1);
++  reopened.sessions.refresh({ ...input, refreshCredential: rotated.refreshCredential, operationId: "refresh_next" });
++  expect(reopened.store.database.prepare("SELECT * FROM refresh_replay").all()).toHaveLength(1);
++  expect(() => reopened.sessions.refresh(input)).toThrow("REFRESH_REUSED");
++  expect(reopened.sessions.activeRefreshCredentialCount(first.deviceId)).toBe(0);
++  reopened.close();
++});
++for (const revoke of ["refresh", "session", "device", "reset", "reuse"] as const) it(`does not replay after ${revoke} revocation`, async () => {
++  const { account, input, first } = await setup();
++  const rotated = account.sessions.refresh(input);
++  if (revoke === "refresh") account.sessions.revokeRefreshCredentials(first.deviceId, "logout");
++  if (revoke === "session") account.sessions.revokeSession(rotated.sessionId, "logout");
++  if (revoke === "device") account.store.database.prepare("DELETE FROM device_keys WHERE device_id=?").run(first.deviceId);
++  if (revoke === "reset") account.store.database.exec("UPDATE refresh_credentials SET status='revoked'");
++  if (revoke === "reuse") expect(() => account.sessions.refresh({ ...input, operationId: "different" })).toThrow("REFRESH_REUSED");
++  expect(() => account.sessions.refresh(input)).toThrow();
++  account.close();
++});
++it("rolls rotation and replay back together on sealing failure", async () => {
++  const { account, input, first } = await setup();
++  const failedStore = { ...account.store, sealJson: () => { throw new Error("ATTACHMENT_STORAGE_UNAVAILABLE"); } };
++  const { SessionService } = await import("../src/core/session-service.js");
++  const sessions = new SessionService("acct_alice", failedStore, account.audit, account.events, account.credentials);
++  expect(() => sessions.refresh(input)).toThrow("ATTACHMENT_STORAGE_UNAVAILABLE");
++  expect(account.sessions.activeRefreshCredentialCount(first.deviceId)).toBe(1);
++  expect(account.store.database.prepare("SELECT status FROM refresh_credentials").all()).toEqual([{ status: "active" }]);
++  account.close();
++});
++
++it("negotiates and replays over HTTP with a fresh negotiation, validates wire IDs, and keeps metadata out of JSON", async () => {
++  const { createServer } = await import("node:http");
++  const { createGatewayRoutes } = await import("../src/http/routes.js");
++  const { coreSchemaHash } = await import("../gateway-contract/src/core-schema-hash.js");
++  const { default: vectors } = await import("../gateway-contract/vectors/protocol-negotiation.json", { with: { type: "json" } });
++  const { root, account, first } = await setup();
++  account.close();
++  let core = createGatewayCore({ storageRoot: root, attachmentMasterKey: key });
++  const server = createServer((req, res) => {
++    const route = createGatewayRoutes({ core, hostVersion: "2026.7.1" }).find(route => route.path === req.url)!;
++    void route.handler(req, res);
++  });
++  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
++  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}/open-android-intelligence/v2`;
++  const post = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(origin + path, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", ...headers } });
++  const rawPost = (path: string, body: unknown, pairs: string[]) => new Promise<number>((resolve, reject) => {
++    const payload = JSON.stringify(body);
++    void import("node:http").then(({ request }) => {
++      const outgoing = request(origin + path, { method: "POST", headers: ["Host", new URL(origin).host, "Content-Type", "application/json", "Content-Length", String(Buffer.byteLength(payload)), ...pairs] }, incoming => {
++        incoming.resume();
++        incoming.on("end", () => resolve(incoming.statusCode!));
++      });
++      outgoing.on("error", reject);
++      outgoing.end(payload);
++    }).catch(reject);
++  });
++  const negotiation = structuredClone(vectors.cases[0]!.input.value!) as Record<string, any>;
++  negotiation.schemaHashes.core = coreSchemaHash();
++  negotiation.client.installationId = "install_one";
++  const capability = "x-open-android-intelligence-refresh-replay";
++  try {
++    for (const value of ["v2", "v1, v1"]) {
++      expect(await rawPost("/negotiate", negotiation, [capability, value])).toBe(400);
++    }
++    expect(await rawPost("/negotiate", negotiation, [capability, "v1", capability, "v1"])).toBe(400);
++    let response = await post("/negotiate", negotiation, { [capability]: "v1" });
++    expect(response.status).toBe(200);
++    expect(response.headers.get(capability)).toBe("v1");
++    expect(await response.text()).not.toContain("responseHeaders");
++    const body = { accountId: "acct_alice", installationId: "install_one", deviceId: first.deviceId, refreshCredential: first.refreshCredential, negotiationId: negotiation.negotiationId };
++    response = await post("/sessions/refresh", body, { "Idempotency-Key": "bad key" });
++    expect(response.status).toBe(400);
++    expect(await rawPost("/sessions/refresh", body, ["Idempotency-Key", "refresh_http", "Idempotency-Key", "refresh_http"])).toBe(400);
++    expect(await rawPost("/sessions/refresh", body, ["Idempotency-Key", "refresh_http, refresh_http"])).toBe(400);
++    response = await post("/sessions/refresh", body, { "Idempotency-Key": "refresh_http" });
++    expect(response.status).toBe(200);
++    const original = (await response.json() as any).data;
++    const changed = await core.openGatewayAccount("acct_alice");
++    changed.store.database.prepare("UPDATE device_keys SET grant_revision=7 WHERE device_id=?").run(first.deviceId);
++    changed.close();
++    core = createGatewayCore({ storageRoot: root, attachmentMasterKey: key });
++    negotiation.negotiationId = "neg_after_restart";
++    await (await post("/negotiate", negotiation, { [capability]: "v1" })).text();
++    response = await post("/sessions/refresh", { ...body, negotiationId: negotiation.negotiationId }, { "Idempotency-Key": "refresh_http" });
++    expect(response.status).toBe(200);
++    expect((await response.json() as any).data).toEqual({ ...original, grantRevision: 7 });
++    core = createGatewayCore({ storageRoot: root });
++    response = await post("/negotiate", negotiation, { [capability]: "v1" });
++    expect(response.headers.get(capability)).toBeNull();
++    await response.text();
++  } finally {
++    await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
++  }
++});
++
++it("does not let a mismatched binding or corrupt encrypted result authorize a replay", async () => {
++  const { account, input, first } = await setup();
++  account.sessions.refresh(input);
++  expect(() => account.sessions.refresh({ ...input, installationId: "install_other" })).toThrow("AUTHENTICATION_FAILED");
++  expect(() => account.sessions.refresh({ ...input, deviceId: "dev_other" })).toThrow("AUTHENTICATION_FAILED");
++  account.store.database.prepare("UPDATE refresh_replay SET outcome_json='aead-v1:broken'").run();
++  expect(() => account.sessions.refresh(input)).toThrow("ATTACHMENT_STORAGE_UNAVAILABLE");
++  expect(account.sessions.activeRefreshCredentialCount(first.deviceId)).toBe(1);
++  account.close();
++});

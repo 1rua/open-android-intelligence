@@ -17,6 +17,16 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34, 36], application = Application::class)
 class AgentSessionKeepAliveTest {
     @Test
+    fun a_recreated_owner_can_stop_the_service_requested_by_the_previous_process() {
+        val context = RecordingContext()
+        AgentSessionKeepAlive(context).update(hasWork = true, appVisible = true)
+
+        AgentSessionKeepAlive(context).stop()
+
+        assertEquals(1, context.stops.size)
+    }
+
+    @Test
     fun only_visible_active_work_can_start_a_service() {
         val context = RecordingContext()
         val keepAlive = AgentSessionKeepAlive(context)
@@ -85,6 +95,7 @@ class AgentSessionKeepAliveTest {
             val keepAlive = AgentSessionKeepAlive(context)
             keepAlive.update(hasWork = true, appVisible = true)
             assertEquals(1, context.starts.size)
+            assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
             context.startFailure = null
 
             keepAlive.update(hasWork = true, appVisible = false)
@@ -92,6 +103,74 @@ class AgentSessionKeepAliveTest {
             keepAlive.update(hasWork = true, appVisible = true)
             assertEquals(2, context.starts.size)
         }
+    }
+
+    @Test
+    fun logout_ignores_a_recovery_lease_and_clears_durable_eligibility() {
+        val context = RecordingContext()
+        AgentSessionKeepAlive(context).update(hasWork = true, appVisible = true)
+        val state = AgentSessionRecoveryState(context)
+        assertNotNull(state.beginRecovery())
+        val restoredOwner = AgentSessionKeepAlive(context)
+
+        restoredOwner.update(hasWork = false, appVisible = false)
+        restoredOwner.onForegrounded(hasWork = false)
+        assertTrue(context.stops.isEmpty())
+        assertTrue(state.hasRecoveryLease)
+
+        restoredOwner.stop()
+
+        assertEquals(1, context.stops.size)
+        assertFalse(state.hasPendingWork)
+        assertFalse(state.hasRecoveryLease)
+        assertNull(state.beginRecovery())
+    }
+
+    @Test
+    fun repeated_recovery_cannot_renew_the_original_lease() {
+        val context = RecordingContext()
+        AgentSessionKeepAlive(context).update(hasWork = true, appVisible = true)
+        val state = AgentSessionRecoveryState(context)
+        val initialLease = requireNotNull(state.beginRecovery())
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(20))
+
+        val remainingLease = requireNotNull(AgentSessionRecoveryState(context).beginRecovery())
+
+        assertTrue(remainingLease <= initialLease - 20_000L)
+    }
+
+    @Test
+    fun late_background_work_cannot_convert_an_expired_lease_to_durable_running_work() {
+        val context = RecordingContext()
+        AgentSessionKeepAlive(context).update(hasWork = true, appVisible = true)
+        val state = AgentSessionRecoveryState(context)
+        assertNotNull(state.beginRecovery())
+        val restoredOwner = AgentSessionKeepAlive(context)
+        // Advance the clock without running a Service's main-thread timeout.
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+
+        restoredOwner.update(hasWork = true, appVisible = false)
+
+        assertFalse(state.hasPendingWork)
+        assertFalse(state.isRecovering)
+        assertEquals(1, context.stops.size)
+        assertEquals(1, context.starts.size)
+    }
+
+    @Test
+    fun real_visible_work_can_make_a_new_start_after_the_recovery_lease_expired() {
+        val context = RecordingContext()
+        AgentSessionKeepAlive(context).update(hasWork = true, appVisible = true)
+        val state = AgentSessionRecoveryState(context)
+        assertNotNull(state.beginRecovery())
+        val restoredOwner = AgentSessionKeepAlive(context)
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+
+        restoredOwner.update(hasWork = true, appVisible = true)
+
+        assertTrue(state.hasPendingWork)
+        assertFalse(state.isRecovering)
+        assertEquals(2, context.starts.size)
     }
 
     @Test

@@ -270,6 +270,18 @@ TypeScript validation diagnostics 的唯一规范化算法为：每个 Ajv error
 
 `POST /sessions/refresh` 使用绑定 `accountId + installationId + deviceId` 的刷新凭据轮换短期 access token，并同时轮换 refresh credential。旧 refresh credential 在成功使用后立即失效；检测到重复使用时撤销该设备全部 refresh credential 并产生安全审计。
 
+#### 刷新结果安全重放扩展
+
+refresh 的轮换提交与 HTTP 响应之间可能发生连接中断。为允许客户端安全恢复未知结果，本扩展不改变 JSON body 或 Schema：客户端在 `POST /negotiate` 请求上可发送恰好一个 `X-Open-Android-Intelligence-Refresh-Replay: v1`；Gateway 只有在该账号的 AEAD 加密持久化已配置并能用于保护重放结果时，才在协商响应上回送恰好一个同名、值为 `v1` 的 header。未请求时 Gateway 不应回送；重复或不支持的请求值必须拒绝协商。缺失响应 header 表示该 Gateway 不支持此扩展；其他值或重复响应 header 不表示支持。该能力只覆盖 refresh 结果重放，不改变 access token 有效期或 refresh 凭据的轮换规则。
+
+客户端仅在收到该协商响应后，才可为 `POST /sessions/refresh` 发送可选的 `Idempotency-Key`。值必须是符合第 2 节 wire ID 语法的稳定不透明操作标识；发送时该 header 恰好出现一次，Gateway 必须从 raw header 列表验证单例，不得接受重复或逗号折叠值。对同一次逻辑刷新及其所有重试保持不变。省略该 header 保持现有一次性轮换行为。若 Gateway 未协商 `v1`，客户端不得发送该 header，也不得声称未知结果可安全重试；遇到结果不明时不得自动用旧 refresh credential 发起新的逻辑刷新。支持扩展但未为该账号启用 AEAD 的 Gateway 收到该 header 时必须在轮换前拒绝请求。
+
+在支持扩展的 Gateway 上，幂等作用域是 `accountId + installationId + deviceId + Idempotency-Key`。幂等输入绑定当前 refresh credential 的密码学摘要以及这三个身份字段，**不包含**临时 `negotiationId`，因此 Gateway 重启后客户端重新协商，仍可重放同一逻辑刷新。Gateway 必须在同一个 SQLite 事务中轮换凭据并以 AEAD 加密保存完整轮换结果；数据库中不得明文保存 access token 或 refresh credential。相同作用域、相同输入再次到达时，Gateway 返回原 session、Token、刷新凭据及其有效期，不得再次轮换；配对和授权 revision 则必须从当前有效状态读取。相同作用域但不同输入必须以 `IDEMPOTENCY_CONFLICT` 拒绝。
+
+保存的响应只在其后继状态仍有效时可重放：对应的 successor refresh credential、它签发的 access session 和设备配对都必须仍为 active。若 successor credential 或 session 已被撤销、设备已解绑，或 successor 已再次轮换，Gateway 必须拒绝重放，不能借重放恢复已撤销的会话。使用旧 refresh credential 搭配不同 `Idempotency-Key` 仍按重复使用处理，并撤销该设备全部 refresh credential。Gateway 在重放检查和状态判定中必须串行化同一作用域的并发请求。
+
+客户端必须在发送刷新请求前持久化 `Idempotency-Key` 与当前 refresh credential 的摘要；进程重启后只对同一旧 credential 复用该 ID。收到成功响应后，客户端必须先原子保存新 refresh credential，再保存会话绑定并清除待处理记录，之后才能切换到新 session 或报告刷新成功。该提交顺序必须可在崩溃后恢复：若新 credential 已保存但旧待处理记录仍在，以持久化 credential 的摘要识别新状态，不能再次提交旧 credential。若本地保存失败，优先重试保存已收到的新结果；若结果已随进程丢失，使用原 ID 和原 credential 请求重放，不创建新 ID。Gateway 未协商此扩展时，不具备上述响应恢复保证。
+
 `POST /sessions/device` 使用已配对设备私钥签名挑战建立短期会话。请求仍必须携带账号名或账号 ID；设备密钥不能在账号之间探测或复用。
 
 密码重置撤销账号的全部 refresh credential。既有配对密钥是否保留由操作员选择；疑似泄露流程撤销全部会话和配对。

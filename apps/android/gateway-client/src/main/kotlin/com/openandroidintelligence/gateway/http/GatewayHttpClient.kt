@@ -1,5 +1,7 @@
 package com.openandroidintelligence.gateway.http
 
+import com.openandroidintelligence.gateway.auth.GatewaySessionRenewal
+import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.events.EventCursorStore
 import com.openandroidintelligence.gateway.events.EventStreamStatus
@@ -83,7 +85,45 @@ class GatewayHttpClient(
      */
     private val maxConsecutiveFailures: Int = 6,
     private val handlePlatformEvent: suspend (GatewayEvent) -> Boolean = { false },
+    private val sessionRenewal: GatewaySessionRenewal? = null,
 ) {
+    init {
+        if (sessionRenewal != null) {
+            sessionRenewal.requireScope(profile)
+            webSocketTransport?.bindSessionRenewal(sessionRenewal)
+        }
+    }
+
+    private fun sessionProfile(): GatewayProfile = sessionRenewal?.current ?: profile
+
+    // A healthy sibling stream cannot repeatedly replenish a broken client's
+    // authentication attempts. This fence also survives Flow re-collection.
+    private val localEventRecoveryMarker = java.util.concurrent.atomic.AtomicReference<Any?>(null)
+    private val failedEventSession = java.util.concurrent.atomic.AtomicReference<Pair<GatewayProfile, Throwable>?>(null)
+
+    private fun recordEventActivity(snapshot: GatewayProfile) {
+        if (sessionRenewal?.recordEventActivity(snapshot) == true) localEventRecoveryMarker.set(null)
+    }
+
+    private suspend fun recoverEventAuthentication(rejected: GatewayProfile): Boolean {
+        val renewal = sessionRenewal ?: return false
+        val marker = Any()
+        val allowRefresh = localEventRecoveryMarker.compareAndSet(null, marker)
+        val attemptedMarker = if (allowRefresh) marker else localEventRecoveryMarker.get()
+        val recovered = try {
+            renewal.recoverEventSession(rejected, allowRefresh) {
+                // Completion belongs to the shared operation, not its cancellable
+                // waiter. A later operation's fence must survive an older failure.
+                if (attemptedMarker != null) localEventRecoveryMarker.compareAndSet(attemptedMarker, null)
+            }
+        } catch (paused: SessionRecoveryPausedException) {
+            failedEventSession.set(rejected to paused)
+            statusSink?.report(EventStreamStatus.FAILED)
+            throw paused
+        }
+        if (!recovered) failedEventSession.set(rejected to EventSessionRejectedException(rejected))
+        return recovered
+    }
 
     /**
      * Event ids this client has already handed to a collector.
@@ -120,10 +160,13 @@ class GatewayHttpClient(
 
     @Synchronized private fun wasDelivered(eventId: String?) = !eventId.isNullOrBlank() && eventId in deliveredEventIds
 
-    private suspend fun FlowCollector<GatewayEvent>.deliverEvent(event: GatewayEvent) {
+    private suspend fun FlowCollector<GatewayEvent>.deliverEvent(event: GatewayEvent, snapshot: GatewayProfile) {
         if (wasDelivered(event.id)) return
         try {
-            if (!handlePlatformEvent(event)) emit(event)
+            if (!handlePlatformEvent(event)) {
+                recordEventActivity(snapshot)
+                emit(event)
+            }
             if (event.event == "conversation.message.completed" || event.event == "conversation.message.delta") runCatching {
                 val envelope = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(event.data))
                 val payload = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(envelope, "payload")) ?: envelope
@@ -172,34 +215,63 @@ class GatewayHttpClient(
     }
 
     suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
-        val wire = signedWireRequest(request)
+        val replayable = request.copy(requestId = request.requestId ?: newRequestId())
+        var snapshot = sessionProfile()
+        var response = executeOnce(replayable, snapshot)
+        if (response.status == 401 && sessionRenewal != null) {
+            snapshot = sessionRenewal.refresh(snapshot)
+            response = executeOnce(replayable, snapshot)
+        }
+        return response
+    }
+
+    private suspend fun executeOnce(request: SignedGatewayRequest, snapshot: GatewayProfile): GatewayResponse {
+        val wire = signedWireRequest(request, snapshot)
         return withContext(Dispatchers.IO) {
             val response = transport.execute(wire)
             GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
         }
     }
 
-    /** 先验证响应原始头，再将尚未预读的原件流交给账号范围内的消费者。 */
+    /** Validate raw headers first; close a rejected stream before retrying the request. */
     suspend fun <T> consumeResponse(
         request: SignedGatewayRequest,
         consume: suspend (Int, List<RawHeader>, java.io.InputStream) -> T,
     ): T {
-        val wire = signedWireRequest(request)
-        return withContext(Dispatchers.IO) {
-            transport.consumeResponse(wire) { status, headers, stream ->
-                consume(status, RawHeaders.validate(headers), stream)
+        val replayable = request.copy(requestId = request.requestId ?: newRequestId())
+        var snapshot = sessionProfile()
+        var canRecover = sessionRenewal != null
+        while (true) {
+            val wire = signedWireRequest(replayable, snapshot)
+            val result = withContext(Dispatchers.IO) {
+                transport.consumeResponse(wire) { status, rawHeaders, stream ->
+                    val headers = RawHeaders.validate(rawHeaders)
+                    if (status == 401 && canRecover) ResponseAttempt.Rejected
+                    else ResponseAttempt.Consumed(consume(status, headers, stream))
+                }
+            }
+            when (result) {
+                is ResponseAttempt.Consumed -> return result.value
+                ResponseAttempt.Rejected -> {
+                    snapshot = requireNotNull(sessionRenewal).refresh(snapshot)
+                    canRecover = false
+                }
             }
         }
     }
 
-    private fun signedWireRequest(request: SignedGatewayRequest): WireRequest {
+    private sealed interface ResponseAttempt<out T> {
+        data class Consumed<T>(val value: T) : ResponseAttempt<T>
+        data object Rejected : ResponseAttempt<Nothing>
+    }
+
+    private fun signedWireRequest(request: SignedGatewayRequest, snapshot: GatewayProfile): WireRequest {
         val validatedHeaders = RawHeaders.validate(request.headers)
         require(request.streamBody == null || request.body.isEmpty()) { "REQUEST_BODY_INVALID:multiple-bodies" }
         val input = request.streamBody?.let { body ->
-            signedInput(request.method, request.target, ByteArray(0), body.sha256Hex, request.requestId)
-        } ?: signedInput(request.method, request.target, request.body, requestId = request.requestId)
-        val headers = validatedHeaders + authenticationHeaders(input, signatureOf(input), request.method)
-
+            signedInput(snapshot, request.method, request.target, ByteArray(0), body.sha256Hex, request.requestId)
+        } ?: signedInput(snapshot, request.method, request.target, request.body, requestId = request.requestId)
+        val headers = validatedHeaders + authenticationHeaders(snapshot, input, signatureOf(input), request.method)
         return WireRequest(input.method, input.target, headers, request.body, request.streamBody)
     }
 
@@ -214,6 +286,12 @@ class GatewayHttpClient(
      * backoff (1s, 2s, 5s...) carrying the newest cursor, ensuring the stream stays alive.
      */
     fun events(autoReconnect: Boolean = true): Flow<GatewayEvent> = flow {
+        failedEventSession.get()?.takeIf { it.first == sessionProfile() }?.let { failed ->
+            // Re-collecting a Flow or switching networks cannot make a rejected
+            // credential valid. A newly published session permits another try.
+            statusSink?.report(EventStreamStatus.FAILED)
+            throw failed.second
+        }
         var backoffMillis = 1000L
         val maxBackoffMillis = 60_000L
         var preferWebSocket = (webSocketTransport != null)
@@ -234,8 +312,11 @@ class GatewayHttpClient(
 
             // 1. Try WebSocket first if preferred and available
             if (preferWebSocket && webSocketTransport != null) {
+                val attemptedProfile = sessionProfile()
                 try {
-                    webSocketTransport.events(cursor).collect { event ->
+                    val stream = if (sessionRenewal == null) webSocketTransport.events(cursor)
+                    else webSocketTransport.events(cursor, { recordEventActivity(attemptedProfile) }, attemptedProfile)
+                    stream.collect { event ->
                         if (!receivedWsEventInAttempt) {
                             GatewayLog.d(TAG, "event stream live over websocket")
                         }
@@ -245,7 +326,7 @@ class GatewayHttpClient(
                         consecutiveFailures = 0
                         statusSink?.report(EventStreamStatus.LIVE)
 
-                        deliverEvent(event)
+                        deliverEvent(event, attemptedProfile)
                     }
                     if (currentCoroutineContext().isActive) {
                         streamFailed = true
@@ -257,6 +338,10 @@ class GatewayHttpClient(
                     throw e
                 } catch (e: Throwable) {
                     if (e is EventSessionRejectedException) {
+                        if (recoverEventAuthentication(e.rejectedProfile ?: attemptedProfile)) {
+                            statusSink?.report(EventStreamStatus.RECONNECTING)
+                            continue
+                        }
                         statusSink?.report(EventStreamStatus.FAILED)
                         throw e
                     }
@@ -280,6 +365,7 @@ class GatewayHttpClient(
             // 2. Fallback to SSE stream if WebSocket not preferred or failed to connect
             if (!preferWebSocket || (!receivedAnyEventInAttempt && streamFailed)) {
                 streamFailed = false
+                val attemptedProfile = sessionProfile()
                 try {
                     val sseStoredCursor = cursorStore.load(profile.accountId)
                     val sseCursor = sseStoredCursor?.takeIf { CURSOR_ALPHABET.matches(it) }
@@ -289,7 +375,7 @@ class GatewayHttpClient(
                         "$EVENTS_TARGET?cursor=$sseCursor"
                     }
 
-                    val parser = SseParser()
+                    val parser = SseParser().also { it.onHeartbeat = { recordEventActivity(attemptedProfile) } }
 
                     val headers = RawHeaders.validate(
                         listOf(
@@ -297,8 +383,8 @@ class GatewayHttpClient(
                             RawHeader("Cache-Control", "no-store"),
                         ),
                     )
-                    val input = signedInput("GET", target, ByteArray(0))
-                    val streamHeaders = headers + authenticationHeaders(input, signatureOf(input), "GET")
+                    val input = signedInput(attemptedProfile, "GET", target, ByteArray(0))
+                    val streamHeaders = headers + authenticationHeaders(attemptedProfile, input, signatureOf(input), "GET")
 
                     transport.eventStream(
                         WireRequest(input.method, input.target, streamHeaders, ByteArray(0)),
@@ -314,13 +400,17 @@ class GatewayHttpClient(
                             statusSink?.report(EventStreamStatus.LIVE)
                         }
                         for (event in parsedEvents) {
-                            deliverEvent(event)
+                            deliverEvent(event, attemptedProfile)
                         }
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
                     if (e is EventSessionRejectedException) {
+                        if (recoverEventAuthentication(e.rejectedProfile ?: attemptedProfile)) {
+                            statusSink?.report(EventStreamStatus.RECONNECTING)
+                            continue
+                        }
                         statusSink?.report(EventStreamStatus.FAILED)
                         throw e
                     }
@@ -394,7 +484,7 @@ class GatewayHttpClient(
         body: ByteArray,
         bodySha256Hex: String? = null,
         requestId: String? = null,
-    ): SignedRequestInput = signedInput(profile, method, target, body, bodySha256Hex, requestId)
+    ): SignedRequestInput = signedInput(sessionProfile(), method, target, body, bodySha256Hex, requestId)
 
     internal fun signatureOf(input: SignedRequestInput): String =
         signatureOf(signer, input)
@@ -403,7 +493,7 @@ class GatewayHttpClient(
         input: SignedRequestInput,
         signatureBase64Url: String,
         method: String,
-    ): List<RawHeader> = authenticationHeaders(profile, input, signatureBase64Url, method)
+    ): List<RawHeader> = authenticationHeaders(sessionProfile(), input, signatureBase64Url, method)
 
     companion object {
         const val PROTOCOL_HEADER = "2.1"

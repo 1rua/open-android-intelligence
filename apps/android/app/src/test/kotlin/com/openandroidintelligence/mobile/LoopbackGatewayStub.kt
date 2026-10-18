@@ -33,6 +33,7 @@ internal class LoopbackGatewayStub {
 
     private val server = ServerSocket(0)
     private val routes = ConcurrentHashMap<String, StubResponse>()
+    private val responders = ConcurrentHashMap<String, (RecordedGatewayRequest) -> StubResponse>()
     private val recorded = CopyOnWriteArrayList<RecordedGatewayRequest>()
 
     val baseUrl: String = "http://127.0.0.1:${server.localPort}"
@@ -50,8 +51,16 @@ internal class LoopbackGatewayStub {
     }
 
     /** 注册一个路径的响应；未注册的路径返回 404。SSE 路径需自定义 Content-Type。 */
-    fun respond(path: String, body: String, status: Int = 200, contentType: String = "application/json") {
-        routes[path] = StubResponse(status, body, contentType)
+    fun respond(path: String, body: String, status: Int = 200, contentType: String = "application/json", headers: Map<String, String> = emptyMap()) {
+        responders.remove(path)
+        routes[path] = StubResponse(status, body, contentType, headers = headers)
+    }
+
+    fun respond(path: String, contentType: String = "application/json", handler: (RecordedGatewayRequest) -> Pair<Int, String>) {
+        responders[path] = { request ->
+            val (status, body) = handler(request)
+            StubResponse(status, body, contentType)
+        }
     }
 
     /** 暂停一个响应，供取消测试在请求已到达后确定性地中断客户端协程。 */
@@ -84,22 +93,26 @@ internal class LoopbackGatewayStub {
             }
             val target = requestLine.split(' ').getOrNull(1).orEmpty()
             val method = requestLine.substringBefore(' ')
-            recorded += RecordedGatewayRequest(method, target, String(body, 0, read), headers)
+            val request = RecordedGatewayRequest(method, target, String(body, 0, read), headers)
+            recorded += request
 
             val path = target.substringBefore('?')
-            val response = routes[path] ?: StubResponse(404, """{"error":{"code":"NOT_FOUND"}}""", "application/json")
+            val response = responders[path]?.invoke(request) ?: routes[path]
+                ?: StubResponse(404, """{"error":{"code":"NOT_FOUND"}}""", "application/json")
             check(response.release?.await(10, TimeUnit.SECONDS) != false) { "回环响应等待释放超时" }
             write(open, response)
         }
     }
 
     private fun write(socket: Socket, response: StubResponse) {
+        if (response.status == 0) return // Commit succeeded, but the HTTP response was lost.
         val payload = response.body.toByteArray(Charsets.UTF_8)
         val reason = if (response.status in 200..299) "OK" else "Error"
         val header = buildString {
             append("HTTP/1.1 ${response.status} $reason\r\n")
             append("Content-Type: ${response.contentType}\r\n")
             append("Content-Length: ${payload.size}\r\n")
+            response.headers.forEach { (name, value) -> append("$name: $value\r\n") }
             append("Connection: close\r\n\r\n")
         }
         socket.getOutputStream().apply {
@@ -114,6 +127,7 @@ internal class LoopbackGatewayStub {
         val body: String,
         val contentType: String,
         val release: java.util.concurrent.CountDownLatch? = null,
+        val headers: Map<String, String> = emptyMap(),
     )
 }
 

@@ -1,0 +1,341 @@
+diff --git a/open_android_intelligence_gateway/core.py b/open_android_intelligence_gateway/core.py
+index ca7c58c..1b0bd1b 100644
+--- a/open_android_intelligence_gateway/core.py
++++ b/open_android_intelligence_gateway/core.py
+@@ -363,6 +363,9 @@ def _freeze(value: Any) -> Any:
+ 
+ 
+ class GatewayResponse(dict[str, Any]):
++    # Transport metadata is deliberately excluded from the JSON envelope.
++    response_headers: Mapping[str, str]
++
+     def __init__(self, value: Mapping[str, Any] | None = None, **kwargs: Any):
+         dict.__init__(self, _freeze(dict(value or {}, **kwargs)))
+ 
+@@ -1058,6 +1061,11 @@ class AccountStore:
+               session_id TEXT NOT NULL, status TEXT NOT NULL,
+               created_at TEXT NOT NULL, replaced_by_hash TEXT
+             );
++            CREATE TABLE IF NOT EXISTS refresh_replay (
++              installation_id TEXT NOT NULL, device_id TEXT NOT NULL, operation_id TEXT NOT NULL,
++              input_hash TEXT NOT NULL, outcome_json TEXT NOT NULL,
++              PRIMARY KEY (installation_id, device_id, operation_id)
++            );
+             CREATE TABLE IF NOT EXISTS access_sessions (
+               session_id TEXT PRIMARY KEY NOT NULL,
+               installation_id TEXT NOT NULL, device_id TEXT NOT NULL,
+@@ -3859,17 +3867,38 @@ class SessionService:
+     def refresh(
+         self, refresh_credential: str, installation_id: str, device_id: str,
+         correlation_id: str, now: datetime | str | None = None,
++        operation_id: str | None = None,
+     ) -> dict[str, Any]:
++        if operation_id is not None and (not isinstance(operation_id, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", operation_id)):
++            raise GatewayError("SCHEMA_INVALID")
+         current = _now(now)
+         reused = False
+         bundle: dict[str, Any] | None = None
+         with self.store.transaction():
+             digest = self._digest(refresh_credential)
++            fingerprint = self._digest(_json([self.account_id, installation_id, device_id, digest]))
++            purpose = "refresh-replay:" + _json([self.account_id, installation_id, device_id, operation_id])
++            replay = None if operation_id is None else self.store.database.execute(
++                "SELECT input_hash, outcome_json FROM refresh_replay WHERE installation_id=? AND device_id=? AND operation_id=?",
++                (installation_id, device_id, operation_id),
++            ).fetchone()
++            if replay is not None and not secrets.compare_digest(replay["input_hash"], fingerprint):
++                raise GatewayError("IDEMPOTENCY_CONFLICT")
+             row = self.store.database.execute(
+                 "SELECT * FROM refresh_credentials WHERE credential_hash = ?", (digest,)
+             ).fetchone()
+             if row is None or row["installation_id"] != installation_id or row["device_id"] != device_id:
+                 raise GatewayError("AUTHENTICATION_FAILED")
++            if replay is not None and row["status"] == "used":
++                live = self.store.database.execute(
++                    "SELECT 1 FROM refresh_credentials r JOIN access_sessions s ON s.session_id=r.session_id "
++                    "JOIN device_keys k ON k.device_id=r.device_id AND k.installation_id=r.installation_id "
++                    "WHERE r.credential_hash=? AND r.status='active' AND s.status='active' "
++                    "AND r.installation_id=? AND r.device_id=?",
++                    (row["replaced_by_hash"], installation_id, device_id),
++                ).fetchone()
++                if live is not None:
++                    return dict(self.store.open_json(replay["outcome_json"], purpose))
+             if row["status"] != "active":
+                 self.store.database.execute(
+                     "UPDATE refresh_credentials SET status = 'revoked' WHERE installation_id = ? AND device_id = ?",
+@@ -3887,6 +3916,12 @@ class SessionService:
+                     "UPDATE refresh_credentials SET status = 'used', replaced_by_hash = ? WHERE credential_hash = ?",
+                     (self._digest(bundle["refreshCredential"]), digest),
+                 )
++                # The response and rotation commit together; only the latest
++                # device successor is retained and all secrets stay encrypted.
++                self.store.database.execute("DELETE FROM refresh_replay WHERE installation_id=? AND device_id=?", (installation_id, device_id))
++                if operation_id is not None:
++                    self.store.database.execute("INSERT INTO refresh_replay VALUES (?, ?, ?, ?, ?)",
++                        (installation_id, device_id, operation_id, fingerprint, self.store.seal_json(bundle, purpose)))
+                 self.audit.append(
+                     "session.refresh.rotated",
+                     {"accountId": self.account_id, "deviceId": device_id, "installationId": installation_id},
+@@ -4575,6 +4610,9 @@ class GatewayCore:
+         body = _request_body(request)
+         context = self._pre_auth_context(request, body if isinstance(body, Mapping) else {})
+         try:
++            replay = _request_headers(request).get("x-open-android-intelligence-refresh-replay")
++            if replay is not None and replay != "v1":
++                raise GatewayError("SCHEMA_INVALID")
+             now = _request_now(request)
+             self._admit_pre_auth(False, now)
+             response = self._build_negotiation_response(body)
+@@ -4604,7 +4642,18 @@ class GatewayCore:
+                         "expiresAt": _now(now) + timedelta(minutes=5),
+                         "accountId": None,
+                     }
+-            return _success(context, response)
++            result = _success(context, response)
++            if _request_headers(request).get("x-open-android-intelligence-refresh-replay") == "v1":
++                _, provider = self._resolve_key_binding("refresh-replay-capability")
++                if provider is not None:
++                    try:
++                        probe = b"refresh-replay-v1"
++                        aad = b"open-android-intelligence/refresh-replay-capability"
++                        if provider.decrypt(provider.encrypt(probe, aad), aad) == probe:
++                            result.response_headers = {"x-open-android-intelligence-refresh-replay": "v1"}
++                    except Exception:
++                        pass
++            return result
+         except GatewayError as exc:
+             code = "SCHEMA_INVALID" if exc.code == "INVALID_STATE_TRANSITION" else exc.code
+             return _failure(context, code, exc.details)
+@@ -4740,7 +4789,14 @@ class GatewayCore:
+                     device_id=str(body["deviceId"]),
+                     correlation_id=context["correlationId"],
+                     now=now,
++                    operation_id=_request_headers(request).get("idempotency-key"),
+                 )
++                pairing = account.store.database.execute(
++                    "SELECT pairing_generation,grant_revision FROM device_keys WHERE device_id=?", (bundle["deviceId"],)
++                ).fetchone()
++                if pairing is None:
++                    raise GatewayError("AUTHENTICATION_FAILED")
++                bundle = dict(bundle, pairingGeneration=pairing["pairing_generation"], grantRevision=pairing["grant_revision"])
+             finally:
+                 account.close()
+             response = dict(bundle)
+diff --git a/open_android_intelligence_gateway/http.py b/open_android_intelligence_gateway/http.py
+index 78386b0..2d3e6fc 100644
+--- a/open_android_intelligence_gateway/http.py
++++ b/open_android_intelligence_gateway/http.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import json
++import re
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any, Callable, Mapping
+@@ -35,6 +36,37 @@ def _get(value: Any, *names: str, default: Any = None) -> Any:
+     return default
+ 
+ 
++def _refresh_replay_headers(request: Any, target: str) -> dict[str, str]:
++    """Optional pre-auth replay singletons are proven before framework folding."""
++    headers = dict(_get(request, "headers", default={}) or {})
++    name = ("x-open-android-intelligence-refresh-replay" if target == "/open-android-intelligence/v2/negotiate"
++            else "idempotency-key" if target == "/open-android-intelligence/v2/sessions/refresh" else None)
++    if name is None:
++        return headers
++    raw = _get(request, "rawHeaders", "raw_headers")
++    if raw is None:
++        if any(key.lower() == name for key in headers):
++            raise ValueError("raw replay headers unavailable")
++        return headers
++    items = list(raw)
++    if items and isinstance(items[0], (tuple, list)):
++        pairs = items
++    else:
++        if len(items) % 2:
++            raise ValueError("malformed raw headers")
++        pairs = list(zip(items[::2], items[1::2]))
++    values = [value for key, value in pairs if str(key).lower() == name]
++    if len(values) > 1 or (not values and any(key.lower() == name for key in headers)):
++        raise ValueError("duplicate or missing replay header")
++    headers = {key: value for key, value in headers.items() if key.lower() != name}
++    if values:
++        value = values[0]
++        if not isinstance(value, str) or (value != "v1" if name != "idempotency-key" else re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", value) is None):
++            raise ValueError("invalid replay header")
++        headers[name] = value
++    return headers
++
++
+ _PRE_AUTH_TARGETS = (
+     "/open-android-intelligence/v2/negotiate",
+     "/open-android-intelligence/v2/sessions/invite/challenge",
+@@ -176,6 +208,7 @@ class GatewayHttpRoute:
+                     "method": method,
+                     "target": target,
+                     "body": _get(request, "body"),
++                    "headers": dict(_get(request, "headers", default={}) or {}),
+                     "requestId": _get(request, "requestId", "request_id", default="open-android-intelligence-negotiate"),
+                     "correlationId": _get(request, "correlationId", "correlation_id", default="open-android-intelligence-negotiate"),
+                 }
+@@ -221,7 +254,7 @@ class GatewayHttpRoute:
+         status = _status(body)
+         if _get(_get(body, "error", default={}), "code") in _AUTHENTICATION_FAILURE_CODES:
+             status = 401
+-        return {"statusCode": status, "headers": dict(_RESPONSE_HEADERS), "body": body}
++        return {"statusCode": status, "headers": {**_RESPONSE_HEADERS, **getattr(body, "response_headers", {})}, "body": body}
+ 
+     def event_backlog(self, request: Any) -> dict[str, Any]:
+         """Contract section 9 SSE handshake: verify the request, then read events.
+@@ -350,6 +383,10 @@ class GatewayHttpRoute:
+             return {"statusCode": 400, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "REQUEST_BODY_INVALID")}
+         if len(body) > self._services.max_body_bytes:
+             return {"statusCode": 413, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "REQUEST_BODY_TOO_LARGE")}
++        try:
++            headers = _refresh_replay_headers(request, target)
++        except (TypeError, ValueError):
++            return {"statusCode": 400, "headers": dict(_RESPONSE_HEADERS), "body": _failure(empty, "SCHEMA_INVALID")}
+         if method == "POST" and target == "/open-android-intelligence/v2/negotiate":
+             try:
+                 decoded = _strict_json(body)
+@@ -359,10 +396,11 @@ class GatewayHttpRoute:
+                 "method": method,
+                 "target": target,
+                 "body": decoded,
++                "headers": headers,
+                 "requestId": str(_get(request, "requestId", "request_id", default="open-android-intelligence-negotiate")),
+                 "correlationId": str(_get(request, "correlationId", "correlation_id", default="open-android-intelligence-negotiate")),
+             })
+-            return {"statusCode": _status(response_body), "headers": dict(_RESPONSE_HEADERS), "body": response_body}
++            return {"statusCode": _status(response_body), "headers": {**_RESPONSE_HEADERS, **getattr(response_body, "response_headers", {})}, "body": response_body}
+         if method == "POST" and target in {"/open-android-intelligence/v2/sessions/password","/open-android-intelligence/v2/sessions/invite/challenge","/open-android-intelligence/v2/sessions/invite/exchange","/open-android-intelligence/v2/pairings/exchange","/open-android-intelligence/v2/sessions/device/challenge","/open-android-intelligence/v2/sessions/device"}:
+             try:
+                 decoded = _strict_json(body)
+@@ -390,7 +428,7 @@ class GatewayHttpRoute:
+                 "method": method,
+                 "target": target,
+                 "body": decoded,
+-                "headers": dict(_get(request, "headers", default={}) or {}),
++                "headers": headers,
+                 "requestId": str(_get(request, "requestId", "request_id", default="open-android-intelligence-session")),
+                 "correlationId": str(_get(request, "correlationId", "correlation_id", default="open-android-intelligence-session")),
+             })
+diff --git a/tests/test_refresh_replay.py b/tests/test_refresh_replay.py
+new file mode 100644
+index 0000000..de43a29
+--- /dev/null
++++ b/tests/test_refresh_replay.py
+@@ -0,0 +1,112 @@
++import pytest
++from open_android_intelligence_gateway.core import create_gateway_core, GatewayError
++from test_support import make_secret_store
++
++INSTALLATION = {"installationId": "install_one", "displayName": "phone", "devicePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
++
++def setup(tmp_path):
++    secret_store = make_secret_store()
++    core = create_gateway_core(storage_root=tmp_path, secret_store=secret_store, credential_verifier=lambda *args: True)
++    account = core.open_gateway_account("acct_alice")
++    first = account.sessions.create_password_session("alice", "password", INSTALLATION, "login")
++    inputs = dict(refresh_credential=first["refreshCredential"], installation_id="install_one", device_id=first["deviceId"], correlation_id="refresh", operation_id="refresh_operation")
++    return core, account, first, inputs
++
++def test_replay_survives_restart_is_encrypted_conflicts_and_is_bounded(tmp_path):
++    core, account, first, inputs = setup(tmp_path)
++    rotated = account.sessions.refresh(**inputs)
++    rows = str([tuple(row) for row in account.store.database.execute("SELECT * FROM refresh_replay")])
++    assert "aead-v1:" in rows
++    assert rotated["refreshCredential"] not in rows and rotated["accessToken"] not in rows
++    account.close()
++    core = create_gateway_core(storage_root=tmp_path, secret_store=core.secret_store, credential_verifier=lambda *args: True)
++    account = core.open_gateway_account("acct_alice")
++    assert account.sessions.refresh(**inputs) == rotated
++    with pytest.raises(GatewayError, match="IDEMPOTENCY_CONFLICT"):
++        account.sessions.refresh(**dict(inputs, refresh_credential=rotated["refreshCredential"]))
++    assert account.sessions.active_refresh_credential_count(first["deviceId"]) == 1
++    account.sessions.refresh(**dict(inputs, refresh_credential=rotated["refreshCredential"], operation_id="refresh_next"))
++    assert account.store.database.execute("SELECT COUNT(*) FROM refresh_replay").fetchone()[0] == 1
++    with pytest.raises(GatewayError, match="REFRESH_REUSED"):
++        account.sessions.refresh(**inputs)
++    assert account.sessions.active_refresh_credential_count(first["deviceId"]) == 0
++    account.close()
++
++@pytest.mark.parametrize("revoke", ["refresh", "session", "device", "reset", "reuse"])
++def test_revocation_blocks_replay(tmp_path, revoke):
++    _, account, first, inputs = setup(tmp_path)
++    rotated = account.sessions.refresh(**inputs)
++    if revoke == "refresh": account.sessions.revoke_refresh_credentials(first["deviceId"], "logout")
++    if revoke == "session": account.sessions.revoke_session(rotated["sessionId"], "logout")
++    if revoke == "device": account.store.database.execute("DELETE FROM device_keys WHERE device_id=?", (first["deviceId"],))
++    if revoke == "reset": account.store.database.execute("UPDATE refresh_credentials SET status='revoked'")
++    if revoke == "reuse":
++        with pytest.raises(GatewayError, match="REFRESH_REUSED"):
++            account.sessions.refresh(**dict(inputs, operation_id="different"))
++    with pytest.raises(GatewayError): account.sessions.refresh(**inputs)
++    account.close()
++
++def test_sealing_failure_rolls_back_rotation(tmp_path):
++    _, account, first, inputs = setup(tmp_path)
++    def fail(*args): raise GatewayError("ATTACHMENT_STORAGE_UNAVAILABLE")
++    account.store.seal_json = fail
++    with pytest.raises(GatewayError, match="ATTACHMENT_STORAGE_UNAVAILABLE"):
++        account.sessions.refresh(**inputs)
++    assert [row[0] for row in account.store.database.execute("SELECT status FROM refresh_credentials")] == ["active"]
++    account.close()
++
++def test_http_capability_and_refresh_replay_after_new_negotiation(tmp_path):
++    import copy
++    import json
++    from open_android_intelligence_gateway.http import create_gateway_routes, HostApiCompatibility
++    from test_support import contract_root
++    core, account, first, _ = setup(tmp_path)
++    account.close()
++    core.tls_spki_sha256 = "sha256:" + "a" * 64
++    host_api = HostApiCompatibility("1.0.0", "1.0.0", "0123456789abcdef0123456789abcdef01234567")
++    def post(path, body, headers=None, raw_headers=None):
++        routes = create_gateway_routes(core=core, host_version="1.0.0", host_api=host_api)
++        route = next(r for r in routes if r.path == "/open-android-intelligence/v2" + path)
++        return route._handle_raw({"method": "POST", "url": route.path, "body": json.dumps(body).encode(), "headers": headers or {}, "rawHeaders": list((headers or {}).items()) if raw_headers is None else raw_headers})
++    negotiation = copy.deepcopy(json.loads((contract_root() / "vectors/protocol-negotiation.json").read_text())["cases"][0]["input"]["value"])
++    negotiation["schemaHashes"]["core"] = core.contracts.core_schema_hash
++    negotiation["client"]["installationId"] = "install_one"
++    capability = "X-Open-Android-Intelligence-Refresh-Replay"
++    for value in ("v2", "v1, v1"):
++        assert post("/negotiate", negotiation, {capability: value})["statusCode"] == 400
++    assert post("/negotiate", negotiation, {capability: "v1"}, [(capability, "v1"), (capability, "v1")])["statusCode"] == 400
++    response = post("/negotiate", negotiation, {capability: "v1"})
++    assert response["statusCode"] == 200
++    assert response["headers"].get(capability.lower()) == "v1"
++    assert "response_headers" not in json.dumps(response["body"])
++    body = dict(accountId="acct_alice", installationId="install_one", deviceId=first["deviceId"], refreshCredential=first["refreshCredential"], negotiationId=negotiation["negotiationId"])
++    assert post("/sessions/refresh", body, {"Idempotency-Key": "bad key"})["statusCode"] == 400
++    assert post("/sessions/refresh", body, {"Idempotency-Key": "refresh_http"}, [("Idempotency-Key", "refresh_http"), ("Idempotency-Key", "refresh_http")])["statusCode"] == 400
++    assert post("/sessions/refresh", body, {"Idempotency-Key": "refresh_http, refresh_http"})["statusCode"] == 400
++    response = post("/sessions/refresh", body, {"Idempotency-Key": "refresh_http"})
++    assert response["statusCode"] == 200
++    original = response["body"]["data"]
++    changed = core.open_gateway_account("acct_alice")
++    changed.store.database.execute("UPDATE device_keys SET grant_revision=7 WHERE device_id=?", (first["deviceId"],))
++    changed.close()
++    core = create_gateway_core(storage_root=tmp_path, secret_store=core.secret_store, tls_spki_sha256="sha256:" + "a" * 64)
++    negotiation["negotiationId"] = "neg_after_restart"
++    assert post("/negotiate", negotiation, {capability: "v1"})["statusCode"] == 200
++    replay = post("/sessions/refresh", dict(body, negotiationId=negotiation["negotiationId"]), {"Idempotency-Key": "refresh_http"})
++    assert replay["statusCode"] == 200
++    assert replay["body"]["data"] == dict(original, grantRevision=7)
++    core = create_gateway_core(storage_root=tmp_path, tls_spki_sha256="sha256:" + "a" * 64)
++    assert capability.lower() not in post("/negotiate", negotiation, {capability: "v1"})["headers"]
++
++def test_binding_and_ciphertext_cannot_be_substituted(tmp_path):
++    _, account, first, inputs = setup(tmp_path)
++    account.sessions.refresh(**inputs)
++    with pytest.raises(GatewayError, match="AUTHENTICATION_FAILED"):
++        account.sessions.refresh(**dict(inputs, installation_id="install_other"))
++    with pytest.raises(GatewayError, match="AUTHENTICATION_FAILED"):
++        account.sessions.refresh(**dict(inputs, device_id="dev_other"))
++    account.store.database.execute("UPDATE refresh_replay SET outcome_json='aead-v1:broken'")
++    with pytest.raises(GatewayError, match="DECRYPTION_FAILED"):
++        account.sessions.refresh(**inputs)
++    assert account.sessions.active_refresh_credential_count(first["deviceId"]) == 1
++    account.close()

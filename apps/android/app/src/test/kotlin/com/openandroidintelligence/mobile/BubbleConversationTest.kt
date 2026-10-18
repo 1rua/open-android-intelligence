@@ -168,8 +168,8 @@ class BubbleConversationTest {
             await { !chat.hasActiveWork.value && !chat.state.value.isOnline }
             await { shadowOf(context).nextStoppedService?.component?.className == AgentSessionForegroundService::class.java.name }
 
-            // Retiring the authenticated workspace must also discard every old
-            // root-owned work watcher, even if its UI already went away.
+            // Rotating credentials keeps the authenticated workspace and its
+            // in-flight bubble task until the Gateway supplies its terminal event.
             gateway.respond("/open-android-intelligence/v2/conversations/conv-a/messages", emptyTimeline)
             runtime.onAppForegrounded()
             val retired = requireNotNull(runtime.createBubbleConversation(current))
@@ -182,7 +182,19 @@ class BubbleConversationTest {
             assertTrue(retired.hasActiveWork.value)
             gateway.respond("/open-android-intelligence/v2/sessions/refresh", """{"data":{"accountId":"account-a","deviceId":"device-a","sessionId":"refreshed-session","accessToken":"refreshed-token","refreshCredential":"refreshed-credential"}}""")
             runtime.refreshSession()
-            await { !runtime.isRefreshingSession.value && !retired.state.value.isOnline }
+            await { !runtime.isRefreshingSession.value && gateway.requests.any { it.target.endsWith("/sessions/refresh") } }
+            assertSame(main, runtime.controller.value)
+            assertTrue(retired.state.value.isOnline)
+            assertTrue(retired.hasActiveWork.value)
+            await { gateway.requests.any { request -> request.target.substringBefore('?').endsWith("/events") &&
+                request.headers.any { it.equals("Authorization: Bearer refreshed-token", true) } } }
+            val secondRequest = gateway.requests.last { it.method == "POST" && it.target.endsWith("/conv-a/messages") }
+            val secondPayload = com.openandroidintelligence.gateway.schema.JsonFields.obj(
+                com.openandroidintelligence.gateway.schema.Json.parse(secondRequest.body.toByteArray(Charsets.ISO_8859_1).toString(Charsets.UTF_8)))
+            val secondClientId = requireNotNull(com.openandroidintelligence.gateway.schema.JsonFields.string(secondPayload, "clientMessageId"))
+            val secondTerminal = """{"accountId":"account-a","occurredAt":"${java.time.Instant.now()}","payload":{"conversationId":"conv-a","generationId":"second-bubble-generation","messageId":"second-bubble-reply","clientMessageId":"$secondClientId","status":"completed","revision":1,"errorCode":null}}"""
+            gateway.respond("/open-android-intelligence/v2/events", "id: second-bubble-terminal\nevent: conversation.message.status\ndata: $secondTerminal\n\n", contentType = "text/event-stream")
+            await { !retired.hasActiveWork.value && !retired.state.value.isOnline }
             await { shadowOf(context).nextStoppedService?.component?.className == AgentSessionForegroundService::class.java.name }
             assertFalse(retired.hasActiveWork.value)
         } finally { releaseAcceptance?.countDown(); runtimeDispatcher.resume(); bubble?.close(); scope.cancel(); gateway.closed() }
