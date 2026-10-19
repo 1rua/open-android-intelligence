@@ -40,16 +40,16 @@ class LocalConversationFirstFrameTest {
         val gate = CompletableDeferred<Unit>()
         val host = DelayedHost(gate, listOf(user, assistant))
         val job = SupervisorJob()
-        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
+        val controller = controller(CoroutineScope(coroutineContext + job), host, mirror)
         try {
             controller.openThread("conv_a")
-            yield()
+            awaitTimeline(controller) { rows -> rows.map { it.sender } == listOf("user", "assistant") }
             assertFalse("断言时服务器历史必须仍在等待", gate.isCompleted)
             assertEquals("首个本地可读快照必须同时含用户和助手", listOf("user", "assistant"),
                 (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().map { it.sender })
         } finally {
             gate.complete(Unit)
-            controller.close()
+            controller.closeAndAwait()
             job.cancel()
         }
     }
@@ -72,16 +72,18 @@ class LocalConversationFirstFrameTest {
         val gate=CompletableDeferred<Unit>()
         val changed=assistant.copy(parts=listOf(MessagePart.Text("远端编辑后的回答")),contentRevision=2)
         val job=SupervisorJob()
-        val controller=controller(CoroutineScope(job+Dispatchers.Unconfined),DelayedHost(gate,listOf(user,changed)),mirror)
+        val controller=controller(CoroutineScope(coroutineContext+job),DelayedHost(gate,listOf(user,changed)),mirror)
         try {
-            controller.openThread("conv_a"); yield()
+            controller.openThread("conv_a")
+            awaitTimeline(controller) { rows -> rows.singleOrNull { !it.isUser }?.text == "回答" }
             assertEquals("回答",(controller.state.value.timeline as Loadable.Ready).value.single { !it.isUser }.text)
-            gate.complete(Unit); yield()
+            gate.complete(Unit)
+            awaitTimeline(controller) { rows -> rows.singleOrNull { !it.isUser }?.text == "远端编辑后的回答" }
             val rows=(controller.state.value.timeline as Loadable.Ready).value
             assertEquals(2,rows.size)
             assertEquals("远端编辑后的回答",rows.single { !it.isUser }.text)
             assertEquals(changed.parts,EncryptedConversationMirror(context,account,key).timeline("conv_a")!!.messages.single { it.id==assistant.id }.parts)
-        } finally { gate.complete(Unit); controller.close(); job.cancel() }
+        } finally { gate.complete(Unit); controller.closeAndAwait(); job.cancel() }
     }
 
     @Test fun anUnrevisionedOlderHostBodyCannotOverwriteAnAlreadyCompletedEventReply() = runBlocking {
@@ -118,12 +120,16 @@ class LocalConversationFirstFrameTest {
         val host=DelayedHost(gate,emptyList())
         val calls=mutableListOf<Pair<String,String>>()
         val local=linkedMapOf<Pair<String,String>,HistoricalMediaMetadata>()
+        val retained=CompletableDeferred<Unit>()
         val media=object:HistoricalMediaPort {
             override suspend fun metadata(conversationId:String,attachmentId:String):HistoricalMediaMetadata {
                 calls+=conversationId to attachmentId
                 return HistoricalMediaMetadata(conversationId,attachmentId,"后台回复.png","image/png",1,"sha256:"+"0".repeat(64),true,1)
             }
-            override suspend fun retain(metadata:HistoricalMediaMetadata) { local[metadata.conversationId to metadata.attachmentId]=metadata }
+            override suspend fun retain(metadata:HistoricalMediaMetadata) {
+                local[metadata.conversationId to metadata.attachmentId]=metadata
+                retained.complete(Unit)
+            }
             override suspend fun localMetadata(conversationId:String,attachmentId:String)=local[conversationId to attachmentId]
             override fun isRetained(attachmentId:String)=local.keys.any { it.second==attachmentId }
             override fun preview(attachmentId:String):ByteArray?=null
@@ -131,15 +137,24 @@ class LocalConversationFirstFrameTest {
         }
         val job=SupervisorJob()
         val reopened=EncryptedConversationMirror(context,account,key,Dispatchers.Unconfined)
-        val controller=controller(CoroutineScope(job+Dispatchers.Unconfined),host,reopened,media)
+        val controller=controller(CoroutineScope(coroutineContext+job),host,reopened,media)
         try {
-            yield()
+            withTimeout(5_000) { retained.await() }
             assertEquals(listOf("conv_b" to "file_inactive"),calls)
             assertTrue("本地已知附件恢复不能扫描未打开的服务器会话",host.timelineReads.none { it=="conv_b" })
             assertEquals("conv_a",controller.state.value.activeThreadId)
             reopened.apply(VerifiedConversationEvent.TimelineTombstoned("evt_deleted_inactive",40,inactive.id,2,ConversationId("conv_b")))
             assertTrue("明确删除不得重新成为启动保存意图",reopened.loadKnownMediaMessages().none { it.id==inactive.id })
-        } finally { gate.complete(Unit); controller.close(); job.cancel() }
+        } finally { gate.complete(Unit); controller.closeAndAwait(); job.cancel() }
+    }
+
+    private suspend fun awaitTimeline(controller: WorkbenchController, predicate: (List<TimelineEntry>) -> Boolean) {
+        withTimeout(5_000) {
+            controller.state.first { state ->
+                state.activeThreadId == "conv_a" && state.historyHydrated &&
+                    (state.timeline as? Loadable.Ready)?.value?.let(predicate) == true
+            }
+        }
     }
 
     private fun controller(scope: CoroutineScope, host: DelayedHost, mirror: EncryptedConversationMirror,media:HistoricalMediaPort?=null) = WorkbenchController(

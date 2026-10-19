@@ -6,6 +6,7 @@ import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.http.requireData
 import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
+import com.openandroidintelligence.gateway.negotiation.ConversationManagementCapability
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -51,6 +52,18 @@ data class ConversationThread(
     val conversationId: String,
     val title: String?,
     val lastMessageAt: String?,
+    val updatedAt: String? = null,
+    val archived: Boolean = false,
+)
+
+data class ConversationThreadPage(val conversations: List<ConversationThread>, val nextCursor: String?, val snapshotRevision: Long?)
+data class ConversationFolder(val folderId: String, val name: String)
+data class ConversationOrganization(
+    val revision: Long,
+    val sortMode: String,
+    val customOrder: List<String>,
+    val folders: List<ConversationFolder>,
+    val assignments: Map<String, String>,
 )
 
 /** `POST /conversations` result. */
@@ -152,6 +165,10 @@ class ConversationClient(private val http: GatewayHttpClient) {
     }
 
     suspend fun readThreads(cursor: String? = null, limit: Int? = null): List<ConversationThread> {
+        return readThreadPage(cursor, limit).conversations
+    }
+
+    suspend fun readThreadPage(cursor: String? = null, limit: Int? = null): ConversationThreadPage {
         val response = execute(
             method = "GET",
             target = "/open-android-intelligence/v2/conversations" + query(
@@ -159,19 +176,81 @@ class ConversationClient(private val http: GatewayHttpClient) {
                 "limit" to limit?.toString(),
             ),
         )
-        if (response.status != 200) {
-            throw IllegalStateException("CONVERSATIONS_FAILED:${response.status}")
-        }
         val body = response.requireData("CONVERSATIONS_FAILED")
+        check(response.status == 200) { "CONVERSATIONS_FAILED:${response.status}" }
         check(JsonFields.array(JsonFields.field(body, "conversations")) != null) { "CONVERSATIONS_FAILED:missing-list" }
-        return JsonFields.objects(body, "conversations").mapNotNull { thread ->
+        val conversations = JsonFields.objects(body, "conversations").mapNotNull { thread ->
             val id = JsonFields.string(thread, "conversationId") ?: return@mapNotNull null
             ConversationThread(
                 conversationId = id,
                 title = JsonFields.string(thread, "title"),
                 lastMessageAt = JsonFields.string(thread, "lastMessageAt"),
+                updatedAt = JsonFields.string(thread, "updatedAt"),
+                archived = JsonFields.bool(thread, "archived") ?: false,
             )
         }
+        return ConversationThreadPage(conversations, JsonFields.string(body, "nextCursor"), JsonFields.long(body, "snapshotRevision"))
+    }
+
+    suspend fun readOrganization(capability: ConversationManagementCapability = ConversationManagementCapability.NotNegotiated): ConversationOrganization {
+        check(capability.agreed) { "CONVERSATION_MANAGEMENT_UNSUPPORTED" }
+        return organization(execute("GET", "/open-android-intelligence/v2/conversation-organization").requireData("ORGANIZATION_READ_FAILED"))
+    }
+
+    suspend fun updateOrganization(
+        expectedRevision: Long,
+        state: ConversationOrganization,
+        capability: ConversationManagementCapability = ConversationManagementCapability.NotNegotiated,
+    ): ConversationOrganization {
+        check(capability.agreed) { "CONVERSATION_MANAGEMENT_UNSUPPORTED" }
+        val payload = mapOf("expectedRevision" to expectedRevision, "sortMode" to state.sortMode,
+            "customOrder" to state.customOrder, "folders" to state.folders.map { mapOf("folderId" to it.folderId, "name" to it.name) },
+            "assignments" to state.assignments)
+        val data = execute("PUT", "/open-android-intelligence/v2/conversation-organization", Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8))
+            .requireData("ORGANIZATION_UPDATE_FAILED")
+        return organization(data).also { check(it.revision > expectedRevision) { "ORGANIZATION_UPDATE_FAILED:revision" } }
+    }
+
+    suspend fun setArchived(conversationId: String, archived: Boolean,
+        capability: ConversationManagementCapability = ConversationManagementCapability.NotNegotiated) {
+        check(capability.agreed) { "CONVERSATION_MANAGEMENT_UNSUPPORTED" }
+        val data = execute("PATCH", "/open-android-intelligence/v2/conversations/$conversationId",
+            Json.canonical(Json.of(mapOf("archived" to archived))).toByteArray(Charsets.UTF_8)).requireData("CONVERSATION_ARCHIVE_FAILED")
+        val conversation = JsonFields.obj(JsonFields.field(data, "conversation")) ?: error("CONVERSATION_ARCHIVE_FAILED:missing-conversation")
+        check(JsonFields.string(conversation, "conversationId") == conversationId && JsonFields.bool(conversation, "archived") == archived) {
+            "CONVERSATION_ARCHIVE_FAILED:unconfirmed"
+        }
+    }
+
+    suspend fun deleteConversation(conversationId: String,
+        capability: ConversationManagementCapability = ConversationManagementCapability.NotNegotiated) {
+        check(capability.agreed) { "CONVERSATION_MANAGEMENT_UNSUPPORTED" }
+        val data = execute("DELETE", "/open-android-intelligence/v2/conversations/$conversationId").requireData("CONVERSATION_DELETE_FAILED")
+        check(JsonFields.string(data, "conversationId") == conversationId && JsonFields.bool(data, "deleted") == true) {
+            "CONVERSATION_DELETE_FAILED:unconfirmed"
+        }
+    }
+
+    private fun organization(data: JsonValue.JObject): ConversationOrganization {
+        val revision = JsonFields.long(data, "revision")?.takeIf { it >= 0 } ?: error("ORGANIZATION_INVALID:revision")
+        val sortMode = JsonFields.string(data, "sortMode")?.takeIf { it in setOf("updated-desc", "custom") } ?: error("ORGANIZATION_INVALID:sort-mode")
+        val customOrder = JsonFields.array(JsonFields.field(data, "customOrder"))?.items?.map {
+            (it as? JsonValue.JString)?.value?.takeIf(String::isNotBlank) ?: error("ORGANIZATION_INVALID:order")
+        } ?: error("ORGANIZATION_INVALID:order")
+        check(customOrder.size == customOrder.toSet().size) { "ORGANIZATION_INVALID:duplicate-order" }
+        val folders = JsonFields.array(JsonFields.field(data, "folders"))?.items?.map { raw ->
+            val folder = JsonFields.obj(raw) ?: error("ORGANIZATION_INVALID:folder")
+            ConversationFolder(JsonFields.string(folder, "folderId")?.takeIf(String::isNotBlank) ?: error("ORGANIZATION_INVALID:folder-id"),
+                JsonFields.string(folder, "name")?.takeIf(String::isNotBlank) ?: error("ORGANIZATION_INVALID:folder-name"))
+        } ?: error("ORGANIZATION_INVALID:folders")
+        val folderIds = folders.map { it.folderId }.toSet()
+        check(folderIds.size == folders.size) { "ORGANIZATION_INVALID:duplicate-folder" }
+        val assignments = JsonFields.obj(JsonFields.field(data, "assignments"))?.fields?.associate { (id, raw) ->
+            val folderId = (raw as? JsonValue.JString)?.value ?: error("ORGANIZATION_INVALID:assignment")
+            check(id.isNotBlank() && folderId in folderIds) { "ORGANIZATION_INVALID:assignment" }
+            id to folderId
+        } ?: error("ORGANIZATION_INVALID:assignments")
+        return ConversationOrganization(revision, sortMode, customOrder, folders, assignments)
     }
 
     suspend fun createConversation(

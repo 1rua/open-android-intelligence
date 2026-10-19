@@ -42,18 +42,17 @@ class LiveUpdateNotificationsTest {
         publisher = AndroidReplyNotificationPublisher(context, settings)
     }
 
-    @Test fun runningTaskKeepsBubbleConversationAndSeparateEligibleIndeterminateLiveUpdate() {
+    @Test fun runningTaskUsesOneEligibleNativeLiveUpdateWhileKeepingConversationShortcutAndAction() {
         assertEquals(36, Build.VERSION.SDK_INT)
         publisher.update(session(NativeConversationStatus.RUNNING, "Latest public reply"), false)
-        val conversation = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
-        val live = manager.activeNotifications.single { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID }.notification
-        assertTrue(Notification.Builder.recoverBuilder(context, conversation).style is Notification.MessagingStyle)
-        assertNotNull(conversation.bubbleMetadata)
-        val shortcut = context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.single { it.id == conversation.shortcutId }
+        val live = manager.activeNotifications.single().notification
+        assertEquals(LIVE_UPDATE_CHANNEL_ID, live.channelId)
+        val shortcut = context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.single()
+        assertEquals(target, BubbleConversationActivity.targetFromIntent(shortcut.intent!!))
         val participants = org.robolectric.util.ReflectionHelpers.callInstanceMethod<Array<android.app.Person>>(shortcut, "getPersons")
-        val conversationStyle = Notification.Builder.recoverBuilder(context, conversation).style as Notification.MessagingStyle
-        assertTrue("API 36 must also include the real user for conversation eligibility", participants.any { !it.isBot && it.key == conversationStyle.user.key })
+        assertTrue("API 36 shortcuts must include the real user", participants.any { !it.isBot })
         assertTrue(participants.any { it.isBot })
+        assertEquals(target, BubbleConversationActivity.targetFromIntent(shadowOf(live.actions.single().actionIntent).savedIntent))
         val progress = Notification.Builder.recoverBuilder(context, live).style as Notification.ProgressStyle
         assertTrue(progress.isProgressIndeterminate)
         assertTrue(progress.progressSegments.isEmpty())
@@ -71,12 +70,46 @@ class LiveUpdateNotificationsTest {
         assertNull(manager.getNotificationChannel(LIVE_UPDATE_CHANNEL_ID).sound)
 
         publisher.update(session(NativeConversationStatus.RUNNING, "New snapshot"), false)
-        assertEquals(2, manager.activeNotifications.size)
+        assertEquals(1, manager.activeNotifications.size)
         assertEquals("New snapshot", manager.activeNotifications.single { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID }.notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
     }
 
+    @Test fun aUserSelectedBubbleKeepsOnlyASilentShadeSuppressedConversationCompanion() {
+        managerShadow.bubblePreferenceSetting = NotificationManager.BUBBLE_PREFERENCE_ALL
+        publisher.update(session(NativeConversationStatus.RUNNING, "Public preview"), true)
+        assertEquals(2, manager.activeNotifications.size)
+        val conversation = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
+        assertTrue(Notification.Builder.recoverBuilder(context, conversation).style is Notification.MessagingStyle)
+        assertTrue(conversation.bubbleMetadata!!.isNotificationSuppressed)
+        assertTrue(conversation.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
+        managerShadow.bubblePreferenceSetting = NotificationManager.BUBBLE_PREFERENCE_NONE
+        publisher.update(session(NativeConversationStatus.RUNNING, "Next preview"), false)
+        assertEquals(LIVE_UPDATE_CHANNEL_ID, manager.activeNotifications.single().notification.channelId)
+    }
+
+    @Test fun longStreamedRepliesAdvanceTheirVisibleTailAndTheTerminalCardKeepsTheEnding() {
+        val prefix = "😀".repeat(6_000)
+        val first = session(NativeConversationStatus.RUNNING, prefix + "First visible tail")
+        publisher.update(first, false)
+        val firstText = manager.activeNotifications.single().notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString()
+        publisher.update(first.copy(latestReply = prefix + "Second visible tail"), false)
+        val secondText = manager.activeNotifications.single().notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString()
+        assertNotEquals(firstText, secondText)
+        assertTrue(secondText.endsWith("Second visible tail"))
+        assertEquals(RUNNING_REPLY_EXCERPT_CODE_POINTS, secondText.codePointCount(0, secondText.length))
+        val completed = first.copy(status = NativeConversationStatus.COMPLETED, latestReply = "Answer opening. " + prefix + "Final answer ending.")
+        publisher.update(completed, true)
+        val notification = manager.activeNotifications.single().notification
+        val style = Notification.Builder.recoverBuilder(context, notification).style as Notification.MessagingStyle
+        val finalText = style.messages.single().text.toString()
+        assertTrue(finalText.startsWith("Answer opening. "))
+        assertTrue("Final excerpt tail: ${finalText.takeLast(120)}", finalText.contains("Final answer ending.\n\n$COMPLETE_REPLY_HINT"))
+        assertTrue(finalText.length < 1_024)
+        assertTrue("The full snapshot remains available to the app", completed.latestReply.length > 5_120)
+    }
+
     @Test fun terminalAndUnknownRemoteStateRemoveLiveCardWhileKeepingConversation() {
-        listOf(NativeConversationStatus.COMPLETED, NativeConversationStatus.FAILED, NativeConversationStatus.CANCELLED, NativeConversationStatus.DISCONNECTED).forEach { outcome ->
+        listOf(NativeConversationStatus.COMPLETED, NativeConversationStatus.FAILED, NativeConversationStatus.CANCELLED, NativeConversationStatus.ENDED, NativeConversationStatus.DISCONNECTED).forEach { outcome ->
             publisher.update(session(NativeConversationStatus.RUNNING, "Working"), false)
             assertTrue(manager.activeNotifications.any { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID })
             publisher.update(session(outcome, "Latest reply"), outcome == NativeConversationStatus.COMPLETED)
@@ -91,9 +124,9 @@ class LiveUpdateNotificationsTest {
         val other = target.copy(accountId = "other-account")
         publisher.update(session(NativeConversationStatus.RUNNING, "Own"), false)
         publisher.update(session(NativeConversationStatus.RUNNING, "Other").copy(target = other), false)
-        assertEquals(4, manager.activeNotifications.size)
-        publisher.cancel(target)
         assertEquals(2, manager.activeNotifications.size)
+        publisher.cancel(target)
+        assertEquals(1, manager.activeNotifications.size)
         assertTrue(manager.activeNotifications.any { it.tag == liveUpdateTag(other) })
         publisher.eraseAccount(other.profileId, other.accountId)
         assertTrue(manager.activeNotifications.isEmpty())
@@ -113,6 +146,7 @@ class LiveUpdateNotificationsTest {
         settings.refreshPermission()
         assertFalse(settings.liveUpdatesAllowed.value)
         assertTrue(manager.activeNotifications.none { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID })
+        publisher.update(session(NativeConversationStatus.RUNNING), false)
         assertTrue(manager.activeNotifications.any { it.notification.channelId == REPLY_CHANNEL_ID })
         managerShadow.promotedAllowed = true
         settings.refreshPermission()
@@ -121,6 +155,14 @@ class LiveUpdateNotificationsTest {
         settings.refreshPermission()
         assertFalse(settings.liveUpdatesAllowed.value)
         assertTrue(manager.activeNotifications.none { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID })
+    }
+
+    @Test fun deletingAConversationRemovesBothItsLiveUpdateAndShortcutRouting() {
+        publisher.update(session(NativeConversationStatus.RUNNING), false)
+        assertEquals(1, context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.size)
+        publisher.forget(target)
+        assertTrue(manager.activeNotifications.isEmpty())
+        assertTrue(context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.isEmpty())
     }
 
     @Test fun minorSdkCompatibilityEncodesRealLegacyAndModernPromotionRequirements() {
@@ -150,6 +192,9 @@ class LiveUpdateNotificationsTest {
 @Implements(NotificationManager::class)
 class LiveUpdateNotificationManagerShadow : ShadowNotificationManager() {
     var promotedAllowed: Boolean = true
+    var bubblePreferenceSetting: Int = NotificationManager.BUBBLE_PREFERENCE_NONE
     @Implementation(minSdk = 36)
     protected fun canPostPromotedNotifications(): Boolean = promotedAllowed
+    @Implementation(minSdk = 31)
+    protected fun getBubblePreference(): Int = bubblePreferenceSetting
 }

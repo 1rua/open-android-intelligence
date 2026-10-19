@@ -14,6 +14,10 @@ internal class WorkbenchActiveWork {
     private val finishedGenerations = linkedSetOf<Pair<String, String>>()
     private val _active = MutableStateFlow(false)
     val active = _active.asStateFlow()
+    private val _conversationIds = MutableStateFlow<Set<String>>(emptySet())
+    val ids = _conversationIds.asStateFlow()
+
+    @Synchronized fun conversationIds(): Set<String> = submissions.values.mapNotNullTo(linkedSetOf()) { it.conversationId }
 
     @Synchronized fun begin(clientId: String, conversationId: String?) {
         submissions.putIfAbsent(clientId, Submission(conversationId))
@@ -72,5 +76,8 @@ internal class WorkbenchActiveWork {
         publish()
     }
 
-    private fun publish() { _active.value = submissions.isNotEmpty() }
+    private fun publish() {
+        _active.value = submissions.isNotEmpty()
+        _conversationIds.value = conversationIds()
+    }
 }

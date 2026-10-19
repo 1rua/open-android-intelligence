@@ -20,6 +20,16 @@ import org.junit.Test
  * plausible-looking fake state.
  */
 class GatewayEventDecoderTest {
+    @Test fun accountMetadataFramesTriggerARefreshAndDeletionKeepsItsIdentity() {
+        for (name in listOf("conversation.updated","conversation.deleted","conversation.organization.updated")) {
+            val wire=SseParser().feed(frame("evt_$name",name,"""{"payload":{"conversationId":"conv_a","revision":7}}""")).single()
+            val decoded=GatewayEventDecoder.decode(wire) as VerifiedConversationEvent.ConversationsChanged
+            assertEquals(name == "conversation.deleted",decoded.deleted)
+            assertEquals("conv_a",decoded.conversationId?.value)
+        }
+        val deleted=SseParser().feed(frame("evt_deleted","conversation.updated","""{"payload":{"conversationId":"conv_a","deleted":true}}""")).single()
+        assertTrue((GatewayEventDecoder.decode(deleted) as VerifiedConversationEvent.ConversationsChanged).deleted)
+    }
 
     @Test fun upsertRetainsTheExplicitClientIdentityBeforeHttpAcceptanceArrives() {
         val event = SseParser().feed(frame("evt_client_identity", "conversation.timeline.upsert",

@@ -22,9 +22,13 @@ class GatewayWireRegressionTest {
         val repository = GatewayConversationRepository(ConversationClient(http(transport))) { "conv_server" }
         val conversation = repository.createConversation(scope, "cconv_local")
         assertEquals("conv_server", conversation.id.value)
-        val listed = repository.listConversations(scope, PageRequest())
+        val listed = repository.listConversations(scope, PageRequest(limit = 17))
         assertEquals(listOf("conv_server"), listed.conversations.map { it.id.value })
-        assertEquals("/open-android-intelligence/v2/conversations", transport.requests.last().target)
+        assertEquals(1L, listed.snapshotRevision)
+        assertNull(listed.nextCursor)
+        assertFalse(listed.conversations.single().archived)
+        assertEquals(java.time.Instant.parse("2026-10-18T12:00:00Z").toEpochMilli(), listed.conversations.single().updatedAt)
+        assertEquals("/open-android-intelligence/v2/conversations?limit=17", transport.requests.last().target)
     }
 
     @Test fun sendsTextAndVerifiedAttachmentsUsingTheChatV1Request() = runBlocking {
@@ -81,10 +85,10 @@ class GatewayWireRegressionTest {
         val requests = mutableListOf<WireRequest>()
         override suspend fun execute(request: WireRequest): WireResponse {
             requests += request
-            val path = request.target.removePrefix("/open-android-intelligence/v2")
+            val path = request.target.removePrefix("/open-android-intelligence/v2").substringBefore('?')
             val data = when (request.method to path) {
                 "POST" to "/conversations" -> """{"conversation":{"conversationId":"conv_server","title":"新对话"}}"""
-                "GET" to "/conversations" -> """{"conversations":[{"conversationId":"conv_server","title":"新对话"}]}"""
+                "GET" to "/conversations" -> """{"conversations":[{"conversationId":"conv_server","clientConversationId":"cconv_local","title":"新对话","archived":false,"updatedAt":"2026-10-18T12:00:00Z"}],"nextCursor":null,"snapshotRevision":1}"""
                 "POST" to "/conversations/conv_server/messages" -> {
                     val body = JsonFields.obj(Json.parse(String(request.body)))!!
                     if (JsonFields.string(body, "clientMessageId") == null) {

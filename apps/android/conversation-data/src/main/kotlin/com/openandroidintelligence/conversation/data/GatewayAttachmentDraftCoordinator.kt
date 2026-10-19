@@ -103,9 +103,8 @@ class GatewayAttachmentDraftCoordinator(
                         updateProgress(draftId, AttachmentState.LOCAL_PREPARING, bytes, null)
                     },
                     isCancelled = { !jobContext.isActive },
-                )
+                ).also { staged[draftId] = it }
             }
-            staged[draftId] = content
             selections.remove(draftId)
             drafts.computeIfPresent(draftId) { _, draft ->
                 draft.copy(sizeBytes = content.sizeBytes, sha256 = content.sha256Hex)
@@ -234,7 +233,7 @@ class GatewayAttachmentDraftCoordinator(
     }
 
     override suspend fun discard(draftId: String) {
-        jobs.remove(draftId)?.cancel()
+        jobs.remove(draftId)?.cancelAndJoin()
         val content = staged.remove(draftId)
         selections.remove(draftId)
         remoteIds.remove(draftId)
@@ -327,7 +326,7 @@ class GatewayAttachmentDraftCoordinator(
     }
 
     override suspend fun releaseAfterSubmit(draftId: String) {
-        jobs.remove(draftId)?.cancel()
+        jobs.remove(draftId)?.cancelAndJoin()
         val content = staged.remove(draftId)
         selections.remove(draftId)
         remoteIds.remove(draftId)

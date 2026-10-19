@@ -17,6 +17,11 @@ data class WorkbenchCheckpoint(
     val draft: String, val draftRevision: Long, val attachments: List<AttachmentDraft>,
     val submission: SavedSubmission?, val renamedThreads: Set<String>, val eventIds: Set<String>,
     val batches:List<SavedBatch> = emptyList(),
+    val organization: com.openandroidintelligence.conversation.ports.ConversationOrganization = com.openandroidintelligence.conversation.ports.ConversationOrganization(),
+    /** An initial/loading screen must not replace a completed account history with an empty list. */
+    val threadsHydrated: Boolean = true,
+    val threadsSnapshotRevision: Long? = null,
+    val deletedThreadIds: Set<String> = emptySet(),
 )
 
 interface WorkbenchPersistence {

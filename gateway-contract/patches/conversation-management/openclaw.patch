@@ -1,0 +1,2698 @@
+diff --git a/gateway-contract/core-dispatched-schemas.json b/gateway-contract/core-dispatched-schemas.json
+index 10e93c8..2ed06a0 100644
+--- a/gateway-contract/core-dispatched-schemas.json
++++ b/gateway-contract/core-dispatched-schemas.json
+@@ -911,6 +911,52 @@
+           }
+         }
+       }
++    },
++    {
++      "key": {
++        "kind": "event",
++        "eventType": "conversation.updated",
++        "schemaSha256": "sha256:87ea658d8628e63e45b3ec08160874f1e5689feac62ca4866ad1ee205d0dbdfb"
++      },
++      "schema": {
++        "type": "object",
++        "additionalProperties": false,
++        "required": [
++          "conversationId"
++        ],
++        "properties": {
++          "conversationId": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          },
++          "archived": {
++            "type": "boolean"
++          },
++          "deleted": {
++            "const": true
++          }
++        }
++      }
++    },
++    {
++      "key": {
++        "kind": "event",
++        "eventType": "conversation.organization.updated",
++        "schemaSha256": "sha256:34491deb9354b913572df9e2418bba77c104d35cc8320b978b5eefd471787c8f"
++      },
++      "schema": {
++        "type": "object",
++        "additionalProperties": false,
++        "required": [
++          "revision"
++        ],
++        "properties": {
++          "revision": {
++            "type": "integer",
++            "minimum": 0
++          }
++        }
++      }
+     }
+   ],
+   "bindings": [
+@@ -1026,6 +1072,20 @@
+         "eventType": "conversation.generation.cancelled"
+       },
+       "schemaSha256": "sha256:331d2f051149d5f1cff4794de468fc07ce1ce727c9a49bf688f3cc21d8b68f1d"
++    },
++    {
++      "key": {
++        "kind": "event",
++        "eventType": "conversation.updated"
++      },
++      "schemaSha256": "sha256:87ea658d8628e63e45b3ec08160874f1e5689feac62ca4866ad1ee205d0dbdfb"
++    },
++    {
++      "key": {
++        "kind": "event",
++        "eventType": "conversation.organization.updated"
++      },
++      "schemaSha256": "sha256:34491deb9354b913572df9e2418bba77c104d35cc8320b978b5eefd471787c8f"
+     }
+   ]
+ }
+diff --git a/gateway-contract/schemas/conversation.schema.json b/gateway-contract/schemas/conversation.schema.json
+index c36583e..0ff54e4 100644
+--- a/gateway-contract/schemas/conversation.schema.json
++++ b/gateway-contract/schemas/conversation.schema.json
+@@ -5,29 +5,41 @@
+     "create": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["clientConversationId"],
++      "required": [
++        "clientConversationId"
++      ],
+       "properties": {
+         "clientConversationId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+         },
+-        "title": { "type": "string" }
++        "title": {
++          "type": "string"
++        }
+       }
+     },
+     "messageCreate": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["clientMessageId", "text", "attachments"],
++      "required": [
++        "clientMessageId",
++        "text",
++        "attachments"
++      ],
+       "properties": {
+         "clientMessageId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+         },
+-        "text": { "type": "string" },
++        "text": {
++          "type": "string"
++        },
+         "attachments": {
+           "type": "array",
+           "items": {
+             "type": "object",
+             "additionalProperties": false,
+-            "required": ["attachmentId"],
++            "required": [
++              "attachmentId"
++            ],
+             "properties": {
+               "attachmentId": {
+                 "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+@@ -40,21 +52,31 @@
+     "commandCatalog": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["commands"],
++      "required": [
++        "commands"
++      ],
+       "properties": {
+         "commands": {
+           "type": "array",
+           "items": {
+             "type": "object",
+             "additionalProperties": false,
+-            "required": ["command", "description"],
++            "required": [
++              "command",
++              "description"
++            ],
+             "properties": {
+               "command": {
+                 "type": "string",
+                 "pattern": "^/[a-z0-9_-]+$"
+               },
+-              "description": { "type": "string", "minLength": 1 },
+-              "argumentHint": { "type": "string" }
++              "description": {
++                "type": "string",
++                "minLength": 1
++              },
++              "argumentHint": {
++                "type": "string"
++              }
+             }
+           }
+         }
+@@ -63,7 +85,9 @@
+     "generationCancel": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["clientMessageId"],
++      "required": [
++        "clientMessageId"
++      ],
+       "properties": {
+         "clientMessageId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+@@ -73,12 +97,227 @@
+     "mirrorSync": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["conversationId", "sinceSeq"],
++      "required": [
++        "conversationId",
++        "sinceSeq"
++      ],
+       "properties": {
+         "conversationId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+         },
+-        "sinceSeq": { "type": "integer", "minimum": 0 }
++        "sinceSeq": {
++          "type": "integer",
++          "minimum": 0
++        }
++      }
++    },
++    "organization": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "revision",
++        "sortMode",
++        "customOrder",
++        "folders",
++        "assignments"
++      ],
++      "properties": {
++        "revision": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "sortMode": {
++          "enum": [
++            "updated-desc",
++            "custom"
++          ]
++        },
++        "customOrder": {
++          "type": "array",
++          "uniqueItems": true,
++          "maxItems": 100000,
++          "items": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          }
++        },
++        "folders": {
++          "type": "array",
++          "maxItems": 500,
++          "items": {
++            "type": "object",
++            "additionalProperties": false,
++            "required": [
++              "folderId",
++              "name"
++            ],
++            "properties": {
++              "folderId": {
++                "type": "string",
++                "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++              },
++              "name": {
++                "type": "string",
++                "minLength": 1,
++                "maxLength": 80,
++                "pattern": "^\\S(?:[^\\r\\n]*\\S)?$"
++              }
++            }
++          }
++        },
++        "assignments": {
++          "type": "object",
++          "maxProperties": 100000,
++          "propertyNames": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          },
++          "additionalProperties": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          }
++        }
++      }
++    },
++    "organizationReplace": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "expectedRevision",
++        "sortMode",
++        "customOrder",
++        "folders",
++        "assignments"
++      ],
++      "properties": {
++        "expectedRevision": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "sortMode": {
++          "enum": [
++            "updated-desc",
++            "custom"
++          ]
++        },
++        "customOrder": {
++          "type": "array",
++          "uniqueItems": true,
++          "maxItems": 100000,
++          "items": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          }
++        },
++        "folders": {
++          "type": "array",
++          "maxItems": 500,
++          "items": {
++            "type": "object",
++            "additionalProperties": false,
++            "required": [
++              "folderId",
++              "name"
++            ],
++            "properties": {
++              "folderId": {
++                "type": "string",
++                "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++              },
++              "name": {
++                "type": "string",
++                "minLength": 1,
++                "maxLength": 80,
++                "pattern": "^\\S(?:[^\\r\\n]*\\S)?$"
++              }
++            }
++          }
++        },
++        "assignments": {
++          "type": "object",
++          "maxProperties": 100000,
++          "propertyNames": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          },
++          "additionalProperties": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          }
++        }
++      }
++    },
++    "archive": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "archived"
++      ],
++      "properties": {
++        "archived": {
++          "type": "boolean"
++        }
++      }
++    },
++    "managedRecord": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "conversationId",
++        "clientConversationId",
++        "title",
++        "archived",
++        "updatedAt"
++      ],
++      "properties": {
++        "conversationId": {
++          "type": "string",
++          "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++        },
++        "clientConversationId": {
++          "type": "string",
++          "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++        },
++        "title": {
++          "type": [
++            "string",
++            "null"
++          ]
++        },
++        "archived": {
++          "type": "boolean"
++        },
++        "updatedAt": {
++          "type": "string",
++          "format": "date-time"
++        }
++      }
++    },
++    "listPage": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "conversations",
++        "nextCursor",
++        "snapshotRevision"
++      ],
++      "properties": {
++        "conversations": {
++          "type": "array",
++          "items": {
++            "$ref": "#/$defs/managedRecord"
++          }
++        },
++        "nextCursor": {
++          "type": [
++            "string",
++            "null"
++          ]
++        },
++        "snapshotRevision": {
++          "type": "integer",
++          "minimum": 1
++        }
+       }
+     }
+   }
+diff --git a/gateway-contract/schemas/event.schema.json b/gateway-contract/schemas/event.schema.json
+index 32012e3..d4125d5 100644
+--- a/gateway-contract/schemas/event.schema.json
++++ b/gateway-contract/schemas/event.schema.json
+@@ -18,7 +18,7 @@
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/utcMillis"
+         },
+         "type": {
+-          "$comment": "Event type is carried by the validated SSE event line (contract §9); this mirror is optional and lists the V2 event types.",
++          "$comment": "Event type is carried by the validated SSE event line (contract \u00a79); this mirror is optional and lists the V2 event types.",
+           "type": "string",
+           "enum": [
+             "conversation.message.delta",
+@@ -33,7 +33,9 @@
+             "pairing.grant.changed",
+             "session.revoked",
+             "attachment.acknowledged",
+-            "gateway.notice"
++            "gateway.notice",
++            "conversation.updated",
++            "conversation.organization.updated"
+           ]
+         },
+         "payload": {
+@@ -43,7 +45,7 @@
+       }
+     },
+     "sessionRevokedPayload": {
+-      "$comment": "Normative copy for eventType 'session.revoked' (contract §9). Notification only.",
++      "$comment": "Normative copy for eventType 'session.revoked' (contract \u00a79). Notification only.",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -59,7 +61,7 @@
+       }
+     },
+     "pairingGrantChangedPayload": {
+-      "$comment": "Normative copy for eventType 'pairing.grant.changed' (contract §9/§11). Notification only: the event must never widen the Android-local authoritative grant record; decisions still travel the request path and stale revisions still return GRANT_STALE.",
++      "$comment": "Normative copy for eventType 'pairing.grant.changed' (contract \u00a79/\u00a711). Notification only: the event must never widen the Android-local authoritative grant record; decisions still travel the request path and stale revisions still return GRANT_STALE.",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -95,7 +97,7 @@
+       }
+     },
+     "conversationMessagePayload": {
+-      "$comment": "消息正文为累积 upsert；parts 为封闭的文本和附件联合，纯附件的空正文合法。附件字节不进入事件。",
++      "$comment": "\u6d88\u606f\u6b63\u6587\u4e3a\u7d2f\u79ef upsert\uff1bparts \u4e3a\u5c01\u95ed\u7684\u6587\u672c\u548c\u9644\u4ef6\u8054\u5408\uff0c\u7eaf\u9644\u4ef6\u7684\u7a7a\u6b63\u6587\u5408\u6cd5\u3002\u9644\u4ef6\u5b57\u8282\u4e0d\u8fdb\u5165\u4e8b\u4ef6\u3002",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -317,7 +319,7 @@
+       }
+     },
+     "deviceRequestedEventPayload": {
+-      "$comment": "Normative copy for eventType 'device.requested' (contract §9). Both hosts emit this event, but they currently disagree on width: Hermes mirrors the full request (device-request.schema.json#/$defs/request) while OpenClaw emits { requestId, risk, grantRevision }. Required is therefore the intersection; the remaining request fields are optional. parameters stays an open object because capability sub-schemas dispatch by id/version.",
++      "$comment": "Normative copy for eventType 'device.requested' (contract \u00a79). Both hosts emit this event, but they currently disagree on width: Hermes mirrors the full request (device-request.schema.json#/$defs/request) while OpenClaw emits { requestId, risk, grantRevision }. Required is therefore the intersection; the remaining request fields are optional. parameters stays an open object because capability sub-schemas dispatch by id/version.",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -392,7 +394,7 @@
+       }
+     },
+     "deviceRequestCancelRequestedPayload": {
+-      "$comment": "Normative copy for eventType 'device.request.cancel.requested' (contract §9).",
++      "$comment": "Normative copy for eventType 'device.request.cancel.requested' (contract \u00a79).",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -405,7 +407,7 @@
+       }
+     },
+     "attachmentAcknowledgedPayload": {
+-      "$comment": "Normative copy for eventType 'attachment.acknowledged' (contract §9).",
++      "$comment": "Normative copy for eventType 'attachment.acknowledged' (contract \u00a79).",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+diff --git a/gateway-contract/schemas/negotiate.schema.json b/gateway-contract/schemas/negotiate.schema.json
+index 28e1f20..e9c73cf 100644
+--- a/gateway-contract/schemas/negotiate.schema.json
++++ b/gateway-contract/schemas/negotiate.schema.json
+@@ -5,65 +5,121 @@
+     "protocol": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["major", "minor"],
++      "required": [
++        "major",
++        "minor"
++      ],
+       "properties": {
+-        "major": { "const": 2 },
+-        "minor": { "type": "integer", "minimum": 0 }
++        "major": {
++          "const": 2
++        },
++        "minor": {
++          "type": "integer",
++          "minimum": 0
++        }
+       }
+     },
+     "request": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["negotiationId", "protocol", "client", "features", "schemaHashes"],
++      "required": [
++        "negotiationId",
++        "protocol",
++        "client",
++        "features",
++        "schemaHashes"
++      ],
+       "properties": {
+         "negotiationId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+         },
+-        "protocol": { "$ref": "#/$defs/protocol" },
++        "protocol": {
++          "$ref": "#/$defs/protocol"
++        },
+         "client": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["installationId", "appVersion", "platform", "platformApi"],
++          "required": [
++            "installationId",
++            "appVersion",
++            "platform",
++            "platformApi"
++          ],
+           "properties": {
+             "installationId": {
+               "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+             },
+-            "appVersion": { "type": "string", "minLength": 1 },
+-            "platform": { "const": "android" },
+-            "platformApi": { "type": "integer", "minimum": 1 }
++            "appVersion": {
++              "type": "string",
++              "minLength": 1
++            },
++            "platform": {
++              "const": "android"
++            },
++            "platformApi": {
++              "type": "integer",
++              "minimum": 1
++            }
+           }
+         },
+         "features": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["auth", "messages", "attachments", "events", "deviceRequests"],
++          "required": [
++            "auth",
++            "messages",
++            "attachments",
++            "events",
++            "deviceRequests"
++          ],
+           "properties": {
+             "auth": {
+               "type": "array",
+               "uniqueItems": true,
+               "items": {
+-                "enum": ["password", "account-invitation", "refresh", "device-key"]
++                "enum": [
++                  "password",
++                  "account-invitation",
++                  "refresh",
++                  "device-key"
++                ]
+               }
+             },
+             "messages": {
+               "type": "array",
+               "uniqueItems": true,
+-              "items": { "enum": ["chat-v1"] }
++              "items": {
++                "enum": [
++                  "chat-v1"
++                ]
++              }
+             },
+             "attachments": {
+               "type": "array",
+               "uniqueItems": true,
+-              "items": { "enum": ["staged-sha256-v1"] }
++              "items": {
++                "enum": [
++                  "staged-sha256-v1"
++                ]
++              }
+             },
+             "events": {
+               "type": "array",
+               "uniqueItems": true,
+-              "items": { "enum": ["sse-cursor-v1"] }
++              "items": {
++                "enum": [
++                  "sse-cursor-v1"
++                ]
++              }
+             },
+             "deviceRequests": {
+               "type": "array",
+               "uniqueItems": true,
+-              "items": { "enum": ["risk-queue-v1"] }
++              "items": {
++                "enum": [
++                  "risk-queue-v1"
++                ]
++              }
+             },
+             "conversationUi": {
+               "type": "array",
+@@ -77,7 +133,8 @@
+                   "newline-v1",
+                   "generation-cancel-v1",
+                   "conversation-mirror-v1",
+-                  "attachment-status-v1"
++                  "attachment-status-v1",
++                  "conversation-management-v1"
+                 ]
+               }
+             }
+@@ -86,7 +143,9 @@
+         "schemaHashes": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["core"],
++          "required": [
++            "core"
++          ],
+           "properties": {
+             "core": {
+               "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256"
+@@ -98,25 +157,51 @@
+     "response": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["protocol", "features", "limits", "gatewayIdentity"],
++      "required": [
++        "protocol",
++        "features",
++        "limits",
++        "gatewayIdentity"
++      ],
+       "properties": {
+-        "protocol": { "$ref": "#/$defs/protocol" },
++        "protocol": {
++          "$ref": "#/$defs/protocol"
++        },
+         "features": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["auth", "messages", "attachments", "events", "deviceRequests"],
++          "required": [
++            "auth",
++            "messages",
++            "attachments",
++            "events",
++            "deviceRequests"
++          ],
+           "properties": {
+             "auth": {
+               "type": "array",
+               "uniqueItems": true,
+               "items": {
+-                "enum": ["password", "account-invitation", "refresh", "device-key"]
++                "enum": [
++                  "password",
++                  "account-invitation",
++                  "refresh",
++                  "device-key"
++                ]
+               }
+             },
+-            "messages": { "const": "chat-v1" },
+-            "attachments": { "const": "staged-sha256-v1" },
+-            "events": { "const": "sse-cursor-v1" },
+-            "deviceRequests": { "const": "risk-queue-v1" },
++            "messages": {
++              "const": "chat-v1"
++            },
++            "attachments": {
++              "const": "staged-sha256-v1"
++            },
++            "events": {
++              "const": "sse-cursor-v1"
++            },
++            "deviceRequests": {
++              "const": "risk-queue-v1"
++            },
+             "conversationUi": {
+               "type": "array",
+               "uniqueItems": true,
+@@ -129,7 +214,8 @@
+                   "newline-v1",
+                   "generation-cancel-v1",
+                   "conversation-mirror-v1",
+-                  "attachment-status-v1"
++                  "attachment-status-v1",
++                  "conversation-management-v1"
+                 ]
+               }
+             }
+@@ -144,17 +230,35 @@
+             "maxClockSkewSeconds"
+           ],
+           "properties": {
+-            "attachmentTtlSeconds": { "type": "integer", "minimum": 1 },
+-            "eventRetentionSeconds": { "type": "integer", "minimum": 1 },
+-            "maxClockSkewSeconds": { "type": "integer", "minimum": 0 },
+-            "maxBatchMembers": { "type": "integer", "minimum": 1 },
+-            "maxBatchBytes": { "type": "integer", "minimum": 1 }
++            "attachmentTtlSeconds": {
++              "type": "integer",
++              "minimum": 1
++            },
++            "eventRetentionSeconds": {
++              "type": "integer",
++              "minimum": 1
++            },
++            "maxClockSkewSeconds": {
++              "type": "integer",
++              "minimum": 0
++            },
++            "maxBatchMembers": {
++              "type": "integer",
++              "minimum": 1
++            },
++            "maxBatchBytes": {
++              "type": "integer",
++              "minimum": 1
++            }
+           }
+         },
+         "gatewayIdentity": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["deploymentId", "tlsSpkiSha256"],
++          "required": [
++            "deploymentId",
++            "tlsSpkiSha256"
++          ],
+           "properties": {
+             "deploymentId": {
+               "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+@@ -162,11 +266,19 @@
+             "tlsSpkiSha256": {
+               "$comment": "No configured TLS identity is null for explicit plaintext deployments; HTTPS clients must refuse null before sending credentials. Zero is never an identity.",
+               "oneOf": [
+-                { "type": "null" },
++                {
++                  "type": "null"
++                },
+                 {
+                   "allOf": [
+-                    { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256" },
+-                    { "not": { "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000" } }
++                    {
++                      "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256"
++                    },
++                    {
++                      "not": {
++                        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
++                      }
++                    }
+                   ]
+                 }
+               ]
+diff --git a/gateway-contract/src/schema-registry.ts b/gateway-contract/src/schema-registry.ts
+index 2afc9f0..f3d8787 100644
+--- a/gateway-contract/src/schema-registry.ts
++++ b/gateway-contract/src/schema-registry.ts
+@@ -27,6 +27,10 @@ export type GatewaySchemaName =
+   | "session.pairing"
+   | "session.pairingSummary"
+   | "conversation.create"
++  | "conversation.organization"
++  | "conversation.organizationReplace"
++  | "conversation.archive"
++  | "conversation.listPage"
+   | "conversation.commandCatalog"
+   | "conversation.generationCancel"
+   | "conversation.mirrorSync"
+@@ -79,6 +83,10 @@ const definitions: Record<GatewaySchemaName, readonly [SchemaDocument, string]>
+   "session.pairing": [sessionDocument as SchemaDocument, "pairing"],
+   "session.pairingSummary": [sessionDocument as SchemaDocument, "pairingSummary"],
+   "conversation.create": [conversationDocument as SchemaDocument, "create"],
++  "conversation.organization": [conversationDocument as SchemaDocument, "organization"],
++  "conversation.organizationReplace": [conversationDocument as SchemaDocument, "organizationReplace"],
++  "conversation.archive": [conversationDocument as SchemaDocument, "archive"],
++  "conversation.listPage": [conversationDocument as SchemaDocument, "listPage"],
+   // The catalog and mirror-sync request shapes live in conversation.schema.json.
+   // command-catalog.schema.json and conversation-snapshot.schema.json describe the
+   // discovery response and the snapshot response, which are not GatewaySchemaName
+diff --git a/plugin-manifest.json b/plugin-manifest.json
+index d7ac236..1943308 100644
+--- a/plugin-manifest.json
++++ b/plugin-manifest.json
+@@ -3,7 +3,7 @@
+   "backend": "openclaw",
+   "upstream": { "release": "2026.7.1-2", "tag": "v2026.7.1-2", "commit": "0790d9f593ad30c940ed93b5872a8cf6d6f3cf8c" },
+   "protocolVersion": "2.1.0",
+-  "capabilitySchemaHash": "sha256:59244afa522108614123e4d047a8ff51f6f2e2651e9b800bb8c63e5e6e82d320",
++  "capabilitySchemaHash": "sha256:032f580246eb4a214624bded717819b4d5a76191208207edc9e5a4607f5c4d23",
+   "hostApi": { "min": "2026.7.1", "max": "2026.7.1", "commit": "0790d9f593ad30c940ed93b5872a8cf6d6f3cf8c" },
+   "authoritativeProfiles": { "chat": "gateway", "tool": "plugin", "event": "plugin-hook" },
+   "profiles": [
+diff --git a/runtime/gateway-contract/core-dispatched-schemas.json b/runtime/gateway-contract/core-dispatched-schemas.json
+index 10e93c8..2ed06a0 100644
+--- a/runtime/gateway-contract/core-dispatched-schemas.json
++++ b/runtime/gateway-contract/core-dispatched-schemas.json
+@@ -911,6 +911,52 @@
+           }
+         }
+       }
++    },
++    {
++      "key": {
++        "kind": "event",
++        "eventType": "conversation.updated",
++        "schemaSha256": "sha256:87ea658d8628e63e45b3ec08160874f1e5689feac62ca4866ad1ee205d0dbdfb"
++      },
++      "schema": {
++        "type": "object",
++        "additionalProperties": false,
++        "required": [
++          "conversationId"
++        ],
++        "properties": {
++          "conversationId": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          },
++          "archived": {
++            "type": "boolean"
++          },
++          "deleted": {
++            "const": true
++          }
++        }
++      }
++    },
++    {
++      "key": {
++        "kind": "event",
++        "eventType": "conversation.organization.updated",
++        "schemaSha256": "sha256:34491deb9354b913572df9e2418bba77c104d35cc8320b978b5eefd471787c8f"
++      },
++      "schema": {
++        "type": "object",
++        "additionalProperties": false,
++        "required": [
++          "revision"
++        ],
++        "properties": {
++          "revision": {
++            "type": "integer",
++            "minimum": 0
++          }
++        }
++      }
+     }
+   ],
+   "bindings": [
+@@ -1026,6 +1072,20 @@
+         "eventType": "conversation.generation.cancelled"
+       },
+       "schemaSha256": "sha256:331d2f051149d5f1cff4794de468fc07ce1ce727c9a49bf688f3cc21d8b68f1d"
++    },
++    {
++      "key": {
++        "kind": "event",
++        "eventType": "conversation.updated"
++      },
++      "schemaSha256": "sha256:87ea658d8628e63e45b3ec08160874f1e5689feac62ca4866ad1ee205d0dbdfb"
++    },
++    {
++      "key": {
++        "kind": "event",
++        "eventType": "conversation.organization.updated"
++      },
++      "schemaSha256": "sha256:34491deb9354b913572df9e2418bba77c104d35cc8320b978b5eefd471787c8f"
+     }
+   ]
+ }
+diff --git a/runtime/gateway-contract/schemas/conversation.schema.json b/runtime/gateway-contract/schemas/conversation.schema.json
+index c36583e..0ff54e4 100644
+--- a/runtime/gateway-contract/schemas/conversation.schema.json
++++ b/runtime/gateway-contract/schemas/conversation.schema.json
+@@ -5,29 +5,41 @@
+     "create": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["clientConversationId"],
++      "required": [
++        "clientConversationId"
++      ],
+       "properties": {
+         "clientConversationId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+         },
+-        "title": { "type": "string" }
++        "title": {
++          "type": "string"
++        }
+       }
+     },
+     "messageCreate": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["clientMessageId", "text", "attachments"],
++      "required": [
++        "clientMessageId",
++        "text",
++        "attachments"
++      ],
+       "properties": {
+         "clientMessageId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+         },
+-        "text": { "type": "string" },
++        "text": {
++          "type": "string"
++        },
+         "attachments": {
+           "type": "array",
+           "items": {
+             "type": "object",
+             "additionalProperties": false,
+-            "required": ["attachmentId"],
++            "required": [
++              "attachmentId"
++            ],
+             "properties": {
+               "attachmentId": {
+                 "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+@@ -40,21 +52,31 @@
+     "commandCatalog": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["commands"],
++      "required": [
++        "commands"
++      ],
+       "properties": {
+         "commands": {
+           "type": "array",
+           "items": {
+             "type": "object",
+             "additionalProperties": false,
+-            "required": ["command", "description"],
++            "required": [
++              "command",
++              "description"
++            ],
+             "properties": {
+               "command": {
+                 "type": "string",
+                 "pattern": "^/[a-z0-9_-]+$"
+               },
+-              "description": { "type": "string", "minLength": 1 },
+-              "argumentHint": { "type": "string" }
++              "description": {
++                "type": "string",
++                "minLength": 1
++              },
++              "argumentHint": {
++                "type": "string"
++              }
+             }
+           }
+         }
+@@ -63,7 +85,9 @@
+     "generationCancel": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["clientMessageId"],
++      "required": [
++        "clientMessageId"
++      ],
+       "properties": {
+         "clientMessageId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+@@ -73,12 +97,227 @@
+     "mirrorSync": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["conversationId", "sinceSeq"],
++      "required": [
++        "conversationId",
++        "sinceSeq"
++      ],
+       "properties": {
+         "conversationId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+         },
+-        "sinceSeq": { "type": "integer", "minimum": 0 }
++        "sinceSeq": {
++          "type": "integer",
++          "minimum": 0
++        }
++      }
++    },
++    "organization": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "revision",
++        "sortMode",
++        "customOrder",
++        "folders",
++        "assignments"
++      ],
++      "properties": {
++        "revision": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "sortMode": {
++          "enum": [
++            "updated-desc",
++            "custom"
++          ]
++        },
++        "customOrder": {
++          "type": "array",
++          "uniqueItems": true,
++          "maxItems": 100000,
++          "items": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          }
++        },
++        "folders": {
++          "type": "array",
++          "maxItems": 500,
++          "items": {
++            "type": "object",
++            "additionalProperties": false,
++            "required": [
++              "folderId",
++              "name"
++            ],
++            "properties": {
++              "folderId": {
++                "type": "string",
++                "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++              },
++              "name": {
++                "type": "string",
++                "minLength": 1,
++                "maxLength": 80,
++                "pattern": "^\\S(?:[^\\r\\n]*\\S)?$"
++              }
++            }
++          }
++        },
++        "assignments": {
++          "type": "object",
++          "maxProperties": 100000,
++          "propertyNames": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          },
++          "additionalProperties": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          }
++        }
++      }
++    },
++    "organizationReplace": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "expectedRevision",
++        "sortMode",
++        "customOrder",
++        "folders",
++        "assignments"
++      ],
++      "properties": {
++        "expectedRevision": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "sortMode": {
++          "enum": [
++            "updated-desc",
++            "custom"
++          ]
++        },
++        "customOrder": {
++          "type": "array",
++          "uniqueItems": true,
++          "maxItems": 100000,
++          "items": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          }
++        },
++        "folders": {
++          "type": "array",
++          "maxItems": 500,
++          "items": {
++            "type": "object",
++            "additionalProperties": false,
++            "required": [
++              "folderId",
++              "name"
++            ],
++            "properties": {
++              "folderId": {
++                "type": "string",
++                "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++              },
++              "name": {
++                "type": "string",
++                "minLength": 1,
++                "maxLength": 80,
++                "pattern": "^\\S(?:[^\\r\\n]*\\S)?$"
++              }
++            }
++          }
++        },
++        "assignments": {
++          "type": "object",
++          "maxProperties": 100000,
++          "propertyNames": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          },
++          "additionalProperties": {
++            "type": "string",
++            "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++          }
++        }
++      }
++    },
++    "archive": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "archived"
++      ],
++      "properties": {
++        "archived": {
++          "type": "boolean"
++        }
++      }
++    },
++    "managedRecord": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "conversationId",
++        "clientConversationId",
++        "title",
++        "archived",
++        "updatedAt"
++      ],
++      "properties": {
++        "conversationId": {
++          "type": "string",
++          "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++        },
++        "clientConversationId": {
++          "type": "string",
++          "pattern": "^[A-Za-z0-9._~-]{1,128}$"
++        },
++        "title": {
++          "type": [
++            "string",
++            "null"
++          ]
++        },
++        "archived": {
++          "type": "boolean"
++        },
++        "updatedAt": {
++          "type": "string",
++          "format": "date-time"
++        }
++      }
++    },
++    "listPage": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "conversations",
++        "nextCursor",
++        "snapshotRevision"
++      ],
++      "properties": {
++        "conversations": {
++          "type": "array",
++          "items": {
++            "$ref": "#/$defs/managedRecord"
++          }
++        },
++        "nextCursor": {
++          "type": [
++            "string",
++            "null"
++          ]
++        },
++        "snapshotRevision": {
++          "type": "integer",
++          "minimum": 1
++        }
+       }
+     }
+   }
+diff --git a/runtime/gateway-contract/schemas/event.schema.json b/runtime/gateway-contract/schemas/event.schema.json
+index 32012e3..d4125d5 100644
+--- a/runtime/gateway-contract/schemas/event.schema.json
++++ b/runtime/gateway-contract/schemas/event.schema.json
+@@ -18,7 +18,7 @@
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/utcMillis"
+         },
+         "type": {
+-          "$comment": "Event type is carried by the validated SSE event line (contract §9); this mirror is optional and lists the V2 event types.",
++          "$comment": "Event type is carried by the validated SSE event line (contract \u00a79); this mirror is optional and lists the V2 event types.",
+           "type": "string",
+           "enum": [
+             "conversation.message.delta",
+@@ -33,7 +33,9 @@
+             "pairing.grant.changed",
+             "session.revoked",
+             "attachment.acknowledged",
+-            "gateway.notice"
++            "gateway.notice",
++            "conversation.updated",
++            "conversation.organization.updated"
+           ]
+         },
+         "payload": {
+@@ -43,7 +45,7 @@
+       }
+     },
+     "sessionRevokedPayload": {
+-      "$comment": "Normative copy for eventType 'session.revoked' (contract §9). Notification only.",
++      "$comment": "Normative copy for eventType 'session.revoked' (contract \u00a79). Notification only.",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -59,7 +61,7 @@
+       }
+     },
+     "pairingGrantChangedPayload": {
+-      "$comment": "Normative copy for eventType 'pairing.grant.changed' (contract §9/§11). Notification only: the event must never widen the Android-local authoritative grant record; decisions still travel the request path and stale revisions still return GRANT_STALE.",
++      "$comment": "Normative copy for eventType 'pairing.grant.changed' (contract \u00a79/\u00a711). Notification only: the event must never widen the Android-local authoritative grant record; decisions still travel the request path and stale revisions still return GRANT_STALE.",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -95,7 +97,7 @@
+       }
+     },
+     "conversationMessagePayload": {
+-      "$comment": "消息正文为累积 upsert；parts 为封闭的文本和附件联合，纯附件的空正文合法。附件字节不进入事件。",
++      "$comment": "\u6d88\u606f\u6b63\u6587\u4e3a\u7d2f\u79ef upsert\uff1bparts \u4e3a\u5c01\u95ed\u7684\u6587\u672c\u548c\u9644\u4ef6\u8054\u5408\uff0c\u7eaf\u9644\u4ef6\u7684\u7a7a\u6b63\u6587\u5408\u6cd5\u3002\u9644\u4ef6\u5b57\u8282\u4e0d\u8fdb\u5165\u4e8b\u4ef6\u3002",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -317,7 +319,7 @@
+       }
+     },
+     "deviceRequestedEventPayload": {
+-      "$comment": "Normative copy for eventType 'device.requested' (contract §9). Both hosts emit this event, but they currently disagree on width: Hermes mirrors the full request (device-request.schema.json#/$defs/request) while OpenClaw emits { requestId, risk, grantRevision }. Required is therefore the intersection; the remaining request fields are optional. parameters stays an open object because capability sub-schemas dispatch by id/version.",
++      "$comment": "Normative copy for eventType 'device.requested' (contract \u00a79). Both hosts emit this event, but they currently disagree on width: Hermes mirrors the full request (device-request.schema.json#/$defs/request) while OpenClaw emits { requestId, risk, grantRevision }. Required is therefore the intersection; the remaining request fields are optional. parameters stays an open object because capability sub-schemas dispatch by id/version.",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -392,7 +394,7 @@
+       }
+     },
+     "deviceRequestCancelRequestedPayload": {
+-      "$comment": "Normative copy for eventType 'device.request.cancel.requested' (contract §9).",
++      "$comment": "Normative copy for eventType 'device.request.cancel.requested' (contract \u00a79).",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+@@ -405,7 +407,7 @@
+       }
+     },
+     "attachmentAcknowledgedPayload": {
+-      "$comment": "Normative copy for eventType 'attachment.acknowledged' (contract §9).",
++      "$comment": "Normative copy for eventType 'attachment.acknowledged' (contract \u00a79).",
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+diff --git a/runtime/gateway-contract/schemas/negotiate.schema.json b/runtime/gateway-contract/schemas/negotiate.schema.json
+index 28e1f20..e9c73cf 100644
+--- a/runtime/gateway-contract/schemas/negotiate.schema.json
++++ b/runtime/gateway-contract/schemas/negotiate.schema.json
+@@ -5,65 +5,121 @@
+     "protocol": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["major", "minor"],
++      "required": [
++        "major",
++        "minor"
++      ],
+       "properties": {
+-        "major": { "const": 2 },
+-        "minor": { "type": "integer", "minimum": 0 }
++        "major": {
++          "const": 2
++        },
++        "minor": {
++          "type": "integer",
++          "minimum": 0
++        }
+       }
+     },
+     "request": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["negotiationId", "protocol", "client", "features", "schemaHashes"],
++      "required": [
++        "negotiationId",
++        "protocol",
++        "client",
++        "features",
++        "schemaHashes"
++      ],
+       "properties": {
+         "negotiationId": {
+           "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+         },
+-        "protocol": { "$ref": "#/$defs/protocol" },
++        "protocol": {
++          "$ref": "#/$defs/protocol"
++        },
+         "client": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["installationId", "appVersion", "platform", "platformApi"],
++          "required": [
++            "installationId",
++            "appVersion",
++            "platform",
++            "platformApi"
++          ],
+           "properties": {
+             "installationId": {
+               "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+             },
+-            "appVersion": { "type": "string", "minLength": 1 },
+-            "platform": { "const": "android" },
+-            "platformApi": { "type": "integer", "minimum": 1 }
++            "appVersion": {
++              "type": "string",
++              "minLength": 1
++            },
++            "platform": {
++              "const": "android"
++            },
++            "platformApi": {
++              "type": "integer",
++              "minimum": 1
++            }
+           }
+         },
+         "features": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["auth", "messages", "attachments", "events", "deviceRequests"],
++          "required": [
++            "auth",
++            "messages",
++            "attachments",
++            "events",
++            "deviceRequests"
++          ],
+           "properties": {
+             "auth": {
+               "type": "array",
+               "uniqueItems": true,
+               "items": {
+-                "enum": ["password", "account-invitation", "refresh", "device-key"]
++                "enum": [
++                  "password",
++                  "account-invitation",
++                  "refresh",
++                  "device-key"
++                ]
+               }
+             },
+             "messages": {
+               "type": "array",
+               "uniqueItems": true,
+-              "items": { "enum": ["chat-v1"] }
++              "items": {
++                "enum": [
++                  "chat-v1"
++                ]
++              }
+             },
+             "attachments": {
+               "type": "array",
+               "uniqueItems": true,
+-              "items": { "enum": ["staged-sha256-v1"] }
++              "items": {
++                "enum": [
++                  "staged-sha256-v1"
++                ]
++              }
+             },
+             "events": {
+               "type": "array",
+               "uniqueItems": true,
+-              "items": { "enum": ["sse-cursor-v1"] }
++              "items": {
++                "enum": [
++                  "sse-cursor-v1"
++                ]
++              }
+             },
+             "deviceRequests": {
+               "type": "array",
+               "uniqueItems": true,
+-              "items": { "enum": ["risk-queue-v1"] }
++              "items": {
++                "enum": [
++                  "risk-queue-v1"
++                ]
++              }
+             },
+             "conversationUi": {
+               "type": "array",
+@@ -77,7 +133,8 @@
+                   "newline-v1",
+                   "generation-cancel-v1",
+                   "conversation-mirror-v1",
+-                  "attachment-status-v1"
++                  "attachment-status-v1",
++                  "conversation-management-v1"
+                 ]
+               }
+             }
+@@ -86,7 +143,9 @@
+         "schemaHashes": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["core"],
++          "required": [
++            "core"
++          ],
+           "properties": {
+             "core": {
+               "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256"
+@@ -98,25 +157,51 @@
+     "response": {
+       "type": "object",
+       "additionalProperties": false,
+-      "required": ["protocol", "features", "limits", "gatewayIdentity"],
++      "required": [
++        "protocol",
++        "features",
++        "limits",
++        "gatewayIdentity"
++      ],
+       "properties": {
+-        "protocol": { "$ref": "#/$defs/protocol" },
++        "protocol": {
++          "$ref": "#/$defs/protocol"
++        },
+         "features": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["auth", "messages", "attachments", "events", "deviceRequests"],
++          "required": [
++            "auth",
++            "messages",
++            "attachments",
++            "events",
++            "deviceRequests"
++          ],
+           "properties": {
+             "auth": {
+               "type": "array",
+               "uniqueItems": true,
+               "items": {
+-                "enum": ["password", "account-invitation", "refresh", "device-key"]
++                "enum": [
++                  "password",
++                  "account-invitation",
++                  "refresh",
++                  "device-key"
++                ]
+               }
+             },
+-            "messages": { "const": "chat-v1" },
+-            "attachments": { "const": "staged-sha256-v1" },
+-            "events": { "const": "sse-cursor-v1" },
+-            "deviceRequests": { "const": "risk-queue-v1" },
++            "messages": {
++              "const": "chat-v1"
++            },
++            "attachments": {
++              "const": "staged-sha256-v1"
++            },
++            "events": {
++              "const": "sse-cursor-v1"
++            },
++            "deviceRequests": {
++              "const": "risk-queue-v1"
++            },
+             "conversationUi": {
+               "type": "array",
+               "uniqueItems": true,
+@@ -129,7 +214,8 @@
+                   "newline-v1",
+                   "generation-cancel-v1",
+                   "conversation-mirror-v1",
+-                  "attachment-status-v1"
++                  "attachment-status-v1",
++                  "conversation-management-v1"
+                 ]
+               }
+             }
+@@ -144,17 +230,35 @@
+             "maxClockSkewSeconds"
+           ],
+           "properties": {
+-            "attachmentTtlSeconds": { "type": "integer", "minimum": 1 },
+-            "eventRetentionSeconds": { "type": "integer", "minimum": 1 },
+-            "maxClockSkewSeconds": { "type": "integer", "minimum": 0 },
+-            "maxBatchMembers": { "type": "integer", "minimum": 1 },
+-            "maxBatchBytes": { "type": "integer", "minimum": 1 }
++            "attachmentTtlSeconds": {
++              "type": "integer",
++              "minimum": 1
++            },
++            "eventRetentionSeconds": {
++              "type": "integer",
++              "minimum": 1
++            },
++            "maxClockSkewSeconds": {
++              "type": "integer",
++              "minimum": 0
++            },
++            "maxBatchMembers": {
++              "type": "integer",
++              "minimum": 1
++            },
++            "maxBatchBytes": {
++              "type": "integer",
++              "minimum": 1
++            }
+           }
+         },
+         "gatewayIdentity": {
+           "type": "object",
+           "additionalProperties": false,
+-          "required": ["deploymentId", "tlsSpkiSha256"],
++          "required": [
++            "deploymentId",
++            "tlsSpkiSha256"
++          ],
+           "properties": {
+             "deploymentId": {
+               "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/opaqueId"
+@@ -162,11 +266,19 @@
+             "tlsSpkiSha256": {
+               "$comment": "No configured TLS identity is null for explicit plaintext deployments; HTTPS clients must refuse null before sending credentials. Zero is never an identity.",
+               "oneOf": [
+-                { "type": "null" },
++                {
++                  "type": "null"
++                },
+                 {
+                   "allOf": [
+-                    { "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256" },
+-                    { "not": { "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000" } }
++                    {
++                      "$ref": "https://open-android-intelligence.dev/schemas/gateway/v2/envelope.schema.json#/$defs/prefixedSha256"
++                    },
++                    {
++                      "not": {
++                        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
++                      }
++                    }
+                   ]
+                 }
+               ]
+diff --git a/runtime/gateway-contract/src/schema-registry.js b/runtime/gateway-contract/src/schema-registry.js
+index 2ef3906..e96b965 100644
+--- a/runtime/gateway-contract/src/schema-registry.js
++++ b/runtime/gateway-contract/src/schema-registry.js
+@@ -34,6 +34,10 @@ const definitions = {
+     "session.pairing": [sessionDocument, "pairing"],
+     "session.pairingSummary": [sessionDocument, "pairingSummary"],
+     "conversation.create": [conversationDocument, "create"],
++    "conversation.organization": [conversationDocument, "organization"],
++    "conversation.organizationReplace": [conversationDocument, "organizationReplace"],
++    "conversation.archive": [conversationDocument, "archive"],
++    "conversation.listPage": [conversationDocument, "listPage"],
+     // The catalog and mirror-sync request shapes live in conversation.schema.json.
+     // command-catalog.schema.json and conversation-snapshot.schema.json describe the
+     // discovery response and the snapshot response, which are not GatewaySchemaName
+diff --git a/runtime/src/core/conversation-port.js b/runtime/src/core/conversation-port.js
+index 6dec455..d0c5f67 100644
+--- a/runtime/src/core/conversation-port.js
++++ b/runtime/src/core/conversation-port.js
+@@ -1,3 +1,4 @@
++import { ConversationManagement } from "./conversation-management.js";
+ import { ConversationWorkflow } from "./conversation-workflow.js";
+ import { HistoryMedia } from "./history-media.js";
+ import { randomUUID, createHash } from "node:crypto";
+@@ -11,6 +12,7 @@ export class ConversationPort {
+     events;
+     policy;
+     workflow;
++    management;
+     hostSessionResolver;
+     setHostSessionResolver(resolver) { this.hostSessionResolver = resolver; }
+     bindHostSession(conversationId, binding) {
+@@ -234,14 +236,16 @@ export class ConversationPort {
+         this.events = events;
+         this.policy = policy;
+         this.workflow = new ConversationWorkflow(store, events);
++        this.management = new ConversationManagement(store, this, events);
+     }
+     list() {
+         const rows = this.store.database
+             .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations ORDER BY conversation_id")
+             .all();
+-        return rows.map((row) => this.mapConversation(row));
++        return rows.filter(row => !this.management.state(String(row.conversation_id)).deleted).map((row) => this.mapConversation(row));
+     }
+     get(conversationId) {
++        this.management.requireVisible(conversationId);
+         const row = this.store.database
+             .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?")
+             .get(conversationId);
+@@ -260,6 +264,7 @@ export class ConversationPort {
+         const existing = this.store.database.prepare("SELECT * FROM conversations WHERE client_conversation_id=?").get(input.clientConversationId);
+         if (existing) {
+             const conversation = this.mapConversation(existing);
++            this.management.requireVisible(conversation.conversationId);
+             if (conversation.title !== (input.title ?? null))
+                 throw new Error("IDEMPOTENCY_CONFLICT");
+             return conversation;
+@@ -285,6 +290,7 @@ export class ConversationPort {
+         });
+     }
+     acceptMessage(input) {
++        this.management.requireWritable(input.conversationId);
+         return this.store.transaction(() => {
+             const conversation = this.store.database
+                 .prepare("SELECT conversation_id FROM conversations WHERE conversation_id = ?")
+@@ -569,6 +575,7 @@ export class ConversationPort {
+      * `update_title` result field for field.
+      */
+     updateTitle(input) {
++        this.management.requireVisible(input.conversationId);
+         return this.store.transaction(() => {
+             const row = this.store.database
+                 .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?")
+@@ -578,6 +585,7 @@ export class ConversationPort {
+             this.store.database
+                 .prepare("UPDATE conversations SET title = ? WHERE conversation_id = ?")
+                 .run(input.title, input.conversationId);
++            this.management.touch(input.conversationId, input.now);
+             this.audit.append({
+                 eventType: "conversation.title.updated",
+                 actor: { accountId: this.accountId },
+diff --git a/runtime/src/core/gateway-core.js b/runtime/src/core/gateway-core.js
+index fa57a97..eabbaa3 100644
+--- a/runtime/src/core/gateway-core.js
++++ b/runtime/src/core/gateway-core.js
+@@ -169,6 +169,10 @@ const protocolErrorCodes = new Set([
+     "PAIRING_GENERATION_STALE",
+     "GRANT_STALE",
+     "IDEMPOTENCY_CONFLICT",
++    "CONVERSATION_NOT_FOUND",
++    "CONVERSATION_ARCHIVED",
++    "CONVERSATION_BUSY",
++    "ORGANIZATION_CONFLICT",
+     "OUTCOME_UNKNOWN",
+     "ATTACHMENT_DIGEST_MISMATCH",
+     "ATTACHMENT_STORAGE_UNAVAILABLE",
+@@ -200,6 +204,10 @@ const persistableErrorCodes = new Set([
+     "PAIRING_GENERATION_STALE",
+     "GRANT_STALE",
+     "IDEMPOTENCY_CONFLICT",
++    "CONVERSATION_NOT_FOUND",
++    "CONVERSATION_ARCHIVED",
++    "CONVERSATION_BUSY",
++    "ORGANIZATION_CONFLICT",
+     "OUTCOME_UNKNOWN",
+     "ATTACHMENT_DIGEST_MISMATCH",
+     "ATTACHMENT_EXPIRED",
+@@ -270,6 +278,10 @@ const runIdempotent = (account, request, work, validateReplay) => {
+                 return failure(request, replayError);
+             return account.store.openJson(String(existing.outcome_json), `idempotency:${request.context.deviceId}:${request.context.requestId}`);
+         }
++        const reservation = account.store.database.prepare("SELECT value FROM account_metadata WHERE key=?")
++            .get(`native-operation:${request.context.deviceId}:${request.context.requestId}`);
++        if (reservation && reservation.value !== inputHash)
++            return failure(request, "IDEMPOTENCY_CONFLICT");
+         let response;
+         try {
+             response = work();
+@@ -399,6 +411,7 @@ export const createGatewayCore = (options = {}) => {
+     if (tlsSpkiSha256 !== null && (!/^sha256:[a-f0-9]{64}$/.test(tlsSpkiSha256) || tlsSpkiSha256 === `sha256:${"0".repeat(64)}`))
+         throw new Error("GATEWAY_TLS_IDENTITY_INVALID");
+     let commandCatalogProvider;
++    let hostConversationManager;
+     let hostConversationCreator;
+     let generationCanceller;
+     let hostSessionResolver;
+@@ -465,7 +478,7 @@ export const createGatewayCore = (options = {}) => {
+             throw new Error("PROTOCOL_INCOMPATIBLE");
+         }
+         const conversationUi = Array.isArray(requested["conversationUi"])
+-            ? requested["conversationUi"].filter((item) => typeof item === "string" && (SUPPORTED_CONVERSATION_UI.includes(item) || (item === "generation-cancel-v1" && generationCanceller !== undefined)))
++            ? requested["conversationUi"].filter((item) => typeof item === "string" && (SUPPORTED_CONVERSATION_UI.includes(item) || (item === "generation-cancel-v1" && generationCanceller !== undefined) || (item === "conversation-management-v1" && hostConversationManager !== undefined)))
+             : [];
+         const features = { auth, ...REQUIRED_FEATURES };
+         if (conversationUi.length > 0)
+@@ -844,11 +857,13 @@ export const createGatewayCore = (options = {}) => {
+             database?.close();
+         }
+     };
++    const activeManagement = new Set();
+     const online = new Map();
+     return Object.freeze({
+         gatewayIdentity: () => ({ deploymentId: deploymentIdOf(resolveRoot()), tlsSpkiSha256 }),
+         setCommandCatalogProvider: (provider) => { commandCatalogProvider = provider; },
+         setHostConversationCreator: (create) => { hostConversationCreator = create; },
++        setHostConversationManager: (manage) => { hostConversationManager = manage; },
+         setGenerationCanceller: (cancel) => { generationCanceller = cancel; },
+         setHostSessionResolver: (resolver) => { hostSessionResolver = resolver; },
+         openGatewayAccount: async (accountId) => openAccount(accountId),
+@@ -947,6 +962,73 @@ export const createGatewayCore = (options = {}) => {
+                         const commands = commandCatalogProvider ? await commandCatalogProvider() : [];
+                         return success(request, commandCatalog(languageCode, commands));
+                     }
++                    const managementPath = request.target.split("?")[0];
++                    if (request.method === "GET" && managementPath === "/open-android-intelligence/v2/conversations" && hostConversationManager) {
++                        const query = new URL(request.target, "https://gateway.invalid").searchParams;
++                        if ([...query.keys()].some(key => !["cursor", "limit"].includes(key)) || query.getAll("cursor").length > 1 || query.getAll("limit").length > 1)
++                            throw new Error("SCHEMA_INVALID");
++                        return success(request, account.conversations.management.page(query.get("cursor") ?? undefined, query.has("limit") ? Number(query.get("limit")) : undefined));
++                    }
++                    if (managementPath === "/open-android-intelligence/v2/conversation-organization") {
++                        if (!hostConversationManager)
++                            throw new Error("HOST_INCOMPATIBLE");
++                        if (request.target !== managementPath)
++                            throw new Error("SCHEMA_INVALID");
++                        if (request.method === "GET")
++                            return success(request, account.conversations.management.organization());
++                        if (request.method === "PUT") {
++                            assertSchema("conversation.organizationReplace", request.body);
++                            return runIdempotent(account, request, () => success(request, account.conversations.management.replace(request.body, request.context.correlationId)));
++                        }
++                    }
++                    const managedConversation = managementPath.match(/^\/open-android-intelligence\/v2\/conversations\/([^/]+)$/);
++                    if (managedConversation && (request.method === "DELETE" || request.method === "PATCH" && typeof request.body === "object" && request.body !== null && "archived" in request.body)) {
++                        if (!hostConversationManager)
++                            throw new Error("HOST_INCOMPATIBLE");
++                        if (request.target !== managementPath)
++                            throw new Error("SCHEMA_INVALID");
++                        const body = request.method === "PATCH" ? bodyRecord(request.body) : {};
++                        if (request.method === "PATCH")
++                            assertSchema("conversation.archive", body);
++                        else if (request.body !== undefined)
++                            throw new Error("SCHEMA_INVALID");
++                        const context = request.context;
++                        const prior = account.store.database.prepare("SELECT 1 FROM idempotency_ledger WHERE device_id=? AND request_id=?").get(context.deviceId, context.requestId);
++                        if (prior)
++                            return runIdempotent(account, request, () => { throw new Error("OUTCOME_UNKNOWN"); });
++                        if (request.idempotencyKey !== context.requestId)
++                            throw new Error("IDEMPOTENCY_CONFLICT");
++                        const id = managedConversation[1], operation = request.method === "DELETE" ? "delete" : "archive";
++                        const requestKey = `${context.deviceId}:${context.requestId}`, reservationKey = `native-operation:${requestKey}`;
++                        const inputHash = createHash("sha256").update(canonicalJson({ method: request.method, target: request.target, body: request.body }), "utf8").digest("hex");
++                        const reserved = account.store.database.prepare("SELECT value FROM account_metadata WHERE key=?").get(reservationKey);
++                        if (reserved && reserved.value !== inputHash)
++                            throw new Error("IDEMPOTENCY_CONFLICT");
++                        const management = account.conversations.management;
++                        const key = `${context.accountId}:${id}`;
++                        if (activeManagement.has(key))
++                            throw new Error("CONVERSATION_BUSY");
++                        activeManagement.add(key);
++                        try {
++                            management.begin(id, requestKey, operation, body.archived);
++                            account.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)").run(reservationKey, inputHash);
++                            await hostConversationManager(context.accountId, id, operation, body.archived);
++                            return runIdempotent(account, request, () => success(request, management.commit(id, operation, body.archived, context.correlationId, request.now)));
++                        }
++                        catch (error) {
++                            const code = error.message;
++                            if (["CONVERSATION_BUSY", "HOST_INCOMPATIBLE"].includes(code) && management.state(id).pendingRequestId === requestKey) {
++                                management.abort(id, requestKey);
++                                account.store.database.prepare("DELETE FROM account_metadata WHERE key=?").run(reservationKey);
++                            }
++                            if (["CONVERSATION_BUSY", "HOST_INCOMPATIBLE", "CONVERSATION_NOT_FOUND", "IDEMPOTENCY_CONFLICT", "OUTCOME_UNKNOWN"].includes(code))
++                                throw error;
++                            throw new Error("OUTCOME_UNKNOWN");
++                        }
++                        finally {
++                            activeManagement.delete(key);
++                        }
++                    }
+                     if (request.method === "POST" && request.target === "/open-android-intelligence/v2/conversations" && hostConversationCreator) {
+                         assertSchema("conversation.create", request.body);
+                         const context = request.context;
+diff --git a/runtime/src/host/channel-adapter.js b/runtime/src/host/channel-adapter.js
+index ea71ac2..0c92f36 100644
+--- a/runtime/src/host/channel-adapter.js
++++ b/runtime/src/host/channel-adapter.js
+@@ -1,3 +1,4 @@
++import { readNativeSessionState } from "./native-history.js";
+ import { resolveGatewayHostSession } from "./host-session.js";
+ import { abortTrackedTurn } from "./active-turns.js";
+ import { registerDeviceTools } from "./device-tools.js";
+@@ -238,10 +239,10 @@ export const registerOpenAndroidIntelligenceGateway = (api) => {
+         tlsSpkiSha256: typeof api.pluginConfig?.["tlsSpkiSha256"] === "string" ? api.pluginConfig["tlsSpkiSha256"] : undefined,
+     });
+     const nativeGateway = api.runtime?.gateway;
++    const runtime = asInboundRuntime(api.runtime?.channel);
+     let activeChannelAccountId = "default";
+     let activeConfig = api.config;
+     if (typeof nativeGateway?.request === "function") {
+-        const runtime = asInboundRuntime(api.runtime?.channel);
+         services.core.setCommandCatalogProvider?.(async () => {
+             if (!runtime)
+                 throw new Error("AGENT_UNAVAILABLE");
+@@ -272,6 +273,41 @@ export const registerOpenAndroidIntelligenceGateway = (api) => {
+                 return binding;
+             });
+     }
++    if (runtime && typeof nativeGateway?.request === "function")
++        services.core.setHostConversationManager?.(async (accountId, conversationId, operation, archived) => {
++            const account = await services.core.openGatewayAccount(accountId);
++            let binding;
++            try {
++                binding = account.conversations.workflow.get(`host-session:${conversationId}`);
++            }
++            finally {
++                account.close();
++            }
++            const trusted = await resolveGatewayHostSession(runtime, activeConfig, activeChannelAccountId, accountId, conversationId, binding);
++            const before = readNativeSessionState(trusted);
++            if (!before) {
++                if (operation === "delete")
++                    return;
++                throw new Error("HOST_INCOMPATIBLE");
++            }
++            try {
++                // Both native methods enter OpenClaw's runExclusiveSessionLifecycleMutation.
++                // Delete preconditions prevent a racing host reset selecting another session.
++                const result = await nativeGateway.request(operation === "delete" ? "sessions.delete" : "sessions.patch", { key: trusted.sessionKey, agentId: trusted.agentId, ...(operation === "archive" ? { archived } : {
++                        deleteTranscript: true, ...(before.sessionId ? { expectedSessionId: before.sessionId } : {}),
++                        ...(before.lifecycleRevision ? { expectedLifecycleRevision: before.lifecycleRevision } : {}),
++                        ...(before.nativeUpdatedAt !== undefined ? { expectedSessionUpdatedAt: before.nativeUpdatedAt } : {}),
++                    }) }, { timeoutMs: 8000 });
++                if (result.ok !== true || result.key?.toLowerCase() !== trusted.sessionKey.toLowerCase())
++                    throw new Error("OUTCOME_UNKNOWN");
++            }
++            catch (error) {
++                const message = typeof error === "object" && error !== null && "message" in error ? String(error.message) : "";
++                if (/active run|still active|changed before|not archived/iu.test(message))
++                    throw new Error("CONVERSATION_BUSY");
++                throw new Error("OUTCOME_UNKNOWN");
++            }
++        });
+     if (typeof nativeGateway?.request === "function")
+         services.core.setGenerationCanceller?.(async (accountId, conversationId, generationId) => {
+             const account = await services.core.openGatewayAccount(accountId);
+diff --git a/runtime/src/host/native-history.js b/runtime/src/host/native-history.js
+index 7f31d51..cadc7c2 100644
+--- a/runtime/src/host/native-history.js
++++ b/runtime/src/host/native-history.js
+@@ -133,3 +133,23 @@ export const nativeAssistantSnapshot = (binding) => {
+         throw error;
+     }
+ };
++/** Read lifecycle flags only from a server-created, account-bound SDK route. */
++export const readNativeSessionState = (binding) => {
++    let store;
++    try {
++        store = JSON.parse(readFileSync(binding.storePath, "utf8"));
++    }
++    catch (error) {
++        if (error.code === "ENOENT")
++            return undefined;
++        throw new Error("HOST_INCOMPATIBLE");
++    }
++    const entry = store[binding.sessionKey] ?? Object.entries(store).find(([key]) => key.toLowerCase() === binding.sessionKey.toLowerCase())?.[1];
++    if (!entry)
++        return undefined;
++    const timestamp = typeof entry.updatedAt === "number" ? entry.updatedAt : undefined;
++    return { archived: typeof entry.archivedAt === "number",
++        ...(typeof entry.sessionId === "string" ? { sessionId: entry.sessionId } : {}),
++        ...(typeof entry.lifecycleRevision === "string" ? { lifecycleRevision: entry.lifecycleRevision } : {}),
++        ...(timestamp !== undefined && Number.isFinite(timestamp) ? { updatedAt: new Date(timestamp).toISOString(), nativeUpdatedAt: timestamp } : {}) };
++};
+diff --git a/runtime/src/http/routes.js b/runtime/src/http/routes.js
+index 22d7e1e..d22ebb7 100644
+--- a/runtime/src/http/routes.js
++++ b/runtime/src/http/routes.js
+@@ -87,6 +87,10 @@ const ERROR_STATUS = Object.freeze({
+     ATTACHMENT_DIGEST_MISMATCH: 400,
+     PROTOCOL_INCOMPATIBLE: 406,
+     IDEMPOTENCY_CONFLICT: 409,
++    ORGANIZATION_CONFLICT: 409,
++    CONVERSATION_BUSY: 409,
++    CONVERSATION_ARCHIVED: 409,
++    CONVERSATION_NOT_FOUND: 404,
+     CURSOR_CONFLICT: 409,
+     CURSOR_EXPIRED: 410,
+     REQUEST_BODY_TOO_LARGE: 413,
+@@ -683,6 +687,7 @@ const routeDefinitions = Object.freeze([
+     Object.freeze({ path: "/open-android-intelligence/v2/sync/snapshot", match: "exact" }),
+     Object.freeze({ path: "/open-android-intelligence/v2/commands", match: "exact" }),
+     Object.freeze({ path: "/open-android-intelligence/v2/events", match: "exact" }),
++    Object.freeze({ path: "/open-android-intelligence/v2/conversation-organization", match: "exact" }),
+     Object.freeze({ path: "/open-android-intelligence/v2/conversations", match: "exact" }),
+     Object.freeze({ path: "/open-android-intelligence/v2/conversations/", match: "prefix" }),
+     Object.freeze({ path: "/open-android-intelligence/v2/attachments", match: "exact" }),
+diff --git a/src/core/conversation-port.ts b/src/core/conversation-port.ts
+index 69740f2..18d31f0 100644
+--- a/src/core/conversation-port.ts
++++ b/src/core/conversation-port.ts
+@@ -1,3 +1,4 @@
++import { ConversationManagement } from "./conversation-management.js";
+ import { ConversationWorkflow } from "./conversation-workflow.js";
+ import { HistoryMedia } from "./history-media.js";
+ import { randomUUID, createHash } from "node:crypto";
+@@ -49,6 +50,7 @@ type NativeCancellationBoundary = {
+
+ export class ConversationPort {
+   readonly workflow: ConversationWorkflow;
++  readonly management: ConversationManagement;
+   private hostSessionResolver?: (accountId:string,conversationId:string)=>HostSessionBinding|undefined|Promise<HostSessionBinding|undefined>;
+   setHostSessionResolver(resolver:NonNullable<ConversationPort['hostSessionResolver']>):void {this.hostSessionResolver=resolver;}
+   bindHostSession(conversationId: string, binding: HostSessionBinding): void {
+@@ -244,16 +246,17 @@ export class ConversationPort {
+     private readonly audit: AuditStore,
+     private readonly events: EventStore,
+     private readonly policy: AttachmentPolicy = DEFAULT_ATTACHMENT_POLICY,
+-  ) { this.workflow = new ConversationWorkflow(store,events); }
++  ) { this.workflow = new ConversationWorkflow(store,events); this.management = new ConversationManagement(store,this,events); }
+
+   list(): ConversationRecord[] {
+     const rows = this.store.database
+       .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations ORDER BY conversation_id")
+       .all() as Record<string, unknown>[];
+-    return rows.map((row) => this.mapConversation(row));
++    return rows.filter(row=>!this.management.state(String(row.conversation_id)).deleted).map((row) => this.mapConversation(row));
+   }
+
+   get(conversationId: string): ConversationRecord {
++    this.management.requireVisible(conversationId);
+     const row = this.store.database
+       .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?")
+       .get(conversationId) as Record<string, unknown> | undefined;
+@@ -278,6 +281,7 @@ export class ConversationPort {
+     const existing = this.store.database.prepare("SELECT * FROM conversations WHERE client_conversation_id=?").get(input.clientConversationId) as Record<string,unknown> | undefined;
+     if (existing) {
+       const conversation = this.mapConversation(existing);
++      this.management.requireVisible(conversation.conversationId);
+       if (conversation.title !== (input.title ?? null)) throw new Error("IDEMPOTENCY_CONFLICT");
+       return conversation;
+     }
+@@ -313,6 +317,7 @@ export class ConversationPort {
+     now?: Date;
+     emitQueued?: boolean;
+   }>): AcceptedMessage {
++    this.management.requireWritable(input.conversationId);
+     return this.store.transaction(() => {
+       const conversation = this.store.database
+         .prepare("SELECT conversation_id FROM conversations WHERE conversation_id = ?")
+@@ -636,6 +641,7 @@ export class ConversationPort {
+     correlationId: string;
+     now?: Date;
+   }>): ConversationRecord {
++    this.management.requireVisible(input.conversationId);
+     return this.store.transaction(() => {
+       const row = this.store.database
+         .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?")
+@@ -644,6 +650,7 @@ export class ConversationPort {
+       this.store.database
+         .prepare("UPDATE conversations SET title = ? WHERE conversation_id = ?")
+         .run(input.title, input.conversationId);
++      this.management.touch(input.conversationId,input.now);
+       this.audit.append({
+         eventType: "conversation.title.updated",
+         actor: { accountId: this.accountId },
+diff --git a/src/core/gateway-core.ts b/src/core/gateway-core.ts
+index 3f0112c..4fd9d86 100644
+--- a/src/core/gateway-core.ts
++++ b/src/core/gateway-core.ts
+@@ -131,6 +131,7 @@ export type GatewayCore = Readonly<{
+   setCommandCatalogProvider?: (provider: () => Promise<readonly Record<string, unknown>[]>) => void;
+   setHostConversationCreator?: (create: (accountId:string,conversationId:string,title:string|null)=>Promise<HostSessionBinding>) => void;
+   setGenerationCanceller?: (cancel: GenerationCanceller) => void;
++  setHostConversationManager?: (manage:(accountId:string,conversationId:string,operation:"archive"|"delete",archived?:boolean)=>Promise<void>)=>void;
+   setHostSessionResolver?: (resolver:(accountId:string,conversationId:string)=>HostSessionBinding|undefined|Promise<HostSessionBinding|undefined>)=>void;
+   handle: (request: VerifiedGatewayRequest) => Promise<GatewayResponse>;
+   uploadAttachmentContent?: (
+@@ -299,6 +300,10 @@ const protocolErrorCodes = new Set([
+   "PAIRING_GENERATION_STALE",
+   "GRANT_STALE",
+   "IDEMPOTENCY_CONFLICT",
++  "CONVERSATION_NOT_FOUND",
++  "CONVERSATION_ARCHIVED",
++  "CONVERSATION_BUSY",
++  "ORGANIZATION_CONFLICT",
+   "OUTCOME_UNKNOWN",
+   "ATTACHMENT_DIGEST_MISMATCH",
+   "ATTACHMENT_STORAGE_UNAVAILABLE",
+@@ -331,6 +336,10 @@ const persistableErrorCodes = new Set([
+   "PAIRING_GENERATION_STALE",
+   "GRANT_STALE",
+   "IDEMPOTENCY_CONFLICT",
++  "CONVERSATION_NOT_FOUND",
++  "CONVERSATION_ARCHIVED",
++  "CONVERSATION_BUSY",
++  "ORGANIZATION_CONFLICT",
+   "OUTCOME_UNKNOWN",
+   "ATTACHMENT_DIGEST_MISMATCH",
+   "ATTACHMENT_EXPIRED",
+@@ -404,6 +413,9 @@ const runIdempotent = (
+       if (replayError !== undefined) return failure(request, replayError);
+       return account.store.openJson(String(existing.outcome_json), `idempotency:${request.context!.deviceId}:${request.context!.requestId}`) as GatewayResponse;
+     }
++    const reservation=account.store.database.prepare("SELECT value FROM account_metadata WHERE key=?")
++      .get(`native-operation:${request.context!.deviceId}:${request.context!.requestId}`) as {value:string}|undefined;
++    if(reservation && reservation.value!==inputHash) return failure(request,"IDEMPOTENCY_CONFLICT");
+
+     let response: GatewayResponse;
+     try {
+@@ -544,6 +556,7 @@ export const createGatewayCore = (options: GatewayCoreOptions = {}): GatewayCore
+   const tlsSpkiSha256 = options.tlsSpkiSha256 ?? process.env["OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256"] ?? null;
+   if (tlsSpkiSha256 !== null && (!/^sha256:[a-f0-9]{64}$/.test(tlsSpkiSha256) || tlsSpkiSha256 === `sha256:${"0".repeat(64)}`)) throw new Error("GATEWAY_TLS_IDENTITY_INVALID");
+   let commandCatalogProvider: (()=>Promise<readonly Record<string,unknown>[]>) | undefined;
++  let hostConversationManager:Parameters<NonNullable<GatewayCore["setHostConversationManager"]>>[0]|undefined;
+   let hostConversationCreator: ((accountId:string,conversationId:string,title:string|null)=>Promise<HostSessionBinding>) | undefined;
+   let generationCanceller: GenerationCanceller | undefined;
+   let hostSessionResolver:Parameters<NonNullable<GatewayCore['setHostSessionResolver']>>[0]|undefined;
+@@ -610,7 +623,7 @@ export const createGatewayCore = (options: GatewayCoreOptions = {}): GatewayCore
+     }
+     const conversationUi = Array.isArray(requested["conversationUi"])
+       ? (requested["conversationUi"] as readonly unknown[]).filter(
+-          (item): item is string => typeof item === "string" && (SUPPORTED_CONVERSATION_UI.includes(item) || (item === "generation-cancel-v1" && generationCanceller !== undefined)),
++          (item): item is string => typeof item === "string" && (SUPPORTED_CONVERSATION_UI.includes(item) || (item === "generation-cancel-v1" && generationCanceller !== undefined) || (item === "conversation-management-v1" && hostConversationManager !== undefined)),
+         )
+       : [];
+     const features: Record<string, unknown> = { auth, ...REQUIRED_FEATURES };
+@@ -947,11 +960,13 @@ export const createGatewayCore = (options: GatewayCoreOptions = {}): GatewayCore
+       } catch { return false; }
+       finally { database?.close(); }
+     };
++  const activeManagement=new Set<string>();
+   const online = new Map<string,{context:VerifiedRequestContext;count:number}>();
+   return Object.freeze({
+     gatewayIdentity: () => ({deploymentId:deploymentIdOf(resolveRoot()),tlsSpkiSha256}),
+     setCommandCatalogProvider: (provider):void => { commandCatalogProvider=provider; },
+     setHostConversationCreator: (create):void => { hostConversationCreator=create; },
++    setHostConversationManager: (manage):void => { hostConversationManager=manage; },
+     setGenerationCanceller: (cancel:GenerationCanceller):void => { generationCanceller=cancel; },
+     setHostSessionResolver: (resolver:NonNullable<typeof hostSessionResolver>):void=> {hostSessionResolver=resolver;},
+     openGatewayAccount: async (accountId: string): Promise<GatewayAccount> =>
+@@ -1035,6 +1050,57 @@ export const createGatewayCore = (options: GatewayCoreOptions = {}): GatewayCore
+             const commands = commandCatalogProvider ? await commandCatalogProvider() : [];
+             return success(request, commandCatalog(languageCode, commands));
+           }
++          const managementPath=request.target.split("?")[0]!;
++          if (request.method==="GET" && managementPath==="/open-android-intelligence/v2/conversations" && hostConversationManager) {
++            const query=new URL(request.target,"https://gateway.invalid").searchParams;
++            if([...query.keys()].some(key=>!["cursor","limit"].includes(key)) || query.getAll("cursor").length>1 || query.getAll("limit").length>1) throw new Error("SCHEMA_INVALID");
++            return success(request,account.conversations.management.page(query.get("cursor") ?? undefined,query.has("limit") ? Number(query.get("limit")) : undefined));
++          }
++          if (managementPath==="/open-android-intelligence/v2/conversation-organization") {
++            if(!hostConversationManager) throw new Error("HOST_INCOMPATIBLE");
++            if(request.target!==managementPath) throw new Error("SCHEMA_INVALID");
++            if(request.method==="GET") return success(request,account.conversations.management.organization());
++            if(request.method==="PUT") {
++              assertSchema("conversation.organizationReplace",request.body);
++              return runIdempotent(account,request,()=>success(request,account.conversations.management.replace(request.body as Parameters<typeof account.conversations.management.replace>[0],request.context!.correlationId)));
++            }
++          }
++          const managedConversation=managementPath.match(/^\/open-android-intelligence\/v2\/conversations\/([^/]+)$/);
++          if(managedConversation && (request.method==="DELETE" || request.method==="PATCH" && typeof request.body==="object" && request.body!==null && "archived" in request.body)) {
++            if(!hostConversationManager) throw new Error("HOST_INCOMPATIBLE");
++            if(request.target!==managementPath) throw new Error("SCHEMA_INVALID");
++            const body=request.method==="PATCH" ? bodyRecord(request.body) : {};
++            if(request.method==="PATCH") assertSchema("conversation.archive",body);
++            else if(request.body!==undefined) throw new Error("SCHEMA_INVALID");
++            const context=request.context!;
++            const prior=account.store.database.prepare("SELECT 1 FROM idempotency_ledger WHERE device_id=? AND request_id=?").get(context.deviceId,context.requestId);
++            if(prior) return runIdempotent(account,request,()=>{throw new Error("OUTCOME_UNKNOWN");});
++            if(request.idempotencyKey!==context.requestId) throw new Error("IDEMPOTENCY_CONFLICT");
++            const id=managedConversation[1]!, operation=request.method==="DELETE" ? "delete" : "archive";
++            const requestKey=`${context.deviceId}:${context.requestId}`,reservationKey=`native-operation:${requestKey}`;
++            const inputHash=createHash("sha256").update(canonicalJson({method:request.method,target:request.target,body:request.body}),"utf8").digest("hex");
++            const reserved=account.store.database.prepare("SELECT value FROM account_metadata WHERE key=?").get(reservationKey) as {value:string}|undefined;
++            if(reserved && reserved.value!==inputHash) throw new Error("IDEMPOTENCY_CONFLICT");
++            const management=account.conversations.management;
++            const key=`${context.accountId}:${id}`;
++            if(activeManagement.has(key)) throw new Error("CONVERSATION_BUSY");
++            activeManagement.add(key);
++            try {
++              management.begin(id,requestKey,operation,body.archived as boolean|undefined);
++              account.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)").run(reservationKey,inputHash);
++              await hostConversationManager(context.accountId,id,operation,body.archived as boolean|undefined);
++              return runIdempotent(account,request,()=>success(request,management.commit(id,operation,body.archived as boolean|undefined,context.correlationId,request.now)));
++            } catch(error) {
++              const code=(error as Error).message;
++              if(["CONVERSATION_BUSY","HOST_INCOMPATIBLE"].includes(code) && management.state(id).pendingRequestId===requestKey) {
++                management.abort(id,requestKey);
++                account.store.database.prepare("DELETE FROM account_metadata WHERE key=?").run(reservationKey);
++              }
++              if(["CONVERSATION_BUSY","HOST_INCOMPATIBLE","CONVERSATION_NOT_FOUND","IDEMPOTENCY_CONFLICT","OUTCOME_UNKNOWN"].includes(code)) throw error;
++              throw new Error("OUTCOME_UNKNOWN");
++            }
++            finally {activeManagement.delete(key);}
++          }
+           if (request.method === "POST" && request.target === "/open-android-intelligence/v2/conversations" && hostConversationCreator) {
+             assertSchema("conversation.create", request.body);
+             const context = request.context!;
+diff --git a/src/host/channel-adapter.ts b/src/host/channel-adapter.ts
+index 6f87390..5175512 100644
+--- a/src/host/channel-adapter.ts
++++ b/src/host/channel-adapter.ts
+@@ -1,3 +1,5 @@
++import type { HostSessionBinding } from "./host-session.js";
++import { readNativeSessionState } from "./native-history.js";
+ import { resolveGatewayHostSession } from "./host-session.js";
+ import { abortTrackedTurn } from "./active-turns.js";
+ import { registerDeviceTools, type DeviceToolApi } from "./device-tools.js";
+@@ -378,10 +380,10 @@ export const registerOpenAndroidIntelligenceGateway = (api: OpenClawPluginApi):
+     tlsSpkiSha256: typeof api.pluginConfig?.["tlsSpkiSha256"] === "string" ? api.pluginConfig["tlsSpkiSha256"] : undefined,
+   });
+   const nativeGateway=api.runtime?.gateway;
++  const runtime=asInboundRuntime(api.runtime?.channel);
+   let activeChannelAccountId="default";
+   let activeConfig=api.config;
+   if (typeof nativeGateway?.request === "function") {
+-    const runtime=asInboundRuntime(api.runtime?.channel);
+     services.core.setCommandCatalogProvider?.(async () => {
+       if (!runtime) throw new Error("AGENT_UNAVAILABLE");
+       const route=runtime.routing.resolveAgentRoute({cfg:activeConfig,channel:OPENCLAW_CHANNEL_ID,
+@@ -406,6 +408,33 @@ export const registerOpenAndroidIntelligenceGateway = (api: OpenClawPluginApi):
+       return binding;
+     });
+   }
++  if (runtime && typeof nativeGateway?.request === "function") services.core.setHostConversationManager?.(async(accountId,conversationId,operation,archived)=> {
++    const account=await services.core.openGatewayAccount(accountId);
++    let binding:HostSessionBinding|undefined;
++    try {binding=account.conversations.workflow.get<HostSessionBinding>(`host-session:${conversationId}`);}
++    finally {account.close();}
++    const trusted=await resolveGatewayHostSession(runtime,activeConfig,activeChannelAccountId,accountId,conversationId,binding);
++    const before=readNativeSessionState(trusted);
++    if(!before) {
++      if(operation==="delete") return;
++      throw new Error("HOST_INCOMPATIBLE");
++    }
++    try {
++      // Both native methods enter OpenClaw's runExclusiveSessionLifecycleMutation.
++      // Delete preconditions prevent a racing host reset selecting another session.
++      const result=await nativeGateway.request(operation==="delete" ? "sessions.delete" : "sessions.patch",
++        {key:trusted.sessionKey,agentId:trusted.agentId,...(operation==="archive" ? {archived} : {
++          deleteTranscript:true,...(before.sessionId ? {expectedSessionId:before.sessionId} : {}),
++          ...(before.lifecycleRevision ? {expectedLifecycleRevision:before.lifecycleRevision} : {}),
++          ...(before.nativeUpdatedAt!==undefined ? {expectedSessionUpdatedAt:before.nativeUpdatedAt} : {}),
++        })},{timeoutMs:8000}) as {ok?:boolean;key?:string};
++      if(result.ok!==true || result.key?.toLowerCase()!==trusted.sessionKey.toLowerCase()) throw new Error("OUTCOME_UNKNOWN");
++    } catch(error) {
++      const message=typeof error==="object" && error!==null && "message" in error ? String(error.message) : "";
++      if(/active run|still active|changed before|not archived/iu.test(message)) throw new Error("CONVERSATION_BUSY");
++      throw new Error("OUTCOME_UNKNOWN");
++    }
++  });
+   if (typeof nativeGateway?.request === "function") services.core.setGenerationCanceller?.(async(accountId,conversationId,generationId)=> {
+     const account=await services.core.openGatewayAccount(accountId);
+     try {
+diff --git a/src/host/native-history.ts b/src/host/native-history.ts
+index 7f52029..8f4b46f 100644
+--- a/src/host/native-history.ts
++++ b/src/host/native-history.ts
+@@ -116,3 +116,17 @@ export const nativeAssistantSnapshot = (binding: NativeHistoryBinding): Readonly
+     return {sessionId:source.sessionId,assistantIds};
+   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {sessionId:source?.sessionId,assistantIds:[]}; throw error; }
+ };
++
++/** Read lifecycle flags only from a server-created, account-bound SDK route. */
++export const readNativeSessionState = (binding:NativeHistoryBinding):{archived:boolean;updatedAt?:string;sessionId?:string;lifecycleRevision?:string;nativeUpdatedAt?:number}|undefined => {
++  let store:Record<string,Record<string,unknown>>;
++  try {store=JSON.parse(readFileSync(binding.storePath,"utf8"));}
++  catch(error) {if((error as NodeJS.ErrnoException).code==="ENOENT") return undefined;throw new Error("HOST_INCOMPATIBLE");}
++  const entry=store[binding.sessionKey] ?? Object.entries(store).find(([key])=>key.toLowerCase()===binding.sessionKey.toLowerCase())?.[1];
++  if(!entry) return undefined;
++  const timestamp=typeof entry.updatedAt==="number" ? entry.updatedAt : undefined;
++  return {archived:typeof entry.archivedAt==="number",
++    ...(typeof entry.sessionId==="string" ? {sessionId:entry.sessionId} : {}),
++    ...(typeof entry.lifecycleRevision==="string" ? {lifecycleRevision:entry.lifecycleRevision} : {}),
++    ...(timestamp!==undefined && Number.isFinite(timestamp) ? {updatedAt:new Date(timestamp).toISOString(),nativeUpdatedAt:timestamp} : {})};
++};
+diff --git a/src/http/routes.ts b/src/http/routes.ts
+index 885e69e..b63c7df 100644
+--- a/src/http/routes.ts
++++ b/src/http/routes.ts
+@@ -200,6 +200,10 @@ const ERROR_STATUS: Readonly<Record<string, number>> = Object.freeze({
+   ATTACHMENT_DIGEST_MISMATCH: 400,
+   PROTOCOL_INCOMPATIBLE: 406,
+   IDEMPOTENCY_CONFLICT: 409,
++  ORGANIZATION_CONFLICT: 409,
++  CONVERSATION_BUSY: 409,
++  CONVERSATION_ARCHIVED: 409,
++  CONVERSATION_NOT_FOUND: 404,
+   CURSOR_CONFLICT: 409,
+   CURSOR_EXPIRED: 410,
+   REQUEST_BODY_TOO_LARGE: 413,
+@@ -810,6 +814,7 @@ const routeDefinitions: readonly Readonly<{
+   Object.freeze({ path: "/open-android-intelligence/v2/sync/snapshot", match: "exact" }),
+   Object.freeze({ path: "/open-android-intelligence/v2/commands", match: "exact" }),
+   Object.freeze({ path: "/open-android-intelligence/v2/events", match: "exact" }),
++  Object.freeze({ path: "/open-android-intelligence/v2/conversation-organization", match: "exact" }),
+   Object.freeze({ path: "/open-android-intelligence/v2/conversations", match: "exact" }),
+   Object.freeze({ path: "/open-android-intelligence/v2/conversations/", match: "prefix" }),
+   Object.freeze({ path: "/open-android-intelligence/v2/attachments", match: "exact" }),
+diff --git a/runtime/src/core/conversation-management.js b/runtime/src/core/conversation-management.js
+new file mode 100644
+index 0000000..31775c2
+--- /dev/null
++++ b/runtime/src/core/conversation-management.js
+@@ -0,0 +1,157 @@
++import { createHash } from "node:crypto";
++import { readNativeSessionState } from "../host/native-history.js";
++const organizationKey = "conversation-organization:v1";
++const empty = () => ({ revision: 0, sortMode: "updated-desc", customOrder: [], folders: [], assignments: {} });
++/** All rows and cursors belong to this authenticated account's database. */
++export class ConversationManagement {
++    store;
++    conversations;
++    events;
++    constructor(store, conversations, events) {
++        this.store = store;
++        this.conversations = conversations;
++        this.events = events;
++    }
++    read(key) {
++        const row = this.store.database.prepare("SELECT value FROM account_metadata WHERE key=?").get(key);
++        return row ? this.store.openJson(row.value, key) : undefined;
++    }
++    write(key, value) {
++        this.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)").run(key, this.store.sealJson(value, key));
++    }
++    state(id) { return this.read(`conversation-management:${id}`) ?? {}; }
++    touch(id, now = new Date()) { this.write(`conversation-management:${id}`, { ...this.state(id), updatedAt: now.toISOString() }); }
++    requireVisible(id) { const state = this.state(id); if (state.deleted)
++        throw new Error("CONVERSATION_NOT_FOUND"); if (state.pending)
++        throw new Error("CONVERSATION_BUSY"); }
++    requireWritable(id) {
++        this.requireVisible(id);
++        this.record(id);
++        this.requireVisible(id);
++        if (this.state(id).archived)
++            throw new Error("CONVERSATION_ARCHIVED");
++    }
++    organization() { return structuredClone(this.read(organizationKey) ?? empty()); }
++    replace(body, correlationId) {
++        return this.store.transaction(() => {
++            const current = this.organization();
++            if (current.revision !== body.expectedRevision)
++                throw new Error("ORGANIZATION_CONFLICT");
++            const ids = new Set(this.conversations.list().map(row => row.conversationId));
++            const folders = new Set(body.folders.map(row => row.folderId));
++            if (folders.size !== body.folders.length || new Set(body.folders.map(row => row.name.toLocaleLowerCase())).size !== body.folders.length
++                || body.customOrder.some(id => !ids.has(id)) || Object.entries(body.assignments).some(([id, folder]) => !ids.has(id) || !folders.has(folder)))
++                throw new Error("SCHEMA_INVALID");
++            const next = { revision: current.revision + 1, sortMode: body.sortMode, customOrder: [...body.customOrder], folders: body.folders.map(row => ({ ...row })), assignments: { ...body.assignments } };
++            this.write(organizationKey, next);
++            this.events.append({ eventType: "conversation.organization.updated", correlationId, payload: { revision: next.revision } });
++            return next;
++        });
++    }
++    removeOrganization(id, correlationId) {
++        const current = this.organization();
++        if (!current.customOrder.includes(id) && !Object.hasOwn(current.assignments, id))
++            return;
++        current.customOrder = current.customOrder.filter(value => value !== id);
++        delete current.assignments[id];
++        current.revision++;
++        this.write(organizationKey, current);
++        this.events.append({ eventType: "conversation.organization.updated", correlationId, payload: { revision: current.revision } });
++    }
++    begin(id, requestId, operation, archived) {
++        const prior = this.state(id);
++        if (prior.deleted)
++            throw new Error("CONVERSATION_NOT_FOUND");
++        if (prior.pending && prior.pendingRequestId !== requestId)
++            throw new Error("OUTCOME_UNKNOWN");
++        if (prior.pending && (prior.pendingOperation !== operation || prior.pendingArchived !== archived))
++            throw new Error("IDEMPOTENCY_CONFLICT");
++        if (!prior.pending)
++            this.conversations.get(id);
++        const active = this.conversations.workflow.current(id);
++        if (active && ["queued", "running", "unknown", "cancel_requested"].includes(String(active.state)))
++            throw new Error("CONVERSATION_BUSY");
++        const queued = this.store.database.prepare("SELECT 1 FROM messages WHERE conversation_id=? AND status IN ('queued','sending','delivered') LIMIT 1").get(id);
++        if (queued)
++            throw new Error("CONVERSATION_BUSY");
++        this.write(`conversation-management:${id}`, { ...this.state(id), pending: true, pendingRequestId: requestId, pendingOperation: operation, ...(archived !== undefined ? { pendingArchived: archived } : {}) });
++    }
++    abort(id, requestId) {
++        const state = this.state(id);
++        if (state.pendingRequestId !== requestId)
++            return;
++        delete state.pending;
++        delete state.pendingRequestId;
++        delete state.pendingOperation;
++        delete state.pendingArchived;
++        this.write(`conversation-management:${id}`, state);
++    }
++    commit(id, operation, archived, correlationId, now = new Date()) {
++        return this.store.transaction(() => {
++            const state = { ...this.state(id), updatedAt: now.toISOString(), ...(operation === "delete" ? { deleted: true } : { archived: archived }) };
++            delete state.pending;
++            delete state.pendingRequestId;
++            delete state.pendingOperation;
++            delete state.pendingArchived;
++            this.write(`conversation-management:${id}`, state);
++            if (operation === "delete")
++                this.removeOrganization(id, correlationId);
++            this.events.append({ eventType: "conversation.updated", correlationId, payload: { conversationId: id, ...(operation === "delete" ? { deleted: true } : { archived: archived }) }, now });
++            return operation === "delete" ? { conversationId: id, deleted: true } : { conversation: this.record(id) };
++        });
++    }
++    record(id) {
++        const row = this.store.database.prepare("SELECT c.*,MAX(m.created_at) AS last_message_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.conversation_id WHERE c.conversation_id=? GROUP BY c.conversation_id").get(id);
++        if (!row || this.state(id).deleted)
++            throw new Error("CONVERSATION_NOT_FOUND");
++        let state = this.state(id);
++        const binding = this.conversations.workflow.get(`host-session:${id}`);
++        let native;
++        if (binding) {
++            native = readNativeSessionState(binding);
++            if (native)
++                this.write(`conversation-native-seen:${id}`, true);
++            else if (!state.pending && this.read(`conversation-native-seen:${id}`)) {
++                this.commit(id, "delete", undefined, "native-conversation-sync");
++                throw new Error("CONVERSATION_NOT_FOUND");
++            }
++            if (native && !state.pending && state.archived !== native.archived) {
++                state = { ...state, archived: native.archived };
++                this.write(`conversation-management:${id}`, state);
++            }
++        }
++        const times = [row.created_at, row.last_message_at, state.updatedAt, native?.updatedAt].filter((value) => typeof value === "string");
++        return { conversationId: id, clientConversationId: String(row.client_conversation_id), title: row.title ?? null, archived: state.archived ?? false, updatedAt: times.sort().at(-1) };
++    }
++    page(cursor, limit) {
++        if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100))
++            throw new Error("SCHEMA_INVALID");
++        const rows = this.conversations.list().flatMap(row => { try {
++            return [this.record(row.conversationId)];
++        }
++        catch (error) {
++            if (error.message === "CONVERSATION_NOT_FOUND")
++                return [];
++            throw error;
++        } })
++            .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)) || String(a.conversationId).localeCompare(String(b.conversationId)));
++        const revision = parseInt(createHash("sha256").update(JSON.stringify(rows)).digest("hex").slice(0, 13), 16) + 1;
++        let offset = 0;
++        if (cursor) {
++            let saved;
++            try {
++                saved = this.store.openJson(cursor, "conversation-list:v1");
++            }
++            catch {
++                throw new Error("SCHEMA_INVALID");
++            }
++            if (saved.revision !== revision)
++                throw new Error("CURSOR_EXPIRED");
++            if (!Number.isInteger(saved.offset) || saved.offset < 0 || saved.offset > rows.length)
++                throw new Error("SCHEMA_INVALID");
++            offset = saved.offset;
++        }
++        const end = offset + (limit ?? rows.length);
++        return { conversations: rows.slice(offset, end), snapshotRevision: revision, nextCursor: end < rows.length ? this.store.sealJson({ revision, offset: end }, "conversation-list:v1") : null };
++    }
++}
+diff --git a/src/core/conversation-management.ts b/src/core/conversation-management.ts
+new file mode 100644
+index 0000000..9fe4f49
+--- /dev/null
++++ b/src/core/conversation-management.ts
+@@ -0,0 +1,114 @@
++import { createHash } from "node:crypto";
++import type { GatewayAccountStore } from "./account-store.js";
++import type { ConversationPort } from "./conversation-port.js";
++import type { EventStore } from "./event-store.js";
++import { readNativeSessionState } from "../host/native-history.js";
++import type { HostSessionBinding } from "../host/host-session.js";
++
++export type ConversationOrganization = {
++  revision: number; sortMode: "updated-desc" | "custom"; customOrder: string[];
++  folders: Array<{folderId:string;name:string}>; assignments: Record<string,string>;
++};
++const organizationKey = "conversation-organization:v1";
++const empty = ():ConversationOrganization => ({revision:0,sortMode:"updated-desc",customOrder:[],folders:[],assignments:{}});
++type ManagementState = {archived?:boolean;deleted?:boolean;pending?:boolean;pendingRequestId?:string;
++  pendingOperation?:"archive"|"delete";pendingArchived?:boolean;updatedAt?:string};
++
++/** All rows and cursors belong to this authenticated account's database. */
++export class ConversationManagement {
++  constructor(private store:GatewayAccountStore, private conversations:ConversationPort, private events:EventStore) {}
++  private read<T>(key:string):T|undefined {
++    const row=this.store.database.prepare("SELECT value FROM account_metadata WHERE key=?").get(key) as {value:string}|undefined;
++    return row ? this.store.openJson(row.value,key) as T : undefined;
++  }
++  private write(key:string,value:unknown):void {
++    this.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)").run(key,this.store.sealJson(value,key));
++  }
++  state(id:string):ManagementState {return this.read(`conversation-management:${id}`) ?? {};}
++  touch(id:string,now=new Date()):void {this.write(`conversation-management:${id}`,{...this.state(id),updatedAt:now.toISOString()});}
++  requireVisible(id:string):void {const state=this.state(id);if(state.deleted) throw new Error("CONVERSATION_NOT_FOUND");if(state.pending) throw new Error("CONVERSATION_BUSY");}
++  requireWritable(id:string):void {
++    this.requireVisible(id);this.record(id);this.requireVisible(id);
++    if(this.state(id).archived) throw new Error("CONVERSATION_ARCHIVED");
++  }
++  organization():ConversationOrganization {return structuredClone(this.read<ConversationOrganization>(organizationKey) ?? empty());}
++  replace(body:Omit<ConversationOrganization,"revision"> & {expectedRevision:number},correlationId:string):ConversationOrganization {
++    return this.store.transaction(()=> {
++      const current=this.organization();
++      if(current.revision!==body.expectedRevision) throw new Error("ORGANIZATION_CONFLICT");
++      const ids=new Set(this.conversations.list().map(row=>row.conversationId));
++      const folders=new Set(body.folders.map(row=>row.folderId));
++      if(folders.size!==body.folders.length || new Set(body.folders.map(row=>row.name.toLocaleLowerCase())).size!==body.folders.length
++        || body.customOrder.some(id=>!ids.has(id)) || Object.entries(body.assignments).some(([id,folder])=>!ids.has(id)||!folders.has(folder))) throw new Error("SCHEMA_INVALID");
++      const next:ConversationOrganization={revision:current.revision+1,sortMode:body.sortMode,customOrder:[...body.customOrder],folders:body.folders.map(row=>({...row})),assignments:{...body.assignments}};
++      this.write(organizationKey,next);
++      this.events.append({eventType:"conversation.organization.updated",correlationId,payload:{revision:next.revision}});
++      return next;
++    });
++  }
++  private removeOrganization(id:string,correlationId:string):void {
++    const current=this.organization();
++    if(!current.customOrder.includes(id) && !Object.hasOwn(current.assignments,id)) return;
++    current.customOrder=current.customOrder.filter(value=>value!==id);delete current.assignments[id];current.revision++;
++    this.write(organizationKey,current);
++    this.events.append({eventType:"conversation.organization.updated",correlationId,payload:{revision:current.revision}});
++  }
++  begin(id:string,requestId:string,operation:"archive"|"delete",archived?:boolean):void {
++    const prior=this.state(id);
++    if(prior.deleted) throw new Error("CONVERSATION_NOT_FOUND");
++    if(prior.pending && prior.pendingRequestId!==requestId) throw new Error("OUTCOME_UNKNOWN");
++    if(prior.pending && (prior.pendingOperation!==operation || prior.pendingArchived!==archived)) throw new Error("IDEMPOTENCY_CONFLICT");
++    if(!prior.pending) this.conversations.get(id);
++    const active=this.conversations.workflow.current(id);
++    if(active && ["queued","running","unknown","cancel_requested"].includes(String(active.state))) throw new Error("CONVERSATION_BUSY");
++    const queued=this.store.database.prepare("SELECT 1 FROM messages WHERE conversation_id=? AND status IN ('queued','sending','delivered') LIMIT 1").get(id);
++    if(queued) throw new Error("CONVERSATION_BUSY");
++    this.write(`conversation-management:${id}`,{...this.state(id),pending:true,pendingRequestId:requestId,pendingOperation:operation,...(archived!==undefined ? {pendingArchived:archived} : {})});
++  }
++  abort(id:string,requestId:string):void {
++    const state=this.state(id);
++    if(state.pendingRequestId!==requestId) return;
++    delete state.pending;delete state.pendingRequestId;delete state.pendingOperation;delete state.pendingArchived;
++    this.write(`conversation-management:${id}`,state);
++  }
++  commit(id:string,operation:"archive"|"delete",archived:boolean|undefined,correlationId:string,now=new Date()):Record<string,unknown> {
++    return this.store.transaction(()=> {
++      const state:ManagementState={...this.state(id),updatedAt:now.toISOString(),...(operation==="delete" ? {deleted:true} : {archived:archived!})};
++      delete state.pending;delete state.pendingRequestId;delete state.pendingOperation;delete state.pendingArchived;
++      this.write(`conversation-management:${id}`,state);
++      if(operation==="delete") this.removeOrganization(id,correlationId);
++      this.events.append({eventType:"conversation.updated",correlationId,payload:{conversationId:id,...(operation==="delete" ? {deleted:true} : {archived:archived!})},now});
++      return operation==="delete" ? {conversationId:id,deleted:true} : {conversation:this.record(id)};
++    });
++  }
++  record(id:string):Record<string,unknown> {
++    const row=this.store.database.prepare("SELECT c.*,MAX(m.created_at) AS last_message_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.conversation_id WHERE c.conversation_id=? GROUP BY c.conversation_id").get(id) as Record<string,unknown>|undefined;
++    if(!row || this.state(id).deleted) throw new Error("CONVERSATION_NOT_FOUND");
++    let state=this.state(id);
++    const binding=this.conversations.workflow.get<HostSessionBinding>(`host-session:${id}`);
++    let native:ReturnType<typeof readNativeSessionState>;
++    if(binding) {
++      native=readNativeSessionState(binding);
++      if(native) this.write(`conversation-native-seen:${id}`,true);
++      else if(!state.pending && this.read(`conversation-native-seen:${id}`)) {this.commit(id,"delete",undefined,"native-conversation-sync");throw new Error("CONVERSATION_NOT_FOUND");}
++      if(native && !state.pending && state.archived!==native.archived) {state={...state,archived:native.archived};this.write(`conversation-management:${id}`,state);}
++    }
++    const times=[row.created_at,row.last_message_at,state.updatedAt,native?.updatedAt].filter((value):value is string=>typeof value==="string");
++    return {conversationId:id,clientConversationId:String(row.client_conversation_id),title:row.title ?? null,archived:state.archived ?? false,updatedAt:times.sort().at(-1)!};
++  }
++  page(cursor?:string,limit?:number):Record<string,unknown> {
++    if(limit!==undefined && (!Number.isInteger(limit)||limit<1||limit>100)) throw new Error("SCHEMA_INVALID");
++    const rows=this.conversations.list().flatMap(row=>{try{return [this.record(row.conversationId)];}catch(error){if((error as Error).message==="CONVERSATION_NOT_FOUND") return [];throw error;}})
++      .sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt))||String(a.conversationId).localeCompare(String(b.conversationId)));
++    const revision=parseInt(createHash("sha256").update(JSON.stringify(rows)).digest("hex").slice(0,13),16)+1;
++    let offset=0;
++    if(cursor) {
++      let saved:{revision:number;offset:number};
++      try {saved=this.store.openJson(cursor,"conversation-list:v1") as typeof saved;} catch {throw new Error("SCHEMA_INVALID");}
++      if(saved.revision!==revision) throw new Error("CURSOR_EXPIRED");
++      if(!Number.isInteger(saved.offset)||saved.offset<0||saved.offset>rows.length) throw new Error("SCHEMA_INVALID");offset=saved.offset;
++    }
++    const end=offset+(limit ?? rows.length);
++    return {conversations:rows.slice(offset,end),snapshotRevision:revision,nextCursor:end<rows.length ? this.store.sealJson({revision,offset:end},"conversation-list:v1") : null};
++  }
++}
+diff --git a/test/conversation-management.test.ts b/test/conversation-management.test.ts
+new file mode 100644
+index 0000000..3edf77f
+--- /dev/null
++++ b/test/conversation-management.test.ts
+@@ -0,0 +1,152 @@
++import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
++import { createRequire } from "node:module";
++import { tmpdir } from "node:os";
++import { dirname, join, resolve } from "node:path";
++import { pathToFileURL } from "node:url";
++import { afterEach, describe, expect, it } from "vitest";
++import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
++import { setRuntimeConfigSnapshot, clearRuntimeConfigSnapshot } from "openclaw/plugin-sdk/config-runtime";
++import { createGatewayCore, type VerifiedRequestContext } from "../src/core/gateway-core.js";
++import { registerOpenAndroidIntelligenceGateway as registerSource } from "../src/host/channel-adapter.js";
++import type { OpenClawInboundRuntime } from "../src/host/inbound-dispatch.js";
++
++// Tests load the exact pinned host; production dispatches its public gateway API.
++const dist=resolve(dirname(createRequire(import.meta.url).resolve("openclaw/plugin-sdk/routing")),"..");
++const loadNative=(file:string):Promise<Record<string,any>>=>import(pathToFileURL(join(dist,file)).href);
++const {sessionsHandlers}=await loadNative("sessions-UcKjjh_n.js");
++const {n:createGatewaySession}=await loadNative("session-create-service-14oZxrT5.js");
++const registerRuntime=(await import(new URL("../runtime/src/host/channel-adapter.js",import.meta.url).href)).registerOpenAndroidIntelligenceGateway as typeof registerSource;
++const context:VerifiedRequestContext={accountId:"acct_management",deviceId:"dev_one",sessionId:"sess_one",requestId:"req_one",
++  correlationId:"cor_management",pairingGeneration:1,grantRevision:1};
++const prefix="/open-android-intelligence/v2";
++afterEach(()=>clearRuntimeConfigSnapshot());
++
++const setup=(register=registerSource)=> {
++  const root=mkdtempSync(join(tmpdir(),"oai-native-management-")),storePath=join(root,"sessions.json");
++  const cfg={session:{store:storePath}};
++  const core=createGatewayCore({storageRoot:join(root,"gateway"),attachmentMasterKey:Buffer.alloc(32,9)});
++  const runtime:OpenClawInboundRuntime={inbound:{run:async()=>({}),buildContext:input=>input},
++    routing:{resolveAgentRoute:input=>resolveAgentRoute(input as Parameters<typeof resolveAgentRoute>[0])},
++    session:{resolveStorePath:()=>storePath,recordInboundSession:async()=>{}},reply:{dispatchReplyWithBufferedBlockDispatcher:async()=>({})}};
++  const calls:Array<{method:string;params?:Record<string,unknown>}>=[];
++  const nativeContext={getRuntimeConfig:()=>cfg,loadGatewayModelCatalog:async()=>[],broadcast:()=>{},
++    chatAbortControllers:new Map(),chatRunBuffers:new Map(),agentRunSeq:new Map(),dedupe:new Map()};
++  const nativeRequest=async(method:string,params?:Record<string,unknown>)=> {
++    setRuntimeConfigSnapshot(cfg);
++    if(method==="sessions.create") return createGatewaySession({cfg,...params});
++    return new Promise((done,fail)=> {
++      Promise.resolve(sessionsHandlers[method]({params,context:nativeContext,
++        respond:(ok:boolean,payload:unknown,error:unknown)=>ok?done(payload):fail(error)})).catch(fail);
++    });
++  };
++  register({gatewayCore:core,hostVersion:"2026.7.1",config:cfg,runtime:{channel:runtime,gateway:{request:async(method,params)=>{
++    calls.push({method,params});return nativeRequest(method,params);
++  }}},registerChannel:()=>{},registerHttpRoute:()=>{}});
++  const request=(method:"GET"|"PUT"|"POST"|"DELETE"|"PATCH",path:string,body?:unknown,id="req_one",device="dev_one",account="acct_management")=>
++    core.handle({context:{...context,requestId:id,deviceId:device,accountId:account},method,target:prefix+path,idempotencyKey:id,...(body!==undefined?{body}:{})});
++  const create=async(clientId:string,id:string)=> {
++    const result=await request("POST","/conversations",{clientConversationId:clientId,title:"Same title"},id);
++    expect(result.error).toBeUndefined();return (result.data!.conversation as {conversationId:string}).conversationId;
++  };
++  const nativeStore=()=>JSON.parse(readFileSync(storePath,"utf8")) as Record<string,Record<string,unknown>>;
++  return {core,calls,create,request,nativeStore,nativeRequest,storePath};
++};
++
++describe.each([{flavor:"source",register:registerSource},{flavor:"runtime",register:registerRuntime}])("$flavor native conversation management",({register})=> {
++  it("archives/restores/deletes the real host store and preserves another account's native session",async()=> {
++    const {core,calls,create,request,nativeStore}=setup(register);
++    const cid=await create("cc_one","req_create_one"),other=await create("cc_other","req_create_other");
++    const account=await core.openGatewayAccount(context.accountId);
++    const binding=account.conversations.workflow.get<{sessionKey:string}>(`host-session:${cid}`)!;
++    const otherBinding=account.conversations.workflow.get<{sessionKey:string}>(`host-session:${other}`)!;
++    account.close();
++    const initial=nativeStore()[binding.sessionKey]!;
++    expect((await request("PATCH",`/conversations/${cid}`,{archived:true},"req_archive")).data).toMatchObject({conversation:{archived:true}});
++    expect(nativeStore()[binding.sessionKey]!.archivedAt).toBeTypeOf("number");
++    expect((await request("GET","/conversations")).data!.conversations).toEqual(expect.arrayContaining([expect.objectContaining({conversationId:cid,archived:true})]));
++    expect((await request("PATCH",`/conversations/${cid}`,{archived:false},"req_restore")).error).toBeUndefined();
++    expect(nativeStore()[binding.sessionKey]!.archivedAt).toBeUndefined();
++    const deleted=await request("DELETE",`/conversations/${cid}`,undefined,"req_delete");
++    expect(deleted.error).toBeUndefined();expect(deleted.data).toEqual({conversationId:cid,deleted:true});
++    expect(nativeStore()[binding.sessionKey]).toBeUndefined();expect(nativeStore()[otherBinding.sessionKey]).toBeDefined();
++    expect(await request("DELETE",`/conversations/${cid}`,undefined,"req_delete")).toEqual(deleted);
++    const deletion=calls.find(call=>call.method==="sessions.delete")!;
++    expect(deletion.params).toMatchObject({key:binding.sessionKey,deleteTranscript:true,expectedSessionId:initial.sessionId});
++    expect((await request("GET",`/conversations/${cid}/messages`)).error?.code).toBe("CONVERSATION_NOT_FOUND");
++    const reopened=await core.openGatewayAccount(context.accountId);
++    try {expect(()=>reopened.conversations.create({clientConversationId:"cc_one",title:"Same title",correlationId:"cor_retry"})).toThrow("CONVERSATION_NOT_FOUND");}
++    finally {reopened.close();}
++  });
++
++  it("shares folders and custom order across devices with optimistic conflicts and account isolation",async()=> {
++    const {create,request}=setup(register);const cid=await create("cc_one","req_create");
++    const first=(await request("GET","/conversations?limit=1")).data!;
++    const body={expectedRevision:0,sortMode:"custom",customOrder:[cid],folders:[{folderId:"folder_work",name:"Work"}],assignments:{[cid]:"folder_work"}};
++    const saved=(await request("PUT","/conversation-organization",body,"req_organize")).data!;
++    expect(saved.revision).toBe(1);
++    expect((await request("GET","/conversation-organization",undefined,"req_get","dev_two")).data).toEqual(saved);
++    expect((await request("PUT","/conversation-organization",body,"req_stale","dev_two")).error?.code).toBe("ORGANIZATION_CONFLICT");
++    expect((await request("GET","/conversations?limit=1")).data!.snapshotRevision).toBe(first.snapshotRevision);
++    expect((await request("GET","/conversation-organization",undefined,"req_other","dev_two","acct_other")).data!.folders).toEqual([]);
++    expect((await request("PUT","/conversation-organization",{...body,expectedRevision:1,assignments:{conv_foreign:"folder_work"}},"req_foreign")).error?.code).toBe("SCHEMA_INVALID");
++    expect((await request("DELETE",`/conversations/${cid}`,undefined,"req_delete")).error).toBeUndefined();
++    expect((await request("GET","/conversation-organization")).data).toMatchObject({revision:2,customOrder:[],assignments:{}});
++  });
++
++  it("refuses queued work before native deletion and projects external native archive/deletion",async()=> {
++    const {core,calls,create,request,nativeStore,nativeRequest}=setup(register);
++    const cid=await create("cc_busy","req_create");const account=await core.openGatewayAccount(context.accountId);
++    let sessionKey:string;
++    try {
++      sessionKey=account.conversations.workflow.get<{sessionKey:string}>(`host-session:${cid}`)!.sessionKey;
++      account.conversations.acceptMessage({conversationId:cid,clientMessageId:"cm_busy",text:"Queued",attachmentIds:[],deviceId:"dev_one",requestId:"req_queued",correlationId:"cor_queued"});
++    } finally {account.close();}
++    expect((await request("DELETE",`/conversations/${cid}`,undefined,"req_busy")).error?.code).toBe("CONVERSATION_BUSY");
++    expect(calls.some(call=>call.method==="sessions.delete")).toBe(false);expect(nativeStore()[sessionKey]).toBeDefined();
++    const external=await create("cc_external","req_external");const lookup=await core.openGatewayAccount(context.accountId);
++    const binding=lookup.conversations.workflow.get<{sessionKey:string}>(`host-session:${external}`)!;lookup.close();
++    await nativeRequest("sessions.patch",{key:binding.sessionKey,archived:true});
++    expect((await request("GET","/conversations")).data!.conversations).toEqual(expect.arrayContaining([expect.objectContaining({conversationId:external,archived:true})]));
++    await nativeRequest("sessions.delete",{key:binding.sessionKey,deleteTranscript:true});
++    expect((await request("GET","/conversations")).data!.conversations).not.toEqual(expect.arrayContaining([expect.objectContaining({conversationId:external})]));
++  });
++});
++
++it("pages every historical thread including archives and invalidates cursors after native state changes",async()=> {
++  const {core,request,storePath}=setup();const account=await core.openGatewayAccount(context.accountId);
++  const native:Record<string,Record<string,unknown>>={};const ids:string[]=[];
++  try {
++    for(let i=0;i<121;i++) {
++      const cid=account.conversations.create({clientConversationId:`cc_${i}`,correlationId:"cor_seed",now:new Date(1000+i)}).conversationId;
++      const sessionKey=`trusted_${i}`;ids.push(cid);native[sessionKey]={sessionId:`native_${i}`,updatedAt:2000+i,...(i%2===0?{archivedAt:3000}:{})};
++      account.conversations.bindHostSession(cid,{sessionKey,storePath});
++    }
++  } finally {account.close();}
++  writeFileSync(storePath,JSON.stringify(native));
++  const seen=new Set<string>(),revisions=new Set<number>();let cursor:string|undefined;
++  do {
++    const data=(await request("GET","/conversations?"+new URLSearchParams({limit:"17",...(cursor?{cursor}:{})}))).data!;
++    for(const row of data.conversations as Array<{conversationId:string}>) seen.add(row.conversationId);
++    revisions.add(data.snapshotRevision as number);cursor=data.nextCursor as string|undefined;
++  } while(cursor);
++  expect(seen.size).toBe(121);expect(revisions.size).toBe(1);
++  const first=(await request("GET","/conversations?limit=1")).data!;
++  native.trusted_0!.updatedAt=5000;writeFileSync(storePath,JSON.stringify(native));
++  expect((await request("GET","/conversations?"+new URLSearchParams({cursor:String(first.nextCursor)}))).error?.code).toBe("CURSOR_EXPIRED");
++  expect((await request("GET","/conversations?limit=0")).error?.code).toBe("SCHEMA_INVALID");
++});
++
++it("reserves device/request identity before a native await and fences unknown outcomes across other routes",async()=> {
++  const {core,create,request}=setup();
++  const first=await create("cc_one","req_create_one"),second=await create("cc_two","req_create_two");
++  let calls=0;
++  core.setHostConversationManager!(async()=>{calls++;throw new Error("response lost");});
++  expect((await request("DELETE",`/conversations/${first}`,undefined,"req_unknown")).error?.code).toBe("OUTCOME_UNKNOWN");
++  expect((await request("DELETE",`/conversations/${second}`,undefined,"req_unknown")).error?.code).toBe("IDEMPOTENCY_CONFLICT");
++  expect((await request("DELETE",`/conversations/${first}`,undefined,"req_unknown","dev_two")).error?.code).toBe("OUTCOME_UNKNOWN");
++  expect((await request("PUT","/conversation-organization",{expectedRevision:0,sortMode:"custom",customOrder:[],folders:[],assignments:{}},"req_unknown")).error?.code).toBe("IDEMPOTENCY_CONFLICT");
++  expect(calls).toBe(1);
++  core.setHostConversationManager!(async()=>{calls++;});
++  expect((await request("DELETE",`/conversations/${first}`,undefined,"req_unknown")).data).toEqual({conversationId:first,deleted:true});
++  expect(calls).toBe(2);
++});
+diff --git a/test/history-media-stream.test.ts b/test/history-media-stream.test.ts
+index e0e6e0b..c853343 100644
+--- a/test/history-media-stream.test.ts
++++ b/test/history-media-stream.test.ts
+@@ -187,7 +187,9 @@ it("真实 Ed25519 HTTP 返回原类型和摘要，JSON 原件与非法 MIME 均
+     const failed = await request("GET", prefix + `/content?format=stream-v1&grantId=${token}`);
+     expect(failed.status).toBe(400); expect(failed.headers.get("x-forged")).toBeNull(); expect((await failed.json() as any).error.code).toBe("SCHEMA_INVALID");
+   } finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); account.close(); }
+-});
++  // The 38 MiB fixture verifies digests and authorization throughout the stream.
++  // Leave room for shared-runner CPU/IO contention without relaxing assertions.
++}, 15_000);
+
+ const inboundRuntime = (root: string, deliver: (turn: any, params: any) => Promise<void>): OpenClawInboundRuntime => {
+   const store = join(root, "sessions.json"); writeFileSync(store, JSON.stringify({})); writeFileSync(join(root, "native.jsonl"), "");

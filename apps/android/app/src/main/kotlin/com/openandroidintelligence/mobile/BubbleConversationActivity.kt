@@ -7,23 +7,25 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.openandroidintelligence.conversation.model.GenerationState
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.conversation.components.noticeText
+import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.workbench.TimelineRow
+import com.openandroidintelligence.conversation.workbench.ComposerBar
+import com.openandroidintelligence.conversation.workbench.ConversationBrowser
 
 /** The system embeds this Activity inside a native conversation bubble. */
 class BubbleConversationActivity : ComponentActivity() {
@@ -77,31 +79,31 @@ class BubbleConversationActivity : ComponentActivity() {
     }
 }
 
-/** The tapped conversation remains reachable when it finishes or the process loses its projection. */
-internal fun bubbleSessionRows(
-    sessions: List<NativeConversationSession>, target: ReplyNotificationTarget,
-): List<NativeConversationSession> = sessions
-    .filter { it.target.profileId == target.profileId && it.target.accountId == target.accountId &&
-        (it.isRunning || it.target == target) }
-    .distinctBy { it.target }
-    .sortedWith(compareByDescending<NativeConversationSession> { it.isRunning }.thenByDescending { it.updatedAt })
-
 @Composable
 private fun BubbleConversationContent(runtime: GatewayRuntime, target: ReplyNotificationTarget?, onClose: () -> Unit) {
     val phase by runtime.phase.collectAsState()
     val sessions by runtime.nativeConversationNotifications.sessions.collectAsState()
-    // A credential refresh replaces the session even when Connected's display fields stay equal.
+    // A replacement authenticated workspace invalidates every old picker and draft destination.
     val activeSession by runtime.controller.collectAsState()
     LaunchedEffect(runtime) { runtime.restoreSessionIfAvailable() }
     val valid = target != null && runtime.isBubbleTargetCurrent(target)
-    var selectedId by rememberSaveable(target?.profileId, target?.accountId, target?.conversationId) { mutableStateOf<String?>(null) }
+    val window: BubbleConversationWindow = viewModel()
+    LaunchedEffect(runtime, target, activeSession, valid) {
+        window.bind(activeSession.takeIf { valid }, target, runtime::createBubbleConversation, runtime::releaseBubbleConversation)
+    }
+    val bound = valid && window.isBoundTo(activeSession, target)
+    val selectedId = window.selectedConversationId.takeIf { bound }
     val selectedTarget = target?.let { current -> selectedId?.let { current.copy(conversationId = it) } }
-    var opened by remember(selectedTarget, activeSession, valid) { mutableStateOf(false) }
-    val controller by produceState<WorkbenchController?>(null, selectedTarget, activeSession, valid) {
-        val created = if (valid && selectedTarget != null) runtime.createBubbleConversation(selectedTarget) else null
-        value = created
-        opened = true
-        awaitDispose { if (created != null) runtime.releaseBubbleConversation(created) }
+    val windowController = window.controller
+    val windowState = windowController?.state?.collectAsState()?.value
+    val chat = windowController?.takeIf { bound && selectedId != null && windowState?.activeThreadId == selectedId }
+    val chatState = windowState.takeIf { chat != null }
+    LaunchedEffect(bound, selectedId, activeSession) {
+        if (bound && selectedId == null) activeSession?.refreshThreads()
+    }
+    val attachmentPickers = rememberConversationAttachmentPickers(chat) { current ->
+        current === window.controller && selectedTarget != null && runtime.isBubbleTargetCurrent(selectedTarget) &&
+            runtime.controller.value === activeSession && window.selectedConversationId == selectedTarget.conversationId
     }
 
     if (!valid) {
@@ -116,51 +118,54 @@ private fun BubbleConversationContent(runtime: GatewayRuntime, target: ReplyNoti
         return
     }
     val launchTarget = target ?: return
-    val rows = bubbleSessionRows(sessions, launchTarget)
     val selected = sessions.firstOrNull { it.target == selectedTarget }
-    BackHandler(enabled = selectedId != null) { selectedId = null }
+    BackHandler(enabled = selectedId != null) { window.showBrowser() }
     Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (selectedId != null) TextButton(onClick = { selectedId = null }) { Text("会话列表") }
-            Text(if (selectedId == null) "运行中的会话" else selected?.title ?: "Agent 会话",
+            if (selectedId != null) TextButton(onClick = window::showBrowser) { Text("会话列表") }
+            Text(if (selectedId == null) "全部会话" else selected?.title ?: chatState?.activeThreadTitle?.ifBlank { "Agent 会话" } ?: "Agent 会话",
                 modifier = Modifier.weight(1f).padding(8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.titleMedium)
             TextButton(onClick = onClose) { Text("关闭") }
         }
         HorizontalDivider()
+        window.notice?.let { Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error) }
         if (selectedId == null) {
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (rows.none { it.isRunning }) item { Text("当前没有正在运行的会话", style = MaterialTheme.typography.bodyMedium) }
-                items(rows, key = { it.target.conversationId }) { session ->
-                    BubbleSessionCard(session.title, session.status.label(), session.latestReply) { selectedId = session.target.conversationId }
+            if (window.creatingThread) LinearProgressIndicator(Modifier.fillMaxWidth())
+            val history = activeSession
+            if (!bound || history == null) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            } else {
+                val historyState by history.state.collectAsState()
+                val notificationInHistory = (historyState.threads as? Loadable.Ready)?.value.orEmpty()
+                    .any { it.id.value == launchTarget.conversationId && !it.archived }
+                if (!notificationInHistory) {
+                    TextButton(onClick = { window.select(launchTarget.conversationId) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("打开通知对应的会话")
+                    }
                 }
-                if (rows.none { it.target == launchTarget }) item {
-                    BubbleSessionCard("通知会话", "查看此通知对应的会话", "") { selectedId = launchTarget.conversationId }
-                }
+                ConversationBrowser(
+                    controller = history,
+                    onOpenThread = window::select,
+                    onCreateThread = { window.createThread(runtime::createBubbleThread) },
+                    activeThreadId = windowState?.activeThreadId,
+                    modifier = Modifier.weight(1f),
+                )
             }
         } else {
-            val chat = controller?.takeIf { it.state.value.activeThreadId == selectedId }
-            if (!opened) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            else if (chat == null) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("会话连接已失效，请返回列表重试") }
-            else key(chat) { BubbleChat(chat, selected?.status, Modifier.weight(1f)) }
+            if (chat == null) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("会话连接已失效，请返回列表重试") }
+            else key(chat) { BubbleChat(chat, selected?.status, attachmentPickers, Modifier.weight(1f)) }
         }
     }
 }
 
 @Composable
-private fun BubbleSessionCard(title: String, status: String, reply: String, onClick: () -> Unit) {
-    Surface(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-            if (reply.isNotBlank()) Text(reply, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-        }
-    }
-}
-
-@Composable
-private fun BubbleChat(controller: WorkbenchController, status: NativeConversationStatus?, modifier: Modifier) {
+private fun BubbleChat(
+    controller: WorkbenchController,
+    status: NativeConversationStatus?,
+    pickers: ConversationAttachmentPickers,
+    modifier: Modifier,
+) {
     val state by controller.state.collectAsState()
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     val list = rememberLazyListState()
@@ -176,8 +181,8 @@ private fun BubbleChat(controller: WorkbenchController, status: NativeConversati
         when (val timeline = state.timeline) {
             Loadable.Idle, Loadable.Loading -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             is Loadable.Failed -> Column(Modifier.weight(1f).padding(12.dp)) {
-                Text("读取会话失败：${timeline.code}")
-                TextButton(onClick = controller::onForegrounded) { Text("重试") }
+                Text(readableFailure(timeline.code))
+                TextButton(onClick = controller::retryTimeline) { Text("重试") }
             }
             else -> LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (entries.isEmpty()) item { Text("此会话暂无消息") }
@@ -187,19 +192,27 @@ private fun BubbleChat(controller: WorkbenchController, status: NativeConversati
             }
         }
         state.notice?.let { notice ->
-            Text(notice, Modifier.fillMaxWidth().padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall,
+            Text(noticeText(notice), Modifier.fillMaxWidth().padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(state.draft, controller::editDraft, Modifier.weight(1f), placeholder = { Text("回复此会话") },
-                enabled = state.isOnline, maxLines = 3)
-            Column {
-                if (state.generation in setOf(GenerationState.QUEUED, GenerationState.RUNNING)) {
-                    TextButton(onClick = controller::stopGeneration) { Text("停止") }
-                }
-                Button(onClick = controller::sendDraft, enabled = state.canSend) { Text("发送") }
-            }
-        }
+        ComposerBar(
+            draft = state.draft,
+            onDraftChange = controller::editDraft,
+            generation = state.generation,
+            canSend = state.canSend,
+            onSend = controller::sendDraft,
+            onStop = controller::stopGeneration,
+            onPickCamera = pickers.camera,
+            onPickGallery = pickers.gallery,
+            onPickDocument = pickers.document,
+            onVoiceInput = {},
+            voiceInputEnabled = false,
+            attachments = state.attachments,
+            onRemoveAttachment = controller::removeAttachment,
+            onRetryAttachment = controller::retryAttachment,
+            applyImePadding = false,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
     }
 }
 
@@ -218,5 +231,6 @@ private fun NativeConversationStatus.label(): String = when (this) {
     NativeConversationStatus.COMPLETED -> "已完成"
     NativeConversationStatus.FAILED -> "任务失败"
     NativeConversationStatus.CANCELLED -> "已取消"
+    NativeConversationStatus.ENDED -> "本次处理已结束"
     NativeConversationStatus.DISCONNECTED -> "连接中断，等待恢复"
 }

@@ -4,7 +4,7 @@ package com.openandroidintelligence.mobile
  * 对话界面协商能力位（契约 §4 的 `features.conversationUi`）在界面上的语义。
  *
  * 闭集与 [com.openandroidintelligence.gateway.negotiation.NegotiationClient]
- * 声明的客户端 offer 对齐：那 8 个能力键是这份契约里仅有的对话界面能力，
+ * 声明的客户端 offer 对齐：这些能力键是这份契约里的对话界面能力，
  * 不在这张表里的键不构成「第五个状态」，也不能在界面上凭空出现。
  */
 object ConversationUiFeature {
@@ -18,6 +18,7 @@ object ConversationUiFeature {
         "generation-cancel-v1",
         "conversation-mirror-v1",
         "attachment-status-v1",
+        "conversation-management-v1",
     )
 }
 

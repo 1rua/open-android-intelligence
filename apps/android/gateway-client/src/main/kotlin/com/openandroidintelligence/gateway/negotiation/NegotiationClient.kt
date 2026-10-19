@@ -10,6 +10,7 @@ import com.openandroidintelligence.gateway.schema.SchemaContractHash
 
 /** generation-cancel-v1 在对话面能力闭集里的名字。 */
 const val GENERATION_CANCEL_FEATURE = "generation-cancel-v1"
+const val CONVERSATION_MANAGEMENT_FEATURE = "conversation-management-v1"
 
 /**
  * 本客户端声明实现、并随协商请求发出的对话面能力位。
@@ -24,6 +25,7 @@ val DECLARED_CONVERSATION_UI_FEATURES: List<String> = listOf(
     "message-batches-v1",
     "newline-v1",
     GENERATION_CANCEL_FEATURE,
+    CONVERSATION_MANAGEMENT_FEATURE,
 )
 
 data class NegotiationResult(
@@ -56,6 +58,16 @@ data class NegotiationResult(
 
     val messageBatchesAgreed: Boolean
         get() = setOf("message-batches-v1", "newline-v1").all { it in agreedConversationUi }
+
+    val conversationManagementAgreed: Boolean
+        get() = CONVERSATION_MANAGEMENT_FEATURE in agreedConversationUi
+}
+
+data class ConversationManagementCapability(val agreed: Boolean) {
+    companion object {
+        val NotNegotiated = ConversationManagementCapability(false)
+        fun fromNegotiation(result: NegotiationResult) = ConversationManagementCapability(result.conversationManagementAgreed)
+    }
 }
 
 /**

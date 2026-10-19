@@ -26,6 +26,7 @@ class ConversationUiCapabilitiesTest {
                 "generation-cancel-v1",
                 "conversation-mirror-v1",
                 "attachment-status-v1",
+                "conversation-management-v1",
             ),
             ConversationUiFeature.CLOSED_SET,
         )

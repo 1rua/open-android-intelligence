@@ -46,7 +46,9 @@ class WorkbenchTitleRegressionTest {
         assertEquals("用户自定义会话名称", controller.state.value.activeThreadTitle)
         assertEquals("用户自定义会话名称", repository.lastUpdatedTitle)
 
-        // Agent suggests a title update via event stream
+        // The host changes its list snapshot before delivering the title event.
+        repository.storedTitle = "Agent建议的标题"
+        val listsBeforeAgentEvent = repository.listRequests
         eventFlow.emit(
             VerifiedConversationEvent.TitleUpdated(
                 eventId = "evt_1",
@@ -58,6 +60,7 @@ class WorkbenchTitleRegressionTest {
         advanceUntilIdle()
 
         // User manual rename must NOT be overwritten
+        assertTrue(repository.listRequests > listsBeforeAgentEvent)
         assertEquals("用户自定义会话名称", controller.state.value.activeThreadTitle)
         controller.cancel()
     }
@@ -75,6 +78,7 @@ class WorkbenchTitleRegressionTest {
         assertFalse(controller.isCurrentThreadUserRenamed)
 
         // Agent broadcasts new title
+        repository.storedTitle = "量子计算导论"
         eventFlow.emit(
             VerifiedConversationEvent.TitleUpdated(
                 eventId = "evt_2",
@@ -173,9 +177,13 @@ class WorkbenchTitleRegressionTest {
         var lastUpdatedConversationId: String? = null
         var lastUpdatedTitle: String? = null
         var titleUpdates = 0
+        var storedTitle = "新对话"
+        var listRequests = 0
 
-        override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage =
-            ConversationPage(listOf(ConversationSummary(ConversationId("conv_test"), "新对话", 100L)), null)
+        override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage {
+            listRequests++
+            return ConversationPage(listOf(ConversationSummary(ConversationId("conv_test"), storedTitle, 100L)), null)
+        }
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation =
             Conversation(ConversationId("conv_test"), "新对话", 100L)
@@ -198,6 +206,7 @@ class WorkbenchTitleRegressionTest {
             lastUpdatedConversationId = conversationId
             lastUpdatedTitle = title
             titleUpdates++
+            if (acceptsTitleUpdate) storedTitle = title
             return acceptsTitleUpdate
         }
     }

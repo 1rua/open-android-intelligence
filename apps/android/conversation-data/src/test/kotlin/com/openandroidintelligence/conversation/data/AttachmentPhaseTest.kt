@@ -11,9 +11,21 @@ import com.openandroidintelligence.gateway.http.GatewayRequestBody
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.TestScope
@@ -117,6 +129,55 @@ class AttachmentPhaseTest {
         coordinator.discard(draft.id.value)
         assertTrue(staging.deleted.contains(staging.lastStagedId))
         finishUpload.cancel()
+    }
+
+    @Test fun discardWaitsForACancelledStagingWorkerAndReclaimsItsLatePublishedContent() = runBlocking {
+        val started = CountDownLatch(1)
+        val finishStaging = CountDownLatch(1)
+        val cancellation = AtomicReference<(() -> Boolean)?>(null)
+        val remaining = ConcurrentHashMap.newKeySet<String>()
+        val deleted = ConcurrentHashMap.newKeySet<String>()
+        val staging = object : LocalAttachmentStagingStore {
+            override fun stage(selection: LocalAttachmentSelection, onBytesStaged: (Long) -> Unit, isCancelled: () -> Boolean): StagedAttachmentContent {
+                cancellation.set(isCancelled)
+                started.countDown()
+                check(finishStaging.await(5, TimeUnit.SECONDS))
+                // A provider may complete just as cancellation arrives. The worker has to
+                // publish this ownership before its dispatcher drops the cancelled result.
+                remaining += "late-stage"
+                return StagedAttachmentContent("late-stage", 3, "0".repeat(64))
+            }
+            override fun openStream(stagedId: String): InputStream = error("Cancelled staging cannot upload")
+            override fun delete(stagedId: String) { deleted += stagedId; remaining -= stagedId }
+            override fun cleanupExpired(nowMillis: Long, maxAgeMillis: Long) = Unit
+            override fun cleanup() = Unit
+        }
+        val transport = object : GatewayAttachmentTransport {
+            override suspend fun create(request: AttachmentCreateRequest): String = error("Cancelled staging cannot create")
+            override suspend fun getStatus(attachmentId: String): AttachmentRemoteStatusInfo = error("Cancelled staging cannot query")
+            override suspend fun uploadContent(attachmentId: String, body: GatewayRequestBody, headers: Map<String, String>) = error("Cancelled staging cannot upload")
+            override suspend fun commit(attachmentId: String) = error("Cancelled staging cannot commit")
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val coordinator = GatewayAttachmentDraftCoordinator(AttachmentUploader(transport),
+                AttachmentSubmissionGate { error("Not submitted") }, scope, staging, Dispatchers.IO)
+            val draft = coordinator.prepare(selection("late.pdf", "application/pdf", "pdf"))
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            val discard = async(Dispatchers.Default) { coordinator.discard(draft.id.value) }
+            withTimeout(5_000) {
+                while (cancellation.get()?.invoke() != true) yield()
+            }
+            assertTrue("discard must wait for staging before removing its content", !discard.isCompleted)
+            finishStaging.countDown()
+            discard.await()
+            assertEquals(setOf("late-stage"), deleted)
+            assertTrue(remaining.isEmpty())
+            assertTrue(coordinator.restoredDrafts().isEmpty())
+        } finally {
+            finishStaging.countDown()
+            scope.cancel()
+        }
     }
 
     private fun TestScope.coordinator(

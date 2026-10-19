@@ -4,6 +4,7 @@ import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepository
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
 import com.openandroidintelligence.conversation.ports.AttachmentDownloadPort
+import com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator
 import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.HistoricalMediaPort
 import com.openandroidintelligence.conversation.state.WorkbenchController
@@ -76,11 +77,14 @@ internal fun createBubbleWorkbench(
     debouncePolicy: DebouncePolicy,
     media: HistoricalMediaPort? = null,
     downloads: AttachmentDownloadPort? = null,
+    attachmentCoordinator: AttachmentDraftCoordinator? = null,
+    externalBusyThreadIds: () -> Set<String> = { emptySet() },
 ): WorkbenchController {
     val active = AtomicReference<String?>(null)
     val client = ConversationClient(http)
     val repository = GatewayConversationRepository(client, streamStatus = status, approvals = approvals,
-        activeConversationId = active::get)
+        activeConversationId = active::get,
+        supportsConversationManagement = "conversation-management-v1" in capabilities)
     val gated = CapabilityGatedConversationRepository(repository, client, generationCancel, active::get)
     val controller = WorkbenchController(
         scope = scope,
@@ -90,9 +94,13 @@ internal fun createBubbleWorkbench(
         supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in capabilities },
         supportsAgentCommandNew = "agent-command-new-v1" in capabilities,
         supportsApprovalCards = approvals != null,
+        supportsConversationManagement = "conversation-management-v1" in capabilities,
+        externalBusyThreadIds = externalBusyThreadIds,
         debouncePolicy = debouncePolicy,
         onActiveThreadChanged = { active.set(it); repository.activeConversationChanged() },
         streamHealthSource = gated,
+        attachmentCoordinator = attachmentCoordinator,
+        onClosed = { (attachmentCoordinator as? BubbleAttachmentDraftCoordinator)?.close(scope) },
         // Bubble drafts and selection deliberately have no main-workbench persistence.
         media = media,
         downloads = downloads,

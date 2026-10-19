@@ -102,6 +102,12 @@ fun specificFailureText(code: String): String? {
             "审批已超时，命令没有执行。卡片恢复为不可点击，如需执行请让 Agent 重新发起。"
         value.contains("APPROVAL_FAILED") ->
             "审批决策没有送达 Gateway，卡片已恢复为可点击，请重试。"
+        value.contains("CONVERSATION_MANAGEMENT_UNSUPPORTED") -> "当前 Gateway 不支持会话管理，请安装配套网关更新后重试。"
+        value.contains("CONVERSATION_BUSY") -> "会话仍有发送或任务正在处理，请等待结束后再归档或删除。"
+        value.contains("ORGANIZATION_CONFLICT") -> "另一端已修改文件夹或排序，已重新同步，请重试这次操作。"
+        value.contains("FOLDER_NOT_FOUND") -> "文件夹已发生变化，请刷新会话列表后重试。"
+        value.contains("CONVERSATION_MANAGEMENT_FAILED") -> "Gateway 尚未确认这次会话修改，请刷新列表并重试。"
+        value.contains("THREAD_SYNC_FAILED") -> "历史会话同步失败，已保留本机记录。请检查连接后刷新。"
         value.contains("CONVERSATION_CREATING") -> "正在等待 Agent 返回新会话，请稍候。"
         value.contains("CONVERSATION_CREATE_NO_RESULT") ->
             "Agent 已经回话了，但没有返回新建会话的结果，无法确认新会话的标识，因此仍停留在原会话。通常意味着当前 Gateway/宿主未实现该命令入口，请重启或升级后重试。"
@@ -183,7 +189,7 @@ fun streamHealthText(health: com.openandroidintelligence.conversation.model.Stre
  * leaving already human-readable notices untouched.
  */
 fun noticeText(notice: String): String {
-    if (!notice.contains(':')) return notice
+    if (!notice.contains(':')) return specificFailureText(notice) ?: notice
     // Both halves are candidates: "SEND_FAILED:MASTER_KEY_UNAVAILABLE" carries its
     // cause on the right, while "CONVERSATION_CREATE_TIMEOUT:NO_COMMAND_RESULT"
     // carries the actionable code on the left. Asking the halves in order is what

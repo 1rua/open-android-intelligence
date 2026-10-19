@@ -186,6 +186,8 @@ hermes gateway restart
 
 验证与升级依据见[停止生成和动态命令修复记录](docs/reviews/2026-10-17-hermes-stop-command-catalog.zh-CN.md)。
 
+本分支增加了主界面与气泡共用的完整历史、归档、文件夹与排序管理，以及气泡附件和通知终态同步修复。会话管理通过 `conversation-management-v1` 协商，归档与删除提交到 Agent 原生会话存储；文件夹和顺序保存在网关账号中。两个独立网关仓的配套实现随本仓以[可验证的固定版本补丁](gateway-contract/patches/conversation-management/README.zh-CN.md)交付，需与 App 一同更新；下面的原始固定提交尚不含此能力。新的契约摘要要求安装配套补丁后再连接，不能仅更新 APK。Android 16 优先使用一张原生 Live Update，Android 14/15 保留普通通知回退；[兼容性与真机验收边界](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md)说明了 Samsung Now Bar 的限制。
+
 OpenClaw Gateway 插件源码位于独立仓库 [`1rua/openclaw-gateway-plugin`](https://github.com/1rua/openclaw-gateway-plugin)。应用主仓在 `openclaw-plugin-pin.json` 中锁定插件提交；插件仓按 `contract-pin.json` 固定本仓唯一维护的 Gateway Protocol 契约。当前固定源码为 `1.0.2` 的对话修复提交 `432e7c0`，旧 `v1.0.2` 标签不含本轮修复；协议版本保持 `2.1.0`，宿主 API 范围保持 `2026.7.1`。安装固定提交：
 
 ```bash

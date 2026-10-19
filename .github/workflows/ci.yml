@@ -78,6 +78,12 @@ jobs:
       - name: Install the OpenClaw Gateway plugin dependencies
         run: npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
 
+      - name: Apply reviewed native conversation management patches
+        run: |
+          python -m unittest discover -s gateway-contract/patches/conversation-management -p 'test_*.py'
+          python gateway-contract/patches/conversation-management/apply-gateway-patches.py \
+            --openclaw-root .openclaw-gateway-plugin --hermes-root .hermes-gateway-plugin --apply
+
       # The plugin packages a contract snapshot generated from a pinned commit.
       # Compare all contract inputs (source, schemas, registry and vectors)
       # rather than commit identity, so unrelated app commits need no plugin bump.
@@ -96,9 +102,14 @@ jobs:
         run: |
           npm run typecheck
           npm run typecheck --prefix .openclaw-gateway-plugin
+          python gateway-contract/patches/conversation-management/runtime-build-manifest.py \
+            --runtime-root .openclaw-gateway-plugin/runtime --write "$RUNNER_TEMP/oai-runtime-reviewed.json"
           npm run build --prefix .openclaw-gateway-plugin
-          git -C .openclaw-gateway-plugin diff --exit-code -- runtime
-          test -z "$(git -C .openclaw-gateway-plugin ls-files --others -- runtime)"
+          python gateway-contract/patches/conversation-management/runtime-build-manifest.py \
+            --runtime-root .openclaw-gateway-plugin/runtime --compare "$RUNNER_TEMP/oai-runtime-reviewed.json"
+          npm run build --prefix .openclaw-gateway-plugin
+          python gateway-contract/patches/conversation-management/runtime-build-manifest.py \
+            --runtime-root .openclaw-gateway-plugin/runtime --compare "$RUNNER_TEMP/oai-runtime-reviewed.json"
           npm run typecheck --prefix plugin-tooling
 
       - name: Gateway v2 Cross-Host Conformance
@@ -115,11 +126,14 @@ jobs:
         run: |
           npm test
           npm test --prefix plugin-tooling
+          # Native SDK imports alter process-wide host registries. Keep fake-host
+          # tests isolated; the next step runs the real SDK/HTTP fixtures.
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT="$PWD/gateway-contract" \
-            python -m pytest .hermes-gateway-plugin/tests \
+            env -u HERMES_SDK_ROOT -u PYTHONPATH python -m pytest .hermes-gateway-plugin/tests \
               --ignore=.hermes-gateway-plugin/tests/test_native_history_complete.py \
               --ignore=.hermes-gateway-plugin/tests/test_native_history_projection.py \
-              --ignore=.hermes-gateway-plugin/tests/test_native_streaming_delivery.py
+              --ignore=.hermes-gateway-plugin/tests/test_native_streaming_delivery.py \
+              --ignore=.hermes-gateway-plugin/tests/test_android_echo_fixture.py
 
       - name: Verify the real Hermes native history and transports
         # 正常矩阵约数十秒；停滞时保留具体用例与调用栈，避免无限占用流水线。
@@ -138,6 +152,7 @@ jobs:
             .hermes-gateway-plugin/tests/test_native_streaming_delivery.py \
             .hermes-gateway-plugin/tests/test_native_turn_lifecycle.py \
             .hermes-gateway-plugin/tests/test_native_turn_review_boundaries.py \
+            .hermes-gateway-plugin/tests/test_conversation_management.py \
             .hermes-gateway-plugin/tests/test_host_command_catalog.py \
             .hermes-gateway-plugin/tests/test_native_binding_http_failures.py \
             .hermes-gateway-plugin/tests/test_legacy_conversation_canonical.py \
@@ -168,6 +183,24 @@ jobs:
           repository: 1rua/hermes-gateway-plugin
           ref: 3b113cadc0526f0475233e7c41790d4a8fdd9fc7
           path: .hermes-gateway-plugin
+
+      - name: Resolve the Android fixture OpenClaw pin
+        id: android-openclaw-pin
+        run: |
+          revision=$(python3 -c "import json;print(json.load(open('openclaw-plugin-pin.json'))['revision'])")
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the Android fixture OpenClaw plugin
+        uses: actions/checkout@v4
+        with:
+          repository: 1rua/openclaw-gateway-plugin
+          ref: ${{ steps.android-openclaw-pin.outputs.revision }}
+          path: .openclaw-gateway-plugin
+
+      - name: Apply the same reviewed Gateway patches for Android interop
+        run: |
+          python gateway-contract/patches/conversation-management/apply-gateway-patches.py \
+            --openclaw-root .openclaw-gateway-plugin --hermes-root .hermes-gateway-plugin --apply
 
       - name: Check out the pinned Hermes native SDK
         uses: actions/checkout@v4
@@ -203,4 +236,4 @@ jobs:
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT: ${{ github.workspace }}/gateway-contract
         run: |
           chmod +x gradlew
-          ./gradlew check :app:assembleFullDebug --stacktrace --no-build-cache
+          ./gradlew check :app:assembleFullDebug --stacktrace --no-build-cache --max-workers=1

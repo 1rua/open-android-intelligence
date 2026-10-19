@@ -118,11 +118,24 @@ internal class AndroidReplyNotificationPublisher(
         liveUpdates.cancel(target)
     }
 
+    fun forget(target: ReplyNotificationTarget) {
+        cancel(target)
+        val shortcutId = "agent-conversation-${notificationTag(target)}"
+        val shortcuts = context.getSystemService(ShortcutManager::class.java)
+        // Launcher pins belong to the user, so invalidate their routing too.
+        try {
+            shortcuts.disableShortcuts(listOf(shortcutId))
+            shortcuts.removeDynamicShortcuts(listOf(shortcutId))
+            shortcuts.removeLongLivedShortcuts(listOf(shortcutId))
+        } catch (_: RuntimeException) { /* Shortcut support can be unavailable on this device. */ }
+        publishedShortcuts.remove(shortcutId)
+    }
+
     fun update(session: NativeConversationSession, alert: Boolean) {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(REPLY_CHANNEL_ID, "Agent 任务回复", NotificationManager.IMPORTANCE_DEFAULT)
             .apply { description = "Agent 处理中实时显示公开回复，并在任务结束时提醒"; setAllowBubbles(true) })
-        liveUpdates.update(session)
+        val hasLiveUpdate = liveUpdates.update(session)
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
         val tag = notificationTag(target)
@@ -142,14 +155,20 @@ internal class AndroidReplyNotificationPublisher(
             .setExtras(android.os.PersistableBundle().apply { putString("reply-account", accountGroup) })
             .setLocusId(LocusId(shortcutId)).setIntent(bubbleIntent).build()
         // A device may disable shortcuts/bubbles. The notification still works.
+        val keepBubble = hasLiveUpdate && userSelectedBubble(manager, shortcutId, tag)
         val bubbleMetadata = try {
             if (publishedShortcuts[shortcutId] != session.title) {
                 shortcutManager.enableShortcuts(listOf(shortcutId))
                 shortcutManager.pushDynamicShortcut(shortcut)
                 publishedShortcuts[shortcutId] = session.title
             }
-            Notification.BubbleMetadata.Builder(shortcutId).setDesiredHeight(640).build()
+            Notification.BubbleMetadata.Builder(shortcutId).setDesiredHeight(640)
+                .setSuppressNotification(keepBubble).build()
         } catch (_: RuntimeException) { null }
+        if (hasLiveUpdate && (!keepBubble || bubbleMetadata == null)) {
+            manager.cancel(tag, 0)
+            return
+        }
         val pendingIntent = PendingIntent.getActivity(context, 0, target.intent(context), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val heading = if (session.isRunning && session.lastOutcome != null) when (session.lastOutcome) {
             NativeConversationStatus.COMPLETED -> "Agent 已回复，仍有任务处理中"
@@ -162,14 +181,16 @@ internal class AndroidReplyNotificationPublisher(
             NativeConversationStatus.COMPLETED -> "Agent 任务已完成"
             NativeConversationStatus.FAILED -> "Agent 任务失败"
             NativeConversationStatus.CANCELLED -> "Agent 任务已取消"
+            NativeConversationStatus.ENDED -> "任务已结束"
             NativeConversationStatus.DISCONNECTED -> "Gateway 已断开，任务状态待同步"
         }
-        val preview = session.latestReply.ifBlank { when (session.status) {
+        val preview = notificationReplyExcerpt(session.latestReply, session.isRunning).ifBlank { when (session.status) {
             NativeConversationStatus.QUEUED -> "等待 Agent 开始处理"
             NativeConversationStatus.RUNNING -> "等待 Agent 回复"
             NativeConversationStatus.COMPLETED -> "已收到回复，点击查看会话"
             NativeConversationStatus.FAILED -> "任务未完成，请查看会话中的错误信息"
             NativeConversationStatus.CANCELLED -> "任务已取消"
+            NativeConversationStatus.ENDED -> "任务已结束，点击查看会话"
             NativeConversationStatus.DISCONNECTED -> "重新连接后同步任务状态"
         } }
         val style = Notification.MessagingStyle(localUser)
@@ -188,8 +209,10 @@ internal class AndroidReplyNotificationPublisher(
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setOngoing(session.isRunning)
             .setAutoCancel(!session.isRunning)
-            .setOnlyAlertOnce(!alert)
+            .setOnlyAlertOnce(hasLiveUpdate || !alert)
             .setContentIntent(pendingIntent)
+            .addAction(Notification.Action.Builder(null, "打开会话窗口",
+                PendingIntent.getActivity(context, 0, bubbleIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)).build())
             .build()
         // Permission may be revoked between checking it and the Binder call.
         try { manager.notify(tag, 0, notification) } catch (_: SecurityException) { settings.refreshPermission() }
@@ -216,6 +239,17 @@ internal class AndroidReplyNotificationPublisher(
 
     private fun notificationTag(target: ReplyNotificationTarget) =
         replyDigest("${target.profileId}\u0000${target.accountId}\u0000${target.conversationId}")
+
+    private fun userSelectedBubble(manager: NotificationManager, shortcutId: String, tag: String): Boolean {
+        when (manager.bubblePreference) {
+            NotificationManager.BUBBLE_PREFERENCE_NONE -> return false
+            NotificationManager.BUBBLE_PREFERENCE_ALL -> return true
+        }
+        val channel = manager.getNotificationChannel(REPLY_CHANNEL_ID, shortcutId)
+        if (channel?.conversationId == shortcutId && channel.canBubble()) return true
+        // FLAG_BUBBLE is assigned by the system after applying the user's choice.
+        return manager.activeNotifications.any { it.tag == tag && it.notification.flags and Notification.FLAG_BUBBLE != 0 }
+    }
 }
 
 /**

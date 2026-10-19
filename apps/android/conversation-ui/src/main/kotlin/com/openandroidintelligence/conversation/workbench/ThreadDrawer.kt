@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.SettingsListItem
 import com.openandroidintelligence.conversation.components.SettingsTone
 import com.openandroidintelligence.conversation.ports.ConversationSummary
+import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -54,9 +55,13 @@ fun ThreadDrawer(
     showClose: Boolean = true,
     onOpenAttachments: (() -> Unit)? = null,
     onLogout: () -> Unit,
+    organization: ConversationOrganization = ConversationOrganization(),
+    managementSupported: Boolean = false,
+    managing: Boolean = false,
+    online: Boolean = true,
+    busyThreadIds: Set<String> = emptySet(),
+    actions: ConversationBrowserActions = ConversationBrowserActions(),
 ) {
-    var query by rememberSaveable { mutableStateOf("") }
-    val threadList = (threads as? Loadable.Ready)?.value.orEmpty()
     val username = if (gatewayLabel.contains("@")) gatewayLabel.substringBefore("@") else "用户"
 
     Surface(
@@ -179,7 +184,7 @@ fun ThreadDrawer(
                                 .background(MaterialTheme.colorScheme.primary),
                         )
                         Text(
-                            text = "在线",
+                            text = if (online) "在线" else "离线",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             fontSize = 10.sp,
@@ -190,168 +195,29 @@ fun ThreadDrawer(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
 
-            // ===== 3. Navigation List (Scrollable) =====
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                // Action: 新建对话
-                Button(
-                    onClick = {
-                        onCreateThread()
-                        onCloseDrawer()
-                    },
-                    shape = RoundedCornerShape(AppRadius.Small),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary,
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(44.dp),
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(Dimensions.SmallIcon))
-                    Spacer(Modifier.width(8.dp))
-                    Text("新建对话", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                }
-
-                Spacer(Modifier.height(4.dp))
-
-                // 会话搜索与列表头部
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    placeholder = { Text("搜索会话…", fontSize = 12.sp) },
-                    leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(16.dp)) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(AppRadius.Small),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = Dimensions.MinimumTouchTarget),
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            text = "会话列表",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                        )
-                        if (threadList.isNotEmpty()) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                            ) {
-                                Text(
-                                    text = "${threadList.size}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 10.sp,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-                                )
-                            }
-                        }
-                    }
-                    IconButton(onClick = onRefresh, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Refresh, "刷新会话", modifier = Modifier.size(16.dp))
-                    }
-                }
-
-                // 线程项
-                val filtered = threadList.filter { it.title.contains(query, ignoreCase = true) }
-                if (filtered.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = if (query.isNotBlank()) "暂无匹配对话" else "暂无历史对话",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            fontSize = 12.sp,
-                        )
-                    }
-                } else {
-                    filtered.forEach { thread ->
-                        val isSelected = thread.id.value == activeThreadId
-                        ListItem(
-                            headlineContent = {
-                                Text(
-                                    text = thread.title.ifBlank { "未命名对话" },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            leadingContent = {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Outlined.Chat,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(Dimensions.SmallIcon),
-                                )
-                            },
-                            colors = ListItemDefaults.colors(
-                                containerColor = if (isSelected) {
-                                    MaterialTheme.colorScheme.secondaryContainer
-                                } else {
-                                    Color.Transparent
-                                },
-                                headlineColor = if (isSelected) {
-                                    MaterialTheme.colorScheme.onSecondaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                leadingIconColor = if (isSelected) {
-                                    MaterialTheme.colorScheme.onSecondaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(AppRadius.Medium))
-                                .clickable {
-                                    onOpenThread(thread.id.value)
-                                    onCloseDrawer()
-                                },
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
-                Spacer(Modifier.height(4.dp))
-
-                // 附件库入口
-                DrawerNavItem(
-                    icon = Icons.Default.AttachFile,
-                    label = "附件库",
-                    onClick = {
-                        onOpenAttachments?.invoke() ?: onOpenSettings()
-                        onCloseDrawer()
-                    },
-                )
-            }
-
+            ConversationBrowser(
+                threads = threads,
+                organization = organization,
+                activeThreadId = activeThreadId,
+                managementSupported = managementSupported,
+                managing = managing,
+                online = online,
+                busyThreadIds = busyThreadIds,
+                onOpenThread = { id -> onOpenThread(id); onCloseDrawer() },
+                onCreateThread = { onCreateThread(); onCloseDrawer() },
+                onRefresh = onRefresh,
+                actions = actions,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
+            DrawerNavItem(
+                icon = Icons.Default.AttachFile,
+                label = "附件库",
+                onClick = {
+                    onOpenAttachments?.invoke() ?: onOpenSettings()
+                    onCloseDrawer()
+                },
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
 
             // ===== 4. Footer (Settings, Protocol Version & Logout) =====
