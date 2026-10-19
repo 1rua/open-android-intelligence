@@ -122,6 +122,13 @@ data class BatchAcceptance(
     val generationId: String?,
 )
 
+/** Only an explicit native preflight refusal proves a first attempt made no mutation. */
+class ConversationManagementException(
+    operation: String,
+    val code: String,
+    val definitivelyRejected: Boolean,
+) : IllegalStateException("$operation:$code")
+
 /**
  * Conversation listing, creation, timeline reads, batch submission and
  * generation cancellation.
@@ -212,10 +219,11 @@ class ConversationClient(private val http: GatewayHttpClient) {
     }
 
     suspend fun setArchived(conversationId: String, archived: Boolean,
-        capability: ConversationManagementCapability = ConversationManagementCapability.NotNegotiated) {
+        capability: ConversationManagementCapability = ConversationManagementCapability.NotNegotiated,
+        requestId: String? = null) {
         check(capability.agreed) { "CONVERSATION_MANAGEMENT_UNSUPPORTED" }
-        val data = execute("PATCH", "/open-android-intelligence/v2/conversations/$conversationId",
-            Json.canonical(Json.of(mapOf("archived" to archived))).toByteArray(Charsets.UTF_8)).requireData("CONVERSATION_ARCHIVE_FAILED")
+        val data = managementData(execute("PATCH", "/open-android-intelligence/v2/conversations/$conversationId",
+            Json.canonical(Json.of(mapOf("archived" to archived))).toByteArray(Charsets.UTF_8), requestId), "CONVERSATION_ARCHIVE_FAILED")
         val conversation = JsonFields.obj(JsonFields.field(data, "conversation")) ?: error("CONVERSATION_ARCHIVE_FAILED:missing-conversation")
         check(JsonFields.string(conversation, "conversationId") == conversationId && JsonFields.bool(conversation, "archived") == archived) {
             "CONVERSATION_ARCHIVE_FAILED:unconfirmed"
@@ -223,12 +231,25 @@ class ConversationClient(private val http: GatewayHttpClient) {
     }
 
     suspend fun deleteConversation(conversationId: String,
-        capability: ConversationManagementCapability = ConversationManagementCapability.NotNegotiated) {
+        capability: ConversationManagementCapability = ConversationManagementCapability.NotNegotiated,
+        requestId: String? = null) {
         check(capability.agreed) { "CONVERSATION_MANAGEMENT_UNSUPPORTED" }
-        val data = execute("DELETE", "/open-android-intelligence/v2/conversations/$conversationId").requireData("CONVERSATION_DELETE_FAILED")
+        val data = managementData(execute("DELETE", "/open-android-intelligence/v2/conversations/$conversationId", requestId = requestId), "CONVERSATION_DELETE_FAILED")
         check(JsonFields.string(data, "conversationId") == conversationId && JsonFields.bool(data, "deleted") == true) {
             "CONVERSATION_DELETE_FAILED:unconfirmed"
         }
+    }
+
+    private fun managementData(response: GatewayResponse, operation: String): JsonValue.JObject {
+        if (response.status !in 200..299) {
+            val envelope = runCatching { JsonFields.obj(Json.parse(response.body.decodeToString())) }.getOrNull()
+            val code = JsonFields.string(JsonFields.obj(JsonFields.field(envelope,"error")),"code")
+                ?.takeIf { Regex("[A-Z0-9_]+").matches(it) }
+            val rejected = response.status in 400..499 && JsonFields.string(envelope,"protocol") == "2.1" &&
+                code in setOf("SCHEMA_INVALID", "CONVERSATION_BUSY", "CONVERSATION_ARCHIVED", "CONVERSATION_NOT_FOUND", "HOST_INCOMPATIBLE")
+            throw ConversationManagementException(operation, code ?: response.status.toString(), rejected)
+        }
+        return response.requireData(operation)
     }
 
     private fun organization(data: JsonValue.JObject): ConversationOrganization {

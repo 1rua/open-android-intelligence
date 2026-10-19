@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.openandroidintelligence.conversation.data.GatewayEventDecoder
 import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
+import com.openandroidintelligence.conversation.ports.ConversationPage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.conversations.GatewayTimelineMessage
@@ -201,8 +202,10 @@ internal class NativeConversationNotifications(
     }
 
     /** Only a complete, unfiltered, authenticated conversation listing may retire missing targets. */
-    @Synchronized fun retireMissingTargets(expected: NotificationPresenceReconciliationRequest?, allConversationIds: Set<String>) {
-        if (expected == null || activeProfile != expected.profileId || activeAccount != expected.accountId) return
+    @Synchronized fun retireMissingTargets(expected: NotificationPresenceReconciliationRequest?, page: ConversationPage) {
+        if (!page.authoritative || page.nextCursor != null || expected == null ||
+            activeProfile != expected.profileId || activeAccount != expected.accountId) return
+        val allConversationIds = page.conversations.map { it.id.value }.toSet()
         expected.revisions.forEach { (target, revision) ->
             if (target.conversationId !in allConversationIds && sessionRevisions[target] == revision) retireTarget(target, now())
         }

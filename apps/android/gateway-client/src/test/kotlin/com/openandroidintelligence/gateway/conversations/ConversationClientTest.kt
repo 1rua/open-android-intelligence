@@ -71,6 +71,41 @@ class ConversationClientTest {
         assertEquals("DELETE",transport.lastRequest?.method)
     }
 
+    @Test fun archiveAndDeleteBindTheSuppliedOperationIdentityToBothSignedHeaders() = runBlocking {
+        val transport=RecordingTransport().apply { responseToReturn=wire("""{"conversation":{"conversationId":"conv_a","archived":false}}""") }
+        val client=client(transport)
+        client.setArchived("conv_a",false,ConversationManagementCapability(true),"archive_operation")
+        assertEquals("""{"archived":false}""",transport.lastRequest!!.body.decodeToString())
+        for (name in listOf("X-Open-Android-Intelligence-Request-Id","Idempotency-Key")) {
+            assertEquals("archive_operation",transport.lastRequest!!.headers.single { it.name == name }.value)
+        }
+        transport.responseToReturn=wire("""{"conversationId":"conv_a","deleted":true}""")
+        client.deleteConversation("conv_a",ConversationManagementCapability(true),"delete_operation")
+        for (name in listOf("X-Open-Android-Intelligence-Request-Id","Idempotency-Key")) {
+            assertEquals("delete_operation",transport.lastRequest!!.headers.single { it.name == name }.value)
+        }
+        assertTrue(transport.lastRequest!!.body.isEmpty())
+    }
+
+    @Test fun onlyExplicitNativePreflightErrorsCanProveTheFirstAttemptWasRejected() = runBlocking {
+        val transport=RecordingTransport()
+        val client=client(transport)
+        for ((status,code,rejected) in listOf(
+            Triple(409,"CONVERSATION_BUSY",true), Triple(404,"CONVERSATION_NOT_FOUND",true),
+            Triple(401,"SESSION_INVALID",false), Triple(409,"IDEMPOTENCY_CONFLICT",false),
+            Triple(409,"OUTCOME_UNKNOWN",false), Triple(503,"CONVERSATION_BUSY",false),
+        )) {
+            transport.responseToReturn=WireResponse(status,emptyList(),"""{"protocol":"2.1","error":{"code":"$code"}}""".toByteArray())
+            val failure=runCatching { client.deleteConversation("conv_a",ConversationManagementCapability(true),"operation") }.exceptionOrNull()
+            assertTrue(failure is ConversationManagementException)
+            assertEquals(code,(failure as ConversationManagementException).code)
+            assertEquals(rejected,failure.definitivelyRejected)
+        }
+        transport.responseToReturn=WireResponse(409,emptyList(),"""{"error":{"code":"CONVERSATION_BUSY"}}""".toByteArray())
+        val invalid=runCatching { client.deleteConversation("conv_a",ConversationManagementCapability(true),"operation") }.exceptionOrNull()
+        assertFalse((invalid as ConversationManagementException).definitivelyRejected)
+    }
+
     private fun wire(data:String)=WireResponse(200,emptyList(),("""{"protocol":"2.1","data":$data}""").toByteArray())
     private fun client(transport:RecordingTransport)=ConversationClient(GatewayHttpClient(
         GatewayProfile("acc_test","dev_test","sess_test","https://gateway.example.com"),transport,{ByteArray(64)},MemoryCursorStore()))

@@ -1615,15 +1615,20 @@ index 2ef3906..e96b965 100644
      // command-catalog.schema.json and conversation-snapshot.schema.json describe the
      // discovery response and the snapshot response, which are not GatewaySchemaName
 diff --git a/runtime/src/core/conversation-port.js b/runtime/src/core/conversation-port.js
-index 6dec455..d0c5f67 100644
+index 6dec455..b390178 100644
 --- a/runtime/src/core/conversation-port.js
 +++ b/runtime/src/core/conversation-port.js
-@@ -1,3 +1,4 @@
+@@ -1,7 +1,8 @@
 +import { ConversationManagement } from "./conversation-management.js";
  import { ConversationWorkflow } from "./conversation-workflow.js";
  import { HistoryMedia } from "./history-media.js";
  import { randomUUID, createHash } from "node:crypto";
-@@ -11,6 +12,7 @@ export class ConversationPort {
+-import { nativeHistoryStamp, readNativeHistory, nativeHistoryWatermark, nativeAssistantSnapshot } from "../host/native-history.js";
++import { nativeHistoryStamp, readNativeHistory, nativeHistoryWatermark, nativeAssistantSnapshot, readNativeSessionState } from "../host/native-history.js";
+ import { DEFAULT_ATTACHMENT_POLICY } from "./attachment-policy.js";
+ export class ConversationPort {
+     accountId;
+@@ -11,12 +12,16 @@ export class ConversationPort {
      events;
      policy;
      workflow;
@@ -1631,7 +1636,28 @@ index 6dec455..d0c5f67 100644
      hostSessionResolver;
      setHostSessionResolver(resolver) { this.hostSessionResolver = resolver; }
      bindHostSession(conversationId, binding) {
-@@ -234,14 +236,16 @@ export class ConversationPort {
+-        this.get(conversationId);
+-        this.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)")
+-            .run(`host-session:${conversationId}`, JSON.stringify(binding));
++        this.store.transaction(() => {
++            this.get(conversationId);
++            this.management.prepareNativeBinding(conversationId, binding);
++            this.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)")
++                .run(`host-session:${conversationId}`, JSON.stringify(binding));
++        });
+     }
+     nativeCancellations(conversationId) {
+         return this.store.database.prepare("SELECT key,value FROM account_metadata WHERE key LIKE ?").all(`native-cancellation:${conversationId}:%`)
+@@ -33,6 +38,8 @@ export class ConversationPort {
+             const binding = this.workflow.get(`host-session:${conversationId}`);
+             if (!binding)
+                 return;
++            if (readNativeSessionState(binding))
++                this.management.rememberNativeSession(conversationId, binding);
+             const watermark = nativeHistoryWatermark(binding);
+             if (watermark)
+                 this.workflow.put(`native-checkpoint:${conversationId}`, { ...binding, watermark });
+@@ -234,14 +241,16 @@ export class ConversationPort {
          this.events = events;
          this.policy = policy;
          this.workflow = new ConversationWorkflow(store, events);
@@ -1649,7 +1675,7 @@ index 6dec455..d0c5f67 100644
          const row = this.store.database
              .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?")
              .get(conversationId);
-@@ -260,6 +264,7 @@ export class ConversationPort {
+@@ -260,6 +269,7 @@ export class ConversationPort {
          const existing = this.store.database.prepare("SELECT * FROM conversations WHERE client_conversation_id=?").get(input.clientConversationId);
          if (existing) {
              const conversation = this.mapConversation(existing);
@@ -1657,7 +1683,7 @@ index 6dec455..d0c5f67 100644
              if (conversation.title !== (input.title ?? null))
                  throw new Error("IDEMPOTENCY_CONFLICT");
              return conversation;
-@@ -285,6 +290,7 @@ export class ConversationPort {
+@@ -285,6 +295,7 @@ export class ConversationPort {
          });
      }
      acceptMessage(input) {
@@ -1665,7 +1691,15 @@ index 6dec455..d0c5f67 100644
          return this.store.transaction(() => {
              const conversation = this.store.database
                  .prepare("SELECT conversation_id FROM conversations WHERE conversation_id = ?")
-@@ -569,6 +575,7 @@ export class ConversationPort {
+@@ -440,6 +451,7 @@ export class ConversationPort {
+                     this.updateMessageStatus(mid, "delivered", null, correlationId, now);
+             for (const attachmentId of message.attachmentIds)
+                 this.attachments.markDelivered(attachmentId, now);
++            this.checkpointHostHistory(message.conversationId);
+             return message;
+         });
+     }
+@@ -569,6 +581,7 @@ export class ConversationPort {
       * `update_title` result field for field.
       */
      updateTitle(input) {
@@ -1673,7 +1707,7 @@ index 6dec455..d0c5f67 100644
          return this.store.transaction(() => {
              const row = this.store.database
                  .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?")
-@@ -578,6 +585,7 @@ export class ConversationPort {
+@@ -578,6 +591,7 @@ export class ConversationPort {
              this.store.database
                  .prepare("UPDATE conversations SET title = ? WHERE conversation_id = ?")
                  .run(input.title, input.conversationId);
@@ -1682,7 +1716,7 @@ index 6dec455..d0c5f67 100644
                  eventType: "conversation.title.updated",
                  actor: { accountId: this.accountId },
 diff --git a/runtime/src/core/gateway-core.js b/runtime/src/core/gateway-core.js
-index fa57a97..eabbaa3 100644
+index fa57a97..a8e94ff 100644
 --- a/runtime/src/core/gateway-core.js
 +++ b/runtime/src/core/gateway-core.js
 @@ -169,6 +169,10 @@ const protocolErrorCodes = new Set([
@@ -1823,8 +1857,16 @@ index fa57a97..eabbaa3 100644
                      if (request.method === "POST" && request.target === "/open-android-intelligence/v2/conversations" && hostConversationCreator) {
                          assertSchema("conversation.create", request.body);
                          const context = request.context;
+@@ -967,6 +1049,7 @@ export const createGatewayCore = (options = {}) => {
+                             ...(typeof body.title === "string" ? { title: body.title } : {}), correlationId: context.correlationId });
+                         const binding = await hostConversationCreator(context.accountId, conversation.conversationId, conversation.title);
+                         account.conversations.bindHostSession(conversation.conversationId, binding);
++                        account.conversations.management.rememberNativeSession(conversation.conversationId, binding);
+                         return runIdempotent(account, request, () => success(request, { conversation }));
+                     }
+                     const currentGeneration = request.target.match(/^\/open-android-intelligence\/v2\/conversations\/([^/]+)\/generations\/current$/);
 diff --git a/runtime/src/host/channel-adapter.js b/runtime/src/host/channel-adapter.js
-index ea71ac2..0c92f36 100644
+index ea71ac2..a37e84c 100644
 --- a/runtime/src/host/channel-adapter.js
 +++ b/runtime/src/host/channel-adapter.js
 @@ -1,3 +1,4 @@
@@ -1844,7 +1886,7 @@ index ea71ac2..0c92f36 100644
          services.core.setCommandCatalogProvider?.(async () => {
              if (!runtime)
                  throw new Error("AGENT_UNAVAILABLE");
-@@ -272,6 +273,41 @@ export const registerOpenAndroidIntelligenceGateway = (api) => {
+@@ -272,6 +273,43 @@ export const registerOpenAndroidIntelligenceGateway = (api) => {
                  return binding;
              });
      }
@@ -1865,6 +1907,8 @@ index ea71ac2..0c92f36 100644
 +                    return;
 +                throw new Error("HOST_INCOMPATIBLE");
 +            }
++            if (operation === "archive" && before.archived === archived)
++                return;
 +            try {
 +                // Both native methods enter OpenClaw's runExclusiveSessionLifecycleMutation.
 +                // Delete preconditions prevent a racing host reset selecting another session.
@@ -1938,15 +1982,21 @@ index 22d7e1e..d22ebb7 100644
      Object.freeze({ path: "/open-android-intelligence/v2/conversations/", match: "prefix" }),
      Object.freeze({ path: "/open-android-intelligence/v2/attachments", match: "exact" }),
 diff --git a/src/core/conversation-port.ts b/src/core/conversation-port.ts
-index 69740f2..18d31f0 100644
+index 69740f2..c545afc 100644
 --- a/src/core/conversation-port.ts
 +++ b/src/core/conversation-port.ts
-@@ -1,3 +1,4 @@
+@@ -1,8 +1,9 @@
 +import { ConversationManagement } from "./conversation-management.js";
  import { ConversationWorkflow } from "./conversation-workflow.js";
  import { HistoryMedia } from "./history-media.js";
  import { randomUUID, createHash } from "node:crypto";
-@@ -49,6 +50,7 @@ type NativeCancellationBoundary = {
+ import type { HostSessionBinding } from "../host/host-session.js";
+-import { nativeHistoryStamp, readNativeHistory, nativeHistoryWatermark, nativeAssistantSnapshot, type NativeHistoryWatermark } from "../host/native-history.js";
++import { nativeHistoryStamp, readNativeHistory, nativeHistoryWatermark, nativeAssistantSnapshot, readNativeSessionState, type NativeHistoryWatermark } from "../host/native-history.js";
+
+ import { AttachmentStore } from "./attachment-store.js";
+ import type { GatewayAccountStore } from "./account-store.js";
+@@ -49,12 +50,16 @@ type NativeCancellationBoundary = {
 
  export class ConversationPort {
    readonly workflow: ConversationWorkflow;
@@ -1954,7 +2004,27 @@ index 69740f2..18d31f0 100644
    private hostSessionResolver?: (accountId:string,conversationId:string)=>HostSessionBinding|undefined|Promise<HostSessionBinding|undefined>;
    setHostSessionResolver(resolver:NonNullable<ConversationPort['hostSessionResolver']>):void {this.hostSessionResolver=resolver;}
    bindHostSession(conversationId: string, binding: HostSessionBinding): void {
-@@ -244,16 +246,17 @@ export class ConversationPort {
+-    this.get(conversationId);
+-    this.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)")
+-      .run(`host-session:${conversationId}`, JSON.stringify(binding));
++    this.store.transaction(()=> {
++      this.get(conversationId);
++      this.management.prepareNativeBinding(conversationId,binding);
++      this.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)")
++        .run(`host-session:${conversationId}`, JSON.stringify(binding));
++    });
+   }
+
+   private nativeCancellations(conversationId:string): Array<{key:string;boundary:NativeCancellationBoundary}> {
+@@ -73,6 +78,7 @@ export class ConversationPort {
+     try {
+       const binding=this.workflow.get<HostSessionBinding>(`host-session:${conversationId}`);
+       if (!binding) return;
++      if (readNativeSessionState(binding)) this.management.rememberNativeSession(conversationId,binding);
+       const watermark=nativeHistoryWatermark(binding);
+       if (watermark) this.workflow.put(`native-checkpoint:${conversationId}`,{...binding,watermark});
+     } catch { /* Keep the last trusted checkpoint. */ }
+@@ -244,16 +250,17 @@ export class ConversationPort {
      private readonly audit: AuditStore,
      private readonly events: EventStore,
      private readonly policy: AttachmentPolicy = DEFAULT_ATTACHMENT_POLICY,
@@ -1974,7 +2044,7 @@ index 69740f2..18d31f0 100644
      const row = this.store.database
        .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?")
        .get(conversationId) as Record<string, unknown> | undefined;
-@@ -278,6 +281,7 @@ export class ConversationPort {
+@@ -278,6 +285,7 @@ export class ConversationPort {
      const existing = this.store.database.prepare("SELECT * FROM conversations WHERE client_conversation_id=?").get(input.clientConversationId) as Record<string,unknown> | undefined;
      if (existing) {
        const conversation = this.mapConversation(existing);
@@ -1982,7 +2052,7 @@ index 69740f2..18d31f0 100644
        if (conversation.title !== (input.title ?? null)) throw new Error("IDEMPOTENCY_CONFLICT");
        return conversation;
      }
-@@ -313,6 +317,7 @@ export class ConversationPort {
+@@ -313,6 +321,7 @@ export class ConversationPort {
      now?: Date;
      emitQueued?: boolean;
    }>): AcceptedMessage {
@@ -1990,7 +2060,15 @@ index 69740f2..18d31f0 100644
      return this.store.transaction(() => {
        const conversation = this.store.database
          .prepare("SELECT conversation_id FROM conversations WHERE conversation_id = ?")
-@@ -636,6 +641,7 @@ export class ConversationPort {
+@@ -469,6 +478,7 @@ export class ConversationPort {
+       const message = this.updateMessageStatus(messageId, "delivered", null, correlationId, now);
+       for (const mid of this.workflow.forMessage(messageId)?.messageIds ?? []) if (mid !== messageId) this.updateMessageStatus(mid,"delivered",null,correlationId,now);
+       for (const attachmentId of message.attachmentIds) this.attachments.markDelivered(attachmentId, now);
++      this.checkpointHostHistory(message.conversationId);
+       return message;
+     });
+   }
+@@ -636,6 +646,7 @@ export class ConversationPort {
      correlationId: string;
      now?: Date;
    }>): ConversationRecord {
@@ -1998,7 +2076,7 @@ index 69740f2..18d31f0 100644
      return this.store.transaction(() => {
        const row = this.store.database
          .prepare("SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?")
-@@ -644,6 +650,7 @@ export class ConversationPort {
+@@ -644,6 +655,7 @@ export class ConversationPort {
        this.store.database
          .prepare("UPDATE conversations SET title = ? WHERE conversation_id = ?")
          .run(input.title, input.conversationId);
@@ -2007,7 +2085,7 @@ index 69740f2..18d31f0 100644
          eventType: "conversation.title.updated",
          actor: { accountId: this.accountId },
 diff --git a/src/core/gateway-core.ts b/src/core/gateway-core.ts
-index 3f0112c..4fd9d86 100644
+index 3f0112c..098fb59 100644
 --- a/src/core/gateway-core.ts
 +++ b/src/core/gateway-core.ts
 @@ -131,6 +131,7 @@ export type GatewayCore = Readonly<{
@@ -2139,8 +2217,16 @@ index 3f0112c..4fd9d86 100644
            if (request.method === "POST" && request.target === "/open-android-intelligence/v2/conversations" && hostConversationCreator) {
              assertSchema("conversation.create", request.body);
              const context = request.context!;
+@@ -1052,6 +1118,7 @@ export const createGatewayCore = (options: GatewayCoreOptions = {}): GatewayCore
+               ...(typeof body.title === "string" ? {title:body.title} : {}), correlationId:context.correlationId });
+             const binding = await hostConversationCreator(context.accountId, conversation.conversationId, conversation.title);
+             account.conversations.bindHostSession(conversation.conversationId, binding);
++            account.conversations.management.rememberNativeSession(conversation.conversationId,binding);
+             return runIdempotent(account,request,()=>success(request,{conversation}));
+           }
+           const currentGeneration=request.target.match(/^\/open-android-intelligence\/v2\/conversations\/([^/]+)\/generations\/current$/);
 diff --git a/src/host/channel-adapter.ts b/src/host/channel-adapter.ts
-index 6f87390..5175512 100644
+index 6f87390..c0b6db2 100644
 --- a/src/host/channel-adapter.ts
 +++ b/src/host/channel-adapter.ts
 @@ -1,3 +1,5 @@
@@ -2161,7 +2247,7 @@ index 6f87390..5175512 100644
      services.core.setCommandCatalogProvider?.(async () => {
        if (!runtime) throw new Error("AGENT_UNAVAILABLE");
        const route=runtime.routing.resolveAgentRoute({cfg:activeConfig,channel:OPENCLAW_CHANNEL_ID,
-@@ -406,6 +408,33 @@ export const registerOpenAndroidIntelligenceGateway = (api: OpenClawPluginApi):
+@@ -406,6 +408,34 @@ export const registerOpenAndroidIntelligenceGateway = (api: OpenClawPluginApi):
        return binding;
      });
    }
@@ -2176,6 +2262,7 @@ index 6f87390..5175512 100644
 +      if(operation==="delete") return;
 +      throw new Error("HOST_INCOMPATIBLE");
 +    }
++    if(operation==="archive" && before.archived===archived) return;
 +    try {
 +      // Both native methods enter OpenClaw's runExclusiveSessionLifecycleMutation.
 +      // Delete preconditions prevent a racing host reset selecting another session.
@@ -2242,10 +2329,10 @@ index 885e69e..b63c7df 100644
    Object.freeze({ path: "/open-android-intelligence/v2/attachments", match: "exact" }),
 diff --git a/runtime/src/core/conversation-management.js b/runtime/src/core/conversation-management.js
 new file mode 100644
-index 0000000..31775c2
+index 0000000..a2a2bb7
 --- /dev/null
 +++ b/runtime/src/core/conversation-management.js
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,189 @@
 +import { createHash } from "node:crypto";
 +import { readNativeSessionState } from "../host/native-history.js";
 +const organizationKey = "conversation-organization:v1";
@@ -2268,6 +2355,17 @@ index 0000000..31775c2
 +        this.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)").run(key, this.store.sealJson(value, key));
 +    }
 +    state(id) { return this.read(`conversation-management:${id}`) ?? {}; }
++    sameNativeBinding(left, right) {
++        return left.storePath === right.storePath && left.sessionKey.toLowerCase() === right.sessionKey.toLowerCase();
++    }
++    prepareNativeBinding(id, binding) {
++        const previous = this.conversations.workflow.get(`host-session:${id}`);
++        if (!previous || !this.sameNativeBinding(previous, binding))
++            this.write(`conversation-native-seen:${id}`, { storePath: binding.storePath, sessionKey: binding.sessionKey, materialized: false });
++    }
++    rememberNativeSession(id, binding) {
++        this.write(`conversation-native-seen:${id}`, { storePath: binding.storePath, sessionKey: binding.sessionKey, materialized: true });
++    }
 +    touch(id, now = new Date()) { this.write(`conversation-management:${id}`, { ...this.state(id), updatedAt: now.toISOString() }); }
 +    requireVisible(id) { const state = this.state(id); if (state.deleted)
 +        throw new Error("CONVERSATION_NOT_FOUND"); if (state.pending)
@@ -2348,6 +2446,26 @@ index 0000000..31775c2
 +            return operation === "delete" ? { conversationId: id, deleted: true } : { conversation: this.record(id) };
 +        });
 +    }
++    nativeWasMaterialized(id, binding) {
++        const observed = this.read(`conversation-native-seen:${id}`);
++        if (observed === true || observed && typeof observed === "object" && this.sameNativeBinding(observed, binding) && observed.materialized)
++            return true;
++        const checkpoint = this.conversations.workflow.get(`native-checkpoint:${id}`);
++        if (checkpoint && this.sameNativeBinding(checkpoint, binding) && typeof checkpoint.watermark?.sessionId === "string" && checkpoint.watermark.sessionId.length > 0)
++            return true;
++        // New/rebound routes have their own observation, so old conversation-wide
++        // receipts cannot prove that the current native session ever existed.
++        if (observed !== undefined)
++            return false;
++        // Legacy bindings can exist before native admission. Only adopted messages,
++        // imported native identities or a checkpoint for this route prove creation.
++        if (this.store.database.prepare("SELECT 1 FROM messages WHERE conversation_id=? AND (delivered_at IS NOT NULL OR status IN ('delivered','completed')) LIMIT 1").get(id))
++            return true;
++        const prefix = `history-native:${id}:`;
++        if (this.store.database.prepare("SELECT 1 FROM account_metadata WHERE substr(key,1,?)=? LIMIT 1").get(prefix.length, prefix))
++            return true;
++        return false;
++    }
 +    record(id) {
 +        const row = this.store.database.prepare("SELECT c.*,MAX(m.created_at) AS last_message_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.conversation_id WHERE c.conversation_id=? GROUP BY c.conversation_id").get(id);
 +        if (!row || this.state(id).deleted)
@@ -2357,9 +2475,10 @@ index 0000000..31775c2
 +        let native;
 +        if (binding) {
 +            native = readNativeSessionState(binding);
-+            if (native)
-+                this.write(`conversation-native-seen:${id}`, true);
-+            else if (!state.pending && this.read(`conversation-native-seen:${id}`)) {
++            const materialized = !!native || this.nativeWasMaterialized(id, binding);
++            if (materialized)
++                this.rememberNativeSession(id, binding);
++            if (!native && !state.pending && materialized) {
 +                this.commit(id, "delete", undefined, "native-conversation-sync");
 +                throw new Error("CONVERSATION_NOT_FOUND");
 +            }
@@ -2405,10 +2524,10 @@ index 0000000..31775c2
 +}
 diff --git a/src/core/conversation-management.ts b/src/core/conversation-management.ts
 new file mode 100644
-index 0000000..9fe4f49
+index 0000000..63c14ac
 --- /dev/null
 +++ b/src/core/conversation-management.ts
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,141 @@
 +import { createHash } from "node:crypto";
 +import type { GatewayAccountStore } from "./account-store.js";
 +import type { ConversationPort } from "./conversation-port.js";
@@ -2424,6 +2543,7 @@ index 0000000..9fe4f49
 +const empty = ():ConversationOrganization => ({revision:0,sortMode:"updated-desc",customOrder:[],folders:[],assignments:{}});
 +type ManagementState = {archived?:boolean;deleted?:boolean;pending?:boolean;pendingRequestId?:string;
 +  pendingOperation?:"archive"|"delete";pendingArchived?:boolean;updatedAt?:string};
++type NativeObservation = Pick<HostSessionBinding,"storePath"|"sessionKey"> & {materialized:boolean};
 +
 +/** All rows and cursors belong to this authenticated account's database. */
 +export class ConversationManagement {
@@ -2436,6 +2556,16 @@ index 0000000..9fe4f49
 +    this.store.database.prepare("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)").run(key,this.store.sealJson(value,key));
 +  }
 +  state(id:string):ManagementState {return this.read(`conversation-management:${id}`) ?? {};}
++  private sameNativeBinding(left:Pick<HostSessionBinding,"storePath"|"sessionKey">,right:HostSessionBinding):boolean {
++    return left.storePath===right.storePath && left.sessionKey.toLowerCase()===right.sessionKey.toLowerCase();
++  }
++  prepareNativeBinding(id:string,binding:HostSessionBinding):void {
++    const previous=this.conversations.workflow.get<HostSessionBinding>(`host-session:${id}`);
++    if(!previous || !this.sameNativeBinding(previous,binding)) this.write(`conversation-native-seen:${id}`,{storePath:binding.storePath,sessionKey:binding.sessionKey,materialized:false} satisfies NativeObservation);
++  }
++  rememberNativeSession(id:string,binding:HostSessionBinding):void {
++    this.write(`conversation-native-seen:${id}`,{storePath:binding.storePath,sessionKey:binding.sessionKey,materialized:true} satisfies NativeObservation);
++  }
 +  touch(id:string,now=new Date()):void {this.write(`conversation-management:${id}`,{...this.state(id),updatedAt:now.toISOString()});}
 +  requireVisible(id:string):void {const state=this.state(id);if(state.deleted) throw new Error("CONVERSATION_NOT_FOUND");if(state.pending) throw new Error("CONVERSATION_BUSY");}
 +  requireWritable(id:string):void {
@@ -2492,6 +2622,21 @@ index 0000000..9fe4f49
 +      return operation==="delete" ? {conversationId:id,deleted:true} : {conversation:this.record(id)};
 +    });
 +  }
++  private nativeWasMaterialized(id:string,binding:HostSessionBinding):boolean {
++    const observed=this.read<boolean|NativeObservation>(`conversation-native-seen:${id}`);
++    if(observed===true || observed && typeof observed==="object" && this.sameNativeBinding(observed,binding) && observed.materialized) return true;
++    const checkpoint=this.conversations.workflow.get<HostSessionBinding & {watermark?:{sessionId?:string}}>(`native-checkpoint:${id}`);
++    if(checkpoint && this.sameNativeBinding(checkpoint,binding) && typeof checkpoint.watermark?.sessionId==="string" && checkpoint.watermark.sessionId.length>0) return true;
++    // New/rebound routes have their own observation, so old conversation-wide
++    // receipts cannot prove that the current native session ever existed.
++    if(observed!==undefined) return false;
++    // Legacy bindings can exist before native admission. Only adopted messages,
++    // imported native identities or a checkpoint for this route prove creation.
++    if(this.store.database.prepare("SELECT 1 FROM messages WHERE conversation_id=? AND (delivered_at IS NOT NULL OR status IN ('delivered','completed')) LIMIT 1").get(id)) return true;
++    const prefix=`history-native:${id}:`;
++    if(this.store.database.prepare("SELECT 1 FROM account_metadata WHERE substr(key,1,?)=? LIMIT 1").get(prefix.length,prefix)) return true;
++    return false;
++  }
 +  record(id:string):Record<string,unknown> {
 +    const row=this.store.database.prepare("SELECT c.*,MAX(m.created_at) AS last_message_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.conversation_id WHERE c.conversation_id=? GROUP BY c.conversation_id").get(id) as Record<string,unknown>|undefined;
 +    if(!row || this.state(id).deleted) throw new Error("CONVERSATION_NOT_FOUND");
@@ -2500,8 +2645,9 @@ index 0000000..9fe4f49
 +    let native:ReturnType<typeof readNativeSessionState>;
 +    if(binding) {
 +      native=readNativeSessionState(binding);
-+      if(native) this.write(`conversation-native-seen:${id}`,true);
-+      else if(!state.pending && this.read(`conversation-native-seen:${id}`)) {this.commit(id,"delete",undefined,"native-conversation-sync");throw new Error("CONVERSATION_NOT_FOUND");}
++      const materialized=!!native || this.nativeWasMaterialized(id,binding);
++      if(materialized) this.rememberNativeSession(id,binding);
++      if(!native && !state.pending && materialized) {this.commit(id,"delete",undefined,"native-conversation-sync");throw new Error("CONVERSATION_NOT_FOUND");}
 +      if(native && !state.pending && state.archived!==native.archived) {state={...state,archived:native.archived};this.write(`conversation-management:${id}`,state);}
 +    }
 +    const times=[row.created_at,row.last_message_at,state.updatedAt,native?.updatedAt].filter((value):value is string=>typeof value==="string");
@@ -2525,10 +2671,10 @@ index 0000000..9fe4f49
 +}
 diff --git a/test/conversation-management.test.ts b/test/conversation-management.test.ts
 new file mode 100644
-index 0000000..3edf77f
+index 0000000..c49daf3
 --- /dev/null
 +++ b/test/conversation-management.test.ts
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,298 @@
 +import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 +import { createRequire } from "node:module";
 +import { tmpdir } from "node:os";
@@ -2547,15 +2693,16 @@ index 0000000..3edf77f
 +const {sessionsHandlers}=await loadNative("sessions-UcKjjh_n.js");
 +const {n:createGatewaySession}=await loadNative("session-create-service-14oZxrT5.js");
 +const registerRuntime=(await import(new URL("../runtime/src/host/channel-adapter.js",import.meta.url).href)).registerOpenAndroidIntelligenceGateway as typeof registerSource;
++const createRuntimeCore=(await import(new URL("../runtime/src/core/gateway-core.js",import.meta.url).href)).createGatewayCore as typeof createGatewayCore;
 +const context:VerifiedRequestContext={accountId:"acct_management",deviceId:"dev_one",sessionId:"sess_one",requestId:"req_one",
 +  correlationId:"cor_management",pairingGeneration:1,grantRevision:1};
 +const prefix="/open-android-intelligence/v2";
 +afterEach(()=>clearRuntimeConfigSnapshot());
 +
-+const setup=(register=registerSource)=> {
-+  const root=mkdtempSync(join(tmpdir(),"oai-native-management-")),storePath=join(root,"sessions.json");
++const setup=(register=registerSource,createCore=createGatewayCore,existingRoot?:string)=> {
++  const root=existingRoot ?? mkdtempSync(join(tmpdir(),"oai-native-management-")),storePath=join(root,"sessions.json");
 +  const cfg={session:{store:storePath}};
-+  const core=createGatewayCore({storageRoot:join(root,"gateway"),attachmentMasterKey:Buffer.alloc(32,9)});
++  const core=createCore({storageRoot:join(root,"gateway"),attachmentMasterKey:Buffer.alloc(32,9)});
 +  const runtime:OpenClawInboundRuntime={inbound:{run:async()=>({}),buildContext:input=>input},
 +    routing:{resolveAgentRoute:input=>resolveAgentRoute(input as Parameters<typeof resolveAgentRoute>[0])},
 +    session:{resolveStorePath:()=>storePath,recordInboundSession:async()=>{}},reply:{dispatchReplyWithBufferedBlockDispatcher:async()=>({})}};
@@ -2580,12 +2727,12 @@ index 0000000..3edf77f
 +    expect(result.error).toBeUndefined();return (result.data!.conversation as {conversationId:string}).conversationId;
 +  };
 +  const nativeStore=()=>JSON.parse(readFileSync(storePath,"utf8")) as Record<string,Record<string,unknown>>;
-+  return {core,calls,create,request,nativeStore,nativeRequest,storePath};
++  return {core,calls,create,request,nativeStore,nativeRequest,storePath,root};
 +};
 +
-+describe.each([{flavor:"source",register:registerSource},{flavor:"runtime",register:registerRuntime}])("$flavor native conversation management",({register})=> {
++describe.each([{flavor:"source",register:registerSource,createCore:createGatewayCore},{flavor:"runtime",register:registerRuntime,createCore:createRuntimeCore}])("$flavor native conversation management",({register,createCore})=> {
 +  it("archives/restores/deletes the real host store and preserves another account's native session",async()=> {
-+    const {core,calls,create,request,nativeStore}=setup(register);
++    const {core,calls,create,request,nativeStore}=setup(register,createCore);
 +    const cid=await create("cc_one","req_create_one"),other=await create("cc_other","req_create_other");
 +    const account=await core.openGatewayAccount(context.accountId);
 +    const binding=account.conversations.workflow.get<{sessionKey:string}>(`host-session:${cid}`)!;
@@ -2610,7 +2757,7 @@ index 0000000..3edf77f
 +  });
 +
 +  it("shares folders and custom order across devices with optimistic conflicts and account isolation",async()=> {
-+    const {create,request}=setup(register);const cid=await create("cc_one","req_create");
++    const {create,request}=setup(register,createCore);const cid=await create("cc_one","req_create");
 +    const first=(await request("GET","/conversations?limit=1")).data!;
 +    const body={expectedRevision:0,sortMode:"custom",customOrder:[cid],folders:[{folderId:"folder_work",name:"Work"}],assignments:{[cid]:"folder_work"}};
 +    const saved=(await request("PUT","/conversation-organization",body,"req_organize")).data!;
@@ -2625,7 +2772,7 @@ index 0000000..3edf77f
 +  });
 +
 +  it("refuses queued work before native deletion and projects external native archive/deletion",async()=> {
-+    const {core,calls,create,request,nativeStore,nativeRequest}=setup(register);
++    const {core,calls,create,request,nativeStore,nativeRequest}=setup(register,createCore);
 +    const cid=await create("cc_busy","req_create");const account=await core.openGatewayAccount(context.accountId);
 +    let sessionKey:string;
 +    try {
@@ -2640,6 +2787,151 @@ index 0000000..3edf77f
 +    expect((await request("GET","/conversations")).data!.conversations).toEqual(expect.arrayContaining([expect.objectContaining({conversationId:external,archived:true})]));
 +    await nativeRequest("sessions.delete",{key:binding.sessionKey,deleteTranscript:true});
 +    expect((await request("GET","/conversations")).data!.conversations).not.toEqual(expect.arrayContaining([expect.objectContaining({conversationId:external})]));
++  });
++
++  it("migrates native materialization evidence before the first upgraded list and keeps untouched legacy bindings",async()=> {
++    const {core,request,nativeStore,nativeRequest,storePath}=setup(register,createCore);
++    const account=await core.openGatewayAccount(context.accountId);
++    const deleted:Array<{id:string;clientId:string;sessionKey:string}>=[];
++    let untouched:string,failedBeforeAdoption:string;
++    try {
++      for(const evidence of ["completed","adopted-failure","native-history","checkpoint"] as const) {
++        const clientId=`cc_legacy_${evidence}`;
++        const id=account.conversations.create({clientConversationId:clientId,correlationId:"cor_legacy"}).conversationId;
++        const accepted=evidence==="completed" || evidence==="adopted-failure" ? account.conversations.acceptMessage({conversationId:id,clientMessageId:`cm_${evidence}`,text:"Legacy send",attachmentIds:[],deviceId:"dev_one",requestId:`req_${evidence}`,correlationId:"cor_legacy"}) : undefined;
++        const sessionKey=`agent:main:legacy_${evidence}`;
++        await nativeRequest("sessions.create",{key:sessionKey});
++        // Seed the old binding format, before route observations existed.
++        account.conversations.workflow.put(`host-session:${id}`,{sessionKey,storePath});
++        if(accepted) {
++          account.conversations.markDelivered(accepted.messageId,"cor_legacy");
++          if(evidence==="completed") {
++            account.conversations.markCompleted(accepted.messageId,"cor_legacy");
++            account.store.database.prepare("UPDATE messages SET delivered_at=NULL WHERE message_id=?").run(accepted.messageId);
++          }
++          else account.conversations.markFailed(accepted.messageId,"MODEL_REQUEST_REJECTED","cor_legacy");
++          account.store.database.prepare("DELETE FROM account_metadata WHERE key=?").run(`native-checkpoint:${id}`);
++        } else {
++          const sessionId=String(nativeStore()[sessionKey]!.sessionId);
++          writeFileSync(join(dirname(storePath),`${sessionId}.jsonl`),JSON.stringify({type:"message",id:"legacy_native_reply",timestamp:new Date().toISOString(),message:{role:"assistant",content:"Legacy reply"}})+"\n");
++          if(evidence==="native-history") await account.conversations.listMessages(id);
++          else account.conversations.checkpointHostHistory(id);
++        }
++        account.store.database.prepare("DELETE FROM account_metadata WHERE key=?").run(`conversation-native-seen:${id}`);
++        expect(account.store.database.prepare("SELECT 1 FROM account_metadata WHERE key=?").get(`conversation-native-seen:${id}`)).toBeUndefined();
++        deleted.push({id,clientId,sessionKey});
++      }
++      untouched=account.conversations.create({clientConversationId:"cc_untouched",correlationId:"cor_legacy"}).conversationId;
++      account.conversations.bindHostSession(untouched,{sessionKey:"agent:main:never_materialized",storePath});
++      failedBeforeAdoption=account.conversations.create({clientConversationId:"cc_failed_before_adoption",correlationId:"cor_legacy"}).conversationId;
++      const queued=account.conversations.acceptMessage({conversationId:failedBeforeAdoption,clientMessageId:"cm_never_adopted",text:"Never adopted",attachmentIds:[],deviceId:"dev_one",requestId:"req_never_adopted",correlationId:"cor_legacy"});
++      account.conversations.markFailed(queued.messageId,"MODEL_REQUEST_REJECTED","cor_legacy");
++      account.conversations.bindHostSession(failedBeforeAdoption,{sessionKey:"agent:main:failed_before_native_admission",storePath});
++      // Evidence must match this conversation exactly, including literal underscores.
++      account.conversations.workflow.put(`history-native:${untouched.replace("_","X")}:unrelated`,"msg_unrelated");
++      account.conversations.workflow.put(`native-checkpoint:${untouched}`,{storePath,sessionKey:"agent:main:another_route",watermark:{sessionId:"unrelated",fileId:"1:2",byteLength:1}});
++      account.conversations.management.replace({expectedRevision:0,sortMode:"custom",customOrder:deleted.map(row=>row.id),folders:[{folderId:"legacy",name:"Legacy"}],assignments:Object.fromEntries(deleted.map(row=>[row.id,"legacy"]))},"cor_legacy");
++    } finally {account.close();}
++    for(const row of deleted) await nativeRequest("sessions.delete",{key:row.sessionKey,deleteTranscript:true});
++    const list=(await request("GET","/conversations")).data!.conversations as Array<{conversationId:string}>;
++    expect(new Set(list.map(row=>row.conversationId))).toEqual(new Set([untouched!,failedBeforeAdoption!]));
++    const reopened=await core.openGatewayAccount(context.accountId);
++    try {
++      expect(reopened.conversations.management.organization()).toMatchObject({customOrder:[],assignments:{}});
++      for(const row of deleted) {
++        expect(reopened.conversations.management.state(row.id).deleted).toBe(true);
++        expect(()=>reopened.conversations.create({clientConversationId:row.clientId,correlationId:"cor_retry"})).toThrow("CONVERSATION_NOT_FOUND");
++      }
++    } finally {reopened.close();}
++    // Another account's materialized receipt cannot delete an untouched binding.
++    const other=await core.openGatewayAccount("acct_other");
++    try {other.conversations.workflow.put(`history-native:${untouched!}:foreign`,"msg_foreign");} finally {other.close();}
++    for(const row of deleted) await nativeRequest("sessions.create",{key:row.sessionKey});
++    expect((await request("GET","/conversations")).data!.conversations).toHaveLength(2);
++    for(const row of deleted) expect((await request("GET",`/conversations/${row.id}/messages`)).error?.code).toBe("CONVERSATION_NOT_FOUND");
++  });
++
++  it("remembers successful native creation when an empty session is deleted before its first list",async()=> {
++    const {core,create,request,nativeRequest}=setup(register,createCore);
++    const id=await create("cc_empty_native","req_create_empty");
++    const account=await core.openGatewayAccount(context.accountId);
++    let sessionKey:string;
++    try {sessionKey=account.conversations.workflow.get<{sessionKey:string}>(`host-session:${id}`)!.sessionKey;}
++    finally {account.close();}
++    await nativeRequest("sessions.delete",{key:sessionKey,deleteTranscript:true});
++    expect((await request("GET","/conversations")).data!.conversations).toEqual([]);
++    expect((await request("GET",`/conversations/${id}/messages`)).error?.code).toBe("CONVERSATION_NOT_FOUND");
++  });
++
++  it.each(["legacy-receipt","observed-native"] as const)("isolates %s evidence when a trusted binding changes before native materialization",async evidence=> {
++    const {core,nativeRequest,storePath}=setup(register,createCore);
++    const account=await core.openGatewayAccount(context.accountId);
++    let id:string;
++    try {
++      id=account.conversations.create({clientConversationId:`cc_rebound_${evidence}`,correlationId:"cor_rebound"}).conversationId;
++      const accepted=account.conversations.acceptMessage({conversationId:id,clientMessageId:"cm_old_binding",text:"Old route",attachmentIds:[],deviceId:"dev_one",requestId:"req_old_binding",correlationId:"cor_rebound"});
++      const oldBinding={storePath,sessionKey:`agent:main:old_${evidence}`};
++      await nativeRequest("sessions.create",{key:oldBinding.sessionKey});
++      account.conversations.workflow.put(`host-session:${id}`,oldBinding);
++      account.conversations.markDelivered(accepted.messageId,"cor_rebound");
++      account.conversations.markCompleted(accepted.messageId,"cor_rebound");
++      if(evidence==="legacy-receipt") account.store.database.prepare("DELETE FROM account_metadata WHERE key=?").run(`conversation-native-seen:${id}`);
++      else account.conversations.management.record(id);
++      const rebound={storePath,sessionKey:`agent:main:new_${evidence}`};
++      account.conversations.bindHostSession(id,rebound);
++      expect(account.conversations.management.record(id)).toMatchObject({conversationId:id});
++      expect(()=>account.conversations.management.requireWritable(id)).not.toThrow();
++    } finally {account.close();}
++    const reopened=await core.openGatewayAccount(context.accountId);
++    try {
++      expect(reopened.conversations.management.record(id!)).toMatchObject({conversationId:id!});
++      const binding=reopened.conversations.workflow.get<{sessionKey:string}>(`host-session:${id!}`)!;
++      await nativeRequest("sessions.create",{key:binding.sessionKey});
++      reopened.conversations.checkpointHostHistory(id!);
++      await nativeRequest("sessions.delete",{key:binding.sessionKey,deleteTranscript:true});
++      expect(()=>reopened.conversations.management.record(id!)).toThrow("CONVERSATION_NOT_FOUND");
++      expect(()=>reopened.conversations.bindHostSession(id!,{storePath,sessionKey:"agent:main:cannot_revive"})).toThrow("CONVERSATION_NOT_FOUND");
++      expect(reopened.conversations.management.state(id!).deleted).toBe(true);
++    } finally {reopened.close();}
++  });
++
++  it.each(["archive","delete"] as const)("recovers native %s after receipt persistence fails and the gateway restarts",async operation=> {
++    const initial=setup(register,createCore);
++    const id=await initial.create(`cc_receipt_loss_${operation}`,"req_create");
++    const account=await initial.core.openGatewayAccount(context.accountId);
++    let sessionKey:string;
++    try {
++      sessionKey=account.conversations.workflow.get<{sessionKey:string}>(`host-session:${id}`)!.sessionKey;
++      account.store.database.exec("CREATE TRIGGER fail_management_receipt BEFORE INSERT ON idempotency_ledger WHEN NEW.request_id='req_receipt_loss' BEGIN SELECT RAISE(ABORT,'injected receipt persistence failure'); END");
++    } finally {account.close();}
++    const method=operation==="delete" ? "DELETE" : "PATCH",body=operation==="archive" ? {archived:true} : undefined;
++    const lost=await initial.request(method,`/conversations/${id}`,body,"req_receipt_loss");
++    expect(lost.error?.code).toBe("OUTCOME_UNKNOWN");
++    const nativeAfterMutation=initial.nativeStore();
++    if(operation==="delete") expect(nativeAfterMutation[sessionKey!]).toBeUndefined();
++    else expect(nativeAfterMutation[sessionKey!]!.archivedAt).toBeTypeOf("number");
++    const persisted=await initial.core.openGatewayAccount(context.accountId);
++    try {
++      expect(persisted.conversations.management.state(id)).toMatchObject({pending:true,pendingRequestId:"dev_one:req_receipt_loss"});
++      expect(()=>persisted.conversations.bindHostSession(id,{storePath:initial.storePath,sessionKey:"agent:main:cannot_clear_pending"})).toThrow("CONVERSATION_BUSY");
++      expect(persisted.store.database.prepare("SELECT 1 FROM idempotency_ledger WHERE request_id='req_receipt_loss'").get()).toBeUndefined();
++      persisted.store.database.exec("DROP TRIGGER fail_management_receipt");
++    } finally {persisted.close();}
++    const restarted=setup(register,createCore,initial.root);
++    expect((await restarted.request(method,`/conversations/${id}`,body,"req_new_key")).error?.code).toBe("OUTCOME_UNKNOWN");
++    expect((await restarted.request(method,`/conversations/${id}`,body,"req_receipt_loss","dev_two")).error?.code).toBe("OUTCOME_UNKNOWN");
++    expect((await restarted.request("PATCH",`/conversations/${id}`,{archived:operation!=="archive"},"req_receipt_loss")).error?.code).toBe("IDEMPOTENCY_CONFLICT");
++    const recovered=await restarted.request(method,`/conversations/${id}`,body,"req_receipt_loss");
++    expect(recovered.error).toBeUndefined();
++    expect(recovered.data).toMatchObject(operation==="delete" ? {conversationId:id,deleted:true} : {conversation:{conversationId:id,archived:true}});
++    expect(restarted.nativeStore()).toEqual(nativeAfterMutation);
++    expect(restarted.calls.filter(call=>call.method==="sessions.patch" || call.method==="sessions.delete")).toHaveLength(0);
++    expect(await restarted.request(method,`/conversations/${id}`,body,"req_receipt_loss")).toEqual(recovered);
++    const settled=await restarted.core.openGatewayAccount(context.accountId);
++    try {
++      expect(settled.conversations.management.state(id).pending).toBeUndefined();
++      expect(settled.events.readAfter(null).filter(event=>event.eventType==="conversation.updated" && event.payload.conversationId===id)).toHaveLength(1);
++    } finally {settled.close();}
 +  });
 +});
 +
