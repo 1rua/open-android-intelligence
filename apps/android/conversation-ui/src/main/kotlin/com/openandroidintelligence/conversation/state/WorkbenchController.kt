@@ -32,6 +32,11 @@ import com.openandroidintelligence.conversation.ports.AgentCommandCatalogReposit
 import com.openandroidintelligence.conversation.ports.ConversationRepository
 import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.ConversationSummary
+import com.openandroidintelligence.conversation.ports.ConversationOrganization
+import com.openandroidintelligence.conversation.ports.ConversationFolder
+import com.openandroidintelligence.conversation.ports.ConversationSortMode
+import com.openandroidintelligence.conversation.ports.completeConversations
+import com.openandroidintelligence.conversation.ports.sort
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.TimelineMessage
@@ -141,9 +146,14 @@ data class WorkbenchUiState(
     val hasRecoverableSubmissions: Boolean = false,
     /** 本地发送身份装载完成之前不允许把旧消息误作一条新提交。 */
     val historyHydrated: Boolean = true,
+    val organization: ConversationOrganization = ConversationOrganization(),
+    val conversationManagementSupported: Boolean = false,
+    val managingThreads: Boolean = false,
+    val busyThreadIds: Set<String> = emptySet(),
 ) {
     val canSend: Boolean get() = isOnline && historyHydrated && (draft.isNotBlank() || attachments.isNotEmpty()) &&
-        composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
+        !managingThreads && !activeThreadArchived && composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
+    val activeThreadArchived: Boolean get() = (threads as? Loadable.Ready)?.value?.any { it.id.value == activeThreadId && it.archived } == true
 }
 
 /**
@@ -189,6 +199,9 @@ class WorkbenchController(
     private val persistenceDispatcher: CoroutineDispatcher = mediaDispatcher,
     private val allowSending: Boolean = true,
     private val languageCode: String = "zh-CN",
+    private val supportsConversationManagement: Boolean = false,
+    private val externalBusyThreadIds: () -> Set<String> = { emptySet() },
+    private val onClosed: () -> Unit = {},
 ) : AutoCloseable {
     private val controllerJob=SupervisorJob(scope.coroutineContext[Job])
     private val workScope=CoroutineScope(scope.coroutineContext+controllerJob)
@@ -236,11 +249,17 @@ class WorkbenchController(
     // The capability is written in from the start: the data class default only
     // says "no negotiated fact yet", so a Gateway that did offer cards would
     // otherwise read as one that never offered them until the first update ran.
-    private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,isOnline=allowSending))
+    private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,isOnline=allowSending,
+        conversationManagementSupported=supportsConversationManagement))
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
     private val activeWork = WorkbenchActiveWork()
     /** Live sends across every conversation, including work not yet acknowledged by the Gateway. */
     val hasActiveWork: StateFlow<Boolean> = activeWork.active
+    /** Excludes other surfaces so a host can combine controllers without feeding busy state back. */
+    val ownedBusyThreadIds: Set<String> get() = managementBusyThreadIds(_state.value)
+    /** Picker results belong to the exact composer that launched them. */
+    var attachmentTargetRevision: Long = 0
+        private set
 
     /** Server-mirrored messages for the active thread, by message id. */
     private val submittingBatches=mutableSetOf<String>()
@@ -584,6 +603,12 @@ class WorkbenchController(
     private var replyWatchdog: Job? = null
     private var awaitingReplyInThread: String? = null
     private var activeThreadId: String? = null
+    private var threadRequestEpoch = 0L
+    private var organizationMutationEpoch = 0L
+    private var threadsSnapshotRevision: Long? = null
+    private var managementJob: Job? = null
+    /** Once acknowledged deleted, replayed frames may not reopen this identity. */
+    private val deletedThreads = mutableSetOf<String>()
 
     /**
      * The one `/new` request waiting for the Agent's answer.
@@ -718,6 +743,7 @@ class WorkbenchController(
      * be blocked forever by a rename that never happened.
      */
     fun renameThread(threadId: String, newTitle: String) {
+        if (closed || newTitle.isBlank()) return
         val previousTitle = if (activeThreadId == threadId) {
             _state.value.activeThreadTitle
         } else {
@@ -753,6 +779,137 @@ class WorkbenchController(
         renameThread(id, newTitle)
     }
 
+    private fun beginManagement(threadId: String? = null, operation: suspend () -> Unit) {
+        if (closed) return
+        if (!supportsConversationManagement || !allowSending) {
+            update { it.copy(notice="CONVERSATION_MANAGEMENT_UNSUPPORTED") }
+            return
+        }
+        if (_state.value.managingThreads) return
+        if (threadId != null && threadId in (ownedBusyThreadIds + externalBusyThreadIds())) {
+            update { it.copy(notice="CONVERSATION_BUSY:请等待当前发送和回复结束") }
+            return
+        }
+        organizationMutationEpoch++
+        threadRequestEpoch++ // A list requested before this commit cannot restore old metadata.
+        update { it.copy(managingThreads=true, notice=null) }
+        managementJob=workScope.launch {
+            try { operation() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                update { it.copy(notice="CONVERSATION_MANAGEMENT_FAILED:${errorCodeOf(failure)}") }
+            } finally {
+                update { it.copy(managingThreads=false) }
+                refreshThreads()
+            }
+        }
+    }
+
+    fun archiveThread(threadId: String, archived: Boolean = true) = beginManagement(threadId) {
+        repository.setArchived(threadId, archived)
+        update { state -> state.copy(threads=(state.threads as? Loadable.Ready)?.let { list ->
+            Loadable.Ready(list.value.map { if (it.id.value == threadId) it.copy(archived=archived) else it })
+        } ?: state.threads) }
+    }
+
+    fun deleteThread(threadId: String) = beginManagement(threadId) {
+        repository.deleteConversation(threadId)
+        deletedThreads.add(threadId)
+        sendAtomsEpoch++
+        sendAtomsByThread.remove(threadId)
+        snapshotDeletedIdsByThread.remove(threadId)
+        userRenamedThreads.remove(threadId)
+        creationReceipts.remove(threadId)
+        approvalCards.entries.removeAll { it.value.request.conversationId?.value == threadId }
+        historicalAttachments.snapshot().keys.filter { it.threadId == threadId }.forEach { historicalAttachments.remove(it) }
+        val organization = _state.value.organization
+        update { state ->
+            val remaining=(state.threads as? Loadable.Ready)?.value.orEmpty().filterNot { it.id.value == threadId }
+            state.copy(threads=if (remaining.isEmpty()) Loadable.Empty else Loadable.Ready(remaining),
+                organization=organization.copy(customOrder=organization.customOrder.filterNot { it == threadId }, assignments=organization.assignments-threadId))
+        }
+        if (activeThreadId == threadId) leaveManagedThread(threadId)
+    }
+
+    /** Completed destructive operations release timeline jobs and the host's active event scope. */
+    private fun leaveManagedThread(threadId: String) {
+        if (activeThreadId != threadId) return
+        attachmentTargetRevision++
+        cancelPendingSubmission()
+        threadEpoch++
+        timelineJob?.cancel()
+        disarmReplyWatchdog()
+        activeThreadId=null
+        onActiveThreadChanged(null)
+        mirrored.clear(); mirroredRevisions.clear(); messageStatusRevisions.clear()
+        messageStatusesById.clear(); messageStatusesByClientId.clear()
+        failedSubmission=failedSubmission?.takeUnless { it.conversationId == threadId }
+        update { it.copy(activeThreadId=null, activeThreadTitle="", timeline=Loadable.Empty, pendingBatch=emptyList(),
+            generation=GenerationState.IDLE, composer=ComposerState.EDITING, historyHydrated=true) }
+        if (_state.value.draft.isBlank() && _state.value.attachments.isEmpty()) {
+            (_state.value.threads as? Loadable.Ready)?.value?.firstOrNull { !it.archived && it.id.value !in deletedThreads }?.let { openThread(it.id.value) }
+        }
+    }
+
+    private fun changeOrganization(change: (ConversationOrganization) -> ConversationOrganization) = beginManagement {
+        // Read before every CAS: an action from this surface must preserve changes made elsewhere.
+        val current=repository.readOrganization()
+        val committed=repository.updateOrganization(current.revision, change(current))
+        installOrganization(committed)
+    }
+
+    private fun installOrganization(organization: ConversationOrganization) {
+        if (organization.revision < _state.value.organization.revision) return
+        update { state -> state.copy(organization=organization, threads=(state.threads as? Loadable.Ready)?.let {
+            Loadable.Ready(organization.sort(it.value))
+        } ?: state.threads) }
+    }
+
+    fun createFolder(name: String) {
+        val clean=name.trim()
+        if (clean.isBlank()) return
+        val id="folder_"+UUID.randomUUID().toString()
+        changeOrganization { it.copy(folders=it.folders+ConversationFolder(id,clean)) }
+    }
+    fun renameFolder(folderId: String, name: String) {
+        val clean=name.trim()
+        if (clean.isBlank()) return
+        changeOrganization { state ->
+            check(state.folders.any { it.folderId == folderId }) { "FOLDER_NOT_FOUND" }
+            state.copy(folders=state.folders.map { if (it.folderId == folderId) it.copy(name=clean) else it })
+        }
+    }
+    fun deleteFolder(folderId: String) = changeOrganization { state ->
+        state.copy(folders=state.folders.filterNot { it.folderId == folderId }, assignments=state.assignments.filterValues { it != folderId })
+    }
+    fun assignThreadToFolder(threadId: String, folderId: String?) = changeOrganization { state ->
+        check(folderId == null || state.folders.any { it.folderId == folderId }) { "FOLDER_NOT_FOUND" }
+        state.copy(assignments=if (folderId == null) state.assignments-threadId else state.assignments+(threadId to folderId))
+    }
+    fun setThreadSortMode(mode: ConversationSortMode) = changeOrganization { it.copy(sortMode=mode) }
+    fun reorderThreads(orderedIds: List<String>) = changeOrganization { state ->
+        check(orderedIds.size == orderedIds.toSet().size) { "CONVERSATION_ORDER_INVALID" }
+        // Reordering a filtered folder retains every other conversation's relative order.
+        val supplied=orderedIds.toSet()
+        val visible=state.sort((_state.value.threads as? Loadable.Ready)?.value.orEmpty()).map { it.id.value }
+        val current=(if (state.sortMode == ConversationSortMode.CUSTOM) state.customOrder+visible else visible+state.customOrder).distinct()
+        val iterator=orderedIds.iterator()
+        val merged=current.map { id -> if (id in supplied && iterator.hasNext()) iterator.next() else id }.toMutableList()
+        while (iterator.hasNext()) merged.add(iterator.next())
+        state.copy(sortMode=ConversationSortMode.CUSTOM, customOrder=merged.distinct())
+    }
+
+    private fun managementBusyThreadIds(state: WorkbenchUiState): Set<String> = buildSet {
+        addAll(activeWork.conversationIds())
+        pendingSubmission?.conversationId?.let(::add)
+        frozenBatches.values.forEach { add(it.conversationId) }
+        collectingUnits.values.forEach { add(it.first) }
+        pendingCreation?.sourceThreadId?.let(::add)
+        if (state.generation in setOf(GenerationState.QUEUED,GenerationState.RUNNING,GenerationState.CANCEL_REQUESTED,GenerationState.OUTCOME_UNKNOWN)) {
+            state.activeThreadId?.let(::add)
+        }
+    }
+
     override fun close() {
         if (closed) return
         closingJobs=controllerJob.children.toList()
@@ -781,6 +938,7 @@ class WorkbenchController(
         generationJob?.cancel()
         disarmReplyWatchdog()
         batcher.close()
+        onClosed()
     }
 
     /** 正常账号切换先提交，再等所有旧 IO 收尾；即时认证撤销仍使用同步 close。 */
@@ -817,6 +975,8 @@ class WorkbenchController(
 
     init {
         persistence?.load()?.let { saved ->
+            deletedThreads.addAll(saved.deletedThreadIds)
+            threadsSnapshotRevision=saved.threadsSnapshotRevision
             hydrateInitialSendAtoms(buildSet {
                 saved.threadId?.let(::add)
                 saved.submission?.conversationId?.let(::add)
@@ -832,7 +992,8 @@ class WorkbenchController(
             failedSubmission = saved.submission?.let { DraftSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) }
             saved.threadId?.let(::reconcileDeletedRecoveryUnits)
             val restoredRows = renderTimeline()
-            _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.threads),
+            _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(saved.threads)),
+                organization=saved.organization,
                 activeThreadId = saved.threadId, activeThreadTitle = saved.title, draft = saved.draft.ifBlank { failedSubmission?.text.orEmpty() },
                 attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } }, timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
                 composer = if (failedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
@@ -846,6 +1007,8 @@ class WorkbenchController(
             if (activeThreadId != null) { observeThreadEvents(); activeThreadId?.let(::reloadTimeline) }
         }
         refreshThreads()
+        if (supportsConversationManagement) observeThreadEvents()
+        workScope.launch { activeWork.ids.collect { update { it } } }
         loadCatalog()
         observeStreamHealth()
         recoverKnownMedia()
@@ -902,6 +1065,9 @@ class WorkbenchController(
                 ) {
                     activeThreadId?.let(::reloadTimeline)
                 }
+                if (health == com.openandroidintelligence.conversation.model.StreamHealth.LIVE && previous != health) {
+                    refreshThreads()
+                }
                 if (health == com.openandroidintelligence.conversation.model.StreamHealth.FAILED) {
                     update { it.copy(notice = "EVENTS_FAILED:EVENT_STREAM_FAILED") }
                 }
@@ -954,17 +1120,45 @@ class WorkbenchController(
     }
 
     fun refreshThreads() {
-        if (closed) return
-        update { if (it.threads is Loadable.Ready) it else it.copy(threads = Loadable.Loading) }
+        if (closed || _state.value.managingThreads) return
+        val epoch=++threadRequestEpoch
+        val mutationEpoch=organizationMutationEpoch
+        val requestedScope=scopeFactory()
+        val requestedThreadEpoch=threadEpoch
+        val requestedActiveId=activeThreadId
+        update { if (it.threads is Loadable.Ready || it.threads is Loadable.Empty) it else it.copy(threads = Loadable.Loading) }
         workScope.launch {
-            val result = Result
-                .runCatching { repository.listConversations(scopeFactory(), PageRequest()) }
-                .toLoadable { page -> page.conversations.isEmpty() }
-                .map { page -> page.conversations }
-            update { if (result is Loadable.Failed && it.threads is Loadable.Ready) it.copy(notice="THREAD_SYNC_FAILED:${result.code}") else it.copy(threads = result) }
-            // Open the most recent thread automatically on a first successful load.
-            if (result is Loadable.Ready && activeThreadId == null && bootstrapJob?.isActive != true) {
-                result.value.maxByOrNull { summary -> summary.updatedAt }?.let { openThread(it.id.value) }
+            try {
+                val page=repository.completeConversations(requestedScope)
+                val organization=if (supportsConversationManagement) repository.readOrganization() else _state.value.organization
+                if (closed || epoch != threadRequestEpoch || mutationEpoch != organizationMutationEpoch || requestedScope != scopeFactory()) return@launch
+                val snapshotRevision=page.snapshotRevision
+                if (snapshotRevision != null && threadsSnapshotRevision?.let { snapshotRevision < it } == true) return@launch
+                threadsSnapshotRevision=snapshotRevision
+                val installedOrganization=organization.takeUnless { it.revision < _state.value.organization.revision } ?: _state.value.organization
+                val threads=installedOrganization.sort(page.conversations.filterNot { it.id.value in deletedThreads })
+                update { state -> state.copy(organization=installedOrganization,
+                    threads=if (threads.isEmpty()) Loadable.Empty else Loadable.Ready(threads),
+                    // A title event's list refresh must honor the same manual-rename protection.
+                    activeThreadTitle=if (activeThreadId in userRenamedThreads) state.activeThreadTitle
+                        else threads.firstOrNull { it.id.value == activeThreadId }?.title ?: state.activeThreadTitle) }
+                val active=activeThreadId
+                if (supportsConversationManagement && page.authoritative && active != null && requestedActiveId == active && requestedThreadEpoch == threadEpoch &&
+                    bootstrapJob?.isActive != true && !_state.value.creatingThread &&
+                    threads.none { it.id.value == active }) {
+                    leaveManagedThread(active)
+                }
+                if (activeThreadId == null && bootstrapJob?.isActive != true && _state.value.draft.isBlank() &&
+                    _state.value.attachments.isEmpty() && pendingSubmission == null && failedSubmission == null) {
+                    threads.firstOrNull { !it.archived }?.let { openThread(it.id.value) }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                if (epoch != threadRequestEpoch || requestedScope != scopeFactory()) return@launch
+                update { state ->
+                    if (state.threads is Loadable.Ready || state.threads is Loadable.Empty) state.copy(notice="THREAD_SYNC_FAILED:${errorCodeOf(failure)}")
+                    else state.copy(threads=Loadable.Failed(errorCodeOf(failure)))
+                }
             }
         }
     }
@@ -986,8 +1180,9 @@ class WorkbenchController(
     }
 
     fun openThread(threadId: String) {
-        if (closed) return
+        if (closed || threadId in deletedThreads) return
         if (activeThreadId == threadId) return
+        attachmentTargetRevision++
         cancelPendingSubmission()
         threadEpoch++
         activeThreadId = threadId
@@ -1076,7 +1271,8 @@ class WorkbenchController(
 
     /** Creates a Gateway-owned conversation without sending a slash command. */
     fun createThread() {
-        if (closed || _state.value.creatingThread || bootstrapJob?.isActive == true) return
+        if (closed || _state.value.managingThreads || _state.value.creatingThread || bootstrapJob?.isActive == true) return
+        attachmentTargetRevision++
         val sourceThreadId = activeThreadId
         val sourceEpoch = threadEpoch
         cancelPendingSubmission()
@@ -1623,15 +1819,22 @@ class WorkbenchController(
      * Prepares and starts uploading a local attachment through the real three-step contract.
      */
     fun addAttachment(selection: com.openandroidintelligence.conversation.ports.LocalAttachmentSelection) {
+        if (closed || _state.value.managingThreads || _state.value.activeThreadArchived) return
         val coordinator = attachmentCoordinator ?: run {
             update { it.copy(notice = "ATTACHMENT_UNAVAILABLE:NO_COORDINATOR") }
             return
         }
         cancelPendingSubmission()
         draftRevision++
+        val targetRevision=attachmentTargetRevision
+        val targetThreadEpoch=threadEpoch
         workScope.launch {
             val draft = coordinator.prepare(selection)
             val draftId = draft.id.value
+            if (closed || targetRevision != attachmentTargetRevision || targetThreadEpoch != threadEpoch) {
+                coordinator.discard(draftId)
+                return@launch
+            }
             selection.previewBytes?.let { attachmentPreviews[draftId] = it }
             update { state ->
                 state.copy(attachments = state.attachments + draft)
@@ -1643,6 +1846,7 @@ class WorkbenchController(
     /** The same live gate is used before recording and before submitting its attachment. */
     fun canSendVoiceAttachment(expectedThreadId: String?): Boolean =
         attachmentCoordinator != null && !closed && allowSending && activeThreadId == expectedThreadId &&
+            !_state.value.managingThreads && !_state.value.activeThreadArchived &&
             (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
             !creationBlocksActiveThread() && pendingSubmission == null &&
             _state.value.composer !in setOf(ComposerState.SUBMITTING,ComposerState.WAITING_ATTACHMENTS) &&
@@ -1704,6 +1908,7 @@ class WorkbenchController(
             beginLegacyTurn(expectedThreadId)
             generationFactRevision++
             pendingSubmission = submission
+            attachmentTargetRevision++
             activeWork.begin(submission.clientMessageId, submission.conversationId)
             submitted = true
             sendJob = submitWhenAttachmentsVerified()
@@ -1966,6 +2171,7 @@ class WorkbenchController(
             update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:请先确认并查询未确认消息") }
             return
         }
+        attachmentTargetRevision++
         pendingSubmission = failedSubmission?.takeIf {
             it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId &&
                 it.conversationId?.let { id -> atomsFor(id)[it.clientMessageId]?.isDeleted } != true
@@ -2796,7 +3002,8 @@ class WorkbenchController(
     fun onForegrounded() {
         if (closed) return
         restartEventStream()
-        retryTimeline()
+        refreshThreads()
+        activeThreadId?.let(::reloadTimeline)
     }
 
     /**
@@ -2863,6 +3070,26 @@ class WorkbenchController(
                 }
                 .collect { event ->
                     if (!isActive) return@collect
+                    if (event is VerifiedConversationEvent.ConversationsChanged) {
+                        if (event.eventId.isNotBlank() && event.eventId in handledEventIds) return@collect
+                        if (event.deleted) event.conversationId?.value?.let { id ->
+                            deletedThreads.add(id)
+                            sendAtomsByThread.remove(id)
+                            if (activeThreadId == id) leaveManagedThread(id)
+                        }
+                        refreshThreads()
+                        markEventHandled(event.eventId)
+                        return@collect
+                    }
+                    val eventThreadId=when (event) {
+                        is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value
+                        is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value
+                        is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
+                        is VerifiedConversationEvent.TitleUpdated -> event.conversationId.value
+                        is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
+                        else -> null
+                    }
+                    if (eventThreadId in deletedThreads) return@collect
                     // 未携带线程身份的正文或删除事件不能借用当前屏幕的线程身份。
                     if ((event is VerifiedConversationEvent.TimelineUpsert && event.message.conversationId == null) ||
                         (event is VerifiedConversationEvent.TimelineTombstoned && event.conversationId == null)) return@collect
@@ -2876,6 +3103,7 @@ class WorkbenchController(
                     // applied when one is, not be swallowed as already seen.
                     if (event.eventId.isNotBlank() && handledEventIds.contains(event.eventId)) return@collect
                     when (event) {
+                        is VerifiedConversationEvent.ConversationsChanged -> Unit // handled before timeline routing
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                             val eventConvId = event.conversationId?.value
                             val correlationId = event.correlationId
@@ -3639,7 +3867,9 @@ class WorkbenchController(
             mirrored.values.toList(), mirroredRevisions.toMap(), ui.draft, draftRevision,
             ui.attachments.filterNot { draft -> pending?.voiceAttempt != null && draft.id.value in pending.attachmentIds },
             pending?.let { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) },
-            userRenamedThreads.toSet(), handledEventIds.toSet(), frozenBatches.values.toList()+collectingUnits.values.groupBy { it.first }.map { (id,units) -> SavedBatch("collecting",id,units.map { it.second },false) })
+            userRenamedThreads.toSet(), handledEventIds.toSet(), frozenBatches.values.toList()+collectingUnits.values.groupBy { it.first }.map { (id,units) -> SavedBatch("collecting",id,units.map { it.second },false) },
+            organization=ui.organization, threadsHydrated=ui.threads is Loadable.Ready || ui.threads is Loadable.Empty,
+            threadsSnapshotRevision=threadsSnapshotRevision, deletedThreadIds=deletedThreads.toSet())
         pendingCheckpoint = checkpoint
         if (checkpointJob?.isActive == true) return
         checkpointJob = workScope.launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
@@ -3691,7 +3921,9 @@ class WorkbenchController(
             val recoverable = frozenBatches.values.any { it.conversationId == transformed.activeThreadId } ||
                 collectingUnits.values.any { it.first == transformed.activeThreadId } ||
                 transformed.activeThreadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true
-            val next = transformed.copy(hasRecoverableSubmissions = recoverable)
+            val next = transformed.copy(hasRecoverableSubmissions = recoverable,
+                conversationManagementSupported=supportsConversationManagement,
+                busyThreadIds=managementBusyThreadIds(transformed)+externalBusyThreadIds())
             if (next.approvalCardsSupported == supportsApprovalCards) {
                 next
             } else {

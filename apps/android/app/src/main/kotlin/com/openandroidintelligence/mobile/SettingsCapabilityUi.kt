@@ -61,7 +61,7 @@ internal fun ConversationBubbleSettingsItem() {
     val context = LocalContext.current
     SettingsNavigationItem(
         headline = "原生会话气泡",
-        supporting = "在系统中允许气泡，展开后可查看运行中会话并直接回复",
+        supporting = "在系统中允许气泡，展开后可查看全部历史、管理文件夹并发送附件",
         onClick = {
             val settings = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_BUBBLE_SETTINGS)
                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
@@ -198,6 +198,7 @@ val negotiatedCapabilityLabels: Map<String, String> = mapOf(
     "generation-cancel-v1" to "生成中止",
     "conversation-mirror-v1" to "会话镜像",
     "attachment-status-v1" to "圈选结果回传",
+    "conversation-management-v1" to "会话与文件夹管理",
 )
 
 /**

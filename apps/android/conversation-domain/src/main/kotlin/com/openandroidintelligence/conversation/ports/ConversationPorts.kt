@@ -18,8 +18,10 @@ data class ConversationScope(
 )
 
 data class PageRequest(val cursor: String? = null, val limit: Int = 50)
-data class ConversationPage(val conversations: List<ConversationSummary>, val nextCursor: String?)
-data class ConversationSummary(val id: ConversationId, val title: String, val updatedAt: Long)
+data class ConversationPage(val conversations: List<ConversationSummary>, val nextCursor: String?, val snapshotRevision: Long? = null,
+    /** Cached history can render a screen, but absence from it is never evidence of deletion. */
+    val authoritative: Boolean = true)
+data class ConversationSummary(val id: ConversationId, val title: String, val updatedAt: Long, val archived: Boolean = false)
 data class Conversation(val id: ConversationId, val title: String, val createdAt: Long)
 data class TimelinePage(
     val messages: List<TimelineMessage>, val nextCursor: String?, val snapshotRevision: Long? = null,
@@ -301,6 +303,14 @@ sealed interface VerifiedConversationEvent {
         val newTitle: String,
     ) : VerifiedConversationEvent
 
+    /** Account-wide metadata changed; fetch committed organization and history again. */
+    data class ConversationsChanged(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val conversationId: ConversationId? = null,
+        val deleted: Boolean = false,
+    ) : VerifiedConversationEvent
+
     data class TimelineUpsert(
         override val eventId: String,
         override val occurredAt: Long,
@@ -387,6 +397,13 @@ interface ConversationRepository {
     ): CancelGenerationResult = cancelGeneration(generationId, requestId)
     suspend fun updateTitle(conversationId: String, title: String): Boolean = false
 
+    suspend fun readOrganization(): ConversationOrganization = error("CONVERSATION_MANAGEMENT_UNSUPPORTED")
+    /** The server commits this complete state only if [expectedRevision] is still current. */
+    suspend fun updateOrganization(expectedRevision: Long, organization: ConversationOrganization): ConversationOrganization =
+        error("CONVERSATION_MANAGEMENT_UNSUPPORTED")
+    suspend fun setArchived(conversationId: String, archived: Boolean): Unit = error("CONVERSATION_MANAGEMENT_UNSUPPORTED")
+    suspend fun deleteConversation(conversationId: String): Unit = error("CONVERSATION_MANAGEMENT_UNSUPPORTED")
+
     /**
      * One conversation's authoritative metadata as the Gateway has it.
      *
@@ -419,6 +436,35 @@ interface ConversationRepository {
  */
 interface MessageOutcomeQuery {
     suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage?
+}
+
+/** Expose a complete account history, never a partial first page or a mixed revision. */
+suspend fun ConversationRepository.completeConversations(scope: ConversationScope): ConversationPage {
+    repeat(3) { attempt ->
+        val conversations = linkedMapOf<String, ConversationSummary>()
+        val cursors = mutableSetOf<String>()
+        var cursor: String? = null
+        var revision: Long? = null
+        var first = true
+        var authoritative = true
+        try {
+            do {
+                val page = listConversations(scope, PageRequest(cursor, 100))
+                if (!first && page.snapshotRevision != revision) error("CURSOR_EXPIRED")
+                first = false
+                revision = page.snapshotRevision
+                authoritative = authoritative && page.authoritative
+                page.conversations.forEach { conversations[it.id.value] = it }
+                cursor = page.nextCursor
+                check(cursor == null || cursors.add(cursor)) { "CONVERSATIONS_CURSOR_CYCLE" }
+            } while (cursor != null)
+            return ConversationPage(conversations.values.toList(), null, revision, authoritative)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (cause: Exception) {
+            if (attempt == 2 || !cause.message.orEmpty().contains("CURSOR_EXPIRED")) throw cause
+        }
+    }
+    error("CONVERSATIONS_RESYNC_FAILED")
 }
 
 /** Complete a snapshot before exposing it. A changing snapshot is restarted, never mixed. */

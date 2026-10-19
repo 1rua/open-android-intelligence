@@ -43,19 +43,6 @@ class BubbleConversationTest {
         assertNull(BubbleConversationActivity.targetFromIntent(Intent()))
     }
 
-    @Test fun listContainsOnlyCurrentAccountRunningSessionsAndTheTappedCompletedConversation() {
-        fun session(id: String, status: NativeConversationStatus, time: Long, account: String = "account-a") =
-            NativeConversationSession(target.copy(conversationId = id, accountId = account), null, "标题 $id", status, "回答", updatedAt = time)
-        val sessions = listOf(
-            session("conv-a", NativeConversationStatus.COMPLETED, 10),
-            session("running", NativeConversationStatus.RUNNING, 20),
-            session("queued", NativeConversationStatus.QUEUED, 30),
-            session("old-completed", NativeConversationStatus.COMPLETED, 40),
-            session("foreign", NativeConversationStatus.RUNNING, 50, "other-account"),
-        )
-        assertEquals(listOf("queued", "running", "conv-a"), bubbleSessionRows(sessions, target).map { it.target.conversationId })
-    }
-
     @Test fun workspaceRejectsAnotherAccountBeforeCreatingAnyConversationAndClosesOnSessionTeardown() {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.Unconfined)

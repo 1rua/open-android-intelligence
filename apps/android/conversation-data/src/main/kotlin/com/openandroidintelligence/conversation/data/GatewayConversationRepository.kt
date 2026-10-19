@@ -22,6 +22,10 @@ import com.openandroidintelligence.conversation.ports.ConversationPage
 import com.openandroidintelligence.conversation.ports.ConversationRepository
 import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.ConversationSummary
+import com.openandroidintelligence.conversation.ports.ConversationOrganization
+import com.openandroidintelligence.conversation.ports.ConversationFolder
+import com.openandroidintelligence.conversation.ports.ConversationSortMode
+import com.openandroidintelligence.gateway.negotiation.ConversationManagementCapability
 import com.openandroidintelligence.conversation.ports.GenerationTracker
 import com.openandroidintelligence.conversation.ports.MessageAcceptance
 import com.openandroidintelligence.conversation.ports.MessageBatch
@@ -65,7 +69,8 @@ class GatewayConversationRepository(
      * then leave the command blocked.
      */
     private val approvals: ApprovalClient? = null,
-    /** The thread cancellation and event scope act on; owned by the screen holder. */
+    private val supportsConversationManagement: Boolean = false,
+    /** Keep the callback last so existing trailing-lambda construction remains valid. */
     private val activeConversationId: () -> String? = { null },
 ) : ConversationRepository,
     com.openandroidintelligence.conversation.ports.MessageOutcomeQuery,
@@ -173,20 +178,45 @@ class GatewayConversationRepository(
         scope: ConversationScope,
         page: PageRequest,
     ): ConversationPage {
-        val threads = client.readThreads()
+        val result = client.readThreadPage(page.cursor, page.limit)
         return ConversationPage(
-            conversations = threads.map { thread ->
+            conversations = result.conversations.map { thread ->
                 ConversationSummary(
                     id = ConversationId(thread.conversationId),
                     title = thread.title?.takeIf { it.isNotBlank() } ?: "新对话",
-                    updatedAt = parseMillis(thread.lastMessageAt),
+                    updatedAt = parseMillis(thread.updatedAt ?: thread.lastMessageAt),
+                    archived = thread.archived,
                 )
             },
-            // The v2 list endpoint is not cursor-paginated yet; a single page is
-            // the honest answer instead of an invented next cursor.
-            nextCursor = null,
+            nextCursor = result.nextCursor,
+            snapshotRevision = result.snapshotRevision,
         )
     }
+
+    override suspend fun readOrganization(): ConversationOrganization =
+        client.readOrganization(ConversationManagementCapability(supportsConversationManagement)).toDomain()
+
+    override suspend fun updateOrganization(expectedRevision: Long, organization: ConversationOrganization): ConversationOrganization =
+        client.updateOrganization(expectedRevision, com.openandroidintelligence.gateway.conversations.ConversationOrganization(
+            organization.revision, organization.sortMode.wireValue, organization.customOrder,
+            organization.folders.map { com.openandroidintelligence.gateway.conversations.ConversationFolder(it.folderId,it.name) },
+            organization.assignments), ConversationManagementCapability(supportsConversationManagement)).toDomain()
+
+    override suspend fun setArchived(conversationId: String, archived: Boolean) =
+        client.setArchived(conversationId, archived, ConversationManagementCapability(supportsConversationManagement))
+
+    override suspend fun deleteConversation(conversationId: String) {
+        client.deleteConversation(conversationId, ConversationManagementCapability(supportsConversationManagement))
+        synchronized(this) {
+            generations.remove(conversationId)
+            generationChanged(conversationId)
+            activeConversationChanged()
+        }
+    }
+
+    private fun com.openandroidintelligence.gateway.conversations.ConversationOrganization.toDomain() = ConversationOrganization(
+        revision, ConversationSortMode.entries.first { it.wireValue == sortMode }, customOrder,
+        folders.map { ConversationFolder(it.folderId,it.name) }, assignments)
 
     override suspend fun createConversation(
         scope: ConversationScope,

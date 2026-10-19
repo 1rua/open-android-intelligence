@@ -21,6 +21,73 @@ class EncryptedMirrorRecoveryTest {
     private val context get()=ApplicationProvider.getApplicationContext<Application>()
     private val key=object:AesGcmKeyProvider {override fun getOrCreate()=SecretKeySpec(ByteArray(32){7},"AES");override fun delete(){}}
     private val scope=ConversationScope("profile_mirror","https://first.example","acct_same","install_one")
+    @Test fun organizationArchiveAndCompleteHistoryRemainTogetherAfterReopenAndEmptyListClearsHistory() {
+        val testScope=scope.copy(profileId="organization_roundtrip")
+        val mirror=EncryptedConversationMirror(context,testScope,key)
+        val threads=listOf(ConversationSummary(ConversationId("conv_archived"),"Archived",20,true),ConversationSummary(ConversationId("conv_live"),"Live",10))
+        val organization=ConversationOrganization(6,ConversationSortMode.CUSTOM,listOf("conv_live","conv_archived"),
+            listOf(ConversationFolder("work","Work")),mapOf("conv_live" to "work"))
+        val checkpoint=WorkbenchCheckpoint(threads,"conv_live","Live",emptyList(),emptyMap(),"unsent",1,emptyList(),null,emptySet(),emptySet(),
+            organization=organization,threadsSnapshotRevision=12)
+        mirror.save(checkpoint)
+        val reopened=EncryptedConversationMirror(context,testScope,key)
+        assertEquals(organization,reopened.load()?.organization)
+        assertEquals(threads,reopened.threads())
+        assertEquals(12L,reopened.load()?.threadsSnapshotRevision)
+        reopened.save(checkpoint.copy(threads=emptyList(),threadId=null,threadsSnapshotRevision=13))
+        val empty=EncryptedConversationMirror(context,testScope,key)
+        assertEquals(emptyList<ConversationSummary>(),empty.load()?.threads)
+        assertEquals(emptyList<ConversationSummary>(),empty.threads())
+        empty.wipe()
+    }
+
+    @Test fun deletedConversationCannotReturnThroughAnOldCheckpointLateTimelineOrEvent() {
+        val testScope=scope.copy(profileId="deleted_conversation_barrier")
+        val mirror=EncryptedConversationMirror(context,testScope,key)
+        val thread=ConversationSummary(ConversationId("conv_deleted"),"Deleted",1)
+        val row=TimelineMessage("old_message","user",listOf(MessagePart.Text("private deleted body")),1,
+            conversationId=thread.id,clientMessageId=ClientMessageId("old_client"),contentRevision=1)
+        val checkpoint=WorkbenchCheckpoint(listOf(thread),thread.id.value,thread.title,listOf(row),mapOf(row.id to 1),"keep draft",1,
+            emptyList(),SavedSubmission("old",emptyList(),1,thread.id.value,"old_client"),emptySet(),emptySet())
+        mirror.save(checkpoint)
+        mirror.saveTimeline(thread.id.value,TimelinePage(listOf(row),null,1))
+        mirror.saveSendAtoms(thread.id.value,listOf(LocalSendAtom(thread.id,ClientMessageId("old_client"),row.parts,1)))
+        mirror.deleteConversation(thread.id.value)
+        mirror.save(checkpoint)
+        mirror.saveThreads(listOf(thread))
+        mirror.saveTimeline(thread.id.value,TimelinePage(listOf(row),null,9))
+        mirror.saveSendAtoms(thread.id.value,listOf(LocalSendAtom(thread.id,ClientMessageId("late_client"),row.parts,2)))
+        val late=VerifiedConversationEvent.TimelineUpsert("late_event",9,9,row)
+        mirror.apply(late)
+        assertNull(mirror.projectEvent(late))
+        val reopened=EncryptedConversationMirror(context,testScope,key)
+        assertNull(reopened.load()?.threadId)
+        assertTrue(reopened.load()!!.messages.isEmpty())
+        assertTrue(reopened.threads()!!.isEmpty())
+        assertNull(reopened.timeline(thread.id.value))
+        assertTrue(reopened.loadSendAtoms(thread.id.value).isEmpty())
+        assertNull(reopened.load()?.submission)
+        reopened.wipe()
+    }
+    @Test fun acknowledgedArchiveCannotBeUndoneByAnOlderCheckpointOrAnInflightList() {
+        val testScope=scope.copy(profileId="archive_metadata_barrier")
+        val mirror=EncryptedConversationMirror(context,testScope,key)
+        val thread=ConversationSummary(ConversationId("conv_archive"),"Archive",1)
+        mirror.saveThreads(listOf(thread),10)
+        val epoch=mirror.historyEpoch()
+        mirror.archiveConversation(thread.id.value,true)
+        mirror.saveThreads(listOf(thread),11,expectedEpoch=epoch)
+        mirror.save(WorkbenchCheckpoint(listOf(thread),thread.id.value,thread.title,emptyList(),emptyMap(),"",0,emptyList(),null,
+            emptySet(),emptySet(),threadsSnapshotRevision=10))
+        assertTrue(mirror.threads()!!.single().archived)
+        val reopened=EncryptedConversationMirror(context,testScope,key)
+        assertTrue(reopened.load()!!.threads.single().archived)
+        reopened.saveThreads(listOf(thread.copy(archived=true)),12,reopened.historyEpoch())
+        assertEquals(12L,reopened.threadsSnapshotRevision())
+        reopened.archiveConversation(thread.id.value,false)
+        assertFalse(reopened.threads()!!.single().archived)
+        reopened.wipe()
+    }
     @Test fun reopensEncryptedDraftFrozenIdentitiesAllPagesAndGatewayPartitions() {
         val mirror=EncryptedConversationMirror(context,scope,key)
         val threads=listOf(ConversationSummary(ConversationId("conv_one"),"会话",1))

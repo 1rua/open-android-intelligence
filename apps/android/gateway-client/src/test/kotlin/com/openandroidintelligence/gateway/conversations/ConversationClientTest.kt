@@ -9,16 +9,71 @@ import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.WireRequest
 import com.openandroidintelligence.gateway.http.WireResponse
 import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
+import com.openandroidintelligence.gateway.negotiation.ConversationManagementCapability
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationClientTest {
+    @Test fun threadPageKeepsHistoricalCursorSnapshotAndArchiveMetadata() = runBlocking {
+        val transport=RecordingTransport().apply { responseToReturn=wire("""{"conversations":[{"conversationId":"conv_old","title":"Old","updatedAt":"2026-10-18T01:00:00Z","archived":true}],"nextCursor":"next_page","snapshotRevision":17}""") }
+        val page=client(transport).readThreadPage("previous_page",100)
+        assertEquals("next_page",page.nextCursor)
+        assertEquals(17L,page.snapshotRevision)
+        assertTrue(page.conversations.single().archived)
+        assertEquals("2026-10-18T01:00:00Z",page.conversations.single().updatedAt)
+        assertEquals("/open-android-intelligence/v2/conversations?cursor=previous_page&limit=100",transport.lastRequest?.target)
+    }
+
+    @Test fun organizationManagementWithoutNegotiationSendsNoRequest() = runBlocking {
+        val transport=RecordingTransport()
+        val client=client(transport)
+        for (operation in listOf<suspend () -> Unit>(
+            { client.readOrganization(); Unit },
+            { client.updateOrganization(0,ConversationOrganization(0,"updated-desc",emptyList(),emptyList(),emptyMap())); Unit },
+            { client.setArchived("conv_a",true) },
+            { client.deleteConversation("conv_a") },
+        )) assertEquals("CONVERSATION_MANAGEMENT_UNSUPPORTED",runCatching { operation() }.exceptionOrNull()?.message)
+        assertNull(transport.lastRequest)
+    }
+
+    @Test fun organizationUpdateSendsExpectedRevisionAndPreservesConflictCode() = runBlocking {
+        val transport=RecordingTransport().apply { responseToReturn=wire("""{"revision":9,"sortMode":"custom","customOrder":["conv_b","conv_a"],"folders":[{"folderId":"folder_work","name":"Work"}],"assignments":{"conv_b":"folder_work"}}""") }
+        val client=client(transport)
+        val state=ConversationOrganization(8,"custom",listOf("conv_b","conv_a"),listOf(ConversationFolder("folder_work","Work")),mapOf("conv_b" to "folder_work"))
+        assertEquals(9L,client.updateOrganization(8,state,ConversationManagementCapability(true)).revision)
+        val body=String(transport.lastRequest!!.body,Charsets.UTF_8)
+        assertTrue(body.contains("\"expectedRevision\":8"))
+        assertFalse(body.contains("\"revision\""))
+        assertEquals("PUT",transport.lastRequest?.method)
+        transport.responseToReturn=WireResponse(409,emptyList(),"""{"protocol":"2.1","error":{"code":"ORGANIZATION_CONFLICT"}}""".toByteArray())
+        assertEquals("ORGANIZATION_UPDATE_FAILED:ORGANIZATION_CONFLICT",runCatching {
+            client.updateOrganization(8,state,ConversationManagementCapability(true))
+        }.exceptionOrNull()?.message)
+    }
+
+    @Test fun archiveAndDeleteRequireTheServerToConfirmTheExactConversation() = runBlocking {
+        val transport=RecordingTransport().apply { responseToReturn=wire("""{"conversation":{"conversationId":"conv_a","archived":true}}""") }
+        val client=client(transport)
+        client.setArchived("conv_a",true,ConversationManagementCapability(true))
+        assertEquals("PATCH",transport.lastRequest?.method)
+        assertEquals("""{"archived":true}""",String(transport.lastRequest!!.body))
+        transport.responseToReturn=wire("""{"conversationId":"conv_other","deleted":true}""")
+        assertEquals("CONVERSATION_DELETE_FAILED:unconfirmed",runCatching { client.deleteConversation("conv_a",ConversationManagementCapability(true)) }.exceptionOrNull()?.message)
+        transport.responseToReturn=wire("""{"conversationId":"conv_a","deleted":true}""")
+        client.deleteConversation("conv_a",ConversationManagementCapability(true))
+        assertEquals("DELETE",transport.lastRequest?.method)
+    }
+
+    private fun wire(data:String)=WireResponse(200,emptyList(),("""{"protocol":"2.1","data":$data}""").toByteArray())
+    private fun client(transport:RecordingTransport)=ConversationClient(GatewayHttpClient(
+        GatewayProfile("acc_test","dev_test","sess_test","https://gateway.example.com"),transport,{ByteArray(64)},MemoryCursorStore()))
 
     private class RecordingTransport : GatewayByteTransport {
         var lastRequest: WireRequest? = null

@@ -157,6 +157,13 @@ class NegotiationClientTest {
         )
     }
 
+    @Test fun conversationManagementIsAnOptionalNegotiatedCapability() {
+        assertTrue(CONVERSATION_MANAGEMENT_FEATURE in DECLARED_CONVERSATION_UI_FEATURES)
+        assertTrue(ConversationManagementCapability.fromNegotiation(result(conversationUi=listOf(CONVERSATION_MANAGEMENT_FEATURE))).agreed)
+        assertTrue(!ConversationManagementCapability.fromNegotiation(result(conversationUi=emptyList())).agreed)
+        assertTrue(!ConversationManagementCapability.NotNegotiated.agreed)
+    }
+
     @Test
     fun allowsNegotiationWithOmittedOrBlankTlsSpkiSha256() = runBlocking {
         for (identityJson in listOf(

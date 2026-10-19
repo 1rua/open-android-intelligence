@@ -1,5 +1,6 @@
 package com.openandroidintelligence.mobile
 
+import android.app.Application
 import androidx.compose.runtime.Composable
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -25,7 +26,7 @@ import org.robolectric.annotation.Config
  * 三态文案必须如实呈现，禁用条目点了必须真的没有反应。
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [34], application = Application::class)
 class SettingsCapabilityUiTest {
 
     @get:Rule
@@ -71,7 +72,7 @@ class SettingsCapabilityUiTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun negotiatedCapabilitiesGroupRendersAllEightKeysWithHonestLabels() {
+    fun negotiatedCapabilitiesGroupRendersAllDeclaredKeysWithHonestLabels() {
         val capabilities = negotiatedConversationUi(
             agreed = setOf("agent-command-catalog-v1", "message-batches-v1"),
             requested = setOf(
@@ -85,12 +86,14 @@ class SettingsCapabilityUiTest {
         // 三种状态都必须真实出现，不能被折叠成同一种
         compose.onAllNodesWithText("已启用").assertCountEquals(2)
         compose.onAllNodesWithText("本网关不支持").assertCountEquals(1)
-        // 客户端只声明了 3 项，其余 5 项双方都没声明
-        compose.onAllNodesWithText("未声明").assertCountEquals(5)
-        // 闭集 8 项全部渲染（用人类可读标签核对）
+        // 客户端只声明了 3 项，其余能力保持「未声明」。
+        compose.onAllNodesWithText("未声明").assertCountEquals(ConversationUiFeature.CLOSED_SET.size - 3)
+        // 闭集全部渲染，并为会话管理提供人类可读的标签。
         for (label in negotiatedCapabilityLabels.values) {
             compose.onNodeWithText(label).assertExists()
         }
+        compose.onNodeWithText("会话与文件夹管理").assertExists()
+        compose.onNodeWithText("conversation-management-v1").assertDoesNotExist()
     }
 
     @Test

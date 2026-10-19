@@ -87,29 +87,32 @@ class EncryptedSendAtomRecoveryTest {
         val host = Host().apply { rows = listOf(row("msg_cm_one", "已显示的用户消息", "cm_one"),
             row("assistant_one", "已显示的助手回复").copy(sender = "assistant")) }
         val job = SupervisorJob()
-        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
+        val controller = controller(CoroutineScope(coroutineContext + job), host, mirror)
         try {
-            controller.openThread("conv_a"); yield()
+            awaitLaunchedWork(job) { controller.openThread("conv_a") }
+            awaitReadyThread(controller, "conv_a")
             assertEquals(2, (controller.state.value.timeline as Loadable.Ready).value.size)
             controller.editDraft("删除历史时保留当前草稿")
             host.rows = host.rows.map { it.copy(parts = emptyList(), state = "DELETED") }
-            controller.onForegrounded(); yield()
+            awaitLaunchedWork(job) { controller.onForegrounded() }
+            awaitReadyThread(controller, "conv_a")
 
             assertTrue("正在显示的用户与助手旧缓存必须遵守明确删除", (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().isEmpty())
             assertEquals("删除历史时保留当前草稿", controller.state.value.draft)
         } finally {
-            controller.close(); job.cancel()
+            controller.closeAndAwait(); job.cancel()
         }
 
         val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val restartJob = SupervisorJob()
-        val restarted = controller(CoroutineScope(restartJob + Dispatchers.Unconfined), Host(), reopened)
+        val restarted = controller(CoroutineScope(coroutineContext + restartJob), Host(), reopened)
         try {
-            yield(); restarted.openThread("conv_a"); yield()
+            awaitLaunchedWork(restartJob) { restarted.openThread("conv_a") }
+            awaitReadyThread(restarted, "conv_a")
             assertTrue((restarted.state.value.timeline as? Loadable.Ready)?.value.orEmpty().isEmpty())
             assertEquals("删除历史时保留当前草稿", restarted.state.value.draft)
         } finally {
-            restarted.close(); restartJob.cancel()
+            restarted.closeAndAwait(); restartJob.cancel()
         }
     }
 
@@ -124,16 +127,17 @@ class EncryptedSendAtomRecoveryTest {
         mirror.saveTimeline("conv_a", TimelinePage(listOf(row("msg_cm_one", "", "cm_one").copy(parts = emptyList(), state = "DELETED")), null))
         val host = Host()
         val job = SupervisorJob()
-        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
+        val controller = controller(CoroutineScope(coroutineContext + job), host, mirror)
         try {
-            yield(); controller.retryPendingSubmissions(); yield()
+            awaitReadyThread(controller, "conv_a")
+            awaitLaunchedWork(job) { controller.retryPendingSubmissions() }
 
             assertEquals("已删除的批次成员不能因查询空结果而重复提交", 0, host.submissionCount)
             assertFalse(controller.state.value.hasRecoverableSubmissions)
             assertTrue(userTexts(controller).isEmpty())
             assertEquals("独立的新草稿", controller.state.value.draft)
         } finally {
-            controller.close(); job.cancel()
+            controller.closeAndAwait(); job.cancel()
         }
     }
 
@@ -162,14 +166,15 @@ class EncryptedSendAtomRecoveryTest {
         assertEquals(-1L, durable.contentRevision)
         assertEquals(AgentMessageStatus.COMPLETED, durable.status)
         val job = SupervisorJob()
-        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), Host(late), reopened)
+        val controller = controller(CoroutineScope(coroutineContext + job), Host(late), reopened)
         try {
-            controller.openThread("conv_a"); yield()
+            awaitLaunchedWork(job) { controller.openThread("conv_a") }
+            awaitReadyThread(controller, "conv_a")
             assertTrue((controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().isEmpty())
-            controller.retryPendingSubmissions(); yield()
+            awaitLaunchedWork(job) { controller.retryPendingSubmissions() }
             assertFalse(controller.state.value.hasRecoverableSubmissions)
         } finally {
-            controller.close(); job.cancel()
+            controller.closeAndAwait(); job.cancel()
         }
     }
 
@@ -185,9 +190,11 @@ class EncryptedSendAtomRecoveryTest {
         mirror.saveTimeline("conv_a", TimelinePage(listOf(row("msg_cm_deleted", "", "cm_deleted").copy(parts = emptyList(), state = "DELETED")), null))
         val host = Host()
         val job = SupervisorJob()
-        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
+        val controller = controller(CoroutineScope(coroutineContext + job), host, mirror)
         try {
-            yield(); controller.retryPendingSubmissions(); yield()
+            awaitReadyThread(controller, "conv_a")
+            awaitLaunchedWork(job) { controller.retryPendingSubmissions() }
+            controller.flushPendingPersistence()
             assertEquals(0, host.submissionCount)
             assertEquals(listOf(ClientMessageId("cm_unknown")), host.queryIds)
             assertTrue(controller.state.value.hasRecoverableSubmissions)
@@ -202,7 +209,7 @@ class EncryptedSendAtomRecoveryTest {
             assertEquals("仍未知成员的原稿", frozen.messages.last().text)
             assertEquals(LocalSubmissionState.OUTCOME_UNKNOWN, restored.loadSendAtoms("conv_a").single { it.clientMessageId.value == "cm_unknown" }.submissionState)
         } finally {
-            controller.close(); job.cancel()
+            controller.closeAndAwait(); job.cancel()
         }
     }
 
@@ -324,35 +331,42 @@ class EncryptedSendAtomRecoveryTest {
         val mirror = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val host = Host()
         val job = SupervisorJob()
-        val controller = controller(CoroutineScope(job + Dispatchers.Unconfined), host, mirror)
+        val controller = controller(CoroutineScope(coroutineContext + job), host, mirror)
         try {
             controller.openThread("conv_a")
-            yield()
+            awaitReadyThread(controller, "conv_a")
             listOf("等待回复的第一条", "等待回复的第二条").forEach { text ->
                 controller.editDraft(text)
+                assertTrue(controller.state.value.canSend)
                 controller.sendDraft()
-                yield()
+                // The repository also uses Dispatchers.IO: yield does not wait for a durable send.
+                withTimeout(5_000) {
+                    controller.state.first { state ->
+                        state.draft.isEmpty() && state.composer == ComposerState.EDITING &&
+                            state.pendingBatch.isEmpty() &&
+                            (state.timeline as? Loadable.Ready)?.value?.none { it.pendingAcceptance } == true
+                    }
+                }
             }
             assertEquals(2, host.submissionCount)
             assertEquals(listOf("等待回复的第一条", "等待回复的第二条"), userTexts(controller))
             controller.openThread("conv_b")
-            yield()
+            awaitReadyThread(controller, "conv_b")
             assertTrue(userTexts(controller).isEmpty())
             controller.openThread("conv_a")
-            yield()
+            awaitReadyThread(controller, "conv_a")
             assertEquals(listOf("等待回复的第一条", "等待回复的第二条"), userTexts(controller))
         } finally {
-            controller.close()
+            controller.closeAndAwait()
             job.cancel()
         }
 
         val reopened = EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined)
         val restartJob = SupervisorJob()
-        val restarted = controller(CoroutineScope(restartJob + Dispatchers.Unconfined), host, reopened)
+        val restarted = controller(CoroutineScope(coroutineContext + restartJob), host, reopened)
         try {
-            yield()
             restarted.openThread("conv_a")
-            yield()
+            awaitReadyThread(restarted, "conv_a")
             assertEquals(listOf("等待回复的第一条", "等待回复的第二条"), userTexts(restarted))
             assertEquals(2, reopened.loadSendAtoms("conv_a").size)
             assertTrue("远端基线不能写入本地发送副本", reopened.timeline("conv_a")!!.messages.isEmpty())
@@ -361,7 +375,7 @@ class EncryptedSendAtomRecoveryTest {
                 assertFalse(it.readBytes().decodeToString().contains("等待回复的第一条"))
             }
         } finally {
-            restarted.close()
+            restarted.closeAndAwait()
             restartJob.cancel()
         }
     }
@@ -505,6 +519,26 @@ class EncryptedSendAtomRecoveryTest {
 
     private fun userTexts(controller: WorkbenchController) =
         (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().filter { it.isUser }.map { it.text }
+
+    private suspend fun awaitReadyThread(controller: WorkbenchController, threadId: String) {
+        withTimeout(5_000) {
+            controller.state.first { state ->
+                state.activeThreadId == threadId && state.historyHydrated && state.threads is Loadable.Ready &&
+                    (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty)
+            }
+        }
+    }
+
+    /** A no-op recovery can finish without publishing another StateFlow value. */
+    private suspend fun awaitLaunchedWork(parent: Job, action: () -> Unit) {
+        fun descendants(job: Job): List<Job> = job.children.flatMap { child ->
+            sequenceOf(child) + descendants(child).asSequence()
+        }.toList()
+        val existing = descendants(parent).toSet()
+        action()
+        val launched = descendants(parent).filterNot { it in existing }
+        withTimeout(5_000) { launched.forEach { it.join() } }
+    }
 
     private fun atom(id: String, text: String) = LocalSendAtom(ConversationId("conv_a"), ClientMessageId(id), listOf(MessagePart.Text(text)), 1000)
     private fun row(id: String, text: String, clientId: String? = null) = TimelineMessage(id, "user", listOf(MessagePart.Text(text)), 1000,

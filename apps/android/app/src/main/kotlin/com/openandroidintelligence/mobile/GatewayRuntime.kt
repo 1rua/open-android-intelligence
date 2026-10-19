@@ -6,6 +6,7 @@ import com.openandroidintelligence.conversation.data.GatewayAttachmentDraftCoord
 import com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepository
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
 import com.openandroidintelligence.conversation.ports.completeTimeline
+import com.openandroidintelligence.conversation.ports.completeConversations
 import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.ports.LocalAttachmentStagingStore
@@ -98,6 +99,7 @@ val CLIENT_CONVERSATION_UI_OFFER: Set<String> = setOf(
     "agent-approval-cards-v1",
     "message-batches-v1",
     "generation-cancel-v1",
+    "conversation-management-v1",
 )
 
 sealed interface ConnectionPhase {
@@ -191,6 +193,7 @@ class GatewayRuntime(
     private val hasRecoveredGatewayWork = MutableStateFlow(false)
     internal val nativeConversationNotifications = NativeConversationNotifications(context, scope, replyPublisher::update,
         cancel = replyPublisher::cancel,
+        forget = replyPublisher::forget,
         titleFor = { target ->
             (_controller.value?.state?.value?.threads as? com.openandroidintelligence.conversation.state.Loadable.Ready)
                 ?.value?.firstOrNull { it.id.value == target.conversationId }?.title
@@ -202,6 +205,25 @@ class GatewayRuntime(
         return connectedAccountId == target.accountId &&
             profileIdFor(connected.gatewayUrl, connected.username) == target.profileId &&
             bubbleWorkspace?.accepts(target) == true
+    }
+
+    /** A new bubble conversation never consumes the main window's draft or selection. */
+    internal suspend fun createBubbleThread(target: ReplyNotificationTarget): ReplyNotificationTarget {
+        check(isBubbleTargetCurrent(target)) { "BUBBLE_SESSION_UNAVAILABLE" }
+        val owner = bubbleWorkspace
+        val http = checkNotNull(activeHttpClient) { "BUBBLE_SESSION_UNAVAILABLE" }
+        val created = withContext(Dispatchers.IO) {
+            ConversationClient(http).createConversation("cv_client_${java.util.UUID.randomUUID()}")
+        }
+        check(bubbleWorkspace === owner && activeHttpClient === http && isBubbleTargetCurrent(target)) {
+            "BUBBLE_SESSION_CHANGED"
+        }
+        _controller.value?.refreshThreads()
+        return target.copy(conversationId = created.conversationId)
+    }
+
+    private fun bubbleBusyConversationIds(): Set<String> = synchronized(bubbleWorkJobs) {
+        bubbleWorkOwners.keys.flatMap { it.ownedBusyThreadIds }.toSet()
     }
 
     internal fun createBubbleConversation(target: ReplyNotificationTarget): WorkbenchController? {
@@ -1137,6 +1159,7 @@ class GatewayRuntime(
             activeConversationId = { activeThread.get() },
             streamStatus = eventStreamStatus,
             approvals = approvalClient,
+            supportsConversationManagement = "conversation-management-v1" in conversationUi,
         )
         // generation-cancel-v1 门禁接线：工作台的「停止生成」经由这层仓储
         // 才会带上协商门禁转发给真实客户端；未协商时保持 fail-closed。
@@ -1242,15 +1265,11 @@ class GatewayRuntime(
             val envelope = JsonFields.obj(Json.parse(response.body.decodeToString())) ?: error("SNAPSHOT_INVALID")
             val data = JsonFields.obj(JsonFields.field(envelope,"data")) ?: error("SNAPSHOT_INVALID")
             val baseline = JsonFields.string(data,"baselineCursor") ?: error("SNAPSHOT_INVALID")
-            val threads = mutableListOf<com.openandroidintelligence.conversation.ports.ConversationSummary>()
-            val seen = mutableSetOf<String>()
-            var cursor: String? = null
-            do {
-                val page = workbenchRepository.listConversations(conversationScope,com.openandroidintelligence.conversation.ports.PageRequest(cursor))
-                threads += page.conversations
-                cursor = page.nextCursor
-                check(cursor == null || seen.add(cursor)) { "CONVERSATION_CURSOR_LOOP" }
-            } while (cursor != null)
+            val presence = nativeConversationNotifications.capturePresenceReconciliation()
+            val threads = workbenchRepository.completeConversations(conversationScope).conversations
+            if (activeHttpClient === http && sessionJob === ownedJob && "conversation-management-v1" in conversationUi) {
+                nativeConversationNotifications.retireMissingTargets(presence, threads.map { it.id.value }.toSet())
+            }
             val pages = linkedMapOf<String,com.openandroidintelligence.conversation.ports.TimelinePage>()
             // 只补本机已经保存或当前打开的线程，从未打开的旧历史仍在首次打开时读取。
             val known = kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -1282,6 +1301,11 @@ class GatewayRuntime(
                     // uses the authoritative POST /conversations endpoint directly.
                     supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
                     supportsApprovalCards = approvalClient != null,
+                    supportsConversationManagement = "conversation-management-v1" in conversationUi,
+                    externalBusyThreadIds = {
+                        bubbleBusyConversationIds() + nativeConversationNotifications.sessions.value
+                            .filter { it.isRunning }.map { it.target.conversationId }
+                    },
                     onActiveThreadChanged = { threadId -> activeThread.set(threadId);repository.activeConversationChanged() },
                     streamHealthSource = workbenchRepository,
                     persistence = mirror,
@@ -1308,7 +1332,12 @@ class GatewayRuntime(
                 createBubbleWorkbench(sessionScope, conversationScope, conversationId, bubbleHttp, bubbleStatus,
                     approvalClient, generationCancelCapability, conversationUi.toSet(),
                     com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
-                    mediaCache, downloads)
+                    mediaCache, downloads,
+                    attachmentCoordinator = BubbleAttachmentDraftCoordinator(attachmentCoordinator),
+                    externalBusyThreadIds = {
+                        _controller.value?.ownedBusyThreadIds.orEmpty() + bubbleBusyConversationIds() +
+                            nativeConversationNotifications.sessions.value.filter { it.isRunning }.map { it.target.conversationId }
+                    })
             }
         }
         synchronized(backgroundOwnershipLock) {
@@ -1349,11 +1378,39 @@ class GatewayRuntime(
                 }
             },
         )
+        val notificationReconciler = if (generationCancelCapability.agreed) {
+            NotificationConversationReconciler(nativeConversationNotifications, ConversationClient(platformHttp))
+        } else null
+        suspend fun reconcileNotifications(force: Boolean = false) {
+            if (sessionJob !== ownedJob || activeHttpClient !== http) return
+            try {
+                if (force && "conversation-management-v1" in conversationUi) {
+                    val presence = nativeConversationNotifications.capturePresenceReconciliation()
+                    if (presence != null && presence.revisions.isNotEmpty()) {
+                        val threads = workbenchRepository.completeConversations(conversationScope).conversations
+                        if (sessionJob !== ownedJob || activeHttpClient !== http) return
+                        nativeConversationNotifications.retireMissingTargets(presence, threads.map { it.id.value }.toSet())
+                    }
+                }
+                notificationReconciler?.reconcileActive(force)
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (_: Exception) { /* Keep the last projection and retry on the next recovery tick. */ }
+        }
         platformHttp.setCursorRecovery {
-            recoverPlatformSnapshot(platformHttp,
+            val baseline = recoverPlatformSnapshot(platformHttp,
                 syncCapabilities = { capabilityPublisher?.sync() },
                 acceptRequest = { executionDriver?.accept(it) },
                 recoverLocalRequests = { executionDriver?.recoverPending() })
+            reconcileNotifications(force = true)
+            baseline
+        }
+        // Streaming updates stay event-driven. This bounded active-task check
+        // repairs missed terminal frames even when no conversation UI is open.
+        sessionScope.launch(Dispatchers.IO) {
+            while (isActive && sessionJob === ownedJob) {
+                if (notificationReconciler?.hasPendingReconciliation() == true) reconcileNotifications()
+                delay(5_000)
+            }
         }
         var platformJob: Job? = null
         val streamOwnerLock = Any()
@@ -1363,6 +1420,10 @@ class GatewayRuntime(
         sessionScope.launch {
             platformStatus.status.collect { status ->
                 if (sessionJob === ownedJob) _connectionStatus.value = status
+                if (status == EventStreamStatus.LIVE && sessionJob === ownedJob) {
+                    withContext(Dispatchers.IO) { reconcileNotifications(force = true) }
+                    _controller.value?.refreshThreads()
+                }
             }
         }
         val startPlatform: () -> Unit = {

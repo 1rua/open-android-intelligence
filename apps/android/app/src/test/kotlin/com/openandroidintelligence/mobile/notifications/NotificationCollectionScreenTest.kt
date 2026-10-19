@@ -39,7 +39,8 @@ import org.robolectric.annotation.Config
  *   NotificationBindingPort，绝不出现本地假状态。
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+// These UI contracts supply both ports; production startup adds unrelated lifecycle work.
+@Config(sdk = [34], application = Application::class)
 class NotificationCollectionScreenTest {
 
     @get:Rule

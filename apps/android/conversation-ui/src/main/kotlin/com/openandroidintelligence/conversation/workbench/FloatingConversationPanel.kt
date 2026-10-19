@@ -80,7 +80,7 @@ fun FloatingConversationPanel(
             CommandMenu(state.catalog, state.draft, controller::selectCommand, controller::loadCatalog)
             ComposerBar(draft = state.draft, onDraftChange = controller::editDraft,
                 generation = state.generation,
-                canSend = state.activeThreadId != null && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
+                canSend = state.activeThreadId != null && state.canSend,
                 onSend = controller::sendDraft, onStop = controller::stopGeneration,
                 onPickCamera = onPickCamera, onPickGallery = onPickGallery, onPickDocument = onPickDocument,
                 onVoiceInput = onVoiceInput, attachments = state.attachments,

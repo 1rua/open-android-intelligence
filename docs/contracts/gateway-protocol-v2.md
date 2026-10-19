@@ -132,7 +132,7 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 
 协议主版本不同、核心 Schema 不兼容、未知安全字段或未知高风险能力时返回 `PROTOCOL_INCOMPATIBLE`。2.1 的 core Schema hash 与 2.0 不兼容，Android、Hermes 和 OpenClaw 必须同版本发布。次版本差异只启用双方声明的交集。协商结果由 `negotiationId` 绑定后续认证会话，客户端不能在单次请求中自行扩大功能。
 
-`messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`agent-approval-cards-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
+`messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`agent-approval-cards-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`、`conversation-management-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
 
 `agent-command-new-v1` 表示该 Gateway 服务用户手动发送的 `/new` 命令入口：能接收以普通文本形式送达的 `/new`，由宿主命令层原子创建新会话、保存绑定，并通过 `conversation.command.result` 返回权威 `conversationId`（第 7 节）。未实现该入口的 Gateway **不得**声明该能力。App 的“新建对话”按钮直接请求基础端点 `POST /conversations`，不自动发送 `/new`，也不依赖该命令能力位；两条入口均只能切换到 Gateway 返回的权威会话，客户端不得本地构造会话。
 
@@ -424,6 +424,14 @@ Gateway 随后校验账号、设备、配对 generation、时间窗、nonce、�
 读请求重复可以安全重试。所有创建、副作用和附件提交请求必须携带 `Idempotency-Key`，且值必须逐字节精确等于已签名的 `X-Open-Android-Intelligence-Request-Id`。同一账号、设备和 request ID 在保留期内返回同一终态，不重复执行。客户端重试可以更换 timestamp 和 nonce，但必须保持 request ID 不变。
 
 ## 7. 对话
+
+### 共享历史与会话管理（2026-10-18）
+
+仅当 Gateway 已接入真实宿主会话的管理 API 时协商 `conversation-management-v1`。`GET /conversations?limit=1..100&cursor=<opaque>` 返回当前已验证账号的全部持久历史，包含归档会话。每项包含 `conversationId`、`clientConversationId`、`title`、布尔 `archived` 与 ISO `updatedAt`；外壳为 `{conversations,nextCursor,snapshotRevision}`。`nextCursor=null` 表示已取完，未指定 limit 保留完整列表兼容。分页按更新时间倒序、会话 ID 升序稳定排序；记录变化使旧游标返回 `CURSOR_EXPIRED`，文件夹与自定义顺序变化不改变历史快照。不得设置只返回前若干活跃会话的隐式上限，也不得导入无法证明属于当前账号的原生聊天。
+
+`PATCH /conversations/{id}` 的 `{archived:boolean}` 在宿主原生存储成功后返回 `{conversation:{conversationId,clientConversationId,title,archived,updatedAt}}`；`DELETE /conversations/{id}` 在原生删除成功后返回 `{conversationId,deleted:true}`。Hermes 采用 `SessionDB.set_session_archived` 与 `delete_sessions`，完整处理压缩链；OpenClaw 采用原生 `sessions.patch` 与带会话/生命周期前置条件的 `sessions.delete`，由宿主生命周期锁保护。原生仍有任务或 Gateway 有待处理生成时返回 `CONVERSATION_BUSY`（409）；不假称已经停止或删除。删除屏障持久保存在该账号下，历史投影、旧创建身份与迟到同步都不能复活该会话。原生宿主的文件保留策略仍由宿主删除 API 执行。
+
+`GET /conversation-organization` 返回 `{revision,sortMode,customOrder,folders,assignments}`，其中 sortMode 为 `updated-desc|custom`、folders 为有序 `{folderId,name}` 数组、assignments 为 conversationId→folderId 映射。`PUT` 用同一完整结构替换，但以 `expectedRevision` 代替 `revision`；成功 revision 严格增加，过期版本返回 `ORGANIZATION_CONFLICT`（409），客户端须重读后应用当前用户操作。文件夹创建、重命名、删除、排序与跨设备拖动统一使用该写入；删除文件夹时显式移除映射，保留会话。引用必须属于当前账号且指向现有文件夹。每次组织变更发出 `conversation.organization.updated {revision}`；原生归档/删除成功发出 `conversation.updated {conversationId,archived}` 或 `{conversationId,deleted:true}`，设备据此重取服务端事实。
 
 ### 历史媒体流式读取与本地保存（2026-10-14）
 

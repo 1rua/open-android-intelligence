@@ -1,0 +1,799 @@
+diff --git a/open_android_intelligence_gateway/adapter.py b/open_android_intelligence_gateway/adapter.py
+index da392c9..37af87c 100644
+--- a/open_android_intelligence_gateway/adapter.py
++++ b/open_android_intelligence_gateway/adapter.py
+@@ -845,6 +845,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
+         elif session_store is not None and NATIVE_HERMES_AVAILABLE:
+             from .host_history import HermesHistoryPort
+             core.history_reader = HermesHistoryPort(core, session_store).read
++        port = getattr(getattr(core, "history_reader", None), "__self__", None)
++        core.conversation_manager = port.manage if session_store is not None and hasattr(port, "manage") else None
+
+     def _native_generation_canceller(self) -> Any:
+         if (not getattr(self, "_message_handler", None)
+@@ -975,6 +977,8 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
+             session_store = getattr(self, "_session_store", None)
+             # 宿主历史只在原生会话储存已接入时提供，独立传输仍由 Core 短期队列负责。
+             core.history_reader = HermesHistoryPort(core, session_store).read if session_store is not None and NATIVE_HERMES_AVAILABLE else None
++            port = getattr(core.history_reader, "__self__", None)
++            core.conversation_manager = port.manage if port is not None else None
+         register_sink = getattr(core, "register_event_sink", None)
+         if callable(register_sink):
+             register_sink(self._event_sink)
+@@ -1723,7 +1727,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
+                 result = await asyncio.to_thread(handler_found._handle_raw, raw_req)
+             finally:
+                 self._password_tasks -= 1
+-        elif re.fullmatch(r"/open-android-intelligence/v2/conversations/[^/]+/attachments/[^/]+/(metadata|cache-grant|content)", path):
++        elif re.fullmatch(r"/open-android-intelligence/v2/conversations/[^/]+/attachments/[^/]+/(metadata|cache-grant|content)", path) or (method in {"DELETE", "PATCH"} and re.fullmatch(r"/open-android-intelligence/v2/conversations/[^/]+", path)) or (method == "GET" and path == "/open-android-intelligence/v2/conversations"):
+             # 原件散列、采用及 SQLite 读取离开事件循环，网络回复只保留一个有界块。
+             result = await asyncio.to_thread(handler_found._handle_raw, raw_req)
+         else:
+@@ -1863,6 +1867,7 @@ class OpenAndroidPlatformAdapter(BasePlatformAdapter):
+
+         account = self.services.core.open_gateway_account(account_id)
+         try:
++            account.conversations.management.require_visible(conversation_id)
+             binding = account.agent_sessions.lookup(conversation_id)
+         finally:
+             account.close()
+diff --git a/open_android_intelligence_gateway/core.py b/open_android_intelligence_gateway/core.py
+index ca7c58c..a7b6430 100644
+--- a/open_android_intelligence_gateway/core.py
++++ b/open_android_intelligence_gateway/core.py
+@@ -560,6 +560,10 @@ class ContractRegistry:
+         "session.pairing": ("session.schema.json", "pairing"),
+         "session.pairingSummary": ("session.schema.json", "pairingSummary"),
+         "conversation.create": ("conversation.schema.json", "create"),
++        "conversation.organization": ("conversation.schema.json", "organization"),
++        "conversation.organizationReplace": ("conversation.schema.json", "organizationReplace"),
++        "conversation.archive": ("conversation.schema.json", "archive"),
++        "conversation.listPage": ("conversation.schema.json", "listPage"),
+         "message.create": ("conversation.schema.json", "messageCreate"),
+         "attachment.create": ("attachment.schema.json", "create"),
+         "event": ("event.schema.json", "event"),
+@@ -3093,6 +3097,8 @@ class ConversationPort:
+         self.history_reader: Any = None
+         from .conversation_workflow import ConversationWorkflow
+         self.workflow = ConversationWorkflow(self)
++        from .conversation_management import ConversationManagement
++        self.management = ConversationManagement(self)
+
+     def _legacy_create_receipt(self, client_conversation_id: str) -> dict[str, Any]:
+         """Recover one creation identity from authenticated HTTP outcomes.
+@@ -3185,6 +3191,7 @@ class ConversationPort:
+                     raise GatewayError("IDEMPOTENCY_CONFLICT")
+                 if original["title"] != title:
+                     raise GatewayError("IDEMPOTENCY_CONFLICT")
++                self.management.require_visible(original["conversationId"])
+                 self.store.database.execute(
+                     "INSERT INTO account_metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (receipt_key, self.store.seal_json(original, receipt_key)),
+@@ -3214,9 +3221,11 @@ class ConversationPort:
+         emit_queued: bool = True,
+     ) -> dict[str, Any]:
+         current = _now(now)
++        self.management.require_writable(conversation_id)
+         for attachment_id in attachment_ids:
+             self.attachments.require_verified_for_message(attachment_id, current)
+         with self.store.transaction():
++            self.management.require_writable(conversation_id)
+             row = self.store.database.execute("SELECT conversation_id FROM conversations WHERE conversation_id = ?", (conversation_id,)).fetchone()
+             if row is None:
+                 raise GatewayError("SCHEMA_INVALID")
+@@ -3465,6 +3474,7 @@ class ConversationPort:
+         self, conversation_id: str, client_message_id: str | None = None,
+         cursor: str | None = None, limit: int = 50,
+     ) -> dict[str, Any]:
++        self.management.require_visible(conversation_id)
+         if callable(self.history_reader):
+             from .host_history import host_history_page
+             return host_history_page(self, conversation_id, client_message_id, cursor, limit)
+@@ -3582,9 +3592,11 @@ class ConversationPort:
+
+     def list(self) -> list[dict[str, Any]]:
+         rows = self.store.database.execute("SELECT conversation_id, client_conversation_id, title FROM conversations ORDER BY conversation_id").fetchall()
+-        return [{"conversationId": r[0], "clientConversationId": r[1], "title": r[2]} for r in rows]
++        return [{"conversationId": r[0], "clientConversationId": r[1], "title": r[2]} for r in rows
++                if not self.management.state(r[0]).get("deleted")]
+
+     def get(self, conversation_id: str) -> dict[str, Any]:
++        self.management.require_visible(conversation_id)
+         row = self.store.database.execute(
+             "SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?",
+             (conversation_id,),
+@@ -3598,6 +3610,7 @@ class ConversationPort:
+         now: datetime | str | None = None,
+     ) -> dict[str, Any]:
+         current = _now(now)
++        self.management.require_visible(conversation_id)
+         with self.store.transaction():
+             row = self.store.database.execute(
+                 "SELECT conversation_id, client_conversation_id, title FROM conversations WHERE conversation_id = ?",
+@@ -3609,6 +3622,8 @@ class ConversationPort:
+                 "UPDATE conversations SET title = ? WHERE conversation_id = ?",
+                 (title, conversation_id),
+             )
++            self.management._write("conversation-management:" + conversation_id,
++                                   {**self.management.state(conversation_id), "updatedAt": iso_millis(current)})
+             self.audit.append(
+                 "conversation.title.updated",
+                 {"accountId": self.account_id},
+@@ -4145,6 +4160,7 @@ def maximum_device_request_queue_seconds(risk: str) -> int:
+
+ _PERSISTABLE_ERRORS = {
+     "SCHEMA_INVALID", "IDENTITY_OVERRIDE_REJECTED", "PAIRING_GENERATION_STALE",
++    "CONVERSATION_NOT_FOUND", "CONVERSATION_ARCHIVED", "CONVERSATION_BUSY", "ORGANIZATION_CONFLICT",
+     # D1: a refusal to unpair is a fact about the pairing, not a transient
+     # failure, so a replay answers the refusal instead of sweeping again.
+     "PAIRING_REQUIRED",
+@@ -4204,6 +4220,8 @@ class GatewayCore:
+         self._online_devices: dict[tuple[str,str,str], tuple[VerifiedRequestContext,int]] = {}
+         self.command_catalog = (command_catalog if callable(command_catalog) else tuple(command_catalog)) if command_catalog is not None else native_command_catalog
+         self.history_reader: Any = None
++        self.conversation_manager: Any = None
++        self._conversation_management_lock = threading.RLock()
+         self.generation_canceller: Any = None
+         self._cancel_locks: dict[tuple[str, str], tuple[Any, int]] = {}
+         self._event_sinks: list[EventSink] = [event_sink] if event_sink is not None else []
+@@ -4516,6 +4534,7 @@ class GatewayCore:
+         # without that entry would make the agreement a claim, not a fact.
+         supported_conversation_ui = {"agent-command-catalog-v1", "agent-command-new-v1", "message-batches-v1", "newline-v1"}
+         if self.generation_canceller is not None: supported_conversation_ui.add("generation-cancel-v1")
++        if self.conversation_manager is not None: supported_conversation_ui.add("conversation-management-v1")
+         if self.approval_cards_available:
+             # Contract §7.2: only a Gateway that can actually release the blocked
+             # Agent thread may promise the phone a card whose buttons do something.
+@@ -4866,6 +4885,10 @@ class GatewayCore:
+         transaction, where it is the authoritative check.
+         """
+         database = account.store.database
++        reserved = database.execute("SELECT value FROM account_metadata WHERE key=?",
++            (f"native-operation:{context['deviceId']}:{context['requestId']}",)).fetchone()
++        if reserved is not None and reserved[0] != input_hash:
++            return _failure(context, "IDEMPOTENCY_CONFLICT")
+         uncertain = database.execute(
+             "SELECT 1 FROM uncertain_outcomes WHERE device_id = ? AND request_id = ?",
+             (context["deviceId"], context["requestId"]),
+@@ -5358,8 +5381,31 @@ class GatewayCore:
+                 cancel_handoff: dict[str, Any] = {}
+                 now = _request_now(request)
+                 cancel_route = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/generations/([^/]+)/cancel",target_path) if method == "POST" else None
++                managed_conversation = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)", target_path)
++                management_route = managed_conversation if (method == "DELETE" or method == "PATCH"
++                    and isinstance(body, Mapping) and "archived" in body) else None
++                if management_route:
++                    if self.conversation_manager is None:
++                        raise GatewayError("HOST_INCOMPATIBLE")
++                    if parsed_target.query or (method == "PATCH" and not self.contracts.validate("conversation.archive", body)) or (method == "DELETE" and body is not None):
++                        raise GatewayError("SCHEMA_INVALID")
++                management_operation = "delete" if method == "DELETE" else "archive"
++                management_archived = body.get("archived") if isinstance(body, Mapping) else None
+
+                 def work() -> dict[str, Any]:
++                    if management_route:
++                        return _success(context, account.conversations.management.commit(management_route.group(1),
++                            management_operation, management_archived, context["correlationId"], now))
++                    if target_path == "/open-android-intelligence/v2/conversation-organization":
++                        if self.conversation_manager is None:
++                            raise GatewayError("HOST_INCOMPATIBLE")
++                        if parsed_target.query:
++                            raise GatewayError("SCHEMA_INVALID")
++                        if method == "GET":
++                            return _success(context, account.conversations.management.organization())
++                        if method == "PUT" and self.contracts.validate("conversation.organizationReplace", body):
++                            return _success(context, account.conversations.management.replace(body, context["correlationId"]))
++                        raise GatewayError("SCHEMA_INVALID")
+                     if cancel_route:
+                         return _success(context,account.conversations.workflow.finish_cancel(*cancel_route.groups(),cancel_handoff["outcome"],context,now))
+                     batch_route = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/message-batches",target_path) if method == "POST" else None
+@@ -5458,6 +5504,15 @@ class GatewayCore:
+                         )
+                         return _success(context, {"conversation": conversation})
+                     if method == "GET" and target_path == "/open-android-intelligence/v2/conversations":
++                        if self.conversation_manager is not None:
++                            query = parse_qs(parsed_target.query, keep_blank_values=True)
++                            if any(key not in {"cursor", "limit"} or len(values) != 1 for key, values in query.items()):
++                                raise GatewayError("SCHEMA_INVALID")
++                            try:
++                                limit = int(query["limit"][0]) if "limit" in query else None
++                            except ValueError as error:
++                                raise GatewayError("SCHEMA_INVALID") from error
++                            return _success(context, account.conversations.management.page(query.get("cursor", [None])[0], limit))
+                         return _success(context, {"conversations": account.conversations.list()})
+                     message_match = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/messages", target_path)
+                     if method == "GET" and message_match:
+@@ -5628,6 +5683,27 @@ class GatewayCore:
+                     def decision_preflight() -> None:
+                         native_cancel = (lambda cid,gid: self.generation_canceller(context["accountId"],cid,gid)) if self.generation_canceller else None
+                         cancel_handoff["outcome"] = account.conversations.workflow.prepare_cancel(*cancel_route.groups(),context,native_cancel)
++                if management_route:
++                    def decision_preflight() -> None:
++                        conversation_id = management_route.group(1)
++                        operation_key = f"{context['deviceId']}:{context['requestId']}"
++                        reservation_key = "native-operation:" + operation_key
++                        account.conversations.management.begin(conversation_id, operation_key, management_operation, management_archived)
++                        account.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
++                            (reservation_key, _hash_input(method, target, body)))
++                        try:
++                            self.conversation_manager(context["accountId"], conversation_id, management_operation, management_archived)
++                        except GatewayError as error:
++                            if error.code in {"CONVERSATION_BUSY", "HOST_INCOMPATIBLE"}:
++                                account.conversations.management.abort(conversation_id, operation_key)
++                                account.store.database.execute("DELETE FROM account_metadata WHERE key=?", (reservation_key,))
++                            raise
++                        except Exception as error:
++                            # The native mutation may have committed. Only the same
++                            # request can retry, and messages remain fenced meanwhile.
++                            raise GatewayError("OUTCOME_UNKNOWN") from error
++                    with self._conversation_management_lock:
++                        return self._run_idempotent(account, request, context, work, replay_check, decision_preflight)
+                 if cancel_route:
+                     with self._generation_cancel_lock(context['accountId'], cancel_route.group(2)):
+                         return self._run_idempotent(account, request, context, work, replay_check, decision_preflight)
+diff --git a/open_android_intelligence_gateway/host_history.py b/open_android_intelligence_gateway/host_history.py
+index efe3437..3fd391c 100644
+--- a/open_android_intelligence_gateway/host_history.py
++++ b/open_android_intelligence_gateway/host_history.py
+@@ -10,6 +10,7 @@ import json
+ import re
+ from datetime import datetime, timezone, timedelta
+ import threading
++from contextlib import nullcontext
+ from typing import Any, Mapping
+ from .history_media import HistoryMedia
+
+@@ -74,6 +75,84 @@ class HermesHistoryPort:
+         self.started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+         self._migration_lock = threading.RLock()
+
++    def _bound_database(self, binding: Mapping[str, Any]) -> Any:
++        session_id = binding.get("agentSessionId")
++        key = binding.get("sessionKey")
++        resolve_key = getattr(self.session_store, "_db_for_key", None)
++        resolve_id = getattr(self.session_store, "_db_for_session_id", None)
++        database = (resolve_key(key) if key and callable(resolve_key) else
++                    resolve_id(session_id) if callable(resolve_id) else getattr(self.session_store, "_db", None))
++        if database is None or not callable(getattr(database, "get_session", None)):
++            from .core import GatewayError
++            raise GatewayError("HOST_INCOMPATIBLE")
++        return database
++
++    def conversation_state(self, account_id: str, conversation_id: str, store: Any) -> dict[str, Any] | None:
++        """Consult the account's stored binding; never enumerate another user's native chats."""
++        from .core import AgentSessionBindings, iso_millis
++        binding = AgentSessionBindings(store).lookup(conversation_id)
++        if not binding or not binding.get("agentSessionId"):
++            return None
++        database = self._bound_database(binding)
++        row = database.get_session(binding["agentSessionId"])
++        if row is None:
++            return {"deleted": True}
++        chain = self._session_chain(database, binding["agentSessionId"])
++        tip = database.get_session(chain[-1]) or row
++        times = [value for value in (tip.get("started_at"), tip.get("ended_at")) if isinstance(value, (int, float))]
++        messages = database.get_messages(chain[-1], include_inactive=True)
++        times.extend(item["timestamp"] for item in messages if isinstance(item.get("timestamp"), (int, float)))
++        return {"archived": bool(tip.get("archived")),
++                **({"updatedAt": iso_millis(datetime.fromtimestamp(max(times), timezone.utc))} if times else {})}
++
++    def manage(self, account_id: str, conversation_id: str, operation: str, archived: bool | None = None) -> None:
++        """Use SessionDB lifecycle APIs, including every compression segment on delete.
++
++        The gateway operation fence is durable before entry. The store routing lock
++        closes admission while native records and their live route are removed.
++        Active native work is refused before any transcript mutation.
++        """
++        from .core import GatewayError
++        account = self.core.open_gateway_account(account_id)
++        try:
++            binding = account.agent_sessions.lookup(conversation_id)
++            if not binding or not binding.get("agentSessionId"):
++                raise GatewayError("HOST_INCOMPATIBLE")
++            database = self._bound_database(binding)
++            setter = getattr(database, "set_session_archived", None)
++            delete = getattr(database, "delete_sessions", None)
++            if not callable(setter) or not callable(delete):
++                raise GatewayError("HOST_INCOMPATIBLE")
++            key = binding.get("sessionKey")
++            store_lock = getattr(self.session_store, "_lock", None)
++            with self._migration_lock, (store_lock if store_lock is not None else nullcontext()):
++                entry = getattr(self.session_store, "_entries", {}).get(key)
++                busy = getattr(self.session_store, "_has_active_processes_safe", None)
++                if (getattr(entry, "active_turn_token", None)
++                        or key and callable(busy) and busy(key, context="oai-conversation-management")):
++                    raise GatewayError("CONVERSATION_BUSY")
++                session_id = binding["agentSessionId"]
++                exists = database.get_session(session_id) is not None
++                chain = self._session_chain(database, session_id) if exists else []
++                if exists and entry is not None and entry.session_id not in chain:
++                    # A real reset is a different conversation, not a compression child.
++                    raise GatewayError("HOST_INCOMPATIBLE")
++                if operation == "archive":
++                    if not exists or setter(session_id, archived) is not True:
++                        raise GatewayError("HOST_INCOMPATIBLE")
++                else:
++                    if chain:
++                        delete(chain, sessions_dir=getattr(self.session_store, "sessions_dir", None))
++                    # Presentation KV is native long-lived content too.
++                    keys = [name for name, _ in database.list_meta_prefix(self._presentation_prefix(account_id, conversation_id))]
++                    if keys:
++                        database._execute_write(lambda conn: conn.executemany("DELETE FROM state_meta WHERE key=?", [(name,) for name in keys]))
++                    if entry is not None:
++                        self.session_store._entries.pop(key, None)
++                        self.session_store._save()
++        finally:
++            account.close()
++
+     def _database(self, session_id: str, native_session_key: str | None = None) -> Any:
+         # 压缩会推进路由，旧会话 ID 不能再用于猜测所属 profile 的数据库。
+         resolve_key = getattr(self.session_store, "_db_for_key", None)
+@@ -299,6 +378,7 @@ class HermesHistoryPort:
+     def read(self, account_id: str, conversation_id: str) -> list[dict[str, Any]]:
+         account = self.core.open_gateway_account(account_id)
+         try:
++            account.conversations.management.require_visible(conversation_id)
+             binding = account.agent_sessions.lookup(conversation_id)
+             if not binding or not binding.get("agentSessionId"):
+                 return []
+@@ -430,6 +510,8 @@ class HermesHistoryPort:
+             saved = account.store.database.execute("SELECT value FROM account_metadata WHERE key='native-history-maintenance-offset'").fetchone()
+             offset = int(saved[0]) if saved else 0
+             conversations = account.store.database.execute("SELECT conversation_id FROM conversation_agent_sessions WHERE agent_session_id IS NOT NULL ORDER BY conversation_id LIMIT 10 OFFSET ?", (offset,)).fetchall()
++            page_size = len(conversations)
++            conversations = [row for row in conversations if not account.conversations.management.state(row[0]).get("deleted")]
+         finally:
+             account.close()
+
+@@ -437,7 +519,7 @@ class HermesHistoryPort:
+             self.read(account_id, row[0])
+         account = self.core.open_gateway_account(account_id)
+         try:
+-            next_offset = offset + len(conversations) if len(conversations) == 10 else 0
++            next_offset = offset + page_size if page_size == 10 else 0
+             account.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES ('native-history-maintenance-offset',?)", (str(next_offset),))
+             from .core import iso_millis
+             cutoff = iso_millis((now or datetime.now(timezone.utc)) - timedelta(seconds=self.core.attachment_policy.attachment_ttl_seconds))
+diff --git a/open_android_intelligence_gateway/http.py b/open_android_intelligence_gateway/http.py
+index 78386b0..fac1947 100644
+--- a/open_android_intelligence_gateway/http.py
++++ b/open_android_intelligence_gateway/http.py
+@@ -117,6 +117,10 @@ _ERROR_STATUS = {
+     "ACCOUNT_NOT_FOUND": 404,
+     "PROTOCOL_INCOMPATIBLE": 406,
+     "IDEMPOTENCY_CONFLICT": 409,
++    "ORGANIZATION_CONFLICT": 409,
++    "CONVERSATION_BUSY": 409,
++    "CONVERSATION_ARCHIVED": 409,
++    "CONVERSATION_NOT_FOUND": 404,
+     "CURSOR_CONFLICT": 409,
+     "CURSOR_EXPIRED": 410,
+     "APPROVAL_NOT_FOUND": 404,
+@@ -506,6 +510,7 @@ def create_gateway_routes(
+         ("/open-android-intelligence/v2/sync/snapshot", "exact"),
+         ("/open-android-intelligence/v2/commands", "exact"),
+         ("/open-android-intelligence/v2/events", "exact"),
++        ("/open-android-intelligence/v2/conversation-organization", "exact"),
+         ("/open-android-intelligence/v2/conversations", "exact"), ("/open-android-intelligence/v2/conversations/", "prefix"),
+         ("/open-android-intelligence/v2/attachments", "exact"), ("/open-android-intelligence/v2/attachments/", "prefix"),
+         ("/open-android-intelligence/v2/device-requests/", "prefix"),
+diff --git a/open_android_intelligence_gateway/conversation_management.py b/open_android_intelligence_gateway/conversation_management.py
+new file mode 100644
+index 0000000..9e69e6e
+--- /dev/null
++++ b/open_android_intelligence_gateway/conversation_management.py
+@@ -0,0 +1,181 @@
++"""Account-scoped conversation organization and native lifecycle receipts.
++
++The native SessionDB owns archive/delete. This database keeps only organization,
++operation fences and tombstones so stale clients cannot recreate deleted chats.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++from typing import Any
++
++
++ORGANIZATION_KEY = "conversation-organization:v1"
++
++
++class ConversationManagement:
++    def __init__(self, conversations: Any):
++        self.conversations = conversations
++        self.store = conversations.store
++
++    def _read(self, key: str, default: Any = None) -> Any:
++        row = self.store.database.execute("SELECT value FROM account_metadata WHERE key=?", (key,)).fetchone()
++        return self.store.open_json(row[0], key) if row else default
++
++    def _write(self, key: str, value: Any) -> None:
++        self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
++                                   (key, self.store.seal_json(value, key)))
++
++    def state(self, conversation_id: str) -> dict[str, Any]:
++        return self._read("conversation-management:" + conversation_id, {})
++
++    def require_visible(self, conversation_id: str) -> None:
++        from .core import GatewayError
++        state = self.state(conversation_id)
++        if state.get("deleted"):
++            raise GatewayError("CONVERSATION_NOT_FOUND")
++        if state.get("pending"):
++            raise GatewayError("CONVERSATION_BUSY")
++
++    def require_writable(self, conversation_id: str) -> None:
++        from .core import GatewayError
++        self.require_visible(conversation_id)
++        reader = getattr(self.conversations.history_reader, "__self__", None)
++        if callable(getattr(reader, "conversation_state", None)):
++            self.record(conversation_id)
++            self.require_visible(conversation_id)
++        if self.state(conversation_id).get("archived"):
++            raise GatewayError("CONVERSATION_ARCHIVED")
++
++    def organization(self) -> dict[str, Any]:
++        return self._read(ORGANIZATION_KEY, {"revision": 0, "sortMode": "updated-desc",
++                                           "customOrder": [], "folders": [], "assignments": {}})
++
++    def replace(self, body: dict[str, Any], correlation_id: str) -> dict[str, Any]:
++        from .core import GatewayError
++        with self.store.transaction():
++            previous = self.organization()
++            if previous["revision"] != body["expectedRevision"]:
++                raise GatewayError("ORGANIZATION_CONFLICT", {"revision": previous["revision"]})
++            ids = {row["conversationId"] for row in self.conversations.list()}
++            folders = {row["folderId"] for row in body["folders"]}
++            names = {row["name"].casefold() for row in body["folders"]}
++            if (len(folders) != len(body["folders"]) or len(names) != len(folders)
++                    or any(value not in ids for value in body["customOrder"])
++                    or any(cid not in ids or folder not in folders for cid, folder in body["assignments"].items())):
++                raise GatewayError("SCHEMA_INVALID")
++            result = {key: body[key] for key in ("sortMode", "customOrder", "folders", "assignments")}
++            result["revision"] = previous["revision"] + 1
++            self._write(ORGANIZATION_KEY, result)
++            self.conversations.events.append("conversation.organization.updated", correlation_id,
++                                             {"revision": result["revision"]})
++            return result
++
++    def begin(self, conversation_id: str, request_id: str, operation: str, archived: bool | None) -> None:
++        from .core import GatewayError
++        with self.store.transaction():
++            prior = self.state(conversation_id)
++            if prior.get("deleted"):
++                raise GatewayError("CONVERSATION_NOT_FOUND")
++            if prior.get("pending"):
++                if prior.get("pendingRequestId") != request_id:
++                    raise GatewayError("OUTCOME_UNKNOWN")
++                if prior.get("operation") != operation or prior.get("archiveValue") != archived:
++                    raise GatewayError("IDEMPOTENCY_CONFLICT")
++            else:
++                self.conversations.get(conversation_id)
++            active = self.conversations.workflow.current(conversation_id) if not prior.get("pending") else None
++            if active and active["state"] in {"queued", "running", "unknown", "cancel_requested"}:
++                raise GatewayError("CONVERSATION_BUSY")
++            queued = self.store.database.execute("SELECT 1 FROM conversation_message_dispatch WHERE conversation_id=? "
++                "AND status IN ('queued','dispatching','delivered') LIMIT 1", (conversation_id,)).fetchone()
++            if queued:
++                raise GatewayError("CONVERSATION_BUSY")
++            self._write("conversation-management:" + conversation_id, {**prior, "pending": True,
++                        "pendingRequestId": request_id, "operation": operation, "archiveValue": archived})
++
++    def abort(self, conversation_id: str, request_id: str) -> None:
++        state = self.state(conversation_id)
++        if state.get("pendingRequestId") != request_id:
++            return
++        for name in ("pending", "pendingRequestId", "operation", "archiveValue"):
++            state.pop(name, None)
++        self._write("conversation-management:" + conversation_id, state)
++
++    def commit(self, conversation_id: str, operation: str, archived: bool | None,
++               correlation_id: str, now: Any = None) -> dict[str, Any]:
++        from .core import _now, iso_millis
++        with self.store.transaction():
++            state = self.state(conversation_id)
++            for name in ("pending", "pendingRequestId", "operation", "archiveValue"):
++                state.pop(name, None)
++            state["updatedAt"] = iso_millis(_now(now))
++            state["deleted" if operation == "delete" else "archived"] = True if operation == "delete" else archived
++            self._write("conversation-management:" + conversation_id, state)
++            if operation == "delete":
++                organization = self.organization()
++                if conversation_id in organization["customOrder"] or conversation_id in organization["assignments"]:
++                    organization["customOrder"] = [value for value in organization["customOrder"] if value != conversation_id]
++                    organization["assignments"].pop(conversation_id, None)
++                    organization["revision"] += 1
++                    self._write(ORGANIZATION_KEY, organization)
++                    self.conversations.events.append("conversation.organization.updated", correlation_id,
++                                                     {"revision": organization["revision"]}, now)
++            self.conversations.events.append("conversation.updated", correlation_id,
++                {"conversationId": conversation_id, **({"deleted": True} if operation == "delete" else {"archived": archived})}, now)
++            return {"conversationId": conversation_id, "deleted": True} if operation == "delete" else {"conversation": self.record(conversation_id)}
++
++    def record(self, conversation_id: str) -> dict[str, Any]:
++        from .core import GatewayError
++        row = self.store.database.execute("SELECT c.*,MAX(m.created_at) AS last_message_at FROM conversations c "
++            "LEFT JOIN messages m ON m.conversation_id=c.conversation_id WHERE c.conversation_id=? GROUP BY c.conversation_id",
++            (conversation_id,)).fetchone()
++        state = self.state(conversation_id)
++        if row is None or state.get("deleted"):
++            raise GatewayError("CONVERSATION_NOT_FOUND")
++        reader = getattr(self.conversations.history_reader, "__self__", None)
++        native_state = getattr(reader, "conversation_state", None)
++        native = native_state(self.conversations.account_id, conversation_id, self.store) if callable(native_state) else None
++        if native and native.get("deleted") and not state.get("pending"):
++            self.commit(conversation_id, "delete", None, "native-conversation-sync")
++            raise GatewayError("CONVERSATION_NOT_FOUND")
++        if native and "archived" in native and not state.get("pending"):
++            state = {**state, "archived": native["archived"]}
++            self._write("conversation-management:" + conversation_id, state)
++        timestamps = [row["created_at"], row["last_message_at"], state.get("updatedAt"), (native or {}).get("updatedAt")]
++        return {"conversationId": conversation_id, "clientConversationId": row["client_conversation_id"],
++                "title": row["title"], "archived": state.get("archived", False),
++                "updatedAt": max(value for value in timestamps if value)}
++
++    def page(self, cursor: str | None = None, limit: int | None = None) -> dict[str, Any]:
++        from .core import GatewayError
++        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100):
++            raise GatewayError("SCHEMA_INVALID")
++        rows = []
++        for conversation in self.conversations.list():
++            try:
++                rows.append(self.record(conversation["conversationId"]))
++            except GatewayError as error:
++                if error.code != "CONVERSATION_NOT_FOUND":
++                    raise
++        rows.sort(key=lambda row: row["conversationId"])
++        rows.sort(key=lambda row: row["updatedAt"], reverse=True)
++        revision = int(hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:13], 16) + 1
++        offset = 0
++        if cursor:
++            try:
++                saved = self.store.open_json(cursor, "conversation-list:v1")
++                offset = saved["offset"]
++                if saved["revision"] != revision:
++                    raise GatewayError("CURSOR_EXPIRED", {"recoverableResources": ["conversations"]})
++                if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= len(rows):
++                    raise ValueError("invalid offset")
++            except GatewayError as error:
++                if error.code == "CURSOR_EXPIRED":
++                    raise
++                raise GatewayError("SCHEMA_INVALID") from error
++            except (KeyError, TypeError, ValueError) as error:
++                raise GatewayError("SCHEMA_INVALID") from error
++        end = offset + (limit if limit is not None else len(rows))
++        next_cursor = self.store.seal_json({"revision": revision, "offset": end}, "conversation-list:v1") if end < len(rows) else None
++        return {"conversations": rows[offset:end], "snapshotRevision": revision, "nextCursor": next_cursor}
+diff --git a/tests/test_conversation_management.py b/tests/test_conversation_management.py
+new file mode 100644
+index 0000000..ecb06ac
+--- /dev/null
++++ b/tests/test_conversation_management.py
+@@ -0,0 +1,227 @@
++"""Shared organization and actual SessionDB archive/delete, without model calls."""
++from __future__ import annotations
++
++from types import SimpleNamespace
++import threading
++import asyncio
++
++import pytest
++
++from open_android_intelligence_gateway.core import GatewayError, create_gateway_core
++from open_android_intelligence_gateway.host_history import HermesHistoryPort
++from test_support import make_secret_store, trust_core
++from test_native_turn_lifecycle import native_store  # noqa: F401 - real SDK fixture
++
++PREFIX = "/open-android-intelligence/v2"
++
++
++@pytest.fixture
++def managed(tmp_path):
++    SessionDB = pytest.importorskip("hermes_state").SessionDB
++    database = SessionDB(tmp_path / "native.db")
++    core = trust_core(create_gateway_core(tmp_path / "gateway", secret_store=make_secret_store()))
++    store = SimpleNamespace(_db=database, _lock=threading.Lock(), _entries={})
++    port = HermesHistoryPort(core, store)
++    core.history_reader = port.read
++    core.conversation_manager = port.manage
++    yield core, database, store
++    database.close()
++
++
++def send(core, method, path, body=None, request_id="req_management", device="dev_one", account="acct_one"):
++    return core.handle({"method": method, "target": PREFIX + path, "body": body,
++        "context": {"accountId": account, "deviceId": device, "sessionId": "sess_one",
++            "requestId": request_id, "correlationId": "cor_management", "pairingGeneration": 1, "grantRevision": 1},
++        "idempotencyKey": request_id})
++
++
++def seed(core, database, count=1, account_id="acct_one"):
++    account = core.open_gateway_account(account_id)
++    ids = []
++    try:
++        for index in range(count):
++            cid = account.conversations.create(f"cc_{index}", f"Thread {index}", "cor_seed")["conversationId"]
++            sid = account_id + f"_native_{index}"
++            database.create_session(sid, "open_android", user_id=account_id, chat_id=cid)
++            database.append_message(sid, "assistant", f"Native reply {index}", timestamp=1000 + index)
++            account.agent_sessions.record(cid, "inbound-message")
++            account.agent_sessions.attach(cid, sid)
++            ids.append((cid, sid))
++        return ids
++    finally:
++        account.close()
++
++
++def test_full_history_pages_include_archived_native_sessions_and_expire_on_change(managed):
++    core, database, _ = managed
++    ids = seed(core, database, 121)
++    database.set_session_archived(ids[0][1], True)
++    cursor = None
++    rows, revisions = [], set()
++    while True:
++        from urllib.parse import urlencode
++        page = send(core, "GET", "/conversations?" + urlencode({"limit": 17, **({"cursor": cursor} if cursor else {})}))["data"]
++        rows.extend(page["conversations"])
++        revisions.add(page["snapshotRevision"])
++        cursor = page["nextCursor"]
++        if cursor is None:
++            break
++    assert len(rows) == len({row["conversationId"] for row in rows}) == 121
++    assert len(revisions) == 1
++    assert next(row for row in rows if row["conversationId"] == ids[0][0])["archived"] is True
++    first = send(core, "GET", "/conversations?limit=5")["data"]
++    database.set_session_archived(ids[-1][1], True)
++    expired = send(core, "GET", "/conversations?" + urlencode({"cursor": first["nextCursor"]}))
++    assert expired["error"]["code"] == "CURSOR_EXPIRED"
++    assert send(core, "GET", "/conversations?limit=0")["error"]["code"] == "SCHEMA_INVALID"
++
++
++def test_two_devices_share_folders_order_and_optimistic_revision_without_affecting_list_snapshot(managed):
++    core, database, _ = managed
++    ids = seed(core, database, 2)
++    before = send(core, "GET", "/conversations?limit=1")["data"]
++    body = {"expectedRevision": 0, "sortMode": "custom", "customOrder": [value[0] for value in ids],
++        "folders": [{"folderId": "folder_work", "name": "Work"}], "assignments": {ids[0][0]: "folder_work"}}
++    result = send(core, "PUT", "/conversation-organization", body)["data"]
++    assert result["revision"] == 1
++    assert send(core, "GET", "/conversation-organization", device="dev_two")["data"] == result
++    conflict = send(core, "PUT", "/conversation-organization", body, "req_stale", "dev_two")
++    assert conflict["error"]["code"] == "ORGANIZATION_CONFLICT"
++    assert send(core, "GET", "/conversations?limit=1")["data"]["snapshotRevision"] == before["snapshotRevision"]
++    assert send(core, "GET", "/conversation-organization", account="acct_other")["data"]["folders"] == []
++    invalid = {**body, "expectedRevision": 1, "assignments": {"conv_other_account": "folder_work"}}
++    assert send(core, "PUT", "/conversation-organization", invalid, "req_foreign")["error"]["code"] == "SCHEMA_INVALID"
++    removed = send(core, "PUT", "/conversation-organization", {**body, "expectedRevision": 1,
++        "folders": [], "assignments": {}, "sortMode": "updated-desc"}, "req_folder_remove")["data"]
++    assert removed["folders"] == [] and removed["revision"] == 2
++
++
++def test_archive_delete_mutate_actual_native_compression_lineage_and_preserve_unrelated_rows(managed):
++    core, database, _ = managed
++    cid, sid = seed(core, database)[0]
++    database.end_session(sid, "compression")
++    database.create_session("compressed_tip", "open_android", parent_session_id=sid)
++    database.append_message("compressed_tip", "assistant", "Continuation", timestamp=2000)
++    database.create_session("unrelated", "cli")
++    database.append_message("unrelated", "user", "Keep me", timestamp=3000)
++    result = send(core, "PATCH", f"/conversations/{cid}", {"archived": True})
++    assert result["data"]["conversation"]["archived"] is True
++    assert all(database.get_session(value)["archived"] == 1 for value in [sid, "compressed_tip"])
++    assert send(core, "PATCH", f"/conversations/{cid}", {"archived": False}, "req_restore")["data"]["conversation"]["archived"] is False
++    send(core, "PUT", "/conversation-organization", {"expectedRevision": 0, "sortMode": "custom", "customOrder": [cid],
++        "folders": [{"folderId": "f_one", "name": "One"}], "assignments": {cid: "f_one"}}, "req_organize")
++    deleted = send(core, "DELETE", f"/conversations/{cid}", request_id="req_delete")
++    assert deleted["data"] == {"conversationId": cid, "deleted": True}
++    assert database.get_session(sid) is None and database.get_session("compressed_tip") is None
++    assert database.get_messages(sid, include_inactive=True) == []
++    assert database.get_messages("compressed_tip", include_inactive=True) == []
++    assert database.get_messages("unrelated")[0]["content"] == "Keep me"
++    assert send(core, "DELETE", f"/conversations/{cid}", request_id="req_delete") == deleted
++    assert send(core, "GET", "/conversations")["data"]["conversations"] == []
++    assert send(core, "GET", f"/conversations/{cid}/messages")["error"]["code"] == "CONVERSATION_NOT_FOUND"
++    assert send(core, "GET", "/conversation-organization")["data"]["customOrder"] == []
++    account = core.open_gateway_account("acct_one")
++    try:
++        with pytest.raises(GatewayError, match="CONVERSATION_NOT_FOUND"):
++            account.conversations.create("cc_0", "Thread 0", "cor_retry_create")
++        assert account.conversations.management.state(cid)["deleted"] is True
++    finally:
++        account.close()
++
++
++def test_busy_queue_and_native_active_marker_refuse_delete_before_native_content_changes(managed):
++    core, database, store = managed
++    cid, sid = seed(core, database)[0]
++    account = core.open_gateway_account("acct_one")
++    try:
++        receipt = account.conversations.accept_message(cid, "cm_busy", "Queued", [], "dev_one", "req_message", "cor_message")
++    finally:
++        account.close()
++    assert send(core, "DELETE", f"/conversations/{cid}")["error"]["code"] == "CONVERSATION_BUSY"
++    assert database.get_session(sid) is not None
++    account = core.open_gateway_account("acct_one")
++    try:
++        account.conversations.workflow.settle(receipt["messageId"], "failed")
++        account.store.database.execute("UPDATE conversation_message_dispatch SET status='failed' WHERE message_id=?", (receipt["messageId"],))
++        account.store.database.execute("UPDATE conversation_agent_sessions SET session_key='trusted' WHERE conversation_id=?", (cid,))
++    finally:
++        account.close()
++    store._entries["trusted"] = SimpleNamespace(session_id=sid, active_turn_token="native_work")
++    assert send(core, "DELETE", f"/conversations/{cid}", request_id="req_native_busy")["error"]["code"] == "CONVERSATION_BUSY"
++    assert database.get_session(sid) is not None
++
++
++def test_native_delete_in_another_ui_produces_tombstone_and_external_archive_is_visible(managed):
++    core, database, _ = managed
++    cid, sid = seed(core, database)[0]
++    database.set_session_archived(sid, True)
++    assert send(core, "GET", "/conversations")["data"]["conversations"][0]["archived"] is True
++    database.delete_session(sid)
++    assert send(core, "GET", "/conversations")["data"]["conversations"] == []
++    # Even a stale writer restoring the native row cannot undo the durable deletion.
++    database.create_session(sid, "open_android")
++    assert send(core, "GET", "/conversations")["data"]["conversations"] == []
++
++
++def test_operation_fence_survives_unknown_native_outcome_and_only_same_request_can_retry(managed):
++    core, database, _ = managed
++    cid, _ = seed(core, database)[0]
++    manager = core.conversation_manager
++    def uncertain(*args):
++        manager(*args)
++        raise OSError("response lost after native commit")
++    core.conversation_manager = uncertain
++    assert send(core, "DELETE", f"/conversations/{cid}")["error"]["code"] == "OUTCOME_UNKNOWN"
++    other = send(core, "POST", "/conversations", {"clientConversationId": "cc_after_unknown"}, "req_create_other")["data"]["conversation"]["conversationId"]
++    assert send(core, "DELETE", f"/conversations/{other}")["error"]["code"] == "IDEMPOTENCY_CONFLICT"
++    assert send(core, "DELETE", f"/conversations/{cid}", device="dev_two")["error"]["code"] == "OUTCOME_UNKNOWN"
++    assert send(core, "DELETE", f"/conversations/{cid}", request_id="req_other")["error"]["code"] == "OUTCOME_UNKNOWN"
++    assert send(core, "PATCH", f"/conversations/{cid}", {"archived": True})["error"]["code"] == "IDEMPOTENCY_CONFLICT"
++    core.conversation_manager = manager
++    assert send(core, "DELETE", f"/conversations/{cid}")["data"]["deleted"] is True
++
++
++def test_signed_native_http_archive_delete_remove_the_real_route_and_cannot_recreate_it(native_store, tmp_path):
++    from aiohttp import ClientSession
++    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
++    from test_batch_http_dispatch import _adapter, _request, _signed_request
++    from test_conversation_rename import ACCOUNT_ID, _gateway
++
++    async def scenario():
++        key = Ed25519PrivateKey.generate()
++        core, bundle, _, exposure = _gateway(tmp_path, key)
++        adapter = _adapter(core, exposure)
++        adapter.set_session_store(native_store)
++        assert await adapter.connect()
++        base = f"http://127.0.0.1:{adapter._site._server.sockets[0].getsockname()[1]}"
++        try:
++            async with ClientSession() as client:
++                created = await _request(client, base, bundle, key, "POST", PREFIX + "/conversations",
++                    {"clientConversationId": "cc_native_management", "title": "Native management"}, "req_native_create")
++                cid = created["data"]["conversation"]["conversationId"]
++                account = core.open_gateway_account(ACCOUNT_ID)
++                try:
++                    binding = account.agent_sessions.lookup(cid)
++                finally:
++                    account.close()
++                database = native_store._db_for_key(binding["sessionKey"])
++                sid = binding["agentSessionId"]
++                assert database.get_session(sid) is not None
++                archived = await _request(client, base, bundle, key, "PATCH", PREFIX + f"/conversations/{cid}",
++                    {"archived": True}, "req_native_archive")
++                assert archived["data"]["conversation"]["archived"] is True
++                assert database.get_session(sid)["archived"] == 1
++                deleted = await _request(client, base, bundle, key, "DELETE", PREFIX + f"/conversations/{cid}",
++                    None, "req_native_delete")
++                assert deleted["data"] == {"conversationId": cid, "deleted": True}
++                assert database.get_session(sid) is None
++                assert native_store.lookup_by_session_key(binding["sessionKey"]) is None
++                target = PREFIX + f"/conversations/{cid}/messages"
++                _, headers = _signed_request(bundle, key, "GET", target, None, "req_native_deleted_history")
++                async with client.get(base + target, headers=headers) as response:
++                    assert response.status == 404
++                    assert (await response.json())["error"]["code"] == "CONVERSATION_NOT_FOUND"
++                assert native_store.lookup_by_session_key(binding["sessionKey"]) is None
++        finally:
++            await adapter.disconnect()
++    asyncio.run(scenario())

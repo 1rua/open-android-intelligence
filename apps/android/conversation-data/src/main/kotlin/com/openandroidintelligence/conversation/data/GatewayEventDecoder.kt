@@ -108,6 +108,10 @@ object GatewayEventDecoder {
                 conversationId = conversationIdOf(payload, body),
             )
 
+            "conversation.updated", "conversation.deleted", "conversation.organization.updated" ->
+                VerifiedConversationEvent.ConversationsChanged(eventId, occurredAt,
+                    conversationIdOf(payload, body), deleted = name == "conversation.deleted" || JsonFields.bool(payload,"deleted") == true)
+
             "conversation.title.updated" -> {
                 val conversationId = conversationIdOf(payload, body) ?: return null
                 val newTitle = JsonFields.string(payload, "title")

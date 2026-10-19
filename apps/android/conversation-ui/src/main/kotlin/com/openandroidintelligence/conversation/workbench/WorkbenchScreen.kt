@@ -119,6 +119,22 @@ fun WorkbenchScreen(
                 gatewayLabel = gatewayLabel,
                 threads = state.threads,
                 activeThreadId = state.activeThreadId,
+                organization = state.organization,
+                managementSupported = state.conversationManagementSupported,
+                managing = state.managingThreads,
+                online = state.isOnline,
+                busyThreadIds = state.busyThreadIds,
+                actions = ConversationBrowserActions(
+                    rename = controller::renameThread,
+                    archive = controller::archiveThread,
+                    delete = controller::deleteThread,
+                    createFolder = controller::createFolder,
+                    renameFolder = controller::renameFolder,
+                    deleteFolder = controller::deleteFolder,
+                    assignFolder = controller::assignThreadToFolder,
+                    sort = controller::setThreadSortMode,
+                    reorder = controller::reorderThreads,
+                ),
                 onOpenThread = {
                     controller.openThread(it)
                     scope.launch { drawer.close() }

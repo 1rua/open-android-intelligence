@@ -114,6 +114,94 @@ class NativeConversationNotificationsTest {
         assertFalse(publications.last().first.isRunning)
     }
 
+    @Test fun terminalStatusFlushesThrottledPreviewAndAnEarlierTimestampedFinalBodyStillArrives() {
+        coordinator = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert },
+            now = { clock }, throttleMillis = 60_000)
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        val finalBody = message("conversation.message.completed", "Final authoritative body", 2)
+        accept(message("conversation.message.delta", "Buffered partial", 1))
+        accept(status("completed", 2))
+        assertEquals("A state-first terminal must bypass the streaming throttle", NativeConversationStatus.COMPLETED, publications.last().first.status)
+        assertEquals("Buffered partial", publications.last().first.latestReply)
+        assertTrue(publications.none { it.second })
+
+        accept(finalBody)
+        assertEquals("Final authoritative body", publications.last().first.latestReply)
+        assertFalse(publications.last().first.isRunning)
+        assertEquals(1, publications.count { it.second })
+        accept(finalBody)
+        assertEquals("Replayed final body must not ring again", 1, publications.count { it.second })
+    }
+
+    @Test fun oldGenerationFinalCannotReplaceTheNextGenerationsPreview() {
+        accept(status("delivered", 1, generation = "old"))
+        accept(message("conversation.message.delta", "Old partial", 1, generation = "old"))
+        accept(status("completed", 2, generation = "old"))
+        accept(status("delivered", 1, generation = "new"))
+        assertEquals("A generation starts with its own empty preview", "", coordinator.sessions.value.single().latestReply)
+        accept(message("conversation.message.delta", "New preview", 1, generation = "new", messageId = "new-reply"))
+        accept(message("conversation.message.completed", "Old final", 2, generation = "old"))
+        val current = coordinator.sessions.value.single()
+        assertEquals("new", current.generationId)
+        assertEquals(NativeConversationStatus.RUNNING, current.status)
+        assertEquals("New preview", current.latestReply)
+        assertEquals("New preview", publications.last().first.latestReply)
+    }
+
+    @Test fun conversationDeletionCancelsWorkAndFencesAStaleSnapshotAndLaterReplay() {
+        val forgotten = mutableListOf<ReplyNotificationTarget>()
+        coordinator = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert },
+            now = { clock }, forget = { forgotten += it })
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        coordinator.requestReconciliation()
+        val request = coordinator.reconciliationRequests().single()
+        accept(event("conversation.deleted", """{"conversationId":"conversation"}"""))
+        assertEquals(listOf(request.session.target), forgotten)
+        assertFalse(coordinator.reconcile(request, null, emptyList()))
+        assertFalse(coordinator.hasPendingReconciliation())
+        assertTrue(coordinator.sessions.value.isEmpty())
+        val count = publications.size
+        coordinator = coordinator()
+        coordinator.bind("profile", "account")
+        accept(status("queued", 2))
+        accept(message("conversation.message.delta", "Deleted replay", 3))
+        assertTrue(coordinator.sessions.value.isEmpty())
+        assertEquals(count, publications.size)
+    }
+
+    @Test fun deletedFlagOnCanonicalConversationUpdateAlsoRetiresTheTarget() {
+        val forgotten = mutableListOf<ReplyNotificationTarget>()
+        coordinator = NativeConversationNotifications(context, scope, { _, _ -> }, now = { clock }, forget = { forgotten += it })
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        accept(event("conversation.updated", """{"conversationId":"conversation","deleted":true}"""))
+        assertEquals(1, forgotten.size)
+        assertTrue(coordinator.sessions.value.isEmpty())
+        assertFalse(coordinator.hasPendingReconciliation())
+    }
+
+    @Test fun authoritativePresenceRecoveryRetiresMissingTargetsAndRejectsStaleListingResults() {
+        val forgotten = mutableListOf<ReplyNotificationTarget>()
+        coordinator = NativeConversationNotifications(context, scope, { _, _ -> }, now = { clock }, forget = { forgotten += it })
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        val stale = coordinator.capturePresenceReconciliation()
+        accept(message("conversation.message.delta", "A newer event", 1))
+        coordinator.retireMissingTargets(stale, emptySet())
+        assertTrue("An event during the listing invalidates its absence receipt", coordinator.sessions.value.single().isRunning)
+        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), setOf("conversation"))
+        assertTrue(forgotten.isEmpty())
+        coordinator.disconnect()
+        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), emptySet())
+        assertEquals(1, forgotten.size)
+        assertTrue(coordinator.sessions.value.isEmpty())
+        assertFalse(coordinator.hasPendingReconciliation())
+        accept(status("queued", 2))
+        assertTrue("Missed deletion recovery also persists the replay fence", coordinator.sessions.value.isEmpty())
+    }
+
     @Test fun legacyUnknownStartStillEndsOngoingButDoesNotInventFinalReplyCorrelation() {
         accept(message("conversation.message.delta", "Legacy preview", 1, generation = null))
         assertTrue(coordinator.sessions.value.single().isRunning)
@@ -344,7 +432,7 @@ class NativeConversationNotificationsTest {
         assertTrue(coordinator.sessions.value.isEmpty())
     }
 
-    @Test fun nativePublisherUpdatesStableConversationNotificationAndPublishesBubbleShortcut() {
+    @Test @Config(sdk = [34, 35]) fun nativePublisherUpdatesStableConversationNotificationAndPublishesBubbleShortcut() {
         val settings = ReplyNotificationSettings(context)
         val publisher = AndroidReplyNotificationPublisher(context, settings)
         val target = ReplyNotificationTarget("profile", "account", "conversation")
@@ -389,6 +477,26 @@ class NativeConversationNotificationsTest {
         shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
         publisher.update(running, false)
         assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun legacyConversationPublisherShowsAdvancingLongTailsAndAReadableFinalExcerpt() {
+        val publisher = AndroidReplyNotificationPublisher(context, ReplyNotificationSettings(context))
+        val target = ReplyNotificationTarget("profile", "account", "conversation")
+        val prefix = "A".repeat(6_000)
+        val running = NativeConversationSession(target, "generation", "Conversation", NativeConversationStatus.RUNNING,
+            prefix + "First stream ending", updatedAt = clock)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        fun text(): String = (Notification.Builder.recoverBuilder(context, manager.activeNotifications.single().notification).style as Notification.MessagingStyle)
+            .messages.single().text.toString()
+        publisher.update(running, false)
+        val first = text()
+        publisher.update(running.copy(latestReply = prefix + "Later stream ending"), false)
+        assertNotEquals(first, text())
+        assertTrue(text().endsWith("Later stream ending"))
+        publisher.update(running.copy(status = NativeConversationStatus.COMPLETED, latestReply = "Opening line. " + prefix + "Final complete ending"), true)
+        assertTrue(text().startsWith("Opening line. "))
+        assertTrue("Final excerpt tail: ${text().takeLast(120)}", text().contains("Final complete ending\n\n$COMPLETE_REPLY_HINT"))
+        assertEquals(TERMINAL_REPLY_EXCERPT_CODE_POINTS, text().codePointCount(0, text().length))
     }
 
     @Test fun permissionAndPreferenceRecoveryRepublishOnlyStillActiveWork() = runBlocking {
