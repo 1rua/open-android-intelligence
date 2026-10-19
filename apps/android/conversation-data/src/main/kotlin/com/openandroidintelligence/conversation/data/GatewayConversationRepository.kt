@@ -25,6 +25,9 @@ import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.ports.ConversationFolder
 import com.openandroidintelligence.conversation.ports.ConversationSortMode
+import com.openandroidintelligence.conversation.ports.ConversationManagementIntent
+import com.openandroidintelligence.conversation.ports.ConversationManagementOperationStore
+import com.openandroidintelligence.conversation.ports.PendingConversationManagementOperation
 import com.openandroidintelligence.gateway.negotiation.ConversationManagementCapability
 import com.openandroidintelligence.conversation.ports.GenerationTracker
 import com.openandroidintelligence.conversation.ports.MessageAcceptance
@@ -40,6 +43,7 @@ import com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome
 import com.openandroidintelligence.gateway.commands.CommandCatalogClient
 import com.openandroidintelligence.gateway.conversations.BatchAcceptance as WireBatchAcceptance
 import com.openandroidintelligence.gateway.conversations.ConversationClient
+import com.openandroidintelligence.gateway.conversations.ConversationManagementException
 import com.openandroidintelligence.gateway.conversations.MessageBatchRequest
 import com.openandroidintelligence.gateway.conversations.MessagePart as WireMessagePart
 import com.openandroidintelligence.gateway.events.EventStreamStatusSink
@@ -70,6 +74,7 @@ class GatewayConversationRepository(
      */
     private val approvals: ApprovalClient? = null,
     private val supportsConversationManagement: Boolean = false,
+    private val managementOperations: ConversationManagementOperationStore = InMemoryConversationManagementOperations(),
     /** Keep the callback last so existing trailing-lambda construction remains valid. */
     private val activeConversationId: () -> String? = { null },
 ) : ConversationRepository,
@@ -178,6 +183,9 @@ class GatewayConversationRepository(
         scope: ConversationScope,
         page: PageRequest,
     ): ConversationPage {
+        // Recovery must precede the first page; a native commit between pages
+        // would otherwise invalidate the history snapshot being traversed.
+        if (page.cursor == null && supportsConversationManagement) recoverManagementOperations()
         val result = client.readThreadPage(page.cursor, page.limit)
         return ConversationPage(
             conversations = result.conversations.map { thread ->
@@ -203,13 +211,55 @@ class GatewayConversationRepository(
             organization.assignments), ConversationManagementCapability(supportsConversationManagement)).toDomain()
 
     override suspend fun setArchived(conversationId: String, archived: Boolean) =
-        client.setArchived(conversationId, archived, ConversationManagementCapability(supportsConversationManagement))
+        manageConversation(ConversationManagementIntent.Archive(conversationId, archived))
 
     override suspend fun deleteConversation(conversationId: String) {
-        client.deleteConversation(conversationId, ConversationManagementCapability(supportsConversationManagement))
-        synchronized(this) {
-            generations.remove(conversationId)
-            generationChanged(conversationId)
+        manageConversation(ConversationManagementIntent.Delete(conversationId))
+    }
+
+    private suspend fun manageConversation(intent: ConversationManagementIntent) {
+        check(supportsConversationManagement) { "CONVERSATION_MANAGEMENT_UNSUPPORTED" }
+        managementOperations.withManagementLock {
+            val pending = managementOperations.pendingManagementOperations().firstOrNull { it.intent.conversationId == intent.conversationId }
+            if (pending != null) {
+                // A new menu action may be the opposite of the lost response.
+                // Settle the original request before allocating another identity.
+                submitManagementOperation(pending, resuming = true)
+                if (pending.intent == intent) return@withManagementLock
+            }
+            submitManagementOperation(managementOperations.reserveManagementOperation(intent), resuming = false)
+        }
+    }
+
+    private suspend fun recoverManagementOperations() = managementOperations.withManagementLock {
+        managementOperations.pendingManagementOperations().forEach { operation ->
+            try { submitManagementOperation(operation, resuming = true) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            // Read-only history remains usable while an uncertain native write
+            // retains its original identity for the next recovery opportunity.
+            catch (_: Exception) { }
+        }
+    }
+
+    private suspend fun submitManagementOperation(operation: PendingConversationManagementOperation, resuming: Boolean) {
+        try {
+            when (val intent = operation.intent) {
+                is ConversationManagementIntent.Archive -> client.setArchived(intent.conversationId, intent.archived,
+                    ConversationManagementCapability(true), operation.requestId)
+                is ConversationManagementIntent.Delete -> client.deleteConversation(intent.conversationId,
+                    ConversationManagementCapability(true), operation.requestId)
+            }
+        } catch (rejected: ConversationManagementException) {
+            // A refusal of a retry says nothing about an earlier native write.
+            // In particular, auth/session errors and BUSY cannot erase unknown
+            // work from a dead process or another server worker.
+            if (!resuming && rejected.definitivelyRejected) managementOperations.finishManagementOperation(operation, confirmed = false)
+            throw rejected
+        }
+        managementOperations.finishManagementOperation(operation, confirmed = true)
+        if (operation.intent is ConversationManagementIntent.Delete) synchronized(this) {
+            generations.remove(operation.intent.conversationId)
+            generationChanged(operation.intent.conversationId)
             activeConversationChanged()
         }
     }

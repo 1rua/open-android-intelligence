@@ -851,11 +851,36 @@ class WorkbenchController(
         }
     }
 
-    private fun changeOrganization(change: (ConversationOrganization) -> ConversationOrganization) = beginManagement {
-        // Read before every CAS: an action from this surface must preserve changes made elsewhere.
-        val current=repository.readOrganization()
-        val committed=repository.updateOrganization(current.revision, change(current))
-        installOrganization(committed)
+    private fun changeOrganization(change: (ConversationOrganization) -> ConversationOrganization) {
+        if (closed) return
+        val requestedScope=scopeFactory()
+        beginManagement {
+            repeat(MAX_ORGANIZATION_UPDATE_ATTEMPTS) { attempt ->
+                currentCoroutineContext().ensureActive()
+                if (closed || requestedScope != scopeFactory()) return@beginManagement
+                // Reapply the same action to each fresh CAS base so another surface's
+                // unrelated edits and the user's original action are both retained.
+                val current=repository.readOrganization()
+                currentCoroutineContext().ensureActive()
+                if (closed || requestedScope != scopeFactory()) return@beginManagement
+                val next=change(current)
+                try {
+                    val committed=repository.updateOrganization(current.revision,next)
+                    currentCoroutineContext().ensureActive()
+                    if (closed || requestedScope != scopeFactory()) return@beginManagement
+                    installOrganization(committed)
+                    return@beginManagement
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) {
+                    currentCoroutineContext().ensureActive()
+                    if (closed || requestedScope != scopeFactory()) return@beginManagement
+                    // Only a confirmed CAS conflict permits another write. A lost
+                    // response may already have committed and must remain visible.
+                    if (attempt == MAX_ORGANIZATION_UPDATE_ATTEMPTS-1 ||
+                        errorCodeOf(failure).substringAfterLast(':') != "ORGANIZATION_CONFLICT") throw failure
+                }
+            }
+        }
     }
 
     private fun installOrganization(organization: ConversationOrganization) {
@@ -1132,9 +1157,9 @@ class WorkbenchController(
                 val page=repository.completeConversations(requestedScope)
                 val organization=if (supportsConversationManagement) repository.readOrganization() else _state.value.organization
                 if (closed || epoch != threadRequestEpoch || mutationEpoch != organizationMutationEpoch || requestedScope != scopeFactory()) return@launch
-                val snapshotRevision=page.snapshotRevision
-                if (snapshotRevision != null && threadsSnapshotRevision?.let { snapshotRevision < it } == true) return@launch
-                threadsSnapshotRevision=snapshotRevision
+                // Snapshot tokens identify coherent pages; host digest values have
+                // no numerical order. Request/mutation epochs above reject late reads.
+                threadsSnapshotRevision=page.snapshotRevision
                 val installedOrganization=organization.takeUnless { it.revision < _state.value.organization.revision } ?: _state.value.organization
                 val threads=installedOrganization.sort(page.conversations.filterNot { it.id.value in deletedThreads })
                 update { state -> state.copy(organization=installedOrganization,
@@ -3937,6 +3962,8 @@ class WorkbenchController(
         command.trim().trimStart('/').equals(NEW_CONVERSATION_COMMAND.trimStart('/'), ignoreCase = true)
 
     private companion object {
+        const val MAX_ORGANIZATION_UPDATE_ATTEMPTS = 3
+
         /** 沿用最多 30 条媒体显示记录，每项至多 256 KiB 缩略图，总预览字节至多 7.5 MiB。 */
         const val MAX_HISTORY_ATTACHMENT_PREVIEWS = 30
         const val MAX_HISTORY_PREVIEW_BYTES = 256 * 1024

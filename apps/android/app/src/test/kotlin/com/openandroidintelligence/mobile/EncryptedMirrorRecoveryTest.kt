@@ -34,6 +34,7 @@ class EncryptedMirrorRecoveryTest {
         assertEquals(organization,reopened.load()?.organization)
         assertEquals(threads,reopened.threads())
         assertEquals(12L,reopened.load()?.threadsSnapshotRevision)
+        reopened.saveThreads(emptyList(),13,reopened.beginHistoryRead())
         reopened.save(checkpoint.copy(threads=emptyList(),threadId=null,threadsSnapshotRevision=13))
         val empty=EncryptedConversationMirror(context,testScope,key)
         assertEquals(emptyList<ConversationSummary>(),empty.load()?.threads)

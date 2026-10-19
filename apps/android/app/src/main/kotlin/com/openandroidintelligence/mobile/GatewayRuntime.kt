@@ -1160,6 +1160,7 @@ class GatewayRuntime(
             streamStatus = eventStreamStatus,
             approvals = approvalClient,
             supportsConversationManagement = "conversation-management-v1" in conversationUi,
+            managementOperations = mirror,
         )
         // generation-cancel-v1 门禁接线：工作台的「停止生成」经由这层仓储
         // 才会带上协商门禁转发给真实客户端；未协商时保持 fail-closed。
@@ -1258,32 +1259,45 @@ class GatewayRuntime(
         }
         if (prepareMediaTransitions(mirror,mediaCache)) recoverDownloads(downloads)?.let { _operationNotice.value = it }
         else _operationNotice.value = MEDIA_RECOVERY_NOTICE
-        val mirroredRepository = com.openandroidintelligence.mobile.conversations.MirroredConversationRepository(workbenchRepository,mirror,mediaCache)
+        val mirroredRepository = com.openandroidintelligence.mobile.conversations.MirroredConversationRepository(workbenchRepository,mirror,mediaCache,
+            managementCommittedByDelegate = true)
         http.setCursorRecovery {
-            val response = http.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest("GET","/open-android-intelligence/v2/sync/snapshot"))
-            check(response.status == 200) { "SNAPSHOT_FAILED" }
-            val envelope = JsonFields.obj(Json.parse(response.body.decodeToString())) ?: error("SNAPSHOT_INVALID")
-            val data = JsonFields.obj(JsonFields.field(envelope,"data")) ?: error("SNAPSHOT_INVALID")
-            val baseline = JsonFields.string(data,"baselineCursor") ?: error("SNAPSHOT_INVALID")
-            val presence = nativeConversationNotifications.capturePresenceReconciliation()
-            val threads = workbenchRepository.completeConversations(conversationScope).conversations
-            if (activeHttpClient === http && sessionJob === ownedJob && "conversation-management-v1" in conversationUi) {
-                nativeConversationNotifications.retireMissingTargets(presence, threads.map { it.id.value }.toSet())
+            fun requireRecoveryOwner() {
+                ownedJob.ensureActive()
+                if (activeHttpClient !== http || sessionJob !== ownedJob) throw CancellationException("SNAPSHOT_OWNER_CHANGED")
             }
-            val pages = linkedMapOf<String,com.openandroidintelligence.conversation.ports.TimelinePage>()
-            // 只补本机已经保存或当前打开的线程，从未打开的旧历史仍在首次打开时读取。
-            val known = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                threads.filter { thread -> thread.id.value == activeThread.get() || mirror.timeline(thread.id.value) != null || mirror.loadSendAtoms(thread.id.value).isNotEmpty() }
+            repeat(3) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val historyEpoch=kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    requireRecoveryOwner()
+                    mirror.beginHistoryRead()
+                }
+                val response = http.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest("GET","/open-android-intelligence/v2/sync/snapshot"))
+                check(response.status == 200) { "SNAPSHOT_FAILED" }
+                val envelope = JsonFields.obj(Json.parse(response.body.decodeToString())) ?: error("SNAPSHOT_INVALID")
+                val data = JsonFields.obj(JsonFields.field(envelope,"data")) ?: error("SNAPSHOT_INVALID")
+                val baseline = JsonFields.string(data,"baselineCursor") ?: error("SNAPSHOT_INVALID")
+                val presence = nativeConversationNotifications.capturePresenceReconciliation()
+                val conversationPage = workbenchRepository.completeConversations(conversationScope)
+                check(conversationPage.authoritative && conversationPage.nextCursor == null) { "SNAPSHOT_NOT_AUTHORITATIVE" }
+                val threads = conversationPage.conversations
+                val pages = linkedMapOf<String,com.openandroidintelligence.conversation.ports.TimelinePage>()
+                // 只补本机已经保存或当前打开的线程，从未打开的旧历史仍在首次打开时读取。
+                val known = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    threads.filter { thread -> thread.id.value == activeThread.get() || mirror.timeline(thread.id.value) != null || mirror.loadSendAtoms(thread.id.value).isNotEmpty() }
+                }
+                known.forEach { thread -> pages[thread.id.value] = workbenchRepository.completeTimeline(thread.id.value) }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                requireRecoveryOwner()
+                if (!mirror.installBaselineAndCommit(threads,pages,baseline,historyEpoch,conversationPage.snapshotRevision)) return@repeat
+                requireRecoveryOwner()
+                if ("conversation-management-v1" in conversationUi) nativeConversationNotifications.retireMissingTargets(presence, conversationPage)
+                // 同事务保存的媒体修订先补做；缺行本身不生成删除，旧导出不能越过未应用的屏障。
+                mirror.applyPendingMediaTransitions(mediaCache)
+                _controller.value?.onMirrorRebuilt()
+                return@setCursorRecovery baseline
             }
-            known.forEach { thread -> pages[thread.id.value] = workbenchRepository.completeTimeline(thread.id.value) }
-            mirror.installBaselineAndCommit(threads,pages,baseline)
-            // 同事务保存的媒体修订先补做；缺行本身不生成删除，旧导出不能越过未应用的屏障。
-            mirror.applyPendingMediaTransitions(mediaCache)
-            kotlinx.coroutines.withContext(Dispatchers.IO) {
-                mirror.finishBaselineRecovery()
-            }
-            _controller.value?.onMirrorRebuilt()
-            baseline
+            error("SNAPSHOT_STALE")
         }
         _controller.value = initializePostLogin(InitializationStage.WORKBENCH) {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -1333,6 +1347,7 @@ class GatewayRuntime(
                     approvalClient, generationCancelCapability, conversationUi.toSet(),
                     com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
                     mediaCache, downloads,
+                    managementOperations = mirror,
                     attachmentCoordinator = BubbleAttachmentDraftCoordinator(attachmentCoordinator),
                     externalBusyThreadIds = {
                         _controller.value?.ownedBusyThreadIds.orEmpty() + bubbleBusyConversationIds() +
@@ -1387,9 +1402,9 @@ class GatewayRuntime(
                 if (force && "conversation-management-v1" in conversationUi) {
                     val presence = nativeConversationNotifications.capturePresenceReconciliation()
                     if (presence != null && presence.revisions.isNotEmpty()) {
-                        val threads = workbenchRepository.completeConversations(conversationScope).conversations
+                        val conversationPage = workbenchRepository.completeConversations(conversationScope)
                         if (sessionJob !== ownedJob || activeHttpClient !== http) return
-                        nativeConversationNotifications.retireMissingTargets(presence, threads.map { it.id.value }.toSet())
+                        nativeConversationNotifications.retireMissingTargets(presence, conversationPage)
                     }
                 }
                 notificationReconciler?.reconcileActive(force)

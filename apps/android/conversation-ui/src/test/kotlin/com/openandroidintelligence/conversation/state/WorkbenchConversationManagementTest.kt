@@ -29,7 +29,7 @@ class WorkbenchConversationManagementTest {
         controller.close()
     }
 
-    @Test fun changesUseLatestServerRevisionAndAConflictRefreshesWithoutLocalSuccess()=runTest {
+    @Test fun changesUseLatestServerRevision()=runTest {
         val host=Host()
         val controller=controller(host)
         runCurrent()
@@ -39,12 +39,179 @@ class WorkbenchConversationManagementTest {
         runCurrent()
         assertEquals(5L,host.expectedRevisions.single())
         assertEquals(listOf("Other","Personal"),controller.state.value.organization.folders.map { it.name })
-        host.conflictNext=true
-        controller.renameFolder("other","Discarded edit")
+        assertNull(controller.state.value.notice)
+        controller.close()
+    }
+
+    @Test fun aConflictReappliesTheOriginalActionAndPreservesConcurrentUnrelatedEdits()=runTest {
+        val host=Host().apply {
+            organization=ConversationOrganization(5,folders=listOf(ConversationFolder("other","Other")))
+        }
+        val controller=controller(host)
         runCurrent()
-        assertTrue(controller.state.value.notice.orEmpty().contains("ORGANIZATION_CONFLICT"))
-        assertEquals(listOf("Other","Personal"),controller.state.value.organization.folders.map { it.name })
+        val gate=CompletableDeferred<Unit>()
+        host.organizationUpdateGate=gate
+        controller.createFolder("Personal")
+        runCurrent()
+        assertEquals(listOf(5L),host.expectedRevisions)
+        assertEquals(listOf("Other"),controller.state.value.organization.folders.map { it.name })
+        // Another surface commits after this action read revision 5 but before its PUT.
+        host.organization=host.organization.copy(revision=6,sortMode=ConversationSortMode.CUSTOM,
+            customOrder=listOf("b","a"),folders=host.organization.folders+ConversationFolder("remote","Remote"),
+            assignments=mapOf("b" to "remote"))
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(listOf(5L,6L),host.expectedRevisions)
+        assertEquals(listOf("Other","Remote","Personal"),controller.state.value.organization.folders.map { it.name })
+        assertEquals(listOf("b","a"),controller.state.value.organization.customOrder)
+        assertEquals(mapOf("b" to "remote"),controller.state.value.organization.assignments)
+        val submittedIds=host.submittedOrganizations.map { it.folders.single { folder -> folder.name=="Personal" }.folderId }
+        assertEquals(1,submittedIds.toSet().size)
         assertEquals(host.organization,controller.state.value.organization)
+        assertNull(controller.state.value.notice)
+        assertFalse(controller.state.value.managingThreads)
+        controller.close()
+    }
+
+    @Test fun repeatedConflictsExhaustTheRetryBoundAndRemainVisibleWithoutLocalSuccess()=runTest {
+        val host=Host().apply { alwaysConflict=true }
+        val controller=controller(host)
+        runCurrent()
+        controller.createFolder("Uncommitted")
+        runCurrent()
+        assertEquals(listOf(0L,1L,2L),host.expectedRevisions)
+        assertTrue(controller.state.value.notice.orEmpty().contains("ORGANIZATION_CONFLICT"))
+        assertTrue(controller.state.value.organization.folders.isEmpty())
+        assertEquals(host.organization,controller.state.value.organization)
+        assertFalse(controller.state.value.managingThreads)
+        controller.close()
+    }
+
+    @Test fun anUnconfirmedWriteFailureIsNotRetried()=runTest {
+        val host=Host().apply { organizationUpdateFailure="ORGANIZATION_UPDATE_FAILED:503" }
+        val controller=controller(host)
+        runCurrent()
+        controller.createFolder("Unconfirmed")
+        runCurrent()
+        assertEquals(listOf(0L),host.expectedRevisions)
+        assertEquals("CONVERSATION_MANAGEMENT_FAILED:ORGANIZATION_UPDATE_FAILED:503",controller.state.value.notice)
+        assertTrue(controller.state.value.organization.folders.isEmpty())
+        assertFalse(controller.state.value.managingThreads)
+        controller.close()
+    }
+
+    @Test fun aScopeChangeDuringAConflictingWritePreventsAnotherAttempt()=runTest {
+        val host=Host()
+        var scope=ConversationScope("profile","gateway","account","install")
+        val controller=controller(host,scope={scope})
+        runCurrent()
+        val gate=CompletableDeferred<Unit>()
+        host.organizationUpdateGate=gate
+        controller.createFolder("Old account action")
+        runCurrent()
+        scope=scope.copy(accountId="new_account")
+        host.organization=host.organization.copy(revision=1)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(listOf(0L),host.expectedRevisions)
+        assertTrue(host.organization.folders.isEmpty())
+        assertNull(controller.state.value.notice)
+        controller.close()
+    }
+
+    @Test fun closingWhileAnUncancellableReadFinishesPreventsTheWrite()=runTest {
+        val host=Host()
+        val controller=controller(host)
+        runCurrent()
+        val gate=CompletableDeferred<Unit>()
+        host.organizationReadGate=gate
+        host.ignoreOrganizationReadCancellation=true
+        controller.createFolder("Cancelled action")
+        runCurrent()
+        controller.close()
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(host.expectedRevisions.isEmpty())
+        assertTrue(host.organization.folders.isEmpty())
+    }
+
+    @Test fun aScopeChangeWhileReadingPreventsTheWrite()=runTest {
+        val host=Host()
+        var scope=ConversationScope("profile","gateway","account","install")
+        val controller=controller(host,scope={scope})
+        runCurrent()
+        val gate=CompletableDeferred<Unit>()
+        host.organizationReadGate=gate
+        controller.createFolder("Old account action")
+        runCurrent()
+        scope=scope.copy(accountId="new_account")
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(host.expectedRevisions.isEmpty())
+        assertTrue(host.organization.folders.isEmpty())
+        controller.close()
+    }
+
+    @Test fun aFreshSnapshotWithADescendingDigestUpdatesTheBrowserAndCheckpoint()=runTest {
+        val host=Host().apply { snapshotRevision=900 }
+        val saved=MemoryPersistence()
+        val controller=controller(host,saved)
+        runCurrent()
+        host.snapshotRevision=20
+        host.threads=listOf(summary("a",3).copy(title="Updated elsewhere",archived=true),summary("new_shared",1))
+        controller.refreshThreads()
+        runCurrent()
+        assertEquals(listOf("a","new_shared"),rows(controller).map { it.id.value })
+        assertEquals("Updated elsewhere",controller.state.value.activeThreadTitle)
+        assertTrue(rows(controller).first().archived)
+        controller.flushPendingPersistence()
+        assertEquals(20L,saved.checkpoint?.threadsSnapshotRevision)
+        assertEquals(host.threads,saved.checkpoint?.threads)
+        controller.close()
+    }
+
+    @Test fun aRestoredSnapshotAcceptsAFreshLowerDigest()=runTest {
+        val host=Host().apply {
+            snapshotRevision=20
+            threads=listOf(summary("a",3).copy(title="Fresh title"),summary("from_other_surface",1))
+        }
+        val cached=listOf(summary("a",2),summary("removed",1))
+        val saved=MemoryPersistence().apply {
+            checkpoint=WorkbenchCheckpoint(cached,"a","Cached title",emptyList(),emptyMap(),"",0,
+                emptyList(),null,emptySet(),emptySet(),threadsSnapshotRevision=900)
+        }
+        val controller=controller(host,saved)
+        assertEquals(cached,rows(controller))
+        runCurrent()
+        assertEquals(host.threads,rows(controller))
+        assertEquals("Fresh title",controller.state.value.activeThreadTitle)
+        controller.flushPendingPersistence()
+        assertEquals(20L,saved.checkpoint?.threadsSnapshotRevision)
+        controller.close()
+    }
+
+    @Test fun anOlderRequestCannotOverwriteANewerSnapshotEvenWithALargerDigest()=runTest {
+        val host=Host().apply { snapshotRevision=10 }
+        val saved=MemoryPersistence()
+        val controller=controller(host,saved)
+        runCurrent()
+        val gate=CompletableDeferred<Unit>()
+        host.listGate=gate
+        host.snapshotRevision=900
+        host.threads=listOf(summary("a",2),summary("stale",1))
+        controller.refreshThreads()
+        runCurrent()
+        host.snapshotRevision=20
+        host.threads=listOf(summary("a",3).copy(title="Newest title"),summary("fresh",1))
+        controller.refreshThreads()
+        runCurrent()
+        assertEquals(host.threads,rows(controller))
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(host.threads,rows(controller))
+        assertEquals("Newest title",controller.state.value.activeThreadTitle)
+        controller.flushPendingPersistence()
+        assertEquals(20L,saved.checkpoint?.threadsSnapshotRevision)
         controller.close()
     }
 
@@ -224,10 +391,11 @@ class WorkbenchConversationManagementTest {
         controller.close()
     }
 
-    private fun TestScope.controller(host:Host,persistence:WorkbenchPersistence?=null,supported:Boolean=true,external:() -> Set<String> = {emptySet()})=
+    private fun TestScope.controller(host:Host,persistence:WorkbenchPersistence?=null,supported:Boolean=true,external:() -> Set<String> = {emptySet()},
+        scope:() -> ConversationScope = {ConversationScope("profile","gateway","account","install")})=
         WorkbenchController(workbenchTestScope(),host,object:AgentCommandCatalogRepository {
             override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
-        },{ConversationScope("profile","gateway","account","install")},persistence=persistence,
+        },scope,persistence=persistence,
             persistenceDispatcher=StandardTestDispatcher(testScheduler),replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false),
             supportsConversationManagement=supported,externalBusyThreadIds=external)
 
@@ -245,26 +413,46 @@ class WorkbenchConversationManagementTest {
         var organization=ConversationOrganization()
         val cursors=mutableListOf<String?>()
         val expectedRevisions=mutableListOf<Long>()
+        val submittedOrganizations=mutableListOf<ConversationOrganization>()
         val events=MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity=16)
         val sendGate=CompletableDeferred<Unit>()
         var listGate:CompletableDeferred<Unit>?=null
-        var conflictNext=false
+        var snapshotRevision:Long?=null
+        var organizationReadGate:CompletableDeferred<Unit>?=null
+        var ignoreOrganizationReadCancellation=false
+        var organizationUpdateGate:CompletableDeferred<Unit>?=null
+        var alwaysConflict=false
+        var organizationUpdateFailure:String?=null
         var archives=0
         var deletes=0
         var authoritative=true
         override suspend fun listConversations(scope:ConversationScope,page:PageRequest):ConversationPage {
             val snapshot=threads
+            val revision=snapshotRevision
             cursors+=page.cursor
             listGate?.let { gate -> listGate=null; gate.await() }
             val offset=page.cursor?.toInt() ?: 0
             val tail=(offset+page.limit).takeIf { it < snapshot.size }?.toString()
-            return ConversationPage(snapshot.drop(offset).take(page.limit),tail,authoritative=authoritative)
+            return ConversationPage(snapshot.drop(offset).take(page.limit),tail,snapshotRevision=revision,authoritative=authoritative)
         }
-        override suspend fun readOrganization()=organization
+        override suspend fun readOrganization():ConversationOrganization {
+            val snapshot=organization
+            organizationReadGate?.let { gate ->
+                organizationReadGate=null
+                if (ignoreOrganizationReadCancellation) withContext(NonCancellable) { gate.await() } else gate.await()
+            }
+            return snapshot
+        }
         override suspend fun updateOrganization(expectedRevision:Long,organization:ConversationOrganization):ConversationOrganization {
             expectedRevisions+=expectedRevision
-            if(conflictNext) { conflictNext=false; this.organization=this.organization.copy(revision=this.organization.revision+1); error("ORGANIZATION_CONFLICT") }
-            check(expectedRevision==this.organization.revision)
+            submittedOrganizations+=organization
+            organizationUpdateGate?.let { gate -> organizationUpdateGate=null; gate.await() }
+            organizationUpdateFailure?.let { error(it) }
+            if(alwaysConflict) {
+                this.organization=this.organization.copy(revision=this.organization.revision+1)
+                error("ORGANIZATION_UPDATE_FAILED:ORGANIZATION_CONFLICT")
+            }
+            check(expectedRevision==this.organization.revision) { "ORGANIZATION_UPDATE_FAILED:ORGANIZATION_CONFLICT" }
             this.organization=organization.copy(revision=expectedRevision+1)
             return this.organization
         }

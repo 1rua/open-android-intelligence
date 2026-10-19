@@ -38,7 +38,7 @@ index da392c9..37af87c 100644
          finally:
              account.close()
 diff --git a/open_android_intelligence_gateway/core.py b/open_android_intelligence_gateway/core.py
-index ca7c58c..a7b6430 100644
+index ca7c58c..10278ac 100644
 --- a/open_android_intelligence_gateway/core.py
 +++ b/open_android_intelligence_gateway/core.py
 @@ -560,6 +560,10 @@ class ContractRegistry:
@@ -144,18 +144,89 @@ index ca7c58c..a7b6430 100644
          if self.approval_cards_available:
              # Contract §7.2: only a Gateway that can actually release the blocked
              # Agent thread may promise the phone a card whose buttons do something.
-@@ -4866,6 +4885,10 @@ class GatewayCore:
+@@ -4857,6 +4876,7 @@ class GatewayCore:
+         now: datetime,
+         input_hash: str,
+         replay_check: Any,
++        native_operation: tuple[str, str, bool | None] | None = None,
+     ) -> dict[str, Any] | None:
+         """The answer already on record for this request, when there is one.
+
+@@ -4866,16 +4886,31 @@ class GatewayCore:
          transaction, where it is the authoritative check.
          """
          database = account.store.database
+-        uncertain = database.execute(
+-            "SELECT 1 FROM uncertain_outcomes WHERE device_id = ? AND request_id = ?",
+-            (context["deviceId"], context["requestId"]),
+-        ).fetchone()
+-        if uncertain is not None:
+-            return _failure(context, "OUTCOME_UNKNOWN")
 +        reserved = database.execute("SELECT value FROM account_metadata WHERE key=?",
 +            (f"native-operation:{context['deviceId']}:{context['requestId']}",)).fetchone()
 +        if reserved is not None and reserved[0] != input_hash:
 +            return _failure(context, "IDEMPOTENCY_CONFLICT")
-         uncertain = database.execute(
-             "SELECT 1 FROM uncertain_outcomes WHERE device_id = ? AND request_id = ?",
+         existing = database.execute(
+             "SELECT input_hash, outcome_json, expires_at FROM idempotency_ledger WHERE device_id = ? AND request_id = ?",
              (context["deviceId"], context["requestId"]),
-@@ -5358,8 +5381,31 @@ class GatewayCore:
+         ).fetchone()
++        uncertain = database.execute(
++            "SELECT input_hash FROM uncertain_outcomes WHERE device_id = ? AND request_id = ?",
++            (context["deviceId"], context["requestId"]),
++        ).fetchone()
++        if uncertain is not None:
++            recoverable = False
++            if native_operation is not None and reserved is not None and uncertain["input_hash"] == input_hash:
++                conversation_id, operation, archived = native_operation
++                pending = account.conversations.management.state(conversation_id)
++                # Native lifecycle has a durable intent fence and can verify the
++                # host's final state. Only that original intent may be retried.
++                recoverable = (pending.get("pending") is True
++                    and pending.get("pendingRequestId") == f"{context['deviceId']}:{context['requestId']}"
++                    and pending.get("operation") == operation and pending.get("archiveValue") == archived)
++                recoverable = recoverable or (existing is not None and existing["input_hash"] == input_hash)
++            if not recoverable:
++                return _failure(context, "OUTCOME_UNKNOWN")
+         if existing is None:
+             return None
+         if existing["input_hash"] != input_hash:
+@@ -4899,6 +4934,7 @@ class GatewayCore:
+         work: Any,
+         replay_check: Any = None,
+         preflight: Any = None,
++        native_operation: tuple[str, str, bool | None] | None = None,
+     ) -> dict[str, Any]:
+         """Run one mutating request once, with its outcome recorded.
+
+@@ -4925,7 +4961,7 @@ class GatewayCore:
+             # A replay is answered from what was recorded and nothing else: the
+             # work below is what the hook exists for, so letting it run again
+             # would hand the host a second copy of a decision it already took.
+-            replayed = self._idempotent_replay(account, context, now, input_hash, replay_check)
++            replayed = self._idempotent_replay(account, context, now, input_hash, replay_check, native_operation)
+             if replayed is not None:
+                 return replayed
+             # The hook releases the host thread before the settlement below is
+@@ -4945,7 +4981,7 @@ class GatewayCore:
+             "createdAt": iso_millis(now),
+             "expiresAt": iso_millis(now + timedelta(days=30)),
+         }):
+-            replayed = self._idempotent_replay(account, context, now, input_hash, replay_check)
++            replayed = self._idempotent_replay(account, context, now, input_hash, replay_check, native_operation)
+             if replayed is not None:
+                 return replayed
+             try:
+@@ -4965,6 +5001,9 @@ class GatewayCore:
+                 )
+             except sqlite3.Error as exc:
+                 raise TransactionOutcomeUnknown({"reason": "idempotency outcome persistence unknown"}) from exc
++            if native_operation is not None:
++                account.store.database.execute("DELETE FROM uncertain_outcomes WHERE device_id=? AND request_id=?",
++                    (context["deviceId"], request_id))
+             return response
+
+     def _handle_new_conversation(
+@@ -5358,8 +5397,31 @@ class GatewayCore:
                  cancel_handoff: dict[str, Any] = {}
                  now = _request_now(request)
                  cancel_route = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/generations/([^/]+)/cancel",target_path) if method == "POST" else None
@@ -187,7 +258,7 @@ index ca7c58c..a7b6430 100644
                      if cancel_route:
                          return _success(context,account.conversations.workflow.finish_cancel(*cancel_route.groups(),cancel_handoff["outcome"],context,now))
                      batch_route = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/message-batches",target_path) if method == "POST" else None
-@@ -5458,6 +5504,15 @@ class GatewayCore:
+@@ -5458,6 +5520,15 @@ class GatewayCore:
                          )
                          return _success(context, {"conversation": conversation})
                      if method == "GET" and target_path == "/open-android-intelligence/v2/conversations":
@@ -203,7 +274,7 @@ index ca7c58c..a7b6430 100644
                          return _success(context, {"conversations": account.conversations.list()})
                      message_match = re.fullmatch(r"/open-android-intelligence/v2/conversations/([^/]+)/messages", target_path)
                      if method == "GET" and message_match:
-@@ -5628,6 +5683,27 @@ class GatewayCore:
+@@ -5628,6 +5699,28 @@ class GatewayCore:
                      def decision_preflight() -> None:
                          native_cancel = (lambda cid,gid: self.generation_canceller(context["accountId"],cid,gid)) if self.generation_canceller else None
                          cancel_handoff["outcome"] = account.conversations.workflow.prepare_cancel(*cancel_route.groups(),context,native_cancel)
@@ -227,12 +298,13 @@ index ca7c58c..a7b6430 100644
 +                            # request can retry, and messages remain fenced meanwhile.
 +                            raise GatewayError("OUTCOME_UNKNOWN") from error
 +                    with self._conversation_management_lock:
-+                        return self._run_idempotent(account, request, context, work, replay_check, decision_preflight)
++                        return self._run_idempotent(account, request, context, work, replay_check, decision_preflight,
++                            native_operation=(management_route.group(1), management_operation, management_archived))
                  if cancel_route:
                      with self._generation_cancel_lock(context['accountId'], cancel_route.group(2)):
                          return self._run_idempotent(account, request, context, work, replay_check, decision_preflight)
 diff --git a/open_android_intelligence_gateway/host_history.py b/open_android_intelligence_gateway/host_history.py
-index efe3437..3fd391c 100644
+index efe3437..12108b3 100644
 --- a/open_android_intelligence_gateway/host_history.py
 +++ b/open_android_intelligence_gateway/host_history.py
 @@ -10,6 +10,7 @@ import json
@@ -243,7 +315,7 @@ index efe3437..3fd391c 100644
  from typing import Any, Mapping
  from .history_media import HistoryMedia
 
-@@ -74,6 +75,84 @@ class HermesHistoryPort:
+@@ -74,6 +75,86 @@ class HermesHistoryPort:
          self.started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
          self._migration_lock = threading.RLock()
 
@@ -310,6 +382,8 @@ index efe3437..3fd391c 100644
 +                    # A real reset is a different conversation, not a compression child.
 +                    raise GatewayError("HOST_INCOMPATIBLE")
 +                if operation == "archive":
++                    if exists and all(bool(database.get_session(value).get("archived")) == archived for value in chain):
++                        return
 +                    if not exists or setter(session_id, archived) is not True:
 +                        raise GatewayError("HOST_INCOMPATIBLE")
 +                else:
@@ -328,7 +402,7 @@ index efe3437..3fd391c 100644
      def _database(self, session_id: str, native_session_key: str | None = None) -> Any:
          # 压缩会推进路由，旧会话 ID 不能再用于猜测所属 profile 的数据库。
          resolve_key = getattr(self.session_store, "_db_for_key", None)
-@@ -299,6 +378,7 @@ class HermesHistoryPort:
+@@ -299,6 +380,7 @@ class HermesHistoryPort:
      def read(self, account_id: str, conversation_id: str) -> list[dict[str, Any]]:
          account = self.core.open_gateway_account(account_id)
          try:
@@ -336,7 +410,7 @@ index efe3437..3fd391c 100644
              binding = account.agent_sessions.lookup(conversation_id)
              if not binding or not binding.get("agentSessionId"):
                  return []
-@@ -430,6 +510,8 @@ class HermesHistoryPort:
+@@ -430,6 +512,8 @@ class HermesHistoryPort:
              saved = account.store.database.execute("SELECT value FROM account_metadata WHERE key='native-history-maintenance-offset'").fetchone()
              offset = int(saved[0]) if saved else 0
              conversations = account.store.database.execute("SELECT conversation_id FROM conversation_agent_sessions WHERE agent_session_id IS NOT NULL ORDER BY conversation_id LIMIT 10 OFFSET ?", (offset,)).fetchall()
@@ -345,7 +419,7 @@ index efe3437..3fd391c 100644
          finally:
              account.close()
 
-@@ -437,7 +519,7 @@ class HermesHistoryPort:
+@@ -437,7 +521,7 @@ class HermesHistoryPort:
              self.read(account_id, row[0])
          account = self.core.open_gateway_account(account_id)
          try:
@@ -566,10 +640,10 @@ index 0000000..9e69e6e
 +        return {"conversations": rows[offset:end], "snapshotRevision": revision, "nextCursor": next_cursor}
 diff --git a/tests/test_conversation_management.py b/tests/test_conversation_management.py
 new file mode 100644
-index 0000000..ecb06ac
+index 0000000..6c5cc53
 --- /dev/null
 +++ b/tests/test_conversation_management.py
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,333 @@
 +"""Shared organization and actual SessionDB archive/delete, without model calls."""
 +from __future__ import annotations
 +
@@ -735,6 +809,43 @@ index 0000000..ecb06ac
 +    assert send(core, "GET", "/conversations")["data"]["conversations"] == []
 +
 +
++def test_first_upgraded_list_tombstones_deleted_attached_session_and_keeps_unmaterialized_bindings(managed):
++    core, database, _ = managed
++    cid, sid = seed(core, database)[0]
++    account = core.open_gateway_account("acct_one")
++    try:
++        untouched = account.conversations.create("cc_untouched", "Untouched", "cor_legacy")["conversationId"]
++        account.agent_sessions.record(untouched, "conversation-read")
++        failed = account.conversations.create("cc_failed", "Failed", "cor_legacy")["conversationId"]
++        account.agent_sessions.record(failed, "inbound-message")
++        receipt = account.conversations.accept_message(failed, "cm_unadopted", "Never adopted", [], "dev_one", "req_unadopted", "cor_legacy")
++        account.store.database.execute("UPDATE conversation_message_dispatch SET status='failed' WHERE message_id=?", (receipt["messageId"],))
++        assert account.agent_sessions.lookup(cid)["agentSessionId"] == sid
++        assert account.agent_sessions.lookup(untouched)["agentSessionId"] is None
++        assert account.agent_sessions.lookup(failed)["agentSessionId"] is None
++        assert account.store.database.execute("SELECT 1 FROM account_metadata WHERE key=?", ("conversation-management:" + cid,)).fetchone() is None
++        account.conversations.management.replace({"expectedRevision": 0, "sortMode": "custom", "customOrder": [cid],
++            "folders": [{"folderId": "legacy", "name": "Legacy"}], "assignments": {cid: "legacy"}}, "cor_legacy")
++    finally:
++        account.close()
++    # The native row disappears before any new lifecycle projection has run.
++    database.delete_session(sid)
++    rows = send(core, "GET", "/conversations")["data"]["conversations"]
++    assert {row["conversationId"] for row in rows} == {untouched, failed}
++    account = core.open_gateway_account("acct_one")
++    try:
++        assert account.conversations.management.state(cid)["deleted"] is True
++        assert account.conversations.management.organization()["customOrder"] == []
++        assert account.conversations.management.organization()["assignments"] == {}
++        with pytest.raises(GatewayError, match="CONVERSATION_NOT_FOUND"):
++            account.conversations.create("cc_0", "Thread 0", "cor_retry")
++    finally:
++        account.close()
++    database.create_session(sid, "open_android")
++    assert {row["conversationId"] for row in send(core, "GET", "/conversations")["data"]["conversations"]} == {untouched, failed}
++    assert send(core, "GET", f"/conversations/{cid}/messages")["error"]["code"] == "CONVERSATION_NOT_FOUND"
++
++
 +def test_operation_fence_survives_unknown_native_outcome_and_only_same_request_can_retry(managed):
 +    core, database, _ = managed
 +    cid, _ = seed(core, database)[0]
@@ -751,6 +862,75 @@ index 0000000..ecb06ac
 +    assert send(core, "PATCH", f"/conversations/{cid}", {"archived": True})["error"]["code"] == "IDEMPOTENCY_CONFLICT"
 +    core.conversation_manager = manager
 +    assert send(core, "DELETE", f"/conversations/{cid}")["data"]["deleted"] is True
++
++
++@pytest.mark.parametrize("operation", ["archive", "delete"])
++def test_native_management_recovers_after_receipt_persistence_failure_and_restart(managed, monkeypatch, operation):
++    core, database, store = managed
++    cid, sid = seed(core, database)[0]
++    calls = []
++    setter, delete = database.set_session_archived, database.delete_sessions
++
++    def archive_native(*args, **kwargs):
++        calls.append("archive")
++        return setter(*args, **kwargs)
++
++    def delete_native(*args, **kwargs):
++        calls.append("delete")
++        return delete(*args, **kwargs)
++
++    monkeypatch.setattr(database, "set_session_archived", archive_native)
++    monkeypatch.setattr(database, "delete_sessions", delete_native)
++    account = core.open_gateway_account("acct_one")
++    try:
++        account.store.database.execute("CREATE TRIGGER fail_management_receipt BEFORE INSERT ON idempotency_ledger WHEN NEW.request_id='req_receipt_loss' BEGIN SELECT RAISE(ABORT,'injected receipt persistence failure'); END")
++    finally:
++        account.close()
++    method, body = ("PATCH", {"archived": True}) if operation == "archive" else ("DELETE", None)
++    lost = send(core, method, f"/conversations/{cid}", body, "req_receipt_loss")
++    assert lost["error"]["code"] == "OUTCOME_UNKNOWN"
++    native_after_mutation = database.get_session(sid)
++    if operation == "delete":
++        assert native_after_mutation is None
++    else:
++        assert native_after_mutation["archived"] == 1
++    assert calls == [operation]
++    account = core.open_gateway_account("acct_one")
++    try:
++        assert account.conversations.management.state(cid)["pendingRequestId"] == "dev_one:req_receipt_loss"
++        assert account.store.database.execute("SELECT 1 FROM idempotency_ledger WHERE request_id='req_receipt_loss'").fetchone() is None
++        account.store.database.execute("DROP TRIGGER fail_management_receipt")
++    finally:
++        account.close()
++    restarted = trust_core(create_gateway_core(core.storage_root, secret_store=core.secret_store))
++    port = HermesHistoryPort(restarted, store)
++    restarted.history_reader, restarted.conversation_manager = port.read, port.manage
++    assert send(restarted, method, f"/conversations/{cid}", body, "req_new_key")["error"]["code"] == "OUTCOME_UNKNOWN"
++    assert send(restarted, method, f"/conversations/{cid}", body, "req_receipt_loss", "dev_two")["error"]["code"] == "OUTCOME_UNKNOWN"
++    assert send(restarted, "PATCH", f"/conversations/{cid}", {"archived": operation != "archive"}, "req_receipt_loss")["error"]["code"] == "IDEMPOTENCY_CONFLICT"
++    recovered = send(restarted, method, f"/conversations/{cid}", body, "req_receipt_loss")
++    assert "error" not in recovered
++    if operation == "delete":
++        assert recovered["data"] == {"conversationId": cid, "deleted": True}
++    else:
++        assert recovered["data"]["conversation"]["archived"] is True
++    assert database.get_session(sid) == native_after_mutation
++    assert calls == [operation]
++    assert send(restarted, method, f"/conversations/{cid}", body, "req_receipt_loss") == recovered
++    account = restarted.open_gateway_account("acct_one")
++    try:
++        assert not account.conversations.management.state(cid).get("pending")
++        assert account.store.database.execute("SELECT 1 FROM uncertain_outcomes WHERE request_id='req_receipt_loss'").fetchone() is None
++        updates = [event for event in account.events.read_after(None) if event["eventType"] == "conversation.updated" and event["payload"]["conversationId"] == cid]
++        assert len(updates) == 1
++        # A COMMIT acknowledgement can also be lost after its receipt became
++        # durable. The matching native receipt resolves that uncertainty too.
++        account.store.database.execute("INSERT INTO uncertain_outcomes(device_id,request_id,input_hash,created_at,expires_at) "
++            "SELECT device_id,request_id,input_hash,'2026-10-19T00:00:00.000Z',expires_at FROM idempotency_ledger WHERE request_id='req_receipt_loss'")
++    finally:
++        account.close()
++    assert send(restarted, method, f"/conversations/{cid}", body, "req_receipt_loss") == recovered
++    assert calls == [operation]
 +
 +
 +def test_signed_native_http_archive_delete_remove_the_real_route_and_cannot_recreate_it(native_store, tmp_path):

@@ -3,9 +3,11 @@ package com.openandroidintelligence.mobile
 import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepository
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
+import com.openandroidintelligence.conversation.data.InMemoryConversationManagementOperations
 import com.openandroidintelligence.conversation.ports.AttachmentDownloadPort
 import com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator
 import com.openandroidintelligence.conversation.ports.ConversationScope
+import com.openandroidintelligence.conversation.ports.ConversationManagementOperationStore
 import com.openandroidintelligence.conversation.ports.HistoricalMediaPort
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.gateway.approvals.ApprovalClient
@@ -78,12 +80,14 @@ internal fun createBubbleWorkbench(
     media: HistoricalMediaPort? = null,
     downloads: AttachmentDownloadPort? = null,
     attachmentCoordinator: AttachmentDraftCoordinator? = null,
+    managementOperations: ConversationManagementOperationStore = InMemoryConversationManagementOperations(),
     externalBusyThreadIds: () -> Set<String> = { emptySet() },
 ): WorkbenchController {
     val active = AtomicReference<String?>(null)
     val client = ConversationClient(http)
     val repository = GatewayConversationRepository(client, streamStatus = status, approvals = approvals,
         activeConversationId = active::get,
+        managementOperations = managementOperations,
         supportsConversationManagement = "conversation-management-v1" in capabilities)
     val gated = CapabilityGatedConversationRepository(repository, client, generationCancel, active::get)
     val controller = WorkbenchController(

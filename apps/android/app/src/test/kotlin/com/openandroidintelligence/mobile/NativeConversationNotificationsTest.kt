@@ -7,6 +7,9 @@ import android.app.NotificationManager
 import android.content.pm.ShortcutManager
 import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.ports.ConversationPage
+import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -189,17 +192,69 @@ class NativeConversationNotificationsTest {
         accept(status("delivered", 1))
         val stale = coordinator.capturePresenceReconciliation()
         accept(message("conversation.message.delta", "A newer event", 1))
-        coordinator.retireMissingTargets(stale, emptySet())
+        coordinator.retireMissingTargets(stale, presencePage())
         assertTrue("An event during the listing invalidates its absence receipt", coordinator.sessions.value.single().isRunning)
-        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), setOf("conversation"))
+        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), presencePage("conversation"))
         assertTrue(forgotten.isEmpty())
         coordinator.disconnect()
-        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), emptySet())
+        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), presencePage())
         assertEquals(1, forgotten.size)
         assertTrue(coordinator.sessions.value.isEmpty())
         assertFalse(coordinator.hasPendingReconciliation())
         accept(status("queued", 2))
         assertTrue("Missed deletion recovery also persists the replay fence", coordinator.sessions.value.isEmpty())
+    }
+
+    @Test fun cachedMissingPresenceKeepsTheShortcutAndDoesNotPersistDeletionBeforeAuthoritativeRecovery() {
+        val publisher = AndroidReplyNotificationPublisher(context, ReplyNotificationSettings(context))
+        fun freshCoordinator() = NativeConversationNotifications(context, scope, publisher::update,
+            now = { clock }, throttleMillis = 0, cancel = publisher::cancel, forget = publisher::forget)
+        coordinator = freshCoordinator()
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val shortcuts = context.getSystemService(ShortcutManager::class.java)
+        val shortcutId = manager.activeNotifications.single().notification.shortcutId
+        val preferences = replyCompletionPreferences(context, "profile", "account")
+        val deletedKey = "realtime.deleted." + replyDigest("conversation")
+
+        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(),
+            presencePage("cached-other-conversation", authoritative = false))
+        assertTrue(coordinator.sessions.value.single().isRunning)
+        assertEquals(1, manager.activeNotifications.size)
+        assertTrue("A cached absence must keep the bubble shortcut routable",
+            shortcuts.dynamicShortcuts.any { it.id == shortcutId && it.isEnabled })
+        assertFalse("A cached absence must not install a durable replay fence", preferences.contains(deletedKey))
+
+        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), presencePage("conversation"))
+        coordinator.leave()
+        coordinator = freshCoordinator()
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1, generation = "after-reconnect"))
+        assertEquals("after-reconnect", coordinator.sessions.value.single().generationId)
+        assertTrue(shortcuts.dynamicShortcuts.any { it.id == shortcutId && it.isEnabled })
+
+        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), presencePage())
+        assertTrue(coordinator.sessions.value.isEmpty())
+        assertTrue(manager.activeNotifications.isEmpty())
+        assertTrue("Confirmed deletion must remove the bubble shortcut", shortcuts.dynamicShortcuts.none { it.id == shortcutId })
+        assertTrue(preferences.contains(deletedKey))
+        coordinator = freshCoordinator()
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1, generation = "after-deletion"))
+        assertTrue("Confirmed deletion must stay fenced across recreation", coordinator.sessions.value.isEmpty())
+    }
+
+    @Test fun anAuthoritativeFirstPageCannotRetireTargetsBeforePaginationCompletes() {
+        val forgotten = mutableListOf<ReplyNotificationTarget>()
+        coordinator = NativeConversationNotifications(context, scope, { _, _ -> }, now = { clock }, forget = { forgotten += it })
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        coordinator.retireMissingTargets(coordinator.capturePresenceReconciliation(), presencePage(nextCursor = "next"))
+        assertTrue(coordinator.sessions.value.single().isRunning)
+        assertTrue(forgotten.isEmpty())
+        assertFalse(replyCompletionPreferences(context, "profile", "account")
+            .contains("realtime.deleted." + replyDigest("conversation")))
     }
 
     @Test fun legacyUnknownStartStillEndsOngoingButDoesNotInventFinalReplyCorrelation() {
@@ -526,6 +581,8 @@ class NativeConversationNotificationsTest {
     }
 
     private fun coordinator() = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert }, now = { clock }, throttleMillis = 40)
+    private fun presencePage(vararg ids: String, authoritative: Boolean = true, nextCursor: String? = null) =
+        ConversationPage(ids.map { ConversationSummary(ConversationId(it), it, clock) }, nextCursor, authoritative = authoritative)
     private fun accept(event: GatewayEvent) = coordinator.accept("profile", "account", event)
     private fun message(type: String, text: String, revision: Long, generation: String? = "generation", sender: String = "assistant", messageId: String = "reply", channel: String? = null) = event(type,
         """{"conversationId":"conversation","messageId":"$messageId",${generationField(generation)}"sender":"$sender","parts":[{"type":"text","text":"$text"}],"revision":$revision${channel?.let { ",\"channel\":\"$it\"" }.orEmpty()}}""")
