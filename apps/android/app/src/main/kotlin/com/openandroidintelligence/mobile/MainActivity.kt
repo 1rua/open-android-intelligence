@@ -125,8 +125,7 @@ class MainActivity : ComponentActivity() {
                     runtime.replyNotifications.refreshPermission()
                     runtime.nativeConversationNotifications.refreshActive()
                     if (phase is ConnectionPhase.Connected && runtime.replyNotifications.enabled.value &&
-                        !runtime.replyNotifications.permissionRequested &&
-                        ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        runtime.replyNotifications.shouldRequestPermission()) {
                         runtime.replyNotifications.markPermissionRequested()
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }

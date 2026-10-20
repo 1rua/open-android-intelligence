@@ -9,9 +9,10 @@
     "buildVariant": "fullDebug",
     "apkRelativePath": "apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk",
     "mainActivity": "com.openandroidintelligence.mobile.MainActivity",
-    "minSdk": 34,
+    "minSdk": 31,
     "targetSdk": 35,
-    "distributionFlavor": "full"
+    "distributionFlavor": "full",
+    "compatibilityApiLevels": [31, 32, 33, 34, 35, 36]
   },
   "environment": {
     "androidCliVersion": "1.0.16261425",
@@ -19,13 +20,20 @@
     "requiredSdkComponents": [
       "cmdline-tools;latest",
       "platform-tools",
-      "platforms;android-35",
+      "platforms;android-36",
       "build-tools;35.0.0",
-      "emulator"
+      "emulator",
+      "system-images;android-31;google_apis;x86_64",
+      "system-images;android-32;google_apis;x86_64",
+      "system-images;android-33;google_apis;x86_64",
+      "system-images;android-34;google_apis;x86_64",
+      "system-images;android-35;google_apis;x86_64",
+      "system-images;android-36;google_apis_playstore;x86_64"
     ],
+    "compatibilityApiLevels": [31, 32, 33, 34, 35, 36],
     "kvmHardwareAcceleration": true,
     "recommendedDeviceProfile": "medium_phone",
-    "recommendedAvdName": "OpenAndroid_Pixel8_API35",
+    "recommendedAvdName": "OpenAndroid_Pixel8_API36",
     "requiredShellEncoding": "C.UTF-8",
     "gateway": {
       "defaultPort": 8045,

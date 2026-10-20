@@ -253,7 +253,7 @@ class SettingsViewModel(
         runtime?.replyNotifications?.refreshPermission()
         runtime?.nativeConversationNotifications?.refreshActive()
     }
-    fun replyNotificationPermissionRequested(): Boolean = runtime?.replyNotifications?.permissionRequested == true
+    fun shouldRequestReplyNotificationPermission(): Boolean = runtime?.replyNotifications?.shouldRequestPermission() == true
     fun markReplyNotificationPermissionRequested() { runtime?.replyNotifications?.markPermissionRequested() }
 
     fun enableTrustMode(

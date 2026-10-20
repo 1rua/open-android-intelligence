@@ -3,6 +3,7 @@ package com.openandroidintelligence.plugin.pkg
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.MessageDigest
 import java.security.Signature
@@ -61,7 +62,10 @@ class AlpManifestSchemaTest {
             .joinToString("") { "%02x".format(it) }
 
     /** 构建签名真实、摘要正确的最小合法包；manifestJson 决定测试的形状变量。 */
-    private fun signedPackage(manifestJson: String): ByteArray {
+    private fun signedPackage(
+        manifestJson: String,
+        transformSignature: (ByteArray) -> ByteArray = { it },
+    ): ByteArray {
         val manifestBytes = manifestJson.toByteArray(Charsets.UTF_8)
         val payload = byteArrayOf(0, 0x61, 0x73, 0x6d)
         val filesJson =
@@ -70,8 +74,8 @@ class AlpManifestSchemaTest {
         val signatureInput =
             "OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1\n".toByteArray(Charsets.UTF_8) +
                 manifestBytes + byteArrayOf('\n'.code.toByte()) + filesBytes
-        val signatureText =
-            Base64.getUrlEncoder().withoutPadding().encodeToString(sign(signatureInput)) + "\n"
+        val signatureText = Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(transformSignature(sign(signatureInput))) + "\n"
         return AlpTestZip.build(
             listOf(
                 "manifest.json" to manifestBytes,
@@ -100,12 +104,31 @@ class AlpManifestSchemaTest {
         assertTrue("unexpected rejection code: $code", messageMatches(code))
     }
 
+    private fun addGroupOrderToScalar(signature: ByteArray): ByteArray {
+        val changed = signature.copyOf()
+        val scalar = BigInteger(1, changed.copyOfRange(32, 64).reversedArray())
+        val groupOrder = BigInteger.ONE.shiftLeft(252)
+            .add(BigInteger("27742317777372353535851937790883648493"))
+        val nonCanonicalScalar = scalar.add(groupOrder)
+        for (index in 0 until 32) {
+            changed[32 + index] = nonCanonicalScalar.shiftRight(index * 8).toByte()
+        }
+        return changed
+    }
+
     @Test
     fun verifiesWellFormedSignedPackage() {
         // 守护用例：强化后的 Schema 校验不得误杀合法 §5 manifest。
         val verified = verifier().verify(signedPackage(validManifest()).inputStream())
         assertEquals("org.example.notifications", verified.identity.pluginId)
         assertEquals("1.0.0", verified.identity.version)
+    }
+
+    @Test
+    fun rejects_noncanonical_ed25519_signature_scalar() {
+        assertRejected(signedPackage(validManifest(), ::addGroupOrderToScalar)) {
+            it.contains("SIGNATURE_INVALID")
+        }
     }
 
     @Test

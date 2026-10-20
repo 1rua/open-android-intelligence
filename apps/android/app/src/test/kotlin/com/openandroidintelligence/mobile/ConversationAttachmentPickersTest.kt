@@ -24,7 +24,7 @@ import org.robolectric.fakes.BaseCursor
 import org.robolectric.shadows.ShadowToast
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class ConversationAttachmentPickersTest {
     private val context get() = ApplicationProvider.getApplicationContext<Application>()
 

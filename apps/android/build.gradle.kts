@@ -23,6 +23,31 @@ check(debugKeystoreFile.asFile.isFile) {
 val debugKeystoreAlias = "androiddebugkey"
 val debugKeystorePassword = "android"
 
+// Full/Play 主 APK 的完整运行依赖闭包支持 Android 12；未进入该 APK 的独立或历史模块保留 API 34 基线。
+val appAndroid12RuntimeLibraries = setOf(
+    ":assistant-holder",
+    ":capability-ports",
+    ":capability-sync-runtime",
+    ":call-log-collector",
+    ":companion-bridge",
+    ":conversation-data",
+    ":conversation-domain",
+    ":conversation-ui",
+    ":core-model",
+    ":device-primitives",
+    ":encrypted-store",
+    ":gateway-client",
+    ":notification-collector",
+    ":notification-control",
+    ":notification-host",
+    ":platform-kernel",
+    ":plugin-package",
+    ":plugin-runtime-wasm",
+    ":plugin-ui",
+    ":policy-engine",
+    ":sms-collector",
+)
+
 allprojects {
     group = "com.openandroidintelligence"
     version = "0.1.0-mvp"
@@ -35,7 +60,7 @@ subprojects {
             // Android 15 keeps the existing app behaviour on older devices.
             compileSdk = 36
             defaultConfig {
-                minSdk = 34
+                minSdk = 31
                 targetSdk = 35
                 testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
             }
@@ -69,7 +94,7 @@ subprojects {
         extensions.configure<com.android.build.api.dsl.LibraryExtension> {
             compileSdk = 35
             defaultConfig {
-                minSdk = 34
+                minSdk = if (project.path in appAndroid12RuntimeLibraries) 31 else 34
                 // Without this a library test APK silently runs under the legacy
                 // `android.test.InstrumentationTestRunner`, which ignores JUnit4
                 // @Test methods: the build reports SUCCESSFUL while executing

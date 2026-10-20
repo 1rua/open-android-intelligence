@@ -14,7 +14,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34, 36], application = Application::class)
+@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class AgentSessionKeepAliveTest {
     @Test
     fun a_recreated_owner_can_stop_the_service_requested_by_the_previous_process() {

@@ -124,9 +124,9 @@ fun PluginManagementScreen(
     val pickPackage = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) installScope.launch {
             try {
-                val bytes = runInterruptible(Dispatchers.IO) { context.contentResolver.openInputStream(uri)?.use {
-                    val value = it.readNBytes(32*1024*1024+1); require(value.size <= 32*1024*1024); value
-                } ?: error("SOURCE_UNAVAILABLE") }
+                val bytes = runInterruptible(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use(::readPluginPackageBytes) ?: error("SOURCE_UNAVAILABLE")
+                }
                 installBytes(bytes)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (cause: Exception) { notice = installFailureNotice(cause) }

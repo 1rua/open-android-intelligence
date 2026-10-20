@@ -99,13 +99,20 @@ cd apps/android
 ./gradlew --no-daemon check
 ```
 
-The source scaffold currently declares provisional Gradle 8.12, AGP 8.9.2,
-Kotlin 2.1.20, app compile SDK 36, target SDK 35 and min SDK 34 values. Library
-modules retain compile SDK 35. Builds and CI use JDK 21; app bytecode remains
-Java 17. API 36 Robolectric tests require JDK 21. The Gradle wrapper JAR
-is included; the Android SDK and native AAR are external. Actual build results
+The source scaffold currently declares Gradle 8.12, AGP 8.9.2, Kotlin 2.1.20,
+app compile SDK 36, target SDK 35 and min SDK 31. Only Android libraries in the
+Full/Play app runtime dependency closure declare min SDK 31; standalone and
+historical modules keep their separate baseline. Library modules retain compile
+SDK 35. Builds and CI use JDK 21; app bytecode remains Java 17. API 36 Robolectric
+tests require JDK 21. The Gradle wrapper JAR is included; the Android SDK and
+native AAR are external. Actual build results
 are recorded separately from controller approval under `MVP-DEP-ANDROID` and
 `MVP-DEP-TSNET`; the historical dependency evidence needs renewal.
+
+The optional `tailscale-companion`/`tailnet-core` path keeps its API 34 baseline
+because the pinned tsnet native AAR requires API 34. Those modules are not in the
+Full/Play host APK runtime dependency closure; core Gateway and device-plugin
+workflows do not depend on that optional transport.
 
 The SMS slice has no current device or native AAR validation in this checkout.
 Its persisted JobScheduler configuration also conflicts with

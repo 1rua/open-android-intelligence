@@ -538,7 +538,7 @@ class AlpVerifier(
         val publicKey = runCatching { ed25519PublicKey(authorKey) }.getOrNull()
             ?: throw PackageRejected("SIGNATURE_INVALID:unsupportedKey")
         val verifier = runCatching {
-            java.security.Signature.getInstance("Ed25519")
+            Ed25519CryptoProvider.signature()
         }.getOrNull() ?: throw PackageRejected("SIGNATURE_INVALID:unsupportedAlgorithm")
 
         verifier.initVerify(publicKey)
@@ -547,15 +547,15 @@ class AlpVerifier(
     }
 
     /**
-     * A raw 32-byte Ed25519 key is not an X.509 SubjectPublicKeyInfo; the
-     * standard 12-byte prefix is prepended so the platform key factory accepts it.
+     * 32 字节 Ed25519 裸公钥不是 X.509 SubjectPublicKeyInfo；这里补上标准前缀，
+     * 再交给随 App 打包的兼容 Provider 解码。
      */
     private fun ed25519PublicKey(raw: ByteArray): java.security.PublicKey {
         val prefix = byteArrayOf(
             0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
         )
         val encoded = prefix + raw
-        return java.security.KeyFactory.getInstance("Ed25519")
+        return Ed25519CryptoProvider.keyFactory()
             .generatePublic(java.security.spec.X509EncodedKeySpec(encoded))
     }
 

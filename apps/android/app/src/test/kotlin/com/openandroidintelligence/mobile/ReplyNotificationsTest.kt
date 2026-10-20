@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
+import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.events.SseParser
@@ -32,7 +33,7 @@ import org.robolectric.shadows.ShadowShortcutManager
 import java.time.Instant
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class ReplyNotificationsTest {
     private lateinit var context: Application
     private val posts = mutableListOf<Pair<ReplyNotificationTarget, String>>()
@@ -43,7 +44,9 @@ class ReplyNotificationsTest {
         context = ApplicationProvider.getApplicationContext()
         context.getSharedPreferences("completion-test", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("agent-reply-alert-settings", Context.MODE_PRIVATE).edit().clear().commit()
-        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     @Test fun progressAndCompletedBodyWaitForSuccessfulGenerationThenReplayDoesNotAlertAgain() {
@@ -174,7 +177,10 @@ class ReplyNotificationsTest {
         assertNull(manager.getNotificationChannel(REPLY_CHANNEL_ID))
         shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
         val settings = ReplyNotificationSettings(context)
-        assertFalse(settings.allowed.value)
+        val runtimePermissionRequired = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        assertEquals(runtimePermissionRequired, settings.postNotificationsPermissionRequired)
+        assertEquals(runtimePermissionRequired, settings.shouldRequestPermission())
+        assertEquals(!runtimePermissionRequired, settings.allowed.value)
 
         shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         settings.refreshPermission()
@@ -234,7 +240,9 @@ class ReplyNotificationsTest {
         assertNotNull(manager.createShortcutResultIntent(pinned))
     }
 
-    @Test fun deniedPermissionConsumesCompletionAndDoesNotReplayAfterPermissionGranted() {
+    @Test
+    @Config(sdk = [33, 34, 35, 36])
+    fun deniedPermissionConsumesCompletionAndDoesNotReplayAfterPermissionGranted() {
         shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
         val settings = ReplyNotificationSettings(context)
         val publisher = AndroidReplyNotificationPublisher(context, settings)
@@ -277,7 +285,9 @@ class ReplyNotificationsTest {
         assertFalse(settings.isAllowed())
     }
 
-    @Test fun bubbleShortcutContainsTheRealLocalUserAlongsideTheBotAndTargetsEmbeddedActivity() {
+    @Test
+    @Config(sdk = [31, 32, 33, 34, 35])
+    fun bubbleShortcutContainsTheRealLocalUserAlongsideTheBotAndTargetsEmbeddedActivity() {
         val publisher = AndroidReplyNotificationPublisher(context, ReplyNotificationSettings(context))
         val target = ReplyNotificationTarget("profile-a", "account-a", "conv-a")
         publisher.post(target, "generation")

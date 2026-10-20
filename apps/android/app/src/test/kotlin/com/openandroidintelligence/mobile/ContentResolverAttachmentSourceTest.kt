@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile
 
 import android.content.Context
+import android.app.Application
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.test.core.app.ApplicationProvider
@@ -12,8 +13,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class ContentResolverAttachmentSourceTest {
     @Test
     fun providerMediaTypeIsPassedThroughWithoutNormalization() {

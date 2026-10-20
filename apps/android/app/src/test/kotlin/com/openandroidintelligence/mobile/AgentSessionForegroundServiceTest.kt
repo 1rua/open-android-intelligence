@@ -17,7 +17,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34, 36], application = Application::class)
+@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class AgentSessionForegroundServiceTest {
     @Test
     fun starts_data_sync_immediately_with_a_separate_silent_ongoing_notification() {

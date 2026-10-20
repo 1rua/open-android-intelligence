@@ -131,7 +131,7 @@ open-android-intelligence/
 - **Node.js / npm**：验证使用固定 `24.18.0 / 11.16.0`；仓库 `tools/run-node24` 可管理本地固定工具链
 - **Python**：`>= 3.12`
 - **JDK**：`JDK 21`（Android 16 Robolectric 验证需要；应用字节码仍为 Java 17）
-- **Android SDK**：App `compileSdk 36`、`targetSdk 35`、`minSdk 34`
+- **Android SDK**：App `compileSdk 36`、`targetSdk 35`、`minSdk 31`
 
 ### 2. 协议契约与跨宿主一致性校验
 
@@ -193,7 +193,7 @@ hermes gateway restart
 
 验证与升级依据见[停止生成和动态命令修复记录](docs/reviews/2026-10-17-hermes-stop-command-catalog.zh-CN.md)。
 
-本分支增加了主界面与气泡共用的完整历史、归档、文件夹与排序管理，以及气泡附件和通知终态同步修复。会话管理通过 `conversation-management-v1` 协商，归档与删除提交到 Agent 原生会话存储；文件夹和顺序保存在网关账号中。两个独立插件仓的固定提交已内置配套实现，安装及 CI 直接使用这些提交，详见[插件同步记录](docs/reviews/2026-10-19-gateway-plugin-sync.zh-CN.md)。Android 16 优先使用一张原生 Live Update，Android 14/15 保留普通通知回退；[兼容性与真机验收边界](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md)说明了 Samsung Now Bar 的限制。
+本分支增加了主界面与气泡共用的完整历史、归档、文件夹与排序管理，以及气泡附件和通知终态同步修复。会话管理通过 `conversation-management-v1` 协商，归档与删除提交到 Agent 原生会话存储；文件夹和顺序保存在网关账号中。两个独立插件仓的固定提交已内置配套实现，安装及 CI 直接使用这些提交，详见[插件同步记录](docs/reviews/2026-10-19-gateway-plugin-sync.zh-CN.md)。Android 12～15 使用系统通知及可用的会话气泡，Android 16 优先使用原生 Live Update；[兼容性与真机验收边界](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md)说明了 Samsung Now Bar 的限制。
 
 OpenClaw Gateway 插件源码位于独立仓库 [`1rua/openclaw-gateway-plugin`](https://github.com/1rua/openclaw-gateway-plugin)。应用主仓在 `openclaw-plugin-pin.json` 中锁定插件提交；插件仓按 `contract-pin.json` 固定本仓唯一维护的 Gateway Protocol 契约。当前固定版本为 `1.1.0`，提交 `c7c087b` 包含原生会话管理及待确认操作恢复；协议版本保持 `2.1.0`，宿主 API 范围保持 `2026.7.1`。安装固定提交：
 

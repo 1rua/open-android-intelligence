@@ -41,7 +41,11 @@ class ReplyNotificationSettings(private val context: Context) {
     private val _liveUpdatesAllowed = MutableStateFlow(canPostLiveUpdates())
     val liveUpdatesAllowed = _liveUpdatesAllowed.asStateFlow()
     val liveUpdatesSupported: Boolean get() = Build.VERSION.SDK_INT >= 36
+    val postNotificationsPermissionRequired: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
     val permissionRequested: Boolean get() = preferences.getBoolean("permission-requested", false)
+
+    fun shouldRequestPermission(): Boolean = postNotificationsPermissionRequired && !permissionRequested &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
 
     fun setEnabled(enabled: Boolean) {
         check(preferences.edit().putBoolean("enabled", enabled).commit())
@@ -76,7 +80,9 @@ class ReplyNotificationSettings(private val context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
         // A missing channel on a fresh install has not been blocked by the user.
         val channel = manager.getNotificationChannel(REPLY_CHANNEL_ID)
-        return ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED &&
+        val runtimePermissionGranted = !postNotificationsPermissionRequired ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        return runtimePermissionGranted &&
             manager.areNotificationsEnabled() && (channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE)
     }
 }

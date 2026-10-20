@@ -3,11 +3,8 @@ package com.openandroidintelligence.gateway.auth
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.io.File
-import java.security.KeyFactory
 import java.security.KeyPair
-import java.security.KeyPairGenerator
 import java.security.KeyStore
-import java.security.Signature
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
@@ -17,16 +14,11 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Software Ed25519 device key, wrapped by a Keystore AES key at rest.
+ * 软件 Ed25519 设备密钥，使用随 App 打包的兼容 Provider，并由 Android Keystore AES 密钥加密保护。
  *
- * Android Keystore cannot generate Ed25519, but the platform JCA can sign with
- * it, so the key pair lives outside Keystore and its private bytes are stored
- * only as AES-GCM ciphertext under a non-exportable Keystore wrapping key —
- * the same envelope pattern the refresh credential uses. If the platform lacks
- * Ed25519 the store fails loudly instead of downgrading to another algorithm.
- *
- * The on-disk frame is `[iv 12][ciphertextLen 4][ciphertext][publicSpki]` so
- * the two halves never have to be told apart by guessing.
+ * Android Keystore 不生成 Ed25519 密钥，因此私钥 PKCS#8 字节只以 AES-GCM 密文存储，
+ * 包装密钥不可导出。磁盘帧保持 `[iv 12][ciphertextLen 4][ciphertext][publicSpki]`，
+ * 现有 API 34+ 安装产生的 PKCS#8/X.509 密钥无需迁移。
  */
 class Ed25519DeviceKeyStore(private val storageDir: File) {
 
@@ -34,7 +26,7 @@ class Ed25519DeviceKeyStore(private val storageDir: File) {
         ed25519WirePublicKey(keyPair(profileId).public)
 
     fun sign(profileId: String, preimage: ByteArray): ByteArray {
-        val signature = Signature.getInstance("Ed25519")
+        val signature = Ed25519CryptoProvider.signature()
         signature.initSign(keyPair(profileId).private)
         signature.update(preimage)
         return signature.sign()
@@ -69,14 +61,14 @@ class Ed25519DeviceKeyStore(private val storageDir: File) {
             init(Cipher.DECRYPT_MODE, wrappingKey(profileId), GCMParameterSpec(TAG_BITS, iv))
             doFinal(ciphertext)
         }
-        val factory = KeyFactory.getInstance("Ed25519")
+        val factory = Ed25519CryptoProvider.keyFactory()
         val privateKey = factory.generatePrivate(PKCS8EncodedKeySpec(plaintext))
         val publicKey = factory.generatePublic(X509EncodedKeySpec(publicSpki))
         return KeyPair(publicKey, privateKey)
     }
 
     private fun generateAndStore(profileId: String): KeyPair {
-        val pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val pair = Ed25519CryptoProvider.keyPairGenerator().generateKeyPair()
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, wrappingKey(profileId))
         val ciphertext = cipher.doFinal(pair.private.encoded)

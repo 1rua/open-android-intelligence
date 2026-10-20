@@ -24,7 +24,7 @@ import org.robolectric.annotation.Config
 
 /** Signed package -> installed bytes -> production host -> kernel -> compiled Rust WASM. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class ProductionPluginHostTest {
     @Test fun anEnabledSignedUpgradeAndRollbackKeepTheSelectedProviderAndAuthorScopedGrant() {
         assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
