@@ -1,6 +1,10 @@
 package com.openandroidintelligence.conversation.assistant
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Modifier
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.test.click
@@ -64,6 +68,7 @@ class AssistantSurfaceInteractionTest {
     fun collapsedSurfaceTouchOnBallExpandsInsteadOfHittingContentButtons() {
         val expansions = mutableListOf<Boolean>()
         var selectionCalls = 0
+        var contentTouches = 0
         compose.setContent {
             MaterialTheme {
                 AssistantSurface(
@@ -72,7 +77,16 @@ class AssistantSurfaceInteractionTest {
                     onClose = {},
                     onStartSelection = { selectionCalls++ },
                     content = {
-                        TextButton(onClick = { selectionCalls++ }) { Text("内容里的圈选") }
+                        // 内容层铺满整个形变区域并整块可点：只要收起态门控漏了一处，
+                        // 点球就会落到这里，测试立刻变红（而不是像只放一个小按钮那样
+                        // 因为点击点落在按钮外而"永远通过"）。
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable { contentTouches++ },
+                        ) {
+                            TextButton(onClick = { selectionCalls++ }) { Text("内容里的圈选") }
+                        }
                     },
                 )
             }
@@ -84,6 +98,7 @@ class AssistantSurfaceInteractionTest {
 
         assertEquals(listOf(true), expansions)
         assertEquals("点球不能拉起屏幕采集授权", 0, selectionCalls)
+        assertEquals("收起态内容层不得收到任何指针事件", 0, contentTouches)
     }
 
     @Test

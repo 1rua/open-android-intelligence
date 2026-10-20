@@ -105,8 +105,27 @@ class ThemeContrastTest {
             assertContrast("warning", state.warning, state.onWarning)
             assertContrast("warningContainer", state.onWarningContainer, state.warningContainer)
         }
-        assertContrast("light success on light surface", LightAppStateColors.success, Color(0xFFF7F9F7))
-        assertContrast("dark success on dark surface", DarkAppStateColors.success, Color(0xFF101416))
+        // 状态色会出现在所有预设的表面色上（含暖色面），必须逐套验证而不是只验默认。
+        ThemePalette.entries.forEach { palette ->
+            val light = palette.lightScheme()
+            val dark = palette.darkScheme()
+            listOf("surface", "surfaceContainer", "surfaceContainerHigh").forEach { role ->
+                val lightSurface = when (role) {
+                    "surface" -> light.surface
+                    "surfaceContainer" -> light.surfaceContainer
+                    else -> light.surfaceContainerHigh
+                }
+                val darkSurface = when (role) {
+                    "surface" -> dark.surface
+                    "surfaceContainer" -> dark.surfaceContainer
+                    else -> dark.surfaceContainerHigh
+                }
+                assertContrast("${palette.label} light success/$role", LightAppStateColors.success, lightSurface)
+                assertContrast("${palette.label} light warning/$role", LightAppStateColors.warning, lightSurface)
+                assertContrast("${palette.label} dark success/$role", DarkAppStateColors.success, darkSurface)
+                assertContrast("${palette.label} dark warning/$role", DarkAppStateColors.warning, darkSurface)
+            }
+        }
     }
 
     /**

@@ -1,6 +1,8 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -133,14 +135,22 @@ internal fun ScrollToLatestButton(
     val reduced = LocalMotionPolicy.current.reduceMotion
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn(MotionSpecs.fade(reduced)) + scaleIn(
-            animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedDecelerateEasing),
-            initialScale = 0.9f,
-        ),
-        exit = fadeOut(MotionSpecs.fade(reduced)) + scaleOut(
-            animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedAccelerateEasing),
-            targetScale = 0.9f,
-        ),
+        enter = fadeIn(MotionSpecs.fade(reduced)) + if (reduced) {
+            EnterTransition.None
+        } else {
+            scaleIn(
+                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedDecelerateEasing),
+                initialScale = 0.9f,
+            )
+        },
+        exit = fadeOut(MotionSpecs.fade(reduced)) + if (reduced) {
+            ExitTransition.None
+        } else {
+            scaleOut(
+                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedAccelerateEasing),
+                targetScale = 0.9f,
+            )
+        },
         modifier = modifier,
     ) {
         FilledTonalButton(

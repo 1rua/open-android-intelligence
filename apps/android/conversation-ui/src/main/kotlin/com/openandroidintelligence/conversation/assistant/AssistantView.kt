@@ -26,7 +26,9 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentHeight
@@ -158,9 +160,10 @@ private fun AssistantSurfaceLayout(
     val currentOnToggleExpanded = rememberUpdatedState<(Boolean) -> Unit> { onExpandedChange(it) }
 
     BoxWithConstraints(
-        // 外层只吃安全区；IME 只作用于展开态输入坞，键盘弹出不会让整个浮层可用矩形缩水。
+        // 外层只吃系统栏与挖孔，**不含 IME**：键盘高度由 input 坞自己的 imePadding 承担，
+        // 否则键盘弹起会把整个浮层可用矩形缩短，面板会先缩一次再位移一次。
         modifier = modifier
-            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
             .fillMaxSize(),
     ) {
         val availableWidth = with(density) { maxWidth.toPx() }
@@ -209,6 +212,8 @@ private fun AssistantSurfaceLayout(
         var positionX by remember { mutableFloatStateOf(target.x) }
         var positionY by remember { mutableFloatStateOf(target.y) }
         var settling by remember { mutableStateOf(false) }
+        // 吸附动画的代际：取消旧动画时它的 finally 不能再把新的 settling 清成 false。
+        var settleGeneration by remember { mutableStateOf(0) }
 
         val containerCorner = animateDpAsState(
             targetValue = if (expanded) AppRadius.Bubble else Dimensions.DockedBall / 2,
@@ -266,7 +271,8 @@ private fun AssistantSurfaceLayout(
         // 目标位置也在 key 里：内容高度是首帧测量出来的，height 变化会改变展开态
         // 的落点，位置必须跟着同一次形变走，否则面板会停在旧落点上。
         // 拖动期不参与（位置由手指直接写），松手动画进行中也不抢占。
-        LaunchedEffect(expanded, target.x, target.y, availableWidth, availableHeight) {
+        LaunchedEffect(expanded, target.x, target.y, availableWidth, availableHeight, settling) {
+            // settling 变化也要重新触发：吸附刚结束时位置在球侧，展开态必须再收敛到居中落点。
             if (settling) return@LaunchedEffect
             val restMinX = dockMarginPx
             val restMaxX = (availableWidth - ballSizePx - dockMarginPx).coerceAtLeast(restMinX)
@@ -365,12 +371,15 @@ private fun AssistantSurfaceLayout(
                                         if (reduceMotion) {
                                             positionX = destinationX
                                             positionY = destinationY
+                                            settling = false
                                         } else {
                                             // 松手才创建动画：从当前位置起飞并继承瞬时速度
                                             // （M17），拖动期没有任何协程在逐帧 cancel。
                                             positionJobHolder.value?.cancel()
+                                            val generation = settleGeneration + 1
+                                            settleGeneration = generation
+                                            settling = true
                                             positionJobHolder.value = scope.launch {
-                                                settling = true
                                                 try {
                                                     coroutineScope {
                                                         launch {
@@ -391,11 +400,14 @@ private fun AssistantSurfaceLayout(
                                                         }
                                                     }
                                                 } finally {
-                                                    settling = false
+                                                    // 只有「仍然是当前这一代」才释放：被新动画/手势
+                                                    // 取代的旧动画不得把状态清掉。
+                                                    if (settleGeneration == generation) settling = false
                                                 }
                                             }
                                         }
                                     } else {
+                                        settling = false
                                         currentOnExpandedChange.value(true)
                                     }
                                     break
@@ -406,6 +418,13 @@ private fun AssistantSurfaceLayout(
                                     continue
                                 }
                                 moved = true
+                                if (!settling) {
+                                    // 用户重新抓住球：先停掉旧的吸附动画，再进入手势驱动，
+                                    // 形变 effect 在此期间不再写位置（单一 owner）。
+                                    settling = true
+                                    settleGeneration += 1
+                                    positionJobHolder.value?.cancel()
+                                }
                                 tracker.addPosition(change.uptimeMillis, change.position)
                                 val delta = change.positionChange()
                                 dragX = rubberbanded(dragX + delta.x, minX, maxX, availableWidth)
@@ -637,11 +656,13 @@ private fun AssistantHeader(
 }
 
 /**
- * 收起态的内容层指针门控。
+ * 收起态的内容层指针门控（第二道防线）。
  *
- * Material 3 的 `clip` 只裁绘制：内容层即使被缩到球里，其按钮仍参与命中。
- * 这里在 **Initial pass** 消费所有指针事件（父到子的顺序），所以内容层里的
- * 「圈选」与关闭按钮永远收不到按下；点球本身由表面自己的手势处理。
+ * 第一道防线是表面自己在 **Initial pass** 消费按下与移动（父到子顺序），
+ * 实测把这一道去掉后，`AssistantSurfaceInteractionTest` 的触摸用例立即变红。
+ * 这一层是冗余的兜底：即使将来有人改了表面手势的消费顺序，内容层也收不到指针。
+ * 另外 Compose 的 `graphicsLayer` 缩放会把命中区域映射到当前视觉尺寸，
+ * 所以内容层实际可点范围本身也只剩球那么大 —— 两者叠加，点球不会拉起屏幕采集。
  */
 private fun Modifier.blockChildPointers(): Modifier = pointerInput(Unit) {
     awaitPointerEventScope {

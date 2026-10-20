@@ -32,8 +32,9 @@ class MaterialTokenGuardTest {
         val root = File("src/main/kotlin")
         assertTrue("找不到 UI 源码根目录", root.exists())
 
-        // 允许的几何值 = AppRadius 令牌：4 / 8 / 12 / 16 / 24 / 28dp。
-        val allowed = setOf(4, 8, 12, 16, 24, 28)
+        // 允许的几何值 = AppRadius 令牌：4 / 8 / 12 / 16 / 20 / 24 / 28dp。
+        // 20dp 是 AppRadius.Bubble（消息气泡/撰写栏），漏掉它会把合法令牌判成违规。
+        val allowed = setOf(4, 8, 12, 16, 20, 24, 28)
         val offenders = root.walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
             .flatMap { file ->

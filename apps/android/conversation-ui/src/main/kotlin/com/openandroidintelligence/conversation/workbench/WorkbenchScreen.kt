@@ -326,7 +326,9 @@ fun WorkbenchScreen(
                 ) {
                     val isCommandPopupVisible = !commandPopupDismissed && state.draft.startsWith("/")
 
-                    if (isCommandPopupVisible) {
+                    // 抽屉盖在上面时它才是「当前可见的一层」：不能让背后看不见的
+                    // 命令菜单先吃掉返回键（否则按一次返回抽屉纹丝不动）。
+                    if (isCommandPopupVisible && !drawer.isOpen) {
                         BackHandler {
                             commandPopupDismissed = true
                         }

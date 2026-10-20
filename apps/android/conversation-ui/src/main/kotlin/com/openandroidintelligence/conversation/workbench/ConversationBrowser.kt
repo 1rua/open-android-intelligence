@@ -503,7 +503,8 @@ private fun ConversationBrowserRow(
         label = "drawer-row-alpha",
     )
     val rise by animateFloatAsState(
-        targetValue = if (entranceVisible) 0f else DrawerRowEnterRise,
+        // 减少动态时只保留淡化：位移本身就是要被关掉的那个效果。
+        targetValue = if (entranceVisible || reduced) 0f else DrawerRowEnterRise,
         animationSpec = entranceSpec,
         label = "drawer-row-rise",
     )
