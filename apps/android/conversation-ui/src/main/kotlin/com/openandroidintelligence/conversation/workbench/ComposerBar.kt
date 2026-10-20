@@ -67,19 +67,21 @@ fun ComposerBar(
     applyImePadding: Boolean = true,
     onQuickChip: ((String) -> Unit)? = null,
     voiceInputEnabled: Boolean = true,
+    inFlightAttachmentIds: Set<String> = emptySet(),
+    hasUnknownSubmissionOutcome: Boolean = false,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
     val waitingCancel = generation == GenerationState.CANCEL_REQUESTED
     val unknown = generation == GenerationState.OUTCOME_UNKNOWN
-    val hasPendingInput = draft.isNotBlank() || attachments.isNotEmpty()
+    val hasPendingInput = draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }
     // While a turn is active, a populated composer belongs to the next turn.
     // Keep cancellation visible only when there is nothing queued by the user.
     val showStop = waitingCancel || (running && !hasPendingInput)
     val actionEnabled = when {
         waitingCancel || unknown -> false
         showStop -> running && !hasPendingInput
-        else -> hasPendingInput && canSend
+        else -> hasPendingInput && canSend && !hasUnknownSubmissionOutcome
     }
 
     var focused by remember { mutableStateOf(false) }
@@ -96,6 +98,7 @@ fun ComposerBar(
         ) {
             AttachmentDraftStrip(
                 attachments = attachments,
+                inFlightAttachmentIds = inFlightAttachmentIds,
                 onRemove = onRemoveAttachment,
                 onRetry = onRetryAttachment,
                 modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
@@ -308,6 +311,7 @@ private fun AttachmentChoice(
 @Composable
 private fun AttachmentDraftStrip(
     attachments: List<AttachmentDraft>,
+    inFlightAttachmentIds: Set<String>,
     onRemove: (String) -> Unit,
     onRetry: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -317,7 +321,12 @@ private fun AttachmentDraftStrip(
         horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
     ) {
         items(attachments, key = { it.id.value }) { draft ->
-            AttachmentDraftChip(draft, onRemove = { onRemove(draft.id.value) }, onRetry = { onRetry(draft.id.value) })
+            AttachmentDraftChip(
+                draft,
+                onRemove = { onRemove(draft.id.value) },
+                onRetry = { onRetry(draft.id.value) },
+                removeEnabled = draft.id.value !in inFlightAttachmentIds,
+            )
         }
     }
 }
@@ -328,6 +337,7 @@ fun AttachmentDraftChip(
     onRemove: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    removeEnabled: Boolean = true,
 ) {
     val state = draft.state
     val failed = state == AttachmentState.RETRYABLE_FAILURE || state == AttachmentState.TERMINAL_FAILURE ||
@@ -404,7 +414,7 @@ fun AttachmentDraftChip(
                 }
             }
 
-            IconButton(onClick = onRemove, modifier = Modifier.size(20.dp)) {
+            IconButton(onClick = onRemove, enabled = removeEnabled, modifier = Modifier.size(20.dp)) {
                 Icon(
                     imageVector = Icons.Default.Close,
                     contentDescription = "移除附件",

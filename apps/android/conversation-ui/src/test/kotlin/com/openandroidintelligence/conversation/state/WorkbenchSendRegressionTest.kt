@@ -266,6 +266,155 @@ class WorkbenchSendRegressionTest {
         controller.cancel()
     }
 
+    @Test fun attachmentAwaitingGatewayAcceptanceCannotBeSubmittedAgain() = runTest {
+        val events = MutableSharedFlow<VerifiedConversationEvent>()
+        val requestStarted = CompletableDeferred<Unit>()
+        val acceptance = CompletableDeferred<MessageAcceptance>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
+                sent += message
+                requestStarted.complete(Unit)
+                return acceptance.await()
+            }
+        }
+        val coordinator = RecordingAttachmentCoordinator()
+        val controller = controllerWithAttachments(repository, coordinator)
+        runCurrent()
+        controller.openThread("conv_attachment_in_flight")
+        runCurrent()
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_attachment_in_flight_active",
+                occurredAt = 1L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_attachment_in_flight_active",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("仍在回答")),
+                    timestamp = 1L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_attachment_in_flight"),
+                    generationId = "gen_attachment_in_flight_old",
+                ),
+            ),
+        )
+        runCurrent()
+        controller.addAttachment(
+            LocalAttachmentSelection(
+                "报告.pdf",
+                "application/pdf",
+                com.openandroidintelligence.conversation.ports.AttachmentContentSource { ByteArrayInputStream(byteArrayOf(1, 2, 3)) },
+            ),
+        )
+        runCurrent()
+        controller.editDraft("请检查附件")
+        controller.sendDraft()
+        runCurrent()
+        requestStarted.await()
+
+        assertEquals(ComposerState.SUBMITTING, controller.state.value.composer)
+        assertEquals(setOf("draft_1"), controller.state.value.inFlightAttachmentIds)
+        assertFalse(controller.state.value.canSend)
+        controller.sendDraft()
+        runCurrent()
+        assertEquals("同一附件等待回执时不能产生第二个提交", 1, repository.sent.size)
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+
+        acceptance.complete(MessageAcceptance("accepted_attachment", repository.sent.single().clientMessageId.value, "gen_attachment_next"))
+        advanceUntilIdle()
+        assertTrue(controller.state.value.inFlightAttachmentIds.isEmpty())
+        assertTrue(controller.state.value.attachments.isEmpty())
+        controller.cancel()
+    }
+
+    @Test fun failedBatchFollowUpPreservesTheExistingRun() = runTest {
+        val events = MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance = error("BATCH_SEND_FAILED:offline")
+        }
+        val controller = batchedController(repository)
+        runCurrent()
+        controller.openThread("conv_failed_follow_up")
+        runCurrent()
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_failed_batch_active",
+                occurredAt = 1L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_failed_batch_active",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("仍在回答")),
+                    timestamp = 1L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_failed_follow_up"),
+                    generationId = "gen_failed_batch_old",
+                ),
+            ),
+        )
+        runCurrent()
+        controller.editDraft("后续消息")
+        controller.sendDraft()
+        advanceTimeBy(1_500L)
+        runCurrent()
+
+        assertTrue(controller.state.value.notice.orEmpty().startsWith("SEND_FAILED:"))
+        assertEquals("后续批次失败不能把仍在工作的旧 generation 置为 IDLE", GenerationState.RUNNING, controller.state.value.generation)
+        controller.cancel()
+    }
+
+    @Test fun unknownAttachmentFollowUpPreservesTheExistingRunAndRetryDraft() = runTest {
+        val events = MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance =
+                throw java.io.IOException("ATTACHMENT_SEND_FAILED:offline")
+        }
+        val controller = controllerWithAttachments(repository, RecordingAttachmentCoordinator())
+        runCurrent()
+        controller.openThread("conv_failed_attachment_follow_up")
+        runCurrent()
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_failed_attachment_active",
+                occurredAt = 1L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_failed_attachment_active",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("仍在回答")),
+                    timestamp = 1L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_failed_attachment_follow_up"),
+                    generationId = "gen_failed_attachment_old",
+                ),
+            ),
+        )
+        runCurrent()
+        controller.addAttachment(
+            LocalAttachmentSelection(
+                "报告.pdf",
+                "application/pdf",
+                com.openandroidintelligence.conversation.ports.AttachmentContentSource { ByteArrayInputStream(byteArrayOf(1, 2, 3)) },
+            ),
+        )
+        runCurrent()
+        controller.editDraft("请检查附件")
+        controller.sendDraft()
+        advanceUntilIdle()
+
+        assertTrue(controller.state.value.notice.orEmpty().startsWith("SEND_OUTCOME_UNKNOWN:"))
+        assertEquals("附件发送失败不能结束原 generation", GenerationState.RUNNING, controller.state.value.generation)
+        assertEquals("失败的文字仍可重试", "请检查附件", controller.state.value.draft)
+        assertTrue(controller.state.value.hasUnknownSubmissionOutcome)
+        assertTrue("控制器的同一 client ID 查询重试路径仍可用", controller.state.value.canSend)
+        assertTrue(controller.state.value.inFlightAttachmentIds.isEmpty())
+        assertEquals(1, controller.state.value.attachments.size)
+        controller.cancel()
+    }
+
     @Test fun stopGenerationCancelsInFlightGenerationAndStreamingMessages() = runTest {
         val repository = RecordingRepository()
         val controller = controller(repository)
@@ -989,7 +1138,7 @@ class WorkbenchSendRegressionTest {
                     id = "msg_assistant",
                     sender = "assistant",
                     parts = listOf(MessagePart.Text("正在处理")),
-                    timestamp = 1000L,
+                    timestamp = System.currentTimeMillis() + 1_000L,
                     state = "STREAMING",
                     conversationId = ConversationId("conv_a"),
                 ),
@@ -1000,6 +1149,99 @@ class WorkbenchSendRegressionTest {
         advanceTimeBy(120_000L)
         runCurrent()
         assertNull("已经收到回复就不该再报超时", controller.state.value.notice)
+        controller.cancel()
+    }
+
+    @Test fun olderGenerationEventsDoNotDisarmTheFollowUpWatchdog() = runTest {
+        val events = MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            var timelineCalls = 0
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
+                timelineCalls++
+                return TimelinePage(emptyList(), null)
+            }
+            override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance = BatchAcceptance(
+                batchId = batch.batchId,
+                memberIds = batch.messages.associate { it.clientMessageId.value to "msg_${it.clientMessageId.value}" },
+                generationId = "gen_follow_up_watchdog",
+            )
+        }
+        val controller = batchedController(
+            repository,
+            WorkbenchController.ReplyTimeouts(firstReplyMillis = 20_000L, giveUpMillis = 120_000L),
+        )
+        runCurrent()
+        controller.openThread("conv_watchdog_follow_up")
+        runCurrent()
+        val timelineCallsBeforeSend = repository.timelineCalls
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_watchdog_old_stream_before_follow_up",
+                occurredAt = 1L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_watchdog_old_stream",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("旧轮次仍在输出")),
+                    timestamp = 1L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_watchdog_follow_up"),
+                    generationId = "gen_watchdog_old",
+                ),
+            ),
+        )
+        runCurrent()
+        controller.editDraft("新的后续消息")
+        controller.sendDraft()
+        advanceTimeBy(1_500L)
+        runCurrent()
+
+        val laterTimestamp = System.currentTimeMillis() + 10_000L
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_watchdog_old_stream_late",
+                occurredAt = laterTimestamp,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "msg_watchdog_old_stream",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("旧轮次的迟到片段")),
+                    timestamp = laterTimestamp,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_watchdog_follow_up"),
+                    generationId = "gen_watchdog_old",
+                ),
+            ),
+        )
+        runCurrent()
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_watchdog_old_confirmed_late",
+                occurredAt = laterTimestamp + 1L,
+                revision = 3L,
+                message = TimelineMessage(
+                    id = "msg_watchdog_old_confirmed",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("旧轮次的确认消息")),
+                    timestamp = laterTimestamp + 1L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_watchdog_follow_up"),
+                    generationId = "gen_watchdog_old",
+                ),
+            ),
+        )
+        runCurrent()
+
+        advanceTimeBy(20_000L)
+        runCurrent()
+        assertTrue("follow-up watchdog 应触发时间线恢复", repository.timelineCalls > timelineCallsBeforeSend)
+        advanceTimeBy(100_000L)
+        runCurrent()
+        assertTrue(
+            "旧 generation 的事件不能隐藏未响应 follow-up 的超时",
+            controller.state.value.notice.orEmpty().contains("REPLY_TIMEOUT"),
+        )
         controller.cancel()
     }
 

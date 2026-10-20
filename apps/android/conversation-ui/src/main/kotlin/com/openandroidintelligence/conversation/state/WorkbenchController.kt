@@ -144,15 +144,21 @@ data class WorkbenchUiState(
     val approvalCardsSupported: Boolean = false,
     val isOnline: Boolean = true,
     val hasRecoverableSubmissions: Boolean = false,
+    /** Unknown send outcomes require an explicit reconciliation before another send. */
+    val hasUnknownSubmissionOutcome: Boolean = false,
     /** 本地发送身份装载完成之前不允许把旧消息误作一条新提交。 */
     val historyHydrated: Boolean = true,
     val organization: ConversationOrganization = ConversationOrganization(),
     val conversationManagementSupported: Boolean = false,
     val managingThreads: Boolean = false,
     val busyThreadIds: Set<String> = emptySet(),
+    /** Attachments held by an in-flight Gateway send, not new composer input. */
+    val inFlightAttachmentIds: Set<String> = emptySet(),
 ) {
-    val canSend: Boolean get() = isOnline && historyHydrated && (draft.isNotBlank() || attachments.isNotEmpty()) &&
-        !managingThreads && !activeThreadArchived && composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
+    val canSend: Boolean get() = isOnline && historyHydrated &&
+        (draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }) &&
+        !managingThreads && !activeThreadArchived &&
+        composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
     val activeThreadArchived: Boolean get() = (threads as? Loadable.Ready)?.value?.any { it.id.value == activeThreadId && it.archived } == true
 }
 
@@ -449,6 +455,20 @@ class WorkbenchController(
             else -> GenerationState.QUEUED
         }
     }
+
+    /** A failed follow-up only ends its own submission; an older run can remain active. */
+    private fun generationAfterSubmissionFailure(current: GenerationState, outcomeUnknown: Boolean): GenerationState {
+        val tracked = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)
+            ?.generationState?.value
+        return when {
+            tracked != null && tracked in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED) -> tracked
+            current in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED) -> current
+            tracked == GenerationState.CANCEL_REQUESTED || current == GenerationState.CANCEL_REQUESTED -> GenerationState.CANCEL_REQUESTED
+            tracked == GenerationState.RUNNING || current == GenerationState.RUNNING -> GenerationState.RUNNING
+            outcomeUnknown -> GenerationState.OUTCOME_UNKNOWN
+            else -> GenerationState.IDLE
+        }
+    }
     private val mirroredRevisions = LinkedHashMap<String, Long>()
     private data class MessageStatusReceipt(
         val status: com.openandroidintelligence.conversation.ports.AgentMessageStatus,
@@ -599,9 +619,14 @@ class WorkbenchController(
     private var pendingCheckpoint: WorkbenchCheckpoint? = null
     private var checkpointFailure: Throwable? = null
     private var closingJobs: List<Job> = emptyList()
-    /** Watchdog for one send: the difference between "thinking" and "broken". */
+    /** Watchdog for one accepted turn: the difference between "thinking" and "broken". */
     private var replyWatchdog: Job? = null
-    private var awaitingReplyInThread: String? = null
+    private data class ReplyWatchdogTarget(
+        val conversationId: String,
+        val clientMessageIds: Set<String>,
+        val generationId: String?,
+    )
+    private var awaitingReply: ReplyWatchdogTarget? = null
     private var activeThreadId: String? = null
     private var threadRequestEpoch = 0L
     private var organizationMutationEpoch = 0L
@@ -1107,19 +1132,20 @@ class WorkbenchController(
      * timer can only ever be silence. This turns silence into either a
      * recovered timeline or a message the user can read.
      */
-    private fun armReplyWatchdog(conversationId: String) {
+    private fun armReplyWatchdog(conversationId: String, clientMessageIds: Collection<String>, generationId: String?) {
         if (!replyTimeouts.enabled) return
+        val target = ReplyWatchdogTarget(conversationId, clientMessageIds.toSet(), generationId)
         replyWatchdog?.cancel()
-        awaitingReplyInThread = conversationId
+        awaitingReply = target
         replyWatchdog = workScope.launch {
             delay(replyTimeouts.firstReplyMillis)
-            if (awaitingReplyInThread != conversationId) return@launch
+            if (awaitingReply !== target) return@launch
             // The event for this reply may have been produced while the stream
             // was down; the timeline is the authoritative answer either way.
             if (activeThreadId == conversationId) reloadTimeline(conversationId)
             delay((replyTimeouts.giveUpMillis - replyTimeouts.firstReplyMillis).coerceAtLeast(0L))
-            if (awaitingReplyInThread != conversationId) return@launch
-            awaitingReplyInThread = null
+            if (awaitingReply !== target) return@launch
+            awaitingReply = null
             update { state ->
                 if (state.activeThreadId != conversationId) return@update state
                 state.copy(
@@ -1137,7 +1163,24 @@ class WorkbenchController(
     private fun disarmReplyWatchdog() {
         replyWatchdog?.cancel()
         replyWatchdog = null
-        awaitingReplyInThread = null
+        awaitingReply = null
+    }
+
+    /** Older turns may still publish after a follow-up has armed its watchdog. */
+    private fun disarmReplyWatchdogFor(
+        conversationId: String,
+        generationId: String?,
+        clientMessageId: String? = null,
+        belongsToCurrentTurn: Boolean = false,
+    ) {
+        val target = awaitingReply ?: return
+        if (target.conversationId != conversationId) return
+        val isExactMessage = clientMessageId != null && clientMessageId in target.clientMessageIds
+        val hasGenerationIds = generationId != null && target.generationId != null
+        val isExactGeneration = hasGenerationIds && generationId == target.generationId
+        if (isExactMessage || isExactGeneration || (!hasGenerationIds && belongsToCurrentTurn)) {
+            disarmReplyWatchdog()
+        }
     }
 
     fun retryTimeline() {
@@ -2005,6 +2048,7 @@ class WorkbenchController(
      * Removes an attachment draft and cancels its upload job.
      */
     fun removeAttachment(draftId: String) {
+        if (draftId in _state.value.inFlightAttachmentIds) return
         cancelPendingSubmission()
         draftRevision++
         attachmentJobs.remove(draftId)?.cancel()
@@ -2186,7 +2230,7 @@ class WorkbenchController(
             update { it.copy(notice = "CONVERSATION_CREATING:SEND_BLOCKED") }
             return
         }
-        val attachmentIds = current.attachments.map { it.id.value }
+        val attachmentIds = current.attachments.map { it.id.value }.filterNot { it in current.inFlightAttachmentIds }
         val remoteAttachmentIds = attachmentIds.map { attachmentCoordinator?.remoteAttachmentId(it) }
         val recoverable = activeThreadId?.let(::recoverableOrdinaryAtoms).orEmpty().filter { atom ->
             atom.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>().joinToString("") { it.value } == current.draft &&
@@ -2227,7 +2271,10 @@ class WorkbenchController(
         failedSubmission = submission
         pendingSubmission = null
         activeWork.started(submission.clientMessageId)
-        update { it.copy(composer = ComposerState.SUBMITTING) }
+        update { it.copy(
+            composer = ComposerState.SUBMITTING,
+            inFlightAttachmentIds = it.inFlightAttachmentIds + submission.attachmentIds,
+        ) }
         return workScope.launch {
             var localEntryKey: String? = null
             var sendTarget: String? = null
@@ -2290,7 +2337,7 @@ class WorkbenchController(
                     draftWasCleared = true
                 }
                 if (activeThreadId == target) update { state -> state.copy(
-                    composer = ComposerState.EDITING,
+                    composer = if (remoteIds.isEmpty()) ComposerState.EDITING else ComposerState.SUBMITTING,
                     timeline = appendLocal(state.timeline, entry),
                     pendingBatch = state.pendingBatch + entry,
                     generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED,
@@ -2403,13 +2450,16 @@ class WorkbenchController(
                         update { state ->
                             val remainingBatch = state.pendingBatch.filterNot { row -> row.key == entry.key }
                             state.copy(
+                                composer = ComposerState.EDITING,
                                 timeline = Loadable.Ready(renderTimeline(remainingBatch)),
                                 pendingBatch = remainingBatch,
                                 notice = null,
                                 generation = generationAfterAcceptance(target, listOf(message.clientMessageId.value), state.generation),
                             )
                         }
-                        if (_state.value.generation !in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) armReplyWatchdog(target)
+                        if (_state.value.generation !in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) {
+                            armReplyWatchdog(target, listOf(message.clientMessageId.value), acceptance.generationId)
+                        }
                     }
                 }
                 // Released only now: an attachment draft that was dropped
@@ -2441,7 +2491,7 @@ class WorkbenchController(
                     state.copy(
                         composer = ComposerState.FAILED,
                         notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:${errorCodeOf(cause)}",
-                        generation = if (unknown) GenerationState.OUTCOME_UNKNOWN else GenerationState.IDLE,
+                        generation = generationAfterSubmissionFailure(state.generation, unknown),
                         // The timeline belongs to whichever thread is open now:
                         // a send that failed after a thread switch must not
                         // repaint the conversation the user moved to.
@@ -2462,6 +2512,9 @@ class WorkbenchController(
                     )
                 }
             } finally {
+                if (submission.attachmentIds.isNotEmpty()) {
+                    update { state -> state.copy(inFlightAttachmentIds = state.inFlightAttachmentIds - submission.attachmentIds.toSet()) }
+                }
                 activeWork.finishSubmission(submission.clientMessageId, sendTarget?.let { atomsFor(it)[submission.clientMessageId] })
             }
         }
@@ -2556,7 +2609,9 @@ class WorkbenchController(
                     generation = generationAfterAcceptance(conversationId, messages.map { it.clientMessageId.value }, state.generation),
                 )
             }
-            if (_state.value.generation !in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) armReplyWatchdog(conversationId)
+            if (_state.value.generation !in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) {
+                armReplyWatchdog(conversationId, messages.map { it.clientMessageId.value }, acceptance.generationId)
+            }
             refreshThreads()
         } catch (cancelled: CancellationException) {
             persistCancelledSendOutcomes(conversationId,messages.map { it.clientMessageId.value })
@@ -2579,9 +2634,11 @@ class WorkbenchController(
                 failureCode = "LOCAL_SEND_PERSIST_FAILED:${errorCodeOf(storageFailure)}"
             }
             if (activeThreadId == conversationId) {
-                disarmReplyWatchdog()
-                update { it.copy(notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:$failureCode", generation = if (unknown) GenerationState.OUTCOME_UNKNOWN else GenerationState.IDLE,
-                    timeline = Loadable.Ready(renderTimeline(it.pendingBatch))) }
+                update { state -> state.copy(
+                    notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:$failureCode",
+                    generation = generationAfterSubmissionFailure(state.generation, unknown),
+                    timeline = Loadable.Ready(renderTimeline(state.pendingBatch)),
+                ) }
             }
         } finally {
             submittingBatches.remove(batchId)
@@ -2766,7 +2823,13 @@ class WorkbenchController(
     }
 
     /** Retire progress for the exact turn; a final response may have another message id. */
-    private fun finishStreaming(threadId: String, generationId: String?, terminal: GenerationState, occurredAt: Long = 0L) {
+    private fun finishStreaming(
+        threadId: String,
+        generationId: String?,
+        terminal: GenerationState,
+        occurredAt: Long = 0L,
+        clientMessageId: String? = null,
+    ) {
         if (generationId != null) {
             activeWork.terminal(threadId, generationId)
             finishedGenerations.add(threadId to generationId)
@@ -2796,7 +2859,12 @@ class WorkbenchController(
                 else -> "CONFIRMED"
             })
         }
-        if (allowLegacy) disarmReplyWatchdog()
+        disarmReplyWatchdogFor(
+            conversationId = threadId,
+            generationId = generationId,
+            clientMessageId = clientMessageId,
+            belongsToCurrentTurn = allowLegacy && isInCurrentTurn(occurredAt),
+        )
     }
 
     fun stopGeneration() {
@@ -3174,7 +3242,9 @@ class WorkbenchController(
                             val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
                             val settlesCurrent = event.generationId == null || currentGeneration == null || currentGeneration == event.generationId
                             if (terminal == null || settlesCurrent) observeGenerationIdentity(event.generationId)
-                            if (terminal != null) finishStreaming(currentActiveId,event.generationId,terminal,event.occurredAt)
+                            if (terminal != null) finishStreaming(
+                                currentActiveId,event.generationId,terminal,event.occurredAt,event.clientMessageId.value,
+                            )
                             val localKey = "local_${event.clientMessageId.value}"
                             update { state ->
                                 val pending = state.pendingBatch.map { row ->
@@ -3237,11 +3307,17 @@ class WorkbenchController(
                                 val messageText = messageTextOf(message)
                                 if (message.state == "CONFIRMED") {
                                     matchedCurrentTurn = pruneConfirmedAssistantDuplicates(message)
-                                    if (matchedCurrentTurn) {
-                                        disarmReplyWatchdog()
-                                    }
+                                    disarmReplyWatchdogFor(
+                                        currentActiveId, message.generationId,
+                                        clientMessageId = message.clientMessageId?.value,
+                                        belongsToCurrentTurn = matchedCurrentTurn,
+                                    )
                                 } else if (message.state == "STREAMING") {
-                                    disarmReplyWatchdog()
+                                    disarmReplyWatchdogFor(
+                                        currentActiveId, message.generationId,
+                                        clientMessageId = message.clientMessageId?.value,
+                                        belongsToCurrentTurn = isInCurrentTurn(message.timestamp),
+                                    )
                                     // If a confirmed assistant message with this content already exists, skip adding this late streaming chunk
                                     if (isAlreadyCoveredByConfirmedReply(message, messageText)) {
                                         return@collect
@@ -3435,6 +3511,11 @@ class WorkbenchController(
                             if (matched) {
                                 receivedConfirmedAssistantForCurrentTurn = true
                             }
+                            disarmReplyWatchdogFor(
+                                threadId, message.generationId,
+                                clientMessageId = message.clientMessageId?.value,
+                                belongsToCurrentTurn = matched,
+                            )
                         }
                         mirrored[message.id] = message
                         mirroredRevisions[message.id] = maxOf(currentRevision,message.contentRevision ?: 0L)
@@ -3443,10 +3524,12 @@ class WorkbenchController(
                         if (matched) {
                             receivedConfirmedAssistantForCurrentTurn = true
                         }
+                        disarmReplyWatchdogFor(
+                            threadId, message.generationId,
+                            clientMessageId = message.clientMessageId?.value,
+                            belongsToCurrentTurn = matched,
+                        )
                     }
-                }
-                if (receivedConfirmedAssistantForCurrentTurn) {
-                    disarmReplyWatchdog()
                 }
                 maybeArmCreationGraceFromTimeline(threadId)
                 update { state ->
@@ -3529,6 +3612,15 @@ class WorkbenchController(
         val userInMirrored = mirrored.values.any { it.sender == "user" && it.timestamp > t }
         val userInPending = _state.value.pendingBatch.any { it.isUser && it.timestamp > t }
         return userInMirrored || userInPending
+    }
+
+    private fun isInCurrentTurn(timestamp: Long): Boolean {
+        if (timestamp <= 0L || hasUserMessageAfter(timestamp)) return false
+        val latestUserTimestamp = maxOf(
+            mirrored.values.filter { it.sender == "user" }.maxOfOrNull { it.timestamp } ?: 0L,
+            _state.value.pendingBatch.filter { it.isUser }.maxOfOrNull { it.timestamp } ?: 0L,
+        )
+        return latestUserTimestamp > 0L && timestamp >= latestUserTimestamp - 5_000L
     }
 
     private fun messageTextOf(message: TimelineMessage): String =
@@ -3952,7 +4044,15 @@ class WorkbenchController(
             val recoverable = frozenBatches.values.any { it.conversationId == transformed.activeThreadId } ||
                 collectingUnits.values.any { it.first == transformed.activeThreadId } ||
                 transformed.activeThreadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true
+            val unknownSubmissionOutcome = transformed.activeThreadId?.let { threadId ->
+                frozenBatches.values.any { batch -> batch.conversationId == threadId && batch.messages.any { message ->
+                    atomsFor(threadId)[message.clientMessageId.value]?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN
+                } } || collectingUnits.filterValues { it.first == threadId }.keys.any { clientId ->
+                    atomsFor(threadId)[clientId]?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN
+                } || recoverableOrdinaryAtoms(threadId).any { it.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN }
+            } == true
             val next = transformed.copy(hasRecoverableSubmissions = recoverable,
+                hasUnknownSubmissionOutcome = unknownSubmissionOutcome,
                 conversationManagementSupported=supportsConversationManagement,
                 busyThreadIds=managementBusyThreadIds(transformed)+externalBusyThreadIds())
             if (next.approvalCardsSupported == supportsApprovalCards) {

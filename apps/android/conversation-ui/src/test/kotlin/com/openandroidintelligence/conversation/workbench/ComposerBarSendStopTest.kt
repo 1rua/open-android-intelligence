@@ -110,11 +110,35 @@ class ComposerBarSendStopTest {
         assertEquals(0, stops)
     }
 
+    @Test fun submittedAttachmentDoesNotCountAsPendingInputDuringActiveGeneration() {
+        var sends = 0
+        var stops = 0
+        var removals = 0
+        val attachment = verifiedAttachment()
+        render(
+            generation = GenerationState.RUNNING,
+            canSend = false,
+            attachments = listOf(attachment),
+            inFlightAttachmentIds = setOf(attachment.id.value),
+            onSend = { sends++ },
+            onStop = { stops++ },
+            onRemoveAttachment = { removals++ },
+        )
+
+        compose.onNodeWithContentDescription("停止生成").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("移除附件").assertIsNotEnabled()
+
+        assertEquals(0, sends)
+        assertEquals(1, stops)
+        assertEquals(0, removals)
+    }
+
     @Test fun cancelUnknownAndSubmittingStatesKeepSendSafetyGates() {
         var sends = 0
         var draft by mutableStateOf("稍后发送")
         var generation by mutableStateOf(GenerationState.CANCEL_REQUESTED)
         var canSend by mutableStateOf(true)
+        var hasUnknownOutcome by mutableStateOf(false)
         compose.setContent {
             MaterialTheme {
                 ComposerBar(
@@ -122,6 +146,7 @@ class ComposerBarSendStopTest {
                     onDraftChange = {},
                     generation = generation,
                     canSend = canSend,
+                    hasUnknownSubmissionOutcome = hasUnknownOutcome,
                     onSend = { sends++ },
                     onStop = {},
                     onPickCamera = {},
@@ -149,6 +174,14 @@ class ComposerBarSendStopTest {
         }
         compose.waitForIdle()
         compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+
+        compose.runOnIdle {
+            draft = "待核实的消息"
+            canSend = true
+            hasUnknownOutcome = true
+        }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
         assertEquals(0, sends)
     }
 
@@ -157,6 +190,9 @@ class ComposerBarSendStopTest {
         generation: GenerationState,
         canSend: Boolean = false,
         attachments: List<AttachmentDraft> = emptyList(),
+        inFlightAttachmentIds: Set<String> = emptySet(),
+        hasUnknownSubmissionOutcome: Boolean = false,
+        onRemoveAttachment: (String) -> Unit = {},
         onSend: () -> Unit = {},
         onStop: () -> Unit = {},
     ) {
@@ -174,6 +210,9 @@ class ComposerBarSendStopTest {
                     onPickDocument = {},
                     onVoiceInput = {},
                     attachments = attachments,
+                    inFlightAttachmentIds = inFlightAttachmentIds,
+                    hasUnknownSubmissionOutcome = hasUnknownSubmissionOutcome,
+                    onRemoveAttachment = onRemoveAttachment,
                     voiceInputEnabled = false,
                 )
             }
