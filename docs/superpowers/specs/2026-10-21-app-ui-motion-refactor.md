@@ -195,11 +195,36 @@ Material 3 的色调映射推导出的完整角色表（见 `theme/AppPalettes.k
 - 已保存账号：列表项显示账号 + Gateway 主机名，长按/菜单移除。
 - 转场：登录 ↔ 工作台使用 `AppTransitions.enter/exit`（M02），不刷新页面。
 
-### 5.5 助理与圈选（`AssistantView` / `FloatingConversationPanel` / `ScreenSelectionOverlay`）
+### 5.5 助理与圈选（系统数字助理表面 + `ScreenSelectionOverlay`）
+
+助理的产品形态是**系统数字助理**：用户把本应用设为默认数字助理后，用 Assist 手势 /
+长按 Home 在**任意 App 之上**唤起浮动会话；App 内的浮动面板与 `action.ASSIST` 兜底页
+复用同一套界面与状态，不再有"只能在 App 内使用"的助理。
+
+实现分三层，共用同一套 Compose 界面与设计令牌：
+
+| 入口 | 系统组件 | 进程 | 形态 |
+|---|---|---|---|
+| 默认助理（主路径） | `VoiceInteractionService` + `VoiceInteractionSessionService` | `:assistant_keeper` / `:assistant_session` | 系统浮层：展开卡片 ↔ 72dp 停靠球，浮在其他 App 之上 |
+| ASSIST 兜底 | `AssistantActivity`（`action.ASSIST`） | `:assistant_session` | 半透明浮层 + 系统遮罩，同样浮在当前 App 之上 |
+| App 内预览 | `FloatingConversationPanel` | 主进程 | 与本 App 共用同一份真实会话状态 |
+
+声明要点（真机踩过的坑，已修复）：
+
+- `android.voice_interaction` 元数据里的 `sessionService` 必须是**带包名的扁平组件名**
+  （`<applicationId>/<类全名>`）。写成短类名时 `ComponentName.unflattenFromString`
+  返回 null，系统把应用判成 unqualified（日志 `has an unqualified voice interaction
+  service`），用户在「默认数字助理」里根本看不到本应用。因此该 XML 必须放在 app 模块。
+- `VoiceInteractionSessionService` 必须 `android:exported="true"`（系统以不同 UID 绑定），
+  仍由 `android.permission.BIND_VOICE_INTERACTION` 收口。
+- ASSIST 兜底 Activity 使用 `windowIsTranslucent=true` 的浮层主题：否则窗口不透明，
+  即使背景设成透明也看不到下面的 App，只剩黑底。
+
+动效与交互：
 
 - 展开与停靠保持同一容器身份：宽度/高度/位置/圆角插值，内容层始终挂载（M16）。
-- 停靠球 48dp，拖动 1:1 跟手 + 速度继承 + 边缘阻力（M17）。
-- 圈选：路径跟手，闭合提示 24dp 范围，确认/取消显式；无截图能力时明确不可用。
+- 停靠球 48dp（会话窗口内 72dp），点击展开；系统会话窗口不能拖动位置，长按切换左右边缘。
+- 圈选：路径跟手，闭合提示 24dp 范围，确认/取消显式；无系统截图时明确不可用。
 
 ## 6. 动效编排（新增/重做部分）
 

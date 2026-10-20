@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  系统数字助理声明。
+
+  `sessionService` 必须是**带包名的扁平组件名**（pkg/cls）：
+  系统用 ComponentName.unflattenFromString 解析它，写短类名会被判成
+  "No sessionService specified"，整个助理会被标记为 unqualified，
+  用户在「默认数字助理」里根本看不到本应用。
+
+  这个文件必须放在 app 模块：只有这里确定最终 applicationId，
+  库模块写死包名在换 applicationId（如渠道变体）时会失效。
+-->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.openandroidintelligence.mobile/com.openandroidintelligence.assistant.AssistantSessionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="false" />
