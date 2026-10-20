@@ -84,6 +84,8 @@ fun FloatingConversationPanel(
                 onSend = controller::sendDraft, onStop = controller::stopGeneration,
                 onPickCamera = onPickCamera, onPickGallery = onPickGallery, onPickDocument = onPickDocument,
                 onVoiceInput = onVoiceInput, attachments = state.attachments,
+                inFlightAttachmentIds = state.inFlightAttachmentIds,
+                hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
                 voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
                 onRemoveAttachment = controller::removeAttachment, onRetryAttachment = controller::retryAttachment,
                 applyImePadding = false)

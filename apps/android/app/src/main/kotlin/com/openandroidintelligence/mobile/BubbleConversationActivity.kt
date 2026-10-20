@@ -208,6 +208,8 @@ private fun BubbleChat(
             onVoiceInput = {},
             voiceInputEnabled = false,
             attachments = state.attachments,
+            inFlightAttachmentIds = state.inFlightAttachmentIds,
+            hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
             onRemoveAttachment = controller::removeAttachment,
             onRetryAttachment = controller::retryAttachment,
             applyImePadding = false,

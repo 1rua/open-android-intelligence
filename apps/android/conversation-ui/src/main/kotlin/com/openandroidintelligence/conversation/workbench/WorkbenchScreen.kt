@@ -383,6 +383,8 @@ fun WorkbenchScreen(
                                     onVoiceInput = onVoiceInput,
                                     voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
                                     attachments = state.attachments,
+                                    inFlightAttachmentIds = state.inFlightAttachmentIds,
+                                    hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
                                     onRemoveAttachment = controller::removeAttachment,
                                     onRetryAttachment = controller::retryAttachment,
                                     modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
