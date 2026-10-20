@@ -105,7 +105,7 @@ class Ed25519CryptoProviderTest {
         val providerPrivate = providerFactory.generatePrivate(
             java.security.spec.PKCS8EncodedKeySpec(platformPair.private.encoded),
         )
-        val message = "existing encrypted key frame".encodeToByteArray()
+        val message = "platform signature interoperability payload".encodeToByteArray()
         val platformSignature = Signature.getInstance("Ed25519").run {
             initSign(platformPair.private)
             update(message)
