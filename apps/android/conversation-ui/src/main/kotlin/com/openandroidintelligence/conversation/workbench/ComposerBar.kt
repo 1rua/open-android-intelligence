@@ -72,6 +72,15 @@ fun ComposerBar(
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
     val waitingCancel = generation == GenerationState.CANCEL_REQUESTED
     val unknown = generation == GenerationState.OUTCOME_UNKNOWN
+    val hasPendingInput = draft.isNotBlank() || attachments.isNotEmpty()
+    // While a turn is active, a populated composer belongs to the next turn.
+    // Keep cancellation visible only when there is nothing queued by the user.
+    val showStop = waitingCancel || (running && !hasPendingInput)
+    val actionEnabled = when {
+        waitingCancel || unknown -> false
+        showStop -> running && !hasPendingInput
+        else -> hasPendingInput && canSend
+    }
 
     var focused by remember { mutableStateOf(false) }
     var showAttachmentsSheet by remember { mutableStateOf(false) }
@@ -183,8 +192,8 @@ fun ComposerBar(
 
             // [ 发送 / 停止 按钮 ]
             FilledIconButton(
-                onClick = if (running) onStop else onSend,
-                enabled = running || (canSend && !waitingCancel && !unknown),
+                onClick = if (showStop) onStop else onSend,
+                enabled = actionEnabled,
                 shape = CircleShape,
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -195,7 +204,7 @@ fun ComposerBar(
                 modifier = Modifier.size(42.dp),
             ) {
                 Crossfade(
-                    targetState = running || waitingCancel,
+                    targetState = showStop,
                     animationSpec = MotionSpecs.fade(reduced),
                     label = "send-stop",
                 ) { stop ->

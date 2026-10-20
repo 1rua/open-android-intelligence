@@ -147,6 +147,125 @@ class WorkbenchSendRegressionTest {
         advanceUntilIdle()
     }
 
+    @Test fun sendingConsecutiveMessagesDuringReplyKeepsCurrentGenerationAndDebouncesThem() = runTest {
+        val events = MutableSharedFlow<VerifiedConversationEvent>()
+        val batches = mutableListOf<MessageBatch>()
+        var cancellations = 0
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {
+                batches += batch
+                return BatchAcceptance(
+                    batchId = batch.batchId,
+                    memberIds = batch.messages.associate { it.clientMessageId.value to "msg_${it.clientMessageId.value}" },
+                    generationId = "gen_next_queued",
+                )
+            }
+            override suspend fun cancelGeneration(generationId: String, requestId: String): CancelGenerationResult {
+                cancellations++
+                return super.cancelGeneration(generationId, requestId)
+            }
+        }
+        val controller = batchedController(repository)
+        runCurrent()
+        controller.openThread("conv_running")
+        runCurrent()
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_active_generation",
+                occurredAt = 1L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_active_generation",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("仍在生成的回复")),
+                    timestamp = 1L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_running"),
+                    generationId = "gen_current",
+                ),
+            ),
+        )
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+
+        controller.editDraft("第一条后续消息")
+        controller.sendDraft()
+        runCurrent()
+        assertEquals("提交新消息不得取消或覆盖当前生成", GenerationState.RUNNING, controller.state.value.generation)
+        assertTrue("防抖窗口内不应提前提交", batches.isEmpty())
+
+        controller.editDraft("第二条后续消息")
+        controller.sendDraft()
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        assertTrue("连续消息应继续复用同一个防抖批次", batches.isEmpty())
+
+        advanceTimeBy(1_500L)
+        runCurrent()
+
+        val batch = batches.single()
+        assertEquals("conv_running", batch.clientConversationId)
+        assertEquals(listOf("第一条后续消息", "第二条后续消息"), batch.messages.map { it.text })
+        assertEquals(2, batch.messages.map { it.clientMessageId }.toSet().size)
+        assertEquals("排队回执不能替换当前运行的 generation", GenerationState.RUNNING, controller.state.value.generation)
+        assertEquals(0, cancellations)
+        controller.cancel()
+    }
+
+    @Test fun attachmentCanBeSentDuringReplyWithoutCancellingItOrJoiningTextBatch() = runTest {
+        val events = MutableSharedFlow<VerifiedConversationEvent>()
+        val repository = object : RecordingRepository() {
+            override fun observeEvents(scope: ConversationScope) = events
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun cancelGeneration(generationId: String, requestId: String): CancelGenerationResult =
+                error("发送附件期间不得自动取消当前生成")
+        }
+        val controller = controllerWithAttachments(
+            repository,
+            RecordingAttachmentCoordinator(),
+            supportsMessageBatches = true,
+        )
+        runCurrent()
+        controller.openThread("conv_attachment_running")
+        runCurrent()
+        events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_attachment_active_generation",
+                occurredAt = 1L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "msg_attachment_active_generation",
+                    sender = "assistant",
+                    parts = listOf(MessagePart.Text("正在回答")),
+                    timestamp = 1L,
+                    state = "STREAMING",
+                    conversationId = ConversationId("conv_attachment_running"),
+                    generationId = "gen_attachment_current",
+                ),
+            ),
+        )
+        runCurrent()
+        controller.addAttachment(
+            LocalAttachmentSelection(
+                "报告.pdf",
+                "application/pdf",
+                com.openandroidintelligence.conversation.ports.AttachmentContentSource { ByteArrayInputStream(byteArrayOf(1, 2, 3)) },
+            ),
+        )
+        runCurrent()
+        controller.editDraft("请同时查看")
+        controller.sendDraft()
+        advanceUntilIdle()
+
+        assertEquals(1, repository.sent.size)
+        assertEquals("请同时查看", repository.sent.single().text)
+        assertEquals(listOf("att_draft_1"), repository.sent.single().attachmentIds)
+        assertEquals("附件发送仍走单条硬边界，当前回复继续生成", GenerationState.RUNNING, controller.state.value.generation)
+        controller.cancel()
+    }
+
     @Test fun stopGenerationCancelsInFlightGenerationAndStreamingMessages() = runTest {
         val repository = RecordingRepository()
         val controller = controller(repository)
@@ -1702,6 +1821,7 @@ class WorkbenchSendRegressionTest {
     private fun TestScope.controllerWithAttachments(
         repository: RecordingRepository,
         coordinator: AttachmentDraftCoordinator,
+        supportsMessageBatches: Boolean = false,
     ) = WorkbenchController(
         workbenchTestScope(), repository,
         object : AgentCommandCatalogRepository {
@@ -1709,6 +1829,7 @@ class WorkbenchSendRegressionTest {
         },
         { ConversationScope("profile", "gateway", "account", "install") },
         attachmentCoordinator = coordinator,
+        supportsMessageBatches = supportsMessageBatches,
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
     )
 
