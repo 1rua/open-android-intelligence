@@ -13,6 +13,8 @@ SERVICE = COLLECTOR / "AndroidNotificationCollector.kt"
 APPLICATION = ROOT / "app/src/main/kotlin/com/openandroidintelligence/mobile/OpenAndroidIntelligenceApplication.kt"
 MANIFEST = ROOT / "app/src/main/AndroidManifest.xml"
 KEY_PROVIDER = ROOT / "encrypted-store/src/main/kotlin/com/openandroidintelligence/encrypted/store/AndroidKeystoreOutboxKeyProvider.kt"
+HOST = ROOT / "notification-host/src/main/kotlin/com/openandroidintelligence/notification/host/NotificationHostInstaller.kt"
+BOOTSTRAP = ROOT / "notification-host/src/main/kotlin/com/openandroidintelligence/notification/host/NotificationControlBootstrapProvider.kt"
 
 
 class NotificationRuntimeStaticTest(unittest.TestCase):
@@ -49,26 +51,32 @@ class NotificationRuntimeStaticTest(unittest.TestCase):
         self.assertIn("runtime?.stop", source)
         self.assertIn("installCollector", source)
 
-    def test_application_installs_no_backup_keystore_and_paired_bridge_composition(self):
+    def test_runtime_module_installs_no_backup_keystore_and_paired_bridge_composition(self):
         application = self.read(APPLICATION)
+        host = self.read(HOST)
         manifest = self.read(MANIFEST)
         key_provider = self.read(KEY_PROVIDER)
         self.assertIn('android:name=".OpenAndroidIntelligenceApplication"', manifest)
         self.assertIn('android:allowBackup="false"', manifest)
-        self.assertIn("noBackupFilesDir", application)
-        self.assertIn("FileNotificationPolicyPersistence", application)
-        self.assertIn("PersistentNotificationPolicyAuthority", application)
-        self.assertIn("FileEncryptedOutboxPersistence", application)
-        self.assertIn("AndroidKeystoreOutboxKeyProvider", application)
-        self.assertIn("NotificationOutboxStore", application)
-        self.assertIn("NotificationBridgeDispatcher", application)
-        self.assertIn("PairedBridgeTransport", application)
-        self.assertIn("EventAckVerifier", application)
+        # The modular App deliberately cannot import collectors. Their
+        # ContentProvider composes the host before Application.onCreate.
+        self.assertIn('runtimeOnly(project(":notification-host"))', self.read(ROOT / "app/build.gradle.kts"))
+        self.assertNotIn("import com.openandroidintelligence.notifications.", application)
+        self.assertIn("NotificationHostInstaller.install", self.read(BOOTSTRAP))
+        self.assertIn("noBackupFilesDir", host)
+        self.assertIn("FileNotificationPolicyPersistence", host)
+        self.assertIn("PersistentNotificationPolicyAuthority", host)
+        self.assertIn("FileEncryptedOutboxPersistence", host)
+        self.assertIn("AndroidKeyStoreOutboxKeySource", host)
+        self.assertIn("NotificationOutboxStore", host)
+        self.assertIn("NotificationBridgeDispatcher", host)
+        self.assertIn("PairedBridgeTransport", host)
+        self.assertIn("NotificationRuntimeFactoryRegistry.install", host)
         self.assertIn('KeyStore.getInstance("AndroidKeyStore")', key_provider)
         self.assertIn('KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")', key_provider)
 
     def test_application_composition_has_no_public_or_generic_network_fallback(self):
-        source = self.read(APPLICATION) + "\n" + self.read(KEY_PROVIDER)
+        source = self.read(APPLICATION) + "\n" + self.read(KEY_PROVIDER) + "\n" + self.read(HOST)
         forbidden = re.compile(
             r"VpnService|BIND_VPN_SERVICE|Socket|ServerSocket|DatagramSocket|"
             r"URLConnection|WebSocket|HttpClient|OkHttp|\bhost\s*:|\bport\s*:|"

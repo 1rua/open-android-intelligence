@@ -258,6 +258,7 @@ discovered
   -> enabled
 
 verifying -> rejected
+enabled -> installed-disabled
 enabled -> waiting-reauthorization | missing-capability | incompatible-host
 enabled -> quarantined
 enabled -> rollback-available

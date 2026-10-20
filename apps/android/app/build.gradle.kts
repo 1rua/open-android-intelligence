@@ -46,8 +46,11 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 tasks.withType<Test>().configureEach {
     inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/sms.wasm"))
         .withPropertyName("compiledSmsReference")
+    inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/notifications.wasm"))
+        .withPropertyName("compiledNotificationsReference")
     inputs.dir(rootProject.projectDir.resolve("../../plugins/schemas")).withPropertyName("referenceSchemas")
     inputs.file(rootProject.projectDir.resolve("../../plugins/sms/manifest.json")).withPropertyName("referenceManifest")
+    inputs.file(rootProject.projectDir.resolve("../../plugins/notifications/manifest.json")).withPropertyName("notificationsReferenceManifest")
 }
 
 // 固定调试签名（app/keystore/debug.keystore，见同目录 README.md）在根工程

@@ -86,12 +86,28 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
                 else {
                     currentCoroutineContext().ensureActive()
                     check(Instant.parse(JsonFields.string(request,"expiresAt")!!).toEpochMilli() > System.currentTimeMillis() && grantRevision == currentGrantRevision()) { "REQUEST_LEASE_EXPIRED" }
+                    // A local confirmation can wait while the operator disables
+                    // this capability. Revalidate at the authenticated Gateway
+                    // boundary even if its cancellation event was missed.
+                    val current = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/device-requests/$id"))
+                    if (current.status in setOf(401,403,404,409)) throw CapabilityDenied("GATEWAY_AUTHORIZATION_REVOKED")
+                    val live = JsonFields.obj(JsonFields.field(current.requireData("DEVICE_LOOKUP_FAILED"),"request")) ?: error("DEVICE_REQUEST_INVALID")
+                    if (JsonFields.string(live,"state") !in setOf("pending","claimed") ||
+                        JsonFields.int(live,"grantRevision") != grantRevision || JsonFields.int(live,"pairingGeneration") != generation ||
+                        JsonFields.string(live,"deviceId") != deviceId) throw CapabilityDenied("GATEWAY_AUTHORIZATION_REVOKED")
+                    currentCoroutineContext().ensureActive()
+                    check(Instant.parse(JsonFields.string(request,"expiresAt")!!).toEpochMilli() > System.currentTimeMillis() && grantRevision == currentGrantRevision()) { "REQUEST_LEASE_EXPIRED" }
                     invocationStarted=true
                     val output = runInterruptible(Dispatchers.IO) { host.invoke(entry.identity,accountId,key,parameters,id) }
                     result = DeviceRequestResult.Succeeded(mapOf("result" to Json.parse(output.decodeToString())))
                 }
             }
-        } catch (denied: CapabilityDenied) { result = DeviceRequestResult.Denied(mapOf("code" to "CAPABILITY_DENIED")) }
+        } catch (denied: CapabilityDenied) {
+            // Keep the protocol code while exposing a bounded, non-sensitive
+            // diagnostic instead of hiding all local gates behind one string.
+            val reason = denied.primitive.takeIf { it.matches(Regex("[A-Z0-9_]{1,128}")) } ?: "LOCAL_CAPABILITY_DENIED"
+            result = DeviceRequestResult.Denied(mapOf("code" to "CAPABILITY_DENIED","reason" to reason))
+        }
         catch (cancelled: CancellationException) { result = DeviceRequestResult.OutcomeUnknown }
         catch (_: Exception) { result = if (invocationStarted && invocationRisk != "read") DeviceRequestResult.OutcomeUnknown else DeviceRequestResult.Failed(mapOf("code" to "PLUGIN_EXECUTION_FAILED")) }
         // Persist the outcome before attempting delivery. A lost HTTP reply cannot repeat execution.

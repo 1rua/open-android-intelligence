@@ -12,13 +12,14 @@ Intelligence 的手机端网关适配器。
 |---|---|
 | `name` | `open-android-intelligence-gateway` |
 | `repo` | `https://github.com/1rua/hermes-gateway-plugin` |
-| `sha` | `175ab18eabd58e7f8fd193c3e3a82c9b5b38126d` |
+| `sha` | `7d21b862c85987568d8abc8a40ecff2b942a0d43` |
 | `category` | `platform` |
 | `tier` | `community` |
 
 ## 锁定提交上的校验结果
 
 条目锁定插件 `2.2.0`，包含原生停止生成、动态命令目录、共享历史、文件夹/排序与原生归档/删除。
+该提交另包含账号设备能力开关、Android 授权诊断与 `open_android_capabilities` 发现工具。
 插件契约固定应用 PR #14 的提交，核心摘要为 `sha256:032f580246eb4a214624bded717819b4d5a76191208207edc9e5a4607f5c4d23`，需安装配套 APK。
 
 在固定 Hermes SDK `75b083e9399115b12513385252811f09c3503c90` 上调用
@@ -35,8 +36,9 @@ security scan: caution (existing historical log contains invisible Unicode)
 `capability probe` 是关键项：它真实加载插件并执行 `register(ctx)`，因此通过即证明插件在
 隔离环境中可被宿主加载。
 
-Python 3.11 和 3.12 均有独立矩阵 407 项、真实原生矩阵 92 项通过，无跳过；全部 473 个测试的集合覆盖完整。
-具体覆盖、打包验证及固定版本见[插件同步记录](../../../../reviews/2026-10-19-gateway-plugin-sync.zh-CN.md)。
+当前固定提交在 Python 3.11 上有独立矩阵 428 项、真实原生矩阵 92 项通过，无跳过。
+本次能力与端到端回归见[通知与能力同步修复记录](../../../../reviews/2026-10-20-agent-notification-capabilities.zh-CN.md)；
+此前会话管理的打包与兼容验证见[插件同步记录](../../../../reviews/2026-10-19-gateway-plugin-sync.zh-CN.md)。
 
 ## 依赖与环境变量
 
@@ -63,6 +65,6 @@ Python 3.11 和 3.12 均有独立矩阵 407 项、真实原生矩阵 92 项通�
 ```bash
 git clone https://github.com/1rua/hermes-gateway-plugin
 cd hermes-gateway-plugin
-git checkout 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d
+git checkout 7d21b862c85987568d8abc8a40ecff2b942a0d43
 hermes plugins validate .
 ```

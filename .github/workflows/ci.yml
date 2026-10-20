@@ -48,7 +48,7 @@ jobs:
         with:
           repository: 1rua/hermes-gateway-plugin
           # 固定配套的宿主桥接修复，保证联调不会随插件 main 漂移。
-          ref: 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d
+          ref: 7d21b862c85987568d8abc8a40ecff2b942a0d43
           path: .hermes-gateway-plugin
 
       - name: Install the Hermes Gateway plugin
@@ -180,7 +180,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 1rua/hermes-gateway-plugin
-          ref: 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d
+          ref: 7d21b862c85987568d8abc8a40ecff2b942a0d43
           path: .hermes-gateway-plugin
 
       - name: Resolve the Android fixture OpenClaw pin

@@ -163,6 +163,8 @@ class GatewayRuntime(
     private var executionDriver: com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver? = null
     private var capabilityPublisher: com.openandroidintelligence.mobile.plugins.CapabilityPublisher? = null
     val deviceConfirmation = MutableStateFlow<com.openandroidintelligence.mobile.plugins.DeviceConfirmation?>(null)
+    val deviceCapabilityStatuses = MutableStateFlow<Map<String,String>>(emptyMap())
+    val deviceCapabilitySyncStatus = MutableStateFlow("SYNC_REQUIRED")
     val connectedAccountId: String? get() = lastAccountId.takeIf { activeHttpClient != null }
     val replyNotifications = ReplyNotificationSettings(context)
     private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications)
@@ -1209,6 +1211,14 @@ class GatewayRuntime(
                     localRevision = { pairingGrants.state.value?.revision ?: 0L },host = pluginHost,
                     foreignChange = { executionDriver?.cancelAll(); pairingGrants.clearCurrent(); pairingGrants.bind(binding) })
                 capabilityPublisher = publisher
+                sessionScope.launch {
+                    publisher.gatewayCapabilities.collect { entries ->
+                        deviceCapabilityStatuses.value = entries.mapNotNull { entry ->
+                            val id = JsonFields.string(entry,"capabilityId") ?: return@mapNotNull null
+                            id to (JsonFields.string(entry,"status") ?: "SYNC_REQUIRED")
+                        }.toMap()
+                    }
+                }
                 val executor = com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver(context,sessionScope,http,pluginHost,
                     session.accountId,session.deviceId,session.pairingGeneration,binding.storageKey,{ publisher.grantRevision },
                     isForeground = { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) })
@@ -1224,9 +1234,14 @@ class GatewayRuntime(
                 sessionScope.launch(Dispatchers.IO) {
                     kotlinx.coroutines.flow.combine(pairingGrants.state,pluginHost.revision) { _, _ -> Unit }.collectLatest {
                         while (isActive) {
-                            try { publisher.sync(); break }
+                            // OS permission changes and listener reconnects need
+                            // reconciliation even when plugin/local-grant flows are unchanged.
+                            try { publisher.sync(); deviceCapabilitySyncStatus.value = "SYNCED"; delay(5_000) }
                             catch (cancelled: CancellationException) { throw cancelled }
-                            catch (_: Exception) { _operationNotice.value = "设备能力授权同步失败，正在重试。"; delay(2_000) }
+                            catch (_: Exception) {
+                                deviceCapabilitySyncStatus.value = "SYNC_FAILED"
+                                _operationNotice.value = "设备能力授权同步失败，正在重试。"; delay(2_000)
+                            }
                         }
                     }
                 }
@@ -1566,6 +1581,8 @@ class GatewayRuntime(
         executionDriver?.cancelAll()
         executionDriver = null
         capabilityPublisher = null
+        deviceCapabilityStatuses.value = emptyMap()
+        deviceCapabilitySyncStatus.value = "SYNC_REQUIRED"
         deviceConfirmation.value = null
         sessionJob?.cancel()
         sessionJob = null

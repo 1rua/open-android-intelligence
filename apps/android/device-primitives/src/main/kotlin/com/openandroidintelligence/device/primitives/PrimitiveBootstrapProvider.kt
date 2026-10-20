@@ -23,7 +23,9 @@ class PrimitiveBootstrapProvider : ContentProvider() {
         KernelPrimitiveRegistry.register(SmsReadPrimitive(AndroidSmsInboxReader(app.contentResolver)) {
             app.checkSelfPermission(android.Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
         })
-        register(app, "kernel.call-log.read") { request, _ ->
+        register("kernel.call-log.read", availability = {
+            if (app.checkSelfPermission(android.Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED) null else "READ_CALL_LOG_REQUIRED"
+        }) { request, _ ->
             permission(app, android.Manifest.permission.READ_CALL_LOG)
             val directions = JsonFields.strings(request, "directions").map { CallDirection.valueOf(it.uppercase()) }.toSet()
                 .ifEmpty { setOf(CallDirection.INCOMING, CallDirection.OUTGOING, CallDirection.MISSED) }
@@ -38,13 +40,15 @@ class PrimitiveBootstrapProvider : ContentProvider() {
             collector = { NotificationRuntimeFactoryRegistry.connectedCollector() },
             authority = notifications.authority,
             permissionGranted = { notifications.bindingPort.isListenerBound() },
+            listenerConnected = { NotificationRuntimeFactoryRegistry.isListenerConnected() },
         ))
         return true
     }
 
-    private fun register(context: Context, id: String, read: suspend (JsonValue.JObject, LocalGrantContext) -> List<Map<String,Any?>>) {
+    private fun register(id: String, availability: () -> String?, read: suspend (JsonValue.JObject, LocalGrantContext) -> List<Map<String,Any?>>) {
         KernelPrimitiveRegistry.register(object : KernelPrimitiveProvider {
             override val primitiveId = id
+            override fun availability(): String? = availability()
             override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray {
                 val request = JsonFields.obj(Json.parse(input.toString(Charsets.UTF_8))) ?: error("SCHEMA_INVALID")
                 return Json.canonical(Json.of(mapOf("records" to read(request,context)))).toByteArray(Charsets.UTF_8)

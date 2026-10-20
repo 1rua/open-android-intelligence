@@ -23,6 +23,8 @@ data class VerifiedCapability(val identity: PluginIdentity, val id: String, val 
         "capabilityId" to id,"capabilityVersion" to version,"schemaSha256" to Json.sha256(schema),"schema" to schema,"risk" to risk)
 }
 
+data class CapabilitySnapshot(val bindings: List<Map<String,Any?>>, val inventory: List<Map<String,Any?>>)
+
 /** Installed code is reverified once before registration; invocations use immutable verified bytes. */
 class ProductionPluginHost(private val context: Context, private val grants: PairingGrantStateHolder,
     private val trustMode: DeveloperTrustMode, val nativeLoader: NativePluginLoader, private val installationId: String) {
@@ -231,13 +233,42 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         if (enabled) entries(pluginId).forEach { selector.setOverride(it.key,grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"),it.identity) }
         revision.value++
     }
-    fun authorizedBindings(): List<Map<String,Any?>> {
-        val state = grants.state.value ?: return emptyList()
-        return capabilities.values.flatten().filter { entry ->
-            isEnabled(entry.identity.pluginId) && entry.key in state.granted &&
-                (entry.primitives + entry.key).all { identityGrantKey(entry.identity,it) in state.granted && it in state.granted } &&
-                runCatching { selector.select(entry.key,state.pairingId).identity == entry.identity }.getOrDefault(false)
-        }.sortedBy { it.key }.map { it.binding() }
+    fun authorizedBindings(): List<Map<String,Any?>> = capabilitySnapshot().bindings
+
+    /** Inventory is diagnostic only. Neither installation nor a Gateway switch creates a local grant. */
+    @Synchronized fun capabilitySnapshot(): CapabilitySnapshot {
+        val state = grants.state.value
+        val bindings = mutableListOf<Map<String,Any?>>()
+        val inventory = capabilities.values.flatten().sortedBy { it.key }.map { entry ->
+            var status = "READY"
+            var reason = ""
+            when {
+                !isEnabled(entry.identity.pluginId) -> { status = "PLUGIN_DISABLED"; reason = "PLUGIN_DISABLED" }
+                state == null || !(entry.primitives + entry.key).all { identityGrantKey(entry.identity,it) in state.granted && it in state.granted } -> {
+                    status = "LOCAL_GRANT_REQUIRED"; reason = "PAIRING_GRANT_REQUIRED"
+                }
+                !runCatching { selector.select(entry.key,state.pairingId).identity == entry.identity }.getOrDefault(false) -> {
+                    status = "PROVIDER_NOT_SELECTED"; reason = "PROVIDER_NOT_SELECTED"
+                }
+                else -> {
+                    reason = entry.primitives.sorted().firstNotNullOfOrNull { primitive ->
+                        val provider = KernelPrimitiveRegistry.provider(primitive)
+                        if (primitive in serviceIds) null else if (provider == null) "PROVIDER_UNAVAILABLE"
+                        else runCatching { provider.availability() }.getOrElse { "PROVIDER_UNAVAILABLE" }
+                    }.orEmpty()
+                    status = when (reason) {
+                        "" -> "READY"
+                        "READ_SMS_REQUIRED", "READ_CALL_LOG_REQUIRED", "NOTIFICATION_ACCESS_REQUIRED" -> "ANDROID_PERMISSION_REQUIRED"
+                        "LOCAL_GRANT_REQUIRED", "LOCAL_POLICY_CORRUPTED" -> "LOCAL_GRANT_REQUIRED"
+                        else -> "PROVIDER_UNAVAILABLE"
+                    }
+                }
+            }
+            if (status == "READY") bindings += entry.binding()
+            mapOf("pluginId" to entry.identity.pluginId,"capabilityId" to entry.id,"capabilityVersion" to entry.version,
+                "status" to status,"reason" to reason)
+        }
+        return CapabilitySnapshot(bindings, inventory)
     }
     fun invoke(identity: PluginIdentity, accountId: String, capability: String, parameters: JsonValue, correlationId: String, background: Boolean = false): ByteArray {
         val entry = entries(identity.pluginId).firstOrNull { it.identity == identity && it.key == capability } ?: throw CapabilityDenied(capability)

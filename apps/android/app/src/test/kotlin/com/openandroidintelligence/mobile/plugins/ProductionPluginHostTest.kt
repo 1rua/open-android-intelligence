@@ -129,10 +129,15 @@ class ProductionPluginHostTest {
             val submitted = CompletableDeferred<Unit>()
             val results = mutableListOf<WireRequest>()
             var terminal = false
+            var gatewayRevoked = false
             val transport = object : GatewayByteTransport {
                 override suspend fun execute(request: WireRequest): WireResponse {
+                    val activeId = if ("req_disabled" in request.target) "req_disabled" else "req_host"
+                    if (request.target.endsWith("/req_disabled") && gatewayRevoked) {
+                        return WireResponse(403,emptyList(),"""{"protocol":"2.1","error":{"code":"CAPABILITY_DENIED"}}""".toByteArray())
+                    }
                     val data = when {
-                        request.target.endsWith("/claim") -> mapOf("claimId" to "claim_host", "requestId" to "req_host",
+                        request.target.endsWith("/claim") -> mapOf("claimId" to "claim_$activeId", "requestId" to activeId,
                             "accountId" to "acct_host", "deviceId" to "dev_host", "pairingGeneration" to 1, "grantRevision" to 7)
                         request.target.endsWith("/result") -> {
                             results.add(request)
@@ -141,8 +146,8 @@ class ProductionPluginHostTest {
                             submitted.complete(Unit)
                             emptyMap<String, Any?>()
                         }
-                        else -> mapOf("request" to mapOf("requestId" to "req_host", "deviceId" to "dev_host",
-                            "pairingGeneration" to 1, "grantRevision" to 7, "state" to if (terminal) "result_succeeded" else "pending",
+                        else -> mapOf("request" to mapOf("requestId" to activeId, "deviceId" to "dev_host",
+                            "pairingGeneration" to 1, "grantRevision" to 7, "state" to if (terminal && activeId == "req_host") "result_succeeded" else "pending",
                             "expiresAt" to Instant.now().plusSeconds(60).toString(), "risk" to "read",
                             "provider" to mapOf("pluginId" to entry.identity.pluginId, "authorKeyId" to "sha256:${entry.identity.authorKeyFingerprint}"),
                             "capability" to mapOf("id" to entry.id, "version" to entry.version), "parameters" to mapOf("limit" to 1)))
@@ -170,6 +175,16 @@ class ProductionPluginHostTest {
                 assertTrue(results[0].body.decodeToString().contains("sms_actual"))
                 driver.accept("req_host")
                 assertEquals(2, calls)
+                // Revoke at the Gateway while the Android confirmation is open;
+                // a missed cancellation event must not permit another invocation.
+                driver.accept("req_disabled")
+                val disabled = withTimeout(5000) { driver.confirmation.filterNotNull().first() }
+                assertEquals("req_disabled",disabled.requestId)
+                gatewayRevoked = true
+                driver.decide("req_disabled",true)
+                withTimeout(5000) { executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+                assertEquals(2,calls)
+                assertTrue(results.last().body.decodeToString().contains("GATEWAY_AUTHORIZATION_REVOKED"))
             } finally {
                 executionScope.cancel()
             }

@@ -13,6 +13,22 @@ import org.junit.Test
 class DeviceReadPrimitivesTest {
     private val context = LocalGrantContext("verified.plugin", "account", "pairing", "request-id")
 
+    @Test fun notification_readiness_distinguishes_os_permission_local_policy_and_listener_connection() {
+        val (authority, collector) = notifications(granted = false)
+        var permission = false
+        var connected = false
+        val primitive = NotificationsReadPrimitive({ collector },authority,listenerConnected={ connected },permissionGranted={ permission })
+        assertEquals("NOTIFICATION_ACCESS_REQUIRED",primitive.availability())
+        permission = true
+        assertEquals("LOCAL_GRANT_REQUIRED",primitive.availability())
+        authority.localController().apply(authority.snapshot().policy,2u,true)
+        assertEquals("NOTIFICATION_LISTENER_UNAVAILABLE",primitive.availability())
+        connected = true
+        assertNull(primitive.availability())
+        permission = false
+        assertEquals("NOTIFICATION_ACCESS_REQUIRED",primitive.availability())
+    }
+
     @Test
     fun registered_sms_provider_reads_with_query_filters_and_returns_content() = runBlocking {
         var requested: SmsInboxQuery? = null

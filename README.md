@@ -160,7 +160,7 @@ Hermes 网关已拆分为独立插件仓库 [`1rua/hermes-gateway-plugin`](https
 
 ```bash
 # 安装并启用插件
-hermes plugins install 1rua/hermes-gateway-plugin --ref 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d --enable
+hermes plugins install 1rua/hermes-gateway-plugin --ref 7d21b862c85987568d8abc8a40ecff2b942a0d43 --enable
 
 # 随后在向导中创建手机连接账号
 hermes gateway setup
@@ -173,18 +173,23 @@ hermes open-android-intelligence contract status   # 协议契约是否就绪
 ```
 
 当前配套 Hermes 插件为 `2.2.0`，固定提交包含原生停止生成透传、当前宿主命令注册表、
-命令别名及插件/技能目录修复，并内置完整历史、文件夹/排序及原生归档/删除管理。
+命令别名及插件/技能目录修复，并内置完整历史、文件夹/排序及原生归档/删除管理，
+以及账号独立的设备能力开关、授权诊断与通知能力重连恢复。
 核心摘要为 `sha256:032f580246eb4a214624bded717819b4d5a76191208207edc9e5a4607f5c4d23`，
 需要与本分支 APK 配套升级。
 旧目录条目曾锁定 `9d642b4`：它会返回 `/models` 等固定命令，并在宿主包装回调下
 漏报取消能力。已安装旧目录或固定 ref 时，需显式移动锁定并重启宿主：
 
 ```bash
-hermes plugins install 1rua/hermes-gateway-plugin --force --ref 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d --enable
+hermes plugins install 1rua/hermes-gateway-plugin --force --ref 7d21b862c85987568d8abc8a40ecff2b942a0d43 --enable
 hermes gateway restart
 ```
 
 随后在手机重新连接 Gateway，以重新协商会话管理与停止生成能力；重新输入 `/` 会刷新命令目录。
+
+设备读取能力默认关闭。通过 `hermes gateway setup` 配置账号，或运行
+`hermes open-android-intelligence capabilities list <账号>` 查看并按需开启。
+开启仍需手机上实际安装、启用并授权对应设备插件；详见[通知与能力同步修复记录](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md)。
 
 验证与升级依据见[停止生成和动态命令修复记录](docs/reviews/2026-10-17-hermes-stop-command-catalog.zh-CN.md)。
 

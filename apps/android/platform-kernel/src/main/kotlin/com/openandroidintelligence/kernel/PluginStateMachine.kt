@@ -75,6 +75,7 @@ class PluginStateMachine(initial: PluginState = PluginState.DISCOVERED) {
                 PluginState.UNINSTALLED,
             ),
             PluginState.ENABLED to setOf(
+                PluginState.INSTALLED_DISABLED,
                 PluginState.WAITING_REAUTHORIZATION,
                 PluginState.MISSING_CAPABILITY,
                 PluginState.INCOMPATIBLE_HOST,

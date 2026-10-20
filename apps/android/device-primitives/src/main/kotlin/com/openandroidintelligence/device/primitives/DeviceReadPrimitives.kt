@@ -14,6 +14,7 @@ internal class SmsReadPrimitive(
     private val reader: SmsInboxReader,
     private val permissionGranted: () -> Boolean,
 ) : RecordReadPrimitive("kernel.sms.read") {
+    override fun availability(): String? = if (permissionGranted()) null else "READ_SMS_REQUIRED"
     override suspend fun read(request: JsonValue.JObject, context: LocalGrantContext): List<Map<String, Any?>> {
         checkPermission()
         val rows = try {
@@ -37,8 +38,17 @@ internal class SmsReadPrimitive(
 internal class NotificationsReadPrimitive(
     private val collector: () -> NotificationCollector?,
     private val authority: PersistentNotificationPolicyAuthority,
+    private val listenerConnected: () -> Boolean = { true },
     private val permissionGranted: () -> Boolean,
 ) : RecordReadPrimitive("kernel.notifications.read") {
+    override fun availability(): String? {
+        if (!permissionGranted()) return "NOTIFICATION_ACCESS_REQUIRED"
+        val snapshot = authority.snapshot()
+        if (snapshot.corrupted) return "LOCAL_POLICY_CORRUPTED"
+        if (!snapshot.granted) return "LOCAL_GRANT_REQUIRED"
+        if (!listenerConnected()) return "NOTIFICATION_LISTENER_UNAVAILABLE"
+        return null
+    }
     override suspend fun read(request: JsonValue.JObject, context: LocalGrantContext): List<Map<String, Any?>> {
         checkPermission()
         val source = collector() ?: throw CapabilityDenied("NOTIFICATION_LISTENER_UNAVAILABLE")
