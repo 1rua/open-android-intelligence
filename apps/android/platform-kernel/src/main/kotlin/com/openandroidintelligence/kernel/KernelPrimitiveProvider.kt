@@ -19,6 +19,8 @@ data class LocalGrantContext(
  */
 interface KernelPrimitiveProvider {
     val primitiveId: String
+    /** Read-only diagnostic. Null means available; execution still rechecks every local gate. */
+    fun availability(): String? = null
     suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray
 }
 

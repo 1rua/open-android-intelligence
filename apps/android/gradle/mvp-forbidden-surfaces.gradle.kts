@@ -70,6 +70,7 @@ val testOnlyLoopbackFixtures = setOf(
  */
 val testOnlyOutboundAssertions = setOf(
     "app/src/test/kotlin/com/openandroidintelligence/mobile/AndroidAttachmentContentTypeTest.kt",
+    "app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/NotificationCapabilityHttpTest.kt",
     "conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/HermesHttpInteropTest.kt",
 )
 

@@ -78,3 +78,27 @@ cd apps/android
 真机复测应包括：查询较早的匹配短信、已有通知在首次连接后可读、撤销权限后拒绝读取；中间回复与最终回复更新同一通知；允许气泡后在展开窗口切换运行中会话并发送消息；主界面草稿不被气泡修改；失败或取消停止运行状态；拒绝通知或气泡权限后对话继续正常完成。
 
 后台与 Live Updates 验收需在 API 34、35、36 设备上检查：发送任务后按 Home，气泡显示且下一条回复继续更新，展开目标是会话气泡页面；系统返回的通知带 `FLAG_BUBBLE`，不能只看 App 构建对象是否有 metadata。Android 16 设备还应检查系统设置允许提升后，Live Updates 出现在设备支持的实时活动区域；撤销提升后普通会话通知继续工作，任务结束后后台服务和运行卡片都停止。Robolectric 不执行完整 SystemUI 资格审核，不能替代 Samsung 真机对 Now Bar 的展示验证。
+
+## Gateway 账号能力开关与诊断
+
+Hermes 插件与 Android 需要一同更新。运行 `hermes gateway setup` 选择新建或已有账号的能力开关，
+或使用以下命令：
+
+```bash
+hermes open-android-intelligence capabilities list <账号>
+hermes open-android-intelligence capabilities set <账号> org.openandroidintelligence.notifications.query on --confirm-local
+```
+
+开关按账号独立保存，未配置时关闭。向导还支持短信、通话记录以及设备插件动态发布的能力。
+Gateway 开启后，手机仍必须安装、启用、为当前配对授权插件，并完成系统权限和本机采集策略授权。
+通知采集默认是空应用白名单、仅元数据；需要正文时还应在手机上选择内容访问范围。
+Agent 可用 `open_android_capabilities` 查看实际 ID、版本、Schema 和状态，不能直接调用 `kernel.notifications.read` 绕过设备插件。
+
+`GATEWAY_DISABLED` 表示该账号开关关闭；`PLUGIN_NOT_INSTALLED`、`PLUGIN_DISABLED`、`LOCAL_GRANT_REQUIRED`、
+`ANDROID_PERMISSION_REQUIRED` 分别表示未安装、未启用、本地未授权和缺少系统权限。
+`PROVIDER_UNAVAILABLE` 的 `reason=NOTIFICATION_LISTENER_UNAVAILABLE` 表示监听服务尚未连接。
+Android 插件管理页面会显示 Gateway 状态与 `SYNC_FAILED` 重试提示。只有旧版本的空 bindings 时，状态为
+`ANDROID_STATE_UNKNOWN`，应先更新两端后查看，不能据此断言插件未安装。
+
+插件与配对授权变更会触发同步；系统权限、通知监听重连和 Gateway 开关由每 5 秒校对自动同步。
+Gateway 开关不会清除手机授权，也不能代替手机授权；外部配对授权撤销仍会清理本机配对授权。

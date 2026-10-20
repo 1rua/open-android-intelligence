@@ -10,6 +10,8 @@ internal class NotificationListenerSession(
 
     fun connect() = synchronized(lock) { connected = true }
 
+    fun isConnected(): Boolean = synchronized(lock) { connected }
+
     fun disconnect() = synchronized(lock) {
         connected = false
         collector.clearActive()

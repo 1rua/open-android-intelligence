@@ -16,6 +16,26 @@ import com.openandroidintelligence.gateway.schema.JsonValue
  */
 internal object TestAlpPackages {
 
+    /** The shipped notifications manifest/schema and compiled Rust payload, signed with an isolated test author. */
+    fun compiledNotificationsPackage(): ByteArray {
+        val root = generateSequence(File(System.getProperty("user.dir")).absoluteFile) { it.parentFile }
+            .first { File(it,"plugins/notifications/manifest.json").isFile }
+        val author = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val publicKey = Base64.getUrlEncoder().withoutPadding().encodeToString(author.public.encoded.copyOfRange(12,44))
+        val template = Json.parse(File(root,"plugins/notifications/manifest.json").readText()) as JsonValue.JObject
+        val manifest = Json.canonical(template.copy(fields=template.fields.map { (name,value) ->
+            name to if(name == "author") Json.of(mapOf("algorithm" to "Ed25519","publicKey" to publicKey)) else value
+        })).encodeToByteArray()
+        val content = listOf("payload/notifications.wasm" to File(root,"plugins/target/wasm32-unknown-unknown/release/notifications.wasm").readBytes(),
+            "schemas/notifications.json" to File(root,"plugins/schemas/notifications.json").readBytes())
+        val index = filesJson(content)
+        val signature = Signature.getInstance("Ed25519").run {
+            initSign(author.private);update("OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1\n".encodeToByteArray()+manifest+byteArrayOf(10)+index);sign()
+        }
+        return zipOf(content+listOf("manifest.json" to manifest,"files.json" to index,
+            "signature.ed25519" to Base64.getUrlEncoder().withoutPadding().encode(signature)))
+    }
+
     /** Real compiled SMS code and its checked-in schema, signed with a fresh test key. */
     fun compiledSmsPackage(queryCapabilityId: String = "org.openandroidintelligence.sms.query", queryVersion: String = "1.0.0",
         author: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(), version: String = "1.0.0"): ByteArray {

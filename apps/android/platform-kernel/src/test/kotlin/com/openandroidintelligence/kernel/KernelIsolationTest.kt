@@ -608,6 +608,23 @@ class KernelIsolationTest {
     }
 
     @Test
+    fun disablingAnEnabledPluginImmediatelyDeniesInvocationAndRequiresExplicitReenable() {
+        val kernel = kernel()
+        registered(kernel)
+        kernel.enable(smsIdentity.pluginId)
+        assertArrayEquals(byteArrayOf(1),kernel.invoke(smsIdentity,"account-a","pairing-a","kernel.sms.read",byteArrayOf(1),session()).output)
+        kernel.disable(smsIdentity.pluginId)
+        assertEquals(PluginState.INSTALLED_DISABLED,kernel.registrationFor(smsIdentity.pluginId)!!.state.state)
+        assertTrue(runCatching {
+            kernel.invoke(smsIdentity,"account-a","pairing-a","kernel.sms.read",byteArrayOf(1),session())
+        }.exceptionOrNull() is CapabilityDenied)
+        kernel.disable(smsIdentity.pluginId)
+        assertTrue(kernel.effectiveCapabilities(smsIdentity.pluginId,"pairing-a",session()).primitives.isEmpty())
+        kernel.enable(smsIdentity.pluginId)
+        assertArrayEquals(byteArrayOf(2),kernel.invoke(smsIdentity,"account-a","pairing-a","kernel.sms.read",byteArrayOf(2),session()).output)
+    }
+
+    @Test
     fun illegalTransitionsAreRejected() {
         val machine = PluginStateMachine(PluginState.DISCOVERED)
         try {

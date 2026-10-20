@@ -87,6 +87,8 @@ fun PluginManagementScreen(
     val app = context.applicationContext as? OpenAndroidIntelligenceApplication
     val host = app?.pluginHost?.takeIf { pluginRuntimesWired }
     val pluginRevision = host?.revision?.collectAsState()?.value
+    val gatewayStatuses = app?.gatewayRuntime?.deviceCapabilityStatuses?.collectAsState()?.value.orEmpty()
+    val gatewaySync = app?.gatewayRuntime?.deviceCapabilitySyncStatus?.collectAsState()?.value ?: "SYNC_REQUIRED"
     var installed by remember { mutableStateOf(resolvedStore.listInstalled()) }
     var pendingApproval by remember { mutableStateOf<ByteArray?>(null) }
     var grantPlugin by remember { mutableStateOf<String?>(null) }
@@ -273,6 +275,11 @@ fun PluginManagementScreen(
                         InstalledPluginBlock(view = view, onAction = sink(view.pluginId ?: view.directory.name),host = host)
                         view.pluginId?.let { id ->
                             if (host != null) {
+                                host.entries(id).forEach { entry ->
+                                    val status = if (gatewaySync == "SYNC_FAILED") gatewaySync else gatewayStatuses[entry.id] ?:
+                                        if (gatewaySync == "SYNCED") "STATUS_UNAVAILABLE" else "SYNC_REQUIRED"
+                                    Text("${entry.id}：${capabilityStatusLabel(status)}",style=MaterialTheme.typography.bodySmall)
+                                }
                                 Row {
                                     TextButton(onClick = { runCatching { host.enable(id,!host.isEnabled(id)) }.fold(onSuccess={notice="插件状态已更新。"},onFailure={notice="启用失败：请检查原生信任模式、包兼容性或安全模式。"}) }) { Text(if(host.isEnabled(id)) "停用" else "启用") }
                                     TextButton(onClick = { grantPlugin = id }) { Text("配对授权") }
@@ -323,6 +330,21 @@ fun PluginManagementScreen(
             }
         }
     }
+}
+
+internal fun capabilityStatusLabel(status: String): String = when(status) {
+    "READY" -> "Gateway 与 Android 授权已就绪"
+    "GATEWAY_DISABLED" -> "当前 Gateway 账号未启用；请通过 Gateway 能力配置开启"
+    "PLUGIN_NOT_INSTALLED" -> "Android 未安装对应插件"
+    "PLUGIN_DISABLED" -> "Android 插件未启用"
+    "LOCAL_GRANT_REQUIRED" -> "需要本机配对或采集策略授权"
+    "ANDROID_PERMISSION_REQUIRED" -> "需要 Android 系统权限"
+    "PROVIDER_UNAVAILABLE" -> "本机采集器或监听服务未就绪"
+    "PROVIDER_NOT_SELECTED" -> "尚未选择此能力提供者"
+    "SYNC_FAILED" -> "Gateway 能力同步失败，正在重试"
+    "ANDROID_STATE_UNKNOWN" -> "Android 版本未提供详细授权状态"
+    "STATUS_UNAVAILABLE" -> "Gateway 未提供能力状态；请检查本机授权与 Gateway 版本"
+    else -> "等待同步当前 Gateway 账号的能力状态"
 }
 
 /** 一个已安装插件的真实状态与其声明式设置贡献。 */

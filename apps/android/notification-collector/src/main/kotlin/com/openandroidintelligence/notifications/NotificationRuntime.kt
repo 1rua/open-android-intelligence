@@ -153,6 +153,7 @@ object NotificationRuntimeFactoryRegistry {
 
     /** Refresh from the connected OS listener; a created or disconnected service is unavailable. */
     fun connectedCollector(): AndroidNotificationCollector? = activeSession?.refresh()
+    fun isListenerConnected(): Boolean = activeSession?.isConnected() == true
     private val defaultFactory = NotificationRuntimeFactory { scope ->
         NotificationRuntime(
             initialCollector = AndroidNotificationCollector(
