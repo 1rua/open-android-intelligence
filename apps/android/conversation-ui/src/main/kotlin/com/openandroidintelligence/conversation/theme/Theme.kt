@@ -1,19 +1,22 @@
 package com.openandroidintelligence.conversation.theme
 
 import android.os.Build
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
-import androidx.compose.material3.Typography
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.rememberSystemMotionPolicy
 
@@ -21,90 +24,53 @@ import com.openandroidintelligence.ui.design.rememberSystemMotionPolicy
 fun supportsDynamicColor(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
 /**
- * 品牌降级配色（浅色）。
+ * 主题桥接层。
  *
- * 只有在设备拿不到系统动态取色时才会用到它。这里必须把 M3 的色角色一次性定义完整，
- * 尤其是 5 级 surface container 层级 —— 界面靠这些层级表达容器深浅，
- * 缺一个角色就会退化成「大家都用同一个灰」，或者逼业务代码回去写死颜色。
+ * 配色来源有两条，优先级从高到低：
+ * 1. **系统动态取色（默认）**：`dynamicLightColorScheme` / `dynamicDarkColorScheme`，
+ *    由壁纸推导，这是 Material You 的原生形态；不自行计算壁纸颜色。
+ * 2. **预设主题色**：用户在「外观」里关闭动态取色后，从 [ThemePalette] 里选一套。
+ *    每套都是按 M3 色调映射从种子色推导的完整角色表，不是手写散值。
+ *
+ * 深浅切换时逐角色插值，避免"白闪一下"或颜色硬切；开启减少动态时直接落到目标值。
  */
-val BrandLightColorScheme = lightColorScheme(
-    primary = AppColors.LightPrimary,
-    onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = AppColors.LightSurfaceHigh,
-    onPrimaryContainer = Color(0xFF174C44),
-    secondary = Color(0xFF50645A),
-    onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = AppColors.LightSurface,
-    onSecondaryContainer = AppColors.LightText,
-    tertiary = AppColors.LightAccent,
-    onTertiary = Color(0xFF201505),
-    tertiaryContainer = Color(0xFFF0DFC8),
-    onTertiaryContainer = Color(0xFF35240E),
-    background = AppColors.LightCanvas,
-    onBackground = AppColors.LightText,
-    surface = AppColors.LightCanvas,
-    onSurface = AppColors.LightText,
-    surfaceVariant = AppColors.LightSurfaceHigh,
-    onSurfaceVariant = AppColors.LightMuted,
-    surfaceDim = Color(0xFFD5DDD6),
-    surfaceBright = AppColors.LightCanvas,
-    surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFEBF0EB),
-    surfaceContainer = AppColors.LightSurface,
-    surfaceContainerHigh = AppColors.LightSurfaceHigh,
-    surfaceContainerHighest = Color(0xFFC9D8D0),
-    outline = Color(0xFF6E7C75),
-    outlineVariant = Color(0xFFBDC9C1),
-    scrim = Color(0xFF000000),
-    error = AppColors.LightError,
-    onError = Color(0xFFFFFFFF),
-    errorContainer = Color(0xFFFFDAD3),
-    onErrorContainer = Color(0xFF3D0E08),
-    inverseSurface = Color(0xFF2C3630),
-    inverseOnSurface = AppColors.DarkText,
-    inversePrimary = AppColors.DarkPrimary,
-    surfaceTint = AppColors.LightPrimary,
-)
-
-/** 品牌降级配色（深色），与浅色共享完全相同的语义角色。 */
-val BrandDarkColorScheme = darkColorScheme(
-    primary = AppColors.DarkPrimary,
-    onPrimary = Color(0xFF0A332B),
-    primaryContainer = Color(0xFF204C42),
-    onPrimaryContainer = Color(0xFFBAE7D9),
-    secondary = Color(0xFFB2CBBE),
-    onSecondary = Color(0xFF233A30),
-    secondaryContainer = AppColors.DarkSurfaceHigh,
-    onSecondaryContainer = AppColors.DarkText,
-    tertiary = AppColors.DarkAccent,
-    onTertiary = Color(0xFF35240E),
-    tertiaryContainer = Color(0xFF554025),
-    onTertiaryContainer = Color(0xFFF0DFC8),
-    background = AppColors.DarkCanvas,
-    onBackground = AppColors.DarkText,
-    surface = AppColors.DarkCanvas,
-    onSurface = AppColors.DarkText,
-    surfaceVariant = AppColors.DarkSurfaceHigh,
-    onSurfaceVariant = AppColors.DarkMuted,
-    surfaceDim = AppColors.DarkCanvas,
-    surfaceBright = Color(0xFF35413A),
-    surfaceContainerLowest = Color(0xFF0B110E),
-    surfaceContainerLow = Color(0xFF151D19),
-    surfaceContainer = AppColors.DarkSurface,
-    surfaceContainerHigh = AppColors.DarkSurfaceHigh,
-    surfaceContainerHighest = Color(0xFF324039),
-    outline = Color(0xFF889A90),
-    outlineVariant = Color(0xFF45574C),
-    scrim = Color(0xFF000000),
-    error = AppColors.DarkError,
-    onError = Color(0xFF3D0E08),
-    errorContainer = Color(0xFF64382F),
-    onErrorContainer = Color(0xFFFFDAD3),
-    inverseSurface = AppColors.LightSurface,
-    inverseOnSurface = AppColors.LightText,
-    inversePrimary = AppColors.LightPrimary,
-    surfaceTint = AppColors.DarkPrimary,
-)
+@Composable
+fun OpenAndroidIntelligenceTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = supportsDynamicColor(),
+    palette: ThemePalette = ThemePalette.INDIGO,
+    reduceMotion: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    val context = LocalContext.current
+    val dynamicAvailable = dynamicColor && supportsDynamicColor()
+    val target = when {
+        dynamicAvailable && darkTheme -> dynamicDarkColorScheme(context)
+        dynamicAvailable -> dynamicLightColorScheme(context)
+        darkTheme -> palette.darkScheme()
+        else -> palette.lightScheme()
+    }
+    val policy = rememberSystemMotionPolicy(reduceMotion)
+    val colorSpec: AnimationSpec<Color> =
+        if (policy.reduceMotion || policy.durationScale == 0f) {
+            snap()
+        } else {
+            tween(durationMillis = MotionSpecs.Standard, easing = MotionSpecs.StandardEasing)
+        }
+    val scheme = animatedColorScheme(target, colorSpec)
+    val stateColors = if (darkTheme) DarkAppStateColors else LightAppStateColors
+    CompositionLocalProvider(
+        LocalMotionPolicy provides policy,
+        LocalAppStateColors provides stateColors,
+    ) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = AppTypography,
+            shapes = AppShapes,
+            content = content,
+        )
+    }
+}
 
 /** M3 形状令牌：容器越大圆角越大。 */
 val AppShapes = Shapes(
@@ -115,35 +81,54 @@ val AppShapes = Shapes(
     extraLarge = RoundedCornerShape(AppRadius.ExtraLarge),
 )
 
+@Composable
+private fun role(target: Color, spec: AnimationSpec<Color>): Color =
+    animateColorAsState(targetValue = target, animationSpec = spec, label = "color-role").value
+
 /**
- * 主题桥接层。
+ * 逐角色插值当前配色。
  *
- * Android 12+ 默认走系统动态取色（[dynamicLightColorScheme] / [dynamicDarkColorScheme]）；
- * 拿不到动态取色时降级到 [BrandLightColorScheme] / [BrandDarkColorScheme]。
- * 无论走哪条路，业务组件看到的都只是一套完整的 M3 语义角色。
+ * 使用 [animateColorAsState] 而不是整棵子树 Crossfade：后者会让两个版本的界面同时挂载
+ * （重复的组合、重复的副作用、重复的无障碍节点），而这里只是在同一棵树上推进颜色值，
+ * 布局与状态完全不受影响。
  */
 @Composable
-fun OpenAndroidIntelligenceTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = supportsDynamicColor(),
-    reduceMotion: Boolean = false,
-    content: @Composable () -> Unit,
-) {
-    val context = LocalContext.current
-    val dynamicAvailable = dynamicColor && supportsDynamicColor()
-    val scheme = when {
-        dynamicAvailable && darkTheme -> dynamicDarkColorScheme(context)
-        dynamicAvailable -> dynamicLightColorScheme(context)
-        darkTheme -> BrandDarkColorScheme
-        else -> BrandLightColorScheme
-    }
-    val policy = rememberSystemMotionPolicy(reduceMotion)
-    CompositionLocalProvider(LocalMotionPolicy provides policy) {
-        MaterialTheme(
-            colorScheme = scheme,
-            typography = Typography(),
-            shapes = AppShapes,
-            content = content,
-        )
-    }
-}
+private fun animatedColorScheme(target: ColorScheme, spec: AnimationSpec<Color>): ColorScheme =
+    target.copy(
+        primary = role(target.primary, spec),
+        onPrimary = role(target.onPrimary, spec),
+        primaryContainer = role(target.primaryContainer, spec),
+        onPrimaryContainer = role(target.onPrimaryContainer, spec),
+        inversePrimary = role(target.inversePrimary, spec),
+        secondary = role(target.secondary, spec),
+        onSecondary = role(target.onSecondary, spec),
+        secondaryContainer = role(target.secondaryContainer, spec),
+        onSecondaryContainer = role(target.onSecondaryContainer, spec),
+        tertiary = role(target.tertiary, spec),
+        onTertiary = role(target.onTertiary, spec),
+        tertiaryContainer = role(target.tertiaryContainer, spec),
+        onTertiaryContainer = role(target.onTertiaryContainer, spec),
+        background = role(target.background, spec),
+        onBackground = role(target.onBackground, spec),
+        surface = role(target.surface, spec),
+        onSurface = role(target.onSurface, spec),
+        surfaceVariant = role(target.surfaceVariant, spec),
+        onSurfaceVariant = role(target.onSurfaceVariant, spec),
+        surfaceTint = role(target.surfaceTint, spec),
+        inverseSurface = role(target.inverseSurface, spec),
+        inverseOnSurface = role(target.inverseOnSurface, spec),
+        error = role(target.error, spec),
+        onError = role(target.onError, spec),
+        errorContainer = role(target.errorContainer, spec),
+        onErrorContainer = role(target.onErrorContainer, spec),
+        outline = role(target.outline, spec),
+        outlineVariant = role(target.outlineVariant, spec),
+        scrim = role(target.scrim, spec),
+        surfaceBright = role(target.surfaceBright, spec),
+        surfaceContainer = role(target.surfaceContainer, spec),
+        surfaceContainerHigh = role(target.surfaceContainerHigh, spec),
+        surfaceContainerHighest = role(target.surfaceContainerHighest, spec),
+        surfaceContainerLow = role(target.surfaceContainerLow, spec),
+        surfaceContainerLowest = role(target.surfaceContainerLowest, spec),
+        surfaceDim = role(target.surfaceDim, spec),
+    )
