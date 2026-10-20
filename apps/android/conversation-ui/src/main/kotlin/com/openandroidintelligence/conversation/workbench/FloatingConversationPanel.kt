@@ -1,22 +1,52 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.openandroidintelligence.capability.ScreenCaptureSource
 import com.openandroidintelligence.conversation.assistant.AssistantSurface
+import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.GenerationState
-import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
+import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.ports.AttachmentContentSource
+import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+
+/** 浮动面板里保留的消息条数：足够给出上下文，又不把固定输入坞挤出视野。 */
+private const val FloatingMessageWindow = 5
 
 /**
  * App 内浮动对话；复用当前账号的真实状态。
+ *
+ * 布局契约（规格 §5.5）：
+ * - 消息区是可滚动内容，输入坞是**固定 footer**，两者都不再塞进同一个 verticalScroll，
+ *   所以面板一打开就能看到输入框；
+ * - 命令菜单走 overlay 槽位，锚定在输入坞上方，不挤压消息区；
+ * - 返回键只在面板/菜单/圈选真的可见时才拦截，并让菜单先吃返回。
  *
  * 圈选的截图来自外部真实采集源 [screenCaptureSource]（宿主装配的
  * MediaProjection 来源，经系统授权对话框显式授予）：来源可用时先采集
@@ -34,63 +64,104 @@ fun FloatingConversationPanel(
     val state by controller.state.collectAsState()
     var expanded by rememberSaveable { mutableStateOf(true) }
     var explainSelection by remember { mutableStateOf(false) }
-    BackHandler {
+
+    // 命令菜单的呈现状态由输入内容驱动；本地关闭只影响当前这次「/」输入，
+    // 这样返回键可以先关菜单，而不是直接收起整个助理。
+    var commandMenuDismissed by remember { mutableStateOf(false) }
+    var previousDraft by remember { mutableStateOf(state.draft) }
+    LaunchedEffect(state.draft) {
+        // 与 CommandMenu 自己的收起规则一致：重新开始一次「/」输入或删短查询时，
+        // 之前按返回键关掉的菜单重新出现。
+        if (!state.draft.startsWith("/") ||
+            (previousDraft.startsWith("/") && state.draft.length < previousDraft.length)
+        ) {
+            commandMenuDismissed = false
+        }
+        previousDraft = state.draft
+    }
+    val commandMenuVisible = state.draft.startsWith("/") && !commandMenuDismissed
+
+    BackHandler(enabled = expanded || commandMenuVisible || explainSelection) {
         when {
             explainSelection -> explainSelection = false
+            commandMenuVisible -> commandMenuDismissed = true
             expanded -> expanded = false
             else -> onClose()
         }
     }
-    Box(modifier.fillMaxSize()) {
-        AssistantSurface(expanded, { expanded = it }, onClose, {
-            val source = screenCaptureSource
-            if (source == null || source.isAvailable) {
-                explainSelection = true
-            } else {
-                // 来源已装配但尚未经用户显式授权：先走系统授权对话框，
-                // 而不是把「未授权」静默渲染成不可用态。宿主未提供授权
-                // 入口时保持既有降级（overlay 自己渲染不可用）。
-                val requestAuthorization = onNeedScreenCaptureAuthorization
-                if (requestAuthorization != null) requestAuthorization() else explainSelection = true
-            }
-        }) {
-            Text(state.activeThreadTitle.ifBlank { "浮动对话" }, style = MaterialTheme.typography.titleMedium)
-            val last = (state.timeline as? Loadable.Ready)?.value?.takeLast(1).orEmpty()
-            if (last.isNotEmpty()) {
-                // The panel shows the newest row, which is often an approval
-                // card. Its buttons must reach the same decision path as the full
-                // screen: a card whose press goes nowhere is a dead control, and
-                // the command behind it stays blocked. Sharing the screen's
-                // method reference keeps that path single.
-                MessageTimeline(
-                    onDownloadAttachment=controller::downloadAttachment,
-                    entries = last,
-                    onDecide = controller::decideApproval,
+
+    val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
+    val visibleEntries = remember(entries) { entries.takeLast(FloatingMessageWindow) }
+    val latestStreaming = entries.lastOrNull()?.let { !it.isUser && it.isStreaming } == true
+    val isThinking = (state.generation == GenerationState.QUEUED ||
+        state.generation == GenerationState.RUNNING) && !latestStreaming
+
+    Box(modifier = modifier.fillMaxSize()) {
+        AssistantSurface(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            onClose = onClose,
+            onStartSelection = {
+                val source = screenCaptureSource
+                if (source == null || source.isAvailable) {
+                    explainSelection = true
+                } else {
+                    // 来源已装配但尚未经用户显式授权：先走系统授权对话框，
+                    // 而不是把「未授权」静默渲染成不可用态。宿主未提供授权
+                    // 入口时保持既有降级（overlay 自己渲染不可用）。
+                    val requestAuthorization = onNeedScreenCaptureAuthorization
+                    if (requestAuthorization != null) requestAuthorization() else explainSelection = true
+                }
+            },
+            title = state.activeThreadTitle.ifBlank { "浮动对话" },
+            footer = {
+                ComposerBar(
+                    draft = state.draft,
+                    onDraftChange = controller::editDraft,
+                    generation = state.generation,
+                    canSend = state.activeThreadId != null && state.canSend,
+                    onSend = controller::sendDraft,
+                    onStop = controller::stopGeneration,
+                    onPickCamera = onPickCamera,
+                    onPickGallery = onPickGallery,
+                    onPickDocument = onPickDocument,
+                    onVoiceInput = onVoiceInput,
+                    attachments = state.attachments,
+                    inFlightAttachmentIds = state.inFlightAttachmentIds,
+                    hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
+                    voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
+                    onRemoveAttachment = controller::removeAttachment,
+                    onRetryAttachment = controller::retryAttachment,
+                    // IME 由助理表面统一给展开态输入坞，避免两层同时加高。
+                    applyImePadding = false,
                 )
-            } else {
-                Text("与当前 Gateway 继续对话", style = MaterialTheme.typography.bodyMedium)
-            }
-            val isThinking = (state.generation == GenerationState.QUEUED ||
-                state.generation == GenerationState.RUNNING) &&
-                last.none { !it.isUser && it.isStreaming }
-            if (isThinking) {
-                ThinkingIndicator(modifier = Modifier.padding(vertical = Dimensions.SpaceSmall))
-            }
-            if (state.activeThreadId == null) TextButton(onClick = controller::createThread) { Text("新建对话") }
-            CommandMenu(state.catalog, state.draft, controller::selectCommand, controller::loadCatalog)
-            ComposerBar(draft = state.draft, onDraftChange = controller::editDraft,
-                generation = state.generation,
-                canSend = state.activeThreadId != null && state.canSend,
-                onSend = controller::sendDraft, onStop = controller::stopGeneration,
-                onPickCamera = onPickCamera, onPickGallery = onPickGallery, onPickDocument = onPickDocument,
-                onVoiceInput = onVoiceInput, attachments = state.attachments,
-                inFlightAttachmentIds = state.inFlightAttachmentIds,
-                hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
-                voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
-                onRemoveAttachment = controller::removeAttachment, onRetryAttachment = controller::retryAttachment,
-                applyImePadding = false)
-            Text("浮动对话仅在此 App 内显示", style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = Dimensions.SpaceSmall))
+                Text(
+                    text = "浮动对话仅在此 App 内显示",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = Dimensions.SpaceSmall),
+                )
+            },
+            overlay = {
+                CommandMenu(
+                    catalogState = state.catalog,
+                    query = state.draft,
+                    onSelect = controller::selectCommand,
+                    onRetry = controller::loadCatalog,
+                    visible = commandMenuVisible,
+                    onDismissRequest = { commandMenuDismissed = true },
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            },
+        ) {
+            FloatingMessageList(
+                entries = visibleEntries,
+                threadId = state.activeThreadId,
+                isThinking = isThinking,
+                onCreateThread = controller::createThread,
+                onDecide = controller::decideApproval,
+                onDownloadAttachment = controller::downloadAttachment,
+            )
         }
         if (explainSelection) {
             ScreenSelectionOverlayHost(
@@ -111,6 +182,80 @@ fun FloatingConversationPanel(
                     )
                     explainSelection = false
                 },
+            )
+        }
+    }
+}
+
+/**
+ * 浮动面板的消息区。
+ *
+ * 用 `reverseLayout` 让最新一条永远贴着输入坞：新消息追加时不需要「整段跳转」
+ * 就能看见（规格 M12 的锚定语义），历史消息仍按时间顺序向上排列。
+ * 只保留最近 [FloatingMessageWindow] 条，配合稳定的条目 key 与 `animateItem`
+ * 让「追加」有进入节奏，而不是替换上一屏内容。
+ */
+@Composable
+private fun FloatingMessageList(
+    entries: List<com.openandroidintelligence.conversation.state.TimelineEntry>,
+    threadId: String?,
+    isThinking: Boolean,
+    onCreateThread: () -> Unit,
+    onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit,
+    onDownloadAttachment: (String) -> Unit,
+) {
+    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val freshKeys = rememberFreshTimelineKeys(threadId, entries.map { it.key })
+    val listState = rememberLazyListState()
+    if (entries.isEmpty() && !isThinking) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+        ) {
+            Text(
+                text = "与当前 Gateway 继续对话",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (threadId == null) {
+                TextButton(onClick = onCreateThread) { Text("新建对话") }
+            }
+        }
+        return
+    }
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        reverseLayout = true,
+        contentPadding = PaddingValues(vertical = Dimensions.SpaceSmall),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.TimelineSpacing),
+    ) {
+        if (isThinking) {
+            item(key = "floating_thinking_indicator") {
+                ThinkingIndicator(
+                    modifier = Modifier
+                        .animateItem(
+                            fadeInSpec = MotionSpecs.fade(reduceMotion),
+                            placementSpec = MotionSpecs.morph(reduceMotion),
+                        )
+                        .padding(vertical = Dimensions.SpaceSmall),
+                )
+            }
+        }
+        items(entries.asReversed(), key = { it.key }) { entry ->
+            val fresh = entry.key in freshKeys
+            TimelineRow(
+                entry = entry,
+                onDecide = onDecide,
+                onDownloadAttachment = onDownloadAttachment,
+                modifier = Modifier
+                    // M04：只有真正新增的消息淡入 + 8dp 上浮；历史不重放。
+                    .animateItem(
+                        fadeInSpec = if (fresh) MotionSpecs.fade(reduceMotion) else null,
+                        placementSpec = MotionSpecs.morph(reduceMotion),
+                    )
+                    .timelineItemRise(fresh = fresh, reduced = reduceMotion)
+                    .fillMaxWidth(),
             )
         }
     }

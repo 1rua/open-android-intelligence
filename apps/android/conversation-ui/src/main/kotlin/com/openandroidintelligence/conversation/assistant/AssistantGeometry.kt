@@ -24,9 +24,15 @@ internal data class AssistantGeometry(
 )
 
 /**
- * Calculates the resting bounds for the docked ball or expanded assistant.
- * Every input is treated as untrusted so a transient invalid measurement
- * cannot produce NaN coordinates or a rectangle outside the available area.
+ * 计算停靠球或展开态助理的静止边界。
+ *
+ * 所有输入都按不可信数据处理：一次瞬时的非法测量不能产生 NaN 坐标，也不能把矩形
+ * 放到可用区域之外。
+ *
+ * [contentHeightPx] 是调用方对「展开态内容期望高度」的真实测量（标题 + 消息区下限 +
+ * 输入坞）。传入正数时展开高度由内容驱动，再夹到 `[minimumExpandedHeightPx,
+ * 可用高度 × 0.6]`；默认 0 表示调用方没有内容测量，沿用
+ * [AssistantGeometryMetrics.preferredExpandedHeightPx]（既有调用与测试的语义不变）。
  */
 internal fun assistantGeometry(
     expanded: Boolean,
@@ -34,6 +40,7 @@ internal fun assistantGeometry(
     availableHeight: Float,
     dockOnLeft: Boolean,
     metrics: AssistantGeometryMetrics,
+    contentHeightPx: Float = 0f,
 ): AssistantGeometry {
     val safeWidth = nonNegativeFinite(availableWidth)
     val safeHeight = nonNegativeFinite(availableHeight)
@@ -42,9 +49,12 @@ internal fun assistantGeometry(
     val expandedMargin = nonNegativeFinite(metrics.expandedMarginPx)
     val maxExpandedWidth = positiveFiniteOr(metrics.maxExpandedWidthPx, safeWidth)
     val minimumExpandedHeight = nonNegativeFinite(metrics.minimumExpandedHeightPx)
-    val preferredExpandedHeight = nonNegativeFinite(
-        metrics.preferredExpandedHeightPx,
-    ).coerceAtLeast(minimumExpandedHeight)
+    val desiredContentHeight = nonNegativeFinite(contentHeightPx)
+    val preferredExpandedHeight = if (desiredContentHeight > 0f) {
+        desiredContentHeight.coerceAtLeast(minimumExpandedHeight)
+    } else {
+        nonNegativeFinite(metrics.preferredExpandedHeightPx).coerceAtLeast(minimumExpandedHeight)
+    }
 
     if (!expanded) {
         val width = ball.coerceAtMost(safeWidth)

@@ -9,11 +9,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import com.openandroidintelligence.capability.ScreenCapture
 import com.openandroidintelligence.capability.ScreenCaptureSource
@@ -22,6 +23,9 @@ import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import kotlin.math.ceil
 import kotlin.math.floor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 圈选层的截图供给。
@@ -34,6 +38,15 @@ import kotlin.math.floor
  * 失败时，一律以 `screenshot = null` 渲染 overlay 的不可用态——overlay 在该
  * 状态下不显示确认按钮、不触发确认回调（基线 B6 行为，见
  * ScreenSelectionOverlay 的契约），这里不重复实现任何降级 UI。
+ *
+ * 两个状态边界：
+ * - **采集中**：截图还没到，渲染「正在截取屏幕…」中间态，而不是先诬告一次失败；
+ * - **解码/裁剪**：PNG 解码与裁剪都在 `Dispatchers.Default` 上执行，主线程不做整图
+ *   解码；确认回调因此可能晚一帧到达，但绝不会在失败时伪造成功。
+ *
+ * **坐标契约：画布坐标 ≡ 帧坐标。** 画布尺寸只有一处来源——overlay 自己的
+ * `onSizeChanged`（经 [ScreenSelectionOverlay.onCanvasSizeChanged] 上报），宿主
+ * 不再二次测量、也不额外加 inset，避免两套坐标随窗口变化而漂移。
  */
 @Composable
 internal fun ScreenSelectionOverlayHost(
@@ -44,61 +57,111 @@ internal fun ScreenSelectionOverlayHost(
     var frame by remember { mutableStateOf<ScreenCapture?>(null) }
     var screenshot by remember { mutableStateOf<ImageBitmap?>(null) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var capturing by remember { mutableStateOf(screenCaptureSource != null) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(screenCaptureSource) {
         // 只取一次：不轮询、不静默重试。任一环节失败都落到不可用态，
         // 由用户显式重开圈选，而不是让层自己在后台反复要截图。
+        capturing = screenCaptureSource != null
         val resolved = resolveScreenFrame(screenCaptureSource)
-        frame = resolved
-        screenshot = resolved?.toImageBitmap()
+        if (resolved == null) {
+            frame = null
+            screenshot = null
+            capturing = false
+            return@LaunchedEffect
+        }
+        val decoded = withContext(Dispatchers.Default) { resolved.toImageBitmap() }
+        // 帧损坏或解码失败：同样降级为「没有截图」，绝不拿半张图冒充。
+        frame = if (decoded == null) null else resolved
+        screenshot = decoded
+        capturing = false
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .onSizeChanged { canvasSize = it },
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
         ScreenSelectionOverlay(
             onFreehandConfirmed = { points ->
-                val current = frame ?: error("SCREENSHOT_SOURCE_UNAVAILABLE")
-                val crop = cropPngSelection(current.pngBytes(), current.widthPixels, current.heightPixels,
-                    canvasSize.width.toFloat(), canvasSize.height.toFloat(),
-                    points.minOf { it.x }, points.minOf { it.y }, points.maxOf { it.x }, points.maxOf { it.y }, points)
-                if (crop == null) { frame = null; screenshot = null }
-                else onConfirmCrop(ScreenSelectionCrop(crop))
+                confirmCrop(
+                    scope = scope,
+                    current = frame,
+                    canvasSize = canvasSize,
+                    pathPoints = points,
+                    onUnavailable = {
+                        frame = null
+                        screenshot = null
+                    },
+                    onConfirmed = onConfirmCrop,
+                )
             },
             onCropConfirmed = { left, top, right, bottom ->
-                val current = frame
-                val frameBytes = current?.pngBytes()
-                // fail-closed 防御（保留自原实现）：overlay 只在有截图时才
-                // 会触发确认回调，此分支理论上不可达；保留它是为了防止未来
-                // overlay 行为变化后，把「没有截图」静默交给下游。
-                if (current == null || frameBytes == null || screenshot == null) {
-                    error("SCREENSHOT_SOURCE_UNAVAILABLE")
-                }
-                val crop = cropPngSelection(
-                    sourcePngBytes = frameBytes,
-                    sourceWidthPx = current.widthPixels,
-                    sourceHeightPx = current.heightPixels,
-                    canvasWidthPx = canvasSize.width.toFloat(),
-                    canvasHeightPx = canvasSize.height.toFloat(),
+                confirmCrop(
+                    scope = scope,
+                    current = frame,
+                    canvasSize = canvasSize,
                     left = left,
                     top = top,
                     right = right,
                     bottom = bottom,
+                    onUnavailable = {
+                        frame = null
+                        screenshot = null
+                    },
+                    onConfirmed = onConfirmCrop,
                 )
-                if (crop == null) {
-                    // 裁剪失败：绝不交付非用户所选的内容，也不静默当成功。
-                    // 回到不可用态并保持层打开，用户可以取消后重试。
-                    frame = null
-                    screenshot = null
-                } else {
-                    onConfirmCrop(ScreenSelectionCrop(crop))
-                }
             },
             onCancel = onCancel,
             screenshot = screenshot,
+            capturing = capturing,
+            // 唯一画布尺寸来源：overlay 自己测量后上报。
+            onCanvasSizeChanged = { canvasSize = it },
         )
+    }
+}
+
+/**
+ * 确认路径：默认线程上不裁图，任何失败都回到不可用态而不是崩溃或静默成功。
+ *
+ * 之前这里的防御分支直接 `error(...)`，一旦 overlay 行为变化就会让整个 App 崩在
+ * 用户面前；采集/裁剪失败是可预期状态，必须降级成「没有可用截图」。
+ */
+private fun confirmCrop(
+    scope: kotlinx.coroutines.CoroutineScope,
+    current: ScreenCapture?,
+    canvasSize: IntSize,
+    onUnavailable: () -> Unit,
+    onConfirmed: (ScreenSelectionCrop) -> Unit,
+    left: Float = 0f,
+    top: Float = 0f,
+    right: Float = 0f,
+    bottom: Float = 0f,
+    pathPoints: List<Offset> = emptyList(),
+) {
+    if (current == null || canvasSize == IntSize.Zero) {
+        onUnavailable()
+        return
+    }
+    scope.launch {
+        val crop = withContext(Dispatchers.Default) {
+            cropPngSelection(
+                sourcePngBytes = current.pngBytes(),
+                sourceWidthPx = current.widthPixels,
+                sourceHeightPx = current.heightPixels,
+                canvasWidthPx = canvasSize.width.toFloat(),
+                canvasHeightPx = canvasSize.height.toFloat(),
+                left = left,
+                top = top,
+                right = right,
+                bottom = bottom,
+                pathPoints = pathPoints,
+            )
+        }
+        if (crop == null) {
+            // 裁剪失败：绝不交付非用户所选的内容，也不静默当成功。
+            // 回到不可用态并保持层打开，用户可以取消后重试。
+            onUnavailable()
+        } else {
+            onConfirmed(ScreenSelectionCrop(crop))
+        }
     }
 }
 
@@ -124,6 +187,9 @@ internal suspend fun resolveScreenFrame(source: ScreenCaptureSource?): ScreenCap
 /**
  * 把采集帧解码为 [ImageBitmap]；PNG 损坏（解码失败）或解码尺寸与帧元数据
  * 不符时返回 null（调用方按无截图降级），绝不拿半张图或占位图冒充截图。
+ *
+ * 保持非 suspend：它是纯解码，调用方负责把它放到后台线程（见
+ * [ScreenSelectionOverlayHost]），JVM 测试也可以直接验证解码语义。
  */
 internal fun ScreenCapture.toImageBitmap(): ImageBitmap? {
     val bytes = pngBytes()
