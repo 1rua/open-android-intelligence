@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile
 
 import android.content.Context
+import com.openandroidintelligence.conversation.theme.ThemePalette
 import com.openandroidintelligence.conversation.theme.supportsDynamicColor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,12 +24,22 @@ enum class ThemePreference {
 /**
  * 本机外观偏好。
  *
- * 动态取色在 Android 12+ 默认开启：系统壁纸提取的 Monet 调色是 M3 的原生形态，
- * 用户在「外观与动效」里可以随时关回品牌默认配色。
+ * 动态取色（Monet）**默认开启**（Android 12+）：默认跟随系统壁纸取色，与 Material 3
+ * 的平台默认形态一致。用户可以在「外观与动效」里关掉它，回落到本机预设色板；也可以
+ * 直接从预设色板中选择一套（色板选择入口由主题层统一提供，本文件只负责偏好持久化）。
+ * 代码不自行计算壁纸色，只调用 Android 官方的 `dynamicLightColorScheme` /
+ * `dynamicDarkColorScheme`。
+ *
+ * 注意 [AppearancePreferences.read] 只在用户从未保存过动态取色偏好时才使用这里的默认值，
+ * 已经落盘的显式选择（无论 true/false）一律保持原样。
+ *
+ * [palette] 只在动态取色关闭时生效：用户关掉 Monet 后，界面回落到选中的预设色板。
+ * 选择预设会同时关闭动态取色（见 [selectPalette]），避免"选了却看不到"。
  */
 data class AppearanceSettings(
     val theme: ThemePreference = ThemePreference.SYSTEM,
     val dynamicColor: Boolean = supportsDynamicColor(),
+    val palette: ThemePalette = ThemePalette.INDIGO,
     val reduceMotion: Boolean = false,
 )
 
@@ -49,6 +60,16 @@ class AppearancePreferences(context: Context) {
         persist(_settings.value.copy(dynamicColor = enabled))
     }
 
+    /** 选择一套预设色板：同时关闭动态取色，选中的方案必须立刻可见。 */
+    fun selectPalette(palette: ThemePalette) {
+        persist(_settings.value.copy(palette = palette, dynamicColor = false))
+    }
+
+    /** 只保存色板（不改变动态取色开关）；设置页的预置行与测试使用。 */
+    fun setPalette(palette: ThemePalette) {
+        persist(_settings.value.copy(palette = palette))
+    }
+
     fun setReduceMotion(enabled: Boolean) {
         persist(_settings.value.copy(reduceMotion = enabled))
     }
@@ -57,7 +78,11 @@ class AppearancePreferences(context: Context) {
         theme = preferences.getString(KEY_THEME, ThemePreference.SYSTEM.name)
             ?.let { value -> runCatching { ThemePreference.valueOf(value) }.getOrNull() }
             ?: ThemePreference.SYSTEM,
+        // 默认跟随系统动态取色（Android 12+）；用户显式关闭过则读回 false。
         dynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, supportsDynamicColor()),
+        palette = preferences.getString(KEY_PALETTE, ThemePalette.INDIGO.name)
+            ?.let { value -> runCatching { ThemePalette.valueOf(value) }.getOrNull() }
+            ?: ThemePalette.INDIGO,
         reduceMotion = preferences.getBoolean(KEY_REDUCE_MOTION, false),
     )
 
@@ -67,6 +92,7 @@ class AppearancePreferences(context: Context) {
                 .putString(KEY_THEME, next.theme.name)
                 .putBoolean(KEY_DYNAMIC_COLOR, next.dynamicColor)
                 .putBoolean(KEY_REDUCE_MOTION, next.reduceMotion)
+                .putString(KEY_PALETTE, next.palette.name)
                 .commit(),
         ) { "APPEARANCE_PREFERENCE_PERSISTENCE_FAILED" }
         _settings.value = next
@@ -77,5 +103,6 @@ class AppearancePreferences(context: Context) {
         const val KEY_THEME = "theme"
         const val KEY_DYNAMIC_COLOR = "dynamic_color"
         const val KEY_REDUCE_MOTION = "reduce_motion"
+        const val KEY_PALETTE = "palette"
     }
 }

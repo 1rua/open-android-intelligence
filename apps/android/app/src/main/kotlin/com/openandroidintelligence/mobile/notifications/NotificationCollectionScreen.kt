@@ -1,11 +1,15 @@
 package com.openandroidintelligence.mobile.notifications
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -20,6 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -119,11 +124,21 @@ fun NotificationCollectionScreen(
         },
         containerColor = MaterialTheme.colorScheme.surface,
     ) { padding ->
+        // 宽屏限宽居中；系统栏 inset 由 Scaffold 给出，页面左右边距由内容容器负责。
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize(),
+            contentAlignment = Alignment.TopCenter,
+        ) {
         Column(
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
             modifier = Modifier
-                .padding(padding)
-                .fillMaxWidth()
+                .widthIn(max = Dimensions.ReadingWidth)
+                .fillMaxHeight()
+                // 页面左右边距：卡片不再贴着屏幕边缘；水平 padding 在滚动容器外层，
+                // 滚动内容不会画到边距里。
+                .padding(horizontal = Dimensions.ScreenHorizontal)
                 .verticalScroll(rememberScrollState())
                 .testTag("notification-collection-content"),
         ) {
@@ -198,6 +213,7 @@ fun NotificationCollectionScreen(
                 )
             }
         }
+        }
     }
 }
 
@@ -221,19 +237,26 @@ private fun UninstalledNotice() {
     }
 }
 
-/** 更新被权威拒绝时的显式反馈：绝不静默假成功，也绝不吞掉拒绝原因。 */
+/**
+ * 更新被权威拒绝时的显式反馈：绝不静默假成功，也绝不吞掉拒绝原因。
+ *
+ * 位置放在内容区第一项（而不是悬浮在顶栏之上）：进页即可读到，也不会挡住标题与返回。
+ */
 @Composable
 private fun RejectionNotice(reason: String) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Dimensions.ScreenHorizontal),
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = RoundedCornerShape(AppRadius.Medium),
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Text(
             text = "更新被拒绝：$reason",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(
+                horizontal = Dimensions.SpaceMedium,
+                vertical = Dimensions.SpaceSmall,
+            ),
         )
     }
 }
@@ -360,7 +383,16 @@ private fun AllowlistGroup(
         ) {
             Text(text = "添加")
         }
-        if (snapshot.packageIds.isNotEmpty()) {
+        if (snapshot.packageIds.isEmpty()) {
+            // 空态不是"没有内容"：白名单为空时一条通知也不会采集，必须说清楚。
+            Text(
+                text = "尚未添加任何应用：白名单为空时不会采集任何通知。" +
+                    "添加包名后，只有这些应用的通知会按上面的内容范围与投递模式处理。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = Dimensions.SpaceSmall),
+            )
+        } else {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
         snapshot.packageIds.forEachIndexed { index, packageId ->

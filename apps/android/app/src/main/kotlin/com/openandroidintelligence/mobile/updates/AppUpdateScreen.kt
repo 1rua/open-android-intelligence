@@ -4,10 +4,13 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,6 +26,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -32,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -96,6 +102,17 @@ internal fun AppUpdateScreen(
     onOpenRelease: (String) -> Unit,
     openFailed: Boolean = false,
 ) {
+    // 「打不开浏览器」属于与按钮就近的操作结果：走 Scaffold 的 Snackbar，
+    // 不再挂在页面最底部、离触发的按钮隔着一整屏。
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(openFailed) {
+        if (openFailed) {
+            snackbarHostState.showSnackbar(
+                message = "未找到可打开发布页的浏览器，请确认系统浏览器已安装。",
+                withDismissAction = true,
+            )
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -109,71 +126,87 @@ internal fun AppUpdateScreen(
             )
         },
         containerColor = MaterialTheme.colorScheme.surface,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
-        Column(
-            modifier = Modifier.padding(padding).fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = Dimensions.ScreenHorizontal, vertical = Dimensions.SpaceSmall),
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize(),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            SettingsSectionCard {
-                SettingsCardHeader("当前版本")
-                Text(installed.versionName, style = MaterialTheme.typography.titleLarge)
-                Text(appBuildChannelLabel(installed.channel), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            SettingsSectionCard {
-                SettingsCardHeader("更新渠道")
-                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                    AppUpdateChannel.entries.forEachIndexed { index, channel ->
-                        SegmentedButton(
-                            selected = state.channel == channel,
-                            onClick = { onSelectChannel(channel) },
-                            shape = SegmentedButtonDefaults.itemShape(index, AppUpdateChannel.entries.size),
-                        ) {
-                            Text(if (channel == AppUpdateChannel.STABLE) "正式版" else "预览版")
+            Column(
+                modifier = Modifier
+                    .widthIn(max = Dimensions.ReadingWidth)
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = Dimensions.ScreenHorizontal, vertical = Dimensions.SpaceSmall),
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+            ) {
+                SettingsSectionCard {
+                    SettingsCardHeader("当前版本")
+                    Text(installed.versionName, style = MaterialTheme.typography.titleLarge)
+                    Text(appBuildChannelLabel(installed.channel), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                SettingsSectionCard {
+                    SettingsCardHeader("更新渠道")
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        AppUpdateChannel.entries.forEachIndexed { index, channel ->
+                            SegmentedButton(
+                                selected = state.channel == channel,
+                                onClick = { onSelectChannel(channel) },
+                                shape = SegmentedButtonDefaults.itemShape(index, AppUpdateChannel.entries.size),
+                            ) {
+                                Text(if (channel == AppUpdateChannel.STABLE) "正式版" else "预览版")
+                            }
                         }
                     }
+                    Text(
+                        text = if (state.channel == AppUpdateChannel.STABLE) {
+                            "仅检查已发布的正式版本。"
+                        } else {
+                            "跟踪开发预览测试版和带版本号的测试版（如 Beta、RC），也会提示后续可升级的正式版。"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(onClick = onCheck, enabled = !state.isChecking, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (state.isChecking) "正在检查更新…" else "检查更新")
+                    }
+                    // 进度条放在按钮区：检查期间只表达「正在进行」，
+                    // 上一次的结果卡片保持常驻，不再被进度条顶掉（避免读起来像结果被清空）。
+                    if (state.isChecking) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            text = "正在获取发布信息，下方保留上次结果…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (state.preferenceSaveFailed) {
+                        Text(
+                            "更新渠道未能保存，下次打开时可能恢复原设置。请重试。",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
                 }
-                Text(
-                    text = if (state.channel == AppUpdateChannel.STABLE) {
-                        "仅检查已发布的正式版本。"
-                    } else {
-                        "跟踪开发预览测试版和带版本号的测试版（如 Beta、RC），也会提示后续可升级的正式版。"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Button(onClick = onCheck, enabled = !state.isChecking, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (state.isChecking) "正在检查更新…" else "检查更新")
-                }
-                if (state.preferenceSaveFailed) {
-                    Text("更新渠道未能保存，下次打开时可能恢复原设置。请重试。", color = MaterialTheme.colorScheme.error)
-                }
-            }
-            Column(
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-            ) {
-                if (state.isChecking) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    Text("正在获取发布信息…", style = MaterialTheme.typography.bodyMedium)
-                } else {
+                Column(
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
                     state.result?.let { result ->
                         AppUpdateResultCard(result, state.channel, onOpenRelease)
                     }
                 }
+                OutlinedButton(onClick = { onOpenRelease(APP_RELEASES_URL) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("查看所有发布")
+                }
+                Text(
+                    "更新信息来自本项目的 GitHub 发布页，打开此页面会自动检查，也可手动重查。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            OutlinedButton(onClick = { onOpenRelease(APP_RELEASES_URL) }, modifier = Modifier.fillMaxWidth()) {
-                Text("查看所有发布")
-            }
-            if (openFailed) {
-                Text("未找到可打开发布页的浏览器。", color = MaterialTheme.colorScheme.error)
-            }
-            Text(
-                "更新信息来自本项目的 GitHub 发布页，打开此页面会自动检查，也可手动重查。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

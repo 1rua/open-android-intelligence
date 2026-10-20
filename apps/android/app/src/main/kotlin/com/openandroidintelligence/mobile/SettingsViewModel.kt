@@ -232,6 +232,10 @@ class SettingsViewModel(
         environment.appearance.setDynamicColor(enabled)
     }
 
+    fun setPalette(palette: com.openandroidintelligence.conversation.theme.ThemePalette) {
+        environment.appearance.selectPalette(palette)
+    }
+
     fun setReduceMotion(enabled: Boolean) {
         environment.appearance.setReduceMotion(enabled)
     }
