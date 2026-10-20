@@ -1,15 +1,11 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -28,16 +24,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.ports.AgentCommand
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
@@ -59,7 +57,10 @@ fun filterCommands(
 
 /**
  * 斜杠命令补全悬浮窗。
- * 遵循 mobile_motion_preview.html 与规范 Section 5 的视觉层级与动效。
+ *
+ * 视觉：`surfaceContainerHigh` 浮层 + 16dp 圆角 + 轻 tonal/阴影层级，最大高度
+ * [Dimensions.CommandMenuHeight]；出现/消失是 M3 淡化 + 4dp 上浮（M11），
+ * 过滤结果本身即时更新、不逐项做动画。
  */
 @Composable
 fun CommandAutocompletePopup(
@@ -119,30 +120,38 @@ fun CommandAutocompletePopup(
     }
 
     val isVisible = visible && !dismissedLocally && query.startsWith("/")
+    val risePx = with(LocalDensity.current) { CommandMenuRise.roundToPx() }
 
     AnimatedVisibility(
         visible = isVisible,
         enter = if (reduced) {
-            EnterTransition.None
+            // 减少动态也要有一次淡化：直接出现比 150ms 渐变更生硬，也更难察觉上下文变化。
+            fadeIn(animationSpec = tween(MotionSpecs.ReducedMotionCrossfadeDuration))
         } else {
-            fadeIn(animationSpec = tween(150)) + slideInVertically(
-                animationSpec = spring(dampingRatio = 0.82f, stiffness = 380f),
-            ) { it / 4 }
+            fadeIn(
+                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedDecelerateEasing),
+            ) + slideInVertically(
+                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedDecelerateEasing),
+                initialOffsetY = { risePx },
+            )
         },
         exit = if (reduced) {
-            ExitTransition.None
+            fadeOut(animationSpec = tween(MotionSpecs.ReducedMotionCrossfadeDuration))
         } else {
-            fadeOut(animationSpec = tween(100)) + slideOutVertically(
-                animationSpec = tween(100),
-            ) { it / 4 }
+            fadeOut(
+                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedAccelerateEasing),
+            ) + slideOutVertically(
+                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedAccelerateEasing),
+                targetOffsetY = { risePx },
+            )
         },
         modifier = modifier,
     ) {
         Surface(
             shape = RoundedCornerShape(AppRadius.Medium),
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            shadowElevation = 8.dp,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 2.dp,
+            shadowElevation = 4.dp,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = Dimensions.SpaceMedium)
@@ -155,13 +164,13 @@ fun CommandAutocompletePopup(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(8.dp),
+                    .padding(Dimensions.SpaceSmall),
             ) {
                 if (catalogStatus != null) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+                            .padding(start = Dimensions.SpaceCompact, end = Dimensions.SpaceTiny, top = 2.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
@@ -179,7 +188,7 @@ fun CommandAutocompletePopup(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                            .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceCompact),
                         contentAlignment = Alignment.CenterStart,
                     ) {
                         Text(
@@ -191,7 +200,7 @@ fun CommandAutocompletePopup(
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
                     ) {
                         items(matchedCommands, key = { it.command }) { command ->
                             CommandItemRow(
@@ -219,10 +228,12 @@ fun CommandItemRow(
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
     val isPressed by interactionSource.collectIsPressedAsState()
+    // 浮层本身已经是 surfaceContainerHigh；列表项默认透明，只在悬停/按压时提亮，
+    // 避免卡片内部再铺一层几乎同色的色块。
     val backgroundColor = if (isHovered || isPressed) {
         MaterialTheme.colorScheme.surfaceContainerHighest
     } else {
-        MaterialTheme.colorScheme.surfaceContainerHigh
+        Color.Transparent
     }
 
     Surface(
@@ -237,34 +248,33 @@ fun CommandItemRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 9.dp),
+                .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
                 Text(
                     text = command.command,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
+                    style = AppTextStyles.Mono,
+                    fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 val hint = command.argumentHint
                 if (!hint.isNullOrBlank()) {
                     Text(
                         text = hint,
-                        fontSize = 11.sp,
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(Dimensions.SpaceSmall))
             Text(
                 text = command.description,
-                fontSize = 12.sp,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -296,3 +306,6 @@ fun CommandMenu(
         onRetry = onRetry,
     )
 }
+
+/** 命令菜单出现/消失时的上浮位移（M11：4dp）。 */
+private val CommandMenuRise = 4.dp

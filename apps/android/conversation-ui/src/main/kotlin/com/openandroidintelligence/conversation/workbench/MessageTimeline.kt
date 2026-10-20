@@ -1,72 +1,60 @@
 package com.openandroidintelligence.conversation.workbench
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.openandroidintelligence.conversation.components.SignalStitch
-import com.openandroidintelligence.conversation.model.ApprovalChoice
-import com.openandroidintelligence.conversation.model.AttachmentLocalState
-import com.openandroidintelligence.conversation.model.AttachmentDownloadState
-import com.openandroidintelligence.conversation.model.TimelineAttachment
-import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
-import com.openandroidintelligence.conversation.ports.AgentMessageStatus
-import com.openandroidintelligence.conversation.state.TimelineEntry
-import com.openandroidintelligence.conversation.theme.AppRadius
-import com.openandroidintelligence.conversation.theme.Dimensions
-import androidx.compose.foundation.Image
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.graphics.asImageBitmap
 import android.graphics.BitmapFactory
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.text.InlineTextContent
-import androidx.compose.foundation.text.appendInlineContent
-import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.text.Placeholder
-import androidx.compose.ui.text.PlaceholderVerticalAlign
-import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.components.stitchGuide
+import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.AttachmentDownloadState
+import com.openandroidintelligence.conversation.model.AttachmentLocalState
+import com.openandroidintelligence.conversation.model.TimelineAttachment
+import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
+import com.openandroidintelligence.conversation.ports.AgentMessageStatus
+import com.openandroidintelligence.conversation.state.TimelineEntry
+import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.AppTextStyles
+import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * 消息时间线的列表容器。渲染规范严格遵循设计系统与交互规范（设计规格 §4.4、§6.1）：
- * 1. 助手消息：开放式正文，左侧信号缝线（Signal Stitch），适合长文本、Markdown 与代码块；
- * 2. 用户消息：右侧 tonal surface 气泡，最大宽度 82–85%，使用右下较小圆角提供方向感；
- * 3. Markdown 代码块：深色圆角容器、语言标签、独立复制代码按钮、横向自由滚动与等宽字体；
- * 4. 时间戳与状态指示点：技术元数据使用 Roboto Mono/等宽字体，状态点如实反映接收与发送就绪状态。
+ * 消息时间线的列表容器。视觉规范严格遵循设计系统与产品规格（2026-10-21 §5.1）：
+ * 1. 助手消息：开放式正文 + 由内容高度驱动的连续缝线（[stitchGuide]），适合长文本与 Markdown；
+ * 2. 用户消息：右对齐气泡，`surfaceContainerHigh` + `onSurface`，20dp 圆角、尾部方向角 4dp；
+ * 3. 元数据：时间与状态统一 `AppTextStyles.MonoSmall` + `onSurfaceVariant`，状态用文字表达，
+ *    等待用 warning、失败才用 error —— 颜色永远不是唯一信号；
+ * 4. Markdown 代码块：深色圆角容器、语言标签、独立复制代码按钮、横向自由滚动与等宽字体。
  *
  * @param onDecide 提交一次审批决策，走它自己的端点；卡片永不用「在会话里打字」的方式作答
  *   （§7.2）。决策与被按下卡片的标识一起传递，因此一组行可以共用同一个回调而不丢失回答的是哪张审批。
@@ -80,7 +68,7 @@ fun MessageTimeline(
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.TimelineSpacing),
     ) {
         entries.forEach { entry ->
             TimelineRow(entry = entry, onDecide = onDecide, onDownloadAttachment = onDownloadAttachment)
@@ -119,108 +107,61 @@ fun TimelineRow(
     }
 }
 
+/**
+ * 用户气泡：`surfaceContainerHigh`（"用户说的内容"这一层），不再是 secondaryContainer。
+ * 尾部方向角（右下）压到 4dp，其余三角 20dp —— 方向感来自形状，不靠第二个强调色。
+ */
 @Composable
-private fun UserMessageBubble(entry: TimelineEntry, modifier: Modifier = Modifier, onDownloadAttachment: ((String) -> Unit)? = null) {
+private fun UserMessageBubble(
+    entry: TimelineEntry,
+    modifier: Modifier = Modifier,
+    onDownloadAttachment: ((String) -> Unit)? = null,
+) {
+    val failed = entry.submissionFailureCode != null || entry.messageStatus == AgentMessageStatus.FAILED
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
     ) {
         Surface(
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedCornerShape(
-                topStart = 16.dp,
-                topEnd = 16.dp,
-                bottomStart = 16.dp,
-                bottomEnd = 4.dp,
+                topStart = AppRadius.Bubble,
+                topEnd = AppRadius.Bubble,
+                bottomStart = AppRadius.Bubble,
+                bottomEnd = AppRadius.ExtraSmall,
             ),
             modifier = Modifier
                 .widthIn(max = Dimensions.MessageWidth)
-                .fillMaxWidth(0.85f),
+                .fillMaxWidth(Dimensions.MessageWidthFraction),
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(
+                    horizontal = Dimensions.SpaceMedium,
+                    vertical = Dimensions.SpaceCompact,
+                ),
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
                 MessageAttachments(entry.attachments, onDownloadAttachment)
 
                 if (entry.text.isNotBlank()) {
                     SelectionContainer {
-                        Text(
-                            text = entry.text,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontSize = 15.sp,
-                            lineHeight = 22.sp,
-                        )
+                        Text(text = entry.text, style = MaterialTheme.typography.bodyLarge)
                     }
                 } else if (entry.attachments.isEmpty()) {
                     SelectionContainer {
                         Text(
                             text = "此消息没有可显示的文本",
                             style = MaterialTheme.typography.bodyLarge,
-                            fontSize = 15.sp,
-                            lineHeight = 22.sp,
                         )
                     }
                 }
 
-                Row(
+                MessageMetadata(
+                    entry = entry,
+                    failed = failed,
                     modifier = Modifier.align(Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    if (entry.submissionFailureCode != null) {
-                        Text(
-                            text = "发送失败 · ${entry.submissionFailureCode}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    } else if (entry.messageStatus != null) {
-                        val failedStatus = entry.messageStatus == AgentMessageStatus.FAILED
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(if (failedStatus) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary),
-                        )
-                        Text(
-                            text = messageStatusLabel(entry.messageStatus, entry.messageStatusErrorCode),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 11.sp,
-                            color = if (failedStatus) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else if (entry.pendingAcceptance) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.tertiary),
-                        )
-                        Text(
-                            text = if (entry.batchGroupId != null) "等待合并" else "等待 Gateway 接收",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        val timeStr = formatTime(entry.timestamp)
-                        if (timeStr.isNotEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .size(5.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)),
-                            )
-                            Text(
-                                text = timeStr,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
+                )
             }
         }
     }
@@ -247,20 +188,21 @@ private fun AttachmentFallbackChip(filename: String, isImage: Boolean) {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceSmall),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
         ) {
             Icon(
                 imageVector = if (isImage) Icons.Default.Image else Icons.AutoMirrored.Filled.InsertDriveFile,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Text(
                 text = filename,
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -284,14 +226,14 @@ fun HistoricalAttachmentCard(attachment: TimelineAttachment, onDownload: ((Strin
             if (image != null) Image(image, contentDescription = attachment.filename.ifBlank { "图片预览" },
                 contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp))
             when (attachment.localState) {
-                AttachmentLocalState.PENDING -> Text("正在保存到本机…", style = MaterialTheme.typography.bodySmall)
-                AttachmentLocalState.UNAVAILABLE -> Text("原件不可用，附件信息仍保留", style = MaterialTheme.typography.bodySmall)
-                AttachmentLocalState.FAILED -> Text("本地保存失败，请检查手机存储空间或连接", style = MaterialTheme.typography.bodySmall)
+                AttachmentLocalState.PENDING -> Text("正在保存到本机…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AttachmentLocalState.UNAVAILABLE -> Text("原件不可用，附件信息仍保留", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AttachmentLocalState.FAILED -> Text("本地保存失败，请检查手机存储空间或连接", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 AttachmentLocalState.SAVED -> Unit
             }
             when (attachment.downloadState) {
-                AttachmentDownloadState.SAVED -> Text("已保存到下载目录", style = MaterialTheme.typography.bodySmall)
-                AttachmentDownloadState.FAILED -> Text("下载失败，请重试", style = MaterialTheme.typography.bodySmall)
+                AttachmentDownloadState.SAVED -> Text("已保存到下载目录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AttachmentDownloadState.FAILED -> Text("下载失败，请重试", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 else -> Unit
             }
             TextButton(onClick = { onDownload?.invoke(attachment.draftId) }, enabled =
@@ -302,98 +244,113 @@ fun HistoricalAttachmentCard(attachment: TimelineAttachment, onDownload: ((Strin
     }
 }
 
+/**
+ * 助手正文：不再每块各画一段固定 32dp 的缝线，而是让 [stitchGuide] 跟着内容长度走。
+ * 正文直接交给 [MarkdownDocumentView]，字号走 bodyLarge（16sp / 26sp 行高）。
+ */
 @Composable
-private fun AssistantMessageRow(entry: TimelineEntry, modifier: Modifier = Modifier, onDownloadAttachment: ((String) -> Unit)? = null) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Start,
-        verticalAlignment = Alignment.Top,
+private fun AssistantMessageRow(
+    entry: TimelineEntry,
+    modifier: Modifier = Modifier,
+    onDownloadAttachment: ((String) -> Unit)? = null,
+) {
+    val failed = entry.messageStatus == AgentMessageStatus.FAILED || entry.submissionFailureCode != null
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .stitchGuide(failed = failed)
+            .padding(start = Dimensions.StitchGutter),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
     ) {
-        SignalStitch(
-            modifier = Modifier
-                .padding(top = 4.dp)
-                .height(32.dp),
-        )
-        Spacer(Modifier.width(Dimensions.SpaceSmall))
+        MessageAttachments(entry.attachments, onDownloadAttachment)
+        val content = entry.text.ifBlank {
+            if (entry.isStreaming || entry.attachments.isNotEmpty()) "" else "此消息没有可显示的文本"
+        }
 
-        Column(
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .padding(vertical = 2.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+        if (content.isBlank() && entry.isStreaming) {
+            StreamingCursor(modifier = Modifier.padding(vertical = Dimensions.SpaceTiny))
+        } else if (content.isNotBlank()) {
+            val blocks = remember(content) { parseMarkdownBlocks(content) }
+            MarkdownDocumentView(
+                blocks = blocks,
+                isStreaming = entry.isStreaming,
+            )
+        }
+
+        MessageMetadata(entry = entry, failed = failed)
+    }
+}
+
+/**
+ * 时间 / 送达状态：统一等宽小字，状态用文字而不是"变色圆点"。
+ *
+ * 颜色映射只有两处例外：等待（QUEUED / 等待合并）用 warning，失败才用 error；
+ * 其余保持 onSurfaceVariant —— 时间戳不该抢正文的注意力。
+ */
+@Composable
+private fun MessageMetadata(
+    entry: TimelineEntry,
+    failed: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val stateColors = LocalAppStateColors.current
+    val meta: Pair<String, Color>? = when {
+        entry.submissionFailureCode != null ->
+            "发送失败 · ${entry.submissionFailureCode}" to MaterialTheme.colorScheme.error
+        entry.messageStatus != null ->
+            messageStatusLabel(entry.messageStatus, entry.messageStatusErrorCode) to when {
+                failed -> MaterialTheme.colorScheme.error
+                entry.messageStatus == AgentMessageStatus.QUEUED -> stateColors.warning
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        entry.pendingAcceptance ->
+            (if (entry.batchGroupId != null) "等待合并" else "等待 Gateway 接收") to stateColors.warning
+        entry.isStreaming -> "正在输出…" to MaterialTheme.colorScheme.onSurfaceVariant
+        else -> formatTime(entry.timestamp).takeIf { it.isNotEmpty() }
+            ?.let { it to MaterialTheme.colorScheme.onSurfaceVariant }
+    }
+    meta?.let { (text, color) ->
+        Row(
+            modifier = modifier,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
         ) {
-            MessageAttachments(entry.attachments, onDownloadAttachment)
-            val content = entry.text.ifBlank {
-                if (entry.isStreaming || entry.attachments.isNotEmpty()) "" else "此消息没有可显示的文本"
-            }
-
-            if (content.isBlank() && entry.isStreaming) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(vertical = 4.dp),
-                ) {
-                    StreamingCursor()
-                }
-            } else if (content.isNotBlank()) {
-                val blocks = remember(content) { parseMarkdownBlocks(content) }
-                MarkdownDocumentView(
-                    blocks = blocks,
-                    isStreaming = entry.isStreaming,
-                )
-            }
-
-            // Timestamp and Status Dot
-            val timeStr = formatTime(entry.timestamp)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                modifier = Modifier.padding(top = 2.dp),
-            ) {
-                if (entry.isStreaming) {
-                    val infiniteTransition = rememberInfiniteTransition(label = "streaming-dot")
-                    val dotAlpha by infiniteTransition.animateFloat(
-                        initialValue = 0.4f,
-                        targetValue = 1f,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(durationMillis = 600),
-                            repeatMode = RepeatMode.Reverse,
-                        ),
-                        label = "dot-alpha",
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(5.dp)
-                            .clip(CircleShape)
-                            .alpha(dotAlpha)
-                            .background(MaterialTheme.colorScheme.primary),
-                    )
-                    Text(
-                        text = "正在输出…",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(5.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary),
-                    )
-                    if (timeStr.isNotEmpty()) {
-                        Text(
-                            text = timeStr,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
+            // 流式状态点与文字并存：点只是"还在长"的辅助信号，减少动态时保持静止。
+            if (entry.isStreaming) StreamingStatusDot()
+            Text(
+                text = text,
+                style = AppTextStyles.MonoSmall,
+                color = color,
+                maxLines = 1,
+            )
         }
     }
+}
+
+/** 流式输出的状态点：极缓的 1.2s alpha 呼吸；减少动态时完全静止。 */
+@Composable
+private fun StreamingStatusDot() {
+    val reduced = LocalMotionPolicy.current.reduceMotion
+    val alpha = if (reduced) {
+        0.75f
+    } else {
+        val transition = rememberInfiniteTransition(label = "streaming-dot")
+        transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "streaming-dot-alpha",
+        ).value
+    }
+    Box(
+        modifier = Modifier
+            .size(Dimensions.SpaceTiny)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = alpha)),
+    )
 }
 
 /**
@@ -424,12 +381,19 @@ fun StreamingCursor(modifier: Modifier = Modifier) {
     }
     Box(
         modifier = modifier
-            .width(2.5.dp)
+            .width(2.dp)
             .height(16.dp)
-            .alpha(alpha)
-            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp)),
+            .graphicsLayer { this.alpha = alpha }
+            .background(MaterialTheme.colorScheme.primary, CircleShape),
     )
 }
+
+/** 思考点：3 点错峰位移 2dp + alpha，一个循环 1400ms；减少动态时静态。 */
+private val TypingDotSize = 6.dp
+private val TypingDotRise = 2.dp
+private const val TypingDotsCycleMillis = 1400
+private const val TypingDotsStaggerMillis = 160
+private const val StaticTypingDotAlpha = 0.55f
 
 /**
  * 正在思考动画组件：对齐 fronted-preview 的 #thinkingIndicator 与 .typing-dot
@@ -440,33 +404,29 @@ fun ThinkingIndicator(
     text: String = "AI 正在思考",
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Start,
-        verticalAlignment = Alignment.Top,
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .stitchGuide()
+            .padding(start = Dimensions.StitchGutter),
     ) {
-        SignalStitch(
-            modifier = Modifier
-                .padding(top = 4.dp)
-                .height(28.dp),
-        )
-        Spacer(Modifier.width(Dimensions.SpaceSmall))
-
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainer,
             contentColor = MaterialTheme.colorScheme.onSurface,
             shape = RoundedCornerShape(
-                topStart = 16.dp,
-                topEnd = 16.dp,
-                bottomStart = 4.dp,
-                bottomEnd = 16.dp,
+                topStart = AppRadius.Bubble,
+                topEnd = AppRadius.Bubble,
+                bottomStart = AppRadius.ExtraSmall,
+                bottomEnd = AppRadius.Bubble,
             ),
-            modifier = Modifier.padding(vertical = 2.dp),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.padding(
+                    horizontal = Dimensions.SpaceMedium,
+                    vertical = Dimensions.SpaceCompact,
+                ),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
                 Text(
                     text = text,
@@ -481,7 +441,9 @@ fun ThinkingIndicator(
 }
 
 /**
- * 3 颗连续跳动点：对齐 fronted-preview 的 .typing-dot 关键帧动画
+ * 3 颗连续跳动点：对齐 fronted-preview 的 .typing-dot 关键帧动画。
+ *
+ * 位移与 alpha 都放在 `graphicsLayer` 的绘制 lambda 里读取，逐帧只失效图层、不触发重组。
  */
 @Composable
 fun TypingDots(
@@ -489,23 +451,22 @@ fun TypingDots(
     reduced: Boolean = false,
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "typing-dots")
-    val dotCount = 3
-    val dotAnimations = List(dotCount) { index ->
-        if (reduced) {
-            remember { mutableStateOf(1f) }
-        } else {
+    val progress: List<State<Float>?> = if (reduced) {
+        List(3) { null }
+    } else {
+        List(3) { index ->
             infiniteTransition.animateFloat(
                 initialValue = 0f,
                 targetValue = 1f,
                 animationSpec = infiniteRepeatable(
                     animation = keyframes {
-                        durationMillis = 1400
-                        val delay = index * 160
+                        durationMillis = TypingDotsCycleMillis
+                        val start = index * TypingDotsStaggerMillis
                         0f at 0
-                        if (delay > 0) 0f at delay
-                        1f at (delay + 300).coerceAtMost(1400)
-                        0f at (delay + 600).coerceAtMost(1400)
-                        0f at 1400
+                        if (start > 0) 0f at start
+                        1f at (start + 300).coerceAtMost(TypingDotsCycleMillis)
+                        0f at (start + 700).coerceAtMost(TypingDotsCycleMillis)
+                        0f at TypingDotsCycleMillis
                     },
                     repeatMode = RepeatMode.Restart,
                 ),
@@ -513,21 +474,21 @@ fun TypingDots(
             )
         }
     }
+    val risePx = with(LocalDensity.current) { TypingDotRise.toPx() }
 
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        dotAnimations.forEach { animState ->
-            val scale = animState.value
+        progress.forEach { state ->
             Box(
                 modifier = Modifier
-                    .size(6.dp)
+                    .size(TypingDotSize)
                     .graphicsLayer {
-                        scaleX = 0.4f + 0.6f * scale
-                        scaleY = 0.4f + 0.6f * scale
-                        alpha = 0.3f + 0.7f * scale
+                        val value = state?.value ?: 0f
+                        translationY = -risePx * value
+                        alpha = if (state == null) StaticTypingDotAlpha else 0.35f + 0.65f * value
                     }
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary),

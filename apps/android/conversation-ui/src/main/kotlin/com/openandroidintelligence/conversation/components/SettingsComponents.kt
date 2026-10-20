@@ -1,6 +1,5 @@
 package com.openandroidintelligence.conversation.components
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,6 +8,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.theme.AppRadius
@@ -75,7 +76,12 @@ fun SettingsSectionCard(
     }
 }
 
-/** 卡片标题，用于多张分组卡之间的层级区分。 */
+/**
+ * 卡片标题，用于多张分组卡之间的层级区分。
+ *
+ * 规格 §5.3：分组标题用 `labelMedium` + `onSurfaceVariant`，不再用主色抢
+ * 条目本身的强调层级；行尾仍保留一个可选的 trailing 槽位。
+ */
 @Composable
 fun SettingsCardHeader(
     title: String,
@@ -87,8 +93,8 @@ fun SettingsCardHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        ProvideTextStyle(MaterialTheme.typography.titleSmall) {
-            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary) {
+        ProvideTextStyle(MaterialTheme.typography.labelMedium) {
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {
                 Text(title, modifier = Modifier.weight(1f, fill = false))
             }
         }
@@ -100,7 +106,8 @@ fun SettingsCardHeader(
  * 标准设置条目，基于官方 M3 [ListItem]：
  * 前置图标容器 → 标题 + 辅助说明两行排版 → 后置控件槽位。
  *
- * 点击反馈一律保留 M3 Ripple（不要再额外画 `.clickable` 之外的高亮）；
+ * 行高不低于 48dp；按下时走 `bouncyClickable` 的 0.97 内收（与抽屉项、附件卡片
+ * 同一套按压反馈），ripple 仍由 M3 提供。
  * [onClick] 传 null 表示这一行只展示、不可交互。
  */
 @Composable
@@ -120,8 +127,19 @@ fun SettingsListItem(
         headlineContent = { Text(headline, style = MaterialTheme.typography.bodyLarge) },
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = Dimensions.MinimumTouchTarget)
             .alpha(if (enabled) 1f else 0.38f)
-            .then(if (interactive) Modifier.clickable(onClick = onClick!!) else Modifier),
+            .then(
+                if (interactive) {
+                    Modifier.bouncyClickable(
+                        enabled = true,
+                        role = Role.Button,
+                        onClick = onClick!!,
+                    )
+                } else {
+                    Modifier
+                },
+            ),
         supportingContent = supporting?.let {
             { Text(it, style = MaterialTheme.typography.bodyMedium) }
         },
@@ -129,7 +147,7 @@ fun SettingsListItem(
         trailingContent = trailing,
         colors = ListItemDefaults.colors(
             containerColor = if (selected) {
-                MaterialTheme.colorScheme.secondaryContainer
+                MaterialTheme.colorScheme.surfaceContainerHighest
             } else {
                 Color.Transparent
             },

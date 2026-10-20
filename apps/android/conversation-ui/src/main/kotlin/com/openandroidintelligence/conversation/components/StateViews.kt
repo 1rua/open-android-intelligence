@@ -8,6 +8,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -15,22 +16,45 @@ import androidx.compose.ui.text.style.TextAlign
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.theme.Dimensions
 
-/** 无论处于哪一状态都保留调用方的尺寸约束，避免列表把编辑器挤出窗口。 */
+/**
+ * 无论处于哪一状态都保留调用方的尺寸约束，避免列表把编辑器挤出窗口。
+ *
+ * 加载 / 空 / 失败三态用同一套排版：[StatusColumn]（图标 + 标题 + 说明 + 动作），
+ * 失败态的说明来自 [readableFailure]，不把原始错误码或异常原文直接丢给用户；
+ * 空态与失败态仍然严格可分：前者是「Gateway 答了但没有内容」，后者是「没问成」。
+ */
 @Composable
 fun <T> LoadableRegion(state: Loadable<T>, emptyHint: String, onRetry: () -> Unit,
     modifier: Modifier = Modifier, ready: @Composable (T) -> Unit) {
     Box(modifier, contentAlignment = Alignment.Center) {
         when (state) {
-            Loadable.Idle -> Text("选择会话后显示内容", style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(Dimensions.SpaceMedium))
-            Loadable.Loading -> Column(Modifier.padding(Dimensions.SpaceMedium),
-                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                CircularProgressIndicator(Modifier.size(Dimensions.Progress), strokeWidth = Dimensions.StrokeStitch)
-                Text("正在加载", style = MaterialTheme.typography.labelMedium)
-            }
-            Loadable.Empty -> StatusColumn("还没有内容", emptyHint, false, "刷新" to onRetry)
-            is Loadable.Failed -> StatusColumn("暂时无法加载", readableFailure(state.code), true,
-                if (state.retryable) "重试" to onRetry else null)
+            Loadable.Idle -> Text(
+                "选择会话后显示内容",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(Dimensions.SpaceMedium),
+            )
+            Loadable.Loading -> StatusColumn(
+                icon = null,
+                title = "正在加载",
+                body = "正在从 Gateway 读取内容…",
+                failed = false,
+                action = null,
+            )
+            Loadable.Empty -> StatusColumn(
+                icon = Icons.Default.Forum,
+                title = "还没有内容",
+                body = emptyHint,
+                failed = false,
+                action = "刷新" to onRetry,
+            )
+            is Loadable.Failed -> StatusColumn(
+                icon = Icons.Default.ErrorOutline,
+                title = "暂时无法加载",
+                body = readableFailure(state.code),
+                failed = true,
+                action = if (state.retryable) "重试" to onRetry else null,
+            )
             is Loadable.Ready -> ready(state.value)
         }
     }
@@ -203,14 +227,50 @@ fun noticeText(notice: String): String {
     return notice
 }
 
+/**
+ * 统一的空 / 加载 / 失败排版：图标（加载时换成进度圈）+ 标题 + 说明 + 可选动作。
+ *
+ * 图标只做装饰（`contentDescription = null`），信息由标题与说明文字承担 ——
+ * 状态不允许只靠图形或颜色传达。
+ */
 @Composable
-private fun StatusColumn(title: String, body: String, failed: Boolean, action: Pair<String, () -> Unit>?) {
-    Column(Modifier.widthIn(max = Dimensions.FormWidth).padding(Dimensions.SpaceLarge).semantics { liveRegion = LiveRegionMode.Polite },
-        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-        Icon(if (failed) Icons.Default.ErrorOutline else Icons.Default.Forum, null,
-            tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        Text(body, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        action?.let { (label, click) -> TextButton(onClick = click) { Text(label) } }
+private fun StatusColumn(
+    icon: ImageVector?,
+    title: String,
+    body: String,
+    failed: Boolean,
+    action: Pair<String, () -> Unit>?,
+) {
+    Column(
+        Modifier
+            .widthIn(max = Dimensions.FormWidth)
+            .padding(Dimensions.SpaceLarge)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+    ) {
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(Dimensions.Icon),
+            )
+        } else {
+            CircularProgressIndicator(
+                modifier = Modifier.size(Dimensions.Progress),
+                strokeWidth = Dimensions.StrokeStitch,
+            )
+        }
+        Text(title, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        action?.let { (label, click) ->
+            FilledTonalButton(onClick = click) { Text(label) }
+        }
     }
 }

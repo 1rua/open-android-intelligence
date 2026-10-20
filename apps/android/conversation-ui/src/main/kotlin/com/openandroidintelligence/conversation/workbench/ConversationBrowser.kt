@@ -1,22 +1,28 @@
 package com.openandroidintelligence.conversation.workbench
 
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -28,15 +34,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import com.openandroidintelligence.conversation.ports.ConversationFolder
+import com.openandroidintelligence.conversation.components.bouncyClickable
 import com.openandroidintelligence.conversation.components.noticeText
+import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.ports.ConversationFolder
 import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.ports.ConversationSortMode
 import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.AppTextStyles
+import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /** The same history and organization controls are used in the drawer and the native bubble. */
@@ -113,6 +127,7 @@ fun ConversationBrowser(
     busyThreadIds: Set<String> = emptySet(),
     actions: ConversationBrowserActions = ConversationBrowserActions(),
 ) {
+    val reduced = LocalMotionPolicy.current.reduceMotion
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(ALL_THREADS) }
     var showFilter by remember { mutableStateOf(false) }
@@ -146,12 +161,16 @@ fun ConversationBrowser(
     var dragStartOffset by remember { mutableFloatStateOf(0f) }
     var dragDistance by remember { mutableFloatStateOf(0f) }
     var dragHeight by remember { mutableIntStateOf(0) }
+    // 列表首次进入做一次错峰入场（M19）；筛选变化不重放，避免每次搜索都闪一遍。
+    var rowsRevealed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { rowsRevealed = true }
     val rowsById = ordered.associateBy { it.id.value }
     val displayed = previewIds?.mapNotNull(rowsById::get) ?: filtered
     val currentOrdered by rememberUpdatedState(ordered)
     val currentFiltered by rememberUpdatedState(filtered)
     val currentReorder by rememberUpdatedState(actions.reorder)
     val currentCanManage by rememberUpdatedState(canManage)
+    val now = remember { System.currentTimeMillis() }
 
     fun cancelDrag() {
         draggedId = null
@@ -194,33 +213,42 @@ fun ConversationBrowser(
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("conversation-browser"),
         state = listState,
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        contentPadding = PaddingValues(
+            start = Dimensions.SpaceCompact,
+            top = Dimensions.SpaceSmall,
+            end = Dimensions.SpaceCompact,
+            bottom = DrawerListBottomSpace,
+        ),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
-        item(key = "browser-create") {
-            Button(onClick = onCreateThread, enabled = online, shape = RoundedCornerShape(AppRadius.Small),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp)) {
-                Icon(Icons.Default.Add, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("新建对话")
-            }
-        }
         item(key = "browser-search") {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
                 placeholder = { Text("搜索会话…") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = if (query.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Default.Close, contentDescription = "清除搜索")
+                        }
+                    }
+                } else {
+                    null
+                },
                 singleLine = true,
-                shape = RoundedCornerShape(AppRadius.Small),
+                shape = RoundedCornerShape(AppRadius.Medium),
                 modifier = Modifier.fillMaxWidth(),
             )
         }
         item(key = "browser-controls") {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = Dimensions.SpaceTiny),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Box(Modifier.weight(1f)) {
                     TextButton(onClick = { showFilter = true }, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(Dimensions.SmallIcon))
                         Spacer(Modifier.width(4.dp))
                         Text(when (filter) {
                             ARCHIVED_THREADS -> "已归档"
@@ -246,37 +274,53 @@ fun ConversationBrowser(
                     Icon(Icons.Default.CreateNewFolder, contentDescription = "管理文件夹")
                 }
                 IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, contentDescription = "刷新会话") }
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("${filtered.size} 个会话", style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                Box {
-                    TextButton(onClick = { showSort = true }, enabled = canManage,
-                        contentPadding = PaddingValues(horizontal = 4.dp)) {
-                        Text(if (organization.sortMode == ConversationSortMode.CUSTOM) "自定义顺序" else "最近更新")
-                        Icon(Icons.Default.Sort, contentDescription = "会话排序", modifier = Modifier.size(18.dp))
-                    }
-                    DropdownMenu(expanded = showSort, onDismissRequest = { showSort = false }) {
-                        DropdownMenuItem(text = { Text("按更新时间倒序") }, onClick = {
-                            showSort = false; actions.sort(ConversationSortMode.UPDATED_DESC)
-                        })
-                        DropdownMenuItem(text = { Text("自定义顺序") }, onClick = {
-                            showSort = false; actions.sort(ConversationSortMode.CUSTOM)
-                        })
-                    }
+                IconButton(onClick = onCreateThread, enabled = online) {
+                    Icon(Icons.Default.Add, contentDescription = "新建会话")
                 }
             }
-            Text(
-                when {
-                    !managementSupported -> "此 Gateway 暂不支持会话管理，请更新 Gateway。"
-                    !online -> "连接 Gateway 后可管理会话。"
-                    managing -> "正在保存会话设置…"
-                    else -> "长按会话并拖动可调整顺序"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 4.dp),
-            )
+        }
+        item(key = "browser-group-header") {
+            Column(modifier = Modifier.fillMaxWidth().padding(top = Dimensions.SpaceSmall)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "会话",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "${filtered.size} 个会话",
+                        style = AppTextStyles.MonoSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Box {
+                        TextButton(onClick = { showSort = true }, enabled = canManage,
+                            contentPadding = PaddingValues(horizontal = 4.dp)) {
+                            Text(if (organization.sortMode == ConversationSortMode.CUSTOM) "自定义顺序" else "最近更新")
+                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "会话排序", modifier = Modifier.size(Dimensions.SmallIcon))
+                        }
+                        DropdownMenu(expanded = showSort, onDismissRequest = { showSort = false }) {
+                            DropdownMenuItem(text = { Text("按更新时间倒序") }, onClick = {
+                                showSort = false; actions.sort(ConversationSortMode.UPDATED_DESC)
+                            })
+                            DropdownMenuItem(text = { Text("自定义顺序") }, onClick = {
+                                showSort = false; actions.sort(ConversationSortMode.CUSTOM)
+                            })
+                        }
+                    }
+                }
+                Text(
+                    when {
+                        !managementSupported -> "此 Gateway 暂不支持会话管理，请更新 Gateway。"
+                        !online -> "连接 Gateway 后可管理会话。"
+                        managing -> "正在保存会话设置…"
+                        else -> "长按会话并拖动可调整顺序"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = Dimensions.SpaceTiny),
+                )
+            }
         }
         when (threads) {
             Loadable.Idle, Loadable.Loading -> item(key = "browser-loading") {
@@ -294,7 +338,7 @@ fun ConversationBrowser(
                     modifier = Modifier.padding(vertical = 16.dp))
             }
         }
-        items(displayed, key = { it.id.value }) { thread ->
+        itemsIndexed(displayed, key = { _, thread -> thread.id.value }) { index, thread ->
             val id = thread.id.value
             val isDragged = draggedId == id
             val itemOffset = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == id }?.offset ?: 0
@@ -310,6 +354,9 @@ fun ConversationBrowser(
                 onClassify = { classifyThread = thread },
                 onArchive = { actions.archive(id, !thread.archived) },
                 onDelete = { deleteThread = thread },
+                entranceIndex = index,
+                entranceVisible = rowsRevealed,
+                relativeTime = relativeThreadTime(thread.updatedAt, now),
                 modifier = Modifier
                     .testTag("conversation:$id")
                     .zIndex(if (isDragged) 1f else 0f)
@@ -425,6 +472,11 @@ fun ConversationBrowser(
     }
 }
 
+/**
+ * 抽屉/气泡共用的会话行：48–56dp、标题一行省略、右侧相对时间（等宽小字）、
+ * 选中态用 `surfaceContainerHighest` + 左侧 3dp 主色指示条，不复用 `secondaryContainer`。
+ * 首次进入按 [MotionSpecs.staggerEnter] 错峰淡入 + 上浮（M19）。
+ */
 @Composable
 private fun ConversationBrowserRow(
     thread: ConversationSummary,
@@ -438,31 +490,131 @@ private fun ConversationBrowserRow(
     onArchive: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
+    entranceIndex: Int = 0,
+    entranceVisible: Boolean = true,
+    relativeTime: String = "",
 ) {
     var menu by remember { mutableStateOf(false) }
-    val details = listOfNotNull(if (busy) "任务进行中" else null, if (thread.archived) "已归档" else null, folder)
+    val reduced = LocalMotionPolicy.current.reduceMotion
+    val entranceSpec = MotionSpecs.staggerEnter<Float>(entranceIndex, reduced)
+    val alpha by animateFloatAsState(
+        targetValue = if (entranceVisible) 1f else 0f,
+        animationSpec = entranceSpec,
+        label = "drawer-row-alpha",
+    )
+    val rise by animateFloatAsState(
+        targetValue = if (entranceVisible) 0f else DrawerRowEnterRise,
+        animationSpec = entranceSpec,
+        label = "drawer-row-rise",
+    )
+    val risePx = with(LocalDensity.current) { rise.dp.toPx() }
+    val indicatorColor = MaterialTheme.colorScheme.primary
+    // 相对时间放在副标题里而不是行尾：抽屉只有 320dp 宽，行尾再占一块等宽时间
+    // 会把标题压到 120dp 左右（"Call the open_..." 就是这么被截断的）。
+    val details = listOfNotNull(
+        if (busy) "任务进行中" else null,
+        if (thread.archived) "已归档" else null,
+        folder,
+        relativeTime.takeIf { it.isNotEmpty() },
+    )
+
     ListItem(
-        headlineContent = { Text(thread.title.ifBlank { "未命名对话" }, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 2, overflow = TextOverflow.Ellipsis) },
-        supportingContent = if (details.isNotEmpty()) ({ Text(details.joinToString(" · "), maxLines = 1, overflow = TextOverflow.Ellipsis) }) else null,
-        leadingContent = { Icon(if (canManage) Icons.Default.DragHandle else Icons.Default.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(18.dp)) },
+        headlineContent = {
+            Text(
+                text = thread.title.ifBlank { "未命名对话" },
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        supportingContent = if (details.isNotEmpty()) {
+            {
+                Text(
+                    text = details.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        } else {
+            null
+        },
+        leadingContent = if (canManage) {
+            {
+                Icon(
+                    imageVector = Icons.Default.DragHandle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(Dimensions.SmallIcon),
+                )
+            }
+        } else {
+            null
+        },
         trailingContent = {
-            Box {
-                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "管理会话 ${thread.title.ifBlank { "未命名对话" }}") }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("重命名对话") }, enabled = canManage, onClick = { menu = false; onRename() })
-                    DropdownMenuItem(text = { Text("移动到文件夹") }, enabled = canManage, onClick = { menu = false; onClassify() })
-                    DropdownMenuItem(text = { Text(if (thread.archived) "取消归档" else "归档对话") }, enabled = canManage && !busy,
-                        onClick = { menu = false; onArchive() })
-                    DropdownMenuItem(text = { Text("删除对话", color = MaterialTheme.colorScheme.error) }, enabled = canManage && !busy,
-                        onClick = { menu = false; onDelete() })
-                    if (busy) Text("任务结束后可归档或删除", style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box {
+                    IconButton(onClick = { menu = true }) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            "管理会话 ${thread.title.ifBlank { "未命名对话" }}",
+                            modifier = Modifier.size(Dimensions.SmallIcon),
+                        )
+                    }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("重命名对话") }, enabled = canManage, onClick = { menu = false; onRename() })
+                        DropdownMenuItem(text = { Text("移动到文件夹") }, enabled = canManage, onClick = { menu = false; onClassify() })
+                        DropdownMenuItem(text = { Text(if (thread.archived) "取消归档" else "归档对话") }, enabled = canManage && !busy,
+                            onClick = { menu = false; onArchive() })
+                        DropdownMenuItem(text = { Text("删除对话", color = MaterialTheme.colorScheme.error) }, enabled = canManage && !busy,
+                            onClick = { menu = false; onDelete() })
+                        if (busy) Text("任务结束后可归档或删除", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    }
                 }
             }
         },
-        colors = ListItemDefaults.colors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent),
-        modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(AppRadius.Medium)).clickable(onClick = onOpen),
+        colors = ListItemDefaults.colors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.surfaceContainerHighest
+            } else {
+                Color.Transparent
+            },
+            supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            leadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        ),
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AppRadius.Medium))
+            .drawWithContent {
+                drawContent()
+                if (selected) {
+                    val barWidth = 3.dp.toPx()
+                    drawRoundRect(
+                        color = indicatorColor,
+                        size = androidx.compose.ui.geometry.Size(barWidth, size.height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth),
+                    )
+                }
+            }
+            .bouncyClickable(
+                // 列表项不声明 Role.Button：它已经带有 onClick 语义与 onClickLabel，
+                // 再叠加 button 角色会让 TalkBack 把「会话行」读成按钮，也会和抽屉里
+                // 真正的按钮（筛选、管理）产生语义重复。
+                onClickLabel = "打开会话",
+                onClick = onOpen,
+            )
+            .graphicsLayer {
+                this.alpha = alpha
+                translationY = risePx
+            }
+            .drawBehind {
+                if (selected) {
+                    drawRect(color = indicatorColor, size = Size(DrawerSelectionWidth.toPx(), size.height))
+                }
+            },
     )
 }
 
@@ -499,3 +651,33 @@ internal fun reorderVisibleConversationIds(allIds: List<String>, visibleIds: Lis
     val iterator = retained.iterator()
     return allIds.map { if (it in moving) iterator.next() else it }
 }
+
+/**
+ * 会话行的相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前，更早的显示日期。
+ * 时间戳来自 Gateway 的真实 `updatedAt`（毫秒），没有可读值时返回空串，不编造。
+ */
+internal fun relativeThreadTime(updatedAt: Long, now: Long = System.currentTimeMillis()): String {
+    if (updatedAt <= 0L) return ""
+    val elapsed = now - updatedAt
+    return when {
+        elapsed < MINUTE_MILLIS -> "刚刚"
+        elapsed < HOUR_MILLIS -> "${elapsed / MINUTE_MILLIS} 分钟前"
+        elapsed < DAY_MILLIS -> "${elapsed / HOUR_MILLIS} 小时前"
+        elapsed < WEEK_MILLIS -> "${elapsed / DAY_MILLIS} 天前"
+        else -> SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(updatedAt))
+    }
+}
+
+private const val MINUTE_MILLIS = 60_000L
+private const val HOUR_MILLIS = 60 * MINUTE_MILLIS
+private const val DAY_MILLIS = 24 * HOUR_MILLIS
+private const val WEEK_MILLIS = 7 * DAY_MILLIS
+
+/** 会话行进入时的上浮位移（M19：淡入 + 小位移，不做逐 token 炫技）。 */
+private const val DrawerRowEnterRise = 12f
+
+/** 选中行左侧指示条宽度。 */
+private val DrawerSelectionWidth = 3.dp
+
+/** 列表底部留白：避免最后一项贴住页脚/导航栏。 */
+private val DrawerListBottomSpace = 24.dp
