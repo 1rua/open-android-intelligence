@@ -29,7 +29,7 @@ import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class NativeConversationNotificationsTest {
     private lateinit var context: Application
     private lateinit var coordinator: NativeConversationNotifications
@@ -42,7 +42,9 @@ class NativeConversationNotificationsTest {
         context = ApplicationProvider.getApplicationContext()
         replyCompletionPreferences(context, "profile", "account").edit().clear().commit()
         context.getSharedPreferences("agent-reply-alert-settings", 0).edit().clear().commit()
-        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        }
         coordinator = coordinator()
         coordinator.bind("profile", "account")
     }
@@ -555,17 +557,20 @@ class NativeConversationNotificationsTest {
     }
 
     @Test fun permissionAndPreferenceRecoveryRepublishOnlyStillActiveWork() = runBlocking {
-        shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val runtimePermissionRequired = android.os.Build.VERSION.SDK_INT >= 33
+        if (runtimePermissionRequired) shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
         val settings = ReplyNotificationSettings(context)
         val publisher = AndroidReplyNotificationPublisher(context, settings)
         coordinator = NativeConversationNotifications(context, scope, publisher::update, now = { clock }, throttleMillis = 40)
         coordinator.bind("profile", "account")
         accept(status("queued", 1))
         val manager = context.getSystemService(NotificationManager::class.java)
-        assertTrue(manager.activeNotifications.isEmpty())
-        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        settings.refreshPermission()
-        coordinator.refreshActive()
+        if (runtimePermissionRequired) {
+            assertTrue(manager.activeNotifications.isEmpty())
+            shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+            settings.refreshPermission()
+            coordinator.refreshActive()
+        }
         assertEquals(1, manager.activeNotifications.size)
         settings.setEnabled(false)
         assertTrue(manager.activeNotifications.isEmpty())

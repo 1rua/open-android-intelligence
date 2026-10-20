@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
 import java.util.Base64
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class BubbleConversationTest {
     private val context get() = ApplicationProvider.getApplicationContext<Application>()
     private val target = ReplyNotificationTarget("profile-a", "account-a", "conv-a")
@@ -114,7 +114,9 @@ class BubbleConversationTest {
             await { runtime.phase.value is ConnectionPhase.Connected && runtime.controller.value?.state?.value?.activeThreadId == "main-thread" }
             val main = runtime.controller.value!!
             main.editDraft("主窗口草稿")
-            shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
             runtime.replyNotifications.setEnabled(true)
             runtime.onAppForegrounded()
             val profileId = Base64.getUrlEncoder().withoutPadding().encodeToString("${gateway.baseUrl}|operator".toByteArray())

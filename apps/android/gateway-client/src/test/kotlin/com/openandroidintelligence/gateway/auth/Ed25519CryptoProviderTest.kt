@@ -67,7 +67,38 @@ class Ed25519CryptoProviderTest {
     }
 
     @Test
-    fun provider_reads_existing_pkcs8_and_x509_keys_and_interoperates_with_platform_ed25519() {
+    fun provider_reads_existing_pkcs8_and_x509_key_frames_and_round_trips_signatures() {
+        val privateKeyFrame = hex(
+            "302e020100300506032b657004220420" +
+                "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+        )
+        val publicKeyFrame = hex(
+            "302a300506032b6570032100" +
+                "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        )
+        val providerFactory = Ed25519CryptoProvider.keyFactory()
+        val providerPublic = providerFactory.generatePublic(X509EncodedKeySpec(publicKeyFrame))
+        val providerPrivate = providerFactory.generatePrivate(
+            java.security.spec.PKCS8EncodedKeySpec(privateKeyFrame),
+        )
+        assertArrayEquals(privateKeyFrame, providerPrivate.encoded)
+        assertArrayEquals(publicKeyFrame, providerPublic.encoded)
+
+        val message = "existing encrypted key frame".encodeToByteArray()
+        val providerSignature = Ed25519CryptoProvider.signature().run {
+            initSign(providerPrivate)
+            update(message)
+            sign()
+        }
+        val providerVerifier = Ed25519CryptoProvider.signature().apply { initVerify(providerPublic) }
+        providerVerifier.update(message)
+        assertTrue(providerVerifier.verify(providerSignature))
+        assertEquals(43, ed25519WirePublicKey(providerPublic).length)
+    }
+
+    @Test
+    @Config(sdk = [33, 34, 35, 36])
+    fun provider_interoperates_with_platform_ed25519_when_available() {
         val platformPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         val providerFactory = Ed25519CryptoProvider.keyFactory()
         val providerPublic = providerFactory.generatePublic(X509EncodedKeySpec(platformPair.public.encoded))

@@ -194,7 +194,7 @@ class AgentSessionForegroundServiceTest {
     }
 
     @Test
-    @Config(sdk = [36])
+    @Config(sdk = [35, 36])
     fun data_sync_timeout_stops_foreground_and_self_immediately_and_is_idempotent() {
         val controller = Robolectric.buildService(AgentSessionForegroundService::class.java).create()
         val service = controller.get()
