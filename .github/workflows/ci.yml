@@ -83,6 +83,9 @@ jobs:
           python -m unittest discover -s gateway-contract/patches/session-recovery -p 'test_*.py'
           python -m unittest discover -s gateway-contract/patches/conversation-management -p 'test_*.py'
 
+      - name: 验证应用更新发布元数据
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_app_release_metadata.py'
+
       # The plugin packages a contract snapshot generated from a pinned commit.
       # Compare all contract inputs (source, schemas, registry and vectors)
       # rather than commit identity, so unrelated app commits need no plugin bump.
@@ -163,6 +166,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # APK 的版本顺序来自完整提交历史，须与发布工作流一致。
+          fetch-depth: 0
 
       - name: Setup Java 21
         uses: actions/setup-java@v4

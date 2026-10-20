@@ -249,7 +249,7 @@ cd apps/android
 
 所有 APK 模块（`app`、`assistant-holder`）的调试包统一使用仓库内固定密钥
 `app/keystore/debug.keystore` 签名（配置在 `apps/android/build.gradle.kts`），不再依赖各机器
-随机生成的 `~/.android/debug.keystore`：本机、CI 与 nightly 预览调试包签名完全一致，可以直接
+随机生成的 `~/.android/debug.keystore`：本机、CI 与开发预览测试版签名完全一致，可以直接
 互相覆盖安装，不会出现 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。校验任意调试包的签名身份：
 
 ```bash

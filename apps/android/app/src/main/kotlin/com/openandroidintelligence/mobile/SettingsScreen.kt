@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -96,6 +97,7 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.notifications.NotificationCollectionScreen
 import com.openandroidintelligence.mobile.plugins.PluginManagementScreen
+import com.openandroidintelligence.mobile.updates.AppUpdateRoute
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
 import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.kernel.DeveloperTrustMode
@@ -110,6 +112,7 @@ object SettingsRoutes {
     const val AUDIT_LOG = "settings/audit"
     const val PLUGINS = "settings/plugins"
     const val NOTIFICATIONS = "settings/notifications"
+    const val APP_UPDATES = "settings/app-updates"
 }
 
 /**
@@ -219,6 +222,10 @@ fun SettingsScreen(
                 onSetDynamicColor = viewModel::setDynamicColor,
                 onSetReduceMotion = viewModel::setReduceMotion,
             )
+        }
+
+        composable(SettingsRoutes.APP_UPDATES) {
+            AppUpdateRoute(onBack = { navController.popBackStack() })
         }
 
         composable(SettingsRoutes.GATEWAY) {
@@ -450,6 +457,15 @@ private fun SettingsOverviewScreen(
                 ),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
         ) {
+            SectionLabel("应用信息")
+            SettingsSectionCard {
+                SettingsNavigationItem(
+                    headline = "应用更新",
+                    supporting = "检查正式版和预览版更新",
+                    icon = Icons.Default.SystemUpdate,
+                    onClick = { onNavigate(SettingsRoutes.APP_UPDATES) },
+                )
+            }
             (androidx.compose.ui.platform.LocalContext.current.applicationContext as? OpenAndroidIntelligenceApplication)?.let { app ->
                 val preferences=remember { com.openandroidintelligence.mobile.conversations.DebouncePreferences(app) }
                 val gateway=(app.gatewayRuntime.phase.value as? ConnectionPhase.Connected)?.gatewayUrl

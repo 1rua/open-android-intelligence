@@ -1,5 +1,6 @@
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -56,11 +57,49 @@ tasks.withType<Test>().configureEach {
 // 固定调试签名（app/keystore/debug.keystore，见同目录 README.md）在根工程
 // build.gradle.kts 里对所有 APK 模块统一配置，此处无需重复声明。
 
+val appBaseVersion = Properties().apply {
+    file("version.properties").inputStream().use(::load)
+}
+val appRepositoryRoot = rootProject.projectDir.resolve("../..")
+fun appGitValue(vararg arguments: String): String? = runCatching {
+    providers.exec {
+        workingDir(appRepositoryRoot)
+        commandLine("git", *arguments)
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim().takeIf { it.isNotEmpty() }
+}.getOrNull()
+
+val appCommit = providers.environmentVariable("OAI_GIT_COMMIT").orNull
+    ?: appGitValue("rev-parse", "HEAD").orEmpty()
+val appCommitCount = if (appGitValue("rev-parse", "--is-shallow-repository") == "false") {
+    appGitValue("rev-list", "--count", "HEAD")?.toIntOrNull()
+} else null
+val appReleaseChannel = providers.environmentVariable("OAI_UPDATE_CHANNEL").orElse("development").get()
+// 每次源码提交预留十个渠道阶段：开发为 0、编号测试版为 1、正式版为 2。
+val appVersionCodeChannelScale = 10
+val appVersionCode = providers.environmentVariable("OAI_VERSION_CODE").orNull?.let {
+    checkNotNull(it.toIntOrNull()) { "App versionCode 必须是有效整数" }
+}
+    ?: appCommitCount?.let { Math.multiplyExact(it, appVersionCodeChannelScale) }
+    ?: appBaseVersion.getProperty("versionCode").toInt()
+val appVersionName = providers.environmentVariable("OAI_VERSION_NAME").orNull
+    ?: if (appCommitCount != null && appCommit.isNotEmpty()) {
+        "${appBaseVersion.getProperty("versionName")}-dev.$appCommitCount+${appCommit.take(12)}"
+    } else appBaseVersion.getProperty("versionName")
+
+check(appReleaseChannel in setOf("development", "preview", "stable")) { "未知的 App 更新渠道" }
+check(appVersionCode in 1..2_100_000_000) { "App versionCode 超出 Android 发行范围" }
+check(appVersionName.matches(Regex("[0-9A-Za-z.+-]+"))) { "App versionName 格式无效" }
+check(appCommit.isEmpty() || appCommit.matches(Regex("[0-9a-f]{40}"))) { "App 提交信息必须是完整的 Git SHA" }
+
 android {
     namespace = "com.openandroidintelligence.mobile"
     defaultConfig {
         applicationId = "com.openandroidintelligence.mobile"
-        versionName = "2.1.1"
+        versionName = appVersionName
+        versionCode = appVersionCode
+        buildConfigField("String", "UPDATE_CHANNEL", "\"$appReleaseChannel\"")
+        buildConfigField("String", "GIT_COMMIT", "\"$appCommit\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -161,6 +200,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-process:2.8.7")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    // 应用更新使用独立客户端；Call.cancel 可立即中止正在读取的响应。
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation("junit:junit:4.13.2")
     // API 36 tests require JDK 21; application bytecode remains Java 17.
     testImplementation("org.robolectric:robolectric:4.16")

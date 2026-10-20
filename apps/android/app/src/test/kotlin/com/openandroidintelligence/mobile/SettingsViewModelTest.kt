@@ -323,6 +323,7 @@ class SettingsViewModelTest {
             SettingsRoutes.PAIRING,
             SettingsRoutes.SECURITY,
             SettingsRoutes.AUDIT_LOG,
+            SettingsRoutes.APP_UPDATES,
         )
         assertEquals(routes.size, routes.distinct().size)
     }

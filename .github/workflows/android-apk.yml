@@ -1,7 +1,7 @@
 name: Android APK
 
 # 编译出可直接安装的 APK，并上传为可下载的构建产物（Artifact）。
-# v* 标签只发布使用私有发行身份签名、不可调试的 FullRelease。
+# v* 标签发布使用私有发行身份签名、不可调试的 FullRelease，并按版本号区分正式版和测试版。
 
 on:
   workflow_dispatch:
@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
 jobs:
   apk:
     name: Build APK
@@ -19,6 +23,19 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 生成与发布渠道一致的版本信息
+        run: |
+          VERSION_TAG=nightly
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION_TAG="$GITHUB_REF_NAME"
+          fi
+          python3 apps/android/tools/app_release_metadata.py prepare \
+            --tag "$VERSION_TAG" \
+            --metadata "$RUNNER_TEMP/oai-release-metadata.json" \
+            --github-env "$GITHUB_ENV"
 
       - name: Setup Java 21
         uses: actions/setup-java@v4
@@ -48,12 +65,22 @@ jobs:
           bash apps/android/tools/verify-debug-signing.sh \
             apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
 
+      - name: 核实开发预览 APK 并生成更新清单
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        run: |
+          python3 apps/android/tools/app_release_metadata.py manifest \
+            --metadata "$RUNNER_TEMP/oai-release-metadata.json" \
+            --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
+            --manifest apps/android/app/build/outputs/apk/full/debug/oai-update.json
+
       - name: Upload APK artifact
         if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
         with:
           name: app-full-debug
-          path: apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
+          path: |
+            apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
+            apps/android/app/build/outputs/apk/full/debug/oai-update.json
           if-no-files-found: error
           retention-days: 14
 
@@ -70,15 +97,32 @@ jobs:
           test -n "$OAI_RELEASE_KEYSTORE_BASE64"
           umask 077
           printf '%s' "$OAI_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$OAI_RELEASE_KEYSTORE"
-          trap 'rm -f "$OAI_RELEASE_KEYSTORE"' EXIT
+          trap 'if [ -f "$OAI_RELEASE_KEYSTORE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_RELEASE_KEYSTORE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keystore"; fi' EXIT
           ./gradlew :app:assembleFullRelease --stacktrace
+
+      - name: 核实正式版或编号测试版 APK 并生成发布清单
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python3 apps/android/tools/app_release_metadata.py manifest \
+            --metadata "$RUNNER_TEMP/oai-release-metadata.json" \
+            --apk apps/android/app/build/outputs/apk/full/release/app-full-release.apk \
+            --manifest "$RUNNER_TEMP/oai-update.json" \
+            --notes "$RUNNER_TEMP/oai-release-notes.md" \
+            --repository "$GITHUB_REPOSITORY"
 
       - name: Publish release with APK
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          RELEASE_FLAGS=()
+          if [ "$OAI_UPDATE_CHANNEL" = preview ]; then
+            RELEASE_FLAGS=(--prerelease --latest=false)
+          fi
           gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
             --title "$GITHUB_REF_NAME" \
-            --notes "构建产物：app-full-release.apk（full flavor / 私有发行签名 / 非 Debug）。旧 Debug 安装签名不同，不能直接覆盖；迁移说明见 apps/android/README.md。" \
-            apps/android/app/build/outputs/apk/full/release/app-full-release.apk
+            --notes-file "$RUNNER_TEMP/oai-release-notes.md" \
+            "${RELEASE_FLAGS[@]}" \
+            apps/android/app/build/outputs/apk/full/release/app-full-release.apk \
+            "$RUNNER_TEMP/oai-update.json"
