@@ -175,15 +175,17 @@ class ReplyNotificationsTest {
     @Test fun freshInstallPermissionIsAllowedBeforeTheFirstReplyCreatesAChannel() {
         val manager = context.getSystemService(NotificationManager::class.java)
         assertNull(manager.getNotificationChannel(REPLY_CHANNEL_ID))
-        shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        val settings = ReplyNotificationSettings(context)
         val runtimePermissionRequired = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        if (runtimePermissionRequired) shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val settings = ReplyNotificationSettings(context)
         assertEquals(runtimePermissionRequired, settings.postNotificationsPermissionRequired)
         assertEquals(runtimePermissionRequired, settings.shouldRequestPermission())
         assertEquals(!runtimePermissionRequired, settings.allowed.value)
 
-        shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        settings.refreshPermission()
+        if (runtimePermissionRequired) {
+            shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+            settings.refreshPermission()
+        }
         assertTrue(settings.isAllowed())
         assertTrue(settings.allowed.value)
         assertTrue(settings.enabled.value)

@@ -84,7 +84,7 @@ class Ed25519CryptoProviderTest {
         assertArrayEquals(privateKeyFrame, providerPrivate.encoded)
         assertArrayEquals(publicKeyFrame, providerPublic.encoded)
 
-        val message = "existing encrypted key frame".encodeToByteArray()
+        val message = "serialized key compatibility payload".encodeToByteArray()
         val providerSignature = Ed25519CryptoProvider.signature().run {
             initSign(providerPrivate)
             update(message)

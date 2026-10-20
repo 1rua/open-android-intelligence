@@ -489,7 +489,7 @@ class NativeConversationNotificationsTest {
         assertTrue(coordinator.sessions.value.isEmpty())
     }
 
-    @Test @Config(sdk = [34, 35]) fun nativePublisherUpdatesStableConversationNotificationAndPublishesBubbleShortcut() {
+    @Test @Config(sdk = [31, 32, 33, 34, 35, 36]) fun nativePublisherUpdatesStableConversationNotificationAndPublishesBubbleShortcut() {
         val settings = ReplyNotificationSettings(context)
         val publisher = AndroidReplyNotificationPublisher(context, settings)
         val target = ReplyNotificationTarget("profile", "account", "conversation")
@@ -531,9 +531,14 @@ class NativeConversationNotificationsTest {
         publisher.update(running, false)
         assertTrue(manager.activeNotifications.isEmpty())
         settings.setEnabled(true)
-        shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        publisher.update(running, false)
-        assertTrue(manager.activeNotifications.isEmpty())
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            shadowOf(context).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+            publisher.update(running, false)
+            assertTrue(manager.activeNotifications.isEmpty())
+        } else {
+            publisher.update(running, false)
+            assertEquals(1, manager.activeNotifications.size)
+        }
     }
 
     @Test fun legacyConversationPublisherShowsAdvancingLongTailsAndAReadableFinalExcerpt() {
