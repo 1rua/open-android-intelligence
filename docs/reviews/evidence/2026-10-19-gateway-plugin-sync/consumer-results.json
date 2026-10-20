@@ -1,0 +1,74 @@
+{
+  "verifiedCommit": "58a1b580a8c15ed7b6c9d1a7752256208cf137db",
+  "plugins": {
+    "hermes": {
+      "sha": "175ab18eabd58e7f8fd193c3e3a82c9b5b38126d",
+      "testedLocalSha": "5dbfc1b60635ceb9dd0a471feb3980cb44b46242",
+      "tree": "1be81bae0227aba4724be3f4559c6380b02712fb"
+    },
+    "openclaw": {
+      "sha": "c7c087b9fe28adcc658a1cbdb71689a377b65214",
+      "testedLocalSha": "e41ee4a34fb3ee4dc4c48be875a0b025069e32a1",
+      "tree": "bfcbb48a7ea2136c22059552338b10ef9c9c9dee"
+    }
+  },
+  "node": {
+    "files": 113,
+    "passed": 1010,
+    "failed": 0
+  },
+  "conformance": {
+    "openclaw": 70,
+    "hermes": 70,
+    "comparisons": 3
+  },
+  "android": {
+    "conversation-data:testDebugUnitTest": {
+      "tests": 60,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "suites": [
+        "com.openandroidintelligence.conversation.data.AttachmentPhaseTest",
+        "com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest",
+        "com.openandroidintelligence.conversation.data.AttachmentRecoveryTest",
+        "com.openandroidintelligence.conversation.data.GatewayWireRegressionTest",
+        "com.openandroidintelligence.conversation.data.GatewayEventDecoderTest",
+        "com.openandroidintelligence.conversation.data.StreamHealthBridgeTest",
+        "com.openandroidintelligence.conversation.data.HermesHttpInteropTest",
+        "com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepositoryTest"
+      ]
+    },
+    "conversation-data:testReleaseUnitTest": {
+      "tests": 60,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "suites": [
+        "com.openandroidintelligence.conversation.data.AttachmentPhaseTest",
+        "com.openandroidintelligence.conversation.data.GatewayGenerationReceiptTest",
+        "com.openandroidintelligence.conversation.data.AttachmentRecoveryTest",
+        "com.openandroidintelligence.conversation.data.GatewayWireRegressionTest",
+        "com.openandroidintelligence.conversation.data.GatewayEventDecoderTest",
+        "com.openandroidintelligence.conversation.data.StreamHealthBridgeTest",
+        "com.openandroidintelligence.conversation.data.HermesHttpInteropTest",
+        "com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepositoryTest"
+      ]
+    },
+    "app:testFullDebugUnitTest": {
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "suites": [
+        "com.openandroidintelligence.mobile.AndroidAttachmentContentTypeTest",
+        "com.openandroidintelligence.mobile.HermesHistoryMediaHttpTest"
+      ]
+    }
+  },
+  "androidDurationSeconds": 68.21,
+  "helpers": {
+    "conversation": 10,
+    "recovery": 6
+  }
+}

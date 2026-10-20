@@ -16,7 +16,7 @@ Android 16 默认只发布一张原生 Live Update。仅在系统确认用户选
 
 ## 配套部署
 
-核心契约摘要已变化，APK 与网关需要配套更新。两个独立插件仓的固定版本补丁、干净 checkout 检查和安装步骤见[配套补丁说明](../../gateway-contract/patches/conversation-management/README.zh-CN.md)。补丁未直接发布到两个外部仓的发布分支。CI 的协议任务和 Android 互通任务均先应用同一补丁，再运行测试。
+核心契约摘要已变化，APK 与网关需要配套更新。初始提交通过[配套补丁](../../gateway-contract/patches/conversation-management/README.zh-CN.md)交付；后续已同步到两个独立插件仓，主仓安装引用、协议及 Android CI 直接检出对应提交。当前固定版本、安装与验证结果见[插件同步记录](2026-10-19-gateway-plugin-sync.zh-CN.md)。
 
 ## 验证
 

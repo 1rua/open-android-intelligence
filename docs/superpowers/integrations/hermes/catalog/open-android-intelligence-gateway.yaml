@@ -11,11 +11,12 @@
 #   4. 确认下方 description 与实际能力一致
 name: open-android-intelligence-gateway
 repo: https://github.com/1rua/hermes-gateway-plugin
-sha: 3b113cadc0526f0475233e7c41790d4a8fdd9fc7
+sha: 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d
 description: >-
   Native Gateway Protocol v2.1 platform adapter that connects an Open Android
   Intelligence phone to a Hermes Agent host: chat, notifications, SMS, device
-  requests and attachment transfer over one authenticated local channel. The
+  requests, attachment transfer, shared history and folders, and native session
+  archive/delete over one authenticated local channel. The
   Gateway Protocol contract is fetched at a pinned commit, so the host validates
   against exactly the schemas the phone negotiates with.
 maintainer: 1rua
