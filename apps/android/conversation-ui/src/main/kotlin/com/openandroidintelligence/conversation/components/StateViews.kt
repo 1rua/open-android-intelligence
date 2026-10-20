@@ -191,7 +191,9 @@ fun specificFailureText(code: String): String? {
 /** 顶栏副标题用的通道状态短标签：始终有值，让「连着」和「断了」一眼可分。 */
 fun connectionLabel(health: com.openandroidintelligence.conversation.model.StreamHealth): String =
     when (health) {
-        com.openandroidintelligence.conversation.model.StreamHealth.IDLE -> "已连接"
+        // IDLE 表示「实时通道还没建立」，不是「已连接」。把它说成已连接会在离线镜像
+        // 状态下与页面顶部的离线横幅自相矛盾，用户无法判断现在到底能不能收发。
+        com.openandroidintelligence.conversation.model.StreamHealth.IDLE -> "实时通道未建立"
         com.openandroidintelligence.conversation.model.StreamHealth.CONNECTING -> "正在连接…"
         com.openandroidintelligence.conversation.model.StreamHealth.LIVE -> "已连接"
         com.openandroidintelligence.conversation.model.StreamHealth.RECONNECTING -> "重连中…"
