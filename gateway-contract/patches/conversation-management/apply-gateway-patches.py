@@ -20,9 +20,6 @@ from pathlib import Path
 from typing import Sequence
 
 
-HERMES_INSTALL_PATTERN = re.compile(
-    r"hermes plugins install 1rua/hermes-gateway-plugin(?: --force)? --ref ([0-9a-f]{40}) --enable"
-)
 CONTRACT_INPUTS = ("schemas", "vectors", "src", "core-dispatched-schemas.json")
 CORE_SCHEMAS = ("attachment.schema.json", "conversation.schema.json", "device-request.schema.json",
                 "envelope.schema.json", "event.schema.json", "negotiate.schema.json", "session.schema.json")
@@ -57,23 +54,22 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def pinned_revisions(project_root: Path) -> tuple[str, str]:
+def pinned_revisions(patch_dir: Path) -> tuple[str, str]:
+    """Load the immutable upstream revisions to which these archived patches apply."""
+    pins_path = patch_dir / "base-pins.json"
     try:
-        openclaw = json.loads((project_root / "openclaw-plugin-pin.json").read_text(encoding="utf-8"))
-        openclaw_revision = openclaw["revision"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as cause:
-        raise PatchError(f"无法读取 OpenClaw pin：{cause}") from cause
-    if not isinstance(openclaw_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", openclaw_revision):
-        raise PatchError("openclaw-plugin-pin.json 中的 revision 不是 40 位小写十六进制 SHA")
-
-    try:
-        readme = (project_root / "README.md").read_text(encoding="utf-8")
-    except OSError as cause:
-        raise PatchError(f"无法读取 README.md 中的 Hermes pin：{cause}") from cause
-    hermes_revisions = set(HERMES_INSTALL_PATTERN.findall(readme))
-    if len(hermes_revisions) != 1:
-        raise PatchError("README.md 必须包含唯一且一致的 Hermes 固定 revision")
-    return openclaw_revision, hermes_revisions.pop()
+        pins = json.loads(pins_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as cause:
+        raise PatchError(f"无法读取归档基线 pin {pins_path}：{cause}") from cause
+    except json.JSONDecodeError as cause:
+        raise PatchError(f"归档基线 pin {pins_path} 不是有效 JSON：{cause}") from cause
+    if not isinstance(pins, dict):
+        raise PatchError("base-pins.json 必须是 JSON 对象")
+    revisions = (pins.get("openclaw"), pins.get("hermes"))
+    for name, revision in zip(("OpenClaw", "Hermes"), revisions):
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise PatchError(f"base-pins.json 中的 {name} revision 必须是 40 位小写十六进制 SHA")
+    return revisions
 
 
 def _validate_checkout(root: Path, expected_revision: str, name: str) -> None:
@@ -181,7 +177,7 @@ def build_targets(
     hermes_root: Path,
     patch_dir: Path,
 ) -> list[Target]:
-    openclaw_revision, hermes_revision = pinned_revisions(project_root)
+    openclaw_revision, hermes_revision = pinned_revisions(patch_dir)
     return [
         Target("OpenClaw", openclaw_root.expanduser().resolve(), patch_dir / "openclaw.patch", openclaw_revision),
         Target("Hermes", hermes_root.expanduser().resolve(), patch_dir / "hermes.patch", hermes_revision),

@@ -48,7 +48,7 @@ jobs:
         with:
           repository: 1rua/hermes-gateway-plugin
           # 固定配套的宿主桥接修复，保证联调不会随插件 main 漂移。
-          ref: 3b113cadc0526f0475233e7c41790d4a8fdd9fc7
+          ref: 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d
           path: .hermes-gateway-plugin
 
       - name: Install the Hermes Gateway plugin
@@ -78,11 +78,10 @@ jobs:
       - name: Install the OpenClaw Gateway plugin dependencies
         run: npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
 
-      - name: Apply reviewed native conversation management patches
+      - name: Check archived Gateway backport tooling
         run: |
+          python -m unittest discover -s gateway-contract/patches/session-recovery -p 'test_*.py'
           python -m unittest discover -s gateway-contract/patches/conversation-management -p 'test_*.py'
-          python gateway-contract/patches/conversation-management/apply-gateway-patches.py \
-            --openclaw-root .openclaw-gateway-plugin --hermes-root .hermes-gateway-plugin --apply
 
       # The plugin packages a contract snapshot generated from a pinned commit.
       # Compare all contract inputs (source, schemas, registry and vectors)
@@ -181,7 +180,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 1rua/hermes-gateway-plugin
-          ref: 3b113cadc0526f0475233e7c41790d4a8fdd9fc7
+          ref: 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d
           path: .hermes-gateway-plugin
 
       - name: Resolve the Android fixture OpenClaw pin
@@ -196,11 +195,6 @@ jobs:
           repository: 1rua/openclaw-gateway-plugin
           ref: ${{ steps.android-openclaw-pin.outputs.revision }}
           path: .openclaw-gateway-plugin
-
-      - name: Apply the same reviewed Gateway patches for Android interop
-        run: |
-          python gateway-contract/patches/conversation-management/apply-gateway-patches.py \
-            --openclaw-root .openclaw-gateway-plugin --hermes-root .hermes-gateway-plugin --apply
 
       - name: Check out the pinned Hermes native SDK
         uses: actions/checkout@v4

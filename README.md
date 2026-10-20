@@ -146,7 +146,7 @@ git clone https://github.com/1rua/openclaw-gateway-plugin.git .openclaw-gateway-
 git -C .openclaw-gateway-plugin checkout "$(python3 -c 'import json; print(json.load(open("openclaw-plugin-pin.json"))["revision"])')"
 npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
 
-# 运行跨宿主网关一致性测试（Hermes + OpenClaw 共用 66 个契约向量）
+# 运行跨宿主网关一致性测试（Hermes + OpenClaw 共用 70 个契约向量）
 OPENCLAW_PLUGIN_ROOT="$PWD/.openclaw-gateway-plugin" npm run gateway:v2:conformance
 ```
 
@@ -160,7 +160,7 @@ Hermes 网关已拆分为独立插件仓库 [`1rua/hermes-gateway-plugin`](https
 
 ```bash
 # 安装并启用插件
-hermes plugins install 1rua/hermes-gateway-plugin --ref 3b113cadc0526f0475233e7c41790d4a8fdd9fc7 --enable
+hermes plugins install 1rua/hermes-gateway-plugin --ref 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d --enable
 
 # 随后在向导中创建手机连接账号
 hermes gateway setup
@@ -172,30 +172,32 @@ hermes open-android-intelligence status
 hermes open-android-intelligence contract status   # 协议契约是否就绪
 ```
 
-当前配套插件为 `2.1.2`，固定提交包含 Hermes 原生停止生成透传、当前宿主命令注册表、
-命令别名及插件/技能目录修复。协议和核心 Schema 摘要与 `2.1.1` 兼容。
+当前配套 Hermes 插件为 `2.2.0`，固定提交包含原生停止生成透传、当前宿主命令注册表、
+命令别名及插件/技能目录修复，并内置完整历史、文件夹/排序及原生归档/删除管理。
+核心摘要为 `sha256:032f580246eb4a214624bded717819b4d5a76191208207edc9e5a4607f5c4d23`，
+需要与本分支 APK 配套升级。
 旧目录条目曾锁定 `9d642b4`：它会返回 `/models` 等固定命令，并在宿主包装回调下
 漏报取消能力。已安装旧目录或固定 ref 时，需显式移动锁定并重启宿主：
 
 ```bash
-hermes plugins install 1rua/hermes-gateway-plugin --force --ref 3b113cadc0526f0475233e7c41790d4a8fdd9fc7 --enable
+hermes plugins install 1rua/hermes-gateway-plugin --force --ref 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d --enable
 hermes gateway restart
 ```
 
-随后在手机重新连接 Gateway，以重新协商停止生成能力；重新输入 `/` 会刷新命令目录。
+随后在手机重新连接 Gateway，以重新协商会话管理与停止生成能力；重新输入 `/` 会刷新命令目录。
 
 验证与升级依据见[停止生成和动态命令修复记录](docs/reviews/2026-10-17-hermes-stop-command-catalog.zh-CN.md)。
 
-本分支增加了主界面与气泡共用的完整历史、归档、文件夹与排序管理，以及气泡附件和通知终态同步修复。会话管理通过 `conversation-management-v1` 协商，归档与删除提交到 Agent 原生会话存储；文件夹和顺序保存在网关账号中。两个独立网关仓的配套实现随本仓以[可验证的固定版本补丁](gateway-contract/patches/conversation-management/README.zh-CN.md)交付，需与 App 一同更新；下面的原始固定提交尚不含此能力。新的契约摘要要求安装配套补丁后再连接，不能仅更新 APK。Android 16 优先使用一张原生 Live Update，Android 14/15 保留普通通知回退；[兼容性与真机验收边界](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md)说明了 Samsung Now Bar 的限制。
+本分支增加了主界面与气泡共用的完整历史、归档、文件夹与排序管理，以及气泡附件和通知终态同步修复。会话管理通过 `conversation-management-v1` 协商，归档与删除提交到 Agent 原生会话存储；文件夹和顺序保存在网关账号中。两个独立插件仓的固定提交已内置配套实现，安装及 CI 直接使用这些提交，详见[插件同步记录](docs/reviews/2026-10-19-gateway-plugin-sync.zh-CN.md)。Android 16 优先使用一张原生 Live Update，Android 14/15 保留普通通知回退；[兼容性与真机验收边界](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md)说明了 Samsung Now Bar 的限制。
 
-OpenClaw Gateway 插件源码位于独立仓库 [`1rua/openclaw-gateway-plugin`](https://github.com/1rua/openclaw-gateway-plugin)。应用主仓在 `openclaw-plugin-pin.json` 中锁定插件提交；插件仓按 `contract-pin.json` 固定本仓唯一维护的 Gateway Protocol 契约。当前固定源码为 `1.0.2` 的对话修复提交 `432e7c0`，旧 `v1.0.2` 标签不含本轮修复；协议版本保持 `2.1.0`，宿主 API 范围保持 `2026.7.1`。安装固定提交：
+OpenClaw Gateway 插件源码位于独立仓库 [`1rua/openclaw-gateway-plugin`](https://github.com/1rua/openclaw-gateway-plugin)。应用主仓在 `openclaw-plugin-pin.json` 中锁定插件提交；插件仓按 `contract-pin.json` 固定本仓唯一维护的 Gateway Protocol 契约。当前固定版本为 `1.1.0`，提交 `c7c087b` 包含原生会话管理及待确认操作恢复；协议版本保持 `2.1.0`，宿主 API 范围保持 `2026.7.1`。安装固定提交：
 
 ```bash
-openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@432e7c0545ecfe36af25fd4c451d777d434ae8fc
+openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@c7c087b9fe28adcc658a1cbdb71689a377b65214
 openclaw plugins inspect open-android-intelligence-gateway --runtime --json
 ```
 
-插件 tag 包含由固定契约提交生成的运行快照与 JavaScript 运行入口；安装和启动时不联网获取契约。核心 Schema 摘要变化时，仍须同步升级 Android、Hermes 和 OpenClaw。
+插件固定提交包含由固定契约提交生成的运行快照与 JavaScript 运行入口；安装和启动时不联网获取契约。核心 Schema 摘要变化时，仍须同步升级 Android、Hermes 和 OpenClaw。
 
 插件仓库另附等价 CLI，可在没有宿主的机器上离线预置账号（与上面共用同一套管理服务和主密钥来源）：
 

@@ -166,24 +166,55 @@ class ApplyGatewayPatchesTest(unittest.TestCase):
         with self.assertRaisesRegex(PATCHER.PatchError, "HEAD 不匹配"):
             PATCHER.check_targets([patch])
 
-    def test_pins_are_read_from_the_main_repository_sources(self) -> None:
+    def test_archived_pins_are_independent_of_active_consumer_pins(self) -> None:
         project = self.base / "project"
         project.mkdir()
         (project / "openclaw-plugin-pin.json").write_text(
-            '{"revision":"' + "a" * 40 + '"}\n', encoding="utf-8"
+            '{"revision":"' + "c" * 40 + '"}\n', encoding="utf-8"
         )
-        hermes_revision = "b" * 40
+        active_hermes_revision = "d" * 40
         (project / "README.md").write_text(
             "hermes plugins install 1rua/hermes-gateway-plugin --ref "
-            + hermes_revision
+            + active_hermes_revision
             + " --enable\n"
             "hermes plugins install 1rua/hermes-gateway-plugin --force --ref "
-            + hermes_revision
+            + active_hermes_revision
             + " --enable\n",
             encoding="utf-8",
         )
 
-        self.assertEqual(("a" * 40, hermes_revision), PATCHER.pinned_revisions(project))
+        archive = self.base / "archive"
+        archive.mkdir()
+        openclaw_revision = "a" * 40
+        hermes_revision = "b" * 40
+        (archive / "base-pins.json").write_text(
+            json.dumps({"openclaw": openclaw_revision, "hermes": hermes_revision}),
+            encoding="utf-8",
+        )
+        self.assertEqual((openclaw_revision, hermes_revision), PATCHER.pinned_revisions(archive))
+
+    def test_missing_or_invalid_archived_pins_are_rejected(self) -> None:
+        archive = self.base / "archive"
+        archive.mkdir()
+        with self.assertRaisesRegex(PATCHER.PatchError, "无法读取归档基线 pin"):
+            PATCHER.pinned_revisions(archive)
+        (archive / "base-pins.json").write_text("{invalid", encoding="utf-8")
+        with self.assertRaisesRegex(PATCHER.PatchError, "不是有效 JSON"):
+            PATCHER.pinned_revisions(archive)
+        (archive / "base-pins.json").write_text("[]", encoding="utf-8")
+        with self.assertRaisesRegex(PATCHER.PatchError, "必须是 JSON 对象"):
+            PATCHER.pinned_revisions(archive)
+
+        for pins in (
+            {"openclaw": "a" * 40},
+            {"openclaw": "A" * 40, "hermes": "b" * 40},
+            {"openclaw": "a" * 39, "hermes": "b" * 40},
+            {"openclaw": "a" * 40, "hermes": "g" * 40},
+        ):
+            with self.subTest(pins=pins):
+                (archive / "base-pins.json").write_text(json.dumps(pins), encoding="utf-8")
+                with self.assertRaisesRegex(PATCHER.PatchError, "40 位小写十六进制 SHA"):
+                    PATCHER.pinned_revisions(archive)
 
 
 if __name__ == "__main__":

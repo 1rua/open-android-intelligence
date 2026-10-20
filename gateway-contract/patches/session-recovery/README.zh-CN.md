@@ -1,12 +1,14 @@
 # Gateway refresh 结果恢复补丁
 
-本目录收纳 OpenClaw 与 Hermes Gateway 的 refresh 结果安全重放补丁。补丁不将服务端实现内嵌到主仓，也不改变 JSON body 或 Schema；协议扩展与行为约束见 [`docs/contracts/gateway-protocol-v2.md` §5.4](../../../docs/contracts/gateway-protocol-v2.md#54-刷新与设备密钥会话)。
+本目录归档 OpenClaw 与 Hermes Gateway 原始插件基线的 refresh 结果安全重放 patch 及回补工具。冻结基线记录在本目录 [`base-pins.json`](base-pins.json)。补丁不将服务端实现内嵌到主仓，也不改变 JSON body 或 Schema；协议扩展与行为约束见 [`docs/contracts/gateway-protocol-v2.md` §5.4](../../../docs/contracts/gateway-protocol-v2.md#54-刷新与设备密钥会话)。
+
+主仓 CI 已直接检出同步后的新插件提交。新安装请使用主仓 README 中记录的插件版本，不要对新插件重复应用这些归档 patch。同步决策和新提交记录见 [Gateway 插件同步评审](../../../docs/reviews/2026-10-19-gateway-plugin-sync.zh-CN.md)。
 
 `openclaw.patch` 和 `hermes.patch` 是交给各自 Gateway 维护仓审查的补丁文件。它们需要由 Gateway 维护仓合并并部署后才会生效；在维护仓合并、发布和实际部署前，客户端不能假设 Gateway 支持安全重放。本目录不会记录或虚构未来的服务端提交 SHA。
 
 ## 检查与应用
 
-先把两个服务端仓库独立检出到本机。OpenClaw 必须位于主仓 `openclaw-plugin-pin.json` 指定的 revision；Hermes 必须位于主仓 `README.md` 安装命令中的固定 revision。两个 checkout 都必须是干净的 Git worktree 根目录。
+仅在需要回补这些归档 patch 的原始基线 checkout 上使用此 helper。先把两个插件仓库独立检出到本机。OpenClaw 和 Hermes 都必须位于本目录 `base-pins.json` 指定的冻结 revision，且两个 checkout 都必须是干净的 Git worktree 根目录。
 
 默认运行只执行 pin、工作区干净状态和 `git apply --check` 检查，不修改文件：
 

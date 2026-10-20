@@ -12,14 +12,14 @@ Intelligence 的手机端网关适配器。
 |---|---|
 | `name` | `open-android-intelligence-gateway` |
 | `repo` | `https://github.com/1rua/hermes-gateway-plugin` |
-| `sha` | `3b113cadc0526f0475233e7c41790d4a8fdd9fc7` |
+| `sha` | `175ab18eabd58e7f8fd193c3e3a82c9b5b38126d` |
 | `category` | `platform` |
 | `tier` | `community` |
 
 ## 锁定提交上的校验结果
 
-条目锁定插件 `2.1.2`，替换会返回固定命令且无法识别宿主包装回调的 `9d642b4`。
-新版本透传 Hermes 原生停止路径，并从当前宿主注册表发现命令、别名、插件及技能。
+条目锁定插件 `2.2.0`，包含原生停止生成、动态命令目录、共享历史、文件夹/排序与原生归档/删除。
+插件契约固定应用 PR #14 的提交，核心摘要为 `sha256:032f580246eb4a214624bded717819b4d5a76191208207edc9e5a4607f5c4d23`，需安装配套 APK。
 
 在固定 Hermes SDK `75b083e9399115b12513385252811f09c3503c90` 上调用
 `hermes plugins validate .` 使用的同一实现 `validate_plugin_dir`：13 项检查均通过。
@@ -35,8 +35,8 @@ security scan: caution (existing historical log contains invisible Unicode)
 `capability probe` 是关键项：它真实加载插件并执行 `register(ctx)`，因此通过即证明插件在
 隔离环境中可被宿主加载。
 
-插件常规测试 417 项通过；真实 Hermes 集成测试 82 项通过；共享协议向量 70/70。
-具体覆盖范围与环境限制见[修复记录](../../../../reviews/2026-10-17-hermes-stop-command-catalog.zh-CN.md)。
+Python 3.11 和 3.12 均有独立矩阵 407 项、真实原生矩阵 92 项通过，无跳过；全部 473 个测试的集合覆盖完整。
+具体覆盖、打包验证及固定版本见[插件同步记录](../../../../reviews/2026-10-19-gateway-plugin-sync.zh-CN.md)。
 
 ## 依赖与环境变量
 
@@ -54,8 +54,8 @@ security scan: caution (existing historical log contains invisible Unicode)
 
 ## 审阅请注意
 
-- 插件在加载时按 `contract-pin.json` 锁定提交获取 Gateway Protocol 契约，宿主无需预装任何
-  依赖；契约不随插件分发，避免出现第二份可能与手机端漂移的副本
+- 契约按 `contract-pin.json` 的固定提交，由 setup/账号创建向导或 `contract sync` 获取并缓存；
+  日常宿主启动不联网获取契约。契约不随插件分发，避免出现第二份可能与手机端漂移的副本
 - 插件清单声明的协议版本与核心实现在加载时做一致性校验，不一致会拒绝加载
 
 ## 本地复现
@@ -63,6 +63,6 @@ security scan: caution (existing historical log contains invisible Unicode)
 ```bash
 git clone https://github.com/1rua/hermes-gateway-plugin
 cd hermes-gateway-plugin
-git checkout 3b113cadc0526f0475233e7c41790d4a8fdd9fc7
+git checkout 175ab18eabd58e7f8fd193c3e3a82c9b5b38126d
 hermes plugins validate .
 ```
