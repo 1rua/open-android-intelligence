@@ -89,8 +89,6 @@ jobs:
           target_commitish: ${{ github.sha }}
           body_path: ${{ runner.temp }}/oai-release-notes.md
           fail_on_unmatched_files: true
-          # 按顺序等待 APK 上传成功后才更新清单，避免发布半完成时宣称已有新包。
-          preserve_order: true
           files: |
             apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
             ${{ runner.temp }}/oai-update.json
