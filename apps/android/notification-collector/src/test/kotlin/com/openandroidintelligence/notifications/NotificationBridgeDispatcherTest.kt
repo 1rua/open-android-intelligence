@@ -1,17 +1,19 @@
 package com.openandroidintelligence.notifications
 
 import com.openandroidintelligence.core.model.BridgeIdentity
+import com.openandroidintelligence.core.model.BridgeSession
 import com.openandroidintelligence.core.model.EnrollmentTicket
 import com.openandroidintelligence.core.model.NotificationContent
 import com.openandroidintelligence.core.model.NotificationMetadata
 import com.openandroidintelligence.core.model.NotificationRecordV1
+import com.openandroidintelligence.core.model.PairedBridgeTransport
 import com.openandroidintelligence.core.model.PolicyAttestation
+import com.openandroidintelligence.core.model.TransportCloseReason
+import com.openandroidintelligence.core.model.VerifiedPairingTransportBinding
 import com.openandroidintelligence.encrypted.store.EventAckVerifier
 import com.openandroidintelligence.encrypted.store.EventIdSource
 import com.openandroidintelligence.encrypted.store.InMemoryOutboxPersistence
 import com.openandroidintelligence.encrypted.store.NotificationOutboxStore
-import com.openandroidintelligence.tailnet.core.VerifiedPairingTransportBindingFactory
-import com.openandroidintelligence.transport.FakeUserspaceTransport
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.startCoroutine
@@ -31,7 +33,7 @@ class NotificationBridgeDispatcherTest {
             EventIdSource { "event-a" },
         )
         val event = outbox.enqueueAcceptedBlocking(record())
-        val transport = FakeUserspaceTransport()
+        val transport = NotificationDispatcherTestTransport()
         transport.enqueueInbound(byteArrayOf(8))
         transport.enqueueInbound(byteArrayOf(7))
         val dispatcher = NotificationBridgeDispatcher(
@@ -58,7 +60,7 @@ class NotificationBridgeDispatcherTest {
             eventIds = EventIdSource { "event-revoked" },
         )
         outbox.enqueueAcceptedBlocking(record())
-        val transport = FakeUserspaceTransport()
+        val transport = NotificationDispatcherTestTransport()
         val dispatcher = NotificationBridgeDispatcher(
             outbox = outbox,
             transport = transport,
@@ -91,7 +93,7 @@ class NotificationBridgeDispatcherTest {
                 id == "event-restart" && ack.contentEquals(byteArrayOf(9))
             },
         )
-        val transport = FakeUserspaceTransport()
+        val transport = NotificationDispatcherTestTransport()
         transport.enqueueInbound(byteArrayOf(9))
         val dispatcher = NotificationBridgeDispatcher(
             outbox = restored,
@@ -119,13 +121,49 @@ class NotificationBridgeDispatcherTest {
         content = NotificationContent("title", "body"),
     )
 
-    private fun validBinding() = VerifiedPairingTransportBindingFactory.mint(
+    private fun validBinding() = VerifiedPairingTransportBinding.mint(
         ticket = EnrollmentTicket("ticket", "device", "bridge", 4u, 1u, 100),
         bridge = BridgeIdentity("bridge"),
         policy = PolicyAttestation(1u, "digest"),
         expectedPairingGeneration = 4u,
         nowEpochSeconds = 10,
     )
+}
+
+private class NotificationDispatcherTestTransport : PairedBridgeTransport {
+    private val inbound = ArrayDeque<ByteArray>()
+    private val sent = mutableListOf<ByteArray>()
+    private var active = false
+
+    override suspend fun open(binding: VerifiedPairingTransportBinding): BridgeSession {
+        check(!active)
+        check(binding.deviceId.isNotBlank())
+        active = true
+        return object : BridgeSession {
+            override val connectionGeneration = 1uL
+
+            override suspend fun sendControl(canonicalWire: ByteArray) {
+                check(active)
+                require(canonicalWire.isNotEmpty())
+                sent += canonicalWire.copyOf()
+            }
+
+            override suspend fun receiveControl(): ByteArray {
+                check(active)
+                return checkNotNull(inbound.removeFirstOrNull()).copyOf()
+            }
+        }
+    }
+
+    override suspend fun close(reason: TransportCloseReason) {
+        active = false
+    }
+
+    fun enqueueInbound(wire: ByteArray) {
+        inbound.addLast(wire.copyOf())
+    }
+
+    fun sentControl(): List<ByteArray> = sent.map(ByteArray::copyOf)
 }
 
 private fun <T> runSuspend(block: suspend () -> T): T {

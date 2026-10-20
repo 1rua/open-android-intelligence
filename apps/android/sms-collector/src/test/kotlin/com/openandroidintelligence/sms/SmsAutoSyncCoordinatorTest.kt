@@ -21,7 +21,6 @@ import com.openandroidintelligence.core.model.CapabilityOutboxAckRejected
 import com.openandroidintelligence.core.model.PairedBridgeTransport
 import com.openandroidintelligence.core.model.TransportCloseReason
 import com.openandroidintelligence.core.model.VerifiedPairingTransportBinding
-import com.openandroidintelligence.tailnet.core.VerifiedPairingTransportBindingFactory
 import com.openandroidintelligence.sync.CapabilityEventEgressGate
 import com.openandroidintelligence.sync.CapabilityPairedBridgeBindingSource
 import com.openandroidintelligence.core.model.BridgeIdentity
@@ -300,7 +299,7 @@ class SmsAutoSyncCoordinatorTest {
         return authorization.access as AuthorizedAutoSendSubscription
     }
 
-    private fun validBinding(): VerifiedPairingTransportBinding = VerifiedPairingTransportBindingFactory.mint(
+    private fun validBinding(): VerifiedPairingTransportBinding = VerifiedPairingTransportBinding.mint(
         ticket = EnrollmentTicket("ticket", "device", "bridge", 4u, 1u, 100),
         bridge = BridgeIdentity("bridge"),
         policy = PolicyAttestation(1u, "digest"),

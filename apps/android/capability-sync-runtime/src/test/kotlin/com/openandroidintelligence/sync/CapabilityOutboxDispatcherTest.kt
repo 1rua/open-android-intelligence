@@ -10,7 +10,6 @@ import com.openandroidintelligence.core.model.PairedBridgeTransport
 import com.openandroidintelligence.core.model.PolicyAttestation
 import com.openandroidintelligence.core.model.TransportCloseReason
 import com.openandroidintelligence.core.model.VerifiedPairingTransportBinding
-import com.openandroidintelligence.tailnet.core.VerifiedPairingTransportBindingFactory
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.startCoroutine
@@ -472,7 +471,7 @@ class CapabilityOutboxDispatcherTest {
         eventWire = eventId.encodeToByteArray(),
     )
 
-    private fun validBinding(): VerifiedPairingTransportBinding = VerifiedPairingTransportBindingFactory.mint(
+    private fun validBinding(): VerifiedPairingTransportBinding = VerifiedPairingTransportBinding.mint(
         ticket = EnrollmentTicket("ticket", "device", "bridge", 4u, 1u, 100),
         bridge = BridgeIdentity("bridge"),
         policy = PolicyAttestation(1u, "digest"),

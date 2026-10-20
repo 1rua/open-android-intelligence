@@ -5,11 +5,6 @@ plugins {
 
 android {
     namespace = "com.openandroidintelligence.notifications"
-    sourceSets {
-        getByName("test") {
-            kotlin.srcDir("../transport/src/testFixtures/kotlin")
-        }
-    }
     testOptions.unitTests.apply {
         isIncludeAndroidResources = true
         all {
@@ -25,8 +20,6 @@ dependencies {
     implementation(project(":policy-engine"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation(project(":encrypted-store"))
-    testImplementation(project(":tailnet-core"))
-    testImplementation(project(":transport"))
     testImplementation("junit:junit:4.13.2")
     // Manifest 合并证据测试：Robolectric 读合并后的 Manifest 验证监听服务声明。
     testImplementation("org.robolectric:robolectric:4.14.1")
