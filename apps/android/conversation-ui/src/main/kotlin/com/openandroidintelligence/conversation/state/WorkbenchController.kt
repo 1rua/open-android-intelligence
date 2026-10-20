@@ -2206,7 +2206,8 @@ class WorkbenchController(
         pendingSubmission?.let { activeWork.begin(it.clientMessageId, it.conversationId) }
         beginLegacyTurn(activeThreadId)
         generationFactRevision++
-        update { it.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null, generation = GenerationState.QUEUED) }
+        update { state -> state.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null,
+            generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED) }
         submitWhenAttachmentsVerified()
     }
 
@@ -2288,7 +2289,12 @@ class WorkbenchController(
                     update { it.copy(draft = "") }
                     draftWasCleared = true
                 }
-                if (activeThreadId == target) update { it.copy(composer = ComposerState.EDITING, timeline = appendLocal(it.timeline, entry), pendingBatch = it.pendingBatch + entry, generation = GenerationState.QUEUED) }
+                if (activeThreadId == target) update { state -> state.copy(
+                    composer = ComposerState.EDITING,
+                    timeline = appendLocal(state.timeline, entry),
+                    pendingBatch = state.pendingBatch + entry,
+                    generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED,
+                ) }
 
                 if (eventJob?.isActive != true) {
                     observeThreadEvents()
