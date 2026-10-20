@@ -27,13 +27,21 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 
+/**
+ * 屏幕附件的安全边界回归。
+ *
+ * 界面从原生 View 换成了 Compose 之后，这层边界必须保持：
+ * 1. 编码发生在工作线程，且位图在回调前已经被拥有者释放；
+ * 2. 界面关闭后迟到的编码结果必须被丢弃，不能把附件塞进已经结束的会话；
+ * 3. 没有当前同意时附件立即回收，不会发出 `screen` 命令。
+ */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @LooperMode(LooperMode.Mode.PAUSED)
 class AssistantScreenAttachmentTest {
     private val commands = mutableListOf<String>()
-    private var panel: AssistantPanel? = null
+    private var client: AssistantBridgeClient? = null
 
     private class BridgeContext : ContextWrapper(RuntimeEnvironment.getApplication()) {
         lateinit var connection: ServiceConnection
@@ -41,26 +49,32 @@ class AssistantScreenAttachmentTest {
             this.connection = connection
             return true
         }
+
         override fun unbindService(connection: ServiceConnection) {}
     }
 
-    private fun connectedPanel(consent: Boolean = true): AssistantPanel {
+    private fun connectedClient(consent: Boolean = true): AssistantBridgeClient {
         val context = BridgeContext()
-        val target = AssistantPanel(context, {}).also { panel = it }
-        val bridge = Messenger(Handler(Looper.getMainLooper()) { message ->
-            val command = message.data.getString("command")!!
-            commands += command
-            if (command == "connect") {
-                message.replyTo.send(Message.obtain().apply {
-                    data = Bundle().apply {
-                        putInt("version", 1)
-                        putString("token", "test-session")
-                        putString("state", """{"connected":true,"consent":$consent}""")
-                    }
-                })
-            }
-            true
-        })
+        val target = AssistantBridgeClient(context).also { client = it }
+        target.connect()
+        val bridge = Messenger(
+            Handler(Looper.getMainLooper()) { message ->
+                val command = message.data.getString("command")!!
+                commands += command
+                if (command == "connect") {
+                    message.replyTo.send(
+                        Message.obtain().apply {
+                            data = Bundle().apply {
+                                putInt("version", 1)
+                                putString("token", "test-session")
+                                putString("state", """{"connected":true,"consent":$consent}""")
+                            }
+                        },
+                    )
+                }
+                true
+            },
+        )
         context.connection.onServiceConnected(ComponentName(context, "TestBridge"), bridge.binder)
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(listOf("connect"), commands)
@@ -77,7 +91,7 @@ class AssistantScreenAttachmentTest {
     }
 
     @After fun cleanup() {
-        panel?.dispose()
+        client?.dispose()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -107,8 +121,8 @@ class AssistantScreenAttachmentTest {
         bytes.fill(0)
     }
 
-    @Test fun closingPanelBeforeTheEncodedImageReturnsDropsTheAttachment() {
-        val target = connectedPanel()
+    @Test fun closingTheBridgeBeforeTheEncodedImageReturnsDropsTheAttachment() {
+        val target = connectedClient()
         val bitmap = Bitmap.createBitmap(32, 24, Bitmap.Config.ARGB_8888)
 
         target.attachScreen(bitmap)
@@ -119,7 +133,7 @@ class AssistantScreenAttachmentTest {
     }
 
     @Test fun anAttachmentWithoutCurrentConsentIsReleasedWithoutDelivery() {
-        val target = connectedPanel(consent = false)
+        val target = connectedClient(consent = false)
         val bitmap = Bitmap.createBitmap(32, 24, Bitmap.Config.ARGB_8888)
 
         target.attachScreen(bitmap)

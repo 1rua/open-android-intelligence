@@ -1,32 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <application
->
-        <activity
-            android:name=".AssistantActivity"
-            android:process=":assistant_session"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.ASSIST" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
-        <service
-            android:name=".AssistantVoiceService"
-            android:process=":assistant_keeper"
-            android:exported="true"
-            android:permission="android.permission.BIND_VOICE_INTERACTION">
-            <intent-filter>
-                <action android:name="android.service.voice.VoiceInteractionService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.voice_interaction"
-            android:resource="@xml/voice_interaction_service" />
-        </service>
-        <service
-            android:name=".AssistantSessionService"
-            android:process=":assistant_session"
-            android:exported="false"
-            android:permission="android.permission.BIND_VOICE_INTERACTION" />
-    </application>
+    <!--
+        系统助理相关组件（VoiceInteractionService / SessionService / ASSIST 兜底 Activity）
+        全部在 app 模块声明：它们的 meta-data 必须写成「<applicationId>/<类全名>」，
+        且 ASSIST Activity 要引用 app 模块的半透明浮层主题，只有 app 模块能确定这些值。
+    -->
+    <application />
 </manifest>
