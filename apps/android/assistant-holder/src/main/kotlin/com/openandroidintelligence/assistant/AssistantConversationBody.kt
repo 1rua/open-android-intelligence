@@ -417,7 +417,9 @@ internal fun AssistantComposerDock(
 ) {
     val enabled = state.canInteract
     val blockReason = state.composerBlockReason()
-    val sendEnabled = enabled && draft.isNotBlank() && !state.isGenerating
+    // 结果未知时禁止发送：controller 会先把这一批落地/恢复真实终态，
+    // 此时再发会造成重复动作。文案由 composerBlockReason 给出可执行指引。
+    val sendEnabled = enabled && draft.isNotBlank() && !state.isGenerating && !state.hasUnknownOutcome
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny)) {
         val trimmedInitial = initialText?.takeIf { it.isNotBlank() }

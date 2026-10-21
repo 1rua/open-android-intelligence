@@ -366,7 +366,11 @@ private fun EditableSelection(
                                 draftCurrent = point
                                 if (freehand) {
                                     val last = freehandPoints.lastOrNull()
-                                    if (last == null || (point - last).getDistance() >= sampleStepPx) {
+                                    // 上限与裁剪端保持一致：超出的点直接丢弃，
+                                    // 否则长手势会因为 >4096 而整体提交失败。
+                                    if ((last == null || (point - last).getDistance() >= sampleStepPx) &&
+                                        freehandPoints.size < MAX_FREEHAND_SAMPLES
+                                    ) {
                                         freehandPoints.add(point)
                                         freehandPath.lineTo(point.x, point.y)
                                         freehandPathVersion++

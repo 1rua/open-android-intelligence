@@ -97,7 +97,16 @@ class AssistantBridgeService : Service() {
         val connected = runtime.controller.value != null && client.scope.canConsent(runtime.connectedAccountId)
         val threads = (state?.threads as? Loadable.Ready)?.value.orEmpty()
         val rows = (state?.timeline as? Loadable.Ready)?.value.orEmpty().takeLast(40)
+        // 外观偏好随状态一起下发：助理进程与主进程各自缓存 SharedPreferences，
+        // 跨进程写入不会可靠地让对方失效，只有走同一条状态通道才是进程安全的。
+        val appearance = (application as OpenAndroidIntelligenceApplication).appearancePreferences.settings.value
         val payload = Json.canonical(Json.of(mapOf("connected" to connected,"consent" to consent,
+            "appearance" to mapOf(
+                "theme" to appearance.theme.name,
+                "dynamicColor" to appearance.dynamicColor,
+                "palette" to appearance.palette.name,
+                "reduceMotion" to appearance.reduceMotion,
+            ),
             "draft" to if (consent) state?.draft else "","title" to if (consent) state?.activeThreadTitle else "",
             "notice" to (error ?: state?.notice),"generation" to state?.generation?.name,
             "threads" to if (consent) threads.take(100).map { mapOf("id" to it.id.value,"title" to it.title) } else emptyList<Any>(),

@@ -45,7 +45,8 @@ fun Modifier.bouncyClickable(
     val pressed by interaction.collectIsPressedAsState()
     val reduced = LocalMotionPolicy.current.reduceMotion
     val scale by animateFloatAsState(
-        targetValue = if (pressed && enabled) pressedScale else 1f,
+        // 减少动态时不做缩放：snap 只是把 90ms 变成瞬时，视觉上仍是"按下就缩"。
+        targetValue = if (pressed && enabled && !reduced) pressedScale else 1f,
         animationSpec = MotionSpecs.press(reduced),
         label = "bouncy-press",
     )

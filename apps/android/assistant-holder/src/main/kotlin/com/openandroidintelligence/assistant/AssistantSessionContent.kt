@@ -103,6 +103,8 @@ internal fun AssistantSessionContent(
     selection: AssistantScreenSelection? = null,
     onFinishSelection: () -> Unit = {},
     initialText: String? = null,
+    /** 解析出的最终深浅色：宿主据此设置状态栏/导航栏图标明暗。 */
+    onResolvedAppearance: (darkTheme: Boolean) -> Unit = {},
 ) {
     val state by client.state.collectAsState()
     // 输入框的即时回显归本地，主进程发布回来的草稿是唯一权威；两者不一致时以主进程为准
@@ -117,15 +119,19 @@ internal fun AssistantSessionContent(
     val banner = state.advisory ?: state.notice.takeIf { it.isNotBlank() }
     val dismissBanner: (() -> Unit)? = if (state.advisory != null) client::clearAdvisory else null
 
-    // 跟随用户在 App 里保存的外观偏好（深浅 / 动态取色 / 预设色板 / 减弱动态），
-    // 助理进程与主进程同应用同数据目录，可以直接只读这份偏好。
+    // 外观优先用主进程经状态通道下发的值：跨进程读 SharedPreferences 会拿到旧缓存。
+    // 没有桥接状态时（尚未 connect / 旧版主进程）才回落到本地偏好。
     val appearanceContext = LocalContext.current
-    val appearance = remember(appearanceContext) { readAssistantAppearance(appearanceContext) }
+    val fallbackAppearance = remember(appearanceContext) { readFallbackAppearance(appearanceContext) }
+    val appearance = state.appearance ?: fallbackAppearance
+    val darkTheme = appearance.darkTheme(appearanceContext)
+    val reduceMotion = appearance.reduceMotion
+    LaunchedEffect(darkTheme) { onResolvedAppearance(darkTheme) }
     OpenAndroidIntelligenceTheme(
-        darkTheme = appearance.darkTheme,
+        darkTheme = darkTheme,
         dynamicColor = appearance.dynamicColor,
-        palette = appearance.palette,
-        reduceMotion = appearance.reduceMotion,
+        palette = appearance.resolvedPalette(),
+        reduceMotion = reduceMotion,
     ) {
         Box(modifier = modifier.fillMaxSize()) {
             when {

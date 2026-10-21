@@ -21,6 +21,38 @@ class AssistantStateJsonTest {
     private fun parsed(payload: String): AssistantState =
         requireNotNull(parseAssistantState(payload)) { "payload 应当可以解析：$payload" }
 
+    /**
+     * 外观必须来自主进程下发的字段：跨进程读 SharedPreferences 会拿到旧缓存，
+     * 所以这条锁定"桥接里带了就用桥接值"。
+     */
+    @Test fun appearanceIsTakenFromPublishedPayload() {
+        val state = parsed(
+            """
+            {
+              "connected": true,
+              "consent": true,
+              "appearance": {
+                "theme": "DARK",
+                "dynamicColor": false,
+                "palette": "VIOLET",
+                "reduceMotion": true
+              }
+            }
+            """.trimIndent(),
+        )
+        val appearance = requireNotNull(state.appearance) { "应当解析出 appearance" }
+        assertEquals(THEME_DARK, appearance.theme)
+        assertFalse(appearance.dynamicColor)
+        assertEquals("VIOLET", appearance.palette)
+        assertTrue(appearance.reduceMotion)
+    }
+
+    /** 旧版主进程不带 appearance 时保持 null，由调用方回落到本地兜底值。 */
+    @Test fun missingAppearanceStaysNull() {
+        val state = parsed("""{"connected": true, "consent": true}""")
+        assertNull(state.appearance)
+    }
+
     @Test fun publishedPayloadMapsToStateWithoutLosingFields() {
         val state = parsed(
             """

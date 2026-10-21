@@ -29,6 +29,8 @@ internal data class AssistantState(
     val draft: String = "",
     val generation: String = "",
     val advisory: String? = null,
+    /** 主进程下发的已保存外观；旧版本主进程不带这个字段时为 null。 */
+    val appearance: AssistantAppearance? = null,
 ) {
     /** 主进程只在「已连接且已绑定当前对话」时才允许读写对话内容。 */
     val canInteract: Boolean get() = bridgeAvailable && connected && consent
@@ -90,6 +92,15 @@ internal fun parseAssistantState(payload: String): AssistantState? = runCatching
         val id = row.stringOrEmpty("id")
         if (id.isBlank()) null else AssistantThread(id = id, title = row.stringOrEmpty("title"))
     }
+    val appearanceRow = root.optJSONObject("appearance")
+    val appearance = appearanceRow?.let { row ->
+        AssistantAppearance(
+            theme = row.optString("theme", THEME_SYSTEM).takeIf { it.isNotBlank() } ?: THEME_SYSTEM,
+            dynamicColor = row.optBoolean("dynamicColor"),
+            palette = row.optString("palette", "").takeIf { it.isNotBlank() } ?: "INDIGO",
+            reduceMotion = row.optBoolean("reduceMotion"),
+        )
+    }
     AssistantState(
         connected = root.optBoolean("connected"),
         consent = root.optBoolean("consent"),
@@ -99,6 +110,7 @@ internal fun parseAssistantState(payload: String): AssistantState? = runCatching
         threads = threads,
         draft = root.stringOrEmpty("draft"),
         generation = root.stringOrEmpty("generation"),
+        appearance = appearance,
     )
 }.getOrNull()
 

@@ -63,6 +63,7 @@ class AssistantActivity : Activity() {
             ?.toString()
             ?.take(MAX_ASSISTANT_DRAFT_CHARS)
         composeHost.setContent {
+            val activity = this@AssistantActivity
             AssistantSessionContent(
                 client = bridge,
                 mode = AssistantHostMode.ASSIST_ACTIVITY,
@@ -79,12 +80,14 @@ class AssistantActivity : Activity() {
                     )
                 },
                 initialText = initialText,
+                onResolvedAppearance = { dark -> activity.applySystemBarAppearance(dark) },
             )
         }
         setContentView(composeHost)
         // 必须在 setContentView 之后：PhoneWindow.getInsetsController() 会去取 DecorView，
         // 装饰视图还没创建时它内部是 null，提前调用会直接 NPE（真机已复现）。
-        applySystemBarAppearance()
+        // 先用兜底偏好设一次，桥接状态到达后由内容层的回调按真实主题覆盖。
+        applySystemBarAppearance(readFallbackAppearance(this).darkTheme(this))
         composeHost.resume()
         bridge.connect()
     }
@@ -96,12 +99,15 @@ class AssistantActivity : Activity() {
         host = null
     }
 
-    /** 全屏页跟随系统深浅色：浅色纸面上用深色状态栏图标，避免看不见系统图标。 */
-    private fun applySystemBarAppearance() {
-        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-            Configuration.UI_MODE_NIGHT_YES
+    /**
+     * 系统栏图标明暗必须跟**最终渲染的深浅色**一致。
+     *
+     * 用户可能在 App 里强制了与系统相反的深浅色：只看系统 night 模式会出现
+     * 「浅色助理表面 + 浅色状态栏图标」这类不可读组合，所以由内容层把解析结果回调过来。
+     */
+    private fun applySystemBarAppearance(darkTheme: Boolean) {
         val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
             WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-        window.insetsController?.setSystemBarsAppearance(if (night) 0 else mask, mask)
+        window.insetsController?.setSystemBarsAppearance(if (darkTheme) 0 else mask, mask)
     }
 }

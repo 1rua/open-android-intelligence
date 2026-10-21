@@ -266,7 +266,7 @@ internal fun cropPngSelection(
     val y1 = ceil(bottom * scaleY).toInt().coerceIn(y0 + 1, bitmap.height)
     var cropped = Bitmap.createBitmap(bitmap, x0, y0, x1 - x0, y1 - y0) ?: return null
     if (pathPoints.isNotEmpty()) {
-        if (pathPoints.size !in 3..4096 || pathPoints.any { !it.x.isFinite() || !it.y.isFinite() } ||
+        if (pathPoints.size !in 3..com.openandroidintelligence.conversation.selection.MAX_FREEHAND_SAMPLES || pathPoints.any { !it.x.isFinite() || !it.y.isFinite() } ||
             com.openandroidintelligence.conversation.selection.polygonArea(pathPoints) < 1f) return null
         val masked = Bitmap.createBitmap(cropped.width, cropped.height, Bitmap.Config.ARGB_8888)
         val path = android.graphics.Path().apply {

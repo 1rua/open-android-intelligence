@@ -81,7 +81,9 @@ fun FloatingConversationPanel(
     }
     val commandMenuVisible = state.draft.startsWith("/") && !commandMenuDismissed
 
-    BackHandler(enabled = expanded || commandMenuVisible || explainSelection) {
+    // 始终接管返回：停靠成球时按返回应当结束助理并回到工作台，
+    // 条件式启用会把 else->onClose() 变成不可达，返回键直接退出 App。
+    BackHandler {
         when {
             explainSelection -> explainSelection = false
             commandMenuVisible -> commandMenuDismissed = true
