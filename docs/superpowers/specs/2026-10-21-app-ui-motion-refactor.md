@@ -211,12 +211,19 @@ Material 3 的色调映射推导出的完整角色表（见 `theme/AppPalettes.k
 
 声明要点（真机踩过的坑，已修复）：
 
-- `android.voice_interaction` 元数据里的 `sessionService` 必须是**带包名的扁平组件名**
-  （`<applicationId>/<类全名>`）。写成短类名时 `ComponentName.unflattenFromString`
-  返回 null，系统把应用判成 unqualified（日志 `has an unqualified voice interaction
-  service`），用户在「默认数字助理」里根本看不到本应用。因此该 XML 必须放在 app 模块。
+- `android.voice_interaction` 元数据里的 `sessionService` 与 `recognitionService` 必须是
+  **类名**（不是 `pkg/cls` 扁平名）：框架用
+  `new ComponentName(serviceInfo.packageName, <value>)` 组装组件，扁平名会得到类名里
+  带 `/` 的非法组件。
+- `recognitionService` **不能缺**：`VoiceInteractionServiceInfo` 缺它时直接判
+  "No recognitionService specified"，应用被判 unqualified（日志
+  `has an unqualified voice interaction service`），在「默认数字助理」里看不到。
+  本应用不做系统级语音识别（语音在 App 内录音后作为附件发送），该服务实现里
+  明确返回「未接入」，不伪造识别结果。
 - `VoiceInteractionSessionService` 必须 `android:exported="true"`（系统以不同 UID 绑定），
   仍由 `android.permission.BIND_VOICE_INTERACTION` 收口。
+- 助理界面必须跟随用户在 App 里保存的外观偏好（深浅 / 动态取色 / 预设色板 / 减弱动态）：
+  助理进程与主进程同应用同数据目录，只读那份 SharedPreferences。
 - ASSIST 兜底 Activity 使用 `windowIsTranslucent=true` 的浮层主题：否则窗口不透明，
   即使背景设成透明也看不到下面的 App，只剩黑底。
 

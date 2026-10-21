@@ -108,6 +108,15 @@
             android:process=":assistant_session"
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
+        <!--
+            数字助理资格判定要求存在 recognitionService（见 voice_interaction_service.xml）。
+            本应用不做系统级语音识别，服务里明确返回「未接入」，不伪造识别结果。
+        -->
+        <service
+            android:name="com.openandroidintelligence.assistant.AssistantRecognitionService"
+            android:process=":assistant_keeper"
+            android:exported="true"
+            android:permission="android.permission.BIND_SPEECH_RECOGNITION" />
         <service android:name=".plugins.PluginTimerService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
         <service
             android:name=".GatewayAccountAuthenticatorService"

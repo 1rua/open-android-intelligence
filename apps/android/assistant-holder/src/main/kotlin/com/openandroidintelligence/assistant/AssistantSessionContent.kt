@@ -33,6 +33,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
@@ -116,9 +117,15 @@ internal fun AssistantSessionContent(
     val banner = state.advisory ?: state.notice.takeIf { it.isNotBlank() }
     val dismissBanner: (() -> Unit)? = if (state.advisory != null) client::clearAdvisory else null
 
+    // 跟随用户在 App 里保存的外观偏好（深浅 / 动态取色 / 预设色板 / 减弱动态），
+    // 助理进程与主进程同应用同数据目录，可以直接只读这份偏好。
+    val appearanceContext = LocalContext.current
+    val appearance = remember(appearanceContext) { readAssistantAppearance(appearanceContext) }
     OpenAndroidIntelligenceTheme(
-        darkTheme = isSystemInDarkTheme(),
-        dynamicColor = true,
+        darkTheme = appearance.darkTheme,
+        dynamicColor = appearance.dynamicColor,
+        palette = appearance.palette,
+        reduceMotion = appearance.reduceMotion,
     ) {
         Box(modifier = modifier.fillMaxSize()) {
             when {

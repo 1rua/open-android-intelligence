@@ -2,15 +2,19 @@
 <!--
   系统数字助理声明。
 
-  `sessionService` 必须是**带包名的扁平组件名**（pkg/cls）：
-  系统用 ComponentName.unflattenFromString 解析它，写短类名会被判成
-  "No sessionService specified"，整个助理会被标记为 unqualified，
-  用户在「默认数字助理」里根本看不到本应用。
+  三个属性都是资格判定的硬条件（`VoiceInteractionServiceInfo` 逐项校验）：
+  - `sessionService` 必须是**类名**（不是 pkg/cls 扁平名）：框架会用
+    `new ComponentName(serviceInfo.packageName, sessionService)` 组装组件，
+    写成扁平名会得到一个类名里带 "/" 的非法组件，会话永远绑定不上。
+  - `recognitionService` 同样必须是类名，且不能缺：缺它时解析直接失败
+    （"No recognitionService specified"），应用不会出现在「默认数字助理」列表里。
+    本应用不做系统级语音识别，实现里明确返回「未接入」而不是伪造识别结果。
+  - `supportsAssist` 必须为 true，否则 Assist 手势不会路由到本应用。
 
-  这个文件必须放在 app 模块：只有这里确定最终 applicationId，
-  库模块写死包名在换 applicationId（如渠道变体）时会失效。
+  这个文件放在 app 模块，因为只有这里能确定最终 applicationId（类名仍是固定 FQN）。
 -->
 <voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:sessionService="com.openandroidintelligence.mobile/com.openandroidintelligence.assistant.AssistantSessionService"
+    android:sessionService="com.openandroidintelligence.assistant.AssistantSessionService"
+    android:recognitionService="com.openandroidintelligence.assistant.AssistantRecognitionService"
     android:supportsAssist="true"
     android:supportsLaunchVoiceAssistFromKeyguard="false" />

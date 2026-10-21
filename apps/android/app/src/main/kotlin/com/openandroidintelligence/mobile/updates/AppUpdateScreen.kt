@@ -88,6 +88,7 @@ fun AppUpdateRoute(onBack: () -> Unit) {
             }
         },
         openFailed = openFailed,
+        onOpenFailedShown = { openFailed = false },
     )
 }
 
@@ -101,6 +102,7 @@ internal fun AppUpdateScreen(
     onCheck: () -> Unit,
     onOpenRelease: (String) -> Unit,
     openFailed: Boolean = false,
+    onOpenFailedShown: () -> Unit = {},
 ) {
     // 「打不开浏览器」属于与按钮就近的操作结果：走 Scaffold 的 Snackbar，
     // 不再挂在页面最底部、离触发的按钮隔着一整屏。
@@ -111,6 +113,9 @@ internal fun AppUpdateScreen(
                 message = "未找到可打开发布页的浏览器，请确认系统浏览器已安装。",
                 withDismissAction = true,
             )
+            // 消费即复位：否则第二次、第三次失败时布尔值一直是 true，
+            // LaunchedEffect 不会重启，用户再也看不到提示。
+            onOpenFailedShown()
         }
     }
     Scaffold(

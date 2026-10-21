@@ -41,7 +41,13 @@ internal fun cropAssistantSelection(
     val width = rightEdge - x
     val height = bottomEdge - y
     if (width < MINIMUM_CROP_PIXELS || height < MINIMUM_CROP_PIXELS) return null
-    return runCatching { Bitmap.createBitmap(source, x, y, width, height) }.getOrNull()
+    return runCatching {
+        val cropped = Bitmap.createBitmap(source, x, y, width, height)
+        // 选区覆盖整张图时 createBitmap 可能把同一个对象返回给我们；下游 attachScreen
+        // 会接管所有权并回收它，若不复制，会话里保留的截图就变成已回收位图，
+        // 同一次助理会话里再圈选会报"没有可用截图"。
+        if (cropped === source) source.copy(Bitmap.Config.ARGB_8888, false) else cropped
+    }.getOrNull()
 }
 
 /**

@@ -14,6 +14,9 @@ import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -170,7 +173,15 @@ fun ConversationBrowser(
     val currentFiltered by rememberUpdatedState(filtered)
     val currentReorder by rememberUpdatedState(actions.reorder)
     val currentCanManage by rememberUpdatedState(canManage)
-    val now = remember { System.currentTimeMillis() }
+    // 相对时间每秒推进一次：抽屉/气泡列表常驻时，"刚刚 / N 分钟前" 必须继续走，
+    // 否则一整段会话都停在进入那一刻的文案。
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000)
+            now = System.currentTimeMillis()
+        }
+    }
 
     fun cancelDrag() {
         draggedId = null

@@ -58,6 +58,9 @@ internal fun ScreenSelectionOverlayHost(
     var screenshot by remember { mutableStateOf<ImageBitmap?>(null) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var capturing by remember { mutableStateOf(screenCaptureSource != null) }
+    // 确认是异步的（解码 + 重编码在后台线程）：不加锁时连点两次会启动两个 worker，
+    // 同一个选区被添加两次。确认一次后立刻上锁，直到结果回来再解锁。
+    var confirming by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(screenCaptureSource) {
@@ -78,36 +81,65 @@ internal fun ScreenSelectionOverlayHost(
         capturing = false
     }
 
+    // 单次确认：解码与重编码是异步的，连点会启动多个 worker，把同一个选区重复添加。
+    // 这里用一个布尔锁把「确认中」串行化，结果回来（成功或降级）才解锁。
+    val confirmOnce: ((() -> Unit)) -> Unit = { action ->
+        if (!confirming) {
+            confirming = true
+            action()
+        }
+    }
+    val releaseConfirmation: () -> Unit = { confirming = false }
+
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenSelectionOverlay(
             onFreehandConfirmed = { points ->
-                confirmCrop(
-                    scope = scope,
-                    current = frame,
-                    canvasSize = canvasSize,
-                    pathPoints = points,
-                    onUnavailable = {
-                        frame = null
-                        screenshot = null
-                    },
-                    onConfirmed = onConfirmCrop,
-                )
+                confirmOnce {
+                    // 边界必须由点集算出：cropPngSelection 用矩形定位输出尺寸，
+                    // 只给 pathPoints、边界留 0 时它会判 left >= right 直接返回 null，
+                    // 自由圈选就永远提交不了。
+                    confirmCrop(
+                        scope = scope,
+                        current = frame,
+                        canvasSize = canvasSize,
+                        left = points.minOfOrNull { it.x } ?: 0f,
+                        top = points.minOfOrNull { it.y } ?: 0f,
+                        right = points.maxOfOrNull { it.x } ?: 0f,
+                        bottom = points.maxOfOrNull { it.y } ?: 0f,
+                        pathPoints = points,
+                        onUnavailable = {
+                            frame = null
+                            screenshot = null
+                            releaseConfirmation()
+                        },
+                        onConfirmed = {
+                            onConfirmCrop(it)
+                            releaseConfirmation()
+                        },
+                    )
+                }
             },
             onCropConfirmed = { left, top, right, bottom ->
-                confirmCrop(
-                    scope = scope,
-                    current = frame,
-                    canvasSize = canvasSize,
-                    left = left,
-                    top = top,
-                    right = right,
-                    bottom = bottom,
-                    onUnavailable = {
-                        frame = null
-                        screenshot = null
-                    },
-                    onConfirmed = onConfirmCrop,
-                )
+                confirmOnce {
+                    confirmCrop(
+                        scope = scope,
+                        current = frame,
+                        canvasSize = canvasSize,
+                        left = left,
+                        top = top,
+                        right = right,
+                        bottom = bottom,
+                        onUnavailable = {
+                            frame = null
+                            screenshot = null
+                            releaseConfirmation()
+                        },
+                        onConfirmed = {
+                            onConfirmCrop(it)
+                            releaseConfirmation()
+                        },
+                    )
+                }
             },
             onCancel = onCancel,
             screenshot = screenshot,

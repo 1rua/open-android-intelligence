@@ -74,8 +74,11 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             host?.destroy()
             host = null
             setContentView(onCreateContentView())
-            setDocked(false)
         }
+        // 每次唤起都以「展开的会话卡片」出现：框架在首次 onShow 之前就会调用
+        // onCreateContentView，client 此时已非空，条件分支不会执行；
+        // 停靠球是会话内的用户动作，不能成为首次唤起的默认形态。
+        setDocked(false)
         host?.resume()
         client?.connect()
     }
