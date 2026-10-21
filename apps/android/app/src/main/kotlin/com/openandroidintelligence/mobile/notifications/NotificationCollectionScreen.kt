@@ -22,7 +22,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -34,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -53,6 +53,9 @@ import com.openandroidintelligence.notification.control.NotificationPolicyPort
 import com.openandroidintelligence.notification.control.NotificationPolicySnapshot
 import com.openandroidintelligence.notification.control.NotificationPolicyUpdate
 import com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 「通知采集」设置子页。
@@ -70,16 +73,40 @@ import com.openandroidintelligence.notification.control.NotificationPolicyUpdate
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NotificationCollectionScreen(
+internal fun NotificationCollectionScreen(
     policy: NotificationPolicyPort,
     binding: NotificationBindingPort,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    loadInstalledApps: (() -> List<InstalledNotificationApp>)? = null,
 ) {
     var snapshot by remember(policy) { mutableStateOf(policy.snapshot()) }
     var listenerBound by remember(binding) { mutableStateOf(binding.isListenerBound()) }
     var rejection by remember { mutableStateOf<String?>(null) }
-    var draftPackage by remember { mutableStateOf("") }
+    val packageManager = LocalContext.current.applicationContext.packageManager
+    val appLoader = remember(packageManager, loadInstalledApps) {
+        loadInstalledApps ?: { loadInstalledNotificationApps(packageManager) }
+    }
+    var installedApps by remember { mutableStateOf<List<InstalledNotificationApp>?>(null) }
+    var appLoadFailed by remember { mutableStateOf(false) }
+    var appRefresh by remember { mutableStateOf(0) }
+    var selectedPackages by rememberSaveable { mutableStateOf<List<String>?>(null) }
+    var selectionRevision by rememberSaveable { mutableStateOf("") }
+    var selectionRejection by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // 包管理器查询放在后台；回到前台后重新读取，反映应用的安装与卸载。
+    LaunchedEffect(snapshot.installed, appLoader, appRefresh) {
+        if (!snapshot.installed) return@LaunchedEffect
+        installedApps = null
+        appLoadFailed = false
+        try {
+            installedApps = withContext(Dispatchers.IO) { appLoader() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            appLoadFailed = true
+        }
+    }
 
     // 策略变化经端口响应式流回（与本页发起的更新同一条权威链路）。
     LaunchedEffect(policy) {
@@ -90,20 +117,56 @@ fun NotificationCollectionScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(binding, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) listenerBound = binding.isListenerBound()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                listenerBound = binding.isListenerBound()
+                appRefresh += 1
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    fun applyUpdate(request: NotificationPolicyUpdate) {
-        when (val outcome = policy.update(request)) {
+    fun applyUpdate(request: NotificationPolicyUpdate): NotificationPolicyUpdateOutcome {
+        val outcome = policy.update(request)
+        when (outcome) {
             is NotificationPolicyUpdateOutcome.Accepted -> {
                 snapshot = outcome.snapshot
                 rejection = null
             }
             is NotificationPolicyUpdateOutcome.Rejected -> rejection = outcome.reason
         }
+        return outcome
+    }
+
+    if (snapshot.installed && selectedPackages != null) {
+        NotificationAppPicker(
+            apps = installedApps,
+            loadFailed = appLoadFailed,
+            savedPackages = snapshot.packageIds,
+            selectedPackages = selectedPackages.orEmpty(),
+            rejection = selectionRejection,
+            onSelectionChanged = { selectedPackages = it },
+            onRetry = { appRefresh += 1 },
+            onReloadSelection = {
+                snapshot = policy.snapshot()
+                selectedPackages = snapshot.packageIds
+                selectionRevision = snapshot.revision.toString()
+                selectionRejection = null
+            },
+            onCancel = { selectedPackages = null },
+            onSave = {
+                val outcome = applyUpdate(
+                    NotificationPolicyUpdate(
+                        expectedRevision = selectionRevision.toULong(),
+                        packageIds = selectedPackages.orEmpty(),
+                    ),
+                )
+                when (outcome) {
+                    is NotificationPolicyUpdateOutcome.Accepted -> selectedPackages = null
+                    is NotificationPolicyUpdateOutcome.Rejected -> selectionRejection = outcome.reason
+                }
+            },
+        )
     }
 
     Scaffold(
@@ -142,8 +205,8 @@ fun NotificationCollectionScreen(
                 .verticalScroll(rememberScrollState())
                 .testTag("notification-collection-content"),
         ) {
-            rejection?.let { reason ->
-                RejectionNotice(reason)
+            if (selectedPackages == null) {
+                rejection?.let { reason -> RejectionNotice(reason) }
             }
 
             if (!snapshot.installed) {
@@ -188,19 +251,11 @@ fun NotificationCollectionScreen(
                 )
                 AllowlistGroup(
                     snapshot = snapshot,
-                    draftPackage = draftPackage,
-                    onDraftChanged = { draftPackage = it },
-                    onAdd = {
-                        val candidate = draftPackage.trim()
-                        if (candidate.isNotEmpty()) {
-                            applyUpdate(
-                                NotificationPolicyUpdate(
-                                    expectedRevision = snapshot.revision,
-                                    packageIds = snapshot.packageIds + candidate,
-                                ),
-                            )
-                            draftPackage = ""
-                        }
+                    installedApps = installedApps,
+                    onSelect = {
+                        selectedPackages = snapshot.packageIds
+                        selectionRevision = snapshot.revision.toString()
+                        selectionRejection = null
                     },
                     onRemove = { removed ->
                         applyUpdate(
@@ -353,9 +408,8 @@ private fun DeliveryModeGroup(
 @Composable
 private fun AllowlistGroup(
     snapshot: NotificationPolicySnapshot,
-    draftPackage: String,
-    onDraftChanged: (String) -> Unit,
-    onAdd: () -> Unit,
+    installedApps: List<InstalledNotificationApp>?,
+    onSelect: () -> Unit,
     onRemove: (String) -> Unit,
 ) {
     SettingsSectionCard {
@@ -364,30 +418,21 @@ private fun AllowlistGroup(
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
         )
-        OutlinedTextField(
-            value = draftPackage,
-            onValueChange = onDraftChanged,
-            label = { Text("应用包名") },
-            placeholder = { Text("com.example.app") },
-            singleLine = true,
+        Button(
+            onClick = onSelect,
             shape = RoundedCornerShape(AppRadius.Small),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = Dimensions.SpaceSmall)
-                .testTag("notification-package-input"),
-        )
-        Button(
-            onClick = onAdd,
-            shape = RoundedCornerShape(AppRadius.Small),
-            modifier = Modifier.fillMaxWidth(),
+                .testTag("notification-select-apps"),
         ) {
-            Text(text = "添加")
+            Text(text = "选择应用")
         }
         if (snapshot.packageIds.isEmpty()) {
             // 空态不是"没有内容"：白名单为空时一条通知也不会采集，必须说清楚。
             Text(
                 text = "尚未添加任何应用：白名单为空时不会采集任何通知。" +
-                    "添加包名后，只有这些应用的通知会按上面的内容范围与投递模式处理。",
+                    "选择应用后，只有这些应用的通知会按上面的内容范围与投递模式处理。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = Dimensions.SpaceSmall),
@@ -396,11 +441,17 @@ private fun AllowlistGroup(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
         snapshot.packageIds.forEachIndexed { index, packageId ->
+            val app = installedApps?.firstOrNull { it.packageId == packageId }
             if (index > 0) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
             SettingsListItem(
-                headline = packageId,
+                headline = app?.label ?: packageId,
+                supporting = when {
+                    app != null -> packageId
+                    installedApps != null -> "未安装或当前不可见，已保留原有选择"
+                    else -> "应用信息暂不可用，已保留原有选择"
+                },
                 trailing = {
                     IconButton(onClick = { onRemove(packageId) }) {
                         Icon(

@@ -16,6 +16,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
 
+    <!-- 提供常见已安装应用的可见范围，查询时仍保留系统允许访问的其他应用。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <!--
         usesCleartextTraffic 允许用户显式输入的 http:// 明文 Gateway（ADR 0047）。
         HTTPS 仍是默认链路：已固定 TLS 身份的连接不会被允许降级到明文，

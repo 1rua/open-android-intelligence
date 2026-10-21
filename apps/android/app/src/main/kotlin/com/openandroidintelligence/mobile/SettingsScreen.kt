@@ -734,7 +734,7 @@ private fun SettingsOverviewScreen(
                         headline = "通知采集设置",
                         onClick = { onNavigate(SettingsRoutes.NOTIFICATIONS) },
                         supporting = if (NotificationControlRegistry.policyPort().snapshot().installed) {
-                            "包名白名单、元数据与内容访问、投递模式与系统授权"
+                            "选择本机应用、元数据与内容访问、投递模式与系统授权"
                         } else {
                             "通知采集未装配"
                         },

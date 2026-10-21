@@ -3,12 +3,19 @@ package com.openandroidintelligence.mobile.notifications
 import android.app.Application
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
@@ -31,6 +38,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 通知采集设置子页的界面契约：
@@ -39,7 +47,7 @@ import org.robolectric.annotation.Config
  *   NotificationBindingPort，绝不出现本地假状态。
  */
 @RunWith(RobolectricTestRunner::class)
-// These UI contracts supply both ports; production startup adds unrelated lifecycle work.
+// 界面契约注入两个端口，避免生产启动过程中的无关生命周期工作。
 @Config(sdk = [34], application = Application::class)
 class NotificationCollectionScreenTest {
 
@@ -105,9 +113,24 @@ class NotificationCollectionScreenTest {
         revision = revision,
     )
 
-    private fun render(policy: NotificationPolicyPort, binding: NotificationBindingPort) {
+    private val localApps = listOf(
+        InstalledNotificationApp("com.example.chat", "聊天"),
+        InstalledNotificationApp("com.example.mail", "邮件"),
+        InstalledNotificationApp("com.example.othermail", "邮件"),
+    )
+
+    private fun render(
+        policy: NotificationPolicyPort,
+        binding: NotificationBindingPort,
+        appLoader: () -> List<InstalledNotificationApp> = { localApps },
+    ) {
         compose.setContent {
-            NotificationCollectionScreen(policy = policy, binding = binding, onBack = {})
+            NotificationCollectionScreen(
+                policy = policy,
+                binding = binding,
+                onBack = {},
+                loadInstalledApps = appLoader,
+            )
         }
         compose.waitForIdle()
     }
@@ -116,6 +139,20 @@ class NotificationCollectionScreenTest {
     private fun scrollTo(matcher: androidx.compose.ui.test.SemanticsMatcher) {
         compose.onNodeWithTag("notification-collection-content")
             .performScrollToNode(matcher)
+    }
+
+    private fun openPicker() {
+        scrollTo(hasTestTag("notification-select-apps"))
+        compose.onNodeWithTag("notification-select-apps").performClick()
+        compose.waitForIdle()
+    }
+
+    private fun waitForApp(packageId: String) {
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("notification-app-list").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("notification-app-list")
+            .performScrollToNode(hasTestTag("notification-app-$packageId"))
     }
 
     @Test
@@ -197,24 +234,24 @@ class NotificationCollectionScreenTest {
     }
 
     @Test
-    fun allowlist_editor_adds_sorted_and_removes_packages() {
-        val policy = FakePolicyPort(
-            installedSnapshot(packageIds = listOf("com.example.mail")),
-        )
+    fun selecting_installed_apps_saves_packages_and_allows_removal() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
         render(policy, FakeBindingPort())
+        compose.onNodeWithTag("notification-package-input").assertDoesNotExist()
 
-        scrollTo(hasText("添加"))
-        compose.onNodeWithTag("notification-package-input").performTextInput("com.example.chat")
-        compose.onNodeWithText("添加").performClick()
+        openPicker()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        assertTrue("勾选时不应提前保存策略", policy.updates.isEmpty())
+        compose.onNodeWithTag("notification-app-save").performClick()
         compose.waitForIdle()
-        // 请求携带「当前集合 + 新包」；码点排序是端口实现的职责（host 测试覆盖），
-        // 这里断言端口状态与请求次数。
-        assertEquals(1, policy.updates.size)
-        assertEquals(
-            listOf("com.example.chat", "com.example.mail"),
-            policy.snapshot().packageIds,
-        )
 
+        assertEquals(listOf("com.example.chat", "com.example.mail"), policy.snapshot().packageIds)
+        assertEquals(5uL, policy.updates.single().expectedRevision)
+        assertEquals(null, policy.updates.single().granted)
+        assertEquals(null, policy.updates.single().fieldAccess)
+        assertEquals(null, policy.updates.single().mode)
         scrollTo(hasContentDescription("移除 com.example.chat"))
         compose.onNodeWithContentDescription("移除 com.example.chat").performClick()
         compose.waitForIdle()
@@ -223,16 +260,157 @@ class NotificationCollectionScreenTest {
     }
 
     @Test
-    fun blank_package_input_is_never_submitted() {
-        val policy = FakePolicyPort(installedSnapshot(packageIds = emptyList()))
+    fun cancelling_picker_discards_changes_and_reopening_uses_saved_selection() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
         render(policy, FakeBindingPort())
-
-        scrollTo(hasText("添加"))
-        compose.onNodeWithTag("notification-package-input").performTextInput("   ")
-        compose.onNodeWithText("添加").performClick()
+        openPicker()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithContentDescription("取消选择").performClick()
         compose.waitForIdle()
 
-        assertTrue("空白输入不得产生任何策略更新", policy.updates.isEmpty())
+        assertTrue(policy.updates.isEmpty())
+        openPicker()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
+        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
+    }
+
+    @Test
+    fun search_matches_labels_and_package_ids_without_merging_same_name_apps() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = emptyList()))
+        render(policy, FakeBindingPort())
+        openPicker()
+        waitForApp("com.example.mail")
+        compose.onNodeWithTag("notification-app-search").performTextInput("邮件")
+        compose.onNodeWithTag("notification-app-com.example.chat").assertDoesNotExist()
+        compose.onNodeWithTag("notification-app-com.example.mail").performClick()
+        compose.onNodeWithTag("notification-app-com.example.othermail").performClick()
+        compose.onNodeWithTag("notification-app-search").performTextClearance()
+        compose.onNodeWithTag("notification-app-search").performTextInput("COM.EXAMPLE.CHAT")
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsDisplayed()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+
+        assertEquals(listOf("com.example.mail", "com.example.othermail"), policy.snapshot().packageIds)
+    }
+
+    @Test
+    fun missing_saved_packages_are_retained_until_explicitly_deselected() {
+        val missing = "com.example.removed"
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf(missing)))
+        render(policy, FakeBindingPort())
+        openPicker()
+        waitForApp(missing)
+        compose.onNodeWithTag("notification-app-$missing").assertIsOn()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("com.example.chat", missing), policy.snapshot().packageIds)
+
+        openPicker()
+        waitForApp(missing)
+        compose.onNodeWithTag("notification-app-$missing").performClick()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+
+        assertTrue(policy.snapshot().packageIds.isEmpty())
+        scrollTo(hasText("尚未添加任何应用：白名单为空时不会采集任何通知。", substring = true))
+        compose.onNodeWithText("尚未添加任何应用：白名单为空时不会采集任何通知。", substring = true)
+            .assertIsDisplayed()
+    }
+
+    @Test
+    fun failed_application_query_is_explicit_and_can_be_retried() {
+        val shouldFail = AtomicBoolean(true)
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
+        render(policy, FakeBindingPort()) {
+            if (shouldFail.get()) throw IllegalStateException("测试读取失败")
+            localApps
+        }
+        openPicker()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithText("无法读取本机应用列表，请重试。").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("notification-app-save").assertIsNotEnabled()
+        assertTrue(policy.updates.isEmpty())
+
+        shouldFail.set(false)
+        compose.onNodeWithText("重试").performClick()
+        waitForApp("com.example.mail")
+        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("com.example.mail"), policy.snapshot().packageIds)
+    }
+
+    @Test
+    fun empty_application_query_has_an_honest_empty_state() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = emptyList()))
+        render(policy, FakeBindingPort(), appLoader = { emptyList() })
+        openPicker()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithText("未找到可选择的已安装应用。").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("未找到可选择的已安装应用。").assertIsDisplayed()
+        compose.onNodeWithContentDescription("取消选择").performClick()
+        assertTrue(policy.updates.isEmpty())
+    }
+
+    @Test
+    fun picker_draft_and_search_survive_saved_state_restoration() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
+        val binding = FakeBindingPort()
+        val loader = { localApps }
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent {
+            NotificationCollectionScreen(policy, binding, onBack = {}, loadInstalledApps = loader)
+        }
+        openPicker()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithTag("notification-app-search").performTextInput("聊天")
+
+        restoration.emulateSavedInstanceStateRestore()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
+        compose.onNodeWithTag("notification-app-com.example.mail").assertDoesNotExist()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+
+        assertEquals(listOf("com.example.chat", "com.example.mail"), policy.snapshot().packageIds)
+        assertEquals(5uL, policy.updates.single().expectedRevision)
+    }
+
+    @Test
+    fun concurrent_policy_change_rejects_old_draft_and_can_reload_saved_selection() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
+        render(policy, FakeBindingPort())
+        openPicker()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.runOnIdle {
+            policy.update(NotificationPolicyUpdate(expectedRevision = 5u, packageIds = listOf("com.example.othermail")))
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("更新被拒绝：REVISION_STALE").assertIsDisplayed()
+        assertEquals(listOf("com.example.othermail"), policy.snapshot().packageIds)
+        assertEquals(5uL, policy.updates.last().expectedRevision)
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
+        compose.onNodeWithText("重新载入已保存选择").performClick()
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
+        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOn()
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(6uL, policy.updates.last().expectedRevision)
+        assertEquals(listOf("com.example.chat", "com.example.othermail"), policy.snapshot().packageIds)
     }
 
     @Test
@@ -244,28 +422,5 @@ class NotificationCollectionScreenTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("更新被拒绝：REVISION_STALE").assertIsDisplayed()
-    }
-
-    @Test
-    fun text_input_is_cleared_after_an_accepted_add() {
-        val policy = FakePolicyPort(installedSnapshot(packageIds = emptyList()))
-        render(policy, FakeBindingPort())
-
-        scrollTo(hasText("添加"))
-        compose.onNodeWithTag("notification-package-input").performTextInput("com.example.mail")
-        compose.onNodeWithText("添加").performClick()
-        compose.waitForIdle()
-
-        assertEquals(1, policy.updates.size)
-
-        // 输入框已被清空：第二次输入不会叠加在旧文本上
-        compose.onNodeWithTag("notification-package-input").performTextInput("com.example.chat")
-        compose.onNodeWithText("添加").performClick()
-        compose.waitForIdle()
-        assertEquals(2, policy.updates.size)
-        assertEquals(
-            listOf("com.example.chat", "com.example.mail"),
-            policy.snapshot().packageIds,
-        )
     }
 }

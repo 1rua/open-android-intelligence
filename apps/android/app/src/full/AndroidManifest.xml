@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Full 侧载版允许选择无桌面启动入口的通知来源；Play 版保留系统可见范围。 -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+</manifest>
