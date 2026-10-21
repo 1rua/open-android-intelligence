@@ -23,6 +23,7 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.components.readableFailure
+import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
@@ -30,6 +31,7 @@ import com.openandroidintelligence.conversation.workbench.rememberExecutionTimin
 import com.openandroidintelligence.conversation.workbench.rememberTimelineDisplayItems
 import com.openandroidintelligence.conversation.workbench.ComposerBar
 import com.openandroidintelligence.conversation.workbench.ConversationBrowser
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /** The system embeds this Activity inside a native conversation bubble. */
@@ -192,6 +194,7 @@ private fun BubbleChat(
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     val displayItems = rememberTimelineDisplayItems(entries)
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
+    val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val list = rememberLazyListState()
     val followLatest by remember { derivedStateOf {
         val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: Int.MAX_VALUE
@@ -217,7 +220,10 @@ private fun BubbleChat(
                         timing = executionTiming,
                         onDownloadAttachment = controller::downloadAttachment,
                         onRequestOriginalAttachment = controller::requestOriginalImage,
-                        modifier = Modifier.animateItem(),
+                        modifier = Modifier.animateItem(
+                            fadeInSpec = null,
+                            placementSpec = MotionSpecs.morph(reduceMotion),
+                        ),
                     )
                 }
             }

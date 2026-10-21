@@ -56,14 +56,19 @@ data class TimelineAttachment(
         if (filename != other.filename) return false
         if (mediaType != other.mediaType) return false
         // 字节数组按内容比较：repaint 会重复构造附件对象，引用比较会让每一帧都被当成新数据。
-        if (previewBytes != null) {
-            if (other.previewBytes == null) return false
-            if (!previewBytes.contentEquals(other.previewBytes)) return false
-        } else if (other.previewBytes != null) return false
-        if (originalBytes != null) {
-            if (other.originalBytes == null) return false
-            if (!originalBytes.contentEquals(other.originalBytes)) return false
-        } else if (other.originalBytes != null) return false
+        // 同一个缓存数组通常以同一引用反复出现，先做身份短路，避免流式期间反复扫描大数组。
+        if (previewBytes !== other.previewBytes) {
+            if (previewBytes != null) {
+                if (other.previewBytes == null) return false
+                if (!previewBytes.contentEquals(other.previewBytes)) return false
+            } else if (other.previewBytes != null) return false
+        }
+        if (originalBytes !== other.originalBytes) {
+            if (originalBytes != null) {
+                if (other.originalBytes == null) return false
+                if (!originalBytes.contentEquals(other.originalBytes)) return false
+            } else if (other.originalBytes != null) return false
+        }
 
         return true
     }
