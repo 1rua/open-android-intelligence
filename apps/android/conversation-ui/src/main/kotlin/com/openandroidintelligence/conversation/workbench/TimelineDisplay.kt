@@ -166,11 +166,13 @@ class TimelineDisplayModel(
         val analyses = entries.map(::analyse)
         val hasExecutionBlocks = analyses.any { it.executionCount > 0 }
         val anyFinalVisible = analyses.any { it.finalVisible }
-        // 会话级生成状态优先于单条消息的 isStreaming：Hermes 的实时快照可能一直
-        // 停留在 STREAMING，直到切会话重载才变成 CONFIRMED。生成已结束时必须
-        // 允许折叠，否则用户要切一次会话才能看到聚合面板。
-        val generationActive = generation?.isActive() ?: entries.any { it.isStreaming }
-        val anyStreaming = entries.any { it.isStreaming } && generationActive
+        // 只有明确终态才强制结束流式判定；OUTCOME_UNKNOWN / UNSUPPORTED / IDLE
+        // 仍按每条消息的 isStreaming 判断（取消结果未知时可能还有增量到达）。
+        // Hermes 的实时快照可能一直停留在 STREAMING，直到切会话重载才变成
+        // CONFIRMED；生成已经明确结束时必须允许折叠，不再依赖消息标记。
+        val terminalGeneration = generation?.isTerminal() == true
+        val streamActive = !terminalGeneration && entries.any { it.isStreaming }
+        val anyStreaming = streamActive
         val segmentKey = entries.first().key
         // 一旦这一段出现过最终正文，就不能因为后续又出现一个工具块而把已折叠的
         // 面板重新展开：展开/收起来回跳比晚一点显示更糟。这个粘滞标记只作用于
@@ -181,9 +183,6 @@ class TimelineDisplayModel(
         // 先把它们逐条显示（用户能看到每张工具卡），等最终回答出现再聚合。
         // XML/fenced 工具消息保持原有规则：执行段结束即折叠。
         val hermesProcessSegment = entries.all(::looksLikeHermesProcessEntry)
-        // 生成已进入终态时，即使 Hermes 段内还没有最终正文，也要折叠：任务已经结束，
-        // 不能因为工具消息被审批行拆段而让卡片一直展开。
-        val terminalGeneration = generation != null && !generationActive
         val shouldFold = hasExecutionBlocks &&
             (anyFinalVisible || stickyFinalStarted ||
                 (!anyStreaming && (!hermesProcessSegment || terminalGeneration)))
@@ -191,12 +190,12 @@ class TimelineDisplayModel(
         if (!shouldFold) {
             return entries.map { TimelineDisplayItem.Single(it) }
         }
-        return listOf(TimelineDisplayItem.Execution(buildRun(analyses, generationActive)))
+        return listOf(TimelineDisplayItem.Execution(buildRun(analyses, streamActive)))
     }
 
     private fun buildRun(
         analyses: List<EntryAnalysis>,
-        generationActive: Boolean,
+        streamActive: Boolean,
     ): AssistantExecutionRun {
         // 只有需要折叠的段才解析完整块；普通助手消息在 [analyse] 里走快速路径。
         val resolved = analyses.map { analysis ->
@@ -258,7 +257,7 @@ class TimelineDisplayModel(
             failedStepCount = failedStepCount,
             interrupted = interrupted,
             isStreaming = analyses.any { it.entry.isStreaming },
-            finalEntryIsStreaming = finalEntry.isStreaming && generationActive,
+            finalEntryIsStreaming = finalEntry.isStreaming && streamActive,
             hasFinalAnswer = hasFinalAnswer,
         )
     }
@@ -360,11 +359,11 @@ fun rememberTimelineDisplayItems(
     return remember(entries, generation) { model.build(entries, generation) }
 }
 
-/** 只有这些状态代表「本轮仍在生成」，终态必须允许折叠。 */
-internal fun GenerationState.isActive(): Boolean =
-    this == GenerationState.QUEUED ||
-        this == GenerationState.RUNNING ||
-        this == GenerationState.CANCEL_REQUESTED
+/** 只有明确终态才强制折叠；OUTCOME_UNKNOWN/UNSUPPORTED 仍可能继续输出。 */
+internal fun GenerationState.isTerminal(): Boolean =
+    this == GenerationState.COMPLETED ||
+        this == GenerationState.FAILED ||
+        this == GenerationState.CANCELLED
 
 /** 能进入执行段的消息：既不是用户消息，也不是审批/系统回执行。 */
 private fun isExecutionEligible(entry: TimelineEntry): Boolean =
@@ -375,6 +374,26 @@ private fun isExecutionEligible(entry: TimelineEntry): Boolean =
  *
  * `$ adb` 是普通 bash 围栏升格工具卡的兼容路径；保守地包含它，避免漏掉工具卡。
  */
+/** 廉价预扫描：先做关键字 contains，避免对普通历史逐行跑正则。 */
+private fun mayContainHermesMarkup(text: String): Boolean {
+    if (text.contains("调用工具") || text.contains("工具调用") ||
+        text.contains("Tool call", ignoreCase = true) ||
+        text.contains("Calling tool", ignoreCase = true)
+    ) {
+        return true
+    }
+    val activityKeywords = listOf(
+        "Running code", "Running ", "Searching files", "Searching the web",
+        "Searching past sessions", "Reading ", "Writing ", "Editing ",
+        "Browsing ", "Clicking ", "Typing ", "Generating image", "Generating video",
+        "Generating speech", "Looking at the image", "Listing skills",
+        "Updating skill", "Delegating", "Scheduling", "Asking", "Updating memory",
+        "Updating tasks",
+    )
+    return activityKeywords.any { text.contains(it, ignoreCase = true) } &&
+        MarkdownParser.mayContainHermesToolText(text)
+}
+
 /** 一条助手消息是否属于 Hermes 的工具占位/活动日志（而不是真实最终回答）。 */
 private fun looksLikeHermesProcessEntry(entry: TimelineEntry): Boolean {
     val text = entry.text
@@ -392,22 +411,11 @@ private fun looksLikeHermesProcessEntry(entry: TimelineEntry): Boolean {
  * 它们没有 XML/围栏标记，但若被当成最终正文，会在第一张工具卡出现时提前折叠成
  * “最终回答是工具日志”的错误形态。整条消息所有行都是活动日志时才视为过程文本。
  */
-internal fun looksLikeHermesActivityLog(text: String): Boolean {
-    val lines = text.lines().filter { it.isNotBlank() }
-    if (lines.isEmpty()) return false
-    val prefixes = listOf(
-        "Running code", "Running", "Searching files", "Searching",
-        "Reading", "Writing", "Editing", "Listing", "Command",
-    )
-    return lines.all { line ->
-        // 行首可能带 emoji/序号/项目符号；跳过非字母字符后再匹配工具活动前缀。
-        val clean = line.trim().trimStart { !it.isLetter() }
-        prefixes.any { clean.startsWith(it, ignoreCase = true) }
-    }
-}
+internal fun looksLikeHermesActivityLog(text: String): Boolean =
+    MarkdownParser.isHermesActivityOnlyText(text)
 
 internal fun mayContainExecutionMarkup(text: String): Boolean =
-    MarkdownParser.mayContainHermesToolText(text) ||
+    mayContainHermesMarkup(text) ||
         text.contains("<think", ignoreCase = true) ||
         text.contains("<tool_call", ignoreCase = true) ||
         text.contains("```tool_call", ignoreCase = true) ||

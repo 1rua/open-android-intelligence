@@ -46,7 +46,7 @@ object MarkdownParser {
     )
 
     /** host_history.py 用「、」连接同一条进度消息里的多个工具名。 */
-    private val hermesToolNameSeparator = Regex("[、,，]")
+    private val hermesToolNameSeparator = Regex("[、，]")
     private val hermesToolNameAndArgs = Regex("^([A-Za-z0-9._~-]{1,128})(?:\\s+|\\s*[(（]\\s*)(.*)$")
     private val thinkStartRegex = Regex("<think(?:\\s+[^>]*)?>", RegexOption.IGNORE_CASE)
     private val thinkEndRegex = Regex("</think>", RegexOption.IGNORE_CASE)
@@ -511,10 +511,10 @@ private const val MaxBlockquoteDepth = 8
  */
 internal fun mayContainHermesToolText(text: String): Boolean {
     if (text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }) return true
-    return isHermesActivityOnlyMessage(text)
+    return isHermesActivityOnlyText(text)
 }
 
-private fun isHermesActivityOnlyMessage(text: String): Boolean {
+internal fun isHermesActivityOnlyText(text: String): Boolean {
     val lines = text.lines().filter { it.isNotBlank() }
     // 至少两行，且行尾没有句读：单行或带句号的 "Reading your question..." 更像正文，
     // 而不是 Hermes 的工具进度预览。
@@ -568,7 +568,7 @@ private fun isHermesActivityOnlyMessage(text: String): Boolean {
             return parseHermesToolLines(
                 text = text,
                 quoteDepth = quoteDepth,
-                includeActivities = !hasExplicitToolLine && isHermesActivityOnlyMessage(text),
+                includeActivities = !hasExplicitToolLine && isHermesActivityOnlyText(text),
             )
         }
         val lines = text.lines()

@@ -322,6 +322,13 @@ private fun ToolCallDetails(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (block.command.endsWith("...")) {
+                Text(
+                    text = "参数来自 Hermes 预览，可能已被截断",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             if (summaryText != null) {
                 Text(

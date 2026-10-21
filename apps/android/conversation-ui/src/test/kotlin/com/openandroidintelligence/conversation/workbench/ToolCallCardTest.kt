@@ -176,6 +176,16 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun hermesArgumentsContainingACommaStayInOneCard() {
+        val blocks = MarkdownParser.parse("调用工具：execute_code print(a, b)")
+
+        assertEquals(1, blocks.size)
+        val call = blocks[0] as TimelineBlock.ToolCallBlock
+        assertEquals("execute_code", call.toolName)
+        assertEquals("print(a, b)", call.command)
+    }
+
+    @Test
     fun hermesJoinedToolNamesBecomeOneCardPerTool() {
         val blocks = MarkdownParser.parse("调用工具：execute_code、search_files、read_file")
 

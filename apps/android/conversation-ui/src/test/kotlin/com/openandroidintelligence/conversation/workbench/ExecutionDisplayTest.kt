@@ -385,6 +385,41 @@ class ExecutionDisplayTest {
     }
 
     @Test
+    fun unknownOrUnsupportedGenerationDoesNotForceHermesCardsToFold() {
+        val entries = listOf(
+            userEntry("u1", "查一下"),
+            assistantEntry("a1", "调用工具：execute_code", streaming = true),
+        )
+        val model = TimelineDisplayModel()
+
+        listOf(GenerationState.OUTCOME_UNKNOWN, GenerationState.UNSUPPORTED).forEach { generation ->
+            val items = model.build(entries, generation = generation)
+            assertTrue(
+                items.drop(1).all { it is TimelineDisplayItem.Single },
+                "$generation 仍可能继续输出，不能强制折叠 Hermes 工具段",
+            )
+        }
+    }
+
+    @Test
+    fun finalAnswerStartingWithToolWordsIsNotMistakenForActivity() {
+        val entries = listOf(
+            userEntry("u1", "继续"),
+            assistantEntry("a1", "<tool_call name=\"read_file\">core.py</tool_call>"),
+            assistantEntry(
+                "a2",
+                "Reading your question, I found the answer.\nRunning the check next.",
+            ),
+        )
+
+        val run = (TimelineDisplayModel().build(entries).last() as TimelineDisplayItem.Execution).run
+
+        assertEquals("a2", run.finalEntry.key)
+        assertTrue(run.hasFinalAnswer)
+        assertTrue(run.finalBlocks.any { it is TimelineBlock.Paragraph })
+    }
+
+    @Test
     fun terminalGenerationFoldsHermesToolOnlySegmentWithoutAFinalAnswer() {
         val entries = listOf(
             userEntry("u1", "查一下"),

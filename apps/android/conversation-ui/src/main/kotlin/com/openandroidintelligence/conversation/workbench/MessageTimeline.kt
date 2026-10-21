@@ -43,6 +43,7 @@ import com.openandroidintelligence.conversation.components.stitchGuide
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.AttachmentDownloadState
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
@@ -75,8 +76,9 @@ fun MessageTimeline(
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
+    generation: GenerationState? = null,
 ) {
-    val displayItems = rememberTimelineDisplayItems(entries)
+    val displayItems = rememberTimelineDisplayItems(entries, generation = generation)
     val timing = rememberExecutionTimingStore(threadId = null)
     AttachmentPreviewHost(
         attachments = entries.flatMap { it.attachments },
