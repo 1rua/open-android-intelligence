@@ -325,7 +325,7 @@ data class TimelineAttachment(
 
 实现中补充/修正了以下规格细节：
 
-0. **Hermes 纯文本工具调用**：解析器识别 `调用工具：<name>` 行，摘要栏显示「已调用」，展开后说明“Hermes 在消息中未提供命令参数”；Hermes 工具活动日志视为过程叙述，与工具卡一起在最终回答出现后聚合。修复了实机反馈“Hermes 未显示工具卡片、回答结束后也未折叠”。
+0. **Hermes 纯文本工具调用**：解析器识别 `调用工具：<name>` 行（同一条消息用「、」连接多个工具名时逐张卡呈现），摘要栏显示「已调用」，展开后说明“Hermes 在消息中未提供命令参数”；Hermes 工具活动日志视为过程叙述，与工具卡一起在最终回答出现后聚合。修复了实机反馈“Hermes 未显示工具卡片、回答结束后也未折叠”。
 1. **粘滞折叠**：执行段一旦出现过最终正文，后续又出现工具块时不把已折叠面板展开回实时卡片，避免流式过程中阅读位置来回跳（`TimelineDisplayModel.latchedFinalSegmentKey`）。
 2. **闭合块之后的未闭合块**：XML 与 fenced 两条路径都继续走执行块入口，避免把「闭合工具/围栏 + 后续未闭合工具/围栏」的最后一段误当普通正文，否则最终回答定位会提前、围栏原文甚至会出现在最终回答里。
 3. **长会话快速路径**：展示模型先做廉价预扫描，只有含 `<think`/`<tool_call`/fenced `tool_call`/`$ adb` 的消息才完整解析；普通历史只在所属执行段真的折叠时解析，避免流式增量反复解析整段历史。
@@ -339,7 +339,7 @@ data class TimelineAttachment(
 
 | 验证 | 结果 |
 |---|---|
-| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 530 个用例 / 0 失败 |
+| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 532 个用例 / 0 失败 |
 | `:app:compileFullDebugKotlin` | BUILD SUCCESSFUL |
 | `:app:assembleFullDebug` | BUILD SUCCESSFUL |
 | `noVpnSurfaceCheck` | BUILD SUCCESSFUL |

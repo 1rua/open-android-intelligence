@@ -25,9 +25,13 @@ object MarkdownParser {
      * 只在独立成行时识别，避免把正文里的同义句子误判成工具卡。
      */
     private val hermesToolLineRegex = Regex(
-        "^\\s*[^\\p{L}\\p{N}]*\\s*(?:调用工具|工具调用|Tool call|Calling tool)\\s*[：:]\\s*([A-Za-z0-9_.\\-]+)\\s*(.*)$",
+        "^\\s*[^\\p{L}\\p{N}]*\\s*(?:调用工具|工具调用|Tool call|Calling tool)\\s*[：:]\\s*(.+?)\\s*$",
         RegexOption.IGNORE_CASE,
     )
+
+    /** host_history.py 用「、」连接同一条进度消息里的多个工具名。 */
+    private val hermesToolNameSeparator = Regex("[、,，]")
+    private val hermesToolNameAndArgs = Regex("^([A-Za-z0-9._~-]{1,128})(?:\\s+|\\s*[(（]\\s*)(.*)$")
     private val thinkStartRegex = Regex("<think(?:\\s+[^>]*)?>", RegexOption.IGNORE_CASE)
     private val thinkEndRegex = Regex("</think>", RegexOption.IGNORE_CASE)
     private val headingRegex = Regex("^(#{1,6})\\s+(.*)$")
@@ -433,15 +437,32 @@ private const val MaxBlockquoteDepth = 8
                 pending += line
             } else {
                 flushPending()
-                val toolName = match.groupValues[1].trim()
-                val rest = match.groupValues[2].trim()
-                blocks += TimelineBlock.ToolCallBlock(
-                    toolName = toolName.ifBlank { "执行命令" },
-                    command = rest,
-                    isSuccess = true,
-                    summary = null,
-                    invocationOnly = true,
-                )
+                val namesText = match.groupValues[1]
+                    .trim()
+                    .trim('*', '`', ' ')
+                // 一条消息可能写成「调用工具：execute_code、search_files」：每个名称一张卡。
+                namesText.split(hermesToolNameSeparator)
+                    .map { it.trim().trim('*', '`', ' ') }
+                    .filter { it.isNotEmpty() }
+                    .forEach { segment ->
+                        val withArgs = hermesToolNameAndArgs.find(segment)
+                        val toolName: String
+                        val command: String
+                        if (withArgs != null) {
+                            toolName = withArgs.groupValues[1]
+                            command = withArgs.groupValues[2].trim()
+                        } else {
+                            toolName = segment
+                            command = ""
+                        }
+                        blocks += TimelineBlock.ToolCallBlock(
+                            toolName = toolName.ifBlank { "执行命令" },
+                            command = command,
+                            isSuccess = true,
+                            summary = null,
+                            invocationOnly = true,
+                        )
+                    }
             }
         }
         flushPending()

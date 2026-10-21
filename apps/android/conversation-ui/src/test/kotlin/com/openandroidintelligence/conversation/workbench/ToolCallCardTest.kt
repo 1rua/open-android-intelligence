@@ -176,6 +176,28 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun hermesJoinedToolNamesBecomeOneCardPerTool() {
+        val blocks = MarkdownParser.parse("调用工具：execute_code、search_files、read_file")
+
+        assertEquals(3, blocks.size)
+        assertEquals(
+            listOf("execute_code", "search_files", "read_file"),
+            blocks.map { (it as TimelineBlock.ToolCallBlock).toolName },
+        )
+        assertTrue(blocks.all { (it as TimelineBlock.ToolCallBlock).invocationOnly })
+    }
+
+    @Test
+    fun hermesInvocationWithArgumentsKeepsThemAsCommand() {
+        val blocks = MarkdownParser.parse("调用工具：execute_code({\"sql\":\"select 1\"})")
+
+        assertEquals(1, blocks.size)
+        val call = blocks[0] as TimelineBlock.ToolCallBlock
+        assertEquals("execute_code", call.toolName)
+        assertTrue(call.command.contains("select 1"))
+    }
+
+    @Test
     fun hermesActivityTextAndInvocationLinesParseIntoNarrativeAndToolCards() {
         val markdown = """
             Running code import sqlite3
