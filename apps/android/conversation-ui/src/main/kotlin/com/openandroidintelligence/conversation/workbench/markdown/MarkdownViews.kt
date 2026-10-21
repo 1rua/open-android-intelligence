@@ -69,7 +69,7 @@ fun MarkdownDocumentView(
     val compact = LocalMarkdownCompact.current
 
     Column(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         // 块间距走间距令牌：普通正文 8dp；紧凑上下文收到 4dp，思维链读起来才连贯。
         verticalArrangement = Arrangement.spacedBy(
             if (compact) Dimensions.SpaceTiny else Dimensions.SpaceSmall,
@@ -131,7 +131,6 @@ fun MarkdownHeadingView(
 
     Column(
         modifier = modifier
-            .fillMaxWidth()
             .padding(
                 top = if (compact) Dimensions.SpaceTiny else 4.dp,
                 bottom = 2.dp,
@@ -185,7 +184,7 @@ fun MarkdownParagraphView(
         text = block.text,
         colors = colors,
         isStreaming = isStreaming,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         style = style,
         color = color,
     )
@@ -206,7 +205,6 @@ fun MarkdownBlockquoteView(
 
     Row(
         modifier = modifier
-            .fillMaxWidth()
             .padding(vertical = 2.dp)
             .height(IntrinsicSize.Min),
     ) {
@@ -223,7 +221,7 @@ fun MarkdownBlockquoteView(
             LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant,
         ) {
             Column(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f, fill = false),
                 verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
             ) {
                 block.blocks.forEachIndexed { index, child ->
@@ -255,7 +253,7 @@ fun MarkdownListView(
     }
 
     Column(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
         // 标记只在首行居中：多行列表项保持圆点/复选框贴首行，而不是浮在整段中间
@@ -276,7 +274,6 @@ fun MarkdownListView(
 
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
                     .padding(start = Dimensions.ListIndent * item.level),
                 verticalAlignment = Alignment.Top,
             ) {
@@ -286,7 +283,7 @@ fun MarkdownListView(
                     text = item.text,
                     colors = colors,
                     isStreaming = isLast,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f, fill = false),
                     style = baseStyle.copy(
                         textDecoration = if (checked) TextDecoration.LineThrough else TextDecoration.None,
                     ),
@@ -374,6 +371,8 @@ fun MarkdownTableView(
     val headerBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val evenBg = MaterialTheme.colorScheme.surfaceContainerLowest
     val oddBg = MaterialTheme.colorScheme.surfaceContainerLow
+    // Leave room for short tables inside bubble padding; wide contents still scroll.
+    val columnMinimum = 72.dp
 
     Surface(
         shape = RoundedCornerShape(AppRadius.Small),
@@ -404,7 +403,7 @@ fun MarkdownTableView(
                         }
                         Box(
                             modifier = Modifier
-                                .widthIn(min = 90.dp)
+                                .widthIn(min = columnMinimum)
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
                             contentAlignment = when (align) {
                                 TableAlignment.LEFT -> Alignment.CenterStart
@@ -455,7 +454,7 @@ fun MarkdownTableView(
                                 colIdx == block.headers.lastIndex
                             Box(
                                 modifier = Modifier
-                                    .widthIn(min = 90.dp)
+                                    .widthIn(min = columnMinimum)
                                     .padding(horizontal = 10.dp, vertical = 7.dp),
                                 contentAlignment = when (align) {
                                     TableAlignment.LEFT -> Alignment.CenterStart

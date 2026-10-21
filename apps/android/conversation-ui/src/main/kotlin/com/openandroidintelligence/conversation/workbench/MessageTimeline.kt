@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -39,7 +40,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.openandroidintelligence.conversation.components.stitchGuide
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.AttachmentDownloadState
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
@@ -60,7 +60,7 @@ import java.time.format.DateTimeFormatter
 
 /**
  * 消息时间线的列表容器。视觉规范严格遵循设计系统与产品规格（2026-10-21 §5.1）：
- * 1. 助手消息：开放式正文 + 由内容高度驱动的连续缝线（[stitchGuide]），适合长文本与 Markdown；
+ * 1. 助手与用户消息各自按内容测量，正文气泡保留长文本与 Markdown 的宽度上限；
  * 2. 用户消息：右对齐气泡，`surfaceContainerHigh` + `onSurface`，20dp 圆角、尾部方向角 4dp；
  * 3. 元数据：时间与状态统一 `AppTextStyles.MonoSmall` + `onSurfaceVariant`，状态用文字表达，
  *    等待用 warning、失败才用 error —— 颜色永远不是唯一信号；
@@ -162,37 +162,17 @@ private fun UserMessageBubble(
     onOpenAttachmentPreview: ((String) -> Unit)? = null,
 ) {
     val failed = entry.submissionFailureCode != null || entry.messageStatus == AgentMessageStatus.FAILED
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.End,
-    ) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            shape = RoundedCornerShape(
-                topStart = AppRadius.Bubble,
-                topEnd = AppRadius.Bubble,
-                bottomStart = AppRadius.Bubble,
-                bottomEnd = AppRadius.ExtraSmall,
-            ),
-            modifier = Modifier
-                .widthIn(max = Dimensions.MessageWidth)
-                .fillMaxWidth(Dimensions.MessageWidthFraction),
-        ) {
-            Column(
-                modifier = Modifier.padding(
-                    horizontal = Dimensions.SpaceMedium,
-                    vertical = Dimensions.SpaceCompact,
-                ),
-                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-            ) {
-                MessageAttachments(
-                    attachments = entry.attachments,
-                    onDownload = onDownloadAttachment,
-                    onRequestOriginal = onRequestOriginalAttachment,
-                    onOpenPreview = onOpenAttachmentPreview,
-                )
-
+    val fileMetadataVisible = entry.attachments.any { !it.isImage }
+    MessageRowLayout(isUser = true, modifier = modifier) {
+        MessageAttachments(
+            attachments = entry.attachments,
+            onDownload = onDownloadAttachment,
+            onRequestOriginal = onRequestOriginalAttachment,
+            onOpenPreview = onOpenAttachmentPreview,
+            fileMetadata = if (fileMetadataVisible) { { MessageMetadata(entry, failed) } } else null,
+        )
+        if (entry.text.isNotBlank() || entry.attachments.isEmpty()) {
+            MessageBubble(isUser = true, messageKey = entry.key) {
                 if (entry.text.isNotBlank()) {
                     SelectionContainer {
                         Text(text = entry.text, style = MaterialTheme.typography.bodyLarge)
@@ -205,14 +185,9 @@ private fun UserMessageBubble(
                         )
                     }
                 }
-
-                MessageMetadata(
-                    entry = entry,
-                    failed = failed,
-                    modifier = Modifier.align(Alignment.End),
-                )
             }
         }
+        if (!fileMetadataVisible) MessageMetadata(entry, failed)
 
         // 复制按钮放在气泡外侧下方：只复制原文，不改变气泡本身的排版与高度。
         if (entry.text.isNotBlank()) {
@@ -222,6 +197,49 @@ private fun UserMessageBubble(
                 modifier = Modifier.padding(top = Dimensions.SpaceTiny),
             )
         }
+    }
+}
+
+/** The row owns the width limit; each bubble is measured with a zero minimum width. */
+@Composable
+private fun MessageRowLayout(
+    isUser: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val alignment = if (isUser) Alignment.TopEnd else Alignment.TopStart
+    Box(modifier.fillMaxWidth(), contentAlignment = alignment) {
+        // Use ordinary layout nodes so execution-panel expansion can remeasure
+        // the bubble directly, without a subcomposition in the animated parent.
+        Box(Modifier.fillMaxWidth(Dimensions.MessageWidthFraction), contentAlignment = alignment) {
+            Column(
+                modifier = Modifier.widthIn(max = Dimensions.MessageWidth),
+                horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                content = content,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(isUser: Boolean, messageKey: String, content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        modifier = Modifier.testTag("message-bubble:$messageKey"),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(
+            topStart = AppRadius.Bubble,
+            topEnd = AppRadius.Bubble,
+            bottomStart = if (isUser) AppRadius.Bubble else AppRadius.ExtraSmall,
+            bottomEnd = if (isUser) AppRadius.ExtraSmall else AppRadius.Bubble,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceCompact),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+            content = content,
+        )
     }
 }
 
@@ -259,7 +277,7 @@ private fun AttachmentFallbackChip(filename: String, isImage: Boolean) {
             Text(
                 text = filename,
                 style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
+                maxLines = if (isImage) 1 else 2,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -307,13 +325,15 @@ private fun MessageAttachments(
     onDownload: ((String) -> Unit)?,
     onRequestOriginal: ((String) -> Unit)?,
     onOpenPreview: ((String) -> Unit)? = null,
+    fileMetadata: (@Composable () -> Unit)? = null,
 ) {
-    attachments.forEach {
+    attachments.forEachIndexed { index, attachment ->
         HistoricalAttachmentCard(
-            attachment = it,
+            attachment = attachment,
             onDownload = onDownload,
             onRequestOriginal = onRequestOriginal,
             onOpenPreview = onOpenPreview,
+            fileMetadata = fileMetadata.takeIf { index == attachments.indexOfLast { !it.isImage } },
         )
     }
 }
@@ -331,11 +351,12 @@ fun HistoricalAttachmentCard(
     onRequestOriginal: ((String) -> Unit)? = null,
     onOpenPreview: ((String) -> Unit)? = null,
     showCaption: Boolean = false,
+    fileMetadata: (@Composable () -> Unit)? = null,
 ) {
     if (attachment.isImage) {
         ImageAttachmentCard(attachment, modifier, onDownload, onRequestOriginal, onOpenPreview, showCaption)
     } else {
-        FileAttachmentCard(attachment, modifier, onDownload)
+        FileAttachmentCard(attachment, modifier, onDownload, fileMetadata)
     }
 }
 
@@ -366,26 +387,30 @@ private fun ImageAttachmentCard(
     val canOpen = image != null || attachment.localState != AttachmentLocalState.UNAVAILABLE
 
     Column(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
         if (showCaption) {
             AttachmentFallbackChip(attachment.filename.ifBlank { "图片附件" }, isImage = true)
         }
         if (image != null) {
-            Image(
-                bitmap = image,
-                contentDescription = "查看大图：${attachment.filename.ifBlank { "图片" }}",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = Dimensions.AttachmentImageMaxHeight)
-                    .clip(RoundedCornerShape(AppRadius.Medium))
-                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                    .clickable(enabled = canOpen, role = Role.Button, onClickLabel = "查看大图") {
-                        openPreview()
-                    },
-            )
+            BoxWithConstraints {
+                val ratio = image.width.toFloat() / image.height
+                val imageWidth = minOf(maxWidth, Dimensions.MessageWidth, Dimensions.AttachmentImageMaxHeight * ratio)
+                Image(
+                    bitmap = image,
+                    contentDescription = "查看大图：${attachment.filename.ifBlank { "图片" }}",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .testTag("attachment-image:${attachment.draftId}")
+                        .size(width = imageWidth, height = imageWidth / ratio)
+                        .clip(RoundedCornerShape(AppRadius.Medium))
+                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                        .clickable(enabled = canOpen, role = Role.Button, onClickLabel = "查看大图") {
+                            openPreview()
+                        },
+                )
+            }
         } else {
             ImageUnavailablePlaceholder(
                 attachment = attachment,
@@ -518,31 +543,35 @@ private fun FileAttachmentCard(
     attachment: TimelineAttachment,
     modifier: Modifier,
     onDownload: ((String) -> Unit)?,
+    metadata: (@Composable () -> Unit)?,
 ) {
-    OutlinedCard(modifier.fillMaxWidth()) {
-        Column(Modifier.padding(Dimensions.SpaceMedium), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-            AttachmentFallbackChip(attachment.filename.ifBlank { "附件文件" }, isImage = false)
-            when (attachment.localState) {
-                AttachmentLocalState.PENDING -> Text("正在保存到本机…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                AttachmentLocalState.UNAVAILABLE -> Text("原件不可用，附件信息仍保留", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                AttachmentLocalState.FAILED -> Text("本地保存失败，请检查手机存储空间或连接", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                AttachmentLocalState.SAVED -> Unit
-            }
-            when (attachment.downloadState) {
-                AttachmentDownloadState.SAVED -> Text("已保存到下载目录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                AttachmentDownloadState.FAILED -> Text("下载失败，请重试", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                else -> Unit
-            }
+    Column(modifier.widthIn(max = Dimensions.MessageWidth), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny)) {
+        AttachmentFallbackChip(attachment.filename.ifBlank { "附件文件" }, isImage = false)
+        when (attachment.localState) {
+            AttachmentLocalState.PENDING -> Text("正在保存到本机…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentLocalState.UNAVAILABLE -> Text("原件不可用，附件信息仍保留", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentLocalState.FAILED -> Text("本地保存失败，请检查手机存储空间或连接", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            AttachmentLocalState.SAVED -> Unit
+        }
+        when (attachment.downloadState) {
+            AttachmentDownloadState.SAVED -> Text("已保存到下载目录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentDownloadState.FAILED -> Text("下载失败，请重试", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            else -> Unit
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
             TextButton(onClick = { onDownload?.invoke(attachment.draftId) }, enabled =
                 onDownload != null && attachment.localState != AttachmentLocalState.UNAVAILABLE && attachment.downloadState != AttachmentDownloadState.DOWNLOADING) {
                 Text(if (attachment.downloadState == AttachmentDownloadState.DOWNLOADING) "下载中…" else "下载")
             }
+            Spacer(Modifier.weight(1f))
+            metadata?.invoke()
         }
     }
 }
 
 /**
- * 助手正文：不再每块各画一段固定 32dp 的缝线，而是让 [stitchGuide] 跟着内容长度走。
+ * 助手正文与用户正文共用内容自适应气泡。
  * 正文直接交给 [MarkdownDocumentView]，字号走 bodyLarge（16sp / 26sp 行高）。
  */
 @Composable
@@ -554,25 +583,23 @@ private fun AssistantMessageRow(
     onOpenAttachmentPreview: ((String) -> Unit)? = null,
 ) {
     val failed = entry.messageStatus == AgentMessageStatus.FAILED || entry.submissionFailureCode != null
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .stitchGuide(failed = failed)
-            .padding(start = Dimensions.StitchGutter),
-        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-    ) {
+    val fileMetadataVisible = entry.attachments.any { !it.isImage }
+    MessageRowLayout(isUser = false, modifier = modifier) {
         MessageAttachments(
             attachments = entry.attachments,
             onDownload = onDownloadAttachment,
             onRequestOriginal = onRequestOriginalAttachment,
             onOpenPreview = onOpenAttachmentPreview,
+            fileMetadata = if (fileMetadataVisible) { { MessageMetadata(entry, failed) } } else null,
         )
 
         // 文本内容（含实时执行卡片/最终回答）统一交给执行过程渲染层；
         // 附件、元数据与复制仍由这一层负责，保持四个宿主一致。
-        AssistantMessageContent(entry = entry)
+        if (entry.text.isNotBlank() || entry.attachments.isEmpty() || entry.isStreaming) {
+            MessageBubble(isUser = false, messageKey = entry.key) { AssistantMessageContent(entry = entry) }
+        }
 
-        MessageMetadata(entry = entry, failed = failed)
+        if (!fileMetadataVisible) MessageMetadata(entry = entry, failed = failed)
 
         // 与用户气泡一致的「原文复制」入口：复制的是含 Markdown 标记的原始内容。
         if (entry.text.isNotBlank()) {
@@ -634,24 +661,25 @@ private fun ExecutionTurnRow(
 ) {
     val failed = run.finalEntry.messageStatus == AgentMessageStatus.FAILED ||
         run.finalEntry.submissionFailureCode != null
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .stitchGuide(failed = failed)
-            .padding(start = Dimensions.StitchGutter),
-        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-    ) {
+    val fileMetadataVisible = run.hasFinalAnswer && run.finalEntry.attachments.any { !it.isImage }
+    MessageRowLayout(isUser = false, modifier = modifier) {
         if (run.hasFinalAnswer) {
             MessageAttachments(
                 attachments = run.finalEntry.attachments,
                 onDownload = onDownloadAttachment,
                 onRequestOriginal = onRequestOriginalAttachment,
                 onOpenPreview = onOpenAttachmentPreview,
+                fileMetadata = if (fileMetadataVisible) { { MessageMetadata(run.finalEntry, failed) } } else null,
             )
         }
 
         AssistantExecutionTurnBody(
             run = run,
+            finalAnswerSlot = { blocks, streaming ->
+                MessageBubble(isUser = false, messageKey = run.finalEntry.key) {
+                    MarkdownDocumentView(blocks = blocks, isStreaming = streaming)
+                }
+            },
             processAttachmentsSlot = { processEntry ->
                 if (processEntry.attachments.isNotEmpty()) {
                     MessageAttachments(
@@ -664,7 +692,7 @@ private fun ExecutionTurnRow(
             },
         )
 
-        MessageMetadata(entry = run.finalEntry, failed = failed)
+        if (!fileMetadataVisible) MessageMetadata(entry = run.finalEntry, failed = failed)
 
         // 复制的是最终消息的原始文本（含 Markdown 标记），与既有逐条复制语义一致。
         if (run.finalEntry.text.isNotBlank()) {
@@ -770,6 +798,7 @@ private fun MessageMetadata(
                 style = AppTextStyles.MonoSmall,
                 color = color,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -854,9 +883,7 @@ fun ThinkingIndicator(
     val reduced = LocalMotionPolicy.current.reduceMotion
     Box(
         modifier = modifier
-            .fillMaxWidth()
-            .stitchGuide()
-            .padding(start = Dimensions.StitchGutter),
+            .fillMaxWidth(),
     ) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainer,

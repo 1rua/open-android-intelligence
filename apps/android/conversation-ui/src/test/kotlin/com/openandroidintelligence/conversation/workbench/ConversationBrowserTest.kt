@@ -28,6 +28,33 @@ import org.junit.Test
 class ConversationBrowserTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun folderSelectionSuppliesCreationContextAndAllThreadsClearsIt() {
+        val folderId = mutableStateOf<String?>(null)
+        val createdIn = mutableListOf<String?>()
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(360.dp, 800.dp)) {
+                    ConversationBrowser(
+                        threads = Loadable.Ready(listOf(thread("a", "Alpha", 1))),
+                        activeThreadId = null,
+                        onOpenThread = {}, onCreateThread = { createdIn += folderId.value }, onRefresh = {},
+                        organization = ConversationOrganization(folders = listOf(ConversationFolder("work", "Work"))),
+                        selectedFolderId = folderId.value,
+                        actions = ConversationBrowserActions(selectFolder = { folderId.value = it }),
+                    )
+                }
+            }
+        }
+        compose.onNodeWithText("全部会话").performClick()
+        compose.onNodeWithText("Work").performClick()
+        compose.onNodeWithContentDescription("新建会话").performClick()
+        assertEquals(listOf("work"), createdIn)
+        compose.onNodeWithText("Work").performClick()
+        compose.onNodeWithText("全部会话").performClick()
+        compose.onNodeWithContentDescription("新建会话").performClick()
+        assertEquals(listOf("work", null), createdIn)
+    }
+
     @Test
     fun recentSortIsTheDefaultAndCustomOrderIsReflectedAfterTheSaveCallback() {
         val rows = listOf(

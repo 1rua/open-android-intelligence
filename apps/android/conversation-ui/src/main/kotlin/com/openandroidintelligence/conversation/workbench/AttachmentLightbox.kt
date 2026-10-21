@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.workbench
 
 import android.graphics.drawable.ColorDrawable
+import android.view.Gravity
 import android.view.WindowInsets as AndroidWindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -21,10 +22,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -115,8 +118,10 @@ fun AttachmentLightbox(
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
-            // 大图预览必须铺满整屏：默认宽度会让它缩成一张居中卡片，图片反而更小。
-            usePlatformDefaultWidth = false,
+            // Compose 1.7's non-default-width path remeasures against screenHeightDp,
+            // excluding system bars, then overwrites the window size on every layout.
+            // Let the platform measure the full window owned by DialogWindowChrome.
+            usePlatformDefaultWidth = true,
             dismissOnClickOutside = false,
             decorFitsSystemWindows = false,
         ),
@@ -151,6 +156,16 @@ private fun DialogWindowChrome() {
             runCatching {
                 window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
                 window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+                window.setDecorFitsSystemWindows(false)
+                // A floating Dialog can retain a centered, inset frame even when
+                // its Compose content fills the available size. Own the full window.
+                window.attributes = window.attributes.apply {
+                    width = WindowManager.LayoutParams.MATCH_PARENT
+                    height = WindowManager.LayoutParams.MATCH_PARENT
+                    gravity = Gravity.TOP or Gravity.START
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    setFitInsetsTypes(0)
+                }
             }
             runCatching {
                 controller?.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -200,8 +215,7 @@ private fun LightboxContent(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.scrim.copy(alpha = ScrimAlpha))
-            .windowInsetsPadding(WindowInsets.safeDrawing),
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = ScrimAlpha)),
     ) {
         LightboxTopBar(
             attachment = attachment,
@@ -219,7 +233,8 @@ private fun LightboxContent(
             onDismiss = onDismiss,
             onDownload = onDownload,
             onRetryOriginal = retryOriginal,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal)),
         )
     }
 }
@@ -242,6 +257,7 @@ private fun LightboxTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
                 .heightIn(min = Dimensions.TopBarContentHeight)
                 .padding(horizontal = Dimensions.SpaceSmall),
             verticalAlignment = Alignment.CenterVertically,

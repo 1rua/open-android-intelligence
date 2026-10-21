@@ -201,6 +201,7 @@ fun WorkbenchScreen(
                 threads = state.threads,
                 activeThreadId = state.activeThreadId,
                 organization = state.organization,
+                selectedFolderId = state.selectedFolderId,
                 managementSupported = state.conversationManagementSupported,
                 managing = state.managingThreads,
                 online = state.isOnline,
@@ -215,6 +216,7 @@ fun WorkbenchScreen(
                     assignFolder = controller::assignThreadToFolder,
                     sort = controller::setThreadSortMode,
                     reorder = controller::reorderThreads,
+                    selectFolder = controller::selectFolder,
                 ),
                 onOpenThread = {
                     controller.openThread(it)
@@ -675,12 +677,6 @@ private fun WorkbenchTopBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
             ) {
-                // 品牌只留一条静默缝线，替换原来那个「机器人头像 + 圆点」的通用 AI 图标。
-                SignalStitch(
-                    modifier = Modifier
-                        .width(8.dp)
-                        .height(Dimensions.SpaceLarge),
-                )
                 Column(modifier = Modifier.weight(1f, fill = false)) {
                     Text(
                         text = threadTitle.ifBlank { "新对话" },
