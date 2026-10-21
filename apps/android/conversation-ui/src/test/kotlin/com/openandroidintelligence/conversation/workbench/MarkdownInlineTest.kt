@@ -183,4 +183,57 @@ class MarkdownInlineTest {
         assertFalse(isSupportedLinkUrl("data:text/html,hi"))
         assertFalse(isSupportedLinkUrl("https:"))
     }
+    @Test
+    fun emphasisDoesNotCloseInsideInlineCode() {
+        val result = buildMarkdownInline("*a `b*c` d*", colors)
+
+        assertEquals("a b*c d", result.annotated.text)
+        assertTrue("整体应是斜体", result.annotated.spanStyles.any { it.item.fontStyle == FontStyle.Italic })
+    }
+
+    @Test
+    fun bareUrlInsideEmphasisStopsAtTheMarkerBoundary() {
+        val result = buildMarkdownInline("**https://a**x", colors)
+
+        assertEquals("https://ax", result.annotated.text)
+        assertEquals(1, result.annotated.getLinkAnnotations(0, result.annotated.length).size)
+        val link = result.annotated.getLinkAnnotations(0, result.annotated.length).single()
+        assertEquals("https://a", ((link.item as LinkAnnotation.Clickable).tag))
+    }
+
+    @Test
+    fun hrefAttributeRequiresRealAttributeBoundary() {
+        val result = buildMarkdownInline("<a data-href=\"https://example.com\">x</a>", colors)
+
+        assertEquals("x", result.annotated.text)
+        assertTrue("data-href 不能被当成 href", result.annotated.getLinkAnnotations(0, result.annotated.length).isEmpty())
+    }
+
+    @Test
+    fun doubleDollarWithoutClosingDelimiterIsPlainText() {
+        val result = buildMarkdownInline("a ${'$'}${'$'}x${'$'}", colors)
+
+        assertEquals("a ${'$'}${'$'}x${'$'}", result.annotated.text)
+        assertTrue("未闭合的 $$ 不能把第二个 $ 当公式起点", result.inlineMath.isEmpty())
+    }
+
+    @Test
+    fun linkUrlRequiresNonEmptyHostForHttp() {
+        assertFalse(isSupportedLinkUrl("https://"))
+        assertFalse(isSupportedLinkUrl("https://..."))
+        assertTrue(isSupportedLinkUrl("HTTPS://example.com/path?q=1"))
+        assertFalse(isSupportedLinkUrl("mailto:"))
+    }
+
+    @Test(timeout = 2_000)
+    fun malformedHtmlTagDoesNotTriggerRegexBacktracking() {
+        // 未闭合的标签即使带大量空格，也必须在线性时间内按普通文本处理
+        val input = "<a " + " ".repeat(32_000) + "!"
+
+        val result = buildMarkdownInline(input, colors)
+
+        assertTrue(result.annotated.text.endsWith("!"))
+        assertTrue(result.annotated.getLinkAnnotations(0, result.annotated.length).isEmpty())
+    }
+
 }

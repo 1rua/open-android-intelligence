@@ -21,7 +21,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -30,10 +29,10 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 
 /**
@@ -222,10 +221,8 @@ fun MarkdownListView(
     }
 
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
         block.items.forEachIndexed { index, item ->
             val isLast = isStreaming && index == block.items.lastIndex
@@ -236,7 +233,7 @@ fun MarkdownListView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = Dimensions.ListIndent * item.level),
-                verticalAlignment = Alignment.Top,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 ListItemMarker(item = item)
                 Spacer(Modifier.width(Dimensions.SpaceSmall))
@@ -258,10 +255,8 @@ fun MarkdownListView(
 @Composable
 private fun ListItemMarker(item: MarkdownListItem) {
     Box(
-        modifier = Modifier
-            .width(Dimensions.ListMarkerWidth)
-            .padding(top = if (item.taskState != TaskState.NONE) 4.dp else 10.dp),
-        contentAlignment = Alignment.TopStart,
+        modifier = Modifier.width(Dimensions.ListMarkerWidth),
+        contentAlignment = Alignment.Center,
     ) {
         when {
             item.taskState != TaskState.NONE -> {
@@ -274,16 +269,13 @@ private fun ListItemMarker(item: MarkdownListItem) {
                     } else {
                         MaterialTheme.colorScheme.outline
                     },
-                    modifier = Modifier.size(16.dp),
+                    modifier = Modifier.size(Dimensions.SmallIcon),
                 )
             }
 
             item.number != null -> Text(
                 text = "${item.number}.",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 13.5.sp,
+                style = AppTextStyles.Mono.copy(fontWeight = FontWeight.SemiBold),
                 color = if (item.level > 0) {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 } else {
@@ -293,18 +285,16 @@ private fun ListItemMarker(item: MarkdownListItem) {
 
             item.level == 0 -> Box(
                 modifier = Modifier
-                    .padding(top = 3.dp)
-                    .size(5.dp)
+                    .size(Dimensions.SpaceTiny)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary),
             )
 
             else -> Box(
                 modifier = Modifier
-                    .padding(top = 3.dp)
-                    .size(4.dp)
+                    .size(Dimensions.SpaceTiny)
                     .clip(CircleShape)
-                    .border(1.dp, MaterialTheme.colorScheme.primary, CircleShape),
+                    .border(Dimensions.StrokeHairline, MaterialTheme.colorScheme.primary, CircleShape),
             )
         }
     }

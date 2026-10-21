@@ -107,4 +107,6 @@ object Dimensions {
     val ListIndent = 16.dp
     /** 列表/任务项标记列宽度：圆点、复选框与序号共用，正文起点因此保持对齐。 */
     val ListMarkerWidth = 20.dp
+    /** 块级公式在 WebView 测量完成前的占位高度。 */
+    val MathPlaceholderHeight = 40.dp
 }

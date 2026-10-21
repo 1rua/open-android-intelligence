@@ -2,6 +2,9 @@ package com.openandroidintelligence.conversation.workbench
 
 import android.content.ClipboardManager
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getBoundsInRoot
@@ -134,4 +137,21 @@ class MarkdownInteractionComposeTest {
         compose.onNodeWithText("一级引用").assertIsDisplayed()
         compose.onNodeWithText("二级引用").assertIsDisplayed()
     }
+    @Test
+    fun copyFeedbackSurvivesStreamingTextUpdates() {
+        var text by mutableStateOf("第一段")
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(listOf(entry("u1", text, isUser = true)))
+            }
+        }
+
+        compose.onNodeWithText("复制").performClick()
+        compose.onNodeWithText("复制成功").assertIsDisplayed()
+
+        // 模拟流式追加：反馈不能因为正文变化而提前消失
+        compose.runOnIdle { text = "第一段，继续输出" }
+        compose.onNodeWithText("复制成功").assertIsDisplayed()
+    }
+
 }

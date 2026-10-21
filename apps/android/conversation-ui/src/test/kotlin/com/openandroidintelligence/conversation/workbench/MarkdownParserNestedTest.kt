@@ -142,4 +142,49 @@ class MarkdownParserNestedTest {
         assertEquals(1, list.items[1].level)
         assertTrue(list.items[1].text.isNotBlank())
     }
+    @Test(timeout = 2_000)
+    fun emptyMathDelimitersNeverHangTheParser() {
+        // 流式输出刚收到 `$$`、公式体还没到时必然经过这些输入
+        listOf("$$", "$$\n", "$$\n\n", "$$\n$$", "$$$$").forEach { input ->
+            val blocks = parseMarkdownBlocks(input)
+            assertTrue("空公式定界符不能吞掉文本：$input", blocks.isNotEmpty())
+        }
+    }
+
+    @Test(timeout = 2_000)
+    fun mathBlockWithTrailingTextDoesNotSwallowFollowingBlocks() {
+        val blocks = parseMarkdownBlocks("${'$'}${'$'}x${'$'}${'$'} tail\n# 标题")
+
+        val paragraph = blocks.firstOrNull() as? TimelineBlock.Paragraph
+        assertTrue("闭合后还有正文时应降级为段落", paragraph?.text?.contains("tail") == true)
+        assertTrue("后续标题不能被公式吞掉", blocks.any { it is TimelineBlock.Heading })
+    }
+
+    @Test(timeout = 5_000)
+    fun deepBlockquoteNestingDegradesInsteadOfOverflowing() {
+        val input = ">".repeat(2_000) + " 深层文本"
+
+        val blocks = parseMarkdownBlocks(input)
+
+        var depth = 0
+        var current: List<TimelineBlock> = blocks
+        while (true) {
+            val quote = current.firstOrNull() as? TimelineBlock.Blockquote ?: break
+            depth++
+            current = quote.blocks
+        }
+        assertTrue("引用递归必须有深度上限", depth <= 8)
+        assertTrue("超限内容仍要保留", blocks.toString().contains("深层文本"))
+    }
+
+    @Test
+    fun listBaseIndentUsesMinimumInsteadOfFirstItem() {
+        val blocks = parseMarkdownBlocks("  - a\n- b\n  - c")
+
+        val items = (blocks.single() as TimelineBlock.ListBlock).items
+        assertEquals(1, items[0].level)
+        assertEquals(0, items[1].level)
+        assertEquals(1, items[2].level)
+    }
+
 }

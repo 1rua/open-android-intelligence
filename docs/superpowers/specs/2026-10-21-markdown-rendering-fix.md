@@ -58,7 +58,12 @@ authorization: 2026-10-21 用户直接要求修复移动端对话 Markdown 渲�
 - **有序编号**：按层级维护计数器，出现更浅层级时重置更深层级，`1.` 可续写也可重复。
 - **引用递归**：逐行剥掉一层 `>` 后重新走「块解析」，因此 `>>` 天然得到两层 `Blockquote`，
   代码围栏在引用里也能正确闭合（围栏正则按行锚定，不会被外层提前吞掉）。
-- 流式输出时未闭合的 `$$`、围栏代码、引用都有稳定的中间态，不会把整段正文吞掉。
+- **解析必须前进**：`$$` 内容为空（例如单独一行 `$$`）时按普通段落消费，绝不让游标停滞；
+  闭合后还有正文的 `$$x$$ tail` 降级为行内公式，不会吞掉后续标题。
+- **深度预算**：引用递归最多 8 层，超出部分去掉剩余 `>` 后扁平化为段落，避免超长 `>>>>…`
+  打爆调用栈；Compose 视图递归因此也有上界。
+- 流式输出时未闭合的 `$$`、围栏代码、引用都有稳定的中间态：公式先按字面量保留，收到闭合
+  分隔符后再升级为公式块。
 
 ### 3.3 行内解析（`markdown/MarkdownInline.kt`）
 
@@ -76,7 +81,7 @@ authorization: 2026-10-21 用户直接要求修复移动端对话 Markdown 渲�
 - **实体解码**：命名实体（`&nbsp; &amp; &lt; &gt; &quot; &copy;` 等）与数字实体统一解码，
   上限 12 个字符防止把长串误当实体。
 - **强调**：`**粗**`、`*斜*`、`***粗斜***`、`~~删除~~` 用「配对标记 + 跳过代码段」的扫描，
-  不会跨越 inline code 误配对。
+  收尾标记不会落在成对反引号内部；裸链接也只扫描当前行内范围，遇到 `*`/`~` 等强调标记即停止。
 
 ## 4. 渲染与交互
 
@@ -103,8 +108,10 @@ authorization: 2026-10-21 用户直接要求修复移动端对话 Markdown 渲�
 
 - **离线 KaTeX 0.16.22**（MIT）：`katex.min.js`、`katex.min.css`、20 个 woff2、LICENSE、
   带逐文件 SHA256 的 README，共约 548 KiB；`loadDataWithBaseURL("file:///android_asset/katex/", …)`。
-- **安全**：`blockNetworkLoads=true`、`allowContentAccess=false`、全部 URL 跳转拦截、
-  不注册 `JavascriptInterface`、`trust:false`；LaTeX 源码经 JS 字符串转义后注入。
+- **安全**：`blockNetworkLoads=true`、`allowFileAccess=false`、`allowContentAccess=false`、
+  `allowFileAccessFromFileURLs=false`、`allowUniversalAccessFromFileURLs=false`（assets 在关闭
+  文件访问后仍可读）、全部 URL 跳转拦截、不注册 `JavascriptInterface`、`trust:false`；
+  LaTeX 源码经 JS 字符串转义后注入。
 - **尺寸协议**：Kotlin 用 `evaluateJavascript` 主动测量，页面回传
   `nw,nh,sw,sh,failed,settled`；字体加载完成后（`document.fonts.ready`）再测一次。
   行内占位用 `InlineTextContent`，块级用 40dp 起占位，实测后精确回填；尺寸缓存 LRU 256。
@@ -118,13 +125,16 @@ authorization: 2026-10-21 用户直接要求修复移动端对话 Markdown 渲�
 
 ### 4.5 单条消息复制（`workbench/MessageTimeline.kt`）
 
-- 用户气泡在气泡下方右侧、助手消息在元信息下方，各有一个紧凑的「复制」按钮
-  （图标 + 文字，`heightIn(min = Dimensions.SpaceXLarge)`），不遮挡正文。
+- 有正文的用户气泡在气泡下方右侧、助手消息在元信息下方，各有一个「复制」按钮
+  （图标 + 文字，触摸目标不小于 `Dimensions.MinimumTouchTarget`），不遮挡正文；
+  仅附件、正文为空的消息不显示复制入口。
 - 点击写入系统剪贴板的是**消息原始文本**（含 Markdown 源码，公式保留 LaTeX），不是渲染后的可见文字。
-- 反馈内联完成：按钮立即变为「✓ 复制成功」并高亮 1.6 秒后恢复，不弹 Toast/Snackbar，
-  （实拍见 `assets/2026-10-21-markdown-rendering/after-copy-feedback.png`），
-  因此在 `WorkbenchScreen`、`FloatingConversationPanel`、`BubbleConversationActivity` 三个宿主里行为一致；
+- 反馈内联完成：按钮立即变为「✓ 复制成功」并高亮 1.6 秒后恢复，不弹 Toast/Snackbar
+  （实拍见 `assets/2026-10-21-markdown-rendering/after-copy-feedback.png`），因此在
+  `WorkbenchScreen`、`FloatingConversationPanel`、`BubbleConversationActivity` 三个宿主里行为一致；
   反馈区域带 `liveRegion = Polite`，读屏用户也能听到状态变化。
+- 反馈状态按消息身份保存，并按点击次数重新计时：流式追加正文不会提前清掉提示，连续点击也会
+  重新显示完整的 1.6 秒。
 
 ## 5. 验收与测试
 
@@ -136,19 +146,26 @@ authorization: 2026-10-21 用户直接要求修复移动端对话 Markdown 渲�
 | 嵌套列表 | `MarkdownParserNestedTest` 2/4 空格、编号重启、流式前缀 | 三级缩进逐级 +16dp，有序子项对齐 |
 | 多级引用 | `MarkdownParserNestedTest` 三层引用、引用内代码围栏 | 三条级联竖线、无裸露 `>` |
 | HTML 白名单 | `MarkdownInlineTest` 键帽/上下标/高亮、危险标签按文本 | `Ctrl`+`C` 键帽、H₂O 下标、x² 上标、高亮底色 |
-| 逐条复制 | `MarkdownInteractionComposeTest` 剪贴板内容与反馈 | 点击变「复制成功」，1.6s 恢复，剪贴板为原文 |
+| 逐条复制 | `MarkdownInteractionComposeTest` 剪贴板内容、流式更新下反馈保持 | 点击变「复制成功」，1.6s 恢复，剪贴板为原文 |
+| 解析健壮性 | `MarkdownParserNestedTest` 覆盖空 `$$`、`$$x$$ tail`、2000 层 `>`、首项缩进异常 | 设备探针无卡顿 |
 
-- 纯 JVM/ Robolectric：`cd apps/android && ./gradlew :conversation-ui:testDebugUnitTest`
+- 纯 JVM/ Robolectric：`cd apps/android && ./gradlew :conversation-ui:testDebugUnitTest`（49 个测试类、411 个用例）
 - 静态门禁：`./gradlew noVpnSurfaceCheck`
 - 设备证据：`tmp/screens/probe-fixed-*.png`（对话内验证产物，不提交）；仓库内长期对照见
   `assets/2026-10-21-markdown-rendering/`。
 
 ## 6. 已知取舍与后续项
 
-1. **任务项读屏语义**：复选框是 Compose 图标 + `contentDescription`，TalkBack 能读出完成状态，
+1. **占位尺寸与非线性字体缩放**：Android 14 起支持非线性字体缩放，`Density` 的 px→sp 转换与
+   Compose `PlaceholderSpan` 内部的线性换算并不互逆；在 `fontScale` 很大时，公式占位可能比实际
+   内容偏大，表现为多余空白或提前换行。行内公式的**内容**始终由 WebView 实测尺寸决定，不会被裁剪；
+   后续可改用与正文像素字号一致的 `em` 占位或等待 Compose 上游修复。
+2. **每个公式一个 WebView**：行内公式各建一个 WebView，一条消息含十几个公式时创建成本叠加。
+   当前只按可见组合创建、离开即销毁，并缓存尺寸；后续可评估共享离屏渲染或位图缓存。
+3. **任务项读屏语义**：复选框是 Compose 图标 + `contentDescription`，TalkBack 能读出完成状态，
    但 uiautomator 里 `checkable=false`；后续可给整行加 `stateDescription`/`toggleable` 语义。
-2. **键帽与高亮视觉**：`<kbd>` 与 `<mark>` 目前底色接近，后续可给键帽加圆角描边以区分。
-3. **公式首帧**：WebView 测量前的占位按 1.5em 估算，正常设备 50–300ms 内被真实尺寸覆盖；
-   极慢设备仍可能看到一次轻微行高变化。
-4. **深色切换瞬间**：公式 WebView 会重建，尺寸不闪但内容有 1–2 帧空白；如需零闪，
+4. **键帽与高亮视觉**：`<kbd>` 与 `<mark>` 目前底色接近，后续可给键帽加圆角描边以区分。
+5. **深色切换瞬间**：公式 WebView 会重建，尺寸不闪但内容有 1–2 帧空白；如需零闪，
    可改为复用 WebView + CSS 变量换色。
+6. **静态令牌守卫范围**：`MaterialTokenGuardTest` 目前只扫描 `app` 模块，`conversation-ui`
+   新增的 dp/sp 依赖人工审查；后续可把该守卫扩展到本模块。

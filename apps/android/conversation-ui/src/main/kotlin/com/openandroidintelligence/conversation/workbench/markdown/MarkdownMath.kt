@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.theme.Dimensions
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
@@ -91,7 +92,8 @@ object MarkdownMathSizeCache {
 
     private const val MAX_ENTRIES = 256
 
-    private val entries = LinkedHashMap<MarkdownMathKey, IntSize>()
+    // accessOrder = true：读取也会刷新顺序，淘汰的才是真正最久未使用的条目
+    private val entries = LinkedHashMap<MarkdownMathKey, IntSize>(16, 0.75f, true)
 
     /** 读取缓存尺寸；未测量过时返回 null。 */
     @Synchronized
@@ -141,7 +143,7 @@ internal const val MARKDOWN_MATH_INLINE_TAG: String = "markdown_math_inline"
 internal const val MARKDOWN_MATH_FALLBACK_TAG: String = "markdown_math_fallback"
 
 /** 块级公式在测量完成前的占位高度。 */
-private val MARKDOWN_MATH_MIN_HEIGHT = 40.dp
+private val MARKDOWN_MATH_MIN_HEIGHT = Dimensions.MathPlaceholderHeight
 
 /** 超过该时限仍未拿到尺寸就认为渲染不可用，切到等宽字体兜底。 */
 private const val MATH_RENDER_TIMEOUT_MS = 4_000L
@@ -218,7 +220,7 @@ fun buildKaTeXHtml(
         append("<div id=\"math\"></div><div id=\"fallback\"></div>")
         append("<script src=\"katex.min.js\"></script>")
         append("<script>(function(){")
-        append("var state={nw:0,nh:0,sw:0,sh:0,failed:false,settled:false};")
+        append("var state={nw:0,nh:0,sw:0,sh:0,failed:false};")
         append("window.__oaiMath=state;")
         append("var target=document.getElementById('math');")
         append("var fallback=document.getElementById('fallback');")
@@ -243,7 +245,7 @@ fun buildKaTeXHtml(
         append("}")
         append("window.__oaiMathMeasure=function(){")
         append("measure();")
-        append("return state.nw+','+state.nh+','+state.sw+','+state.sh+','+(state.failed?1:0)+','+(state.settled?1:0);")
+        append("return state.nw+','+state.nh+','+state.sw+','+state.sh+','+(state.failed?1:0);")
         append("};")
         append("try{")
         append("if(typeof katex==='undefined'){fail();}else{")
@@ -255,14 +257,14 @@ fun buildKaTeXHtml(
         append("}catch(e){fail();}")
         append("measure();")
         append("if(document.fonts&&document.fonts.ready){")
-        append("document.fonts.ready.then(function(){measure();state.settled=true;});")
-        append("}else{state.settled=true;}")
+        append("document.fonts.ready.then(measure);")
+        append("}")
         append("})();</script></body></html>")
     }
 }
 
 /**
- * 块级公式：先按 40dp 占位，测到高度后精确设置，宽度超出的公式在 WebView 内横向滚动。
+ * 块级公式：先按 [Dimensions.MathPlaceholderHeight] 占位，测到高度后精确设置，宽度超出的公式在 WebView 内横向滚动。
  *
  * 颜色取 `MaterialTheme.colorScheme.onSurface`，错误色取 `error`，背景透明。
  */
@@ -456,7 +458,7 @@ internal fun MarkdownMathFallback(
                 .fillMaxWidth()
                 .semantics(mergeDescendants = true) { contentDescription = MARKDOWN_MATH_UNAVAILABLE_DESCRIPTION }
                 .testTag(MARKDOWN_MATH_FALLBACK_TAG),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
         ) {
             Text(
                 text = MARKDOWN_MATH_UNAVAILABLE_DESCRIPTION,
@@ -492,11 +494,10 @@ internal data class MathMeasurement(
     val natural: IntSize,
     val document: IntSize,
     val failed: Boolean,
-    val settled: Boolean,
 )
 
 /**
- * 解析 `evaluateJavascript` 回传的 `"nw,nh,sw,sh,failed,settled"`。
+ * 解析 `evaluateJavascript` 回传的 `"nw,nh,sw,sh,failed"`。
  *
  * `evaluateJavascript` 返回的是 JSON 编码后的字符串（带外层引号），这里剥掉引号后按逗号切分。
  * 非数字、字段不足或空值一律返回 null，调用方视为「还没测到」。
@@ -511,7 +512,7 @@ internal fun parseMathMeasurement(raw: String?): MathMeasurement? {
         trimmed
     }
     val parts = unquoted.split(',')
-    if (parts.size < 6) return null
+    if (parts.size < 5) return null
     val naturalWidth = parts[0].trim().toIntOrNull() ?: return null
     val naturalHeight = parts[1].trim().toIntOrNull() ?: return null
     val documentWidth = parts[2].trim().toIntOrNull() ?: return null
@@ -520,7 +521,6 @@ internal fun parseMathMeasurement(raw: String?): MathMeasurement? {
         natural = IntSize(naturalWidth, naturalHeight),
         document = IntSize(documentWidth, documentHeight),
         failed = parts[4].trim() == "1",
-        settled = parts[5].trim() == "1",
     )
 }
 
@@ -623,7 +623,7 @@ private fun rememberKaTeXWebViewSession(
  * 只加载本地资源、不能联网、不能跳转的公式 WebView。
  *
  * - `blockNetworkLoads = true`：从系统层面禁止 WebView 发起网络请求；
- * - `allowFileAccess = true` / `allowContentAccess = false`：只允许读 assets/file；
+ * - `allowFileAccess = false` / `allowContentAccess = false`：不开放文件系统，只读 assets；
  * - 所有 URL 跳转一律拦截，且不注册 `JavascriptInterface`；
  * - 关闭滚动条、缩放、长按选择与焦点，触摸只用于横向查看超宽公式。
  */
@@ -642,8 +642,12 @@ private fun createKaTeXWebView(context: Context, onPageFinished: () -> Unit): We
         webView.isHapticFeedbackEnabled = false
         webView.settings.apply {
             javaScriptEnabled = true
-            allowFileAccess = true
+            // assets 在 allowFileAccess=false 下仍可通过 file:///android_asset 读取；
+            // 关闭文件系统访问与 file URL 跨源访问，进一步收窄攻击面。
+            allowFileAccess = false
             allowContentAccess = false
+            allowFileAccessFromFileURLs = false
+            allowUniversalAccessFromFileURLs = false
             blockNetworkLoads = true
             blockNetworkImage = true
             setSupportZoom(false)

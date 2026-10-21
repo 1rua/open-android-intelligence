@@ -177,6 +177,7 @@ private fun UserMessageBubble(
         // 复制按钮放在气泡外侧下方：只复制原文，不改变气泡本身的排版与高度。
         if (entry.text.isNotBlank()) {
             MessageCopyAction(
+                messageKey = entry.key,
                 text = entry.text,
                 modifier = Modifier.padding(top = Dimensions.SpaceTiny),
             )
@@ -298,7 +299,7 @@ private fun AssistantMessageRow(
 
         // 与用户气泡一致的「原文复制」入口：复制的是含 Markdown 标记的原始内容。
         if (entry.text.isNotBlank()) {
-            MessageCopyAction(text = entry.text)
+            MessageCopyAction(messageKey = entry.key, text = entry.text)
         }
     }
 }
@@ -314,26 +315,30 @@ private const val CopyFeedbackDurationMillis = 1600L
  */
 @Composable
 fun MessageCopyAction(
+    messageKey: String,
     text: String,
     modifier: Modifier = Modifier,
 ) {
     val clipboardManager = LocalClipboardManager.current
-    var copied by remember(text) { mutableStateOf(false) }
+    // 反馈状态跟随消息身份而不是正文：流式输出更新 text 时不能把「复制成功」提前清掉
+    var copied by remember(messageKey) { mutableStateOf(false) }
+    // 每次点击递增，保证连续点击会重新计时，而不是因为 copied 已经是 true 而忽略
+    var copyRequests by remember(messageKey) { mutableStateOf(0) }
 
-    LaunchedEffect(copied) {
-        if (copied) {
-            delay(CopyFeedbackDurationMillis)
-            copied = false
-        }
+    LaunchedEffect(copyRequests) {
+        if (copyRequests == 0) return@LaunchedEffect
+        copied = true
+        delay(CopyFeedbackDurationMillis)
+        copied = false
     }
 
     Row(
         modifier = modifier
-            .heightIn(min = Dimensions.SpaceXLarge)
+            .heightIn(min = Dimensions.MinimumTouchTarget)
             .clip(RoundedCornerShape(AppRadius.ExtraSmall))
             .clickable(role = Role.Button) {
                 clipboardManager.setText(AnnotatedString(text))
-                copied = true
+                copyRequests++
             }
             // 复制成功属于状态变化：用 liveRegion 让读屏软件在按钮聚焦时也能播报结果。
             .semantics { liveRegion = LiveRegionMode.Polite }

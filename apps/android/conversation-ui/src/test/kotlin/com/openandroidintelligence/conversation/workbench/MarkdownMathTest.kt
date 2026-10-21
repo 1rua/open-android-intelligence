@@ -233,21 +233,39 @@ class MarkdownMathTest {
 
     @Test
     fun parseMathMeasurementReadsJavascriptPayload() {
-        val measurement = parseMathMeasurement("\"120,48,200,60,0,1\"")
+        val measurement = parseMathMeasurement("\"120,48,200,60,0\"")
         assertEquals(IntSize(120, 48), measurement?.natural)
         assertEquals(IntSize(200, 60), measurement?.document)
         assertEquals(false, measurement?.failed)
-        assertEquals(true, measurement?.settled)
 
-        val failed = parseMathMeasurement("\"0,0,0,0,1,0\"")
+        val failed = parseMathMeasurement("\"0,0,0,0,1\"")
         assertEquals(true, failed?.failed)
 
         assertNull("页面还没就绪时返回空串", parseMathMeasurement(""))
         assertNull("null 结果视为未测量", parseMathMeasurement("null"))
         assertNull("字段不足视为未测量", parseMathMeasurement("\"1,2\""))
-        assertNull("非数字视为未测量", parseMathMeasurement("\"a,2,3,4,0,0\""))
+        assertNull("非数字视为未测量", parseMathMeasurement("\"a,2,3,4,0\""))
         assertNull("null 输入", parseMathMeasurement(null))
     }
+    @Test
+    fun cacheEvictsLeastRecentlyUsedEntryNotOldestInserted() {
+        MarkdownMathSizeCache.clear()
+        fun key(index: Int) = MarkdownMathKey("x$index", displayMode = false, fontSizePx = 16)
+
+        repeat(256) { index ->
+            MarkdownMathSizeCache.record(key(index), IntSize(10 + index, 20))
+        }
+        // 读取最旧的条目，使其成为“最近使用”
+        assertEquals(IntSize(10, 20), MarkdownMathSizeCache.size(key(0)))
+
+        MarkdownMathSizeCache.record(key(256), IntSize(999, 999))
+
+        assertEquals("被读取刷新过的旧条目应保留", IntSize(10, 20), MarkdownMathSizeCache.size(key(0)))
+        assertNull("真正最久未使用的条目应被淘汰", MarkdownMathSizeCache.size(key(1)))
+        assertEquals(IntSize(999, 999), MarkdownMathSizeCache.size(key(256)))
+        MarkdownMathSizeCache.clear()
+    }
+
 }
 
 /**

@@ -94,9 +94,18 @@ fun buildMarkdownInline(
 
 /** 链接协议白名单：只允许系统浏览器与拨号/邮件这类明确无害的外部协议。 */
 fun isSupportedLinkUrl(url: String): Boolean {
-    val scheme = url.substringBefore(':', "").lowercase()
-    if (scheme !in SupportedLinkSchemes) return false
-    return url.length > scheme.length + 1
+    if (url.any { it.isWhitespace() }) return false
+    val separator = url.indexOf(':')
+    if (separator <= 0) return false
+    val scheme = url.substring(0, separator).lowercase()
+    val rest = url.substring(separator + 1)
+    return when (scheme) {
+        "http", "https" -> rest.startsWith("//") && rest.substring(2).substringBefore('/')
+            .substringBefore('?').substringBefore('#').let { host -> host.isNotBlank() && host.any { it != '.' } }
+        "mailto" -> rest.isNotBlank() && rest.contains('@')
+        "tel" -> rest.any { it.isDigit() }
+        else -> false
+    }
 }
 
 private val SupportedLinkSchemes = setOf("http", "https", "mailto", "tel")
@@ -107,11 +116,18 @@ private val AllowedInlineTags = setOf(
     "code", "kbd", "mark", "small", "sub", "sup", "br", "span",
 )
 
-private val HtmlTagRegex = Regex("<(/)?([a-zA-Z][a-zA-Z0-9]*)((?:\\s+[^<>]*?)?)(/)?>")
-private val HrefAttributeRegex = Regex("href\\s*=\\s*(\"([^\"]*)\"|'([^']*)')", RegexOption.IGNORE_CASE)
+private val HrefAttributeRegex = Regex("(?:^|\\s)href\\s*=\\s*(\"([^\"]*)\"|'([^']*)')", RegexOption.IGNORE_CASE)
 private val AngleAutolinkRegex = Regex("^([a-zA-Z][a-zA-Z0-9+.-]*):([^\\s<>]+)$")
 private val AngleEmailRegex = Regex("^([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})$")
-private val BareUrlRegex = Regex("(?i)^https?://[^\\s<>\"'`]+")
+
+/** 单个 HTML 标签的最大字符数；超过即按普通文本处理，避免畸形标签拖慢行内解析。 */
+private const val MaxHtmlTagLength = 256
+
+/** 尖括号自动链接 / 裸链接的最大长度；超出后不再尝试识别。 */
+private const val MaxAutolinkLength = 2048
+
+/** 裸链接遇到这些字符立即结束，避免把强调标记、引号等吞进 URL。 */
+private const val BareUrlStopCharacters = "\t\n\r >\"'`*~"
 
 private val NamedEntities = mapOf(
     "amp" to "&",
@@ -119,6 +135,7 @@ private val NamedEntities = mapOf(
     "gt" to ">",
     "quot" to "\"",
     "apos" to "'",
+    "copy" to "©",
     "nbsp" to "\u00A0",
     "mdash" to "—",
     "ndash" to "–",
@@ -185,6 +202,12 @@ private class InlineRenderer(
                 val nextIndex = tryInlineMath(index, end)
                 if (nextIndex != null) {
                     index = nextIndex
+                    continue
+                }
+                // `$$` 不构成合法公式时整体按字面量消费，避免第二个 `$` 被当成单美元开头
+                if (input.startsWith("$$", index)) {
+                    builder.append("$$")
+                    index += 2
                     continue
                 }
             }
@@ -290,8 +313,9 @@ private class InlineRenderer(
     private fun tryInlineMath(start: Int, end: Int): Int? {
         // $$...$$ 出现在正文行内时同样按公式处理（块级由 MarkdownParser 先消费）
         if (input.startsWith("$$", start)) {
+            val searchLimit = minOf(end, start + MaxAutolinkLength)
             val closing = input.indexOf("$$", start + 2)
-            if (closing in (start + 2) until end) {
+            if (closing in (start + 2) until searchLimit) {
                 val latex = input.substring(start + 2, closing).trim()
                 if (latex.isNotEmpty() && !latex.contains('\n')) {
                     appendMath(latex)
@@ -335,14 +359,17 @@ private class InlineRenderer(
     }
 
     private fun tryAngleConstruct(start: Int, end: Int, stack: MutableList<HtmlOpenTag>): Int? {
-        val closingBracket = findNextUnescaped('>', start + 1, end)
+        // 先按有界扫描尝试 HTML 标签：畸形输入（如 "<a " + 大量空格）不会触发正则回溯，
+        // 也不会为了找不存在的 ">" 扫完整条消息。
+        val token = parseHtmlTag(start, end)
+
+        val closingBracket = findNextUnescaped('>', start + 1, minOf(end, start + MaxAutolinkLength))
         if (closingBracket != -1) {
             val inner = input.substring(start + 1, closingBracket)
             val schemeMatch = AngleAutolinkRegex.matchEntire(inner)
             if (schemeMatch != null) {
-                val candidate = inner
-                if (isSupportedLinkUrl(candidate)) {
-                    appendLink(candidate, candidate)
+                if (isSupportedLinkUrl(inner)) {
+                    appendLink(inner, inner)
                     return closingBracket + 1
                 }
             }
@@ -354,22 +381,17 @@ private class InlineRenderer(
             }
         }
 
-        val match = HtmlTagRegex.matchAt(input, start) ?: return null
-        if (match.range.last >= end) return null
-        val isClosing = match.groups[1] != null
-        val tag = match.groupValues[2].lowercase()
-        if (tag !in AllowedInlineTags) return null
-        val nextIndex = match.range.last + 1
-
+        if (token == null) return null
+        val tag = token.tag
         if (tag == "br") {
             builder.append('\n')
-            return nextIndex
+            return token.nextIndex
         }
 
-        if (isClosing) {
+        if (token.isClosing) {
             if (stack.isEmpty() || stack.last().tag != tag) {
-                builder.append(match.value)
-                return nextIndex
+                builder.append(input, start, token.nextIndex)
+                return token.nextIndex
             }
             val open = stack.removeAt(stack.lastIndex)
             if (open.style != null && builder.length > open.start) {
@@ -378,13 +400,13 @@ private class InlineRenderer(
             if (open.href != null && builder.length > open.start) {
                 builder.addLink(buildLinkAnnotation(open.href), open.start, builder.length)
             }
-            return nextIndex
+            return token.nextIndex
         }
 
         val style: SpanStyle?
         val href: String?
         if (tag == "a") {
-            href = HrefAttributeRegex.find(match.value)?.let { attribute ->
+            href = HrefAttributeRegex.find(token.attributes)?.let { attribute ->
                 attribute.groups[2]?.value?.takeIf { it.isNotBlank() }
                     ?: attribute.groups[3]?.value?.takeIf { it.isNotBlank() }
             }
@@ -397,7 +419,50 @@ private class InlineRenderer(
         // 即使没有样式也要入栈：否则 `</span>` 或 `</a>` 会被当成普通文本原样输出
         val supportedHref = href?.takeIf { isSupportedLinkUrl(it) }
         stack.add(HtmlOpenTag(tag = tag, start = builder.length, style = style, href = supportedHref))
-        return nextIndex
+        return token.nextIndex
+    }
+
+    /**
+     * 有界、线性的 HTML 开/闭标签扫描：只识别白名单标签名，属性部分最多看
+     * [MaxHtmlTagLength] 个字符并正确处理引号内的 `>`。解析失败返回 null，由调用方按文本处理。
+     */
+    private fun parseHtmlTag(start: Int, end: Int): HtmlTagToken? {
+        if (start >= end || input[start] != '<') return null
+        var index = start + 1
+        val isClosing = index < end && input[index] == '/'
+        if (isClosing) index++
+        val nameStart = index
+        while (index < end && input[index].isLetterOrDigit()) index++
+        if (index == nameStart) return null
+        val tag = input.substring(nameStart, index).lowercase()
+        if (tag !in AllowedInlineTags) return null
+        if (index < end) {
+            val next = input[index]
+            if (next != '>' && next != '/' && !next.isWhitespace()) return null
+        }
+
+        val attributeStart = index
+        var quote: Char? = null
+        val limit = minOf(end, start + MaxHtmlTagLength)
+        var cursor = index
+        while (cursor < limit) {
+            val character = input[cursor]
+            if (quote != null) {
+                if (character == quote) quote = null
+            } else {
+                when (character) {
+                    '"', '\'' -> quote = character
+                    '>' -> return HtmlTagToken(
+                        tag = tag,
+                        isClosing = isClosing,
+                        attributes = input.substring(attributeStart, cursor),
+                        nextIndex = cursor + 1,
+                    )
+                }
+            }
+            cursor++
+        }
+        return null
     }
 
     private fun spanStyleForTag(tag: String): SpanStyle? = when (tag) {
@@ -489,7 +554,7 @@ private class InlineRenderer(
 
     private fun tryAppendEntity(start: Int, end: Int): Int? {
         val semicolon = input.indexOf(';', start + 1)
-        if (semicolon == -1 || semicolon >= end || semicolon - start > MaxEntityLength) return null
+        if (semicolon == -1 || semicolon >= end || semicolon >= start + MaxEntityLength + 1) return null
         val body = input.substring(start + 1, semicolon)
         if (body.startsWith("#")) {
             val codePoint = if (body.startsWith("#x", ignoreCase = true)) {
@@ -508,10 +573,11 @@ private class InlineRenderer(
         return semicolon + 1
     }
 
-    private fun tryBareUrl(start: Int, rangeStart: Int): Int? {
-        val match = BareUrlRegex.find(input.substring(start)) ?: return null
-        if (match.range.first != 0) return null
-        var candidate = match.value
+    private fun tryBareUrl(start: Int, end: Int): Int? {
+        val limit = minOf(end, start + MaxAutolinkLength)
+        var cursor = start
+        while (cursor < limit && input[cursor] !in BareUrlStopCharacters) cursor++
+        var candidate = input.substring(start, cursor)
         // 去掉句末标点，保留成对括号里的内容
         while (candidate.isNotEmpty() && candidate.last() in TrailingUrlPunctuation) {
             candidate = candidate.dropLast(1)
@@ -635,6 +701,25 @@ private class InlineRenderer(
         return -1
     }
 
+    /** 若 [start] 是反引号 run，返回与之配对的代码段之后的下标；未闭合返回 null。 */
+    private fun skipCodeSpan(start: Int, end: Int): Int? {
+        var runEnd = start
+        while (runEnd < end && input[runEnd] == '`') runEnd++
+        val tickCount = runEnd - start
+        var index = runEnd
+        while (index < end) {
+            if (input[index] == '`') {
+                var closingEnd = index
+                while (closingEnd < end && input[closingEnd] == '`') closingEnd++
+                if (closingEnd - index == tickCount) return closingEnd
+                index = closingEnd
+            } else {
+                index++
+            }
+        }
+        return null
+    }
+
     /**
      * 查找与开启标记配对的收尾标记。
      * 返回收尾 run 中「最后一个标记」的起点：这样 `***x***` 这类多重标记
@@ -646,6 +731,14 @@ private class InlineRenderer(
             if (input[index] == '\\') {
                 index += 2
                 continue
+            }
+            // 行内代码是不可穿透的原子：`*a `b*c` d*` 不能在代码段内部收尾
+            if (input[index] == '`') {
+                val afterCode = skipCodeSpan(index, end)
+                if (afterCode != null) {
+                    index = afterCode
+                    continue
+                }
             }
             if (input[index] == character) {
                 var runEnd = index
@@ -663,6 +756,13 @@ private class InlineRenderer(
 
     private data class LinkDestination(val url: String, val end: Int)
 
+    private data class HtmlTagToken(
+        val tag: String,
+        val isClosing: Boolean,
+        val attributes: String,
+        val nextIndex: Int,
+    )
+
     private data class HtmlOpenTag(
         val tag: String,
         val start: Int,
@@ -675,6 +775,9 @@ private const val MaxEntityLength = 12
 
 private const val EscapableCharacters = "\\`*_{}[]()#+-.!~$<>&|\"'"
 
-private val TrailingUrlPunctuation = charArrayOf('.', ',', ';', ':', '!', '?', '。', '，', '、', '；', '：', '！', '？', '）', '》', '”', '’')
+private val TrailingUrlPunctuation = charArrayOf(
+    '.', ',', ';', ':', '!', '?', '。', '，', '、', '；', '：', '！', '？',
+    '）', '》', '】', '」', '』', '”', '’',
+)
 
 private const val BareLinkAttachedCharacters = "._/-@:"

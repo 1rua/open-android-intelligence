@@ -35,6 +35,9 @@ object MarkdownParser {
     /** 无法从缩进差推出步长时的回退值：GFM 与主流模型默认按 2 空格一级。 */
     private const val DefaultListIndentStep = 2
 
+/** 引用块的最大递归深度；更深的内容扁平化为段落，避免超长 `>>>>…` 打爆调用栈。 */
+private const val MaxBlockquoteDepth = 8
+
     /**
      * 将原始 Markdown 文本解析为 MarkdownBlock / TimelineBlock AST 节点列表。
      * 具备容错能力：未闭合语法安全降级，流式输出增量期间不崩溃。
@@ -129,9 +132,9 @@ object MarkdownParser {
         return parseContentWithCodeBlocks(text)
     }
 
-    private fun parseContentWithCodeBlocks(text: String): List<TimelineBlock> {
+    private fun parseContentWithCodeBlocks(text: String, quoteDepth: Int = 0): List<TimelineBlock> {
         if (!text.contains("```")) {
-            return parseNonCodeText(text)
+            return parseNonCodeText(text, quoteDepth)
         }
 
         val matches = codeBlockRegex.findAll(text).toList()
@@ -141,7 +144,7 @@ object MarkdownParser {
             for (match in matches) {
                 val before = text.substring(lastIndex, match.range.first).trim()
                 if (before.isNotEmpty()) {
-                    blocks.addAll(parseNonCodeText(before))
+                    blocks.addAll(parseNonCodeText(before, quoteDepth))
                 }
                 val language = match.groupValues[1].trim()
                 val code = match.groupValues[2].trimEnd()
@@ -156,7 +159,7 @@ object MarkdownParser {
             }
             val remaining = text.substring(lastIndex).trim()
             if (remaining.isNotEmpty()) {
-                blocks.addAll(parseNonCodeText(remaining))
+                blocks.addAll(parseNonCodeText(remaining, quoteDepth))
             }
             return blocks
         }
@@ -167,7 +170,7 @@ object MarkdownParser {
             val blocks = mutableListOf<TimelineBlock>()
             val before = text.substring(0, unclosedCodeMatch.range.first).trim()
             if (before.isNotEmpty()) {
-                blocks.addAll(parseNonCodeText(before))
+                blocks.addAll(parseNonCodeText(before, quoteDepth))
             }
             val language = unclosedCodeMatch.groupValues[1].trim()
             val code = unclosedCodeMatch.groupValues[2].trimEnd()
@@ -180,7 +183,7 @@ object MarkdownParser {
             return blocks
         }
 
-        return parseNonCodeText(text)
+        return parseNonCodeText(text, quoteDepth)
     }
 
     private fun tryParseCodeBlockAsToolCall(language: String, code: String): TimelineBlock.ToolCallBlock? {
@@ -354,7 +357,7 @@ object MarkdownParser {
         )
     }
 
-    private fun parseNonCodeText(text: String): List<TimelineBlock> {
+    private fun parseNonCodeText(text: String, quoteDepth: Int = 0): List<TimelineBlock> {
         val lines = text.lines()
         val blocks = mutableListOf<TimelineBlock>()
         var lineIndex = 0
@@ -392,6 +395,21 @@ object MarkdownParser {
                 lineIndex = mathBlock.nextLine
                 continue
             }
+            // `$$` 开头但未形成合法公式（例如仅有 `$$`、或闭合后还有正文）：
+            // 必须按段落消费当前行，否则外层循环不会推进，组合期会死循环。
+            if (line.trim().startsWith("$$")) {
+                val paragraphLines = mutableListOf(line)
+                lineIndex++
+                while (lineIndex < lines.size &&
+                    lines[lineIndex].isNotBlank() &&
+                    !startsStructuralBlock(lines, lineIndex)
+                ) {
+                    paragraphLines.add(lines[lineIndex])
+                    lineIndex++
+                }
+                blocks.add(TimelineBlock.Paragraph(paragraphLines.joinToString("\n")))
+                continue
+            }
 
             // 4. 表格检测
             if (line.contains("|") && lineIndex + 1 < lines.size && isTableSeparatorRow(lines[lineIndex + 1])) {
@@ -418,15 +436,26 @@ object MarkdownParser {
             // 5. 引用块：剥掉一层 `>` 后递归解析，嵌套引用自然形成 Blockquote(Blockquote(...))
             if (isBlockquoteLine(line)) {
                 val quoteLines = mutableListOf<String>()
+                val atDepthLimit = quoteDepth >= MaxBlockquoteDepth
                 while (lineIndex < lines.size && isBlockquoteLine(lines[lineIndex])) {
-                    quoteLines.add(stripBlockquoteMarker(lines[lineIndex]))
+                    val stripped = if (atDepthLimit) {
+                        stripAllBlockquoteMarkers(lines[lineIndex])
+                    } else {
+                        stripBlockquoteMarker(lines[lineIndex])
+                    }
+                    quoteLines.add(stripped)
                     lineIndex++
                 }
                 val innerText = quoteLines.joinToString("\n")
                 if (innerText.isNotBlank()) {
-                    val innerBlocks = parseContentWithCodeBlocks(innerText)
-                    if (innerBlocks.isNotEmpty()) {
-                        blocks.add(TimelineBlock.Blockquote(innerBlocks))
+                    if (atDepthLimit) {
+                        // 超出深度预算：保留内容但停止递归，避免无限嵌套与栈溢出
+                        blocks.add(TimelineBlock.Paragraph(innerText.trim()))
+                    } else {
+                        val innerBlocks = parseContentWithCodeBlocks(innerText, quoteDepth + 1)
+                        if (innerBlocks.isNotEmpty()) {
+                            blocks.add(TimelineBlock.Blockquote(innerBlocks))
+                        }
                     }
                 }
                 continue
@@ -477,6 +506,16 @@ object MarkdownParser {
 
     private fun isBlockquoteLine(line: String): Boolean = line.trimStart().startsWith(">")
 
+    /** 去掉引用行所有层级的 `>` 标记；仅在达到递归深度预算时用于扁平化展示。 */
+    private fun stripAllBlockquoteMarkers(line: String): String {
+        var rest = line.trimStart()
+        while (rest.startsWith(">")) {
+            rest = rest.substring(1)
+            if (rest.startsWith(" ")) rest = rest.substring(1)
+        }
+        return rest
+    }
+
     /** 去掉引用行的一层 `>` 标记与紧随其后的一个空格，保留剩余缩进供递归解析。 */
     private fun stripBlockquoteMarker(line: String): String {
         val trimmed = line.trimStart()
@@ -492,27 +531,29 @@ object MarkdownParser {
 
     /**
      * 识别 `$$ ... $$` 块级公式：
+     * - 单行 `$$x$$` 直接解析；闭合后还有正文时返回 null，交给行内公式降级处理；
      * - `$$` 独立成行时收集到下一个以 `$$` 结尾的行；
-     * - 单行 `$$x$$` 直接解析；
-     * - 流式未闭合时把已收到的内容当作公式，避免把 `$$` 暴露在正文里。
+     * - 尚未闭合时把已收到的内容当作公式，流式期间不把 `$$` 暴露在正文里；
+     * - 内容为空的 `$$` / `$$$$` 返回 null，由调用方按普通段落消费（保证游标推进）。
      */
     private fun parseMathBlock(lines: List<String>, start: Int): ParsedMathBlock? {
         val trimmed = lines[start].trim()
         if (!trimmed.startsWith("$$")) return null
 
-        if (trimmed.length > 4 && trimmed.endsWith("$$")) {
-            val latex = trimmed.substring(2, trimmed.length - 2).trim()
-            return if (latex.isEmpty()) null else ParsedMathBlock(TimelineBlock.MathBlock(latex), start + 1)
+        val rest = trimmed.substring(2)
+        val sameLineClose = rest.indexOf("$$")
+        if (sameLineClose >= 0) {
+            val latex = rest.substring(0, sameLineClose).trim()
+            val trailing = rest.substring(sameLineClose + 2).trim()
+            // 闭合后还有正文：整行按行内公式解析，避免吞掉后续内容
+            if (latex.isEmpty() || trailing.isNotEmpty()) return null
+            return ParsedMathBlock(TimelineBlock.MathBlock(latex), start + 1)
         }
 
-        val body = StringBuilder()
-        val firstRest = trimmed.removePrefix("$$").trim()
-        if (firstRest.isNotEmpty()) body.append(firstRest)
-
+        val body = StringBuilder(rest.trim())
         var index = start + 1
         while (index < lines.size) {
-            val current = lines[index]
-            val currentTrimmed = current.trim()
+            val currentTrimmed = lines[index].trim()
             if (currentTrimmed.endsWith("$$")) {
                 val content = currentTrimmed.removeSuffix("$$").trim()
                 if (content.isNotEmpty()) {
@@ -522,8 +563,10 @@ object MarkdownParser {
                 val latex = body.toString().trim()
                 return if (latex.isEmpty()) null else ParsedMathBlock(TimelineBlock.MathBlock(latex), index + 1)
             }
+            // 行内出现 `$$` 但后面还有文字：说明这一行不是块级闭合，整体降级为段落
+            if (currentTrimmed.contains("$$")) return null
             if (body.isNotEmpty()) body.append('\n')
-            body.append(current.trimEnd())
+            body.append(lines[index].trimEnd())
             index++
         }
 
@@ -549,10 +592,10 @@ object MarkdownParser {
      */
     private fun parseListBlock(lines: List<String>, start: Int): ParsedListBlock? {
         val firstMatch = listItemRegex.matchEntire(lines[start]) ?: return null
-        val baseIndent = indentColumns(firstMatch.groupValues[1])
+        val firstIndent = indentColumns(firstMatch.groupValues[1])
 
         val raws = mutableListOf<RawListItem>()
-        var lastItemIndent = baseIndent
+        var lastItemIndent = firstIndent
         var index = start
 
         while (index < lines.size) {
@@ -584,6 +627,9 @@ object MarkdownParser {
 
         if (raws.isEmpty()) return null
 
+        // 基准取所有项里的最小缩进，而不是第一项：首项缩进更深时，
+        // 后面的浅层项与再次嵌套的子项仍能得到正确的父子层级。
+        val baseIndent = raws.minOf { it.indent }
         val distinctIndents = raws.map { it.indent }.distinct().sorted()
         val step = distinctIndents
             .zipWithNext { previous, next -> next - previous }

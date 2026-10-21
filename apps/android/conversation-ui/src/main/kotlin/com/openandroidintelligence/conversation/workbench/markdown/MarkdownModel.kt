@@ -34,9 +34,7 @@ data class MarkdownListItem(
     val level: Int = 0,
     val taskState: TaskState = TaskState.NONE,
     val number: Int? = null,
-) {
-    val isOrdered: Boolean get() = number != null
-}
+)
 
 /**
  * Markdown 时间线文档块体系：严格对齐 mobile_motion_preview.html 中的格式规范。
