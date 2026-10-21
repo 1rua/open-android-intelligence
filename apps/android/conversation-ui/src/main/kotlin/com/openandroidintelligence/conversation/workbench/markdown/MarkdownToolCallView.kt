@@ -1,7 +1,7 @@
 package com.openandroidintelligence.conversation.workbench
 
 import android.widget.Toast
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,13 +10,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -26,14 +25,15 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,72 +42,145 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.ExpandableRegion
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 工具调用与执行结果卡片 (Tool Call & Result Card)：
- * 以结构化紧凑卡片呈现 Agent 调用的外部工具/命令，包括等宽工具名称 Badge、参数代码块、
- * 复制动作反馈、执行状态指示条及可折叠输出日志。
+ * 工具调用卡片（规格 §4.2）。
  *
- * 所有颜色取自 M3 语义角色：成功/失败用 primaryContainer / errorContainer 这对角色表达，
- * 而不是写死某套编辑器主题色 —— 这样深色模式与动态取色下都不会失真。
+ * 摘要栏始终可见：状态图标 + 等宽 `[toolName]` + 状态文字 + 可选耗时 + chevron。
+ * - 执行中（`isRunning && 消息仍在流式`）：`执行中` + 跳动点，默认展开；
+ * - 成功 / 失败 / 中断：默认收起，展开后完整呈现命令与输出/错误输出。
+ *
+ * 展开内容只有一层：命令代码块（可横向滚动、可复制）与输出代码块
+ * （纵横向滚动、最大高度 [Dimensions.CommandMenuHeight]、可选中），
+ * 不再保留第二层「查看输出」开关。用户手动展开/收起优先于自动状态。
+ *
+ * @param isStreaming 所属消息是否仍在流式输出，用于区分「执行中」与「执行已中断」。
+ * @param timingKey 宿主提供的耗时观察 key；为 null 时不显示耗时。
  */
 @Composable
 fun MarkdownToolCallView(
     block: TimelineBlock.ToolCallBlock,
     modifier: Modifier = Modifier,
+    isStreaming: Boolean = false,
+    timingKey: String? = null,
 ) {
-    val clipboardManager = LocalClipboardManager.current
-    val context = LocalContext.current
-    val view = LocalView.current
-    val coroutineScope = rememberCoroutineScope()
-    var copied by remember { mutableStateOf(false) }
-    var outputExpanded by remember { mutableStateOf(false) }
-
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val stateColors = LocalAppStateColors.current
 
-    val badgeText = when {
-        block.toolName.isBlank() || block.toolName.equals("tool_call", ignoreCase = true) || block.toolName == "执行命令" -> "[执行命令]"
-        block.toolName.startsWith("[") && block.toolName.endsWith("]") -> block.toolName
-        else -> "[${block.toolName}]"
+    // 只有消息仍在流式时，未闭合的 tool_call 才代表「真的在执行」；
+    // 流已经结束却仍未闭合，就是中断，结果未知。
+    val running = block.isRunning && isStreaming
+    val interrupted = block.isRunning && !isStreaming
+    val failed = !block.isSuccess && !running
+
+    var userExpanded by remember { mutableStateOf<Boolean?>(null) }
+    val expanded = userExpanded ?: running
+
+    val timingStore = LocalExecutionTiming.current
+    LaunchedEffect(timingKey, running) {
+        if (timingKey != null) timingStore?.observe(timingKey, running)
+    }
+    val durationMillis = timingKey?.let { timingStore?.durationOf(it) }
+
+    val statusColor: Color = when {
+        running -> MaterialTheme.colorScheme.primary
+        interrupted -> stateColors.warning
+        failed -> MaterialTheme.colorScheme.error
+        else -> stateColors.success
+    }
+    val statusDescription = when {
+        running -> "执行中"
+        interrupted -> "执行已中断"
+        failed -> "执行失败"
+        else -> "执行成功"
+    }
+    val statusIcon: ImageVector = when {
+        running -> Icons.Default.PlayArrow
+        interrupted -> Icons.Default.Warning
+        failed -> Icons.Default.Cancel
+        else -> Icons.Default.CheckCircle
+    }
+    val statusText = when {
+        running -> "执行中"
+        interrupted -> "执行已中断 · 结果未知"
+        failed -> "执行失败"
+        else -> "执行成功"
+    }
+    // 只展示真实观察到的耗时：中断/完成的步骤才可能有结算值。
+    val durationSuffix = if (!running && durationMillis != null) {
+        " · ${formatExecutionDuration(durationMillis)}"
+    } else {
+        ""
     }
 
-    val hasResult = !block.summary.isNullOrBlank() || !block.output.isNullOrBlank()
+    val badgeText = toolBadgeText(block.toolName)
+
+    val chevronRotation = if (reduceMotion) {
+        if (expanded) 180f else 0f
+    } else {
+        animateFloatAsState(
+            targetValue = if (expanded) 180f else 0f,
+            animationSpec = MotionSpecs.spatial(reduceMotion),
+            label = "tool-call-chevron",
+        ).value
+    }
 
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .padding(vertical = Dimensions.SpaceTiny),
-        shape = RoundedCornerShape(AppRadius.Medium),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        shape = RoundedCornerShape(AppRadius.Compact),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // 标题栏：比卡面深一级的容器角色
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .heightIn(min = Dimensions.MinimumTouchTarget)
+                    .clip(RoundedCornerShape(AppRadius.Small))
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = if (expanded) "收起工具详情" else "展开工具详情",
+                    ) {
+                        userExpanded = !expanded
+                    }
                     .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
+                Icon(
+                    imageVector = statusIcon,
+                    contentDescription = statusDescription,
+                    tint = statusColor,
+                    modifier = Modifier.size(Dimensions.SmallIcon),
+                )
                 Text(
                     text = badgeText,
                     fontFamily = FontFamily.Monospace,
@@ -115,181 +188,228 @@ fun MarkdownToolCallView(
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-
                 Row(
-                    modifier = Modifier
-                        .defaultMinSize(
-                            minWidth = Dimensions.MinimumTouchTarget,
-                            minHeight = Dimensions.MinimumTouchTarget,
-                        )
-                        .clip(RoundedCornerShape(AppRadius.Small))
-                        .clickable(
-                            role = Role.Button,
-                            onClickLabel = "复制代码",
-                        ) {
-                            clipboardManager.setText(AnnotatedString(block.command))
-                            copied = true
-                            try {
-                                view.announceForAccessibility("已复制到剪贴板")
-                            } catch (_: Throwable) {
-                            }
-                            try {
-                                Toast.makeText(context, "已复制到剪贴板", Toast.LENGTH_SHORT).show()
-                            } catch (_: Throwable) {
-                            }
-                            coroutineScope.launch {
-                                delay(1500)
-                                copied = false
-                            }
-                        }
-                        .padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
                 ) {
-                    Icon(
-                        imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                        contentDescription = if (copied) "已复制" else "复制",
-                        tint = if (copied) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        modifier = Modifier.size(14.dp),
-                    )
                     Text(
-                        text = if (copied) "已复制" else "复制",
-                        fontSize = 12.sp,
-                        color = if (copied) {
-                            MaterialTheme.colorScheme.primary
+                        text = statusText + durationSuffix,
+                        style = AppTextStyles.Thought,
+                        color = statusColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = if (running) {
+                            Modifier.semantics { liveRegion = LiveRegionMode.Polite }
                         } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+                            Modifier
                         },
                     )
+                    if (running) {
+                        TypingDots(reduced = reduceMotion)
+                    }
                 }
-            }
-
-            // 命令内容区：等宽字体、横向滚动
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = Dimensions.SpaceCompact, vertical = 10.dp),
-            ) {
-                SelectionContainer {
-                    Text(
-                        text = block.command,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.5.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
-
-            // 结果指示条（存在 summary 或 output 时呈现）
-            if (hasResult) {
-                val stripColor = if (block.isSuccess) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.errorContainer
-                }
-                val statusColor = if (block.isSuccess) {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onErrorContainer
-                }
-                val statusText = if (block.isSuccess) {
-                    block.summary?.ifBlank { null } ?: "执行成功"
-                } else {
-                    block.summary?.ifBlank { null } ?: block.output ?: "执行失败"
-                }
-
-                Column(
+                Icon(
+                    imageVector = Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .background(stripColor)
-                        .animateContentSize(MotionSpecs.spatial(reduceMotion)),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.weight(1f, fill = false),
-                        ) {
-                            Icon(
-                                imageVector = if (block.isSuccess) Icons.Default.CheckCircle else Icons.Default.Cancel,
-                                contentDescription = if (block.isSuccess) "执行成功" else "执行失败",
-                                tint = statusColor,
-                                modifier = Modifier.size(Dimensions.SpaceMedium),
-                            )
-                            Text(
-                                text = statusText,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = statusColor,
-                                maxLines = if (outputExpanded) Int.MAX_VALUE else 2,
-                            )
-                        }
+                        .size(Dimensions.SmallIcon)
+                        .rotate(chevronRotation),
+                )
+            }
 
-                        if (!block.output.isNullOrBlank()) {
-                            Spacer(Modifier.width(Dimensions.SpaceSmall))
-                            Row(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(AppRadius.ExtraSmall))
-                                    .clickable { outputExpanded = !outputExpanded }
-                                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            ) {
-                                Text(
-                                    text = if (outputExpanded) "收起输出" else "查看输出",
-                                    fontSize = 12.sp,
-                                    color = statusColor,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                                Icon(
-                                    imageVector = if (outputExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                    contentDescription = if (outputExpanded) "收起输出" else "查看输出",
-                                    tint = statusColor,
-                                    modifier = Modifier.size(14.dp),
-                                )
-                            }
-                        }
-                    }
-
-                    // 展开的详细输出日志框：统一走 Emphasized 的 expandVertically + fadeIn
-                    ExpandableRegion(expanded = outputExpanded) {
-                        HorizontalDivider(
-                            color = statusColor.copy(alpha = 0.2f),
-                            thickness = Dimensions.StrokeHairline / 2,
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = Dimensions.CommandMenuHeight)
-                                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                                .verticalScroll(rememberScrollState())
-                                .horizontalScroll(rememberScrollState())
-                                .padding(Dimensions.SpaceSmall),
-                        ) {
-                            SelectionContainer {
-                                Text(
-                                    text = block.output.orEmpty(),
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.5.sp,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    lineHeight = 16.sp,
-                                )
-                            }
-                        }
-                    }
-                }
+            ExpandableRegion(expanded = expanded) {
+                ToolCallDetails(block = block, statusText = statusText, running = running)
             }
         }
+    }
+}
+
+/** 工具名称徽标：空名/占位名归一为 `[执行命令]`，其余统一加方括号。 */
+private fun toolBadgeText(toolName: String): String = when {
+    toolName.isBlank() ||
+        toolName.equals("tool_call", ignoreCase = true) ||
+        toolName == "执行命令" -> "[执行命令]"
+
+    toolName.startsWith("[") && toolName.endsWith("]") -> toolName
+    else -> "[$toolName]"
+}
+
+/**
+ * 展开后的详情：命令 → 摘要 → 输出/错误输出。
+ *
+ * 没有输出时明确显示「无输出」，而不是留一片空白让用户猜是否还在加载。
+ */
+@Composable
+private fun ToolCallDetails(
+    block: TimelineBlock.ToolCallBlock,
+    statusText: String,
+    running: Boolean,
+) {
+    val summaryText = block.summary
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() && it != statusText }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(Dimensions.StrokeHairline)
+                .background(MaterialTheme.colorScheme.outlineVariant),
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = Dimensions.SpaceCompact,
+                    end = Dimensions.SpaceCompact,
+                    bottom = Dimensions.SpaceCompact,
+                ),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+            ) {
+                Text(
+                    text = "命令",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                CopyCommandAction(command = block.command)
+            }
+
+            CodeSurface(
+                text = block.command,
+                fontSizeSp = 12.5f,
+                lineHeightSp = null,
+                maxHeight = false,
+            )
+
+            if (summaryText != null) {
+                Text(
+                    text = summaryText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+
+            val output = block.output
+            if (!output.isNullOrBlank()) {
+                Text(
+                    text = if (block.isSuccess) "输出" else "错误输出",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                CodeSurface(
+                    text = output,
+                    fontSizeSp = 11.5f,
+                    lineHeightSp = 16f,
+                    maxHeight = true,
+                )
+            } else if (!running) {
+                Text(
+                    text = "无输出",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 只读代码块：等宽、可选中；[maxHeight] 时限制高度并同时支持纵向与横向滚动，
+ * 完整保留文本、不截断。
+ */
+@Composable
+private fun CodeSurface(
+    text: String,
+    fontSizeSp: Float,
+    lineHeightSp: Float?,
+    maxHeight: Boolean,
+) {
+    var surfaceModifier = Modifier.fillMaxWidth()
+    if (maxHeight) {
+        surfaceModifier = surfaceModifier.heightIn(max = Dimensions.CommandMenuHeight)
+    }
+    surfaceModifier = surfaceModifier
+        .clip(RoundedCornerShape(AppRadius.Small))
+        .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+    if (maxHeight) {
+        surfaceModifier = surfaceModifier.verticalScroll(rememberScrollState())
+    }
+    surfaceModifier = surfaceModifier
+        .horizontalScroll(rememberScrollState())
+        .padding(Dimensions.SpaceSmall)
+
+    Box(modifier = surfaceModifier) {
+        SelectionContainer {
+            Text(
+                text = text,
+                fontFamily = FontFamily.Monospace,
+                fontSize = fontSizeSp.sp,
+                lineHeight = (lineHeightSp ?: (fontSizeSp * 1.4f)).sp,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
+
+/** 复制命令：1.5 秒「已复制」反馈，同时给读屏与 Toast 一个明确结果。 */
+@Composable
+private fun CopyCommandAction(command: String) {
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    val view = LocalView.current
+    val coroutineScope = rememberCoroutineScope()
+    var copied by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .defaultMinSize(
+                minWidth = Dimensions.MinimumTouchTarget,
+                minHeight = Dimensions.MinimumTouchTarget,
+            )
+            .clip(RoundedCornerShape(AppRadius.ExtraSmall))
+            .clickable(role = Role.Button, onClickLabel = "复制命令") {
+                clipboardManager.setText(AnnotatedString(command))
+                copied = true
+                runCatching { view.announceForAccessibility("已复制命令") }
+                runCatching { Toast.makeText(context, "已复制到剪贴板", Toast.LENGTH_SHORT).show() }
+                coroutineScope.launch {
+                    delay(1500)
+                    copied = false
+                }
+            }
+            .padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+    ) {
+        Icon(
+            imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+            contentDescription = if (copied) "已复制" else "复制",
+            tint = if (copied) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            text = if (copied) "已复制" else "复制",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (copied) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
     }
 }

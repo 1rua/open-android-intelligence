@@ -25,7 +25,9 @@ import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
-import com.openandroidintelligence.conversation.workbench.TimelineRow
+import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
+import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
+import com.openandroidintelligence.conversation.workbench.rememberTimelineDisplayItems
 import com.openandroidintelligence.conversation.workbench.ComposerBar
 import com.openandroidintelligence.conversation.workbench.ConversationBrowser
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -188,6 +190,8 @@ private fun BubbleChat(
 ) {
     val state by controller.state.collectAsState()
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
+    val displayItems = rememberTimelineDisplayItems(entries)
+    val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     val list = rememberLazyListState()
     val followLatest by remember { derivedStateOf {
         val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: Int.MAX_VALUE
@@ -206,8 +210,15 @@ private fun BubbleChat(
             }
             else -> LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(Dimensions.SpaceCompact), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
                 if (entries.isEmpty()) item { Text("此会话暂无消息") }
-                items(entries, key = { it.key }) { entry ->
-                    TimelineRow(entry, controller::decideApproval, onDownloadAttachment = controller::downloadAttachment)
+                items(displayItems, key = { it.key }) { item ->
+                    TimelineDisplayRow(
+                        item = item,
+                        onDecide = controller::decideApproval,
+                        timing = executionTiming,
+                        onDownloadAttachment = controller::downloadAttachment,
+                        onRequestOriginalAttachment = controller::requestOriginalImage,
+                        modifier = Modifier.animateItem(),
+                    )
                 }
             }
         }

@@ -35,6 +35,7 @@ fun AttachmentLibraryScreen(
     onClose: (() -> Unit)? = null,
     historical: List<com.openandroidintelligence.conversation.model.TimelineAttachment> = emptyList(),
     onDownloadHistorical: ((String) -> Unit)? = null,
+    onRequestOriginalHistorical: ((String) -> Unit)? = null,
 ) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         LazyColumn(
@@ -163,7 +164,11 @@ fun AttachmentLibraryScreen(
             }
         }
         items(historical, key = { "history_" + it.draftId }) { media ->
-            HistoricalAttachmentCard(media, onDownloadHistorical)
+            HistoricalAttachmentCard(
+                media,
+                onDownloadHistorical,
+                onRequestOriginal = onRequestOriginalHistorical,
+            )
         }
         }
     }

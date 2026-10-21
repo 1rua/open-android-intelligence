@@ -136,4 +136,18 @@ object AppTextStyles {
         lineHeight = 26.sp,
         letterSpacing = 0.2.sp,
     )
+
+    /**
+     * 执行过程（思维链正文、思考/工具卡标题、紧凑叙述）专用样式：13sp / 18.2sp（1.4 倍行高）。
+     *
+     * 执行卡是正文里的「过程」而不是回答本身：字号比正文收一档，
+     * 靠 [com.openandroidintelligence.conversation.workbench.LocalMarkdownCompact]
+     * 让思维链正文里的 Markdown 全部走这套度量，不再逐块手写字号。
+     */
+    val Thought = TextStyle(
+        fontWeight = FontWeight.Normal,
+        fontSize = 13.sp,
+        lineHeight = 18.2.sp,
+        letterSpacing = 0.1.sp,
+    )
 }

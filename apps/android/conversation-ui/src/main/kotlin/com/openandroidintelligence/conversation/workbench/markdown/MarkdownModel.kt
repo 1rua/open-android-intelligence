@@ -71,12 +71,21 @@ sealed interface TimelineBlock {
         val isComplete: Boolean = true,
     ) : TimelineBlock
 
+    /**
+     * 一次工具调用。
+     *
+     * [isRunning] 表示这条工具调用在流式文本里还没有闭合：解析器遇到未闭合的
+     * `<tool_call>` / fenced `tool_call` 时置 true，闭合后置 false。
+     * 它只描述「文本是否已经写完」，真实是否仍在执行还要结合消息的
+     * `TimelineEntry.isStreaming`，由卡片渲染层判定（规格 §3.2）。
+     */
     data class ToolCallBlock(
         val toolName: String,
         val command: String,
         val output: String? = null,
         val isSuccess: Boolean = true,
         val summary: String? = null,
+        val isRunning: Boolean = false,
     ) : TimelineBlock
 }
 

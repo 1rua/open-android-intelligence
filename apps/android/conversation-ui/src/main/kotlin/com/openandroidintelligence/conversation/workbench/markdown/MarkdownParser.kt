@@ -49,6 +49,28 @@ private const val MaxBlockquoteDepth = 8
         return parseThoughtBlocks(text)
     }
 
+    /**
+     * 解析「叙述性 Markdown」：普通段落、标题、列表、引用、表格与代码块。
+     *
+     * 与 [parse] 的区别是**不识别** `<think>` / `<tool_call>` 执行块：
+     * 思维链正文与执行过程里的叙述本身就可能包含这些标记的示例文本，
+     * 再递归解析会生成嵌套卡片（思考卡里再套一张思考卡），所以这里一律当普通文本。
+     * fenced `tool_call` 与 `$ adb` 命令兼容路径同样保持为代码块，不升格成工具卡。
+     *
+     * 解析异常时回退为单段纯文本，保证流式输出期间界面不崩（规格 §3.3 / §6）。
+     */
+    fun parseNarrative(text: String): List<TimelineBlock> {
+        if (text.isEmpty()) {
+            return listOf(TimelineBlock.Paragraph(""))
+        }
+        return runCatching {
+            parseContentWithCodeBlocks(text, recognizeToolCalls = false)
+                .ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
+        }.getOrElse {
+            listOf(TimelineBlock.Paragraph(text))
+        }
+    }
+
     private fun parseThoughtBlocks(text: String): List<TimelineBlock> {
         if (!text.contains("<think", ignoreCase = true)) {
             return parseContentWithXmlToolCalls(text).ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
@@ -111,12 +133,14 @@ private const val MaxBlockquoteDepth = 8
             }
             val remaining = text.substring(lastIndex).trim()
             if (remaining.isNotEmpty()) {
-                blocks.addAll(parseContentWithCodeBlocks(remaining))
+                // 剩余文本里可能还有尚未闭合的 <tool_call>（流式下一段工具调用）。
+                // 继续走同一入口，才能把它标成 isRunning，而不是当成普通段落。
+                blocks.addAll(parseContentWithXmlToolCalls(remaining))
             }
             return blocks
         }
 
-        // 容错流式未闭合 <tool_call>
+        // 容错流式未闭合 <tool_call>：闭合标签还没写成，标记为仍在执行（isRunning = true）。
         val unclosedMatch = unclosedToolCallXmlRegex.find(text)
         if (unclosedMatch != null) {
             val before = text.substring(0, unclosedMatch.range.first).trim()
@@ -125,16 +149,27 @@ private const val MaxBlockquoteDepth = 8
             }
             val toolNameAttr = unclosedMatch.groups[1]?.value?.trim()?.ifBlank { null } ?: "执行命令"
             val content = unclosedMatch.groupValues[2]
-            blocks.add(parseXmlToolCallContent(toolNameAttr, content))
+            blocks.add(parseXmlToolCallContent(toolNameAttr, content).copy(isRunning = true))
             return blocks
         }
 
         return parseContentWithCodeBlocks(text)
     }
 
-    private fun parseContentWithCodeBlocks(text: String, quoteDepth: Int = 0): List<TimelineBlock> {
+    /**
+     * 代码围栏解析主路径。
+     *
+     * [recognizeToolCalls] 为 false 时（[parseNarrative] 使用）所有围栏一律当普通代码块，
+     * 不再把 `tool_call` 围栏或 `$ adb` 兼容段落升格成工具卡，避免思维链正文里
+     * 出现嵌套的执行卡片。
+     */
+    private fun parseContentWithCodeBlocks(
+        text: String,
+        quoteDepth: Int = 0,
+        recognizeToolCalls: Boolean = true,
+    ): List<TimelineBlock> {
         if (!text.contains("```")) {
-            return parseNonCodeText(text, quoteDepth)
+            return parseNonCodeText(text, quoteDepth, recognizeToolCalls)
         }
 
         val matches = codeBlockRegex.findAll(text).toList()
@@ -144,12 +179,12 @@ private const val MaxBlockquoteDepth = 8
             for (match in matches) {
                 val before = text.substring(lastIndex, match.range.first).trim()
                 if (before.isNotEmpty()) {
-                    blocks.addAll(parseNonCodeText(before, quoteDepth))
+                    blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls))
                 }
                 val language = match.groupValues[1].trim()
                 val code = match.groupValues[2].trimEnd()
 
-                val toolCall = tryParseCodeBlockAsToolCall(language, code)
+                val toolCall = if (recognizeToolCalls) tryParseCodeBlockAsToolCall(language, code) else null
                 if (toolCall != null) {
                     blocks.add(toolCall)
                 } else {
@@ -159,31 +194,31 @@ private const val MaxBlockquoteDepth = 8
             }
             val remaining = text.substring(lastIndex).trim()
             if (remaining.isNotEmpty()) {
-                blocks.addAll(parseNonCodeText(remaining, quoteDepth))
+                blocks.addAll(parseNonCodeText(remaining, quoteDepth, recognizeToolCalls))
             }
             return blocks
         }
 
-        // 容错流式未闭合代码块
+        // 容错流式未闭合代码块：未闭合即代表流还没写完，工具卡标记为仍在执行。
         val unclosedCodeMatch = unclosedCodeBlockRegex.find(text)
         if (unclosedCodeMatch != null) {
             val blocks = mutableListOf<TimelineBlock>()
             val before = text.substring(0, unclosedCodeMatch.range.first).trim()
             if (before.isNotEmpty()) {
-                blocks.addAll(parseNonCodeText(before, quoteDepth))
+                blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls))
             }
             val language = unclosedCodeMatch.groupValues[1].trim()
             val code = unclosedCodeMatch.groupValues[2].trimEnd()
-            val toolCall = tryParseCodeBlockAsToolCall(language, code)
+            val toolCall = if (recognizeToolCalls) tryParseCodeBlockAsToolCall(language, code) else null
             if (toolCall != null) {
-                blocks.add(toolCall)
+                blocks.add(toolCall.copy(isRunning = true))
             } else {
                 blocks.add(TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code))
             }
             return blocks
         }
 
-        return parseNonCodeText(text, quoteDepth)
+        return parseNonCodeText(text, quoteDepth, recognizeToolCalls)
     }
 
     private fun tryParseCodeBlockAsToolCall(language: String, code: String): TimelineBlock.ToolCallBlock? {
@@ -357,7 +392,11 @@ private const val MaxBlockquoteDepth = 8
         )
     }
 
-    private fun parseNonCodeText(text: String, quoteDepth: Int = 0): List<TimelineBlock> {
+    private fun parseNonCodeText(
+        text: String,
+        quoteDepth: Int = 0,
+        recognizeToolCalls: Boolean = true,
+    ): List<TimelineBlock> {
         val lines = text.lines()
         val blocks = mutableListOf<TimelineBlock>()
         var lineIndex = 0
@@ -452,7 +491,11 @@ private const val MaxBlockquoteDepth = 8
                         // 超出深度预算：保留内容但停止递归，避免无限嵌套与栈溢出
                         blocks.add(TimelineBlock.Paragraph(innerText.trim()))
                     } else {
-                        val innerBlocks = parseContentWithCodeBlocks(innerText, quoteDepth + 1)
+                        val innerBlocks = parseContentWithCodeBlocks(
+                            innerText,
+                            quoteDepth + 1,
+                            recognizeToolCalls = recognizeToolCalls,
+                        )
                         if (innerBlocks.isNotEmpty()) {
                             blocks.add(TimelineBlock.Blockquote(innerBlocks))
                         }
