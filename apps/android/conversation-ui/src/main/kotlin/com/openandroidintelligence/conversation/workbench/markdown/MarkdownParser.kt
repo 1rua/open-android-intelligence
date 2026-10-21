@@ -433,7 +433,11 @@ private const val MaxBlockquoteDepth = 8
      * 解析 Hermes 的纯文本工具调用行：工具名后的剩余文本作为命令/参数，
      * 没有参数时标记 [TimelineBlock.ToolCallBlock.invocationOnly]。
      */
-    private fun parseHermesToolLines(text: String, quoteDepth: Int): List<TimelineBlock> {
+    private fun parseHermesToolLines(
+        text: String,
+        quoteDepth: Int,
+        includeActivities: Boolean,
+    ): List<TimelineBlock> {
         val blocks = mutableListOf<TimelineBlock>()
         val pending = mutableListOf<String>()
 
@@ -450,7 +454,7 @@ private const val MaxBlockquoteDepth = 8
         text.lines().forEach { line ->
             val match = hermesToolLineRegex.find(line.trim())
             if (match == null) {
-                val activity = hermesActivityLineRegex.find(line.trim())
+                val activity = if (includeActivities) hermesActivityLineRegex.find(line.trim()) else null
                 if (activity == null) {
                     pending += line
                 } else {
@@ -499,12 +503,27 @@ private const val MaxBlockquoteDepth = 8
         return blocks.ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
     }
 
-    /** 是否为 Hermes 工具占位行或实时进度行。 */
-    internal fun mayContainHermesToolText(text: String): Boolean =
-        text.lineSequence().any { line ->
-            val trimmed = line.trim()
-            hermesToolLineRegex.matches(trimmed) || hermesActivityLineRegex.matches(trimmed)
-        }
+/**
+ * 是否为 Hermes 工具占位行，或整条消息都是实时工具进度行。
+ *
+ * 活动行只在“整条消息没有别的内容”时识别：最终回答里出现一句
+ * "Reading the error message..." 不能被误判成 read_file 工具卡。
+ */
+internal fun mayContainHermesToolText(text: String): Boolean {
+    if (text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }) return true
+    return isHermesActivityOnlyMessage(text)
+}
+
+private fun isHermesActivityOnlyMessage(text: String): Boolean {
+    val lines = text.lines().filter { it.isNotBlank() }
+    // 至少两行，且行尾没有句读：单行或带句号的 "Reading your question..." 更像正文，
+    // 而不是 Hermes 的工具进度预览。
+    return lines.size >= 2 && lines.all { line ->
+        val trimmed = line.trim()
+        hermesActivityLineRegex.matches(trimmed) &&
+            !trimmed.endsWith(".") && !trimmed.endsWith("!") && !trimmed.endsWith("?")
+    }
+}
 
     /** 把 Hermes 的友好动词映射回工具名；未知动词保留原文作为工具名。 */
     private fun hermesToolNameForVerb(verb: String): String = when (verb.trim().lowercase()) {
@@ -541,7 +560,12 @@ private const val MaxBlockquoteDepth = 8
         // Hermes 的工具调用是纯文本行（不是 XML/围栏），必须先拆成 ToolCallBlock，
         // 否则它会被当成普通段落：既没有工具卡，也不会参与执行过程聚合。
         if (recognizeToolCalls && mayContainHermesToolText(text)) {
-            return parseHermesToolLines(text, quoteDepth)
+            val hasExplicitToolLine = text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }
+            return parseHermesToolLines(
+                text = text,
+                quoteDepth = quoteDepth,
+                includeActivities = !hasExplicitToolLine && isHermesActivityOnlyMessage(text),
+            )
         }
         val lines = text.lines()
         val blocks = mutableListOf<TimelineBlock>()

@@ -214,6 +214,24 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun ordinaryProseStartingWithReadingIsNotAToolCard() {
+        val blocks = MarkdownParser.parse("Reading your question, I found the answer.\nRunning the check next.")
+
+        assertEquals(1, blocks.size)
+        val paragraph = blocks.single() as TimelineBlock.Paragraph
+        assertTrue(paragraph.text.contains("Reading your question"))
+        assertTrue(paragraph.text.contains("Running the check next"))
+    }
+
+    @Test
+    fun singleActivityLineIsNotEnoughToBeMistakenForAToolProgressMessage() {
+        val blocks = MarkdownParser.parse("Reading your question, I found the answer.")
+
+        assertEquals(1, blocks.size)
+        assertTrue(blocks[0] is TimelineBlock.Paragraph)
+    }
+
+    @Test
     fun hermesLiveActivityLinesBecomeToolCards() {
         val markdown = """
             Running code import sqlite3
