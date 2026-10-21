@@ -413,13 +413,39 @@ private fun ImageAttachmentCard(
         // 图片的下载状态只在 Lightbox 内就地反馈；列表不再重复显示保存结果。
         // 附件库需要直接识别与保存文件；会话气泡保持纯图降噪。
         if (showCaption) {
-            TextButton(
-                onClick = { onDownload?.invoke(attachment.draftId) },
-                enabled = onDownload != null &&
-                    attachment.localState != AttachmentLocalState.UNAVAILABLE &&
-                    attachment.downloadState != AttachmentDownloadState.DOWNLOADING,
-            ) {
-                Text(if (attachment.downloadState == AttachmentDownloadState.DOWNLOADING) "下载中…" else "下载")
+            when (attachment.downloadState) {
+                AttachmentDownloadState.SAVED -> Text(
+                    "已保存到下载目录",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                AttachmentDownloadState.FAILED -> Text(
+                    "下载失败，请重试",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+
+                else -> Unit
+            }
+            // 没有下载端口时不显示一个点了只会被 Dialog 遮住的按钮。
+            if (onDownload != null) {
+                val canDownload = attachment.localState != AttachmentLocalState.UNAVAILABLE &&
+                    (attachment.downloadState == AttachmentDownloadState.IDLE ||
+                        attachment.downloadState == AttachmentDownloadState.FAILED)
+                TextButton(
+                    onClick = { onDownload(attachment.draftId) },
+                    enabled = canDownload,
+                ) {
+                    Text(
+                        when (attachment.downloadState) {
+                            AttachmentDownloadState.DOWNLOADING -> "下载中…"
+                            AttachmentDownloadState.SAVED -> "已保存"
+                            AttachmentDownloadState.FAILED -> "重试下载"
+                            AttachmentDownloadState.IDLE -> "下载"
+                        },
+                    )
+                }
             }
         }
 

@@ -203,8 +203,10 @@ private fun BubbleChat(
         val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: Int.MAX_VALUE
         lastVisible >= list.layoutInfo.totalItemsCount - 2
     } }
-    LaunchedEffect(entries.lastOrNull()?.key, entries.lastOrNull()?.text) {
-        if (entries.isNotEmpty() && followLatest && !list.isScrollInProgress) list.animateScrollToItem(entries.lastIndex)
+    LaunchedEffect(displayItems.lastOrNull()?.key, entries.lastOrNull()?.text) {
+        if (displayItems.isNotEmpty() && followLatest && !list.isScrollInProgress) {
+            list.animateScrollToItem(displayItems.lastIndex)
+        }
     }
     Column(modifier.fillMaxWidth()) {
         if (status != null) Text(status.label(), Modifier.padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceTiny), style = MaterialTheme.typography.labelMedium)

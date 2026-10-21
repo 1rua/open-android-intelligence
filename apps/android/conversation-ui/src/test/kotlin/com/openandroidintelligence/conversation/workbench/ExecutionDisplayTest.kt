@@ -120,7 +120,7 @@ class ExecutionDisplayTest {
 
         val run = executionRun(TimelineDisplayModel().build(listOf(first, second)))
 
-        assertEquals("execution:a2", run.key)
+        assertEquals("execution_segment:a1", run.segmentKey)
         assertEquals("a2", run.finalEntry.key)
         assertTrue(run.hasFinalAnswer)
         assertTrue(run.isStreaming)
@@ -289,7 +289,7 @@ class ExecutionDisplayTest {
 
         val run = executionRun(TimelineDisplayModel().build(listOf(first, second)))
 
-        assertEquals("execution:a1", run.key)
+        assertEquals("execution_segment:a1", run.segmentKey)
         assertEquals("a1", run.finalEntry.key)
         assertEquals(2, run.stepCount)
         assertTrue(run.hasFinalAnswer)

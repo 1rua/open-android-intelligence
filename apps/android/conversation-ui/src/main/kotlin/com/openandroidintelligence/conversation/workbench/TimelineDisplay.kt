@@ -29,7 +29,6 @@ sealed interface TimelineDisplayItem {
  * 没有最终正文时为空，宿主不应伪造回答占位。
  */
 data class AssistantExecutionRun(
-    val key: String,
     /**
      * 段身份：段内第一条助手消息的 key。
      *
@@ -227,7 +226,6 @@ class TimelineDisplayModel(
         val interrupted = steps.any { it.isInterruptedStep() }
 
         return AssistantExecutionRun(
-            key = "execution:${finalEntry.key}",
             segmentKey = "execution_segment:${analyses.first().entry.key}",
             finalEntry = finalEntry,
             finalBlocks = if (hasFinalAnswer) finalAnalysis.finalBlocks else emptyList(),

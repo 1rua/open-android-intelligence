@@ -87,7 +87,7 @@ fun MarkdownThoughtBlockView(
     // 运行中的卡片被移出组合（滚动/折叠）时在此结账，避免把离开期间也算进耗时。
     DisposableEffect(timingKey, timingStore) {
         onDispose {
-            if (timingKey != null) timingStore?.observe(timingKey, running = false)
+            if (timingKey != null) timingStore?.settleOnDispose(timingKey)
         }
     }
     val durationMillis = timingKey?.let { timingStore?.durationOf(it) }

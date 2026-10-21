@@ -188,7 +188,7 @@ data class TimelineAttachment(
   - `ToolCall` → 工具卡（默认收起）；
   - `Narrative` → 紧凑 Markdown（`LocalMarkdownCompact`）；
   - `Attachments` → 宿主传入的附件 slot 渲染，不丢过程附件。
-- 面板首次出现即折叠；用户展开后保持，不因流式增量强制收起。
+- 面板首次出现即折叠；用户展开后保持，不因流式增量强制收起。例外：没有最终正文且过程区含附件时默认展开，避免唯一的可见附件被折叠藏起来。
 - 标题栏提供 `contentDescription` / `stateDescription`（“执行过程，已完成 N 步，已展开/已收起”）。
 - 面板本身不内滚，交给页面滚动；单个代码块内部滚动。
 
@@ -197,7 +197,7 @@ data class TimelineAttachment(
 - `Single` 助手消息：附件（宿主负责）→ `AssistantMessageContent(entry)` → 元数据/复制。没有思考/工具块时保持现有 `MarkdownDocumentView`；有执行块且尚未聚合时逐块渲染实时卡片与叙述，末尾显示光标。
 - `Execution`：最终消息附件（宿主负责）→ `AssistantExecutionTurnBody(run, processAttachmentsSlot)`（面板 + 最终回答）→ 元数据/复制。
 - 最终回答使用普通 `MarkdownDocumentView`，`isStreaming` 只在最终消息仍流式时传入，光标只出现在真正末块。
-- 折叠时过程条目从列表项移除，只保留一个 `Execution` 展示项（key = `execution:<finalEntry.key>`）；宿主用 `animateItem` 处理出现/消失/重排。
+- 折叠时过程条目从列表项移除，只保留一个 `Execution` 展示项；展示项/面板展开态使用段身份 `segmentKey`（段内第一条助手消息 key），而不是随最终回答变化的 finalEntry key；宿主用 `animateItem` 处理出现/消失/重排。
 - 最终消息没有最终正文时，面板下方只显示元数据，不伪造回答。
 
 ### 4.5 图片附件卡

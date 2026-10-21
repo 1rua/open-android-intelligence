@@ -64,6 +64,19 @@ class ExecutionTimingStore(
         settledDurations[stepKey] = observation.totalMillis
     }
 
+    /**
+     * 卡片离开组合时结算当前区间，但保留「未真正完成」的语义：
+     * 再次进入且仍在运行时从新的观察点继续累计，而不是把已观察的时长清零。
+     */
+    fun settleOnDispose(stepKey: String) {
+        if (stepKey.isBlank()) return
+        val observation = observations[stepKey] ?: return
+        val startedAt = observation.startedAt ?: return
+        observation.startedAt = null
+        observation.totalMillis += (clock() - startedAt).coerceAtLeast(0L)
+        settledDurations[stepKey] = observation.totalMillis
+    }
+
     /** 已结算的耗时（毫秒）；从未观察到开始或尚未结束时返回 null。 */
     fun durationOf(stepKey: String): Long? = settledDurations[stepKey]
 
