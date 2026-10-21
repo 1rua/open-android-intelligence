@@ -520,8 +520,12 @@ private fun isHermesActivityOnlyMessage(text: String): Boolean {
     // 而不是 Hermes 的工具进度预览。
     return lines.size >= 2 && lines.all { line ->
         val trimmed = line.trim()
-        hermesActivityLineRegex.matches(trimmed) &&
-            !trimmed.endsWith(".") && !trimmed.endsWith("!") && !trimmed.endsWith("?")
+        // Hermes 的预览会用 "..." 截断长命令，这仍是进度行；单个句号/问号/感叹号
+        // 才更像正文句尾。
+        val truncatedPreview = trimmed.endsWith("...")
+        val sentenceEnd = !truncatedPreview &&
+            (trimmed.endsWith(".") || trimmed.endsWith("!") || trimmed.endsWith("?"))
+        hermesActivityLineRegex.matches(trimmed) && !sentenceEnd
     }
 }
 

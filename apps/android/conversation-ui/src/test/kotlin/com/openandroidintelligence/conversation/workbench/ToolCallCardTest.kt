@@ -214,6 +214,17 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun ellipsisTruncatedHermesActivityStillBecomesToolCards() {
+        val blocks = MarkdownParser.parse("Running code import sqlite3 import json conn = sql...\nReading core.py L5510-5549...")
+
+        assertEquals(2, blocks.size)
+        assertEquals(
+            listOf("execute_code", "read_file"),
+            blocks.map { (it as TimelineBlock.ToolCallBlock).toolName },
+        )
+    }
+
+    @Test
     fun ordinaryProseStartingWithReadingIsNotAToolCard() {
         val blocks = MarkdownParser.parse("Reading your question, I found the answer.\nRunning the check next.")
 
