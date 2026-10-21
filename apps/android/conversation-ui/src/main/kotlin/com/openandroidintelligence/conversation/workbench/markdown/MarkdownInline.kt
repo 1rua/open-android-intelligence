@@ -108,8 +108,6 @@ fun isSupportedLinkUrl(url: String): Boolean {
     }
 }
 
-private val SupportedLinkSchemes = setOf("http", "https", "mailto", "tel")
-
 /** 基础 HTML 标签白名单：只放行不会执行脚本、不会引入外部资源的排版标签。 */
 private val AllowedInlineTags = setOf(
     "a", "b", "strong", "i", "em", "u", "s", "del", "strike",
@@ -127,7 +125,7 @@ private const val MaxHtmlTagLength = 256
 private const val MaxAutolinkLength = 2048
 
 /** 裸链接遇到这些字符立即结束，避免把强调标记、引号等吞进 URL。 */
-private const val BareUrlStopCharacters = "\t\n\r >\"'`*~"
+private const val BareUrlStopCharacters = "\t\n\r <>\"'`*~"
 
 private val NamedEntities = mapOf(
     "amp" to "&",
@@ -452,6 +450,7 @@ private class InlineRenderer(
             } else {
                 when (character) {
                     '"', '\'' -> quote = character
+                    '<' -> return null
                     '>' -> return HtmlTagToken(
                         tag = tag,
                         isClosing = isClosing,
@@ -553,8 +552,10 @@ private class InlineRenderer(
     }
 
     private fun tryAppendEntity(start: Int, end: Int): Int? {
-        val semicolon = input.indexOf(';', start + 1)
-        if (semicolon == -1 || semicolon >= end || semicolon >= start + MaxEntityLength + 1) return null
+        var semicolon = start + 1
+        val entityLimit = minOf(end, start + MaxEntityLength + 1)
+        while (semicolon < entityLimit && input[semicolon] != ';') semicolon++
+        if (semicolon >= entityLimit || input.getOrNull(semicolon) != ';') return null
         val body = input.substring(start + 1, semicolon)
         if (body.startsWith("#")) {
             val codePoint = if (body.startsWith("#x", ignoreCase = true)) {

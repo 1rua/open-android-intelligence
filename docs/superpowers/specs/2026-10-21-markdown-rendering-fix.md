@@ -62,8 +62,8 @@ authorization: 2026-10-21 用户直接要求修复移动端对话 Markdown 渲�
   闭合后还有正文的 `$$x$$ tail` 降级为行内公式，不会吞掉后续标题。
 - **深度预算**：引用递归最多 8 层，超出部分去掉剩余 `>` 后扁平化为段落，避免超长 `>>>>…`
   打爆调用栈；Compose 视图递归因此也有上界。
-- 流式输出时未闭合的 `$$`、围栏代码、引用都有稳定的中间态：公式先按字面量保留，收到闭合
-  分隔符后再升级为公式块。
+- 流式输出时未闭合的 `$$` 有稳定中间态：若已累积到非空公式体则立即按 `MathBlock` 渲染，
+  只有空体（单独 `$$`）或闭合后还带正文时才退回普通段落；围栏代码与引用同理，不会吞掉整段正文。
 
 ### 3.3 行内解析（`markdown/MarkdownInline.kt`）
 
@@ -113,7 +113,7 @@ authorization: 2026-10-21 用户直接要求修复移动端对话 Markdown 渲�
   文件访问后仍可读）、全部 URL 跳转拦截、不注册 `JavascriptInterface`、`trust:false`；
   LaTeX 源码经 JS 字符串转义后注入。
 - **尺寸协议**：Kotlin 用 `evaluateJavascript` 主动测量，页面回传
-  `nw,nh,sw,sh,failed,settled`；字体加载完成后（`document.fonts.ready`）再测一次。
+  `nw,nh,sw,sh,failed`；字体加载完成后（`document.fonts.ready`）再测一次。
   行内占位用 `InlineTextContent`，块级用 40dp 起占位，实测后精确回填；尺寸缓存 LRU 256。
 - **单位约定**：WebView 必须 `useWideViewPort=true` 让 `initial-scale=1` 生效，此时
   1 CSS px = 1dp；`buildKaTeXHtml` 收 CSS px（= 物理 px / density），测量结果乘 density 得物理 px。
@@ -149,7 +149,7 @@ authorization: 2026-10-21 用户直接要求修复移动端对话 Markdown 渲�
 | 逐条复制 | `MarkdownInteractionComposeTest` 剪贴板内容、流式更新下反馈保持 | 点击变「复制成功」，1.6s 恢复，剪贴板为原文 |
 | 解析健壮性 | `MarkdownParserNestedTest` 覆盖空 `$$`、`$$x$$ tail`、2000 层 `>`、首项缩进异常 | 设备探针无卡顿 |
 
-- 纯 JVM/ Robolectric：`cd apps/android && ./gradlew :conversation-ui:testDebugUnitTest`（49 个测试类、411 个用例）
+- 纯 JVM/ Robolectric：`cd apps/android && ./gradlew :conversation-ui:testDebugUnitTest`（49 个测试类、414 个用例）
 - 静态门禁：`./gradlew noVpnSurfaceCheck`
 - 设备证据：`tmp/screens/probe-fixed-*.png`（对话内验证产物，不提交）；仓库内长期对照见
   `assets/2026-10-21-markdown-rendering/`。

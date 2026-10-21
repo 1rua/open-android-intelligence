@@ -40,9 +40,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.TextUnit
-import androidx.compose.ui.unit.dp
-import com.openandroidintelligence.conversation.theme.Dimensions
 import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.theme.Dimensions
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import java.util.LinkedHashMap

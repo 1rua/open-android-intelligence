@@ -29,7 +29,10 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
@@ -224,6 +227,12 @@ fun MarkdownListView(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
+        // 标记只在首行居中：多行列表项保持圆点/复选框贴首行，而不是浮在整段中间
+        val markerLineHeight = MaterialTheme.typography.bodyLarge.lineHeight
+        val markerHeight = with(LocalDensity.current) {
+            (if (markerLineHeight.isSpecified) markerLineHeight else 24.sp).toDp()
+        }
+
         block.items.forEachIndexed { index, item ->
             val isLast = isStreaming && index == block.items.lastIndex
             val checked = item.taskState == TaskState.CHECKED
@@ -233,9 +242,9 @@ fun MarkdownListView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = Dimensions.ListIndent * item.level),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.Top,
             ) {
-                ListItemMarker(item = item)
+                ListItemMarker(item = item, height = markerHeight)
                 Spacer(Modifier.width(Dimensions.SpaceSmall))
                 MarkdownInlineText(
                     text = item.text,
@@ -253,9 +262,11 @@ fun MarkdownListView(
 }
 
 @Composable
-private fun ListItemMarker(item: MarkdownListItem) {
+private fun ListItemMarker(item: MarkdownListItem, height: Dp) {
     Box(
-        modifier = Modifier.width(Dimensions.ListMarkerWidth),
+        modifier = Modifier
+            .width(Dimensions.ListMarkerWidth)
+            .heightIn(min = height),
         contentAlignment = Alignment.Center,
     ) {
         when {

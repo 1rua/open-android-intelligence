@@ -188,7 +188,8 @@ class MarkdownInlineTest {
         val result = buildMarkdownInline("*a `b*c` d*", colors)
 
         assertEquals("a b*c d", result.annotated.text)
-        assertTrue("整体应是斜体", result.annotated.spanStyles.any { it.item.fontStyle == FontStyle.Italic })
+        val italic = result.annotated.spanStyles.filter { it.item.fontStyle == FontStyle.Italic }
+        assertTrue("整体应是斜体", italic.any { it.start == 0 && it.end == result.annotated.length })
     }
 
     @Test
@@ -234,6 +235,24 @@ class MarkdownInlineTest {
 
         assertTrue(result.annotated.text.endsWith("!"))
         assertTrue(result.annotated.getLinkAnnotations(0, result.annotated.length).isEmpty())
+    }
+
+    @Test
+    fun bareUrlStopsBeforeInlineHtmlTag() {
+        val result = buildMarkdownInline("https://example.com<b>粗</b>", colors)
+
+        assertEquals("https://example.com粗", result.annotated.text)
+        val link = result.annotated.getLinkAnnotations(0, result.annotated.length).single()
+        assertEquals("https://example.com", (link.item as LinkAnnotation.Clickable).tag)
+        assertTrue("粗体标签仍要生效", result.annotated.spanStyles.any { it.item.fontWeight == FontWeight.Bold })
+    }
+
+    @Test
+    fun malformedNestedOpenTagStaysLiteralInsteadOfSwallowingMarkup() {
+        val result = buildMarkdownInline("<b <i>x</i>", colors)
+
+        assertEquals("<b x", result.annotated.text)
+        assertTrue("内层 <i> 仍应正常生效", result.annotated.spanStyles.any { it.item.fontStyle == FontStyle.Italic })
     }
 
 }
