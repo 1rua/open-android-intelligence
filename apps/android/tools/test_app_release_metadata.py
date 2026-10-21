@@ -129,7 +129,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
 
     def test_rolling_release_waits_for_apk_upload_before_publishing_manifest(self):
         # 官方 action 的 preserve_order=true 分支逐个等待上传；APK 失败必须阻止新清单发布。
-        workflow = (release.REPOSITORY_ROOT / ".github/workflows/nightly-release.yml").read_text(encoding="utf-8")
+        workflow = (release.REPOSITORY_ROOT / ".github/workflows/dev-release.yml").read_text(encoding="utf-8")
         action = "uses: softprops/action-gh-release@v2"
         self.assertEqual(workflow.count(action), 1)
         release_step = re.split(r"\n      - ", workflow[workflow.index(action):], maxsplit=1)[0]

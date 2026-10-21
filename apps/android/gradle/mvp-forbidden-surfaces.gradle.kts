@@ -1,9 +1,7 @@
 /**
- * Static no-VPN/no-listener guard for the MVP.
- *
- * This intentionally scans source and merged manifests before packaging. The
- * mobile product is a userspace client of one ticket-bound Bridge; it does not
- * own a system tunnel, route, DNS, proxy or generic socket listener.
+ * 打包前扫描源码与合并后的 Manifest，拒绝系统 VPN 和通用监听面。
+ * Android 宿主通过明确登记的网络 owner 连接 Gateway 或查询公开发布，
+ * 不拥有系统隧道、路由、DNS、代理或通用网络监听能力。
  */
 import java.io.File
 
@@ -25,9 +23,8 @@ val alwaysForbidden = listOf(
 )
 
 /**
- * Outbound HTTP/transport surfaces. These are no longer a blanket ban: the
- * Gateway client and an audited Companion transport adapter must own them, and
- * every other module must go through those owners.
+ * 出站 HTTP 与传输接口由 Gateway 客户端、受审查的 Companion 适配器，
+ * 或精确登记的公开发布查询文件负责；其他源码必须通过这些 owner 访问网络。
  */
 val forbiddenOutsideOwners = listOf(
     Regex("\\b(?:URLConnection|WebSocket|HttpClient|OkHttpClient|ServerSocket|DatagramSocket|Socket)\\b", RegexOption.IGNORE_CASE),
@@ -35,6 +32,15 @@ val forbiddenOutsideOwners = listOf(
 )
 
 val networkOwnerModules = setOf("gateway-client", "tailscale-companion", "companion-bridge")
+
+/**
+ * App 更新仅查询项目的公开 GitHub 发布，不携带账号凭据、不复用 Gateway
+ * 客户端，并在实现内校验官方 HTTPS URL。只登记这一生产文件；同目录及
+ * app 模块的其他源码仍禁止直接联网，全部 owner 仍受 alwaysForbidden 检查。
+ */
+val networkOwnerFiles = setOf(
+    "app/src/main/kotlin/com/openandroidintelligence/mobile/updates/AppUpdateChecker.kt",
+)
 
 /**
  * Generated output is not source: scanning it makes the gate depend on build
@@ -64,12 +70,13 @@ val testOnlyLoopbackFixtures = setOf(
 )
 
 /**
- * 这两个 JVM 回归分别核对实际 Android HTTP 类和实际事件通道名称，
- * 需要提及出站网络关键字。仅按完整测试路径允许这些断言；生产源码仍由
- * 网络 owner 管理，VPN、路由、代理及通用监听/拨号禁令仍检查这两个文件。
+ * 这些 JVM 回归核对实际 HTTP 类、事件通道和请求取消，需要提及出站网络
+ * 关键字，更新检测回归还使用真实回环连接。仅按完整测试路径允许这些断言；
+ * 生产源码仍由网络 owner 管理，VPN、路由、代理及通用监听/拨号禁令仍检查。
  */
 val testOnlyOutboundAssertions = setOf(
     "app/src/test/kotlin/com/openandroidintelligence/mobile/AndroidAttachmentContentTypeTest.kt",
+    "app/src/test/kotlin/com/openandroidintelligence/mobile/AppUpdateCheckerTest.kt",
     "app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/NotificationCapabilityHttpTest.kt",
     "conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/HermesHttpInteropTest.kt",
 )
@@ -233,6 +240,7 @@ tasks.register("noVpnSurfaceCheck") {
         val violations = rootProject.subprojects.flatMap { project ->
             sourceFilesUnder(project.projectDir).flatMap { file ->
                 val allowsOutboundReferences = project.name in networkOwnerModules ||
+                    file.relativeTo(rootDir).path in networkOwnerFiles ||
                     file.relativeTo(rootDir).path in testOnlyOutboundAssertions
                 val banned = if (allowsOutboundReferences) alwaysForbidden else alwaysForbidden + forbiddenOutsideOwners
                 scanNoVpnSurfaces(listOf(file), banned)
