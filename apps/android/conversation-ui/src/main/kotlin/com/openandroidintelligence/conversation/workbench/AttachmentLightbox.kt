@@ -191,6 +191,11 @@ private fun LightboxContent(
     val originalBitmap = rememberDecodedPreview(originalBytes)
     val previewBitmap = rememberDecodedPreview(attachment.previewBytes)
     val bitmap = originalBitmap ?: previewBitmap
+    val retryOriginal: (() -> Unit)? = if (attachment.originalState == OriginalImageState.FAILED) {
+        onRequestOriginal?.let { request -> { request(attachment.draftId) } }
+    } else {
+        null
+    }
 
     Column(
         modifier = modifier
@@ -213,6 +218,7 @@ private fun LightboxContent(
             onMenuDismiss = { menuOpen = false },
             onDismiss = onDismiss,
             onDownload = onDownload,
+            onRetryOriginal = retryOriginal,
             modifier = Modifier.weight(1f),
         )
     }
@@ -310,6 +316,7 @@ private fun LightboxImageStage(
     onMenuDismiss: () -> Unit,
     onDismiss: () -> Unit,
     onDownload: ((String) -> Unit)?,
+    onRetryOriginal: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -323,19 +330,35 @@ private fun LightboxImageStage(
         if (bitmap == null) {
             ImageStagePlaceholder(
                 attachment = attachment,
+                onRetryOriginal = onRetryOriginal,
                 modifier = Modifier
                     .align(Alignment.Center)
                     .padding(horizontal = Dimensions.SpaceLarge),
             )
         } else {
             originalStatusText(attachment, hasPreview = true)?.let { text ->
-                StageStatusChip(
-                    text = text,
-                    showProgress = attachment.originalState == OriginalImageState.LOADING,
+                Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(Dimensions.SpaceMedium),
-                )
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+                ) {
+                    StageStatusChip(
+                        text = text,
+                        showProgress = attachment.originalState == OriginalImageState.LOADING,
+                    )
+                    if (onRetryOriginal != null) {
+                        Surface(
+                            shape = RoundedCornerShape(AppRadius.Compact),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        ) {
+                            TextButton(onClick = onRetryOriginal) {
+                                Text("重试加载原图")
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -566,6 +589,7 @@ private fun ZoomableImageStage(
 @Composable
 private fun ImageStagePlaceholder(
     attachment: TimelineAttachment,
+    onRetryOriginal: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -590,6 +614,11 @@ private fun ImageStagePlaceholder(
                     modifier = Modifier.size(Dimensions.Progress),
                     strokeWidth = Dimensions.StrokeStitch,
                 )
+            }
+            if (onRetryOriginal != null) {
+                TextButton(onClick = onRetryOriginal) {
+                    Text("重试加载原图")
+                }
             }
         }
     }

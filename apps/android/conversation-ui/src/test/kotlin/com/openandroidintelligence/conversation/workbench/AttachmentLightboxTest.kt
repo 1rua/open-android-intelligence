@@ -131,6 +131,19 @@ class AttachmentLightboxTest {
     }
 
     @Test
+    fun failedOriginalOffersAnExplicitRetry() {
+        var requests = 0
+        render(
+            attachment(originalState = OriginalImageState.FAILED),
+            onRequestOriginal = { requests += 1 },
+        )
+
+        compose.onNodeWithText("重试加载原图").performClick()
+
+        assertEquals("失败后的显式重试必须重新请求原图", 1, requests)
+    }
+
+    @Test
     fun loadingOriginalShowsLoadingHintInsteadOfBlank() {
         render(attachment(originalState = OriginalImageState.LOADING))
 

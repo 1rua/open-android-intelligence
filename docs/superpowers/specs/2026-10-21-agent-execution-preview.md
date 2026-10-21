@@ -265,7 +265,7 @@ data class TimelineAttachment(
 | 普通多助手消息无执行块 | 不聚合，保持逐条 |
 | 审批/系统行打断执行段 | 分段聚合，规格记录 |
 | 图片无预览 | 占位 + 状态文字；可尝试原图；不显示文件名 |
-| 原图加载失败 | 回退预览并提示；不影响保存 |
+| 原图加载失败 | 回退预览并提示，提供“重试加载原图”；不影响保存 |
 | 超大/EXIF 旋转图片 | 控制器限制 2048px/24MB；优先 `ImageDecoder`，失败回退 |
 | 下载失败/无下载端口 | Lightbox 内错误/重试；无端口隐藏保存动作 |
 | 气泡窗口内 Lightbox | Dialog 填满宿主窗口；设备级全屏受限时记录 |
@@ -281,7 +281,7 @@ data class TimelineAttachment(
 - `ImagePreviewGeometryTest`：缩放 clamp、平移边界、双击目标、reduce motion。
 - `WorkbenchOriginalImageTest`：加载成功/失败/无端口/epoch 失效/缓存上限；补 `WorkbenchAttachmentPreviewRegressionTest`。
 - 更新 `ThoughtCardTest`、`ToolCallCardTest`；新增 `ExecutionProcessComposeTest`、`AttachmentImageCardTest`、`MessageTimelineExecutionTest`。
-- 更新 `AttachmentOnlyTimelineTest`（PDF 回归不变，新增图片分支断言）。
+- 新增 `AttachmentImageCardTest`（图片分支无文件名/下载、点击预览、长按保存、PDF 回归）；`AttachmentOnlyTimelineTest` 的 PDF 断言保持不变。
 - 回归 `MarkdownRenderingComposeTest`、`MarkdownInteractionComposeTest`、`MessageTimelineStreamingTest`、`WorkbenchLayoutRegressionTest` 等。
 
 ### 7.2 验收
@@ -331,7 +331,7 @@ data class TimelineAttachment(
 
 | 验证 | 结果 |
 |---|---|
-| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 520 个用例 / 0 失败 |
+| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 521 个用例 / 0 失败 |
 | `:app:compileFullDebugKotlin` | BUILD SUCCESSFUL |
 | `:app:assembleFullDebug` | BUILD SUCCESSFUL |
 | `noVpnSurfaceCheck` | BUILD SUCCESSFUL |
