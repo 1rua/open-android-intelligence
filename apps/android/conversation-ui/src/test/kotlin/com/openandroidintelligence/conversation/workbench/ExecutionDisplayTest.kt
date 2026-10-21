@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.workbench
 
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalId
 import com.openandroidintelligence.conversation.model.ApprovalOption
@@ -381,6 +382,23 @@ class ExecutionDisplayTest {
         assertFalse(run.hasFinalAnswer)
         assertTrue(run.finalBlocks.isEmpty())
         assertEquals("a2", run.finalEntry.key)
+    }
+
+    @Test
+    fun terminalGenerationFoldsHermesCardsEvenWhenEntriesStillSayStreaming() {
+        val entries = listOf(
+            userEntry("u1", "查一下"),
+            assistantEntry("a1", "调用工具：execute_code", streaming = true),
+            assistantEntry("a2", "最终答案", streaming = true),
+        )
+
+        val run = (TimelineDisplayModel()
+            .build(entries, generation = GenerationState.COMPLETED)
+            .last() as TimelineDisplayItem.Execution).run
+
+        assertEquals("a2", run.finalEntry.key)
+        assertTrue(run.hasFinalAnswer)
+        assertFalse(run.finalEntryIsStreaming, "生成已结束，即使快照仍是 STREAMING 也不能常驻光标")
     }
 
     @Test

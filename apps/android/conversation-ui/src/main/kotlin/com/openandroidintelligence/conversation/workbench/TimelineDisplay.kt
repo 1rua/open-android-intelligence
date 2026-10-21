@@ -2,6 +2,7 @@ package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.state.TimelineEntry
 
 /**
@@ -128,7 +129,10 @@ class TimelineDisplayModel(
     internal val cachedEntryCount: Int get() = parsedCache.size
 
     /** 纯函数入口：不依赖 Compose，测试可直接驱动折叠矩阵。 */
-    fun build(entries: List<TimelineEntry>): List<TimelineDisplayItem> {
+    fun build(
+        entries: List<TimelineEntry>,
+        generation: GenerationState? = null,
+    ): List<TimelineDisplayItem> {
         if (entries.isEmpty()) return emptyList()
 
         val items = mutableListOf<TimelineDisplayItem>()
@@ -138,7 +142,7 @@ class TimelineDisplayModel(
             if (segment.isEmpty()) return
             // 只有最后一段会继续增量；历史段不需要「已开始最终回答」的粘滞状态。
             val isLastSegment = segment.last().key == entries.last().key
-            items += buildSegment(segment.toList(), isLastSegment)
+            items += buildSegment(segment.toList(), isLastSegment, generation)
             segment.clear()
         }
 
@@ -154,11 +158,19 @@ class TimelineDisplayModel(
         return items
     }
 
-    private fun buildSegment(entries: List<TimelineEntry>, isLastSegment: Boolean): List<TimelineDisplayItem> {
+    private fun buildSegment(
+        entries: List<TimelineEntry>,
+        isLastSegment: Boolean,
+        generation: GenerationState?,
+    ): List<TimelineDisplayItem> {
         val analyses = entries.map(::analyse)
         val hasExecutionBlocks = analyses.any { it.executionCount > 0 }
         val anyFinalVisible = analyses.any { it.finalVisible }
-        val anyStreaming = entries.any { it.isStreaming }
+        // 会话级生成状态优先于单条消息的 isStreaming：Hermes 的实时快照可能一直
+        // 停留在 STREAMING，直到切会话重载才变成 CONFIRMED。生成已结束时必须
+        // 允许折叠，否则用户要切一次会话才能看到聚合面板。
+        val generationActive = generation?.isActive() ?: entries.any { it.isStreaming }
+        val anyStreaming = entries.any { it.isStreaming } && generationActive
         val segmentKey = entries.first().key
         // 一旦这一段出现过最终正文，就不能因为后续又出现一个工具块而把已折叠的
         // 面板重新展开：展开/收起来回跳比晚一点显示更糟。这个粘滞标记只作用于
@@ -175,10 +187,13 @@ class TimelineDisplayModel(
         if (!shouldFold) {
             return entries.map { TimelineDisplayItem.Single(it) }
         }
-        return listOf(TimelineDisplayItem.Execution(buildRun(analyses)))
+        return listOf(TimelineDisplayItem.Execution(buildRun(analyses, generationActive)))
     }
 
-    private fun buildRun(analyses: List<EntryAnalysis>): AssistantExecutionRun {
+    private fun buildRun(
+        analyses: List<EntryAnalysis>,
+        generationActive: Boolean,
+    ): AssistantExecutionRun {
         // 只有需要折叠的段才解析完整块；普通助手消息在 [analyse] 里走快速路径。
         val resolved = analyses.map { analysis ->
             if (analysis.blocks == null) analyseParsed(analysis.entry) else analysis
@@ -239,7 +254,7 @@ class TimelineDisplayModel(
             failedStepCount = failedStepCount,
             interrupted = interrupted,
             isStreaming = analyses.any { it.entry.isStreaming },
-            finalEntryIsStreaming = finalEntry.isStreaming,
+            finalEntryIsStreaming = finalEntry.isStreaming && generationActive,
             hasFinalAnswer = hasFinalAnswer,
         )
     }
@@ -334,11 +349,18 @@ class TimelineDisplayModel(
 fun rememberTimelineDisplayItems(
     entries: List<TimelineEntry>,
     threadId: String? = null,
+    generation: GenerationState? = null,
 ): List<TimelineDisplayItem> {
     // 缓存与粘滞状态都属于一段会话：换会话必须重建，避免跨会话 id 命中/误折叠。
     val model = remember(threadId) { TimelineDisplayModel() }
-    return remember(entries) { model.build(entries) }
+    return remember(entries, generation) { model.build(entries, generation) }
 }
+
+/** 只有这些状态代表「本轮仍在生成」，终态必须允许折叠。 */
+internal fun GenerationState.isActive(): Boolean =
+    this == GenerationState.QUEUED ||
+        this == GenerationState.RUNNING ||
+        this == GenerationState.CANCEL_REQUESTED
 
 /** 能进入执行段的消息：既不是用户消息，也不是审批/系统回执行。 */
 private fun isExecutionEligible(entry: TimelineEntry): Boolean =

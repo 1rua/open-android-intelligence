@@ -92,6 +92,7 @@ fun rememberTimelineDisplayItems(entries: List<TimelineEntry>): List<TimelineDis
    - 某条消息已出现尾部正文（最终回答已开始，即使仍在流式）；
    - 整段不再有 `isStreaming`（执行结束，包括只有工具、没有最终回答）。
    例外：Hermes 会逐步发送「调用工具：xxx」占位消息与工具活动日志；当整段都是这类消息且还没有最终正文时，先逐条显示工具卡，等最终回答出现后再聚合，避免长工具序列一开始就全部藏进折叠面板。
+   **生成状态优先**：Hermes 的实时快照可能一直停留在 `STREAMING`，直到切会话重载才变成 `CONFIRMED`；因此宿主把 `GenerationState` 一并传给展示模型，`COMPLETED`/`FAILED`/`CANCELLED` 等终态会强制允许折叠，并以同一状态决定是否画最终回答光标，不再依赖每条消息的实时标记。
 4. 不折叠：段内没有任何思考/工具块（普通多条助手消息保持现状）；或仍在执行且尚未出现尾部正文（逐条显示实时卡片）。
 5. `finalEntry`：最后一条 `finalVisible` 的助手消息；没有则取段内最后一条助手消息（仅用于元数据/附件承接）。
 6. 折叠内容 = 段内更早助手消息的完整内容 + `finalEntry` 尾部正文之前的块；`finalEntry` 没有最终正文时，其附件也进入过程区。
@@ -327,6 +328,7 @@ data class TimelineAttachment(
 实现中补充/修正了以下规格细节：
 
 0. **Hermes 纯文本工具调用**：解析器识别 `调用工具：<name>` 行（同一条消息用「、」连接多个工具名时逐张卡呈现），摘要栏显示「已调用」，展开后说明“Hermes 在消息中未提供命令参数”；Hermes 工具活动日志视为过程叙述，与工具卡一起在最终回答出现后聚合。修复了实机反馈“Hermes 未显示工具卡片、回答结束后也未折叠”。
+0. **生成状态驱动折叠**：展示模型接收 `GenerationState`；终态强制结束流式判定，修复“会话进行中 Hermes 工具卡不折叠、切会话重载后才折叠”的问题。
 1. **粘滞折叠**：执行段一旦出现过最终正文，后续又出现工具块时不把已折叠面板展开回实时卡片，避免流式过程中阅读位置来回跳（`TimelineDisplayModel.latchedFinalSegmentKey`）。
 2. **闭合块之后的未闭合块**：XML 与 fenced 两条路径都继续走执行块入口，避免把「闭合工具/围栏 + 后续未闭合工具/围栏」的最后一段误当普通正文，否则最终回答定位会提前、围栏原文甚至会出现在最终回答里。
 3. **长会话快速路径**：展示模型先做廉价预扫描，只有含 `<think`/`<tool_call`/fenced `tool_call`/`$ adb` 的消息才完整解析；普通历史只在所属执行段真的折叠时解析，避免流式增量反复解析整段历史。
@@ -340,7 +342,7 @@ data class TimelineAttachment(
 
 | 验证 | 结果 |
 |---|---|
-| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 533 个用例 / 0 失败 |
+| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 534 个用例 / 0 失败 |
 | `:app:compileFullDebugKotlin` | BUILD SUCCESSFUL |
 | `:app:assembleFullDebug` | BUILD SUCCESSFUL |
 | `noVpnSurfaceCheck` | BUILD SUCCESSFUL |

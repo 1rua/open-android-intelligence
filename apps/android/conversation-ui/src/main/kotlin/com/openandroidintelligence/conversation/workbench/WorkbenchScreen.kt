@@ -90,7 +90,7 @@ fun WorkbenchScreen(
     var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
-    val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId)
+    val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     var showAttachmentLibrary by remember { mutableStateOf(false) }
     var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
