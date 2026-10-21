@@ -132,15 +132,45 @@ def verify_apk_identity(metadata: dict, actual: dict) -> None:
         raise ValueError("APK 中的真实包名或版本与构建前信息不一致，拒绝发布")
 
 
+# apksigner 的两种输出格式都要认：
+# - 旧版（直到 SDK 36）：`Signer #1 certificate SHA-256 digest: <hex>`
+# - SDK 37 起：签名方案前缀 `V1/V2/V3.0 Signer: certificate SHA-256 digest: <hex>`，
+#   多签名者写成 `V2 Signer #2: ...`。
+# 只统计**当前 APK 签名证书**那一行：`public key` 摘要与 `Source Stamp Signer`
+# （来源印章，不是 APK 的签名身份）都不算，末尾锚定防止截断的 65 位十六进制误命中。
+_LEGACY_SIGNER_DIGEST = re.compile(
+    r"^Signer #(\d+) certificate SHA-256 digest: ([0-9a-fA-F]{64})$", re.MULTILINE
+)
+_SCHEME_SIGNER_DIGEST = re.compile(
+    r"^(V\d+(?:\.\d+)?) Signer: certificate SHA-256 digest: ([0-9a-fA-F]{64})$", re.MULTILINE
+)
+_SCHEME_INDEXED_SIGNER_DIGEST = re.compile(
+    r"^(V\d+(?:\.\d+)?) Signer #(\d+): certificate SHA-256 digest: ([0-9a-fA-F]{64})$",
+    re.MULTILINE,
+)
+
+
 def signing_digest(apk: Path) -> str:
     result = subprocess.run(
         [str(find_android_tool("apksigner")), "verify", "--print-certs", str(apk.resolve())],
         check=True, capture_output=True, text=True,
     )
-    digests = re.findall(r"Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})", result.stdout)
+    legacy = _LEGACY_SIGNER_DIGEST.findall(result.stdout)
+    plain = _SCHEME_SIGNER_DIGEST.findall(result.stdout)
+    indexed = _SCHEME_INDEXED_SIGNER_DIGEST.findall(result.stdout)
+
+    # 多签名者一律拒绝——即使两个签名者用同一张证书，也说明构建产物身份不唯一。
+    if len(legacy) > 1 or any(int(number) != 1 for _, number, _ in indexed):
+        raise ValueError("发布 APK 必须具有唯一且可验证的当前签名证书")
+    if any(int(number) != 1 for number, _ in legacy):
+        raise ValueError("发布 APK 必须具有唯一且可验证的当前签名证书")
+
+    digests = {digest.lower() for _, digest in legacy}
+    digests |= {digest.lower() for _, digest in plain}
+    digests |= {digest.lower() for _, _, digest in indexed}
     if len(digests) != 1:
         raise ValueError("发布 APK 必须具有唯一且可验证的当前签名证书")
-    return digests[0].lower()
+    return digests.pop()
 
 
 def verified_manifest(metadata: dict, output_metadata: dict, apk: Path, digest: str) -> dict:

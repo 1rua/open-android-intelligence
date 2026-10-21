@@ -106,6 +106,46 @@ class AppReleaseMetadataTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             release.signing_digest(Path("app-full-debug.apk"))
 
+    @patch.object(release, "find_android_tool", return_value=Path("test-apksigner"))
+    @patch.object(release.subprocess, "run")
+    def test_certificate_accepts_sdk37_signature_scheme_prefixes(self, run, _signer):
+        # SDK 37.0.0 的单签名真实输出改为签名方案前缀，不再使用 Signer #1。
+        for scheme in ("V1", "V2", "V3.0"):
+            with self.subTest(scheme=scheme):
+                run.return_value.stdout = (
+                    f"{scheme} Signer: certificate DN: CN=Android Debug, O=Android, C=US\n"
+                    f"{scheme} Signer: certificate SHA-256 digest: {DIGEST.upper()}\n"
+                    f"{scheme} Signer: certificate SHA-1 digest: {'cd' * 20}\n"
+                )
+                self.assertEqual(release.signing_digest(Path("app-full-debug.apk")), DIGEST)
+
+    @patch.object(release, "find_android_tool", return_value=Path("test-apksigner"))
+    @patch.object(release.subprocess, "run")
+    def test_certificate_rejects_sdk37_multiple_signers_even_with_same_certificate(self, run, _signer):
+        for scheme in ("V1", "V2"):
+            for second_digest in (DIGEST, "cd" * 32):
+                with self.subTest(scheme=scheme, second_digest=second_digest):
+                    run.return_value.stdout = (
+                        f"{scheme} Signer #1: certificate SHA-256 digest: {DIGEST}\n"
+                        f"{scheme} Signer #2: certificate SHA-256 digest: {second_digest}\n"
+                    )
+                    with self.assertRaises(ValueError):
+                        release.signing_digest(Path("app-full-debug.apk"))
+
+    @patch.object(release, "find_android_tool", return_value=Path("test-apksigner"))
+    @patch.object(release.subprocess, "run")
+    def test_certificate_uses_only_complete_apk_signer_certificate_lines(self, run, _signer):
+        unrelated = (
+            f"V3.0 Signer: public key SHA-256 digest: {'cd' * 32}\n"
+            f"Source Stamp Signer: certificate SHA-256 digest: {'ef' * 32}\n"
+        )
+        run.return_value.stdout = f"V3.0 Signer: certificate SHA-256 digest: {DIGEST}\n" + unrelated
+        self.assertEqual(release.signing_digest(Path("app-full-debug.apk")), DIGEST)
+        for output in ("", unrelated, f"V3.0 Signer: certificate SHA-256 digest: {DIGEST}00\n"):
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                run.return_value.stdout = output
+                release.signing_digest(Path("app-full-debug.apk"))
+
     @patch.object(release, "find_android_tool", return_value=Path("test-aapt2"))
     @patch.object(release.subprocess, "run")
     def test_actual_apk_identity_is_read_from_binary_manifest(self, run, _tool):
