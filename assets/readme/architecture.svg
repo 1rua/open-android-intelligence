@@ -1,147 +1,147 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 580" width="100%" height="auto" fill="none">
-  <title>Open Android Intelligence Architecture Overview</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="100%" height="auto" role="img" aria-label="架构：手机侧裁决、协议层校验、服务器侧思考">
+  <title>三层结构，一条加密链路</title>
+  <desc>手机上是 Android 宿主、平台内核与设备插件；中间是 Gateway Protocol v2 的加密链路；服务器上是 Hermes 或 OpenClaw 的原生插件与模型。</desc>
+
   <defs>
-    <linearGradient id="archBg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b1311"/>
-      <stop offset="50%" stop-color="#0f1a16"/>
-      <stop offset="100%" stop-color="#0a100e"/>
+    <linearGradient id="archBg" x1="0" y1="0" x2="1200" y2="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#08110E"/>
+      <stop offset="1" stop-color="#0D1A15"/>
     </linearGradient>
-    <linearGradient id="boxBgAndroid" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#14241e" stop-opacity="0.9"/>
-      <stop offset="100%" stop-color="#0e1814" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="boxBgAgent" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#122026" stop-opacity="0.9"/>
-      <stop offset="100%" stop-color="#0c151a" stop-opacity="0.9"/>
-    </linearGradient>
-    <linearGradient id="boxBgProto" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#1e2c26"/>
-      <stop offset="100%" stop-color="#18272b"/>
-    </linearGradient>
+    <radialGradient id="archGlowMint" gradientUnits="userSpaceOnUse" cx="240" cy="120" r="320">
+      <stop offset="0" stop-color="#34D399"/>
+      <stop offset="1" stop-color="#34D399" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="archGlowSky" gradientUnits="userSpaceOnUse" cx="960" cy="440" r="340">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#38BDF8" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="archDots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#34D399"/>
+    </pattern>
+    <clipPath id="archClip">
+      <rect width="1200" height="560" rx="20"/>
+    </clipPath>
   </defs>
 
   <style>
-    .title-main { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 24px; font-weight: 700; fill: #ffffff; }
-    .col-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 16px; font-weight: 700; fill: #f3f4f6; letter-spacing: 0.5px; }
-    .block-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 14px; font-weight: 600; fill: #34d399; }
-    .block-title-blue { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 14px; font-weight: 600; fill: #38bdf8; }
-    .block-desc { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12px; font-weight: 400; fill: #94a3b8; line-height: 1.5; }
-    .tag-badge { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; font-weight: 600; fill: #cbd5e1; }
-    .line-label { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; fill: #6ee7b7; }
+    .h-title { font-size: 26px; font-weight: 700; fill: #F3F7F5; }
+    .h-sub   { font-size: 20px; font-weight: 400; fill: #9DB0AA; }
+    .col-title { font-size: 22px; font-weight: 700; fill: #F3F7F5; }
+    .col-sub   { font-size: 19px; font-weight: 400; fill: #7E918C; }
+    .item-title { font-size: 20px; font-weight: 600; fill: #F3F7F5; }
+    .item-desc  { font-size: 19px; font-weight: 400; fill: #9DB0AA; }
+    .proto-item { font-size: 19px; font-weight: 500; fill: #C7D4CF; }
+    .foot       { font-size: 18px; font-weight: 400; fill: #7E918C; }
   </style>
 
-  <!-- Container -->
-  <rect width="1200" height="580" rx="16" fill="url(#archBg)" stroke="#1e2f29" stroke-width="1.5"/>
-
-  <!-- Header -->
-  <text x="48" y="44" class="title-main">系统架构全景 (Modular Architecture v2)</text>
-  <text x="48" y="68" font-family="-apple-system, sans-serif" font-size="13" fill="#64748b">平台内核裁决权限 · 确定性 WASM 插件隔离 · 宿主原生 Gateway 适配器 · 严格多租户账号隔离</text>
-
-  <!-- COLUMN 1: Android Host & Platform Kernel (x=48, w=480) -->
-  <g transform="translate(48, 92)">
-    <rect width="480" height="448" rx="12" fill="url(#boxBgAndroid)" stroke="#233b32" stroke-width="1"/>
-    <!-- Col Header -->
-    <rect width="480" height="38" rx="12" fill="#182d25"/>
-    <text x="16" y="24" class="col-title">📱 Android 端 (手机宿主与本地信任边界)</text>
-
-    <!-- Sub-block 1: UI Shell (Core) -->
-    <g transform="translate(16, 52)">
-      <rect width="448" height="66" rx="8" fill="#13221c" stroke="#2a453b" stroke-width="1"/>
-      <text x="14" y="22" class="block-title">可见核心入口 (Android Host UI)</text>
-      <text x="14" y="42" class="block-desc">极简宿主：网关连接与账号管理 · 实时对话流 · 用户显式附件选择器</text>
-      <text x="14" y="58" class="block-desc">Material 3 原生界面设计 · 零静默后台收集 · 原生返回栈与生命周期</text>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
+    <!-- 画布 -->
+    <rect width="1200" height="560" rx="20" fill="url(#archBg)"/>
+    <g clip-path="url(#archClip)">
+      <rect width="1200" height="560" fill="url(#archDots)" opacity="0.03"/>
+      <circle cx="240" cy="120" r="320" fill="url(#archGlowMint)" opacity="0.05"/>
+      <circle cx="960" cy="440" r="340" fill="url(#archGlowSky)" opacity="0.05"/>
     </g>
 
-    <!-- Sub-block 2: Platform Kernel -->
-    <g transform="translate(16, 128)">
-      <rect width="448" height="116" rx="8" fill="#162922" stroke="#34d399" stroke-width="1.2"/>
-      <text x="14" y="24" class="block-title">🛡️ 平台内核 (Platform Kernel - 不可卸载本地权威)</text>
-      <text x="14" y="46" class="block-desc">身份与凭证：设备 Ed25519 密钥环、Gateway 账号刷新凭据、配对隔离</text>
-      <text x="14" y="66" class="block-desc">权限裁决：内核安全原语裁决、单次人工审批、配额硬拦截（9.66 GB）</text>
-      <text x="14" y="86" class="block-desc">插件生命周期：发现、哈希核验、安装、启用/停用、沙箱配额监管</text>
-      <text x="14" y="106" class="block-desc">安全与审计：操作审计记录、幂等 Tombstone 追踪、一键紧急停用 (Kill Switch)</text>
+    <!-- 标题 -->
+    <text x="64" y="58" class="h-title">三层结构，一条加密链路</text>
+    <text x="64" y="90" class="h-sub">手机上裁决 · 协议里校验 · 服务器上思考</text>
+
+    <!-- 第一列：手机上 -->
+    <g transform="translate(64,120)">
+      <rect width="330" height="360" rx="20" fill="#101C17" stroke="#22382F" stroke-width="1.5"/>
+      <rect x="16" y="16" width="298" height="44" rx="22" fill="#16281F" stroke="#2E4A3E" stroke-width="1"/>
+      <text x="36" y="46" class="col-title">手机上</text>
+      <text x="24" y="88" class="col-sub">Android 宿主</text>
+
+      <!-- 条目 1：你来操作 -->
+      <g transform="translate(24,114)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="2" width="14" height="20" rx="2.5"/>
+        <path d="M9 18.5h6"/>
+      </g>
+      <text x="60" y="132" class="item-title">你来操作</text>
+      <text x="60" y="158" class="item-desc">连网关、多会话聊天、挑附件</text>
+
+      <!-- 条目 2：平台内核 -->
+      <g transform="translate(24,194)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2 21 5.4v5.2c0 4.6-3.6 8.2-9 9.4-5.4-1.2-9-4.8-9-9.4V5.4L12 2Z"/>
+        <path d="M8.4 11.6l2.6 2.6 4.6-4.8"/>
+      </g>
+      <text x="60" y="212" class="item-title">平台内核</text>
+      <text x="60" y="238" class="item-desc">管身份、裁决权限、启停插件</text>
+
+      <!-- 条目 3：设备插件 -->
+      <g transform="translate(24,274)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4h16v7.2h-2.2a2.6 2.6 0 0 0 0 5.2H20V20H4v-3.6h2.2a2.6 2.6 0 0 0 0-5.2H4V4Z"/>
+      </g>
+      <text x="60" y="292" class="item-title">设备插件</text>
+      <text x="60" y="318" class="item-desc">短信、通知、通话记录按需装</text>
     </g>
 
-    <!-- Sub-block 3: Modular Plugins -->
-    <g transform="translate(16, 254)">
-      <rect width="448" height="178" rx="8" fill="#101c17" stroke="#253a32" stroke-width="1"/>
-      <text x="14" y="22" class="block-title">🧩 模块化设备能力 (可插拔扩展体系)</text>
+    <!-- 列间箭头 1 -->
+    <path d="M398 300h20" stroke="#3C6657" stroke-width="2" stroke-linecap="round"/>
+    <polygon points="418,294 418,306 427,300" fill="#34D399"/>
 
-      <!-- Row A: Protected WASM -->
-      <rect x="14" y="34" width="420" height="54" rx="6" fill="#162620" stroke="#2d483d" stroke-width="1"/>
-      <text x="24" y="52" font-family="-apple-system, sans-serif" font-size="12" font-weight="600" fill="#a7f3d0">受保护模式 (.alp 扩展包 - 确定性 ZIP + WASM 沙箱)</text>
-      <text x="24" y="72" class="block-desc">通知同步 (Notifications) · 短信只读/单条确认 (SMS) · 通话记录只读 (Call-log)</text>
+    <!-- 第二列：中间 -->
+    <g transform="translate(430,120)">
+      <rect width="270" height="360" rx="20" fill="#101C17" stroke="#22382F" stroke-width="1.5"/>
+      <rect x="16" y="16" width="238" height="44" rx="22" fill="#16281F" stroke="#2E4A3E" stroke-width="1"/>
+      <text x="36" y="46" class="col-title">中间</text>
+      <text x="24" y="88" class="col-sub">Gateway Protocol v2</text>
 
-      <!-- Row B: Companion APK -->
-      <rect x="14" y="96" width="202" height="66" rx="6" fill="#162620" stroke="#2d483d" stroke-width="1"/>
-      <text x="24" y="116" font-family="-apple-system, sans-serif" font-size="12" font-weight="600" fill="#6ee7b7">Companion 独立 APK</text>
-      <text x="24" y="134" class="block-desc">Tailscale 连接插件 (tsnet)</text>
-      <text x="24" y="150" class="block-desc">短期单用途 IPC 令牌受控调用</text>
+      <g stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" fill="none">
+        <circle cx="32" cy="122" r="3.4" fill="#38BDF8" stroke="none"/>
+        <circle cx="32" cy="178" r="3.4" fill="#38BDF8" stroke="none"/>
+        <circle cx="32" cy="234" r="3.4" fill="#38BDF8" stroke="none"/>
+        <circle cx="32" cy="290" r="3.4" fill="#38BDF8" stroke="none"/>
+        <path d="M32 132v34M32 188v34M32 244v34" stroke-opacity="0.35"/>
+      </g>
+      <text x="52" y="130" class="proto-item">HTTPS + SSE 推流</text>
+      <text x="52" y="186" class="proto-item">JSON Schema 全封闭</text>
+      <text x="52" y="242" class="proto-item">Ed25519 签名防重放</text>
+      <text x="52" y="298" class="proto-item">幂等重试不重复执行</text>
 
-      <!-- Row C: Developer Trust Native -->
-      <rect x="232" y="96" width="202" height="66" rx="6" fill="#162620" stroke="#2d483d" stroke-width="1"/>
-      <text x="242" y="116" font-family="-apple-system, sans-serif" font-size="12" font-weight="600" fill="#fcd34d">开发者信任原生模式</text>
-      <text x="242" y="134" class="block-desc">同进程原生 Kotlin 插件</text>
-      <text x="242" y="150" class="block-desc">允许接管界面，用户显式信任</text>
-    </g>
-  </g>
-
-  <!-- MIDDLE COLUMN: Protocol & Wire Transport (x=552, w=168) -->
-  <g transform="translate(552, 190)">
-    <rect width="168" height="250" rx="10" fill="url(#boxBgProto)" stroke="#2b4348" stroke-width="1"/>
-    <text x="14" y="26" font-family="-apple-system, sans-serif" font-size="13" font-weight="700" fill="#38bdf8">⚡ Gateway Protocol v2</text>
-    
-    <!-- Flow indicators -->
-    <path d="M -24 38 L 14 38" stroke="#34d399" stroke-width="2" stroke-dasharray="3,3"/>
-    <path d="M 154 38 L 192 38" stroke="#38bdf8" stroke-width="2" stroke-dasharray="3,3"/>
-
-    <text x="14" y="60" class="line-label">通信信道</text>
-    <text x="14" y="78" class="tag-badge">• HTTPS (默认链路)</text>
-    <text x="14" y="96" class="tag-badge">• SSE 实时事件通道</text>
-    <text x="14" y="114" class="tag-badge">• 可选 Tailscale 私网</text>
-
-    <text x="14" y="146" class="line-label">安全契约</text>
-    <text x="14" y="164" class="tag-badge">• JSON Schema 闭合</text>
-    <text x="14" y="182" class="tag-badge">• Ed25519 请求签名</text>
-    <text x="14" y="200" class="tag-badge">• 零保留推理策略</text>
-    <text x="14" y="218" class="tag-badge">• 幂等 Tombstone 校验</text>
-  </g>
-
-  <!-- COLUMN 3: Agent Host & Gateway Adapter (x=744, w=408) -->
-  <g transform="translate(744, 92)">
-    <rect width="408" height="448" rx="12" fill="url(#boxBgAgent)" stroke="#223e4a" stroke-width="1"/>
-    <!-- Col Header -->
-    <rect width="408" height="38" rx="12" fill="#162e38"/>
-    <text x="16" y="24" class="col-title">🤖 Agent 宿主端 (Hermes / OpenClaw)</text>
-
-    <!-- Sub-block 1: Gateway Adapter -->
-    <g transform="translate(16, 52)">
-      <rect width="376" height="74" rx="8" fill="#0f1d24" stroke="#254b5b" stroke-width="1"/>
-      <text x="14" y="22" class="block-title-blue">原生 Gateway 适配器 (In-host Adapter)</text>
-      <text x="14" y="42" class="block-desc">彻底废弃独立 Docker/systemd Bridge</text>
-      <text x="14" y="60" class="block-desc">作为 Agent 宿主的原生插件直接安装部署，极简低开销</text>
+      <text x="24" y="342" class="col-sub">两端共用同一套契约</text>
     </g>
 
-    <!-- Sub-block 2: Gateway Core -->
-    <g transform="translate(16, 136)">
-      <rect width="376" height="136" rx="8" fill="#13242c" stroke="#38bdf8" stroke-width="1.2"/>
-      <text x="14" y="24" class="block-title-blue">⚙️ Gateway Core (跨宿主统一核心业务)</text>
-      <text x="14" y="48" class="block-desc">多租户隔离：单个部署承载多个独立 Gateway 账号</text>
-      <text x="14" y="68" class="block-desc">配对状态机：基于账号密码认证或设备密钥配对</text>
-      <text x="14" y="88" class="block-desc">消息状态与附件：有界队列缓冲、附件生命周期托管</text>
-      <text x="14" y="108" class="block-desc">设备指令派发：超时控制 (86400s / 900s / 0s 瞬时限额)</text>
-      <text x="14" y="126" class="block-desc">多语言一致性：通过语言无关 24 项黄金向量测试</text>
+    <!-- 列间箭头 2 -->
+    <path d="M704 300h20" stroke="#3C6657" stroke-width="2" stroke-linecap="round"/>
+    <polygon points="724,294 724,306 733,300" fill="#38BDF8"/>
+
+    <!-- 第三列：你的服务器上 -->
+    <g transform="translate(736,120)">
+      <rect width="400" height="360" rx="20" fill="#101C17" stroke="#22382F" stroke-width="1.5"/>
+      <rect x="16" y="16" width="368" height="44" rx="22" fill="#16281F" stroke="#2E4A3E" stroke-width="1"/>
+      <text x="36" y="46" class="col-title">你的服务器上</text>
+      <text x="24" y="88" class="col-sub">Agent 宿主</text>
+
+      <!-- 条目 1：原生插件 -->
+      <g transform="translate(24,114)" fill="none" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="8" rx="2"/>
+        <rect x="3" y="13" width="18" height="8" rx="2"/>
+        <path d="M7 7h2M7 17h2"/>
+      </g>
+      <text x="60" y="132" class="item-title">原生插件</text>
+      <text x="60" y="158" class="item-desc">直接加载，不用另跑 Docker Bridge</text>
+
+      <!-- 条目 2：多账号隔离 -->
+      <g transform="translate(24,194)" fill="none" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="7.5" r="4"/>
+        <path d="M4 20c0-3.8 3.6-6.5 8-6.5s8 2.7 8 6.5"/>
+      </g>
+      <text x="60" y="212" class="item-title">多账号隔离</text>
+      <text x="60" y="238" class="item-desc">配对、会话、记忆各归各</text>
+
+      <!-- 条目 3：模型与工具 -->
+      <g transform="translate(24,274)" fill="none" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="6" width="12" height="12" rx="2.5"/>
+        <path d="M10 2v4M14 2v4M10 18v4M14 18v4M2 10h4M2 14h4M18 10h4M18 14h4"/>
+      </g>
+      <text x="60" y="292" class="item-title">模型与工具</text>
+      <text x="60" y="318" class="item-desc">都跑在你自己机器上</text>
     </g>
 
-    <!-- Sub-block 3: Agent Intelligence System -->
-    <g transform="translate(16, 282)">
-      <rect width="376" height="150" rx="8" fill="#0f1d24" stroke="#254b5b" stroke-width="1"/>
-      <text x="14" y="24" class="block-title-blue">🧠 Agent 智能底座与工具集成</text>
-      <text x="14" y="48" class="block-desc">对话与任务：Hermes 技能调度 / OpenClaw 工具链</text>
-      <text x="14" y="68" class="block-desc">通知感知与消费：订阅/按需查询手机端通知流</text>
-      <text x="14" y="88" class="block-desc">受控设备交互：请求短信查询/草拟、通话记录检索</text>
-      <text x="14" y="108" class="block-desc">记忆与隔离：每个 Gateway 账号拥有专属长期记忆</text>
-      <text x="14" y="128" class="block-desc">零保留配置：连接模型提供商时不留存用户设备私密</text>
-    </g>
+    <!-- 底部说明 -->
+    <text x="600" y="524" text-anchor="middle" class="foot">请求从手机发到服务器，事件从服务器推回手机 · 70 组契约向量两端对齐 · 设备执行链路仍在装配</text>
   </g>
 </svg>

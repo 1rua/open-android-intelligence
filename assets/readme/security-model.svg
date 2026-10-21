@@ -1,79 +1,132 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="100%" height="auto" fill="none">
-  <title>Open Android Intelligence Security Model</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="100%" height="auto" role="img" aria-label="安全模型：Agent 只能提请求，放行还是拒绝由平台内核和你在屏幕上决定">
+  <title>决定权始终在手机上</title>
+  <desc>四级审批门：Agent 提请求、内核先查权限、你在屏幕上确认、放行或拒绝；右侧列出永远不做的四件事。</desc>
   <defs>
     <linearGradient id="secBg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0b1311"/>
-      <stop offset="100%" stop-color="#0e1714"/>
+      <stop offset="0%" stop-color="#08110E"/>
+      <stop offset="100%" stop-color="#0D1A15"/>
     </linearGradient>
-    <linearGradient id="cardBg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#15241e"/>
-      <stop offset="100%" stop-color="#101a16"/>
-    </linearGradient>
+    <radialGradient id="secGlowMint" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#34D399" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#34D399" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="secGlowRed" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#F87171" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#F87171" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="secClip">
+      <rect width="1200" height="420" rx="20"/>
+    </clipPath>
   </defs>
 
-  <style>
-    .sec-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 20px; font-weight: 700; fill: #ffffff; }
-    .sec-header { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 15px; font-weight: 700; fill: #34d399; }
-    .sec-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12px; font-weight: 400; fill: #cbd5e1; line-height: 1.6; }
-    .badge-pass { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; font-weight: 600; fill: #6ee7b7; }
-    .badge-warn { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; font-weight: 600; fill: #fde047; }
-    .badge-deny { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; font-weight: 600; fill: #f87171; }
-  </style>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
+    <!-- 背景与氛围光晕（裁剪到圆角画布内，避免光晕溢出四角） -->
+    <g clip-path="url(#secClip)">
+      <rect width="1200" height="420" rx="20" fill="url(#secBg)"/>
+      <ellipse cx="150" cy="52" rx="430" ry="250" fill="url(#secGlowMint)"/>
+      <ellipse cx="1070" cy="352" rx="320" ry="220" fill="url(#secGlowRed)"/>
+    </g>
+    <rect width="1200" height="420" rx="20" fill="none" stroke="#22382F" stroke-width="1.5"/>
 
-  <rect width="1200" height="320" rx="16" fill="url(#secBg)" stroke="#1e2f29" stroke-width="1.5"/>
+    <!-- 标题区 -->
+    <text x="64" y="54" font-size="26" font-weight="700" fill="#F3F7F5">决定权始终在手机上</text>
+    <text x="64" y="88" font-size="20" font-weight="400" fill="#9DB0AA">Agent 只能提请求；放行还是拒绝，由平台内核和你在屏幕上决定</text>
 
-  <text x="48" y="40" class="sec-title">核心安全防线与原则 (Zero-Trust Security Boundary)</text>
-  <text x="48" y="62" font-family="-apple-system, sans-serif" font-size="13" fill="#64748b">所有操作默认拒绝 (Fail-Closed) · 不提供任意远程 Shell · 用户物理屏幕/输入优先裁决</text>
+    <!-- 审批门总标签 -->
+    <text x="64" y="142" font-size="18" font-weight="400" fill="#7E918C">每一步都要过手机</text>
 
-  <!-- Card 1: 平台内核唯一仲裁 -->
-  <g transform="translate(48, 84)">
-    <rect width="260" height="204" rx="10" fill="url(#cardBg)" stroke="#223932" stroke-width="1"/>
-    <text x="18" y="32" class="sec-header">🛡️ 平台内核唯一仲裁</text>
-    <text x="18" y="60" class="sec-body">• 手机是最终授权者</text>
-    <text x="18" y="82" class="sec-body">• Gateway 仅能提出请求</text>
-    <text x="18" y="104" class="sec-body">• 插件不能自扩权限</text>
-    <text x="18" y="126" class="sec-body">• 严格硬限制 9.66 GB 配额</text>
-    <text x="18" y="148" class="sec-body">• 一键硬件级紧急熔断</text>
-    <rect x="18" y="168" width="224" height="24" rx="4" fill="#0f1f1a"/>
-    <text x="26" y="184" class="badge-pass">STATUS: UNCOMPROMISED</text>
-  </g>
+    <!-- 第一级：Agent 提请求 -->
+    <g transform="translate(64,164)">
+      <rect width="176" height="148" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
+      <g transform="translate(16,16)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="4.5" width="18" height="13" rx="2.5"/>
+        <path d="M2.4 6.2 L11 12.2 L19.6 6.2"/>
+      </g>
+      <text x="16" y="64" font-size="20" font-weight="600" fill="#F3F7F5">Agent 提请求</text>
+      <text x="16" y="94" font-size="18" font-weight="400" fill="#9DB0AA">说要什么</text>
+      <text x="16" y="124" font-size="18" font-weight="400" fill="#9DB0AA">用哪个账号</text>
+    </g>
 
-  <!-- Card 2: 细粒度分层授权 -->
-  <g transform="translate(328, 84)">
-    <rect width="260" height="204" rx="10" fill="url(#cardBg)" stroke="#223932" stroke-width="1"/>
-    <text x="18" y="32" class="sec-header">🔐 细粒度分级授权</text>
-    <text x="18" y="60" class="sec-body">• 通话记录：仅元数据只读</text>
-    <text x="18" y="82" class="sec-body">• 短信：只读；发信逐条确认</text>
-    <text x="18" y="104" class="sec-body">• 通知：白名单包名+字段过滤</text>
-    <text x="18" y="126" class="sec-body">• 附件：用户系统选择器点选</text>
-    <text x="18" y="148" class="sec-body">• 绝无后台静默扫盘</text>
-    <rect x="18" y="168" width="224" height="24" rx="4" fill="#1f1e10"/>
-    <text x="26" y="184" class="badge-warn">ACTION: USER GATED</text>
-  </g>
+    <!-- 流向箭头 1 -->
+    <path d="M245 228 L255 238 L245 248" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.75"/>
 
-  <!-- Card 3: 绝对防御（非目标边界） -->
-  <g transform="translate(608, 84)">
-    <rect width="260" height="204" rx="10" fill="url(#cardBg)" stroke="#223932" stroke-width="1"/>
-    <text x="18" y="32" class="sec-header" fill="#f87171">🚫 绝对禁区 (Non-Goals)</text>
-    <text x="18" y="60" class="sec-body">• 严禁任意远程 Root Shell</text>
-    <text x="18" y="82" class="sec-body">• 严禁提取密码/OTP/支付验证</text>
-    <text x="18" y="104" class="sec-body">• 严禁通话录音与远程接拨</text>
-    <text x="18" y="126" class="sec-body">• 严禁持续偷听唤醒词</text>
-    <text x="18" y="148" class="sec-body">• 严禁私设旁路 VPN 出口</text>
-    <rect x="18" y="168" width="224" height="24" rx="4" fill="#241313"/>
-    <text x="26" y="184" class="badge-deny">FAIL-CLOSED: NEVER EXPOSED</text>
-  </g>
+    <!-- 第二级：内核先查权限 -->
+    <g transform="translate(260,164)">
+      <rect width="176" height="148" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
+      <g transform="translate(16,16)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 2.6 L19 5.6 V11.2 C19 15.8 15.6 18.5 11 19.4 C6.4 18.5 3 15.8 3 11.2 V5.6 Z"/>
+      </g>
+      <text x="16" y="64" font-size="20" font-weight="600" fill="#F3F7F5">内核先查权限</text>
+      <text x="16" y="94" font-size="18" font-weight="400" fill="#9DB0AA">查插件能力</text>
+      <text x="16" y="124" font-size="18" font-weight="400" fill="#9DB0AA">查授权范围</text>
+    </g>
 
-  <!-- Card 4: 多租户隔离机制 -->
-  <g transform="translate(888, 84)">
-    <rect width="264" height="204" rx="10" fill="url(#cardBg)" stroke="#223932" stroke-width="1"/>
-    <text x="18" y="32" class="sec-header">👥 租户与隐私强隔离</text>
-    <text x="18" y="60" class="sec-body">• 单网关部署支持多账号</text>
-    <text x="18" y="82" class="sec-body">• 设备配对、密钥独立存储</text>
-    <text x="18" y="104" class="sec-body">• 长期记忆与审计按租户分立</text>
-    <text x="18" y="126" class="sec-body">• 零保留推理：保护模型交互</text>
-    <text x="18" y="148" class="sec-body">• 登出即注销令牌与本地镜像</text>
-    <rect x="18" y="168" width="228" height="24" rx="4" fill="#0f1f1a"/>
-    <text x="26" y="184" class="badge-pass">TENANT: STRICT ISOLATED</text>
+    <!-- 流向箭头 2 -->
+    <path d="M441 228 L451 238 L441 248" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.75"/>
+
+    <!-- 第三级：你在屏幕上确认 -->
+    <g transform="translate(456,164)">
+      <rect width="176" height="148" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
+      <g transform="translate(16,16)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5.5" y="2" width="11" height="18" rx="2.5"/>
+        <path d="M8.4 11 L10.6 13.2 L14 9.2"/>
+      </g>
+      <text x="16" y="64" font-size="20" font-weight="600" fill="#F3F7F5">你在屏幕上确认</text>
+      <text x="16" y="94" font-size="18" font-weight="400" fill="#9DB0AA">一次授权</text>
+      <text x="16" y="124" font-size="18" font-weight="400" fill="#9DB0AA">只这一次生效</text>
+    </g>
+
+    <!-- 流向箭头 3 -->
+    <path d="M637 228 L647 238 L637 248" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.75"/>
+
+    <!-- 第四级：放行或拒绝 -->
+    <g transform="translate(652,164)">
+      <rect width="176" height="148" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
+      <g transform="translate(16,16)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 3 V9"/>
+        <path d="M11 9 L5.6 15.4"/>
+        <path d="M11 9 L16.4 15.4"/>
+      </g>
+      <text x="16" y="64" font-size="20" font-weight="600" fill="#F3F7F5">放行或拒绝</text>
+      <text x="16" y="94" font-size="18" font-weight="400" fill="#9DB0AA">拒绝也写进</text>
+      <text x="16" y="124" font-size="18" font-weight="400" fill="#9DB0AA">审计记录</text>
+    </g>
+
+    <!-- 右侧：我们永远不做 -->
+    <g transform="translate(860,112)">
+      <rect width="276" height="232" rx="20" fill="#12211B" stroke="#2A3C34" stroke-width="1.5"/>
+      <g transform="translate(24,26)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4 L16 16"/>
+        <path d="M16 4 L4 16"/>
+      </g>
+      <text x="54" y="42" font-size="21" font-weight="700" fill="#F87171">我们永远不做</text>
+
+      <g transform="translate(24,71)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4 L12 12"/>
+        <path d="M12 4 L4 12"/>
+      </g>
+      <text x="50" y="84" font-size="18" font-weight="400" fill="#C7D4CF">远程 root shell</text>
+
+      <g transform="translate(24,111)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4 L12 12"/>
+        <path d="M12 4 L4 12"/>
+      </g>
+      <text x="50" y="124" font-size="18" font-weight="400" fill="#C7D4CF">后台翻你的文件</text>
+
+      <g transform="translate(24,151)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4 L12 12"/>
+        <path d="M12 4 L4 12"/>
+      </g>
+      <text x="50" y="164" font-size="18" font-weight="400" fill="#C7D4CF">录音、代接挂断电话</text>
+
+      <g transform="translate(24,191)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4 L12 12"/>
+        <path d="M12 4 L4 12"/>
+      </g>
+      <text x="50" y="204" font-size="18" font-weight="400" fill="#C7D4CF">翻你密码与验证码</text>
+    </g>
+
+    <!-- 底部：配额与熔断 -->
+    <text x="600" y="384" text-anchor="middle" font-size="18" font-weight="400" fill="#7E918C">存储配额超限直接拒绝，不静默覆写 · 不占系统 VPN 槽位 · 可一键熔断</text>
   </g>
 </svg>
