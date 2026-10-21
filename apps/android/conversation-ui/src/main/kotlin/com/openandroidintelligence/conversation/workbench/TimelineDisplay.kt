@@ -165,7 +165,12 @@ class TimelineDisplayModel(
         // 仍在增量的最后一段，历史段由 anyFinalVisible / !anyStreaming 自然覆盖。
         val stickyFinalStarted = isLastSegment && latchedFinalSegmentKey == segmentKey
         if (isLastSegment && anyFinalVisible) latchedFinalSegmentKey = segmentKey
-        val shouldFold = hasExecutionBlocks && (anyFinalVisible || stickyFinalStarted || !anyStreaming)
+        // Hermes 会逐步发送“调用工具：xxx”占位消息与活动日志；还没有最终正文时
+        // 先把它们逐条显示（用户能看到每张工具卡），等最终回答出现再聚合。
+        // XML/fenced 工具消息保持原有规则：执行段结束即折叠。
+        val hermesProcessSegment = entries.all(::looksLikeHermesProcessEntry)
+        val shouldFold = hasExecutionBlocks &&
+            (anyFinalVisible || stickyFinalStarted || (!anyStreaming && !hermesProcessSegment))
 
         if (!shouldFold) {
             return entries.map { TimelineDisplayItem.Single(it) }
@@ -344,6 +349,17 @@ private fun isExecutionEligible(entry: TimelineEntry): Boolean =
  *
  * `$ adb` 是普通 bash 围栏升格工具卡的兼容路径；保守地包含它，避免漏掉工具卡。
  */
+/** 一条助手消息是否属于 Hermes 的工具占位/活动日志（而不是真实最终回答）。 */
+private fun looksLikeHermesProcessEntry(entry: TimelineEntry): Boolean {
+    val text = entry.text
+    if (text.isBlank()) return false
+    return text.contains("调用工具", ignoreCase = true) ||
+        text.contains("工具调用", ignoreCase = true) ||
+        text.contains("Tool call", ignoreCase = true) ||
+        text.contains("Calling tool", ignoreCase = true) ||
+        looksLikeHermesActivityLog(text)
+}
+
 /**
  * Hermes 的工具活动日志（Running code / Searching files / Reading ...）只是过程叙述。
  *

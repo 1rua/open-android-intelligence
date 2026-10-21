@@ -384,6 +384,28 @@ class ExecutionDisplayTest {
     }
 
     @Test
+    fun completedHermesToolMessagesStayVisibleUntilTheFinalAnswerArrives() {
+        val beforeFinal = listOf(
+            userEntry("u1", "查一下"),
+            assistantEntry("a1", "调用工具：execute_code"),
+            assistantEntry("a2", "调用工具：read_file"),
+        )
+        val model = TimelineDisplayModel()
+
+        val liveItems = model.build(beforeFinal)
+        assertTrue(
+            liveItems.drop(1).all { it is TimelineDisplayItem.Single },
+            "还没有最终回答时，逐步到达的 Hermes 工具消息应保持逐条可见",
+        )
+
+        val withFinal = beforeFinal + assistantEntry("a3", "最终答案")
+        assertTrue(
+            model.build(withFinal).last() is TimelineDisplayItem.Execution,
+            "最终回答出现后同一段应收成一个执行面板",
+        )
+    }
+
+    @Test
     fun hermesToolMessagesFoldIntoOneExecutionRun() {
         val entries = listOf(
             userEntry("u1", "查一下"),

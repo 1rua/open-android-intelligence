@@ -91,6 +91,7 @@ fun rememberTimelineDisplayItems(entries: List<TimelineEntry>): List<TimelineDis
 3. 折叠条件：段内至少有一个思考或工具块，且满足其一：
    - 某条消息已出现尾部正文（最终回答已开始，即使仍在流式）；
    - 整段不再有 `isStreaming`（执行结束，包括只有工具、没有最终回答）。
+   例外：Hermes 会逐步发送「调用工具：xxx」占位消息与工具活动日志；当整段都是这类消息且还没有最终正文时，先逐条显示工具卡，等最终回答出现后再聚合，避免长工具序列一开始就全部藏进折叠面板。
 4. 不折叠：段内没有任何思考/工具块（普通多条助手消息保持现状）；或仍在执行且尚未出现尾部正文（逐条显示实时卡片）。
 5. `finalEntry`：最后一条 `finalVisible` 的助手消息；没有则取段内最后一条助手消息（仅用于元数据/附件承接）。
 6. 折叠内容 = 段内更早助手消息的完整内容 + `finalEntry` 尾部正文之前的块；`finalEntry` 没有最终正文时，其附件也进入过程区。
@@ -339,7 +340,7 @@ data class TimelineAttachment(
 
 | 验证 | 结果 |
 |---|---|
-| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 532 个用例 / 0 失败 |
+| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 533 个用例 / 0 失败 |
 | `:app:compileFullDebugKotlin` | BUILD SUCCESSFUL |
 | `:app:assembleFullDebug` | BUILD SUCCESSFUL |
 | `noVpnSurfaceCheck` | BUILD SUCCESSFUL |
