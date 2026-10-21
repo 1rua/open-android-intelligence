@@ -1,47 +1,24 @@
 package com.openandroidintelligence.conversation.theme
 
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-
-/**
- * 品牌色种子。
- *
- * 唯一职责：为 [BrandLightColorScheme] / [BrandDarkColorScheme] 提供不能动态取色时的
- * 降级配色。任何界面组件都不得直接引用这里的值 —— 界面一律通过
- * `MaterialTheme.colorScheme.*` 的语义角色取色，否则 Android 12+ 的系统动态取色
- * （Monet）会被绕过，深浅主题也无法保持一致。
- *
- * 之所以限定为 internal：让编译器替我们把住这条边界。
- */
-internal object AppColors {
-    val LightCanvas = Color(0xFFF1F4F1)
-    val LightSurface = Color(0xFFE3ECE7)
-    val LightSurfaceHigh = Color(0xFFD5E2DC)
-    val LightPrimary = Color(0xFF2F645C)
-    val LightAccent = Color(0xFFB8874A)
-    val LightText = Color(0xFF1C2724)
-    val LightMuted = Color(0xFF4D5D57)
-    val LightError = Color(0xFF994E43)
-    val DarkCanvas = Color(0xFF101613)
-    val DarkSurface = Color(0xFF19231F)
-    val DarkSurfaceHigh = Color(0xFF26332E)
-    val DarkPrimary = Color(0xFF88BAAE)
-    val DarkAccent = Color(0xFFD3A86F)
-    val DarkText = Color(0xFFE8EFEB)
-    val DarkMuted = Color(0xFFAFBDB6)
-    val DarkError = Color(0xFFE1998C)
-}
 
 /**
  * 圆角令牌。
  *
- * 设置类容器一律使用 [AppRadius.Large]（24dp）或 [AppRadius.Medium]（16dp）的大圆角；
- * 只有 chips、图标底衬这类小构件才用小圆角。禁止界面里再手写 `RoundedCornerShape(14.dp)`
- * 之类的散值。
+ * 一个容器越「大」、越「外层」，圆角越大；小构件（chip、图标底衬）使用小档位。
+ * 禁止界面里再手写 `RoundedCornerShape(14.dp)` 之类的散值。
+ *
+ * - [Compact] 12dp：思考/工具卡片等紧凑卡片；
+ * - [Medium] 16dp：次级卡片、输入框、列表容器；
+ * - [Bubble] 20dp：消息气泡、撰写栏；
+ * - [Large] 24dp：设置分组大卡片、底部弹层卡片；
+ * - [ExtraLarge] 28dp：全屏浮层、助理展开态。
  */
 object AppRadius {
     val ExtraSmall = 4.dp
     val Small = 8.dp
+    /** 12dp：紧凑卡片、思考/工具卡片。 */
+    val Compact = 12.dp
     /** 16dp：次级卡片、输入框、列表容器。 */
     val Medium = 16.dp
     /** 20dp：聊天/输入类容器（气泡、撰写栏）。 */
@@ -78,6 +55,14 @@ object Dimensions {
 
     /** M3 最小可点击/可触摸尺寸。 */
     val MinimumTouchTarget = 48.dp
+    /** 输入坞图标按钮的视觉直径（触摸目标仍由 [MinimumTouchTarget] 兜底）。 */
+    val ComposerControl = 44.dp
+    /** 输入坞主操作按钮（发送/停止）直径。 */
+    val ComposerPrimaryAction = 48.dp
+    /** 输入坞单行高度下限。 */
+    val ComposerMinHeight = 48.dp
+    /** M3 TopAppBar 内容高度（不含状态栏）。 */
+    val TopBarContentHeight = 64.dp
     /** 悬浮球直径。 */
     val DockedBall = 48.dp
     /** 品牌标识高度（信号缝线/登录徽章）。 */
@@ -94,18 +79,28 @@ object Dimensions {
     val StrokeHairline = 1.dp
     /** 信号缝线粗细。 */
     val StrokeStitch = 2.dp
+    /** 助手正文左侧引导线的宽度占位（含线与留白）。 */
+    val StitchGutter = 12.dp
     /** 表单最大宽度。 */
     val FormWidth = 480.dp
-    /** 阅读区最大宽度。 */
-    val ReadingWidth = 840.dp
+    /** 阅读区最大宽度：正文每行不超过约 680dp，多余空间留给边距。 */
+    val ReadingWidth = 680.dp
     /** 消息气泡最大宽度。 */
     val MessageWidth = 640.dp
+    /** 用户气泡占可用宽度的比例上限。 */
+    const val MessageWidthFraction = 0.86f
     /** 抽屉宽度。 */
     val DrawerWidth = 320.dp
+    /** 抽屉项单行高度。 */
+    val DrawerItemHeight = 48.dp
     /** 命令菜单最大高度。 */
     val CommandMenuHeight = 240.dp
     /** 中等窗口断点。 */
     val MediumWindow = 600.dp
     /** 展开窗口断点。 */
     val ExpandedWindow = 840.dp
+    /** 时间线列表内容边距。 */
+    val TimelineHorizontal = 16.dp
+    /** 时间线消息之间的垂直间距。 */
+    val TimelineSpacing = 20.dp
 }

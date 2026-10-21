@@ -263,8 +263,12 @@ class WorkbenchLayoutRegressionTest {
         compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
     }
 
+    /**
+     * 顶栏动作收敛后，「重命名对话」从独立图标移进「更多操作」菜单：契约不变——
+     * 只有存在活动线程时才可用，点击后打开重命名对话框。这里按菜单契约断言。
+     */
     @Test
-    fun manualRenameButtonDisplaysWhenActiveThreadExistsAndTriggersRenameDialog() {
+    fun renameEntryIsEnabledInOverflowOnlyWhenAnActiveThreadExists() {
         val gateway = object : ConversationRepository {
             override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
                 ConversationPage(emptyList(), null)
@@ -293,16 +297,19 @@ class WorkbenchLayoutRegressionTest {
             }
         }
 
-        // Initially no active thread, rename button is not present
-        compose.onNodeWithContentDescription("重命名对话").assertDoesNotExist()
+        // 没有活动线程时菜单项存在但不可用：动作在，语义明确，不假装能改。
+        compose.onNodeWithContentDescription("更多操作").performClick()
+        compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("更多操作").performClick()
 
         // Open thread
         compose.runOnIdle {
             controller.openThread("conv_rename")
         }
 
-        // Rename button is displayed in TopAppBar
-        compose.onNodeWithContentDescription("重命名对话").assertIsDisplayed()
+        // 有活动线程后同一个菜单项变为可用，点击即打开重命名对话框。
+        compose.onNodeWithContentDescription("更多操作").performClick()
+        compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsEnabled()
     }
 
     private fun SemanticsNodeInteraction.textLayoutHeight(): Int {

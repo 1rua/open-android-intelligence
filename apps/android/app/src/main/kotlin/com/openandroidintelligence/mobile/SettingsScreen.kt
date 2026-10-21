@@ -3,31 +3,40 @@ package com.openandroidintelligence.mobile
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Animation
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Extension
@@ -39,37 +48,32 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sms
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,15 +81,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.openandroidintelligence.conversation.components.CONNECTION_FAILURE_FALLBACK
-import com.openandroidintelligence.conversation.components.SettingsCardHeader
-import com.openandroidintelligence.conversation.components.SettingsIconBadge
 import com.openandroidintelligence.conversation.components.SettingsListItem
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
@@ -94,13 +103,16 @@ import com.openandroidintelligence.conversation.components.SettingsTone
 import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.AppTextStyles
+import com.openandroidintelligence.conversation.theme.ThemePalette
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.gateway.http.TransportSecurity
+import com.openandroidintelligence.kernel.DeveloperTrustMode
 import com.openandroidintelligence.mobile.notifications.NotificationCollectionScreen
 import com.openandroidintelligence.mobile.plugins.PluginManagementScreen
 import com.openandroidintelligence.mobile.updates.AppUpdateRoute
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
-import com.openandroidintelligence.gateway.http.TransportSecurity
-import com.openandroidintelligence.kernel.DeveloperTrustMode
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /** 设置页面路由契约。 */
 object SettingsRoutes {
@@ -116,14 +128,45 @@ object SettingsRoutes {
 }
 
 /**
+ * 设置的呈现宿主。
+ *
+ * - [SCREEN]：整屏页面（登录页 / 工作台内打开）。系统栏安全区由每个子页自己的
+ *   `Scaffold` 负责，页面内容在全屏窗口里正确避让状态栏与手势条。
+ * - [BOTTOM_SHEET]：M3 底部弹层的内容。安全区归弹层所有（`ModalBottomSheet` 已在
+ *   它自己的 `contentWindowInsets` 里扣过一份），内部 `Scaffold` 因此显式使用
+ *   `WindowInsets(0)`：同一份安全区不能父子各扣一次，否则内容会被凭空推下去一截。
+ *   首屏标题栏的返回箭头同时改为「关闭」语义——它关掉的是整个弹层，而不是退子页。
+ */
+enum class SettingsPresentation { SCREEN, BOTTOM_SHEET }
+
+/** 弹层内容使用的零 inset：安全区归属见 [SettingsPresentation.BOTTOM_SHEET]。 */
+private val NoWindowInsets = WindowInsets(0, 0, 0, 0)
+
+/** 当前呈现方式下页面（Scaffold / 标题栏）应使用的底色。 */
+@Composable
+private fun settingsContainerColor(presentation: SettingsPresentation): Color =
+    if (presentation == SettingsPresentation.BOTTOM_SHEET) {
+        MaterialTheme.colorScheme.surfaceContainerLow
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+
+/** 当前呈现方式下 Scaffold 内容区应扣的系统栏 inset。 */
+@Composable
+private fun settingsContentWindowInsets(presentation: SettingsPresentation): WindowInsets =
+    if (presentation == SettingsPresentation.BOTTOM_SHEET) NoWindowInsets else WindowInsets.systemBars
+
+/**
  * 设置主界面（SettingsScreen）。
  *
- * 遵循严格的 Material 3 分组列表规范与深色暗调设计：
- * 1. 采用暗色卡片容器（surfaceContainer）配合 24dp 大圆角（AppRadius.Large）；
- * 2. 组内条目一律采用标准单行 ListItem 设计：前置轻量图标底衬 + 标题副标题两行排版 + 后置控件/导航箭头；
- * 3. 彻底清理任何假数据与无效占位按钮，全面对齐 SharedPreferences、GatewayRuntime、Kernel 与 AuditStore 真实数据；
- * 4. 内置 NavHost 驱动子配置页面流转（外观、网关、设备能力、内核安全、审计日志），关键操作弹出二次确认弹窗；
- * 5. UI State 与 ViewModel 解耦，具备高内聚低耦合特性。
+ * 遵循 Material 3 分组列表规范：
+ * 1. 分组卡片走 `surfaceContainer` + 24dp 大圆角（AppRadius.Large），组内条目用标准
+ *    M3 ListItem：前置图标底衬 + 标题/辅助两行 + 后置控件或导航箭头；
+ * 2. 危险操作不再把整张卡片涂成 `errorContainer`（同色的 DANGER 徽标会消失），
+ *    卡片保持中性面，危险只用徽标/文字色表达；
+ * 3. 内置 NavHost 驱动子页流转（外观、网关、设备能力、内核安全、审计日志）；
+ * 4. 会话级操作提示走 Snackbar，不再用 `zIndex` 悬浮盖住顶栏；
+ * 5. 宽屏内容限宽 [Dimensions.ReadingWidth] 居中，平板不再通栏拉伸。
  */
 @Composable
 fun SettingsScreen(
@@ -131,6 +174,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     runtime: GatewayRuntime? = null,
     modifier: Modifier = Modifier,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
 ) {
     val viewModel = remember(environment, runtime) {
         SettingsViewModel(environment = environment, runtime = runtime)
@@ -139,6 +183,7 @@ fun SettingsScreen(
         viewModel = viewModel,
         onBack = onBack,
         modifier = modifier,
+        presentation = presentation,
     )
 }
 
@@ -147,11 +192,17 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val navController = rememberNavController()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    // 转场与降级统一读 composition local：它同时覆盖「用户开关」与「系统动画时长 0」
+    // 两种减少动态来源，只看 uiState.appearance.reduceMotion 会漏掉后者。
+    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val snackbarHostState = remember { SnackbarHostState() }
+
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         viewModel.refreshReplyNotificationPermission()
     }
@@ -179,30 +230,38 @@ fun SettingsScreen(
     var showTrustModeDialog by remember { mutableStateOf(false) }
     var showEmergencyDialog by remember { mutableStateOf(false) }
     var showUnpairDialog by remember { mutableStateOf(false) }
-    var showThemeDialog by remember { mutableStateOf(false) }
+
+    // 会话级操作提示：登出/续期这类落网结果必须可见、可关。改用 Scaffold 级 Snackbar，
+    // 不再浮在顶栏之上把标题和返回按钮盖住。
+    LaunchedEffect(uiState.operationNotice) {
+        val notice = uiState.operationNotice ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message = notice, withDismissAction = true)
+        // Snackbar 关闭即视为已读：清掉运行时提示，避免下次进入设置又弹一遍。
+        viewModel.dismissOperationNotice()
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
         NavHost(
             navController = navController,
             startDestination = SettingsRoutes.OVERVIEW,
-            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
-            enterTransition = { AppTransitions.navEnter(uiState.appearance.reduceMotion) },
-            exitTransition = { AppTransitions.navExit(uiState.appearance.reduceMotion) },
-            popEnterTransition = { AppTransitions.navPopEnter(uiState.appearance.reduceMotion) },
-            popExitTransition = { AppTransitions.navPopExit(uiState.appearance.reduceMotion) },
+            // 底色由各子页 Scaffold 负责：弹层里必须是 surfaceContainerLow，
+            // 独立页面里是 surface，避免在弹层上再压一层不同的面色。
+            modifier = Modifier.fillMaxSize(),
+            enterTransition = { AppTransitions.navEnter(reduceMotion) },
+            exitTransition = { AppTransitions.navExit(reduceMotion) },
+            popEnterTransition = { AppTransitions.navPopEnter(reduceMotion) },
+            popExitTransition = { AppTransitions.navPopExit(reduceMotion) },
         ) {
         composable(SettingsRoutes.OVERVIEW) {
             SettingsOverviewScreen(
                 uiState = uiState,
                 onBack = onBack,
+                presentation = presentation,
                 onNavigate = { route ->
                     navController.navigate(route) {
                         launchSingleTop = true
                     }
                 },
-                onSetTheme = viewModel::setTheme,
-                onSetDynamicColor = viewModel::setDynamicColor,
-                onSetReduceMotion = viewModel::setReduceMotion,
                 onSetScreenSelectionGrant = viewModel::setScreenSelectionGrant,
                 onSetNotificationsGrant = setReplyNotifications,
                 onToggleTrustMode = { enable ->
@@ -210,7 +269,6 @@ fun SettingsScreen(
                 },
                 onRequestEmergencyStop = { showEmergencyDialog = true },
                 onRequestUnpair = { showUnpairDialog = true },
-                onOpenThemeDialog = { showThemeDialog = true },
             )
         }
 
@@ -218,8 +276,10 @@ fun SettingsScreen(
             AppearanceSubScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
+                presentation = presentation,
                 onSetTheme = viewModel::setTheme,
                 onSetDynamicColor = viewModel::setDynamicColor,
+                onSetPalette = viewModel::setPalette,
                 onSetReduceMotion = viewModel::setReduceMotion,
             )
         }
@@ -232,6 +292,7 @@ fun SettingsScreen(
             GatewaySubScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
+                presentation = presentation,
                 onRefreshSession = viewModel::refreshSession,
                 onLogout = { viewModel.logout(revokeRefresh = true) },
                 onSwitchAccount = { viewModel.chooseAnotherAccount(); onBack() },
@@ -243,6 +304,7 @@ fun SettingsScreen(
             PairingSubScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
+                presentation = presentation,
                 onNavigate = { route -> navController.navigate(route) { launchSingleTop = true } },
                 onSetScreenSelectionGrant = viewModel::setScreenSelectionGrant,
                 onSetNotificationsGrant = setReplyNotifications,
@@ -253,6 +315,7 @@ fun SettingsScreen(
             SecuritySubScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
+                presentation = presentation,
                 onToggleTrustMode = { enable ->
                     if (enable) showTrustModeDialog = true else viewModel.disableTrustMode()
                 },
@@ -264,6 +327,7 @@ fun SettingsScreen(
             AuditLogSubScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
+                presentation = presentation,
             )
         }
 
@@ -287,21 +351,13 @@ fun SettingsScreen(
         }
         }
 
-        // 会话级操作提示：登出/续期这类落网结果覆盖在内容上方，必须可见、可关。
-        uiState.operationNotice?.let { notice ->
-            OperationNoticeBanner(
-                text = notice,
-                onDismiss = viewModel::dismissOperationNotice,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .padding(
-                        horizontal = Dimensions.ScreenHorizontal,
-                        vertical = Dimensions.SpaceSmall,
-                    )
-                    .zIndex(1f),
-            )
-        }
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(Dimensions.SpaceMedium),
+        )
     }
 
     if (showTrustModeDialog) {
@@ -369,94 +425,106 @@ fun SettingsScreen(
             },
         )
     }
-
-    if (showThemeDialog) {
-        AlertDialog(
-            onDismissRequest = { showThemeDialog = false },
-            title = { Text("选择主题模式") },
-            text = {
-                Column {
-                    ThemePreference.entries.forEach { option ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    viewModel.setTheme(option)
-                                    showThemeDialog = false
-                                }
-                                .padding(vertical = Dimensions.SpaceSmall),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(
-                                selected = uiState.appearance.theme == option,
-                                onClick = {
-                                    viewModel.setTheme(option)
-                                    showThemeDialog = false
-                                },
-                            )
-                            Text(
-                                text = themeLabel(option),
-                                style = MaterialTheme.typography.bodyLarge,
-                                modifier = Modifier.padding(start = Dimensions.SpaceSmall),
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showThemeDialog = false }) { Text("关闭") }
-            },
-        )
-    }
 }
 
-/** 设置主览界面。 */
+/** 设置子页统一的 Scaffold：标题栏、底色与系统栏 inset 只在 [SettingsPresentation] 处分支一次。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsOverviewScreen(
-    uiState: SettingsUiState,
+private fun SettingsPageScaffold(
+    title: String,
+    presentation: SettingsPresentation,
     onBack: () -> Unit,
-    onNavigate: (String) -> Unit,
-    onSetTheme: (ThemePreference) -> Unit,
-    onSetDynamicColor: (Boolean) -> Unit,
-    onSetReduceMotion: (Boolean) -> Unit,
-    onSetScreenSelectionGrant: (Boolean) -> Unit,
-    onSetNotificationsGrant: (Boolean) -> Unit,
-    onToggleTrustMode: (Boolean) -> Unit,
-    onRequestEmergencyStop: () -> Unit,
-    onRequestUnpair: () -> Unit,
-    onOpenThemeDialog: () -> Unit,
+    closeSemantics: Boolean = false,
+    content: @Composable (PaddingValues) -> Unit,
 ) {
-    BackHandler(onBack = onBack)
-
+    val containerColor = settingsContainerColor(presentation)
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("设置与平台管理") },
+                title = { Text(title) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        if (closeSemantics) {
+                            Icon(Icons.Default.Close, contentDescription = "关闭设置")
+                        } else {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
+                    containerColor = containerColor,
                     scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
                 ),
+                windowInsets = if (presentation == SettingsPresentation.BOTTOM_SHEET) {
+                    NoWindowInsets
+                } else {
+                    TopAppBarDefaults.windowInsets
+                },
             )
         },
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) { padding ->
+        containerColor = containerColor,
+        contentWindowInsets = settingsContentWindowInsets(presentation),
+        content = content,
+    )
+}
+
+/**
+ * 设置页统一内容容器：宽屏限宽居中 + 页面边距 + 垂直滚动。
+ *
+ * 短列表（分组卡片）保留 `Column + verticalScroll`：分组是固定的 7 块、每块内部
+ * 条目数量有限，懒加载不会带来收益；而既有界面测试依赖「所有分组行都在语义树里」
+ * 才能 `performScrollTo`，换成 LazyColumn 会让屏外行不再被组合，测试锚点随之失效。
+ * 真正无上限增长的列表（审计流水）另用 LazyColumn，见 [AuditLogSubScreen]。
+ */
+@Composable
+private fun SettingsPageColumn(
+    contentPadding: PaddingValues,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(contentPadding),
+        contentAlignment = Alignment.TopCenter,
+    ) {
         Column(
             modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
+                .widthIn(max = Dimensions.ReadingWidth)
+                .fillMaxHeight()
                 .verticalScroll(rememberScrollState())
                 .padding(
                     horizontal = Dimensions.ScreenHorizontal,
                     vertical = Dimensions.SpaceSmall,
                 ),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-        ) {
+            content = content,
+        )
+    }
+}
+
+/** 设置主览界面。 */
+@Composable
+private fun SettingsOverviewScreen(
+    uiState: SettingsUiState,
+    onBack: () -> Unit,
+    presentation: SettingsPresentation,
+    onNavigate: (String) -> Unit,
+    onSetScreenSelectionGrant: (Boolean) -> Unit,
+    onSetNotificationsGrant: (Boolean) -> Unit,
+    onToggleTrustMode: (Boolean) -> Unit,
+    onRequestEmergencyStop: () -> Unit,
+    onRequestUnpair: () -> Unit,
+) {
+    BackHandler(onBack = onBack)
+
+    SettingsPageScaffold(
+        title = "设置与平台管理",
+        presentation = presentation,
+        onBack = onBack,
+        // 弹层里这一下关掉的是整个面板，箭头语义必须说「关闭」；子页才用「返回」。
+        closeSemantics = presentation == SettingsPresentation.BOTTOM_SHEET,
+    ) { padding ->
+        SettingsPageColumn(contentPadding = padding) {
             SectionLabel("应用信息")
             SettingsSectionCard {
                 SettingsNavigationItem(
@@ -474,80 +542,76 @@ private fun SettingsOverviewScreen(
                 var extend by remember(gateway,override) { mutableStateOf(preferences.read(if (override) gateway else null).mode==com.openandroidintelligence.conversation.batch.DebounceMode.EXTEND_WINDOW) }
                 SectionLabel("消息防抖")
                 SettingsSectionCard {
-                    Column {
-                        if (gateway!=null) Row(verticalAlignment=Alignment.CenterVertically) {
-                            Text("覆盖当前 Gateway 的设置",Modifier.weight(1f))
-                            Switch(checked=override,onCheckedChange={ value -> override=value
-                                if (value) app.gatewayRuntime.updateDebounceSettings(gateway,delayMillis,extend)
-                                else app.gatewayRuntime.useGlobalDebounceSettings(gateway)
-                            })
+                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                        if (gateway!=null) Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .toggleable(
+                                    value = override,
+                                    role = Role.Switch,
+                                ) { value ->
+                                    override = value
+                                    if (value) app.gatewayRuntime.updateDebounceSettings(gateway,delayMillis,extend)
+                                    else app.gatewayRuntime.useGlobalDebounceSettings(gateway)
+                                }
+                                .padding(vertical = Dimensions.SpaceTiny),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "覆盖当前 Gateway 的设置",
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f),
+                            )
+                            // Switch 只做展示：整行 toggleable 已经承载开关语义与点击，
+                            // 避免读屏出现「行」和「开关」两个可点目标。
+                            Switch(checked = override, onCheckedChange = null)
                         }
-                        Text(if (delayMillis==0) "关闭防抖" else "等待 ${delayMillis/1000.0} 秒")
+                        Text(
+                            text = if (delayMillis==0) "关闭防抖" else "等待 ${delayMillis/1000.0} 秒",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         Slider(value=delayMillis.toFloat(),valueRange=0f..10000f,steps=19,onValueChange={ delayMillis=it.toInt() },
                             onValueChangeFinished={ app.gatewayRuntime.updateDebounceSettings(if (override) gateway else null,delayMillis,extend) })
-                        Row(verticalAlignment=Alignment.CenterVertically) {
-                            Text("新消息延长等待",Modifier.weight(1f))
-                            Switch(checked=extend,onCheckedChange={ extend=it;app.gatewayRuntime.updateDebounceSettings(if (override) gateway else null,delayMillis,it) })
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .toggleable(
+                                    value = extend,
+                                    role = Role.Switch,
+                                ) { value ->
+                                    extend = value
+                                    app.gatewayRuntime.updateDebounceSettings(if (override) gateway else null,delayMillis,value)
+                                }
+                                .padding(vertical = Dimensions.SpaceTiny),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "新消息延长等待",
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Switch(checked = extend, onCheckedChange = null)
                         }
-                        Text("设置应用于新批次；最长等待 30 秒，每批最多 20 条。")
+                        Text(
+                            text = "设置应用于新批次；最长等待 30 秒，每批最多 20 条。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
             // 模块 1: 外观与动效
+            // 主题入口只保留「外观」子页一处：主览不再重复一份主题行与主题弹窗，
+            // 否则同一设置存在三处入口（主览行 / AlertDialog / 子页），改一处漏两处。
             SectionLabel("外观与动效")
             SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
-                    SettingsListItem(
-                        headline = "主题模式",
-                        supporting = when (uiState.appearance.theme) {
-                            ThemePreference.SYSTEM -> "跟随系统设置自动切换深浅配色"
-                            ThemePreference.LIGHT -> "始终使用浅色高对比度主题"
-                            ThemePreference.DARK -> "始终使用深色暗调主题，低眩光省电"
-                        },
-                        icon = Icons.Default.Palette,
-                        onClick = onOpenThemeDialog,
-                        trailing = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = themeLabel(uiState.appearance.theme),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(end = Dimensions.SpaceTiny),
-                                )
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(Dimensions.SmallIcon),
-                                )
-                            }
-                        },
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "系统动态取色",
-                        supporting = "跟随系统壁纸提取主题色调（Android 12+）",
-                        checked = uiState.appearance.dynamicColor,
-                        icon = Icons.Default.ColorLens,
-                        tone = SettingsTone.PRIMARY,
-                        onCheckedChange = onSetDynamicColor,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "减弱动态效果",
-                        supporting = "停用位移与缩放，保留平滑淡入淡出",
-                        checked = uiState.appearance.reduceMotion,
-                        icon = Icons.Default.Animation,
-                        onCheckedChange = onSetReduceMotion,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsNavigationItem(
-                        headline = "显示与样式详细配置",
-                        supporting = "查看详细的主题说明与动效策略",
-                        icon = Icons.Default.Palette,
-                        onClick = { onNavigate(SettingsRoutes.APPEARANCE) },
-                    )
-                }
+                SettingsNavigationItem(
+                    headline = "外观、主题与动效",
+                    supporting = "深浅配色（当前：${themeLabel(uiState.appearance.theme)}）· 动态取色 · 减少动态效果",
+                    icon = Icons.Default.Palette,
+                    onClick = { onNavigate(SettingsRoutes.APPEARANCE) },
+                )
             }
 
             // 模块 2: 网关与账号
@@ -607,7 +671,7 @@ private fun SettingsOverviewScreen(
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     },
-                                    modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = 2.dp),
+                                    modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
                                 )
                             }
                         },
@@ -733,8 +797,10 @@ private fun SettingsOverviewScreen(
             }
 
             // 模块 6: 危险操作与紧急控制
+            // 危险分组不整卡涂 errorContainer：那样同色的 DANGER 徽标会与卡面融为一体、
+            // 反而看不出危险。卡面保持中性面，危险只由徽标与文字承担。
             SectionLabel("危险操作与系统熔断")
-            SettingsSectionCard(containerColor = MaterialTheme.colorScheme.errorContainer) {
+            SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
                     SettingsListItem(
                         headline = "一键系统级安全熔断 (Kill Switch)",
@@ -751,7 +817,7 @@ private fun SettingsOverviewScreen(
                             Icon(
                                 Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(Dimensions.SmallIcon),
                             )
                         },
@@ -769,7 +835,7 @@ private fun SettingsOverviewScreen(
                                 Icon(
                                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(Dimensions.SmallIcon),
                                 )
                             },
@@ -783,44 +849,23 @@ private fun SettingsOverviewScreen(
     }
 }
 
-/** 子页面 1: 外观与动效详细配置。 */
-@OptIn(ExperimentalMaterial3Api::class)
+/** 子页面 1: 外观与动效详细配置（主题的唯一入口）。 */
 @Composable
 private fun AppearanceSubScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
+    presentation: SettingsPresentation,
     onSetTheme: (ThemePreference) -> Unit,
     onSetDynamicColor: (Boolean) -> Unit,
+    onSetPalette: (ThemePalette) -> Unit,
     onSetReduceMotion: (Boolean) -> Unit,
 ) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("外观与动效") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
+    SettingsPageScaffold(
+        title = "外观与动效",
+        presentation = presentation,
+        onBack = onBack,
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(
-                    horizontal = Dimensions.ScreenHorizontal,
-                    vertical = Dimensions.SpaceSmall,
-                ),
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-        ) {
+        SettingsPageColumn(contentPadding = padding) {
             SectionLabel("主题模式选择")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
@@ -837,7 +882,13 @@ private fun AppearanceSubScreen(
                             },
                             icon = Icons.Default.Palette,
                             selected = uiState.appearance.theme == option,
-                            onClick = { onSetTheme(option) },
+                            // 自绘行显式声明单选语义：读屏会朗读「已选中，单选框」，
+                            // 而不是只把它当成一行可点文字。
+                            modifier = Modifier.selectable(
+                                selected = uiState.appearance.theme == option,
+                                role = Role.RadioButton,
+                                onClick = { onSetTheme(option) },
+                            ),
                             trailing = {
                                 RadioButton(
                                     selected = uiState.appearance.theme == option,
@@ -849,21 +900,54 @@ private fun AppearanceSubScreen(
                 }
             }
 
-            SectionLabel("动态色彩与无障碍")
+            SectionLabel("主题色")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     SettingsSwitchItem(
                         headline = "系统动态取色 (Monet)",
-                        supporting = "从壁纸提取色调（Android 12+）。关闭时回落至品牌默认配色。",
+                        // 真实语义：默认跟随系统壁纸取色；关闭后回落到本机预设色板。
+                        supporting = "默认开启：主题色由系统壁纸推导，装什么壁纸就是什么气质。" +
+                            "关闭后可从下面的预设色板中挑一套。",
                         checked = uiState.appearance.dynamicColor,
                         icon = Icons.Default.ColorLens,
                         tone = SettingsTone.PRIMARY,
                         onCheckedChange = onSetDynamicColor,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    ThemePalette.entries.forEachIndexed { index, palette ->
+                        if (index > 0) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        }
+                        PaletteOptionRow(
+                            palette = palette,
+                            selected = !uiState.appearance.dynamicColor &&
+                                uiState.appearance.palette == palette,
+                            enabled = !uiState.appearance.dynamicColor,
+                            onSelect = { onSetPalette(palette) },
+                        )
+                    }
+                    Text(
+                        text = if (uiState.appearance.dynamicColor) {
+                            "动态取色已开启；关闭上面的开关即可选择预设色板。"
+                        } else {
+                            "当前使用预设色板；打开动态取色会改用系统壁纸配色。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(
+                            horizontal = Dimensions.SpaceMedium,
+                            vertical = Dimensions.SpaceSmall,
+                        ),
+                    )
+                }
+            }
+
+            SectionLabel("动效与无障碍")
+            SettingsSectionCard {
+                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     SettingsSwitchItem(
                         headline = "减弱动态效果 (Reduce Motion)",
-                        supporting = "停用位移与缩放动效，替换为标准无障碍淡入淡出。",
+                        supporting = "停用位移与缩放动效，替换为标准无障碍淡入淡出。系统「动画时长 0」时自动等效。",
                         checked = uiState.appearance.reduceMotion,
                         icon = Icons.Default.Animation,
                         onCheckedChange = onSetReduceMotion,
@@ -874,45 +958,111 @@ private fun AppearanceSubScreen(
     }
 }
 
+/**
+ * 预设主题色的一行。
+ *
+ * 用当前方案自己的 primary / primaryContainer / tertiary 画三个色点作为预览：
+ * 用户看到的就是切换后界面真正会用的颜色，而不是另画一套"示意色"。
+ * 动态取色开启时整行禁用（`enabled = false`），并在分组底部说明原因。
+ */
+@Composable
+private fun PaletteOptionRow(
+    palette: ThemePalette,
+    selected: Boolean,
+    enabled: Boolean,
+    onSelect: () -> Unit,
+) {
+    val light = remember(palette) { palette.lightScheme() }
+    val dark = remember(palette) { palette.darkScheme() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = Dimensions.MinimumTouchTarget)
+            .clip(RoundedCornerShape(AppRadius.Medium))
+            .then(
+                if (enabled) {
+                    Modifier.selectable(
+                        selected = selected,
+                        role = Role.RadioButton,
+                        onClick = onSelect,
+                    )
+                } else {
+                    Modifier
+                },
+            )
+            .padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceCompact)
+            .alpha(if (enabled) 1f else 0.6f),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(Dimensions.LeadingIconContainer + 4.dp)
+                .clip(CircleShape)
+                .then(
+                    Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                PaletteDot(color = light.primary, dark = dark.primary)
+                PaletteDot(color = light.primaryContainer, dark = dark.primaryContainer)
+                PaletteDot(color = light.tertiary, dark = dark.tertiary)
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = palette.label,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = palette.description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (selected) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+        }
+    }
+}
+
+@Composable
+private fun PaletteDot(
+    color: androidx.compose.ui.graphics.Color,
+    dark: androidx.compose.ui.graphics.Color,
+) {
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    Box(
+        modifier = Modifier
+            .size(10.dp)
+            .clip(CircleShape)
+            .background(if (isDark) dark else color),
+    )
+}
+
 /** 子页面 2: Gateway 连接与账号详细配置。 */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun GatewaySubScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
+    presentation: SettingsPresentation,
     onRefreshSession: () -> Unit,
     onLogout: () -> Unit,
     onSwitchAccount: () -> Unit,
     onRequestUnpair: () -> Unit,
 ) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Gateway 连接详情") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
+    SettingsPageScaffold(
+        title = "Gateway 连接详情",
+        presentation = presentation,
+        onBack = onBack,
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(
-                    horizontal = Dimensions.ScreenHorizontal,
-                    vertical = Dimensions.SpaceSmall,
-                ),
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-        ) {
+        SettingsPageColumn(contentPadding = padding) {
             SectionLabel("节点与连接状态")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
@@ -1012,43 +1162,21 @@ private fun GatewaySubScreen(
 }
 
 /** 子页面 3: 设备能力与配对授权。 */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PairingSubScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
+    presentation: SettingsPresentation,
     onNavigate: (String) -> Unit,
     onSetScreenSelectionGrant: (Boolean) -> Unit,
     onSetNotificationsGrant: (Boolean) -> Unit,
 ) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("设备能力授权清单") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
+    SettingsPageScaffold(
+        title = "设备能力授权清单",
+        presentation = presentation,
+        onBack = onBack,
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(
-                    horizontal = Dimensions.ScreenHorizontal,
-                    vertical = Dimensions.SpaceSmall,
-                ),
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-        ) {
+        SettingsPageColumn(contentPadding = padding) {
             SectionLabel("可授权设备原语")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
@@ -1126,42 +1254,20 @@ private fun PairingSubScreen(
 }
 
 /** 子页面 4: 运行安全与信任模式。 */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SecuritySubScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
+    presentation: SettingsPresentation,
     onToggleTrustMode: (Boolean) -> Unit,
     onRequestEmergencyStop: () -> Unit,
 ) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("运行安全模式") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
+    SettingsPageScaffold(
+        title = "运行安全模式",
+        presentation = presentation,
+        onBack = onBack,
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(
-                    horizontal = Dimensions.ScreenHorizontal,
-                    vertical = Dimensions.SpaceSmall,
-                ),
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-        ) {
+        SettingsPageColumn(contentPadding = padding) {
             SectionLabel("宿主隔离策略")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
@@ -1218,7 +1324,8 @@ private fun SecuritySubScreen(
             }
 
             SectionLabel("系统安全熔断")
-            SettingsSectionCard(containerColor = MaterialTheme.colorScheme.errorContainer) {
+            // 卡面保持中性：DANGER 只在徽标与文案上表达，否则同色的徽标会"消失"在卡面里。
+            SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     SettingsListItem(
                         headline = "一键紧急停用 (Kill Switch)",
@@ -1239,70 +1346,58 @@ private fun SecuritySubScreen(
 }
 
 /** 子页面 5: 内核安全审计记录。 */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AuditLogSubScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
+    presentation: SettingsPresentation,
 ) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("安全审计日志") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
+    SettingsPageScaffold(
+        title = "安全审计日志",
+        presentation = presentation,
+        onBack = onBack,
     ) { padding ->
-        Column(
+        // 审计流水是无上限增长的列表（每次敏感调用都会追加），这里是本页真正的
+        // 性能点：逐行 item 化，新增记录只组合新行，而不是把整段 forEach 重新组合。
+        Box(
             modifier = Modifier
-                .padding(padding)
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(
-                    horizontal = Dimensions.ScreenHorizontal,
-                    vertical = Dimensions.SpaceSmall,
-                ),
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+                .padding(padding),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            SectionLabel("不可篡改审计流水 (${uiState.auditEvents.size} 条)")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    if (uiState.auditLines.isEmpty()) {
-                        Text(
-                            text = "本会话暂无安全审计记录。\n平台内核在敏感授权和原语调用时会在此记入不可篡改记录，包含主体、时间、动作与结果事实。",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(Dimensions.SpaceSmall),
-                        )
-                    } else {
-                        uiState.auditLines.forEachIndexed { index, line ->
-                            if (index > 0) {
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                            }
+            LazyColumn(
+                modifier = Modifier
+                    .widthIn(max = Dimensions.ReadingWidth)
+                    .fillMaxHeight(),
+                contentPadding = PaddingValues(
+                    start = Dimensions.ScreenHorizontal,
+                    end = Dimensions.ScreenHorizontal,
+                    top = Dimensions.SpaceSmall,
+                    bottom = Dimensions.SpaceMedium,
+                ),
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+            ) {
+                item {
+                    SectionLabel("不可篡改审计流水 (${uiState.auditEvents.size} 条)")
+                }
+                if (uiState.auditLines.isEmpty()) {
+                    item {
+                        SettingsSectionCard {
                             Text(
-                                text = line,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = if (line.contains("outcome=DENIED") || line.contains("outcome=FAILED")) {
-                                    MaterialTheme.colorScheme.error
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.padding(
-                                    horizontal = Dimensions.SpaceSmall,
-                                    vertical = Dimensions.SpaceSmall,
-                                ),
+                                text = "本会话暂无安全审计记录。\n平台内核在敏感授权和原语调用时会在此记入不可篡改记录，包含主体、时间、动作与结果事实。",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(Dimensions.SpaceSmall),
                             )
                         }
+                    }
+                } else {
+                    itemsIndexed(uiState.auditLines) { index, line ->
+                        AuditLogRow(
+                            line = line,
+                            first = index == 0,
+                            last = index == uiState.auditLines.lastIndex,
+                        )
                     }
                 }
             }
@@ -1310,13 +1405,48 @@ private fun AuditLogSubScreen(
     }
 }
 
-/** 分组标题：M3 规范小标头，使用 primary 色彩与 labelLarge 字体。 */
+/**
+ * 审计流水单行：沿用分组卡片造型（首尾行外圆角、中间行平角），
+ * 但每一行都是独立列表项——滚动时只组合可见行。
+ */
+@Composable
+private fun AuditLogRow(line: String, first: Boolean, last: Boolean) {
+    val shape = RoundedCornerShape(
+        topStart = if (first) AppRadius.Large else 0.dp,
+        topEnd = if (first) AppRadius.Large else 0.dp,
+        bottomStart = if (last) AppRadius.Large else 0.dp,
+        bottomEnd = if (last) AppRadius.Large else 0.dp,
+    )
+    val failed = line.contains("outcome=DENIED") || line.contains("outcome=FAILED")
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = shape,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column {
+            if (!first) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            }
+            Text(
+                text = line,
+                style = AppTextStyles.MonoSmall,
+                color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(
+                    horizontal = Dimensions.SpaceMedium,
+                    vertical = Dimensions.SpaceSmall,
+                ),
+            )
+        }
+    }
+}
+
+/** 分组标题：M3 设置页规范（labelMedium + onSurfaceVariant，不抢正文注意力）。 */
 @Composable
 private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier.padding(
             start = Dimensions.SpaceMedium,
             top = Dimensions.SpaceSmall,

@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.Dimensions
 
 /**
  * 完整 Markdown 文档渲染器：根据 AST 节点分发渲染至具体组件，
@@ -48,7 +49,8 @@ fun MarkdownDocumentView(
 
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        // 块间距走 8dp 栅格令牌，和消息正文的行间节奏一致。
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
     ) {
         blocks.forEachIndexed { index, block ->
             val isLast = isStreaming && index == blocks.lastIndex
@@ -129,10 +131,9 @@ fun MarkdownParagraphView(
             text = annotatedText,
             inlineContent = streamingCursorInlineContent(isStreaming),
             onTextLayout = { layoutResult = it },
+            // 正文统一 bodyLarge（16sp / 26sp 行高）：长段中文阅读是主角，不再压成 15sp。
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
-            lineHeight = 22.sp,
             modifier = modifier
                 .fillMaxWidth()
                 .pointerInput(annotatedText) {
@@ -182,8 +183,6 @@ fun MarkdownBlockquoteView(
                 inlineContent = streamingCursorInlineContent(isStreaming),
                 style = MaterialTheme.typography.bodyMedium.copy(
                     fontStyle = FontStyle.Italic,
-                    fontSize = 14.sp,
-                    lineHeight = 21.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 ),
             )
@@ -228,8 +227,6 @@ fun MarkdownUnorderedListView(
                         text = annotated,
                         inlineContent = streamingCursorInlineContent(isLast),
                         style = MaterialTheme.typography.bodyLarge,
-                        fontSize = 14.5.sp,
-                        lineHeight = 21.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                 }
@@ -278,8 +275,6 @@ fun MarkdownOrderedListView(
                         text = annotated,
                         inlineContent = streamingCursorInlineContent(isLast),
                         style = MaterialTheme.typography.bodyLarge,
-                        fontSize = 14.5.sp,
-                        lineHeight = 21.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                 }

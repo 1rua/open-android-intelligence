@@ -1,44 +1,40 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
-import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.SettingsListItem
 import com.openandroidintelligence.conversation.components.SettingsTone
-import com.openandroidintelligence.conversation.ports.ConversationSummary
+import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.ports.ConversationOrganization
+import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.theme.AppRadius
+import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 
 /**
- * 侧边抽屉面板：严格遵循主 App 信息架构（设计规格 §5.1）：
- * 1. Gateway 身份与账号信息；
- * 2. 新建对话；
- * 3. 当前 Gateway 的对话线程（支持搜索与选中高亮）；
+ * 侧边抽屉面板：严格遵循主 App 信息架构（设计规格 §5.2）：
+ * 1. 顶部 tonal 头部：信号缝线 + 品牌字标（不再是紫色渐变 + 白字）；
+ * 2. Gateway 身份与账号信息（首字母头像、主机名、在线状态的文字 + 圆点）；
+ * 3. 当前 Gateway 的对话线程（支持搜索、选中高亮与相对时间）；
  * 4. 附件库；
- * 5. 设置与平台管理（置于底部页脚常驻区吸底显示）；
+ * 5. 设置与平台管理（置于底部页脚常驻区吸底显示）。
+ * 底部安全区由抽屉自己承担 `navigationBarsPadding()`，页脚不会落进手势导航条。
  * 坚决不包含假设备卡片（ADB、电量、Wi-Fi）及越界导航项（通知中心、帮助反馈等）。
  */
 @Composable
@@ -68,132 +64,20 @@ fun ThreadDrawer(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier.fillMaxSize(),
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // ===== 1. Gradient Brand Header =====
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.secondaryContainer,
-                            ),
-                        ),
-                    )
-                    .statusBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 24.dp),
-            ) {
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(AppRadius.Medium),
-                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.14f),
-                            modifier = Modifier.size(Dimensions.MinimumTouchTarget),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Shield,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(24.dp),
-                                )
-                            }
-                        }
-                        if (showClose) {
-                            IconButton(onClick = onCloseDrawer) {
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "关闭抽屉",
-                                    tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f),
-                                )
-                            }
-                        }
-                    }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .navigationBarsPadding(),
+        ) {
+            DrawerHeader(
+                username = username,
+                gatewayLabel = gatewayLabel,
+                online = online,
+                showClose = showClose,
+                onCloseDrawer = onCloseDrawer,
+            )
 
-                    Spacer(Modifier.height(14.dp))
-
-                    Text(
-                        text = "Open Android Intelligence",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        fontSize = 18.sp,
-                    )
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        text = "Agent Gateway",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f),
-                        fontSize = 12.sp,
-                    )
-                }
-            }
-
-            // ===== 2. User & Gateway Info Section =====
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = username.take(1).uppercase(),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = username,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = gatewayLabel.removePrefix("https://"),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.padding(top = 2.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(Dimensions.SpaceSmall)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary),
-                        )
-                        Text(
-                            text = if (online) "在线" else "离线",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontSize = 10.sp,
-                        )
-                    }
-                }
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             ConversationBrowser(
                 threads = threads,
@@ -218,16 +102,15 @@ fun ThreadDrawer(
                 },
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-            // ===== 4. Footer (Settings, Protocol Version & Logout) =====
+            // ===== 页脚：设置、协议版本与退出登录，常驻吸底 =====
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
             ) {
-                // 平台设置入口（常驻吸底）
                 DrawerNavItem(
                     icon = Icons.Default.Settings,
                     label = "设置与平台管理",
@@ -240,28 +123,27 @@ fun ThreadDrawer(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                        .padding(horizontal = Dimensions.SpaceTiny, vertical = Dimensions.SpaceTiny),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
                         text = "Gateway Protocol v2",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = AppTextStyles.MonoSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp,
                     )
 
                     TextButton(
                         onClick = onLogout,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        contentPadding = PaddingValues(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ExitToApp,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(Dimensions.SmallIcon),
                         )
-                        Spacer(Modifier.width(4.dp))
+                        Spacer(Modifier.width(Dimensions.SpaceTiny))
                         Text(
                             text = "退出登录",
                             style = MaterialTheme.typography.labelSmall,
@@ -270,6 +152,131 @@ fun ThreadDrawer(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 抽屉头部：`surfaceContainerLow` 上的 tonal 区块 + 顶部安全区，
+ * 品牌只用「信号缝线 + 字标」这一处签名，不再有渐变与白字压浅紫。
+ */
+@Composable
+private fun DrawerHeader(
+    username: String,
+    gatewayLabel: String,
+    online: Boolean,
+    showClose: Boolean,
+    onCloseDrawer: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(
+                start = Dimensions.ScreenHorizontal,
+                end = Dimensions.SpaceSmall,
+                top = DrawerHeaderTopPadding,
+                bottom = Dimensions.SpaceMedium,
+            ),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SignalStitch(modifier = Modifier.height(DrawerStitchHeight).width(DrawerStitchWidth))
+            Spacer(Modifier.width(Dimensions.SpaceCompact))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Open Android Intelligence",
+                    style = AppTextStyles.BrandWordmark,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "Agent Gateway",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (showClose) {
+                IconButton(onClick = onCloseDrawer) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "关闭抽屉",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(Dimensions.SpaceMedium))
+        DrawerAccountRow(
+            username = username,
+            gatewayLabel = gatewayLabel,
+            online = online,
+        )
+    }
+}
+
+@Composable
+private fun DrawerAccountRow(
+    username: String,
+    gatewayLabel: String,
+    online: Boolean,
+) {
+    val stateColors = LocalAppStateColors.current
+    // 在线状态不是只靠颜色：文字始终在场，颜色只做第二通道。
+    val statusColor = if (online) stateColors.success else stateColors.warning
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(DrawerAvatarSize)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = username.take(1).uppercase(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = username,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = gatewayLabel.removePrefix("https://"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = Dimensions.SpaceTiny),
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+                modifier = Modifier.padding(top = Dimensions.SpaceTiny),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(DrawerStatusDot)
+                        .clip(CircleShape)
+                        .background(statusColor),
+                )
+                Text(
+                    text = if (online) "在线" else "离线",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = statusColor,
+                )
             }
         }
     }
@@ -292,3 +299,18 @@ private fun DrawerNavItem(
         onClick = onClick,
     )
 }
+
+/** 抽屉头部顶部留白（规格 §5.2：tonal 头部顶部 20dp）。 */
+private val DrawerHeaderTopPadding = 20.dp
+
+/** 品牌缝线宽度：只占极窄一列，不抢字标。 */
+private val DrawerStitchWidth = 8.dp
+
+/** 品牌缝线高度：字标旁边的小尺寸标记，不做整屏品牌墙。 */
+private val DrawerStitchHeight = 28.dp
+
+/** 首字母头像直径。 */
+private val DrawerAvatarSize = 40.dp
+
+/** 在线状态小圆点直径。 */
+private val DrawerStatusDot = 6.dp

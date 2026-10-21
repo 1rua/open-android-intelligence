@@ -11,13 +11,17 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.theme.Dimensions
 
+/** 缝线圆点半径：略大于线宽的一半，让圆点在缩略尺寸下仍然是一个"点"而不是鼓包。 */
+private val StitchDotRadius = 2.3.dp
+
 /**
  * 信号缝线（Signal Stitch）：产品唯一主要视觉签名。
- * 一段 2–3dp 的墨绿短线与一个茶金小点：
- * - 助手正文左侧是竖向引导线；
- * - 欢迎页与品牌区展示标志性缝线；
- * - 失败时颜色变为错误色并静止。
- * 遵循规格：不无限旋转、不过度抢夺注意力、保持品牌气质。
+ * 一段 2dp 的墨绿短竖线与一个茶金小圆点（半径约 2.3dp），两端圆头：
+ * - 助手正文左侧是竖向引导线（`Modifier.stitchGuide` 由内容高度驱动）；
+ * - 欢迎页、登录页与顶栏品牌位展示标志性缝线；
+ * - 失败时整条缝线（线与点）变为错误色并保持静止。
+ *
+ * 遵循规格：不无限旋转、不做呼吸/发光、不抢夺正文注意力。
  */
 @Composable
 fun SignalStitch(
@@ -31,15 +35,16 @@ fun SignalStitch(
 
     Canvas(
         modifier = modifier
-            .widthIn(min = 6.dp)
-            .defaultMinSize(minWidth = 8.dp, minHeight = 24.dp),
+            .widthIn(min = Dimensions.StrokeStitch * 4)
+            .defaultMinSize(minWidth = Dimensions.StrokeStitch * 4, minHeight = Dimensions.SpaceLarge),
     ) {
-        val stroke = Dimensions.StrokeStitch.toPx().coerceAtLeast(2f)
+        val stroke = Dimensions.StrokeStitch.toPx()
+        val dotRadiusPx = StitchDotRadius.toPx()
         val center = size.width / 2f
-        val dotRadius = stroke * 1.15f
-        val dotCenterY = size.height - dotRadius
-        val lineStartY = stroke
-        val lineEndY = (dotCenterY - stroke * 2.5f).coerceAtLeast(lineStartY)
+        val lineStartY = stroke / 2f
+        val dotCenterY = (size.height - dotRadiusPx).coerceAtLeast(dotRadiusPx)
+        // 线与点之间留一个线宽的呼吸位，避免小尺寸下糊成一团。
+        val lineEndY = (dotCenterY - dotRadiusPx - stroke).coerceAtLeast(lineStartY)
 
         drawLine(
             color = line,
@@ -51,7 +56,7 @@ fun SignalStitch(
 
         drawCircle(
             color = dot,
-            radius = dotRadius,
+            radius = dotRadiusPx,
             center = Offset(center, dotCenterY),
         )
     }

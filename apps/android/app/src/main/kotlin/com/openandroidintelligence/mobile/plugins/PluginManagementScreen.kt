@@ -3,17 +3,36 @@ package com.openandroidintelligence.mobile.plugins
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.InstallMobile
+import androidx.compose.material.icons.filled.SyncProblem
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
-import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import com.openandroidintelligence.conversation.components.SettingsIconBadge
+import com.openandroidintelligence.conversation.theme.AppTextStyles
+import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.plugin.ui.UiActionId
 import com.openandroidintelligence.plugin.ui.PluginUiActionValue
@@ -71,7 +90,7 @@ const val KERNEL_ABSENT_NOTICE = "内核未装配，设置项不可交互"
  * - 安装入口走真实 SAF 文件选择 → AlpVerifier 校验 → PluginInstaller 落盘，
  *   校验失败显示契约拒绝码；渠道策略禁止时入口禁用并说明。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun PluginManagementScreen(
     allowRuntimePlugins: Boolean,
@@ -181,7 +200,7 @@ fun PluginManagementScreen(
     }
     invokePlugin?.let { id ->
         AlertDialog(onDismissRequest = { invokePlugin = null },title = { Text("调用插件能力") },
-            text = { Column { Text(host?.entries(id).orEmpty().joinToString("\n") { it.key }); OutlinedTextField(invokeCapability,{invokeCapability=it},label={Text("能力 ID@版本")}); OutlinedTextField(invokeParameters,{invokeParameters=it},label={Text("JSON 参数")}) } },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) { Text(host?.entries(id).orEmpty().joinToString("\n") { it.key }); OutlinedTextField(invokeCapability,{invokeCapability=it},label={Text("能力 ID@版本")}); OutlinedTextField(invokeParameters,{invokeParameters=it},label={Text("JSON 参数")}) } },
             confirmButton = { TextButton(onClick = {
                 val selected = invokeCapability; val parameters = invokeParameters; invokePlugin = null
                 installScope.launch {
@@ -195,18 +214,45 @@ fun PluginManagementScreen(
                 }
             }) { Text("执行") } },dismissButton = { TextButton(onClick = { invokePlugin = null }) { Text("取消") } })
     }
-    if (showRemote) AlertDialog(onDismissRequest = { showRemote = false },title = { Text("从远程来源安装") },text = {
-        Column {
-            OutlinedTextField(sourceUrl,{sourceUrl=it},label={Text("HTTPS 包或索引地址")})
-            OutlinedTextField(sourcePin,{sourcePin=it},label={Text("TLS SPKI pin（sha256:…）")})
-            OutlinedTextField(sourceDigest,{sourceDigest=it},label={Text("固定发布 SHA-256（可代替 pin）")})
-            OutlinedTextField(indexPluginId,{indexPluginId=it},label={Text("索引中的插件 ID（直接包留空）")})
+    if (showRemote) {
+        // 四个输入框的对话框在大字号/横屏下会被挤出屏幕底部，改为可滚动的 M3 底部弹层。
+        ModalBottomSheet(
+            onDismissRequest = { showRemote = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
+                    .padding(
+                        start = Dimensions.ScreenHorizontal,
+                        end = Dimensions.ScreenHorizontal,
+                        bottom = Dimensions.SpaceLarge,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+            ) {
+                Text("从远程来源安装", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "来源必须提供 TLS SPKI pin 或固定发布摘要；下载后的包仍要通过作者签名与契约校验。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(sourceUrl,{sourceUrl=it},label={Text("HTTPS 包或索引地址")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(sourcePin,{sourcePin=it},label={Text("TLS SPKI pin（sha256:…）")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(sourceDigest,{sourceDigest=it},label={Text("固定发布 SHA-256（可代替 pin）")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(indexPluginId,{indexPluginId=it},label={Text("索引中的插件 ID（直接包留空）")},modifier=Modifier.fillMaxWidth())
+                Row(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                    TextButton(onClick = { showRemote = false }) { Text("取消") }
+                    Button(onClick = {
+                        showRemote = false
+                        installScope.launch { try { val bytes = runInterruptible(Dispatchers.IO) { RemotePluginSource.resolve(sourceUrl,sourcePin,sourceDigest,indexPluginId) }; installBytes(bytes) }
+                        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { notice = "远程来源读取失败，请检查地址、pin 或摘要。" } }
+                    }) { Text("下载并验签") }
+                }
+            }
         }
-    },confirmButton = { TextButton(onClick = {
-        showRemote = false
-        installScope.launch { try { val bytes = runInterruptible(Dispatchers.IO) { RemotePluginSource.resolve(sourceUrl,sourcePin,sourceDigest,indexPluginId) }; installBytes(bytes) }
-        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { notice = "远程来源读取失败，请检查地址、pin 或摘要。" } }
-    }) { Text("下载并验签") } },dismissButton = { TextButton(onClick = { showRemote = false }) { Text("取消") } })
+    }
 
     Scaffold(
         topBar = {
@@ -226,10 +272,17 @@ fun PluginManagementScreen(
         containerColor = MaterialTheme.colorScheme.surface,
         modifier = modifier,
     ) { padding ->
-        Column(
+        // 宽屏限宽居中：分组卡片不再被拉成超长的一行。
+        Box(
             modifier = Modifier
                 .padding(padding)
-                .fillMaxSize()
+                .fillMaxSize(),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = Dimensions.ReadingWidth)
+                .fillMaxHeight()
                 .verticalScroll(rememberScrollState())
                 .padding(
                     horizontal = Dimensions.ScreenHorizontal,
@@ -275,30 +328,48 @@ fun PluginManagementScreen(
                         InstalledPluginBlock(view = view, onAction = sink(view.pluginId ?: view.directory.name),host = host)
                         view.pluginId?.let { id ->
                             if (host != null) {
-                                host.entries(id).forEach { entry ->
-                                    val status = if (gatewaySync == "SYNC_FAILED") gatewaySync else gatewayStatuses[entry.id] ?:
-                                        if (gatewaySync == "SYNCED") "STATUS_UNAVAILABLE" else "SYNC_REQUIRED"
-                                    Text("${entry.id}：${capabilityStatusLabel(status)}",style=MaterialTheme.typography.bodySmall)
-                                }
-                                Row {
-                                    TextButton(onClick = { runCatching { host.enable(id,!host.isEnabled(id)) }.fold(onSuccess={notice="插件状态已更新。"},onFailure={notice="启用失败：请检查原生信任模式、包兼容性或安全模式。"}) }) { Text(if(host.isEnabled(id)) "停用" else "启用") }
-                                    TextButton(onClick = { grantPlugin = id }) { Text("配对授权") }
-                                    TextButton(onClick = { runCatching { resolvedStore.rollback(id); refresh() }.fold(onSuccess={notice="已回滚到上一版本。"},onFailure={notice="没有可回滚的有效版本。"}) }) { Text("回滚") }
-                                    TextButton(onClick = { runCatching { host.uninstall(id); refresh() }.fold(onSuccess={notice="已卸载并清理插件数据。"},onFailure={notice="卸载未完成，请检查存储。"}) }) { Text("卸载") }
-                                }
-                                TextButton(onClick = {
-                                    runCatching { host.grant(id, false) }.fold(
-                                        onSuccess = { notice = "已撤销此插件对当前配对的授权。" },
-                                        onFailure = { notice = "撤销失败，请先登录对应的 Gateway 账号。" },
-                                    )
-                                }) { Text("撤销当前配对授权") }
-                                if (host.hasNativeUi(id)) TextButton(onClick = { runCatching { host.selectNativeUi(id) }.fold(onSuccess={notice="原生界面已启用，可随时恢复宿主界面。"},onFailure={notice="请先开启信任模式并启用插件。"}) }) { Text("使用原生界面") }
-                                if (host.isQuarantined(id)) TextButton(onClick = { host.recoverNative(id); refresh() }) { Text("解除安全模式（保持停用）") }
-                                if (host.entries(id).any { "kernel.notifications.read" in it.primitives }) {
-                                    onOpenNotificationSettings?.let { openSettings ->
-                                        TextButton(onClick = openSettings) { Text("通知采集与访问范围") }
+                                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                                    // 能力状态：图标 + 语义色 + 文字三件套，颜色不是唯一信号。
+                                    host.entries(id).forEach { entry ->
+                                        val status = if (gatewaySync == "SYNC_FAILED") gatewaySync else gatewayStatuses[entry.id] ?:
+                                            if (gatewaySync == "SYNCED") "STATUS_UNAVAILABLE" else "SYNC_REQUIRED"
+                                        CapabilityStatusRow(entryId = entry.id, status = status)
                                     }
-                                    TextButton(onClick = { context.startActivity(android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }) { Text("打开通知访问设置") }
+                                    // 常规动作：FlowRow 自动换行，窄屏不会再被挤成一条溢出屏幕的长行。
+                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                                        TextButton(onClick = { runCatching { host.enable(id,!host.isEnabled(id)) }.fold(onSuccess={notice="插件状态已更新。"},onFailure={notice="启用失败：请检查原生信任模式、包兼容性或安全模式。"}) }) { Text(if(host.isEnabled(id)) "停用" else "启用") }
+                                        TextButton(onClick = { grantPlugin = id }) { Text("配对授权") }
+                                        TextButton(onClick = { runCatching { resolvedStore.rollback(id); refresh() }.fold(onSuccess={notice="已回滚到上一版本。"},onFailure={notice="没有可回滚的有效版本。"}) }) { Text("回滚") }
+                                        if (host.hasNativeUi(id)) TextButton(onClick = { runCatching { host.selectNativeUi(id) }.fold(onSuccess={notice="原生界面已启用，可随时恢复宿主界面。"},onFailure={notice="请先开启信任模式并启用插件。"}) }) { Text("使用原生界面") }
+                                        if (host.isQuarantined(id)) TextButton(onClick = { host.recoverNative(id); refresh() }) { Text("解除安全模式（保持停用）") }
+                                        if (host.entries(id).any { "kernel.notifications.read" in it.primitives }) {
+                                            onOpenNotificationSettings?.let { openSettings ->
+                                                TextButton(onClick = openSettings) { Text("通知采集与访问范围") }
+                                            }
+                                            TextButton(onClick = { context.startActivity(android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }) { Text("打开通知访问设置") }
+                                        }
+                                    }
+                                    // 危险动作单独一组：只有「卸载」和「撤销授权」，配色走 error 语义，
+                                    // 与上面的可逆操作在视觉与位置上都分开。
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                                        val dangerColors = ButtonDefaults.textButtonColors(
+                                            contentColor = MaterialTheme.colorScheme.error,
+                                        )
+                                        TextButton(
+                                            onClick = { runCatching { host.uninstall(id); refresh() }.fold(onSuccess={notice="已卸载并清理插件数据。"},onFailure={notice="卸载未完成，请检查存储。"}) },
+                                            colors = dangerColors,
+                                        ) { Text("卸载") }
+                                        TextButton(
+                                            onClick = {
+                                                runCatching { host.grant(id, false) }.fold(
+                                                    onSuccess = { notice = "已撤销此插件对当前配对的授权。" },
+                                                    onFailure = { notice = "撤销失败，请先登录对应的 Gateway 账号。" },
+                                                )
+                                            },
+                                            colors = dangerColors,
+                                        ) { Text("撤销当前配对授权") }
+                                    }
                                 }
                             }
                         }
@@ -328,6 +399,7 @@ fun PluginManagementScreen(
                     )
                 }
             }
+        }
         }
     }
 }
@@ -396,6 +468,63 @@ private fun InstalledPluginBlock(
                 )
             },
         )
+    }
+}
+
+/**
+ * 能力状态行：图标 + 语义色 + 文字。
+ *
+ * 状态只靠颜色是读不出来的：每种状态都同时有图标和文字说明，颜色取自
+ * [LocalAppStateColors] 的 success / warning 与 M3 的 error，不再借用品牌 primary。
+ */
+@Composable
+private fun CapabilityStatusRow(entryId: String, status: String) {
+    val stateColors = LocalAppStateColors.current
+    val icon: ImageVector
+    val tone: SettingsTone
+    val textColor: Color
+    when (status) {
+        "READY" -> {
+            icon = Icons.Default.CheckCircle
+            tone = SettingsTone.PRIMARY
+            textColor = stateColors.success
+        }
+        "SYNC_FAILED", "STATUS_UNAVAILABLE" -> {
+            icon = Icons.Default.SyncProblem
+            tone = SettingsTone.DANGER
+            textColor = MaterialTheme.colorScheme.error
+        }
+        "GATEWAY_DISABLED", "PLUGIN_NOT_INSTALLED", "PLUGIN_DISABLED", "LOCAL_GRANT_REQUIRED",
+        "ANDROID_PERMISSION_REQUIRED", "PROVIDER_UNAVAILABLE", "PROVIDER_NOT_SELECTED" -> {
+            icon = Icons.Default.Warning
+            tone = SettingsTone.NEUTRAL
+            textColor = stateColors.warning
+        }
+        else -> {
+            icon = Icons.Default.HourglassEmpty
+            tone = SettingsTone.NEUTRAL
+            textColor = MaterialTheme.colorScheme.onSurfaceVariant
+        }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SettingsIconBadge(icon = icon, tone = tone)
+        Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
+        Column(modifier = Modifier.weight(1f)) {
+            // 能力 ID 是技术元数据，用等宽样式；状态说明走正文辅助样式。
+            Text(
+                text = entryId,
+                style = AppTextStyles.MonoSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = capabilityStatusLabel(status),
+                style = MaterialTheme.typography.bodySmall,
+                color = textColor,
+            )
+        }
     }
 }
 

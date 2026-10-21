@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,10 +23,12 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.components.readableFailure
+import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.workbench.TimelineRow
 import com.openandroidintelligence.conversation.workbench.ComposerBar
 import com.openandroidintelligence.conversation.workbench.ConversationBrowser
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /** The system embeds this Activity inside a native conversation bubble. */
 class BubbleConversationActivity : ComponentActivity() {
@@ -34,9 +37,26 @@ class BubbleConversationActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         target = targetFromIntent(intent)
-        val runtime = (application as? OpenAndroidIntelligenceApplication)?.gatewayRuntime
+        val app = application as? OpenAndroidIntelligenceApplication
+        val runtime = app?.gatewayRuntime
+        // 系统气泡窗口与主界面共用同一份外观偏好：深浅、动态取色、减少动态都跟随用户设置，
+        // 而不是永远跟随系统 + 品牌色。首帧前先把系统栏图标对齐，避免出现反向配色的状态栏。
+        applySystemBarContrast(appearanceIsDark(app?.appearancePreferences?.settings?.value ?: AppearanceSettings()))
         setContent {
-            OpenAndroidIntelligenceTheme {
+            val fallbackAppearance = remember { MutableStateFlow(AppearanceSettings()) }
+            val appearance by (app?.appearancePreferences?.settings ?: fallbackAppearance).collectAsState()
+            val isDark = when (appearance.theme) {
+                ThemePreference.LIGHT -> false
+                ThemePreference.DARK -> true
+                ThemePreference.SYSTEM -> isSystemInDarkTheme()
+            }
+            LaunchedEffect(isDark) { applySystemBarContrast(isDark) }
+            OpenAndroidIntelligenceTheme(
+                darkTheme = isDark,
+                dynamicColor = appearance.dynamicColor,
+                palette = appearance.palette,
+                reduceMotion = appearance.reduceMotion,
+            ) {
                 Surface(Modifier.fillMaxSize()) {
                     if (runtime == null) BubbleUnavailable("Gateway 运行环境不可用", ::finish)
                     else BubbleConversationContent(runtime, target, ::finish)
@@ -121,15 +141,15 @@ private fun BubbleConversationContent(runtime: GatewayRuntime, target: ReplyNoti
     val selected = sessions.firstOrNull { it.target == selectedTarget }
     BackHandler(enabled = selectedId != null) { window.showBrowser() }
     Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = Dimensions.SpaceSmall), verticalAlignment = Alignment.CenterVertically) {
             if (selectedId != null) TextButton(onClick = window::showBrowser) { Text("会话列表") }
             Text(if (selectedId == null) "全部会话" else selected?.title ?: chatState?.activeThreadTitle?.ifBlank { "Agent 会话" } ?: "Agent 会话",
-                modifier = Modifier.weight(1f).padding(8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(Dimensions.SpaceSmall), maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.titleMedium)
             TextButton(onClick = onClose) { Text("关闭") }
         }
         HorizontalDivider()
-        window.notice?.let { Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error) }
+        window.notice?.let { Text(it, Modifier.padding(Dimensions.SpaceCompact), color = MaterialTheme.colorScheme.error) }
         if (selectedId == null) {
             if (window.creatingThread) LinearProgressIndicator(Modifier.fillMaxWidth())
             val history = activeSession
@@ -177,14 +197,14 @@ private fun BubbleChat(
         if (entries.isNotEmpty() && followLatest && !list.isScrollInProgress) list.animateScrollToItem(entries.lastIndex)
     }
     Column(modifier.fillMaxWidth()) {
-        if (status != null) Text(status.label(), Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium)
+        if (status != null) Text(status.label(), Modifier.padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceTiny), style = MaterialTheme.typography.labelMedium)
         when (val timeline = state.timeline) {
             Loadable.Idle, Loadable.Loading -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            is Loadable.Failed -> Column(Modifier.weight(1f).padding(12.dp)) {
+            is Loadable.Failed -> Column(Modifier.weight(1f).padding(Dimensions.SpaceCompact)) {
                 Text(readableFailure(timeline.code))
                 TextButton(onClick = controller::retryTimeline) { Text("重试") }
             }
-            else -> LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            else -> LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(Dimensions.SpaceCompact), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
                 if (entries.isEmpty()) item { Text("此会话暂无消息") }
                 items(entries, key = { it.key }) { entry ->
                     TimelineRow(entry, controller::decideApproval, onDownloadAttachment = controller::downloadAttachment)
@@ -192,7 +212,7 @@ private fun BubbleChat(
             }
         }
         state.notice?.let { notice ->
-            Text(noticeText(notice), Modifier.fillMaxWidth().padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall,
+            Text(noticeText(notice), Modifier.fillMaxWidth().padding(horizontal = Dimensions.SpaceCompact), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
         ComposerBar(
@@ -213,14 +233,14 @@ private fun BubbleChat(
             onRemoveAttachment = controller::removeAttachment,
             onRetryAttachment = controller::retryAttachment,
             applyImePadding = false,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
         )
     }
 }
 
 @Composable
 private fun BubbleUnavailable(message: String, onClose: () -> Unit) {
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp), verticalArrangement = Arrangement.Center,
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(Dimensions.ScreenHorizontal), verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally) {
         Text(message)
         TextButton(onClick = onClose) { Text("关闭") }

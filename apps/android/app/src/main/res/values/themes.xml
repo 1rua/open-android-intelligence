@@ -1,12 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+        系统栏图标明暗不在这里固定：应用内主题（跟随系统 / 强制浅色 / 强制深色）由
+        MainActivity 与 BubbleConversationActivity 在 setContent 里按 isDark 通过
+        enableEdgeToEdge(SystemBarStyle.auto(...)) 设置。写死 windowLightStatusBar=true
+        会让「应用内深色 + 系统浅色」时状态栏图标压在深色画布上不可读。
+    -->
     <style name="Theme.OpenAndroidIntelligence" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowActionBar">false</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!--
+        系统助理兜底入口（ASSIST Activity）的浮层主题。
+
+        windowIsTranslucent 必须为 true：否则窗口是不透明的，即使把背景设成透明，
+        系统也不会把下面的 App 画出来，用户只会看到黑底，失去"浮在其他 App 之上"的语义。
+        遮罩由系统 dim 提供（Compose 里只再叠一层很淡的 scrim）。
+    -->
+    <style name="Theme.OpenAndroidIntelligence.AssistantOverlay">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 </resources>
