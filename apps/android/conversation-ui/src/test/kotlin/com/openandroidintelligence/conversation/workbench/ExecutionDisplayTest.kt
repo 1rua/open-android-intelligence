@@ -385,6 +385,25 @@ class ExecutionDisplayTest {
     }
 
     @Test
+    fun terminalGenerationFoldsHermesToolOnlySegmentWithoutAFinalAnswer() {
+        val entries = listOf(
+            userEntry("u1", "查一下"),
+            assistantEntry("a1", "调用工具：execute_code"),
+            assistantEntry("a2", "调用工具：read_file"),
+        )
+
+        val item = TimelineDisplayModel()
+            .build(entries, generation = GenerationState.COMPLETED)
+            .last()
+
+        assertTrue(
+            item is TimelineDisplayItem.Execution,
+            "生成终态后即使没有最终正文，Hermes 过程段也必须折叠",
+        )
+        assertFalse((item as TimelineDisplayItem.Execution).run.hasFinalAnswer)
+    }
+
+    @Test
     fun terminalGenerationFoldsHermesCardsEvenWhenEntriesStillSayStreaming() {
         val entries = listOf(
             userEntry("u1", "查一下"),

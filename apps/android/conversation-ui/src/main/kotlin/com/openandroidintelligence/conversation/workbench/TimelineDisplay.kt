@@ -181,8 +181,12 @@ class TimelineDisplayModel(
         // 先把它们逐条显示（用户能看到每张工具卡），等最终回答出现再聚合。
         // XML/fenced 工具消息保持原有规则：执行段结束即折叠。
         val hermesProcessSegment = entries.all(::looksLikeHermesProcessEntry)
+        // 生成已进入终态时，即使 Hermes 段内还没有最终正文，也要折叠：任务已经结束，
+        // 不能因为工具消息被审批行拆段而让卡片一直展开。
+        val terminalGeneration = generation != null && !generationActive
         val shouldFold = hasExecutionBlocks &&
-            (anyFinalVisible || stickyFinalStarted || (!anyStreaming && !hermesProcessSegment))
+            (anyFinalVisible || stickyFinalStarted ||
+                (!anyStreaming && (!hermesProcessSegment || terminalGeneration)))
 
         if (!shouldFold) {
             return entries.map { TimelineDisplayItem.Single(it) }

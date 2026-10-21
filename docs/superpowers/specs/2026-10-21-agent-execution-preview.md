@@ -342,7 +342,7 @@ data class TimelineAttachment(
 
 | 验证 | 结果 |
 |---|---|
-| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 537 个用例 / 0 失败 |
+| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 538 个用例 / 0 失败 |
 | `:app:compileFullDebugKotlin` | BUILD SUCCESSFUL |
 | `:app:assembleFullDebug` | BUILD SUCCESSFUL |
 | `noVpnSurfaceCheck` | BUILD SUCCESSFUL |
