@@ -9,12 +9,15 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,9 +28,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,6 +52,7 @@ import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -118,9 +127,9 @@ private fun UserMessageBubble(
     onDownloadAttachment: ((String) -> Unit)? = null,
 ) {
     val failed = entry.submissionFailureCode != null || entry.messageStatus == AgentMessageStatus.FAILED
-    Row(
+    Column(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
+        horizontalAlignment = Alignment.End,
     ) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -163,6 +172,14 @@ private fun UserMessageBubble(
                     modifier = Modifier.align(Alignment.End),
                 )
             }
+        }
+
+        // 复制按钮放在气泡外侧下方：只复制原文，不改变气泡本身的排版与高度。
+        if (entry.text.isNotBlank()) {
+            MessageCopyAction(
+                text = entry.text,
+                modifier = Modifier.padding(top = Dimensions.SpaceTiny),
+            )
         }
     }
 }
@@ -278,6 +295,63 @@ private fun AssistantMessageRow(
         }
 
         MessageMetadata(entry = entry, failed = failed)
+
+        // 与用户气泡一致的「原文复制」入口：复制的是含 Markdown 标记的原始内容。
+        if (entry.text.isNotBlank()) {
+            MessageCopyAction(text = entry.text)
+        }
+    }
+}
+
+/** 复制成功提示的展示时长：足够看清，又不会长期占位。 */
+private const val CopyFeedbackDurationMillis = 1600L
+
+/**
+ * 单条消息的「复制原文」按钮。
+ *
+ * 复制的是消息未渲染前的原始内容（含 Markdown 标记），与界面上看到的样子无关；
+ * 成功后按钮原地变成「复制成功」并在 1.6 秒后恢复，不弹 Toast、不推动正文布局。
+ */
+@Composable
+fun MessageCopyAction(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    val clipboardManager = LocalClipboardManager.current
+    var copied by remember(text) { mutableStateOf(false) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(CopyFeedbackDurationMillis)
+            copied = false
+        }
+    }
+
+    Row(
+        modifier = modifier
+            .heightIn(min = Dimensions.SpaceXLarge)
+            .clip(RoundedCornerShape(AppRadius.ExtraSmall))
+            .clickable(role = Role.Button) {
+                clipboardManager.setText(AnnotatedString(text))
+                copied = true
+            }
+            // 复制成功属于状态变化：用 liveRegion 让读屏软件在按钮聚焦时也能播报结果。
+            .semantics { liveRegion = LiveRegionMode.Polite }
+            .padding(horizontal = Dimensions.SpaceSmall),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+    ) {
+        Icon(
+            imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+            contentDescription = null,
+            tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(Dimensions.SmallIcon),
+        )
+        Text(
+            text = if (copied) "复制成功" else "复制",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

@@ -2,10 +2,9 @@ package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -14,6 +13,8 @@ import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,19 +22,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
+
+/**
+ * 当前引用块嵌套深度。段落/引用文本据此切换为从属色与斜体，
+ * 嵌套列表也据此降低文字对比度，避免多级引用一片同色。
+ */
+internal val LocalMarkdownQuoteDepth = compositionLocalOf { 0 }
 
 /**
  * 完整 Markdown 文档渲染器：根据 AST 节点分发渲染至具体组件，
@@ -54,19 +61,29 @@ fun MarkdownDocumentView(
     ) {
         blocks.forEachIndexed { index, block ->
             val isLast = isStreaming && index == blocks.lastIndex
-            when (block) {
-                is TimelineBlock.Heading -> MarkdownHeadingView(block, isLast, colors)
-                is TimelineBlock.Paragraph -> MarkdownParagraphView(block, isLast, colors)
-                is TimelineBlock.CodeBlock -> MarkdownCodeBlock(block, isStreaming = isLast)
-                is TimelineBlock.Blockquote -> MarkdownBlockquoteView(block, isLast, colors)
-                is TimelineBlock.UnorderedList -> MarkdownUnorderedListView(block, isLast, colors)
-                is TimelineBlock.OrderedList -> MarkdownOrderedListView(block, isLast, colors)
-                is TimelineBlock.Table -> MarkdownTableView(block, isLast, colors)
-                is TimelineBlock.ThematicBreak -> MarkdownThematicBreakView()
-                is TimelineBlock.ThoughtBlock -> MarkdownThoughtBlockView(block, isStreaming = isLast)
-                is TimelineBlock.ToolCallBlock -> MarkdownToolCallView(block)
-            }
+            MarkdownBlockView(block, isLast, colors)
         }
+    }
+}
+
+/** 单块渲染入口：文档与引用块共用，引用块递归调用即可呈现多级嵌套。 */
+@Composable
+internal fun MarkdownBlockView(
+    block: TimelineBlock,
+    isStreaming: Boolean,
+    colors: MarkdownColors,
+) {
+    when (block) {
+        is TimelineBlock.Heading -> MarkdownHeadingView(block, isStreaming, colors)
+        is TimelineBlock.Paragraph -> MarkdownParagraphView(block, isStreaming, colors)
+        is TimelineBlock.CodeBlock -> MarkdownCodeBlock(block, isStreaming = isStreaming)
+        is TimelineBlock.Blockquote -> MarkdownBlockquoteView(block, isStreaming, colors)
+        is TimelineBlock.ListBlock -> MarkdownListView(block, isStreaming, colors)
+        is TimelineBlock.Table -> MarkdownTableView(block, isStreaming, colors)
+        is TimelineBlock.MathBlock -> MarkdownMathBlockView(block)
+        is TimelineBlock.ThematicBreak -> MarkdownThematicBreakView()
+        is TimelineBlock.ThoughtBlock -> MarkdownThoughtBlockView(block, isStreaming = isStreaming)
+        is TimelineBlock.ToolCallBlock -> MarkdownToolCallView(block)
     }
 }
 
@@ -90,19 +107,18 @@ fun MarkdownHeadingView(
             .fillMaxWidth()
             .padding(top = 4.dp, bottom = 2.dp),
     ) {
-        val annotatedText = remember(block.text, isStreaming, colors) {
-            buildMarkdownAnnotatedString(block.text, colors, isStreaming)
-        }
-        SelectionContainer {
-            Text(
-                text = annotatedText,
-                inlineContent = streamingCursorInlineContent(isStreaming, cursorHeight = (fontSize.value * 0.9).sp),
+        MarkdownInlineText(
+            text = block.text,
+            colors = colors,
+            isStreaming = isStreaming,
+            style = TextStyle(
                 fontSize = fontSize,
                 fontWeight = fontWeight,
                 color = color,
                 lineHeight = (fontSize.value * 1.35).sp,
-            )
-        }
+            ),
+            color = color,
+        )
         if (showBottomDivider) {
             HorizontalDivider(
                 color = MaterialTheme.colorScheme.outlineVariant,
@@ -120,37 +136,27 @@ fun MarkdownParagraphView(
     colors: MarkdownColors,
     modifier: Modifier = Modifier,
 ) {
-    val uriHandler = LocalUriHandler.current
-    var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
-    val annotatedText = remember(block.text, isStreaming, colors) {
-        buildMarkdownAnnotatedString(block.text, colors, isStreaming)
+    val quoteDepth = LocalMarkdownQuoteDepth.current
+    // 引用内的正文降一级：字号收一档、斜体 + 从属色，与级联引用条一起表达层级。
+    val style = if (quoteDepth > 0) {
+        MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic)
+    } else {
+        MaterialTheme.typography.bodyLarge
+    }
+    val color = if (quoteDepth > 0) {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    } else {
+        MaterialTheme.colorScheme.onSurface
     }
 
-    SelectionContainer {
-        Text(
-            text = annotatedText,
-            inlineContent = streamingCursorInlineContent(isStreaming),
-            onTextLayout = { layoutResult = it },
-            // 正文统一 bodyLarge（16sp / 26sp 行高）：长段中文阅读是主角，不再压成 15sp。
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = modifier
-                .fillMaxWidth()
-                .pointerInput(annotatedText) {
-                    detectTapGestures { offset ->
-                        layoutResult?.let { layout ->
-                            val position = layout.getOffsetForPosition(offset)
-                            annotatedText
-                                .getStringAnnotations("URL", position, position)
-                                .firstOrNull()
-                                ?.let { annotation ->
-                                    runCatching { uriHandler.openUri(annotation.item) }
-                                }
-                        }
-                    }
-                },
-        )
-    }
+    MarkdownInlineText(
+        text = block.text,
+        colors = colors,
+        isStreaming = isStreaming,
+        modifier = modifier.fillMaxWidth(),
+        style = style,
+        color = color,
+    )
 }
 
 @Composable
@@ -160,10 +166,16 @@ fun MarkdownBlockquoteView(
     colors: MarkdownColors,
     modifier: Modifier = Modifier,
 ) {
+    val depth = LocalMarkdownQuoteDepth.current
+    // 嵌套越深，引用条越淡，避免多层引用抢正文的视觉焦点。
+    val barColor = MaterialTheme.colorScheme.primary.copy(
+        alpha = (0.85f - depth * 0.18f).coerceAtLeast(0.4f),
+    )
+
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
+            .padding(vertical = 2.dp)
             .height(IntrinsicSize.Min),
     ) {
         Box(
@@ -171,115 +183,145 @@ fun MarkdownBlockquoteView(
                 .width(3.dp)
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(1.5.dp))
-                .background(MaterialTheme.colorScheme.primary),
+                .background(barColor),
         )
         Spacer(Modifier.width(10.dp))
-        val annotated = remember(block.text, isStreaming, colors) {
-            buildMarkdownAnnotatedString(block.text, colors, isStreaming)
+        CompositionLocalProvider(
+            LocalMarkdownQuoteDepth provides depth + 1,
+            LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+            ) {
+                block.blocks.forEachIndexed { index, child ->
+                    val isLast = isStreaming && index == block.blocks.lastIndex
+                    MarkdownBlockView(child, isLast, colors)
+                }
+            }
         }
-        SelectionContainer {
-            Text(
-                text = annotated,
-                inlineContent = streamingCursorInlineContent(isStreaming),
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontStyle = FontStyle.Italic,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
+    }
+}
+
+/**
+ * 统一列表视图：有序 / 无序 / GFM 任务 / 多级嵌套都由 [TimelineBlock.ListBlock] 驱动。
+ * 每一级额外缩进 [Dimensions.ListIndent]，标记列固定宽度保证正文左缘对齐。
+ */
+@Composable
+fun MarkdownListView(
+    block: TimelineBlock.ListBlock,
+    isStreaming: Boolean,
+    colors: MarkdownColors,
+    modifier: Modifier = Modifier,
+) {
+    val quoteDepth = LocalMarkdownQuoteDepth.current
+    val baseColor = if (quoteDepth > 0) {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        block.items.forEachIndexed { index, item ->
+            val isLast = isStreaming && index == block.items.lastIndex
+            val checked = item.taskState == TaskState.CHECKED
+            val itemColor = if (checked) MaterialTheme.colorScheme.onSurfaceVariant else baseColor
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = Dimensions.ListIndent * item.level),
+                verticalAlignment = Alignment.Top,
+            ) {
+                ListItemMarker(item = item)
+                Spacer(Modifier.width(Dimensions.SpaceSmall))
+                MarkdownInlineText(
+                    text = item.text,
+                    colors = colors,
+                    isStreaming = isLast,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        textDecoration = if (checked) TextDecoration.LineThrough else TextDecoration.None,
+                    ),
+                    color = itemColor,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ListItemMarker(item: MarkdownListItem) {
+    Box(
+        modifier = Modifier
+            .width(Dimensions.ListMarkerWidth)
+            .padding(top = if (item.taskState != TaskState.NONE) 4.dp else 10.dp),
+        contentAlignment = Alignment.TopStart,
+    ) {
+        when {
+            item.taskState != TaskState.NONE -> {
+                val checked = item.taskState == TaskState.CHECKED
+                Icon(
+                    imageVector = if (checked) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
+                    contentDescription = if (checked) "已完成" else "未完成",
+                    tint = if (checked) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+
+            item.number != null -> Text(
+                text = "${item.number}.",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.5.sp,
+                color = if (item.level > 0) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+            )
+
+            item.level == 0 -> Box(
+                modifier = Modifier
+                    .padding(top = 3.dp)
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+
+            else -> Box(
+                modifier = Modifier
+                    .padding(top = 3.dp)
+                    .size(4.dp)
+                    .clip(CircleShape)
+                    .border(1.dp, MaterialTheme.colorScheme.primary, CircleShape),
             )
         }
     }
 }
 
 @Composable
-fun MarkdownUnorderedListView(
-    block: TimelineBlock.UnorderedList,
-    isStreaming: Boolean,
-    colors: MarkdownColors,
+fun MarkdownMathBlockView(
+    block: TimelineBlock.MathBlock,
     modifier: Modifier = Modifier,
 ) {
-    Column(
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(vertical = Dimensions.SpaceTiny),
+        contentAlignment = Alignment.Center,
     ) {
-        block.items.forEachIndexed { idx, itemText ->
-            val isLast = isStreaming && idx == block.items.lastIndex
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 4.dp),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .padding(top = 8.dp)
-                        .size(5.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary),
-                )
-                val annotated = remember(itemText, isLast, colors) {
-                    buildMarkdownAnnotatedString(itemText, colors, isLast)
-                }
-                SelectionContainer {
-                    Text(
-                        text = annotated,
-                        inlineContent = streamingCursorInlineContent(isLast),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun MarkdownOrderedListView(
-    block: TimelineBlock.OrderedList,
-    isStreaming: Boolean,
-    colors: MarkdownColors,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        block.items.forEachIndexed { idx, itemText ->
-            val isLast = isStreaming && idx == block.items.lastIndex
-            val numStr = "${block.startNumber + idx}."
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 2.dp),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    text = numStr,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 13.5.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 1.dp),
-                )
-                val annotated = remember(itemText, isLast, colors) {
-                    buildMarkdownAnnotatedString(itemText, colors, isLast)
-                }
-                SelectionContainer {
-                    Text(
-                        text = annotated,
-                        inlineContent = streamingCursorInlineContent(isLast),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
-        }
+        MarkdownMathBlock(latex = block.latex)
     }
 }
 
@@ -333,13 +375,10 @@ fun MarkdownTableView(
                                 TableAlignment.RIGHT -> Alignment.CenterEnd
                             },
                         ) {
-                            val annotated = remember(header, colors) {
-                                buildMarkdownAnnotatedString(header, colors)
-                            }
-                            Text(
-                                text = annotated,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
+                            MarkdownInlineText(
+                                text = header,
+                                colors = colors,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                 fontSize = 13.sp,
                                 textAlign = textAlign,
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -387,20 +426,16 @@ fun MarkdownTableView(
                                     TableAlignment.RIGHT -> Alignment.CenterEnd
                                 },
                             ) {
-                                val annotated = remember(cellText, isLastCell, colors) {
-                                    buildMarkdownAnnotatedString(cellText, colors, isLastCell)
-                                }
-                                SelectionContainer {
-                                    Text(
-                                        text = annotated,
-                                        inlineContent = streamingCursorInlineContent(isLastCell, cursorHeight = 13.sp),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontSize = 12.5.sp,
-                                        lineHeight = 18.sp,
-                                        textAlign = textAlign,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                    )
-                                }
+                                MarkdownInlineText(
+                                    text = cellText,
+                                    colors = colors,
+                                    isStreaming = isLastCell,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 12.5.sp,
+                                    lineHeight = 18.sp,
+                                    textAlign = textAlign,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
                             }
                             if (colIdx < block.headers.lastIndex) {
                                 Box(

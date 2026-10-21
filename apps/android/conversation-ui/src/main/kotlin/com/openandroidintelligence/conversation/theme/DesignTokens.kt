@@ -103,4 +103,8 @@ object Dimensions {
     val TimelineHorizontal = 16.dp
     /** 时间线消息之间的垂直间距。 */
     val TimelineSpacing = 20.dp
+    /** 嵌套列表每加深一级的缩进量，保证多级列表在手机上仍可读。 */
+    val ListIndent = 16.dp
+    /** 列表/任务项标记列宽度：圆点、复选框与序号共用，正文起点因此保持对齐。 */
+    val ListMarkerWidth = 20.dp
 }

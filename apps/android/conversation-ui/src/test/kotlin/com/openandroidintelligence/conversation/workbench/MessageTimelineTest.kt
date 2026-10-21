@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.workbench
 
+import androidx.compose.ui.text.LinkAnnotation
 import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import org.junit.Assert.assertEquals
@@ -131,7 +132,12 @@ class MessageTimelineTest {
         assertEquals(1, blocks.size)
         assertTrue(blocks[0] is TimelineBlock.Blockquote)
         val quote = blocks[0] as TimelineBlock.Blockquote
-        assertEquals("提示：点击下方模型卡片可立即切换。\n另外，支持快捷命令。", quote.text)
+        // 引用内容现在是递归解析后的块，不再是一整段纯文本
+        assertEquals(1, quote.blocks.size)
+        assertEquals(
+            TimelineBlock.Paragraph("提示：点击下方模型卡片可立即切换。\n另外，支持快捷命令。"),
+            quote.blocks[0],
+        )
     }
 
     @Test
@@ -147,17 +153,18 @@ class MessageTimelineTest {
 
         val blocks = parseMarkdownBlocks(input)
         assertEquals(2, blocks.size)
-        val ul = blocks[0] as TimelineBlock.UnorderedList
+        val ul = blocks[0] as TimelineBlock.ListBlock
         assertEquals(3, ul.items.size)
-        assertEquals("跨 App 覆盖", ul.items[0])
-        assertEquals("连续收缩为停靠球", ul.items[1])
-        assertEquals("Live 屏幕共享", ul.items[2])
+        assertEquals("跨 App 覆盖", ul.items[0].text)
+        assertEquals("连续收缩为停靠球", ul.items[1].text)
+        assertEquals("Live 屏幕共享", ul.items[2].text)
+        assertTrue("无序项不应带序号", ul.items.all { it.number == null })
+        assertTrue("普通列表项不应带任务状态", ul.items.all { it.taskState == TaskState.NONE })
 
-        val ol = blocks[1] as TimelineBlock.OrderedList
-        assertEquals(1, ol.startNumber)
+        val ol = blocks[1] as TimelineBlock.ListBlock
         assertEquals(2, ol.items.size)
-        assertEquals("第一步", ol.items[0])
-        assertEquals("第二步", ol.items[1])
+        assertEquals(listOf(1, 2), ol.items.map { it.number })
+        assertEquals(listOf("第一步", "第二步"), ol.items.map { it.text })
     }
 
     @Test
@@ -205,15 +212,17 @@ class MessageTimelineTest {
             linkColor = androidx.compose.ui.graphics.Color.Blue,
         )
         val raw = "这是 **粗体** 和 *斜体* 以及 `行内代码` 和 [链接](https://example.com) 还有 ~~删除线~~"
-        val annotated = buildMarkdownAnnotatedString(raw, colors, isStreaming = true)
+        val result = buildMarkdownInline(raw, colors)
 
         // 文本已剥除 markdown 标记
-        assertEquals("这是 粗体 和 斜体 以及 行内代码 和 链接 还有 删除线 [cursor]", annotated.text)
+        assertEquals("这是 粗体 和 斜体 以及 行内代码 和 链接 还有 删除线", result.annotated.text)
 
-        // 链接包含 URL 注解
-        val urlAnnotations = annotated.getStringAnnotations("URL", 0, annotated.length)
-        assertEquals(1, urlAnnotations.size)
-        assertEquals("https://example.com", urlAnnotations[0].item)
+        // 链接走 LinkAnnotation.Clickable，不再是裸字符串注解
+        val links = result.annotated.getLinkAnnotations(0, result.annotated.length)
+        assertEquals(1, links.size)
+        val clickable = links[0].item as LinkAnnotation.Clickable
+        assertEquals("https://example.com", clickable.tag)
+        assertEquals("链接", result.annotated.text.substring(links[0].start, links[0].end))
     }
 
     @Test
@@ -241,13 +250,16 @@ class MessageTimelineTest {
         assertEquals(6, blocks.size)
         assertEquals(TimelineBlock.Heading(3, "🔍 代码审查与架构规范验证报告"), blocks[0])
         assertTrue(blocks[1] is TimelineBlock.Paragraph)
-        assertTrue(blocks[2] is TimelineBlock.UnorderedList)
-        assertEquals(2, (blocks[2] as TimelineBlock.UnorderedList).items.size)
+        assertTrue(blocks[2] is TimelineBlock.ListBlock)
+        assertEquals(2, (blocks[2] as TimelineBlock.ListBlock).items.size)
         val codeBlock = blocks[3] as TimelineBlock.CodeBlock
         assertEquals("kotlin", codeBlock.language)
         assertTrue(codeBlock.code.contains("AssistantFloatingBar"))
         val quote = blocks[4] as TimelineBlock.Blockquote
-        assertEquals("系统处于全模态就绪状态，未发现协议异常。", quote.text)
+        assertEquals(
+            TimelineBlock.Paragraph("系统处于全模态就绪状态，未发现协议异常。"),
+            quote.blocks.single(),
+        )
         assertTrue(blocks[5] is TimelineBlock.Paragraph)
     }
 }

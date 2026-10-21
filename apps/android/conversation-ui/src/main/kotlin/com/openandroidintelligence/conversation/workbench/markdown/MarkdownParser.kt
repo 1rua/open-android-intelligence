@@ -2,8 +2,16 @@ package com.openandroidintelligence.conversation.workbench
 
 object MarkdownParser {
 
-    private val codeBlockRegex = Regex("```([a-zA-Z0-9_+:-]*)[\\r\\n]+([\\s\\S]*?)```")
-    private val unclosedCodeBlockRegex = Regex("```([a-zA-Z0-9_+:-]*)[\\r\\n]+([\\s\\S]*)$")
+    // 代码围栏必须从行首（最多 3 个前导空格）开始，否则引用块里的 "> ```" 会被外层误吞，
+    // 导致代码块跑到引用外面。引用块会先剥掉 "> " 再递归解析，围栏在那里才成为真正的围栏。
+    private val codeBlockRegex = Regex(
+        "^ {0,3}```([a-zA-Z0-9_+:-]*)[\\r\\n]+([\\s\\S]*?)^ {0,3}```[ \\t]*$",
+        RegexOption.MULTILINE,
+    )
+    private val unclosedCodeBlockRegex = Regex(
+        "^ {0,3}```([a-zA-Z0-9_+:-]*)[\\r\\n]+([\\s\\S]*)$",
+        RegexOption.MULTILINE,
+    )
     private val toolCallXmlRegex = Regex(
         "<tool_call(?:\\s+name=[\"']([^\"']*)[\"'])?\\s*>([\\s\\S]*?)</tool_call>",
         RegexOption.IGNORE_CASE
@@ -15,9 +23,17 @@ object MarkdownParser {
     private val thinkStartRegex = Regex("<think(?:\\s+[^>]*)?>", RegexOption.IGNORE_CASE)
     private val thinkEndRegex = Regex("</think>", RegexOption.IGNORE_CASE)
     private val headingRegex = Regex("^(#{1,6})\\s+(.*)$")
-    private val unorderedListRegex = Regex("^\\s*[-*+]\\s+(.*)$")
-    private val orderedListRegex = Regex("^\\s*(\\d+)\\.\\s+(.*)$")
     private val thematicBreakRegex = Regex("^\\s*(?:-{3,}|\\*{3,}|_{3,})\\s*$")
+
+    /** 列表项：任意缩进 + 无序标记（-、*、+）或有序标记（1. / 1)）。 */
+    private val listItemRegex = Regex("^(\\s*)([-*+]|\\d+[.)])\\s+(.*)$")
+    private val taskItemRegex = Regex("^\\[([ xX])\\]\\s*(.*)$")
+
+    /** 嵌套列表最多解析 6 级，防御异常深缩进把整条消息压进右侧。 */
+    private const val MaxListLevel = 6
+
+    /** 无法从缩进差推出步长时的回退值：GFM 与主流模型默认按 2 空格一级。 */
+    private const val DefaultListIndentStep = 2
 
     /**
      * 将原始 Markdown 文本解析为 MarkdownBlock / TimelineBlock AST 节点列表。
@@ -369,7 +385,15 @@ object MarkdownParser {
                 continue
             }
 
-            // 3. 表格检测
+            // 3. 块级数学公式 $$ ... $$
+            val mathBlock = parseMathBlock(lines, lineIndex)
+            if (mathBlock != null) {
+                blocks.add(mathBlock.block)
+                lineIndex = mathBlock.nextLine
+                continue
+            }
+
+            // 4. 表格检测
             if (line.contains("|") && lineIndex + 1 < lines.size && isTableSeparatorRow(lines[lineIndex + 1])) {
                 val headers = parseTableCells(line)
                 val separatorCells = parseTableCells(lines[lineIndex + 1])
@@ -391,41 +415,28 @@ object MarkdownParser {
                 continue
             }
 
-            // 4. 引用块
-            if (line.trimStart().startsWith(">")) {
+            // 5. 引用块：剥掉一层 `>` 后递归解析，嵌套引用自然形成 Blockquote(Blockquote(...))
+            if (isBlockquoteLine(line)) {
                 val quoteLines = mutableListOf<String>()
-                while (lineIndex < lines.size && lines[lineIndex].trimStart().startsWith(">")) {
-                    val qLine = lines[lineIndex].trimStart().removePrefix(">").trimStart()
-                    quoteLines.add(qLine)
+                while (lineIndex < lines.size && isBlockquoteLine(lines[lineIndex])) {
+                    quoteLines.add(stripBlockquoteMarker(lines[lineIndex]))
                     lineIndex++
                 }
-                blocks.add(TimelineBlock.Blockquote(quoteLines.joinToString("\n")))
+                val innerText = quoteLines.joinToString("\n")
+                if (innerText.isNotBlank()) {
+                    val innerBlocks = parseContentWithCodeBlocks(innerText)
+                    if (innerBlocks.isNotEmpty()) {
+                        blocks.add(TimelineBlock.Blockquote(innerBlocks))
+                    }
+                }
                 continue
             }
 
-            // 5. 无序列表
-            if (unorderedListRegex.matches(line)) {
-                val items = mutableListOf<String>()
-                while (lineIndex < lines.size) {
-                    val m = unorderedListRegex.matchEntire(lines[lineIndex]) ?: break
-                    items.add(m.groupValues[1])
-                    lineIndex++
-                }
-                blocks.add(TimelineBlock.UnorderedList(items))
-                continue
-            }
-
-            // 6. 有序列表
-            val orderedMatch = orderedListRegex.matchEntire(line)
-            if (orderedMatch != null) {
-                val startNumber = orderedMatch.groupValues[1].toIntOrNull() ?: 1
-                val items = mutableListOf<String>()
-                while (lineIndex < lines.size) {
-                    val m = orderedListRegex.matchEntire(lines[lineIndex]) ?: break
-                    items.add(m.groupValues[2])
-                    lineIndex++
-                }
-                blocks.add(TimelineBlock.OrderedList(items, startNumber))
+            // 6. 列表：一次收集整个列表（含嵌套项），层级与任务标记在解析阶段定好
+            val listBlock = parseListBlock(lines, lineIndex)
+            if (listBlock != null) {
+                blocks.add(listBlock.block)
+                lineIndex = listBlock.nextLine
                 continue
             }
 
@@ -435,13 +446,7 @@ object MarkdownParser {
                 val current = lines[lineIndex]
                 if (current.isBlank()) break
                 // 如果遇到新的结构开始，中断段落
-                if (thematicBreakRegex.matches(current) ||
-                    headingRegex.matches(current) ||
-                    current.trimStart().startsWith(">") ||
-                    unorderedListRegex.matches(current) ||
-                    orderedListRegex.matches(current) ||
-                    (current.contains("|") && lineIndex + 1 < lines.size && isTableSeparatorRow(lines[lineIndex + 1]))
-                ) {
+                if (startsStructuralBlock(lines, lineIndex)) {
                     break
                 }
                 paragraphLines.add(current)
@@ -453,6 +458,195 @@ object MarkdownParser {
         }
 
         return blocks
+    }
+
+    /**
+     * 当前行是否是段落的「结构中断点」：标题、分割线、引用、列表、数学块、表格。
+     * 段落收集循环与列表续行归并共用同一判定，避免两处规则漂移。
+     */
+    private fun startsStructuralBlock(lines: List<String>, index: Int): Boolean {
+        val line = lines[index]
+        if (thematicBreakRegex.matches(line)) return true
+        if (headingRegex.matches(line)) return true
+        if (isBlockquoteLine(line)) return true
+        if (listItemRegex.matches(line)) return true
+        if (line.trim().startsWith("$$")) return true
+        if (line.contains("|") && index + 1 < lines.size && isTableSeparatorRow(lines[index + 1])) return true
+        return false
+    }
+
+    private fun isBlockquoteLine(line: String): Boolean = line.trimStart().startsWith(">")
+
+    /** 去掉引用行的一层 `>` 标记与紧随其后的一个空格，保留剩余缩进供递归解析。 */
+    private fun stripBlockquoteMarker(line: String): String {
+        val trimmed = line.trimStart()
+        if (!trimmed.startsWith(">")) return line
+        val rest = trimmed.substring(1)
+        return if (rest.startsWith(" ")) rest.substring(1) else rest
+    }
+
+    private data class ParsedMathBlock(
+        val block: TimelineBlock.MathBlock,
+        val nextLine: Int,
+    )
+
+    /**
+     * 识别 `$$ ... $$` 块级公式：
+     * - `$$` 独立成行时收集到下一个以 `$$` 结尾的行；
+     * - 单行 `$$x$$` 直接解析；
+     * - 流式未闭合时把已收到的内容当作公式，避免把 `$$` 暴露在正文里。
+     */
+    private fun parseMathBlock(lines: List<String>, start: Int): ParsedMathBlock? {
+        val trimmed = lines[start].trim()
+        if (!trimmed.startsWith("$$")) return null
+
+        if (trimmed.length > 4 && trimmed.endsWith("$$")) {
+            val latex = trimmed.substring(2, trimmed.length - 2).trim()
+            return if (latex.isEmpty()) null else ParsedMathBlock(TimelineBlock.MathBlock(latex), start + 1)
+        }
+
+        val body = StringBuilder()
+        val firstRest = trimmed.removePrefix("$$").trim()
+        if (firstRest.isNotEmpty()) body.append(firstRest)
+
+        var index = start + 1
+        while (index < lines.size) {
+            val current = lines[index]
+            val currentTrimmed = current.trim()
+            if (currentTrimmed.endsWith("$$")) {
+                val content = currentTrimmed.removeSuffix("$$").trim()
+                if (content.isNotEmpty()) {
+                    if (body.isNotEmpty()) body.append('\n')
+                    body.append(content)
+                }
+                val latex = body.toString().trim()
+                return if (latex.isEmpty()) null else ParsedMathBlock(TimelineBlock.MathBlock(latex), index + 1)
+            }
+            if (body.isNotEmpty()) body.append('\n')
+            body.append(current.trimEnd())
+            index++
+        }
+
+        val latex = body.toString().trim()
+        return if (latex.isEmpty()) null else ParsedMathBlock(TimelineBlock.MathBlock(latex), lines.size)
+    }
+
+    private data class ParsedListBlock(
+        val block: TimelineBlock.ListBlock,
+        val nextLine: Int,
+    )
+
+    private data class RawListItem(
+        val indent: Int,
+        val ordinal: Int?,
+        val text: String,
+    )
+
+    /**
+     * 收集连续的列表项（含更深缩进的子项），统一算出层级、序号与任务状态。
+     * 判定顺序：先按行收集原始缩进，再用「最小正缩进差」推断每级步长，
+     * 因此 2 空格与 4 空格两种主流写法都能得到正确的父子关系。
+     */
+    private fun parseListBlock(lines: List<String>, start: Int): ParsedListBlock? {
+        val firstMatch = listItemRegex.matchEntire(lines[start]) ?: return null
+        val baseIndent = indentColumns(firstMatch.groupValues[1])
+
+        val raws = mutableListOf<RawListItem>()
+        var lastItemIndent = baseIndent
+        var index = start
+
+        while (index < lines.size) {
+            val line = lines[index]
+            if (line.isBlank()) break
+
+            val match = listItemRegex.matchEntire(line)
+            if (match != null) {
+                val indent = indentColumns(match.groupValues[1])
+                val marker = match.groupValues[2]
+                // `-` 等无序标记没有序号；`1.` / `1)` 取数字部分
+                val ordinal = marker.dropLast(1).toIntOrNull()
+                raws.add(RawListItem(indent = indent, ordinal = ordinal, text = match.groupValues[3]))
+                lastItemIndent = indent
+                index++
+                continue
+            }
+
+            // 列表项的折行：缩进比当前项更深且不是新结构时并入上一项
+            val indent = indentColumns(line)
+            if (raws.isNotEmpty() && indent > lastItemIndent && !startsStructuralBlock(lines, index)) {
+                val last = raws.removeAt(raws.lastIndex)
+                raws.add(last.copy(text = last.text + " " + line.trim()))
+                index++
+                continue
+            }
+            break
+        }
+
+        if (raws.isEmpty()) return null
+
+        val distinctIndents = raws.map { it.indent }.distinct().sorted()
+        val step = distinctIndents
+            .zipWithNext { previous, next -> next - previous }
+            .filter { it > 0 }
+            .minOrNull()
+            ?: DefaultListIndentStep
+
+        val nextNumberAtLevel = mutableMapOf<Int, Int>()
+        val previousOrderedAtLevel = mutableMapOf<Int, Boolean>()
+
+        val items = raws.map { raw ->
+            val offset = (raw.indent - baseIndent).coerceAtLeast(0)
+            val level = ((offset + step / 2) / step).coerceIn(0, MaxListLevel)
+
+            // 进入新的父项后，更深的子列表是新的编号序列（2. B 下面的子项应从 1. 重新开始）
+            for (deeper in (level + 1)..MaxListLevel) {
+                nextNumberAtLevel.remove(deeper)
+                previousOrderedAtLevel.remove(deeper)
+            }
+
+            val (text, taskState) = parseTaskState(raw.text)
+            val number = if (raw.ordinal != null) {
+                val continueNumbering = previousOrderedAtLevel[level] == true
+                val value = if (continueNumbering) nextNumberAtLevel[level] ?: raw.ordinal else raw.ordinal
+                nextNumberAtLevel[level] = value + 1
+                previousOrderedAtLevel[level] = true
+                value
+            } else {
+                previousOrderedAtLevel[level] = false
+                null
+            }
+            MarkdownListItem(
+                text = text,
+                level = level,
+                taskState = taskState,
+                number = number,
+            )
+        }
+
+        return ParsedListBlock(TimelineBlock.ListBlock(items), index)
+    }
+
+    private fun parseTaskState(text: String): Pair<String, TaskState> {
+        val match = taskItemRegex.matchEntire(text) ?: return text to TaskState.NONE
+        val state = if (match.groupValues[1].equals("x", ignoreCase = true)) {
+            TaskState.CHECKED
+        } else {
+            TaskState.UNCHECKED
+        }
+        return match.groupValues[2].trim() to state
+    }
+
+    /** 缩进换算成列数：制表符按 4 列，普通空格按 1 列，其余空白按 2 列。 */
+    private fun indentColumns(indent: String): Int {
+        var columns = 0
+        for (character in indent) {
+            columns += when (character) {
+                '\t' -> 4
+                ' ' -> 1
+                else -> 2
+            }
+        }
+        return columns
     }
 
     private fun isTableSeparatorRow(line: String): Boolean {
