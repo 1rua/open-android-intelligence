@@ -57,6 +57,7 @@ fun ThreadDrawer(
     online: Boolean = true,
     busyThreadIds: Set<String> = emptySet(),
     actions: ConversationBrowserActions = ConversationBrowserActions(),
+    selectedFolderId: String? = null,
 ) {
     val username = if (gatewayLabel.contains("@")) gatewayLabel.substringBefore("@") else "用户"
 
@@ -82,6 +83,7 @@ fun ThreadDrawer(
             ConversationBrowser(
                 threads = threads,
                 organization = organization,
+                selectedFolderId = selectedFolderId,
                 activeThreadId = activeThreadId,
                 managementSupported = managementSupported,
                 managing = managing,

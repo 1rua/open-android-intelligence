@@ -74,6 +74,7 @@ fun ConversationBrowser(
     ConversationBrowser(
         threads = state.threads,
         organization = state.organization,
+        selectedFolderId = state.selectedFolderId,
         activeThreadId = activeThreadId ?: state.activeThreadId,
         managementSupported = state.conversationManagementSupported,
         managing = state.managingThreads,
@@ -92,6 +93,7 @@ fun ConversationBrowser(
             assignFolder = controller::assignThreadToFolder,
             sort = controller::setThreadSortMode,
             reorder = controller::reorderThreads,
+            selectFolder = controller::selectFolder,
         ),
         modifier = Modifier.weight(1f),
     )
@@ -108,6 +110,7 @@ data class ConversationBrowserActions(
     val assignFolder: (String, String?) -> Unit = { _, _ -> },
     val sort: (ConversationSortMode) -> Unit = {},
     val reorder: (List<String>) -> Unit = {},
+    val selectFolder: (String?) -> Unit = {},
 )
 
 private const val ALL_THREADS = "all"
@@ -129,10 +132,11 @@ fun ConversationBrowser(
     online: Boolean = true,
     busyThreadIds: Set<String> = emptySet(),
     actions: ConversationBrowserActions = ConversationBrowserActions(),
+    selectedFolderId: String? = null,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     var query by rememberSaveable { mutableStateOf("") }
-    var filter by rememberSaveable { mutableStateOf(ALL_THREADS) }
+    var filter by rememberSaveable { mutableStateOf(selectedFolderId?.let { FOLDER_PREFIX + it } ?: ALL_THREADS) }
     var showFilter by remember { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
     var showFolders by remember { mutableStateOf(false) }
@@ -147,8 +151,15 @@ fun ConversationBrowser(
     val ordered = orderConversationRows((threads as? Loadable.Ready)?.value.orEmpty(), organization)
     val folderId = filter.takeIf { it.startsWith(FOLDER_PREFIX) }?.removePrefix(FOLDER_PREFIX)
     val selectedFolder = organization.folders.firstOrNull { it.folderId == folderId }
+    LaunchedEffect(selectedFolderId) {
+        if (selectedFolderId != null) filter = FOLDER_PREFIX + selectedFolderId
+        else if (filter.startsWith(FOLDER_PREFIX)) filter = ALL_THREADS
+    }
     LaunchedEffect(folderId, organization.folders) {
-        if (folderId != null && selectedFolder == null) filter = ALL_THREADS
+        if (folderId != null && selectedFolder == null) {
+            filter = ALL_THREADS
+            actions.selectFolder(null)
+        }
     }
     val filtered = ordered.filter { thread ->
         thread.title.contains(query, ignoreCase = true) && when (filter) {
@@ -270,15 +281,20 @@ fun ConversationBrowser(
                     }
                     DropdownMenu(expanded = showFilter, onDismissRequest = { showFilter = false }) {
                         listOf(ALL_THREADS to "全部会话", UNFILED_THREADS to "未分类").forEach { (value, label) ->
-                            DropdownMenuItem(text = { Text(label) }, onClick = { filter = value; showFilter = false })
+                            DropdownMenuItem(text = { Text(label) }, onClick = {
+                                filter = value; actions.selectFolder(null); showFilter = false
+                            })
                         }
                         organization.folders.forEach { folder ->
                             DropdownMenuItem(text = { Text(folder.name) }, onClick = {
-                                filter = FOLDER_PREFIX + folder.folderId; showFilter = false
+                                filter = FOLDER_PREFIX + folder.folderId
+                                actions.selectFolder(folder.folderId); showFilter = false
                             })
                         }
                         HorizontalDivider()
-                        DropdownMenuItem(text = { Text("已归档") }, onClick = { filter = ARCHIVED_THREADS; showFilter = false })
+                        DropdownMenuItem(text = { Text("已归档") }, onClick = {
+                            filter = ARCHIVED_THREADS; actions.selectFolder(null); showFilter = false
+                        })
                     }
                 }
                 IconButton(onClick = { showFolders = true }, enabled = managementSupported) {

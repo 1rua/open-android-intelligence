@@ -10,6 +10,75 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchConversationManagementTest {
+    @Test fun newConversationsInheritTheSelectedFolderUsingTheExistingOrganizationStore() = runTest {
+        val host = Host().apply {
+            organization = ConversationOrganization(4, folders = listOf(ConversationFolder("work", "Work")))
+        }
+        val controller = controller(host)
+        runCurrent()
+        controller.selectFolder("work")
+        controller.createThread(); runCurrent()
+        assertEquals("work", host.organization.assignments["created"])
+        assertEquals(host.organization, controller.state.value.organization)
+        assertEquals("created", controller.state.value.activeThreadId)
+        assertTrue(rows(controller).any { it.id.value == "created" })
+        controller.assignThreadToFolder("created", null); runCurrent()
+        assertNull(host.organization.assignments["created"])
+        controller.close()
+    }
+
+    @Test fun allConversationsViewKeepsTheDefaultAssignment() = runTest {
+        val host = Host().apply {
+            organization = ConversationOrganization(4, folders = listOf(ConversationFolder("work", "Work")))
+        }
+        val controller = controller(host)
+        runCurrent()
+        controller.selectFolder("work")
+        controller.selectFolder(null)
+        controller.createThread(); runCurrent()
+        assertTrue(host.expectedRevisions.isEmpty())
+        assertTrue(host.organization.assignments.isEmpty())
+        controller.close()
+    }
+
+    @Test fun creationRetainsTheFolderSelectedAtClickTimeAcrossNavigationAndConflicts() = runTest {
+        val host = Host().apply {
+            organization = ConversationOrganization(4, folders = listOf(ConversationFolder("work", "Work"), ConversationFolder("home", "Home")))
+            creationGate = CompletableDeferred()
+        }
+        val controller = controller(host)
+        runCurrent()
+        controller.selectFolder("work")
+        controller.createThread()
+        controller.selectFolder("home"); runCurrent()
+        val updateGate = CompletableDeferred<Unit>()
+        host.organizationUpdateGate = updateGate
+        host.creationGate!!.complete(Unit); runCurrent()
+        host.organization = host.organization.copy(revision = 5, assignments = mapOf("b" to "home"))
+        updateGate.complete(Unit); runCurrent()
+        assertEquals(mapOf("created" to "work", "b" to "home"), host.organization.assignments)
+        assertEquals(listOf(4L, 5L), host.expectedRevisions)
+        assertEquals("home", controller.state.value.selectedFolderId)
+        controller.close()
+    }
+
+    @Test fun deletingTheSelectedFolderDuringCreationDoesNotRestoreIt() = runTest {
+        val host = Host().apply {
+            organization = ConversationOrganization(4, folders = listOf(ConversationFolder("work", "Work")))
+            creationGate = CompletableDeferred()
+        }
+        val controller = controller(host)
+        runCurrent()
+        controller.selectFolder("work")
+        controller.createThread(); runCurrent()
+        host.organization = ConversationOrganization(5)
+        host.creationGate!!.complete(Unit); runCurrent()
+        assertTrue(host.organization.folders.isEmpty())
+        assertTrue(host.organization.assignments.isEmpty())
+        assertNull(controller.state.value.selectedFolderId)
+        controller.close()
+    }
+
     @Test fun browserDrainsHistoryAndLoadsCommittedOrganizationBeforePublishing()=runTest {
         val host=Host().apply {
             threads=(0..124).map { summary("conv_$it",it.toLong()) }
@@ -419,6 +488,7 @@ class WorkbenchConversationManagementTest {
         var listGate:CompletableDeferred<Unit>?=null
         var snapshotRevision:Long?=null
         var organizationReadGate:CompletableDeferred<Unit>?=null
+        var creationGate:CompletableDeferred<Unit>?=null
         var ignoreOrganizationReadCancellation=false
         var organizationUpdateGate:CompletableDeferred<Unit>?=null
         var alwaysConflict=false
@@ -463,7 +533,11 @@ class WorkbenchConversationManagementTest {
         override suspend fun submitMessage(message:OutgoingMessage):MessageAcceptance=error("thread required")
         override suspend fun submitMessage(conversationId:String,message:OutgoingMessage):MessageAcceptance { sendGate.await(); return MessageAcceptance("server",message.clientMessageId.value) }
         override suspend fun submitBatch(batch:MessageBatch):BatchAcceptance=error("not used")
-        override suspend fun createConversation(scope:ConversationScope,clientConversationId:String)=Conversation(ConversationId("created"),"Created",0)
+        override suspend fun createConversation(scope:ConversationScope,clientConversationId:String): Conversation {
+            creationGate?.await()
+            if (threads.none { it.id.value == "created" }) threads = threads + summary("created", 3)
+            return Conversation(ConversationId("created"),"Created",0)
+        }
         override suspend fun cancelGeneration(generationId:String,requestId:String)=CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
     }
     private companion object { fun summary(id:String,updatedAt:Long)=ConversationSummary(ConversationId(id),id,updatedAt) }

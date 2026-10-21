@@ -65,7 +65,7 @@ fun AssistantMessageContent(entry: TimelineEntry, modifier: Modifier = Modifier)
                 text = "此消息没有可显示的文本",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = modifier.fillMaxWidth(),
+                modifier = modifier,
             )
 
             else -> Unit
@@ -146,6 +146,9 @@ fun AssistantMessageContent(entry: TimelineEntry, modifier: Modifier = Modifier)
 fun AssistantExecutionTurnBody(
     run: AssistantExecutionRun,
     modifier: Modifier = Modifier,
+    finalAnswerSlot: @Composable (List<TimelineBlock>, Boolean) -> Unit = { blocks, streaming ->
+        MarkdownDocumentView(blocks = blocks, isStreaming = streaming)
+    },
     processAttachmentsSlot: @Composable (TimelineEntry) -> Unit = {},
 ) {
     Column(
@@ -156,7 +159,7 @@ fun AssistantExecutionTurnBody(
         if (run.hasFinalAnswer && run.finalBlocks.isNotEmpty()) {
             // 最终回答是真正的回答，保持普通（非紧凑）Markdown 渲染；
             // 只有整轮仍在流式时才把光标交给正文。
-            MarkdownDocumentView(blocks = run.finalBlocks, isStreaming = run.finalEntryIsStreaming)
+            finalAnswerSlot(run.finalBlocks, run.finalEntryIsStreaming)
         }
     }
 }

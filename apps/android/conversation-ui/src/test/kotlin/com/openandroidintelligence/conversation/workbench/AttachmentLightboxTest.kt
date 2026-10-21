@@ -34,6 +34,20 @@ class AttachmentLightboxTest {
     val compose = createComposeRule()
 
     @Test
+    @Config(sdk = [31, 35])
+    fun previewWindowCoversTheDisplayWithoutAnInsetOrCenteredDialogFrame() {
+        render(attachment())
+        compose.onNodeWithContentDescription("关闭大图预览").assertIsDisplayed()
+        compose.runOnIdle {
+            val window = org.robolectric.shadows.ShadowDialog.getLatestDialog().window!!
+            assertEquals(android.view.WindowManager.LayoutParams.MATCH_PARENT, window.attributes.width)
+            assertEquals(android.view.WindowManager.LayoutParams.MATCH_PARENT, window.attributes.height)
+            assertEquals(android.view.Gravity.TOP, window.attributes.gravity and android.view.Gravity.VERTICAL_GRAVITY_MASK)
+            assertEquals(0, window.attributes.fitInsetsTypes)
+        }
+    }
+
+    @Test
     fun lightboxShowsCloseFilenameAndSaveAction() {
         render(attachment())
 
