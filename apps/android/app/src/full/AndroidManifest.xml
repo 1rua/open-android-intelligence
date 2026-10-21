@@ -1,4 +1,9 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Full 侧载版允许选择无桌面启动入口的通知来源；Play 版保留系统可见范围。 -->
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Full 侧载版允许选择无桌面启动入口的通知来源；Play 版保留系统可见范围。
+         该权限只存在于 full flavor，Play flavor 不声明；通知白名单需要枚举非 launcher
+         应用，无法用 <queries> 的 launcher intent 完全替代，因此在此显式抑制 lint。 -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
 </manifest>
