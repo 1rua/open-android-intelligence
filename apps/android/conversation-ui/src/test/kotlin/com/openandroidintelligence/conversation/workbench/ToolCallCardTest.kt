@@ -200,18 +200,34 @@ class ToolCallCardTest {
     @Test
     fun hermesActivityTextAndInvocationLinesParseIntoNarrativeAndToolCards() {
         val markdown = """
-            Running code import sqlite3
-            Searching files for inventory
+            插件状态如下：
             调用工具：execute_code
             调用工具：read_file
         """.trimIndent()
 
         val blocks = MarkdownParser.parse(markdown)
         assertTrue(blocks[0] is TimelineBlock.Paragraph)
-        assertTrue((blocks[0] as TimelineBlock.Paragraph).text.contains("Running code"))
+        assertEquals("插件状态如下：", (blocks[0] as TimelineBlock.Paragraph).text)
         assertEquals("execute_code", (blocks[1] as TimelineBlock.ToolCallBlock).toolName)
         assertEquals("read_file", (blocks[2] as TimelineBlock.ToolCallBlock).toolName)
         assertTrue((blocks[1] as TimelineBlock.ToolCallBlock).invocationOnly)
+    }
+
+    @Test
+    fun hermesLiveActivityLinesBecomeToolCards() {
+        val markdown = """
+            Running code import sqlite3
+            Searching files for inventory
+            Reading core.py L5510-5549
+        """.trimIndent()
+
+        val blocks = MarkdownParser.parse(markdown)
+        assertEquals(3, blocks.size)
+        val calls = blocks.map { it as TimelineBlock.ToolCallBlock }
+        assertEquals(listOf("execute_code", "search_files", "read_file"), calls.map { it.toolName })
+        assertEquals("import sqlite3", calls[0].command)
+        assertEquals("inventory", calls[1].command)
+        assertTrue(calls.all { it.invocationOnly })
     }
 
     @Test

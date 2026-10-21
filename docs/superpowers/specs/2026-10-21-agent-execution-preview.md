@@ -125,7 +125,7 @@ fun rememberTimelineDisplayItems(entries: List<TimelineEntry>): List<TimelineDis
 - `ToolCallBlock` 新增 `isRunning: Boolean = false`（默认值兼容既有构造与测试）。
 - 未闭合 `<tool_call>` / 未闭合 fenced `tool_call` → `isRunning = true`；闭合 → `false`。
 - 新增 `MarkdownParser.parseNarrative(text)`：只解析普通 Markdown/代码块，不识别 `<think>` / `<tool_call>`，供思维链正文与过程叙述使用，避免嵌套标签递归产生卡片。
-- **Hermes/宿主纯文本工具调用**：独立成行的 `调用工具：execute_code`（兼容 `工具调用:`、`Tool call:`、`Calling tool:` 与可选行首装饰）解析为 `ToolCallBlock(invocationOnly = true)`；工具名后的剩余文本作为命令/参数，没有结果时不伪装「执行成功」，摘要栏显示「已调用」。Hermes 的 `Running code` / `Searching files` / `Reading` 等工具活动日志整条消息视作过程叙述，不会被误判成最终回答。
+- **Hermes/宿主纯文本工具调用**：独立成行的 `调用工具：execute_code`（兼容 `工具调用:`、`Tool call:`、`Calling tool:` 与可选行首装饰）解析为 `ToolCallBlock(invocationOnly = true)`；工具名后的剩余文本作为命令/参数，没有结果时不伪装「执行成功」，摘要栏显示「已调用」。Hermes 的实时进度行 `Running code` / `Searching files for` / `Reading` / `Writing` / `Editing` 等按 `agent/display.py` 的标签映射回 `execute_code` / `search_files` / `read_file` 等工具卡（`invocationOnly = true`，参数取行内剩余文本）；整条消息全是活动日志时不会被误判成最终回答。
 - 既有 `<think>` / `<tool_call>` / `$ adb` 兼容路径与全部既有解析语义保留。
 
 ### 3.4 附件原图状态
@@ -342,7 +342,7 @@ data class TimelineAttachment(
 
 | 验证 | 结果 |
 |---|---|
-| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 534 个用例 / 0 失败 |
+| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 535 个用例 / 0 失败 |
 | `:app:compileFullDebugKotlin` | BUILD SUCCESSFUL |
 | `:app:assembleFullDebug` | BUILD SUCCESSFUL |
 | `noVpnSurfaceCheck` | BUILD SUCCESSFUL |

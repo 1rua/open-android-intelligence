@@ -29,6 +29,22 @@ object MarkdownParser {
         RegexOption.IGNORE_CASE,
     )
 
+    /**
+     * Hermes 实时进度行（agent/display.py 的友好工具标签），例如
+     * 「Running code ...」「Searching files for ...」「Reading ...」。
+     * 实时会话里这些是普通文本；不识别就会既没有工具卡、也不会聚合。
+     */
+    private val hermesActivityLineRegex = Regex(
+        "^\\s*[^\\p{L}\\p{N}]*\\s*(" +
+            "Running code|Running|Searching files(?: for)?|Searching the web(?: for)?|" +
+            "Searching past sessions|Searching|Reading skill|Reading|Writing|Editing|" +
+            "Browsing|Clicking|Typing|Generating image|Generating video|Generating speech|" +
+            "Looking at the image|Listing skills|Updating skill|Delegating|Scheduling|Asking|" +
+            "Updating memory|Updating tasks" +
+            ")\\b\\s*(.*)$",
+        RegexOption.IGNORE_CASE,
+    )
+
     /** host_history.py 用「、」连接同一条进度消息里的多个工具名。 */
     private val hermesToolNameSeparator = Regex("[、,，]")
     private val hermesToolNameAndArgs = Regex("^([A-Za-z0-9._~-]{1,128})(?:\\s+|\\s*[(（]\\s*)(.*)$")
@@ -434,7 +450,21 @@ private const val MaxBlockquoteDepth = 8
         text.lines().forEach { line ->
             val match = hermesToolLineRegex.find(line.trim())
             if (match == null) {
-                pending += line
+                val activity = hermesActivityLineRegex.find(line.trim())
+                if (activity == null) {
+                    pending += line
+                } else {
+                    flushPending()
+                    val verb = activity.groupValues[1]
+                    val command = activity.groupValues[2].trim()
+                    blocks += TimelineBlock.ToolCallBlock(
+                        toolName = hermesToolNameForVerb(verb),
+                        command = command,
+                        isSuccess = true,
+                        summary = null,
+                        invocationOnly = true,
+                    )
+                }
             } else {
                 flushPending()
                 val namesText = match.groupValues[1]
@@ -469,6 +499,40 @@ private const val MaxBlockquoteDepth = 8
         return blocks.ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
     }
 
+    /** 是否为 Hermes 工具占位行或实时进度行。 */
+    internal fun mayContainHermesToolText(text: String): Boolean =
+        text.lineSequence().any { line ->
+            val trimmed = line.trim()
+            hermesToolLineRegex.matches(trimmed) || hermesActivityLineRegex.matches(trimmed)
+        }
+
+    /** 把 Hermes 的友好动词映射回工具名；未知动词保留原文作为工具名。 */
+    private fun hermesToolNameForVerb(verb: String): String = when (verb.trim().lowercase()) {
+        "running code" -> "execute_code"
+        "running" -> "terminal"
+        "searching files", "searching files for" -> "search_files"
+        "searching the web", "searching the web for" -> "web_search"
+        "searching past sessions" -> "session_search"
+        "reading", "reading skill" -> "read_file"
+        "writing" -> "write_file"
+        "editing" -> "patch"
+        "browsing" -> "browser_navigate"
+        "clicking" -> "browser_click"
+        "typing" -> "browser_type"
+        "generating image" -> "image_generate"
+        "generating video" -> "video_generate"
+        "generating speech" -> "text_to_speech"
+        "looking at the image" -> "vision_analyze"
+        "listing skills" -> "skills_list"
+        "updating skill" -> "skill_manage"
+        "delegating" -> "delegate_task"
+        "scheduling" -> "cronjob_manage"
+        "asking" -> "clarify"
+        "updating memory" -> "memory"
+        "updating tasks" -> "todo_list"
+        else -> verb.trim()
+    }
+
     private fun parseNonCodeText(
         text: String,
         quoteDepth: Int = 0,
@@ -476,7 +540,7 @@ private const val MaxBlockquoteDepth = 8
     ): List<TimelineBlock> {
         // Hermes 的工具调用是纯文本行（不是 XML/围栏），必须先拆成 ToolCallBlock，
         // 否则它会被当成普通段落：既没有工具卡，也不会参与执行过程聚合。
-        if (recognizeToolCalls && text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }) {
+        if (recognizeToolCalls && mayContainHermesToolText(text)) {
             return parseHermesToolLines(text, quoteDepth)
         }
         val lines = text.lines()

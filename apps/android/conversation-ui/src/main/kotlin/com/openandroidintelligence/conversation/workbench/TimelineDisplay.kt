@@ -403,7 +403,8 @@ internal fun looksLikeHermesActivityLog(text: String): Boolean {
 }
 
 internal fun mayContainExecutionMarkup(text: String): Boolean =
-    text.contains("<think", ignoreCase = true) ||
+    MarkdownParser.mayContainHermesToolText(text) ||
+        text.contains("<think", ignoreCase = true) ||
         text.contains("<tool_call", ignoreCase = true) ||
         text.contains("```tool_call", ignoreCase = true) ||
         text.contains("```tool:", ignoreCase = true) ||

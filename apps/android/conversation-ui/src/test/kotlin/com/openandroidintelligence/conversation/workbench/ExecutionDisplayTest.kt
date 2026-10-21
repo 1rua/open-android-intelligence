@@ -427,7 +427,7 @@ class ExecutionDisplayTest {
     fun hermesToolMessagesFoldIntoOneExecutionRun() {
         val entries = listOf(
             userEntry("u1", "查一下"),
-            assistantEntry("a1", "Running code import sqlite3\nReading core.py"),
+            assistantEntry("a1", "插件状态如下：\nRunning code import sqlite3\nReading core.py"),
             assistantEntry("a2", "调用工具：execute_code"),
             assistantEntry("a3", "调用工具：read_file"),
             assistantEntry("a4", "最终答案：插件能力尚未发布。"),
@@ -435,7 +435,7 @@ class ExecutionDisplayTest {
 
         val run = (TimelineDisplayModel().build(entries).last() as TimelineDisplayItem.Execution).run
 
-        assertEquals(2, run.stepCount)
+        assertEquals(4, run.stepCount)
         assertEquals("a4", run.finalEntry.key)
         assertTrue(run.hasFinalAnswer)
         assertTrue(run.steps.any { it is ExecutionStep.ToolCall && it.block.invocationOnly })
