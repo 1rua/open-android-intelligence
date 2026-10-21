@@ -26,6 +26,7 @@ import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
+import com.openandroidintelligence.conversation.workbench.AttachmentPreviewHost
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
 import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
 import com.openandroidintelligence.conversation.workbench.rememberTimelineDisplayItems
@@ -192,9 +193,11 @@ private fun BubbleChat(
 ) {
     val state by controller.state.collectAsState()
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
-    val displayItems = rememberTimelineDisplayItems(entries)
+    val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId)
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val downloadAction: ((String) -> Unit)? =
+        if (controller.downloadsSupported) controller::downloadAttachment else null
     val list = rememberLazyListState()
     val followLatest by remember { derivedStateOf {
         val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: Int.MAX_VALUE
@@ -211,20 +214,28 @@ private fun BubbleChat(
                 Text(readableFailure(timeline.code))
                 TextButton(onClick = controller::retryTimeline) { Text("重试") }
             }
-            else -> LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(Dimensions.SpaceCompact), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
-                if (entries.isEmpty()) item { Text("此会话暂无消息") }
-                items(displayItems, key = { it.key }) { item ->
-                    TimelineDisplayRow(
-                        item = item,
-                        onDecide = controller::decideApproval,
-                        timing = executionTiming,
-                        onDownloadAttachment = controller::downloadAttachment,
-                        onRequestOriginalAttachment = controller::requestOriginalImage,
-                        modifier = Modifier.animateItem(
-                            fadeInSpec = null,
-                            placementSpec = MotionSpecs.morph(reduceMotion),
-                        ),
-                    )
+            else -> AttachmentPreviewHost(
+                attachments = entries.flatMap { it.attachments },
+                onDownload = downloadAction,
+                onRequestOriginal = controller::requestOriginalImage,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            ) { openPreview ->
+                LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(Dimensions.SpaceCompact), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
+                    if (displayItems.isEmpty()) item { Text("此会话暂无消息") }
+                    items(displayItems, key = { it.key }) { item ->
+                        TimelineDisplayRow(
+                            item = item,
+                            onDecide = controller::decideApproval,
+                            timing = executionTiming,
+                            onDownloadAttachment = downloadAction,
+                            onRequestOriginalAttachment = controller::requestOriginalImage,
+                            onOpenAttachmentPreview = openPreview,
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = null,
+                                placementSpec = MotionSpecs.morph(reduceMotion),
+                            ),
+                        )
+                    }
                 }
             }
         }

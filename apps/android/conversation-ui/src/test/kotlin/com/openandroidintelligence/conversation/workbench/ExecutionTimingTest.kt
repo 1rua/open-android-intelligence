@@ -114,6 +114,8 @@ class ExecutionTimingTest {
         assertEquals("2 秒", formatExecutionDuration(2_000L))
         assertEquals("2.4 秒", formatExecutionDuration(2_400L))
         assertEquals("2.5 秒", formatExecutionDuration(2_500L))
+        assertEquals("59.9 秒", formatExecutionDuration(59_949L))
+        assertEquals("1 分 0 秒", formatExecutionDuration(59_950L))
         assertEquals("1 分 0 秒", formatExecutionDuration(60_000L))
         assertEquals("1 分 5 秒", formatExecutionDuration(65_000L))
         assertEquals("不到 1 秒", formatExecutionDuration(-500L))

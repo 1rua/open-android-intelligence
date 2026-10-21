@@ -18,7 +18,7 @@ authorization: 2026-10-21 用户直接要求优化聊天界面的 Agent 执行�
 - **不新增第三方 UI 依赖**：继续使用 Compose BOM 2024.12.01 / Material3；图片方向优先使用平台 `ImageDecoder`（minSdk 31）。
 - **不伪造状态**：未闭合的思考/工具标记在流结束时显示“已中断”；原图不可用时明示“当前为预览图”；下载失败可重试。
 - **保持既有守卫**：`MaterialTokenGuardTest`、`ThemeContrastTest`、`AppTransitionsTest`、`MotionPhysicsTest` 与全部既有 Compose 测试继续通过。
-- **走设计令牌**：颜色只取 `MaterialTheme.colorScheme` / `LocalAppStateColors`；圆角只取 `AppRadius`；尺寸/时长只取 `Dimensions` / `MotionSpecs`；不写魔数。
+- **走设计令牌**：颜色只取 `MaterialTheme.colorScheme` / `LocalAppStateColors`；圆角只取 `AppRadius`；容器尺寸、状态与动效时长取 `Dimensions` / `MotionSpecs`。既有 Markdown 行内排版的 11.5–13sp 档位继续沿用，新增卡片容器不写魔数。
 
 ## 2. 现状诊断
 
@@ -279,7 +279,7 @@ data class TimelineAttachment(
 - `ExecutionDisplayTest`：折叠矩阵全部分支、跨条聚合、最终回答定位、步骤计数、失败/中断、审批打断、普通多消息不聚合、缓存命中、异常兜底。
 - `ExecutionTimingTest`：假时钟记录、重复 observe 幂等、未观察不产生耗时、格式化。
 - `ImagePreviewGeometryTest`：缩放 clamp、平移边界、双击目标、reduce motion。
-- `WorkbenchOriginalImageTest`：加载成功/失败/无端口/epoch 失效/缓存上限；补 `WorkbenchAttachmentPreviewRegressionTest`。
+- `WorkbenchOriginalImageTest`：加载成功/失败/无端口/epoch 失效/缓存上限；既有 `WorkbenchAttachmentPreviewRegressionTest` 继续回归，不改其语义。
 - 更新 `ThoughtCardTest`、`ToolCallCardTest`；新增 `ExecutionProcessComposeTest`、`AttachmentImageCardTest`、`MessageTimelineExecutionTest`。
 - 新增 `AttachmentImageCardTest`（图片分支无文件名/下载、点击预览、长按保存、PDF 回归）；`AttachmentOnlyTimelineTest` 的 PDF 断言保持不变。
 - 回归 `MarkdownRenderingComposeTest`、`MarkdownInteractionComposeTest`、`MessageTimelineStreamingTest`、`WorkbenchLayoutRegressionTest` 等。
@@ -322,16 +322,22 @@ data class TimelineAttachment(
 | 宿主整合 | `workbench/MessageTimeline.kt`、`WorkbenchScreen.kt`、`FloatingConversationPanel.kt`、`AttachmentLibraryScreen.kt`、`app/.../BubbleConversationActivity.kt` |
 | 测试 | `ThoughtCardTest`、`ToolCallCardTest`、`ExecutionDisplayTest`、`ExecutionTimingTest`、`ExecutionProcessComposeTest`、`AttachmentImageCardTest`、`MessageTimelineExecutionTest`、`WorkbenchOriginalImageTest`、`ImagePreviewGeometryTest`、`AttachmentLightboxTest` |
 
-实现中补充了两点规格未展开的细节：
+实现中补充/修正了以下规格细节：
 
 1. **粘滞折叠**：执行段一旦出现过最终正文，后续又出现工具块时不把已折叠面板展开回实时卡片，避免流式过程中阅读位置来回跳（`TimelineDisplayModel.latchedFinalSegmentKey`）。
-2. **闭合工具之后的未闭合工具**：解析器对「已闭合 `<tool_call>` + 后续未闭合 `<tool_call>`」继续走执行块入口，避免把最后一段工具误当普通正文；否则最终回答定位会提前。
+2. **闭合块之后的未闭合块**：XML 与 fenced 两条路径都继续走执行块入口，避免把「闭合工具/围栏 + 后续未闭合工具/围栏」的最后一段误当普通正文，否则最终回答定位会提前、围栏原文甚至会出现在最终回答里。
+3. **长会话快速路径**：展示模型先做廉价预扫描，只有含 `<think`/`<tool_call`/fenced `tool_call`/`$ adb` 的消息才完整解析；普通历史只在所属执行段真的折叠时解析，避免流式增量反复解析整段历史。
+4. **最终回答光标**：光标只看 `finalEntry.isStreaming`，而不是「段内任一条仍流式」；粘滞折叠后较早的已完成回答不会常驻光标。
+5. **工具摘要栏**：优先显示真实 `summary`（`执行成功（或 summary）`），长文本单行省略，展开详情仍展示完整摘要与输出。
+6. **Lightbox 生命周期**：预览 id 与唯一的 `AttachmentLightbox` 提升到宿主级 `AttachmentPreviewHost`；列表项滚动回收、折叠换 key 不会销毁用户正在看的大图，附件库/四个宿主共用同一槽。
+7. **耗时语义**：卡片在移出组合时用 `DisposableEffect` 结算当前区间；`ExecutionTimingStore` 由 `rememberExecutionTimingStore` 在会话切换/销毁时清理；59,950ms 正确格式化为「1 分 0 秒」。
+8. **原图失败可解释**：`originalError` 映射为「超过 24MB 上限 / 解码失败 / 原件不在本机 / 原件已被替换或删除」，Lightbox 提供「重试加载原图」；没有下载端口时宿主传 `null` 隐藏保存动作。
 
 ### 10.2 自动化结果
 
 | 验证 | 结果 |
 |---|---|
-| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 521 个用例 / 0 失败 |
+| `:conversation-ui:testDebugUnitTest` | 57 个测试类 / 526 个用例 / 0 失败 |
 | `:app:compileFullDebugKotlin` | BUILD SUCCESSFUL |
 | `:app:assembleFullDebug` | BUILD SUCCESSFUL |
 | `noVpnSurfaceCheck` | BUILD SUCCESSFUL |
@@ -339,6 +345,6 @@ data class TimelineAttachment(
 
 ### 10.3 设备冒烟与限制
 
-- 已安装 `app-full-debug.apk` 到 `emulator-5554`（1080×2400 / 420dpi / Android 15），App 正常启动；离线镜像中的普通 Markdown 消息、非图片附件（文件名 + 下载）回归正常。
+- 已重新构建并安装当前 HEAD 的 `app-full-debug.apk` 到 `emulator-5554`（1080×2400 / 420dpi / Android 15），App 正常启动、无崩溃；离线镜像中的普通 Markdown 消息、非图片附件（文件名 + 下载）回归正常。
 - **限制**：模拟器当前没有可用的 Gateway（`10.0.2.2:43535` 未监听），附件选择器在控制器未就绪时给出明确提示，因此无法在真机/模拟器上制造带有 `<think>`、`<tool_call>` 或图片附件的新会话。新卡片与新 Lightbox 的交互由上述 Compose/Robolectric 测试覆盖（含聚合、自动收起、长按语义、保存反馈）；真实图片解码（EXIF/2048px）与真实触摸长按仍需在有 Gateway 的环境补一次设备冒烟。
 - 未提交 `tmp/screens/` 下的临时截图。

@@ -383,6 +383,21 @@ class ExecutionDisplayTest {
         assertEquals("a2", run.finalEntry.key)
     }
 
+    @Test
+    fun finalAnswerCursorOnlyFollowsTheFinalEntryItself() {
+        val entries = listOf(
+            userEntry("u1", "继续"),
+            assistantEntry("a1", "第一段最终答案", streaming = false),
+            assistantEntry("a2", "<think>后续思考还在流式", streaming = true),
+        )
+        val model = TimelineDisplayModel()
+
+        val run = (model.build(entries).last() as TimelineDisplayItem.Execution).run
+
+        assertTrue(run.isStreaming, "整段仍有消息在流式")
+        assertFalse(run.finalEntryIsStreaming, "最终回答本身已经完成，不能继续画光标")
+    }
+
     // ==========================================
     // 4. 解析缓存与异常兜底
     // ==========================================
@@ -394,7 +409,7 @@ class ExecutionDisplayTest {
             parseCount++
             MarkdownParser.parse(text)
         }
-        val entries = listOf(assistantEntry("a1", "普通文本"))
+        val entries = listOf(assistantEntry("a1", "<think>思考</think>普通文本"))
 
         model.build(entries)
         model.build(entries)
@@ -410,8 +425,8 @@ class ExecutionDisplayTest {
             MarkdownParser.parse(text)
         }
 
-        model.build(listOf(assistantEntry("a1", "短")))
-        model.build(listOf(assistantEntry("a1", "更长的文本")))
+        model.build(listOf(assistantEntry("a1", "<think>短</think>")))
+        model.build(listOf(assistantEntry("a1", "<think>更长的文本</think>")))
 
         assertEquals(2, parseCount)
     }
@@ -423,12 +438,30 @@ class ExecutionDisplayTest {
             parseCount++
             MarkdownParser.parse(text)
         }
-        val entries = (1..200).map { index -> assistantEntry("m$index", "普通文本 $index") }
+        val entries = (1..200).map { index ->
+            assistantEntry("m$index", "<think>思考 $index</think>")
+        }
 
         model.build(entries)
 
         assertEquals(200, parseCount)
         assertTrue(model.cachedEntryCount <= 128, "缓存上限应为 128，实际 ${model.cachedEntryCount}")
+    }
+
+    @Test
+    fun ordinaryHistoryIsNeverParsedByTheDisplayModel() {
+        var parseCount = 0
+        val model = TimelineDisplayModel { text ->
+            parseCount++
+            MarkdownParser.parse(text)
+        }
+        val entries = (1..300).map { index -> assistantEntry("m$index", "普通历史文本 $index") }
+
+        model.build(entries)
+        model.build(entries)
+
+        assertEquals(0, parseCount, "没有执行标记的历史消息不应进入 Markdown 解析")
+        assertEquals(0, model.cachedEntryCount)
     }
 
     @Test

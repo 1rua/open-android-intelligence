@@ -657,10 +657,31 @@ private fun StageStatusChip(
 private fun originalStatusText(attachment: TimelineAttachment, hasPreview: Boolean): String? =
     when (attachment.originalState) {
         OriginalImageState.LOADING -> "正在加载原图…"
-        OriginalImageState.FAILED ->
-            if (hasPreview) "原图暂不可用，当前为预览图" else "原图暂不可用，图片预览也无法显示"
+        OriginalImageState.FAILED -> {
+            val reason = originalFailureReason(attachment.originalError)
+            val detail = reason?.let { "（$it）" }.orEmpty()
+            if (hasPreview) {
+                "原图暂不可用$detail，当前为预览图"
+            } else {
+                "原图暂不可用$detail，图片预览也无法显示"
+            }
+        }
         OriginalImageState.READY, OriginalImageState.IDLE -> null
     }
+
+/** 把控制器写入的错误码翻译成用户能理解的原因；未知错误仍给出通用失败文案。 */
+private fun originalFailureReason(error: String?): String? {
+    val code = error?.trim().orEmpty()
+    return when {
+        code.isEmpty() -> null
+        code.contains("ORIGINAL_TOO_LARGE") -> "超过 24MB 上限"
+        code.contains("ORIGINAL_DECODE_FAILED") -> "解码失败"
+        code.contains("LOCAL_MEDIA_UNAVAILABLE") -> "原件不在本机"
+        code.contains("ORIGINAL_EPOCH_CHANGED") -> "原件已被替换或删除"
+        code.contains("REMOTE_UNAVAILABLE") -> "远端原件不可用"
+        else -> "加载失败"
+    }
+}
 
 /** 原图不可用又没有任何可解码字节时，按本地状态说明真实原因。 */
 private fun localStateText(localState: AttachmentLocalState): String = when (localState) {

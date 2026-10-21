@@ -145,6 +145,26 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun aClosedFenceFollowedByAnUnclosedFenceKeepsTheSecondRunning() {
+        val markdown = """
+            ```tool_call:adb_shell
+            pm list packages
+            ```
+            我先确认一下。
+            ```tool_call:adb_shell
+            dumpsys battery
+        """.trimIndent()
+
+        val blocks = MarkdownParser.parse(markdown)
+        assertEquals(3, blocks.size)
+        assertFalse((blocks[0] as TimelineBlock.ToolCallBlock).isRunning)
+        assertEquals("我先确认一下。", (blocks[1] as TimelineBlock.Paragraph).text)
+        val second = blocks[2] as TimelineBlock.ToolCallBlock
+        assertEquals("dumpsys battery", second.command)
+        assertTrue(second.isRunning, "闭合围栏之后的未闭合围栏也必须标记为执行中")
+    }
+
+    @Test
     fun fencedToolCallParsesWithLanguageName() {
         val markdown = """
             ```tool_call:adb_shell
@@ -237,6 +257,25 @@ class ToolCallCardTest {
         compose.onNodeWithText("pm list packages -3").assertDoesNotExist()
         compose.onNodeWithText("package:com.demo").assertDoesNotExist()
         compose.onNodeWithText("查看输出").assertDoesNotExist()
+    }
+
+    @Test
+    fun collapsedSummaryBarShowsTheRealResultBeforeExpanding() {
+        val block = toolCall(summary = "设置应用已成功打开")
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        // 规格 §4.2：状态徽标栏显示「执行成功（或 summary）」；summary 不再被藏到展开态。
+        compose.onNodeWithText("设置应用已成功打开").assertIsDisplayed()
+        compose.onNodeWithText("pm list packages -3").assertDoesNotExist()
+
+        compose.onNodeWithText("设置应用已成功打开").performClick()
+        compose.onNodeWithText("命令").assertIsDisplayed()
+        compose.onNodeWithText("pm list packages -3").assertIsDisplayed()
     }
 
     @Test
@@ -336,13 +375,13 @@ class ToolCallCardTest {
             }
         }
 
-        compose.onNodeWithText("执行失败").assertIsDisplayed()
-        compose.onNodeWithContentDescription("执行失败").assertIsDisplayed()
-        compose.onNodeWithText("Activity not found").assertDoesNotExist()
-
-        compose.onNodeWithText("执行失败").performClick()
-
+        // 失败摘要优先出现在徽标栏（规格 §4.2：状态或 summary）。
         compose.onNodeWithText("Activity not found").assertIsDisplayed()
+        compose.onNodeWithContentDescription("执行失败").assertIsDisplayed()
+        compose.onNodeWithText("ActivityNotFoundException", substring = true).assertDoesNotExist()
+
+        compose.onNodeWithText("Activity not found").performClick()
+
         compose.onNodeWithText("错误输出").assertIsDisplayed()
         compose.onNodeWithText("ActivityNotFoundException", substring = true).assertIsDisplayed()
     }

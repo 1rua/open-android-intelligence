@@ -194,7 +194,16 @@ private const val MaxBlockquoteDepth = 8
             }
             val remaining = text.substring(lastIndex).trim()
             if (remaining.isNotEmpty()) {
-                blocks.addAll(parseNonCodeText(remaining, quoteDepth, recognizeToolCalls))
+                // 剩余文本可能包含尚未闭合的下一个围栏（流式工具调用/代码块）。
+                // 继续走同一入口，才能把它识别成 CodeBlock/ToolCall，而不是把
+                // "```tool_call" 原样当最终回答渲染。
+                blocks.addAll(
+                    parseContentWithCodeBlocks(
+                        remaining,
+                        quoteDepth = quoteDepth,
+                        recognizeToolCalls = recognizeToolCalls,
+                    ),
+                )
             }
             return blocks
         }

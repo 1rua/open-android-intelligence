@@ -38,6 +38,12 @@ fun AttachmentLibraryScreen(
     onRequestOriginalHistorical: ((String) -> Unit)? = null,
 ) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+        AttachmentPreviewHost(
+            attachments = historical,
+            onDownload = onDownloadHistorical,
+            onRequestOriginal = onRequestOriginalHistorical,
+            modifier = Modifier.fillMaxSize(),
+        ) { openPreview ->
         LazyColumn(
             modifier = Modifier
                 .widthIn(max = Dimensions.ReadingWidth)
@@ -168,7 +174,10 @@ fun AttachmentLibraryScreen(
                 media,
                 onDownloadHistorical,
                 onRequestOriginal = onRequestOriginalHistorical,
+                onOpenPreview = openPreview,
+                showCaption = true,
             )
+        }
         }
         }
     }

@@ -2,6 +2,7 @@ package com.openandroidintelligence.conversation.workbench
 
 import android.os.SystemClock
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -66,7 +67,7 @@ class ExecutionTimingStore(
     /** 已结算的耗时（毫秒）；从未观察到开始或尚未结束时返回 null。 */
     fun durationOf(stepKey: String): Long? = settledDurations[stepKey]
 
-    /** 清空全部观察记录（退出登录 / close 时由宿主调用）。 */
+    /** 清空全部观察记录（宿主销毁/会话切换时调用，释放已结束步骤的内存）。 */
     fun clear() {
         observations.clear()
         settledDurations.clear()
@@ -84,8 +85,14 @@ val LocalExecutionTiming = staticCompositionLocalOf<ExecutionTimingStore?> { nul
  * 会话级耗时记录器：id 变化时重建，同一会话内的实时卡片与聚合面板共享观察结果。
  */
 @Composable
-fun rememberExecutionTimingStore(threadId: String?): ExecutionTimingStore =
-    remember(threadId) { ExecutionTimingStore() }
+fun rememberExecutionTimingStore(threadId: String?): ExecutionTimingStore {
+    val store = remember(threadId) { ExecutionTimingStore() }
+    // 会话切换/宿主销毁后旧 store 不再被任何卡片引用；主动清空而不是等 GC。
+    DisposableEffect(store) {
+        onDispose { store.clear() }
+    }
+    return store
+}
 
 /**
  * 把耗时格式化成标题里的一小段文字。
@@ -96,10 +103,10 @@ fun rememberExecutionTimingStore(threadId: String?): ExecutionTimingStore =
  */
 fun formatExecutionDuration(durationMillis: Long): String {
     val safe = durationMillis.coerceAtLeast(0L)
+    val tenths = (safe + 50L) / 100L
     return when {
         safe < 1_000L -> "不到 1 秒"
-        safe < 60_000L -> {
-            val tenths = (safe + 50L) / 100L
+        tenths < 600L -> {
             val seconds = tenths / 10L
             val remainder = tenths % 10L
             if (remainder == 0L) "$seconds 秒" else "$seconds.$remainder 秒"

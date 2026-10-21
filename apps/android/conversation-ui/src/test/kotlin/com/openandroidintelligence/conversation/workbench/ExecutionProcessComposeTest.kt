@@ -255,8 +255,8 @@ class ExecutionProcessComposeTest {
             }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
-
+        // 没有最终正文时，过程附件是唯一可见内容：面板默认展开，不能把它藏起来。
+        compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed()
         compose.onNodeWithText("过程附件:a2", substring = true).assertIsDisplayed()
     }
 

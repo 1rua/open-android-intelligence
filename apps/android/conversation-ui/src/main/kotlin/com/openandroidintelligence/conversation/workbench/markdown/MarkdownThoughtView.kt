@@ -20,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -83,6 +84,12 @@ fun MarkdownThoughtBlockView(
     LaunchedEffect(timingKey, live) {
         if (timingKey != null) timingStore?.observe(timingKey, live)
     }
+    // 运行中的卡片被移出组合（滚动/折叠）时在此结账，避免把离开期间也算进耗时。
+    DisposableEffect(timingKey, timingStore) {
+        onDispose {
+            if (timingKey != null) timingStore?.observe(timingKey, running = false)
+        }
+    }
     val durationMillis = timingKey?.let { timingStore?.durationOf(it) }
     val durationSuffix = durationMillis?.let { " · ${formatExecutionDuration(it)}" } ?: ""
 
@@ -128,19 +135,20 @@ fun MarkdownThoughtBlockView(
                     .clip(RoundedCornerShape(AppRadius.Small))
                     .then(
                         if (expandable) {
-                            Modifier.clickable(
-                                role = Role.Button,
-                                onClickLabel = if (expanded) "收起思考过程" else "展开思考过程",
-                            ) {
-                                userExpanded = !expanded
-                            }
+                            Modifier
+                                .clickable(
+                                    role = Role.Button,
+                                    onClickLabel = if (expanded) "收起思考过程" else "展开思考过程",
+                                ) {
+                                    userExpanded = !expanded
+                                }
+                                .semantics {
+                                    stateDescription = if (expanded) "已展开" else "已收起"
+                                }
                         } else {
                             Modifier
                         },
                     )
-                    .semantics {
-                        stateDescription = if (expandable && expanded) "已展开" else "已收起"
-                    }
                     .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),

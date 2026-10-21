@@ -156,7 +156,7 @@ fun AssistantExecutionTurnBody(
         if (run.hasFinalAnswer && run.finalBlocks.isNotEmpty()) {
             // 最终回答是真正的回答，保持普通（非紧凑）Markdown 渲染；
             // 只有整轮仍在流式时才把光标交给正文。
-            MarkdownDocumentView(blocks = run.finalBlocks, isStreaming = run.isStreaming)
+            MarkdownDocumentView(blocks = run.finalBlocks, isStreaming = run.finalEntryIsStreaming)
         }
     }
 }
@@ -186,9 +186,11 @@ fun ExecutionProcessPanel(
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    // 默认折叠；同一 run key 内保持用户选择（流式增量会重建 run，但 key 不变）。
-    // 用 rememberSaveable：列表项滚出再滚回时用户展开偏好不丢。
-    var expanded by rememberSaveable(run.key) { mutableStateOf(false) }
+    // 默认折叠；段身份不变时用户选择保持不变。
+    // 无最终正文且过程区含有附件（例如 Agent 只回了截图）时默认展开：
+    // 折叠面板把唯一的可见附件藏起来，用户会以为消息丢了内容。
+    val startsExpanded = !run.hasFinalAnswer && run.steps.any { it is ExecutionStep.Attachments }
+    var expanded by rememberSaveable(run.segmentKey) { mutableStateOf(startsExpanded) }
 
     val chevronRotation = if (reduceMotion) {
         if (expanded) 180f else 0f

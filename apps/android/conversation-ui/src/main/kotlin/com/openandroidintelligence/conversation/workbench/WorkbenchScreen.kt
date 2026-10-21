@@ -90,7 +90,7 @@ fun WorkbenchScreen(
     var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
-    val displayItems = rememberTimelineDisplayItems(entries)
+    val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId)
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     var showAttachmentLibrary by remember { mutableStateOf(false) }
     var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
@@ -365,6 +365,14 @@ fun WorkbenchScreen(
                                         controller::retryTimeline,
                                         modifier = Modifier.fillMaxSize(),
                                         ready = { _ ->
+                                            val downloadAction =
+                                                if (controller.downloadsSupported) controller::downloadAttachment else null
+                                            AttachmentPreviewHost(
+                                                attachments = entries.flatMap { it.attachments },
+                                                onDownload = downloadAction,
+                                                onRequestOriginal = controller::requestOriginalImage,
+                                                modifier = Modifier.fillMaxSize(),
+                                            ) { openPreview ->
                                             LazyColumn(
                                                 state = listState,
                                                 modifier = Modifier.fillMaxSize(),
@@ -426,8 +434,9 @@ fun WorkbenchScreen(
                                                             item = item,
                                                             onDecide = controller::decideApproval,
                                                             timing = executionTiming,
-                                                            onDownloadAttachment = controller::downloadAttachment,
+                                                            onDownloadAttachment = downloadAction,
                                                             onRequestOriginalAttachment = controller::requestOriginalImage,
+                                                            onOpenAttachmentPreview = openPreview,
                                                             modifier = rowModifier,
                                                         )
                                                     }
@@ -462,6 +471,7 @@ fun WorkbenchScreen(
                                                         )
                                                     }
                                                 }
+                                            }
                                             }
                                         },
                                     )
@@ -588,7 +598,7 @@ fun WorkbenchScreen(
                     onRetryAttachment = controller::retryAttachment,
                     onClose = { showAttachmentLibrary = false },
                     historical=entries.flatMap { it.attachments }.distinctBy { it.draftId },
-                    onDownloadHistorical=controller::downloadAttachment,
+                    onDownloadHistorical=if (controller.downloadsSupported) controller::downloadAttachment else null,
                     onRequestOriginalHistorical=controller::requestOriginalImage,
                 )
             }

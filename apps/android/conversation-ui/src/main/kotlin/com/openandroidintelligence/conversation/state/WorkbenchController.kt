@@ -3082,6 +3082,14 @@ class WorkbenchController(
             verified?.sizeBytes?.takeIf { hash != null },hash)
     }
 
+    /**
+     * 当前宿主是否装配了下载端口。
+     *
+     * 没有端口时“保存至本地”按钮不该出现：Dialog 会遮住宿主的 Snackbar，
+     * 点了只弹一个用户看不到的 notice，等同于假装保存。
+     */
+    val downloadsSupported: Boolean get() = downloads != null
+
     fun downloadAttachment(attachmentId: String) {
         val threadId = activeThreadId ?: return
         val port = downloads ?: run { update { it.copy(notice="DOWNLOAD_UNAVAILABLE") }; return }
@@ -3160,8 +3168,13 @@ class WorkbenchController(
                     port.ensureLocal(threadId, attachmentId)
                     port.openOriginal(threadId, attachmentId).use { input -> readOriginalBytes(input) }
                 }
-                val compressed = withContext(mediaDispatcher) { originalImageCompressor(raw) }
-                    ?: error("ORIGINAL_DECODE_FAILED")
+                val compressed = try {
+                    withContext(mediaDispatcher) { originalImageCompressor(raw) }
+                        ?: error("ORIGINAL_DECODE_FAILED")
+                } finally {
+                    // 原图字节可能带 EXIF/GPS；压缩成展示图之后立即清零，不在堆里留原件。
+                    raw.fill(0)
+                }
                 if (!mediaTaskCurrent(key, epoch)) return@launch
                 val commit = {
                     originalImages.put(key, compressed)

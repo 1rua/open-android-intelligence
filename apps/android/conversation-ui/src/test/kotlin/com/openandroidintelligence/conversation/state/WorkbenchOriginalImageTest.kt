@@ -46,7 +46,8 @@ class WorkbenchOriginalImageTest {
         val media = Media()
         var compressorInput: ByteArray? = null
         val controller = createController(host, media, compressor = { bytes ->
-            compressorInput = bytes
+            // 控制器在压缩后会清零原始字节（防 EXIF/GPS 驻留）；测试先留一份拷贝。
+            compressorInput = bytes.copyOf()
             byteArrayOf(9, 8, 7)
         })
         try {

@@ -33,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,6 +53,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -105,6 +107,12 @@ fun MarkdownToolCallView(
     LaunchedEffect(timingKey, running) {
         if (timingKey != null) timingStore?.observe(timingKey, running)
     }
+    // 运行中的卡片被移出组合（滚动/折叠）时在此结账，避免把离开期间也算进耗时。
+    DisposableEffect(timingKey, timingStore) {
+        onDispose {
+            if (timingKey != null) timingStore?.observe(timingKey, running = false)
+        }
+    }
     val durationMillis = timingKey?.let { timingStore?.durationOf(it) }
 
     val statusColor: Color = when {
@@ -125,11 +133,16 @@ fun MarkdownToolCallView(
         failed -> Icons.Default.Cancel
         else -> Icons.Default.CheckCircle
     }
+    // 摘要栏优先展示真实结果 summary（规格 §4.2「执行成功（或 summary）」）；
+    // 只有通用成功/失败文案才退回状态词，长文本在摘要栏单行省略，详情里仍完整展示。
+    val summaryText = block.summary
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() && it != "执行成功" && it != "执行失败" }
     val statusText = when {
         running -> "执行中"
         interrupted -> "执行已中断 · 结果未知"
-        failed -> "执行失败"
-        else -> "执行成功"
+        failed -> summaryText ?: "执行失败"
+        else -> summaryText ?: "执行成功"
     }
     // 只展示真实观察到的耗时：中断/完成的步骤才可能有结算值。
     val durationSuffix = if (!running && durationMillis != null) {
@@ -171,6 +184,7 @@ fun MarkdownToolCallView(
                     ) {
                         userExpanded = !expanded
                     }
+                    .semantics { stateDescription = if (expanded) "已展开" else "已收起" }
                     .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
@@ -220,7 +234,7 @@ fun MarkdownToolCallView(
             }
 
             ExpandableRegion(expanded = expanded) {
-                ToolCallDetails(block = block, statusText = statusText, running = running)
+                ToolCallDetails(block = block, running = running)
             }
         }
     }
@@ -244,12 +258,11 @@ private fun toolBadgeText(toolName: String): String = when {
 @Composable
 private fun ToolCallDetails(
     block: TimelineBlock.ToolCallBlock,
-    statusText: String,
     running: Boolean,
 ) {
     val summaryText = block.summary
         ?.trim()
-        ?.takeIf { it.isNotEmpty() && it != statusText }
+        ?.takeIf { it.isNotEmpty() && it != "执行成功" && it != "执行失败" }
 
     Column(
         modifier = Modifier.fillMaxWidth(),

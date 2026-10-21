@@ -273,8 +273,10 @@ private fun decodeWithImageDecoder(bytes: ByteArray, maxEdgePx: Int, width: Int,
         ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
             // 软件位图：展示用图片不需要 GPU 纹理，也避免在某些设备上把大图锁进显存。
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-            val sourceWidth = if (width > 0) width else info.size.width
-            val sourceHeight = if (height > 0) height else info.size.height
+            // ImageDecoder 的 info.size 是它实际要解码的源尺寸（已考虑容器/方向）；
+            // BitmapFactory bounds 不含 EXIF 旋转，竖拍照片用它会算出横纵互换的目标尺寸。
+            val sourceWidth = info.size.width.takeIf { it > 0 } ?: width
+            val sourceHeight = info.size.height.takeIf { it > 0 } ?: height
             val (targetWidth, targetHeight) = scaledSize(sourceWidth, sourceHeight, maxEdgePx)
             if (targetWidth > 0 && targetHeight > 0 &&
                 (targetWidth != sourceWidth || targetHeight != sourceHeight)

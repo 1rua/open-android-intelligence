@@ -33,7 +33,7 @@ class AttachmentImageCardTest {
 
         compose.onNodeWithText("camera_1792374688850.jpg").assertDoesNotExist()
         compose.onNodeWithText("下载").assertDoesNotExist()
-        compose.onNodeWithContentDescription("查看大图").assertIsDisplayed()
+        compose.onNodeWithContentDescription("查看大图", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -41,7 +41,7 @@ class AttachmentImageCardTest {
         var downloaded: String? = null
         render(imageAttachment(), onDownload = { downloaded = it })
 
-        compose.onNodeWithContentDescription("查看大图").performClick()
+        compose.onNodeWithContentDescription("查看大图", substring = true).performClick()
         compose.onNodeWithContentDescription("关闭大图预览").assertIsDisplayed()
         compose.onNodeWithText("保存至本地").performClick()
 
@@ -52,7 +52,7 @@ class AttachmentImageCardTest {
     fun lightboxShowsDownloadingStateInPlace() {
         render(imageAttachment(downloadState = AttachmentDownloadState.DOWNLOADING))
 
-        compose.onNodeWithContentDescription("查看大图").performClick()
+        compose.onNodeWithContentDescription("查看大图", substring = true).performClick()
         compose.onNodeWithText("保存中…").assertIsDisplayed()
     }
 
@@ -60,7 +60,7 @@ class AttachmentImageCardTest {
     fun lightboxShowsSavedStateInPlace() {
         render(imageAttachment(downloadState = AttachmentDownloadState.SAVED))
 
-        compose.onNodeWithContentDescription("查看大图").performClick()
+        compose.onNodeWithContentDescription("查看大图", substring = true).performClick()
         compose.onNodeWithText("已保存到下载目录").assertIsDisplayed()
     }
 
@@ -69,7 +69,7 @@ class AttachmentImageCardTest {
         var downloaded: String? = null
         render(imageAttachment(), onDownload = { downloaded = it })
 
-        compose.onNodeWithContentDescription("查看大图").performClick()
+        compose.onNodeWithContentDescription("查看大图", substring = true).performClick()
         compose.onNodeWithContentDescription("大图预览").performTouchInput {
             down(center)
             advanceEventTime(700)
@@ -84,7 +84,7 @@ class AttachmentImageCardTest {
     fun withoutDownloadPortPreviewStillOpensButHidesSave() {
         render(imageAttachment(), onDownload = null)
 
-        compose.onNodeWithContentDescription("查看大图").performClick()
+        compose.onNodeWithContentDescription("查看大图", substring = true).performClick()
         compose.onNodeWithContentDescription("关闭大图预览").assertIsDisplayed()
         compose.onNodeWithText("保存至本地").assertDoesNotExist()
     }
@@ -100,8 +100,53 @@ class AttachmentImageCardTest {
 
         compose.onNodeWithText("camera_1792374688850.jpg").assertDoesNotExist()
         compose.onNodeWithText("下载").assertDoesNotExist()
-        compose.onNodeWithContentDescription("查看大图").assertDoesNotExist()
+        compose.onNodeWithContentDescription("查看大图", substring = true).assertDoesNotExist()
         compose.onNodeWithContentDescription("图片预览不可用").assertIsDisplayed()
+    }
+
+    @Test
+    fun previewSurvivesTheTimelineFoldingIntoAnExecutionPanel() {
+        val assistantText = androidx.compose.runtime.mutableStateOf("<think>先看一眼</think>")
+        val imageEntry = TimelineEntry(
+            key = "message_image_fold",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 2L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            attachments = listOf(imageAttachment()),
+            isStreaming = true,
+        )
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(
+                    listOf(
+                        TimelineEntry(
+                            key = "user_fold",
+                            sender = "user",
+                            text = "看图",
+                            isUser = true,
+                            timestamp = 1L,
+                            pendingAcceptance = false,
+                            batchGroupId = null,
+                        ),
+                        imageEntry.copy(text = assistantText.value),
+                    ),
+                    onDownloadAttachment = {},
+                    onRequestOriginalAttachment = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("查看大图", substring = true).performClick()
+        compose.onNodeWithContentDescription("关闭大图预览").assertIsDisplayed()
+
+        // 最终正文出现后该行会从 Single 折叠成 Execution，展示项 key 改变；
+        // Dialog 挂在宿主预览槽上，不能被这次重组销毁。
+        compose.runOnIdle { assistantText.value = "<think>先看一眼</think>最终答案" }
+
+        compose.onNodeWithContentDescription("关闭大图预览").assertIsDisplayed()
     }
 
     @Test

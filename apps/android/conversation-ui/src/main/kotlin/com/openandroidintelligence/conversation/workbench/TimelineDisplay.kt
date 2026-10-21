@@ -17,7 +17,8 @@ sealed interface TimelineDisplayItem {
     }
 
     data class Execution(val run: AssistantExecutionRun) : TimelineDisplayItem {
-        override val key: String get() = run.key
+        /** 用段身份而不是最终回答 key：finalEntry 变化时展示项不应被当成新条目。 */
+        override val key: String get() = run.segmentKey
     }
 }
 
@@ -29,6 +30,13 @@ sealed interface TimelineDisplayItem {
  */
 data class AssistantExecutionRun(
     val key: String,
+    /**
+     * 段身份：段内第一条助手消息的 key。
+     *
+     * 聚合面板的展开偏好与 LazyColumn 的展示项 key 用这个字段，而不是随最终回答
+     * 变化的 [key]；否则多消息回合里 finalEntry 换成后一条时，面板会被当成新项。
+     */
+    val segmentKey: String,
     val finalEntry: TimelineEntry,
     val finalBlocks: List<TimelineBlock>,
     val steps: List<ExecutionStep>,
@@ -36,6 +44,8 @@ data class AssistantExecutionRun(
     val failedStepCount: Int,
     val interrupted: Boolean,
     val isStreaming: Boolean,
+    /** 只有最终回答所在消息仍在流式时，才在最终正文末尾画光标。 */
+    val finalEntryIsStreaming: Boolean,
     val hasFinalAnswer: Boolean,
 )
 
@@ -165,20 +175,25 @@ class TimelineDisplayModel(
     }
 
     private fun buildRun(analyses: List<EntryAnalysis>): AssistantExecutionRun {
-        val finalAnalysis = analyses.lastOrNull { it.finalVisible } ?: analyses.last()
+        // 只有需要折叠的段才解析完整块；普通助手消息在 [analyse] 里走快速路径。
+        val resolved = analyses.map { analysis ->
+            if (analysis.blocks == null) analyseParsed(analysis.entry) else analysis
+        }
+        val finalAnalysis = resolved.lastOrNull { it.finalVisible } ?: resolved.last()
         val finalEntry = finalAnalysis.entry
         val hasFinalAnswer = finalAnalysis.finalVisible
         val steps = mutableListOf<ExecutionStep>()
 
-        analyses.forEach { analysis ->
+        resolved.forEach { analysis ->
+            val blocks = requireNotNull(analysis.blocks)
             val isFinalEntry = analysis.entry.key == finalEntry.key
             // 最终回答的附件由宿主渲染在答案上方；没有最终正文时改由过程区承接，不丢附件。
             if ((!isFinalEntry || !hasFinalAnswer) && analysis.entry.attachments.isNotEmpty()) {
                 steps += ExecutionStep.Attachments(analysis.entry)
             }
             // 最终消息只把「尾部正文之前的块」收进过程区，尾部正文留在 finalBlocks。
-            val endExclusive = if (isFinalEntry) analysis.tailStartIndex else analysis.blocks.size
-            analysis.blocks.forEachIndexed { index, block ->
+            val endExclusive = if (isFinalEntry) analysis.tailStartIndex else blocks.size
+            blocks.forEachIndexed { index, block ->
                 if (index >= endExclusive) return@forEachIndexed
                 steps += when (block) {
                     is TimelineBlock.ThoughtBlock -> ExecutionStep.Thought(
@@ -213,6 +228,7 @@ class TimelineDisplayModel(
 
         return AssistantExecutionRun(
             key = "execution:${finalEntry.key}",
+            segmentKey = "execution_segment:${analyses.first().entry.key}",
             finalEntry = finalEntry,
             finalBlocks = if (hasFinalAnswer) finalAnalysis.finalBlocks else emptyList(),
             steps = steps,
@@ -220,6 +236,7 @@ class TimelineDisplayModel(
             failedStepCount = failedStepCount,
             interrupted = interrupted,
             isStreaming = analyses.any { it.entry.isStreaming },
+            finalEntryIsStreaming = finalEntry.isStreaming,
             hasFinalAnswer = hasFinalAnswer,
         )
     }
@@ -227,14 +244,35 @@ class TimelineDisplayModel(
     /** 单条助手消息的解析结果与「尾部正文」定位。 */
     private data class EntryAnalysis(
         val entry: TimelineEntry,
-        val blocks: List<TimelineBlock>,
+        /** null 表示没有执行标记、尚未完整解析；只在段需要折叠时解析。 */
+        val blocks: List<TimelineBlock>?,
         val executionCount: Int,
         val tailStartIndex: Int,
         val finalBlocks: List<TimelineBlock>,
         val finalVisible: Boolean,
     )
 
+    /**
+     * 先做廉价预扫描：没有执行标记的消息只记录“是否有可见正文”，不解析 Markdown。
+     *
+     * 旧实现每次都解析整段会话，长历史 + 流式增量会反复在主线程解析全部历史；
+     * 而普通消息只有在所属执行段真的需要折叠时才需要完整块（叙述内容）。
+     */
     private fun analyse(entry: TimelineEntry): EntryAnalysis {
+        if (!mayContainExecutionMarkup(entry.text)) {
+            return EntryAnalysis(
+                entry = entry,
+                blocks = null,
+                executionCount = 0,
+                tailStartIndex = 0,
+                finalBlocks = emptyList(),
+                finalVisible = entry.text.isNotBlank(),
+            )
+        }
+        return analyseParsed(entry)
+    }
+
+    private fun analyseParsed(entry: TimelineEntry): EntryAnalysis {
         val blocks = parseEntry(entry)
         var lastExecutionIndex = -1
         var executionCount = 0
@@ -290,14 +328,30 @@ class TimelineDisplayModel(
  * 时间线展示项缓存：同一批 entries 只重算一次，会话切换 / 流式增量时重建。
  */
 @Composable
-fun rememberTimelineDisplayItems(entries: List<TimelineEntry>): List<TimelineDisplayItem> {
-    val model = remember { TimelineDisplayModel() }
+fun rememberTimelineDisplayItems(
+    entries: List<TimelineEntry>,
+    threadId: String? = null,
+): List<TimelineDisplayItem> {
+    // 缓存与粘滞状态都属于一段会话：换会话必须重建，避免跨会话 id 命中/误折叠。
+    val model = remember(threadId) { TimelineDisplayModel() }
     return remember(entries) { model.build(entries) }
 }
 
 /** 能进入执行段的消息：既不是用户消息，也不是审批/系统回执行。 */
 private fun isExecutionEligible(entry: TimelineEntry): Boolean =
     !entry.isUser && entry.approval == null && entry.systemThreadId == null
+
+/**
+ * 廉价预扫描：只有可能包含执行块的消息才需要完整 Markdown 解析。
+ *
+ * `$ adb` 是普通 bash 围栏升格工具卡的兼容路径；保守地包含它，避免漏掉工具卡。
+ */
+internal fun mayContainExecutionMarkup(text: String): Boolean =
+    text.contains("<think", ignoreCase = true) ||
+        text.contains("<tool_call", ignoreCase = true) ||
+        text.contains("```tool_call", ignoreCase = true) ||
+        text.contains("```tool:", ignoreCase = true) ||
+        text.contains("\$ adb", ignoreCase = true)
 
 /** 执行块：思考与工具调用。步骤计数、折叠条件都以它为准。 */
 internal fun isExecutionBlock(block: TimelineBlock): Boolean =

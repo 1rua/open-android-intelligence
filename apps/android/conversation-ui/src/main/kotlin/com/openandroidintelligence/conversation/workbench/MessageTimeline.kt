@@ -78,18 +78,26 @@ fun MessageTimeline(
 ) {
     val displayItems = rememberTimelineDisplayItems(entries)
     val timing = rememberExecutionTimingStore(threadId = null)
-    Column(
+    AttachmentPreviewHost(
+        attachments = entries.flatMap { it.attachments },
+        onDownload = onDownloadAttachment,
+        onRequestOriginal = onRequestOriginalAttachment,
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(Dimensions.TimelineSpacing),
-    ) {
-        displayItems.forEach { item ->
-            TimelineDisplayRow(
-                item = item,
-                onDecide = onDecide,
-                timing = timing,
-                onDownloadAttachment = onDownloadAttachment,
-                onRequestOriginalAttachment = onRequestOriginalAttachment,
-            )
+    ) { openPreview ->
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.TimelineSpacing),
+        ) {
+            displayItems.forEach { item ->
+                TimelineDisplayRow(
+                    item = item,
+                    onDecide = onDecide,
+                    timing = timing,
+                    onDownloadAttachment = onDownloadAttachment,
+                    onRequestOriginalAttachment = onRequestOriginalAttachment,
+                    onOpenAttachmentPreview = openPreview,
+                )
+            }
         }
     }
 }
@@ -107,6 +115,7 @@ fun TimelineRow(
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
+    onOpenAttachmentPreview: ((String) -> Unit)? = null,
 ) {
     val approval = entry.approval
     if (approval != null) {
@@ -123,12 +132,14 @@ fun TimelineRow(
             modifier = modifier,
             onDownloadAttachment = onDownloadAttachment,
             onRequestOriginalAttachment = onRequestOriginalAttachment,
+            onOpenAttachmentPreview = onOpenAttachmentPreview,
         )
     } else {
         AssistantMessageRow(
             entry = entry,
             onDownloadAttachment = onDownloadAttachment,
             onRequestOriginalAttachment = onRequestOriginalAttachment,
+            onOpenAttachmentPreview = onOpenAttachmentPreview,
             modifier = modifier.semantics {
                 contentDescription = "OaiMessage:${entry.key}:${if (entry.isStreaming) "streaming" else "completed"}"
             },
@@ -146,6 +157,7 @@ private fun UserMessageBubble(
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
+    onOpenAttachmentPreview: ((String) -> Unit)? = null,
 ) {
     val failed = entry.submissionFailureCode != null || entry.messageStatus == AgentMessageStatus.FAILED
     Column(
@@ -172,7 +184,12 @@ private fun UserMessageBubble(
                 ),
                 verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
-                MessageAttachments(entry.attachments, onDownloadAttachment, onRequestOriginalAttachment)
+                MessageAttachments(
+                    attachments = entry.attachments,
+                    onDownload = onDownloadAttachment,
+                    onRequestOriginal = onRequestOriginalAttachment,
+                    onOpenPreview = onOpenAttachmentPreview,
+                )
 
                 if (entry.text.isNotBlank()) {
                     SelectionContainer {
@@ -247,15 +264,55 @@ private fun AttachmentFallbackChip(filename: String, isImage: Boolean) {
     }
 }
 
+/**
+ * 宿主级大图预览槽。
+ *
+ * 预览 id 与唯一的 [AttachmentLightbox] 都放在 Lazy 列表外：列表项因折叠换 key、
+ * 流式自动滚底或回收时，用户正在看的大图不会跟着消失；按 id 从最新附件列表里
+ * 取对象，保存/原图状态仍能实时刷新。
+ */
+@Composable
+fun AttachmentPreviewHost(
+    attachments: List<TimelineAttachment>,
+    onDownload: ((String) -> Unit)?,
+    onRequestOriginal: ((String) -> Unit)?,
+    modifier: Modifier = Modifier,
+    content: @Composable (openPreview: (String) -> Unit) -> Unit,
+) {
+    var openId by rememberSaveable { mutableStateOf<String?>(null) }
+    val selected = openId?.let { id -> attachments.firstOrNull { it.draftId == id } }
+    LaunchedEffect(openId, selected) {
+        // 消息被删除/切换会话后附件不复存在：关闭预览，而不是继续显示旧对象。
+        if (openId != null && selected == null) openId = null
+    }
+    Box(modifier) {
+        content { id -> openId = id }
+    }
+    if (selected != null) {
+        AttachmentLightbox(
+            attachment = selected,
+            onDismiss = { openId = null },
+            onDownload = onDownload,
+            onRequestOriginal = onRequestOriginal,
+        )
+    }
+}
+
 /** 所有发送者和附件身份都走同一入口；图片与普通文件分别呈现。 */
 @Composable
 private fun MessageAttachments(
     attachments: List<TimelineAttachment>,
     onDownload: ((String) -> Unit)?,
     onRequestOriginal: ((String) -> Unit)?,
+    onOpenPreview: ((String) -> Unit)? = null,
 ) {
     attachments.forEach {
-        HistoricalAttachmentCard(it, onDownload, onRequestOriginal = onRequestOriginal)
+        HistoricalAttachmentCard(
+            attachment = it,
+            onDownload = onDownload,
+            onRequestOriginal = onRequestOriginal,
+            onOpenPreview = onOpenPreview,
+        )
     }
 }
 
@@ -270,9 +327,11 @@ fun HistoricalAttachmentCard(
     onDownload: ((String) -> Unit)?,
     modifier: Modifier = Modifier,
     onRequestOriginal: ((String) -> Unit)? = null,
+    onOpenPreview: ((String) -> Unit)? = null,
+    showCaption: Boolean = false,
 ) {
     if (attachment.isImage) {
-        ImageAttachmentCard(attachment, modifier, onDownload, onRequestOriginal)
+        ImageAttachmentCard(attachment, modifier, onDownload, onRequestOriginal, onOpenPreview, showCaption)
     } else {
         FileAttachmentCard(attachment, modifier, onDownload)
     }
@@ -290,8 +349,15 @@ private fun ImageAttachmentCard(
     modifier: Modifier,
     onDownload: ((String) -> Unit)?,
     onRequestOriginal: ((String) -> Unit)?,
+    onOpenPreview: ((String) -> Unit)?,
+    showCaption: Boolean,
 ) {
-    var previewVisible by rememberSaveable(attachment.draftId) { mutableStateOf(false) }
+    // 宿主提供了预览打开回调时，Dialog 由宿主级 AttachmentPreviewHost 持有：
+    // 列表项滚动回收/折叠换 key 不会销毁用户正在看的大图。
+    var localPreviewVisible by rememberSaveable(attachment.draftId) { mutableStateOf(false) }
+    val openPreview: () -> Unit = {
+        if (onOpenPreview != null) onOpenPreview(attachment.draftId) else localPreviewVisible = true
+    }
     // 缩略图解码放到 IO 线程并交给 ImageDecoder 处理 EXIF 方向；失败时保留可点的
     // 占位，用户仍可进入 Lightbox 尝试加载原图，而不是得到一张空白。
     val image = rememberDecodedPreview(attachment.previewBytes)
@@ -301,10 +367,13 @@ private fun ImageAttachmentCard(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
+        if (showCaption) {
+            AttachmentFallbackChip(attachment.filename.ifBlank { "图片附件" }, isImage = true)
+        }
         if (image != null) {
             Image(
                 bitmap = image,
-                contentDescription = "查看大图",
+                contentDescription = "查看大图：${attachment.filename.ifBlank { "图片" }}",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -312,14 +381,14 @@ private fun ImageAttachmentCard(
                     .clip(RoundedCornerShape(AppRadius.Medium))
                     .background(MaterialTheme.colorScheme.surfaceContainerLow)
                     .clickable(enabled = canOpen, role = Role.Button, onClickLabel = "查看大图") {
-                        previewVisible = true
+                        openPreview()
                     },
             )
         } else {
             ImageUnavailablePlaceholder(
                 attachment = attachment,
                 canOpen = canOpen,
-                onOpen = { previewVisible = true },
+                onOpen = openPreview,
             )
         }
 
@@ -341,19 +410,23 @@ private fun ImageAttachmentCard(
             )
             AttachmentLocalState.SAVED -> Unit
         }
-        // 成功保存不重复占位；失败必须可见，用户才知道去预览里重试。
-        if (attachment.downloadState == AttachmentDownloadState.FAILED) {
-            Text(
-                "保存失败，可在预览中重试",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
+        // 图片的下载状态只在 Lightbox 内就地反馈；列表不再重复显示保存结果。
+        // 附件库需要直接识别与保存文件；会话气泡保持纯图降噪。
+        if (showCaption) {
+            TextButton(
+                onClick = { onDownload?.invoke(attachment.draftId) },
+                enabled = onDownload != null &&
+                    attachment.localState != AttachmentLocalState.UNAVAILABLE &&
+                    attachment.downloadState != AttachmentDownloadState.DOWNLOADING,
+            ) {
+                Text(if (attachment.downloadState == AttachmentDownloadState.DOWNLOADING) "下载中…" else "下载")
+            }
         }
 
-        if (previewVisible) {
+        if (onOpenPreview == null && localPreviewVisible) {
             AttachmentLightbox(
                 attachment = attachment,
-                onDismiss = { previewVisible = false },
+                onDismiss = { localPreviewVisible = false },
                 onDownload = onDownload,
                 onRequestOriginal = onRequestOriginal,
             )
@@ -382,7 +455,9 @@ private fun ImageUnavailablePlaceholder(
                 if (canOpen) {
                     Modifier
                         .clickable(role = Role.Button, onClickLabel = "查看大图", onClick = onOpen)
-                        .semantics { contentDescription = "查看大图" }
+                        .semantics {
+                            contentDescription = "查看大图：${attachment.filename.ifBlank { "图片" }}"
+                        }
                 } else {
                     Modifier.semantics { contentDescription = "图片预览不可用" }
                 },
@@ -448,6 +523,7 @@ private fun AssistantMessageRow(
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
+    onOpenAttachmentPreview: ((String) -> Unit)? = null,
 ) {
     val failed = entry.messageStatus == AgentMessageStatus.FAILED || entry.submissionFailureCode != null
     Column(
@@ -457,7 +533,12 @@ private fun AssistantMessageRow(
             .padding(start = Dimensions.StitchGutter),
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
     ) {
-        MessageAttachments(entry.attachments, onDownloadAttachment, onRequestOriginalAttachment)
+        MessageAttachments(
+            attachments = entry.attachments,
+            onDownload = onDownloadAttachment,
+            onRequestOriginal = onRequestOriginalAttachment,
+            onOpenPreview = onOpenAttachmentPreview,
+        )
 
         // 文本内容（含实时执行卡片/最终回答）统一交给执行过程渲染层；
         // 附件、元数据与复制仍由这一层负责，保持四个宿主一致。
@@ -485,6 +566,7 @@ fun TimelineDisplayRow(
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
+    onOpenAttachmentPreview: ((String) -> Unit)? = null,
 ) {
     CompositionLocalProvider(LocalExecutionTiming provides timing) {
         when (item) {
@@ -494,6 +576,7 @@ fun TimelineDisplayRow(
                 modifier = modifier,
                 onDownloadAttachment = onDownloadAttachment,
                 onRequestOriginalAttachment = onRequestOriginalAttachment,
+                onOpenAttachmentPreview = onOpenAttachmentPreview,
             )
 
             is TimelineDisplayItem.Execution -> ExecutionTurnRow(
@@ -501,6 +584,7 @@ fun TimelineDisplayRow(
                 modifier = modifier,
                 onDownloadAttachment = onDownloadAttachment,
                 onRequestOriginalAttachment = onRequestOriginalAttachment,
+                onOpenAttachmentPreview = onOpenAttachmentPreview,
             )
         }
     }
@@ -518,6 +602,7 @@ private fun ExecutionTurnRow(
     modifier: Modifier,
     onDownloadAttachment: ((String) -> Unit)?,
     onRequestOriginalAttachment: ((String) -> Unit)?,
+    onOpenAttachmentPreview: ((String) -> Unit)?,
 ) {
     val failed = run.finalEntry.messageStatus == AgentMessageStatus.FAILED ||
         run.finalEntry.submissionFailureCode != null
@@ -530,9 +615,10 @@ private fun ExecutionTurnRow(
     ) {
         if (run.hasFinalAnswer) {
             MessageAttachments(
-                run.finalEntry.attachments,
-                onDownloadAttachment,
-                onRequestOriginalAttachment,
+                attachments = run.finalEntry.attachments,
+                onDownload = onDownloadAttachment,
+                onRequestOriginal = onRequestOriginalAttachment,
+                onOpenPreview = onOpenAttachmentPreview,
             )
         }
 
@@ -541,9 +627,10 @@ private fun ExecutionTurnRow(
             processAttachmentsSlot = { processEntry ->
                 if (processEntry.attachments.isNotEmpty()) {
                     MessageAttachments(
-                        processEntry.attachments,
-                        onDownloadAttachment,
-                        onRequestOriginalAttachment,
+                        attachments = processEntry.attachments,
+                        onDownload = onDownloadAttachment,
+                        onRequestOriginal = onRequestOriginalAttachment,
+                        onOpenPreview = onOpenAttachmentPreview,
                     )
                 }
             },
