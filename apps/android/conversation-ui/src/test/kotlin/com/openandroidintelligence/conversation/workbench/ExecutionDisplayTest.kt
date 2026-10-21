@@ -384,6 +384,25 @@ class ExecutionDisplayTest {
     }
 
     @Test
+    fun hermesToolMessagesFoldIntoOneExecutionRun() {
+        val entries = listOf(
+            userEntry("u1", "查一下"),
+            assistantEntry("a1", "Running code import sqlite3\nReading core.py"),
+            assistantEntry("a2", "调用工具：execute_code"),
+            assistantEntry("a3", "调用工具：read_file"),
+            assistantEntry("a4", "最终答案：插件能力尚未发布。"),
+        )
+
+        val run = (TimelineDisplayModel().build(entries).last() as TimelineDisplayItem.Execution).run
+
+        assertEquals(2, run.stepCount)
+        assertEquals("a4", run.finalEntry.key)
+        assertTrue(run.hasFinalAnswer)
+        assertTrue(run.steps.any { it is ExecutionStep.ToolCall && it.block.invocationOnly })
+        assertTrue(run.steps.any { it is ExecutionStep.Narrative })
+    }
+
+    @Test
     fun finalAnswerCursorOnlyFollowsTheFinalEntryItself() {
         val entries = listOf(
             userEntry("u1", "继续"),

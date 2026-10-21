@@ -20,6 +20,14 @@ object MarkdownParser {
         "<tool_call(?:\\s+name=[\"']([^\"']*)[\"'])?\\s*>([\\s\\S]*)$",
         RegexOption.IGNORE_CASE
     )
+    /**
+     * Hermes / 宿主以纯文本发送的工具调用行，例如「调用工具：execute_code」。
+     * 只在独立成行时识别，避免把正文里的同义句子误判成工具卡。
+     */
+    private val hermesToolLineRegex = Regex(
+        "^\\s*[^\\p{L}\\p{N}]*\\s*(?:调用工具|工具调用|Tool call|Calling tool)\\s*[：:]\\s*([A-Za-z0-9_.\\-]+)\\s*(.*)$",
+        RegexOption.IGNORE_CASE,
+    )
     private val thinkStartRegex = Regex("<think(?:\\s+[^>]*)?>", RegexOption.IGNORE_CASE)
     private val thinkEndRegex = Regex("</think>", RegexOption.IGNORE_CASE)
     private val headingRegex = Regex("^(#{1,6})\\s+(.*)$")
@@ -401,11 +409,55 @@ private const val MaxBlockquoteDepth = 8
         )
     }
 
+    /**
+     * 解析 Hermes 的纯文本工具调用行：工具名后的剩余文本作为命令/参数，
+     * 没有参数时标记 [TimelineBlock.ToolCallBlock.invocationOnly]。
+     */
+    private fun parseHermesToolLines(text: String, quoteDepth: Int): List<TimelineBlock> {
+        val blocks = mutableListOf<TimelineBlock>()
+        val pending = mutableListOf<String>()
+
+        fun flushPending() {
+            if (pending.isEmpty()) return
+            val chunk = pending.joinToString("\n").trim()
+            pending.clear()
+            if (chunk.isNotEmpty()) {
+                // 已拆掉全部工具行，递归不会再命中 Hermes 分支。
+                blocks.addAll(parseNonCodeText(chunk, quoteDepth, recognizeToolCalls = true))
+            }
+        }
+
+        text.lines().forEach { line ->
+            val match = hermesToolLineRegex.find(line.trim())
+            if (match == null) {
+                pending += line
+            } else {
+                flushPending()
+                val toolName = match.groupValues[1].trim()
+                val rest = match.groupValues[2].trim()
+                blocks += TimelineBlock.ToolCallBlock(
+                    toolName = toolName.ifBlank { "执行命令" },
+                    command = rest,
+                    isSuccess = true,
+                    summary = null,
+                    invocationOnly = true,
+                )
+            }
+        }
+        flushPending()
+        return blocks.ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
+    }
+
     private fun parseNonCodeText(
         text: String,
         quoteDepth: Int = 0,
         recognizeToolCalls: Boolean = true,
     ): List<TimelineBlock> {
+        // Hermes 的工具调用是纯文本行（不是 XML/围栏），必须先拆成 ToolCallBlock，
+        // 否则它会被当成普通段落：既没有工具卡，也不会参与执行过程聚合。
+        if (recognizeToolCalls && text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }) {
+            return parseHermesToolLines(text, quoteDepth)
+        }
         val lines = text.lines()
         val blocks = mutableListOf<TimelineBlock>()
         var lineIndex = 0

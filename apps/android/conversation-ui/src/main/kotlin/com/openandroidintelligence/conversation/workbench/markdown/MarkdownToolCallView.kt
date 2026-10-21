@@ -99,6 +99,10 @@ fun MarkdownToolCallView(
     val running = block.isRunning && isStreaming
     val interrupted = block.isRunning && !isStreaming
     val failed = !block.isSuccess && !running
+    // Hermes 的纯文本「调用工具：xxx」只有调用事实，没有参数/返回值：显示「已调用」，
+    // 不把未知结果伪装成「执行成功」。
+    val invocationOnly = block.invocationOnly &&
+        block.summary.isNullOrBlank() && block.output.isNullOrBlank() && !running && !interrupted && !failed
 
     var userExpanded by remember { mutableStateOf<Boolean?>(null) }
     val expanded = userExpanded ?: running
@@ -119,18 +123,21 @@ fun MarkdownToolCallView(
         running -> MaterialTheme.colorScheme.primary
         interrupted -> stateColors.warning
         failed -> MaterialTheme.colorScheme.error
+        invocationOnly -> MaterialTheme.colorScheme.onSurfaceVariant
         else -> stateColors.success
     }
     val statusDescription = when {
         running -> "执行中"
         interrupted -> "执行已中断"
         failed -> "执行失败"
+        invocationOnly -> "已调用"
         else -> "执行成功"
     }
     val statusIcon: ImageVector = when {
         running -> Icons.Default.PlayArrow
         interrupted -> Icons.Default.Warning
         failed -> Icons.Default.Cancel
+        invocationOnly -> Icons.Default.Check
         else -> Icons.Default.CheckCircle
     }
     // 摘要栏优先展示真实结果 summary（规格 §4.2「执行成功（或 summary）」）；
@@ -142,6 +149,7 @@ fun MarkdownToolCallView(
         running -> "执行中"
         interrupted -> "执行已中断 · 结果未知"
         failed -> summaryText ?: "执行失败"
+        invocationOnly -> "已调用"
         else -> summaryText ?: "执行成功"
     }
     // 只展示真实观察到的耗时：中断/完成的步骤才可能有结算值。
@@ -295,15 +303,25 @@ private fun ToolCallDetails(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                CopyCommandAction(command = block.command)
+                if (block.command.isNotBlank()) {
+                    CopyCommandAction(command = block.command)
+                }
             }
 
-            CodeSurface(
-                text = block.command,
-                fontSizeSp = 12.5f,
-                lineHeightSp = null,
-                maxHeight = false,
-            )
+            if (block.command.isNotBlank()) {
+                CodeSurface(
+                    text = block.command,
+                    fontSizeSp = 12.5f,
+                    lineHeightSp = null,
+                    maxHeight = false,
+                )
+            } else {
+                Text(
+                    text = "Hermes 在消息中未提供命令参数",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             if (summaryText != null) {
                 Text(
@@ -328,7 +346,7 @@ private fun ToolCallDetails(
                 )
             } else if (!running) {
                 Text(
-                    text = "无输出",
+                    text = if (block.invocationOnly) "此调用未附带返回值" else "无输出",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

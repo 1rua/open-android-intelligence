@@ -86,6 +86,11 @@ sealed interface TimelineBlock {
         val isSuccess: Boolean = true,
         val summary: String? = null,
         val isRunning: Boolean = false,
+        /**
+         * Hermes/宿主把工具调用作为一条纯文本消息（如「调用工具：execute_code」）发送时置 true。
+         * 这类消息没有命令参数与返回值，状态应显示「已调用」，不能伪装成「执行成功」。
+         */
+        val invocationOnly: Boolean = false,
     ) : TimelineBlock
 }
 

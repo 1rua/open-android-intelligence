@@ -165,6 +165,34 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun hermesInvocationLineParsesAsInvocationOnlyToolCall() {
+        val blocks = MarkdownParser.parse("调用工具：execute_code")
+
+        assertEquals(1, blocks.size)
+        val call = blocks[0] as TimelineBlock.ToolCallBlock
+        assertEquals("execute_code", call.toolName)
+        assertEquals("", call.command)
+        assertTrue(call.invocationOnly, "Hermes 纯文本工具调用应标记为无参数只有调用事实")
+    }
+
+    @Test
+    fun hermesActivityTextAndInvocationLinesParseIntoNarrativeAndToolCards() {
+        val markdown = """
+            Running code import sqlite3
+            Searching files for inventory
+            调用工具：execute_code
+            调用工具：read_file
+        """.trimIndent()
+
+        val blocks = MarkdownParser.parse(markdown)
+        assertTrue(blocks[0] is TimelineBlock.Paragraph)
+        assertTrue((blocks[0] as TimelineBlock.Paragraph).text.contains("Running code"))
+        assertEquals("execute_code", (blocks[1] as TimelineBlock.ToolCallBlock).toolName)
+        assertEquals("read_file", (blocks[2] as TimelineBlock.ToolCallBlock).toolName)
+        assertTrue((blocks[1] as TimelineBlock.ToolCallBlock).invocationOnly)
+    }
+
+    @Test
     fun fencedToolCallParsesWithLanguageName() {
         val markdown = """
             ```tool_call:adb_shell
@@ -257,6 +285,24 @@ class ToolCallCardTest {
         compose.onNodeWithText("pm list packages -3").assertDoesNotExist()
         compose.onNodeWithText("package:com.demo").assertDoesNotExist()
         compose.onNodeWithText("查看输出").assertDoesNotExist()
+    }
+
+    @Test
+    fun hermesInvocationCardShowsCalledStatusWithoutFakingSuccess() {
+        val block = toolCall(toolName = "execute_code", command = "").copy(invocationOnly = true)
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("已调用").assertIsDisplayed()
+        compose.onNodeWithText("执行成功").assertDoesNotExist()
+
+        compose.onNodeWithText("已调用").performClick()
+        compose.onNodeWithText("Hermes 在消息中未提供命令参数").assertIsDisplayed()
+        compose.onNodeWithText("此调用未附带返回值").assertIsDisplayed()
     }
 
     @Test

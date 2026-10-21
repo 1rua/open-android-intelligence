@@ -264,7 +264,7 @@ class TimelineDisplayModel(
                 executionCount = 0,
                 tailStartIndex = 0,
                 finalBlocks = emptyList(),
-                finalVisible = entry.text.isNotBlank(),
+                finalVisible = entry.text.isNotBlank() && !looksLikeHermesActivityLog(entry.text),
             )
         }
         return analyseParsed(entry)
@@ -344,11 +344,35 @@ private fun isExecutionEligible(entry: TimelineEntry): Boolean =
  *
  * `$ adb` 是普通 bash 围栏升格工具卡的兼容路径；保守地包含它，避免漏掉工具卡。
  */
+/**
+ * Hermes 的工具活动日志（Running code / Searching files / Reading ...）只是过程叙述。
+ *
+ * 它们没有 XML/围栏标记，但若被当成最终正文，会在第一张工具卡出现时提前折叠成
+ * “最终回答是工具日志”的错误形态。整条消息所有行都是活动日志时才视为过程文本。
+ */
+internal fun looksLikeHermesActivityLog(text: String): Boolean {
+    val lines = text.lines().filter { it.isNotBlank() }
+    if (lines.isEmpty()) return false
+    val prefixes = listOf(
+        "Running code", "Running", "Searching files", "Searching",
+        "Reading", "Writing", "Editing", "Listing", "Command",
+    )
+    return lines.all { line ->
+        // 行首可能带 emoji/序号/项目符号；跳过非字母字符后再匹配工具活动前缀。
+        val clean = line.trim().trimStart { !it.isLetter() }
+        prefixes.any { clean.startsWith(it, ignoreCase = true) }
+    }
+}
+
 internal fun mayContainExecutionMarkup(text: String): Boolean =
     text.contains("<think", ignoreCase = true) ||
         text.contains("<tool_call", ignoreCase = true) ||
         text.contains("```tool_call", ignoreCase = true) ||
         text.contains("```tool:", ignoreCase = true) ||
+        text.contains("调用工具", ignoreCase = true) ||
+        text.contains("工具调用", ignoreCase = true) ||
+        text.contains("Tool call", ignoreCase = true) ||
+        text.contains("Calling tool", ignoreCase = true) ||
         text.contains("\$ adb", ignoreCase = true)
 
 /** 执行块：思考与工具调用。步骤计数、折叠条件都以它为准。 */
