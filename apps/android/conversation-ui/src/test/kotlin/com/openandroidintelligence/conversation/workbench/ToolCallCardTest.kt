@@ -1,9 +1,9 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.runtime.CompositionLocalProvider
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -11,8 +11,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -21,6 +19,24 @@ class ToolCallCardTest {
 
     @get:Rule
     val compose = createComposeRule()
+
+    private class FakeClock(var now: Long = 0L)
+
+    private fun toolCall(
+        toolName: String = "adb_shell",
+        command: String = "pm list packages -3",
+        output: String? = null,
+        isSuccess: Boolean = true,
+        summary: String? = null,
+        isRunning: Boolean = false,
+    ) = TimelineBlock.ToolCallBlock(
+        toolName = toolName,
+        command = command,
+        output = output,
+        isSuccess = isSuccess,
+        summary = summary,
+        isRunning = isRunning,
+    )
 
     // ==========================================
     // 1. MarkdownParser AST 解析测试
@@ -44,7 +60,9 @@ class ToolCallCardTest {
         assertEquals("am start -a android.settings.DISPLAY_SETTINGS", toolCall.command)
         assertTrue(toolCall.isSuccess)
         assertEquals("设置应用已成功打开", toolCall.summary)
-        assertNull(toolCall.output)
+        assertEquals(null, toolCall.output)
+        // 闭合标签是已执行完成的调用，不再是运行中。
+        assertFalse(toolCall.isRunning)
     }
 
     @Test
@@ -65,6 +83,7 @@ class ToolCallCardTest {
         assertEquals("am start -a unknown.component", toolCall.command)
         assertFalse(toolCall.isSuccess)
         assertEquals("ActivityNotFoundException: Unable to find explicit activity class", toolCall.summary)
+        assertFalse(toolCall.isRunning)
     }
 
     @Test
@@ -90,6 +109,62 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun unclosedXmlToolCallParsesAsRunning() {
+        val markdown = """
+            <tool_call name="adb_shell">
+              <command>pm list packages -3</command>
+        """.trimIndent()
+
+        val blocks = MarkdownParser.parse(markdown)
+        assertEquals(1, blocks.size)
+        val toolCall = blocks[0] as TimelineBlock.ToolCallBlock
+        assertEquals("adb_shell", toolCall.toolName)
+        assertEquals("pm list packages -3", toolCall.command)
+        assertTrue(toolCall.isRunning, "未闭合的 XML 工具调用应标记为执行中")
+    }
+
+    @Test
+    fun aClosedToolCallFollowedByAnUnclosedOneKeepsTheSecondRunning() {
+        val markdown = """
+            <tool_call name="adb_shell">
+              <command>pm list packages</command>
+              <result status="success">ok</result>
+            </tool_call>
+            我先确认一下。
+            <tool_call name="adb_shell">
+              <command>dumpsys battery</command>
+        """.trimIndent()
+
+        val blocks = MarkdownParser.parse(markdown)
+        assertEquals(3, blocks.size)
+        assertFalse((blocks[0] as TimelineBlock.ToolCallBlock).isRunning)
+        assertEquals("我先确认一下。", (blocks[1] as TimelineBlock.Paragraph).text)
+        val second = blocks[2] as TimelineBlock.ToolCallBlock
+        assertEquals("dumpsys battery", second.command)
+        assertTrue(second.isRunning, "闭合工具调用之后的未闭合工具调用也必须标记为执行中")
+    }
+
+    @Test
+    fun aClosedFenceFollowedByAnUnclosedFenceKeepsTheSecondRunning() {
+        val markdown = """
+            ```tool_call:adb_shell
+            pm list packages
+            ```
+            我先确认一下。
+            ```tool_call:adb_shell
+            dumpsys battery
+        """.trimIndent()
+
+        val blocks = MarkdownParser.parse(markdown)
+        assertEquals(3, blocks.size)
+        assertFalse((blocks[0] as TimelineBlock.ToolCallBlock).isRunning)
+        assertEquals("我先确认一下。", (blocks[1] as TimelineBlock.Paragraph).text)
+        val second = blocks[2] as TimelineBlock.ToolCallBlock
+        assertEquals("dumpsys battery", second.command)
+        assertTrue(second.isRunning, "闭合围栏之后的未闭合围栏也必须标记为执行中")
+    }
+
+    @Test
     fun fencedToolCallParsesWithLanguageName() {
         val markdown = """
             ```tool_call:adb_shell
@@ -105,6 +180,7 @@ class ToolCallCardTest {
         assertEquals("adb_shell", toolCall.toolName)
         assertEquals("am start -a android.settings.DISPLAY_SETTINGS", toolCall.command)
         assertTrue(toolCall.isSuccess)
+        assertFalse(toolCall.isRunning)
     }
 
     @Test
@@ -125,10 +201,25 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun unclosedFencedToolCallParsesAsRunning() {
+        val markdown = """
+            ```tool_call:adb_shell
+            ${'$'} pm list packages
+        """.trimIndent()
+
+        val blocks = MarkdownParser.parse(markdown)
+        assertEquals(1, blocks.size)
+        val toolCall = blocks[0] as TimelineBlock.ToolCallBlock
+        assertEquals("adb_shell", toolCall.toolName)
+        assertEquals("pm list packages", toolCall.command)
+        assertTrue(toolCall.isRunning, "未闭合的 fenced 工具调用应标记为执行中")
+    }
+
+    @Test
     fun codeBlockStartingWithAdbShellConvertsToToolCallBlock() {
         val markdown = """
             ```bash
-            $ adb shell input tap 500 800
+            ${'$'} adb shell input tap 500 800
             执行成功
             ```
         """.trimIndent()
@@ -142,6 +233,7 @@ class ToolCallCardTest {
         assertEquals("adb shell input tap 500 800", toolCall.command)
         assertTrue(toolCall.isSuccess)
         assertEquals("执行成功", toolCall.summary)
+        assertFalse(toolCall.isRunning)
     }
 
     // ==========================================
@@ -149,14 +241,8 @@ class ToolCallCardTest {
     // ==========================================
 
     @Test
-    fun toolCallRendersHeaderBadgeAndCommand() {
-        val block = TimelineBlock.ToolCallBlock(
-            toolName = "adb_shell",
-            command = "input keyevent KEYCODE_HOME",
-            output = null,
-            isSuccess = true,
-            summary = null,
-        )
+    fun collapsedSuccessCardShowsBadgeAndStatusWithoutCommandOrOutput() {
+        val block = toolCall(output = "package:com.demo", summary = "执行成功")
 
         compose.setContent {
             MaterialTheme {
@@ -164,68 +250,121 @@ class ToolCallCardTest {
             }
         }
 
-        // 验证 Badge 等宽工具名称
         compose.onNodeWithText("[adb_shell]").assertIsDisplayed()
-        // 验证命令正文
-        compose.onNodeWithText("input keyevent KEYCODE_HOME").assertIsDisplayed()
-        // 验证复制按钮
-        compose.onNodeWithText("复制").assertIsDisplayed()
+        compose.onNodeWithText("执行成功").assertIsDisplayed()
+        compose.onNodeWithContentDescription("执行成功").assertIsDisplayed()
+        // 完成态默认收起：命令与输出都不参与组合，也没有第二层「查看输出」开关。
+        compose.onNodeWithText("pm list packages -3").assertDoesNotExist()
+        compose.onNodeWithText("package:com.demo").assertDoesNotExist()
+        compose.onNodeWithText("查看输出").assertDoesNotExist()
     }
 
     @Test
-    fun copyButtonCopiesCommandAndShowsFeedback() {
-        val block = TimelineBlock.ToolCallBlock(
-            toolName = "adb_shell",
-            command = "pm list packages -3",
-            output = null,
-            isSuccess = true,
-            summary = null,
-        )
-
-        var clipboardText: String? = null
+    fun collapsedSummaryBarShowsTheRealResultBeforeExpanding() {
+        val block = toolCall(summary = "设置应用已成功打开")
 
         compose.setContent {
-            val clipboard = LocalClipboardManager.current
             MaterialTheme {
                 MarkdownToolCallView(block = block)
             }
-            clipboardText = clipboard.getText()?.text
         }
 
-        // 点击复制
+        // 规格 §4.2：状态徽标栏显示「执行成功（或 summary）」；summary 不再被藏到展开态。
+        compose.onNodeWithText("设置应用已成功打开").assertIsDisplayed()
+        compose.onNodeWithText("pm list packages -3").assertDoesNotExist()
+
+        compose.onNodeWithText("设置应用已成功打开").performClick()
+        compose.onNodeWithText("命令").assertIsDisplayed()
+        compose.onNodeWithText("pm list packages -3").assertIsDisplayed()
+    }
+
+    @Test
+    fun expandingSuccessCardShowsCommandOutputAndCopyAction() {
+        val detailedOutput = "package:com.demo.alpha\npackage:com.demo.beta"
+        val block = toolCall(output = detailedOutput)
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+
+        compose.onNodeWithText("命令").assertIsDisplayed()
+        compose.onNodeWithText("pm list packages -3").assertIsDisplayed()
+        compose.onNodeWithText("输出").assertIsDisplayed()
+        compose.onNodeWithText("package:com.demo.alpha", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("复制").assertIsDisplayed()
+        // 只有一层展开：旧版「查看输出/收起输出」开关已移除。
+        compose.onNodeWithText("查看输出").assertDoesNotExist()
+        compose.onNodeWithText("收起输出").assertDoesNotExist()
+
+        // 再次点击摘要栏收起详情。
+        compose.onNodeWithText("执行成功").performClick()
+        compose.onNodeWithText("命令").assertDoesNotExist()
+        compose.onNodeWithText("pm list packages -3").assertDoesNotExist()
+    }
+
+    @Test
+    fun copyCommandShowsCopiedFeedback() {
+        val block = toolCall(command = "pm list packages -3")
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
         compose.onNodeWithText("复制").performClick()
 
-        // 验证提示切换为“已复制”
         compose.onNodeWithText("已复制").assertIsDisplayed()
     }
 
     @Test
-    fun toolCallRendersSuccessResultStrip() {
-        val block = TimelineBlock.ToolCallBlock(
-            toolName = "adb_shell",
-            command = "am start -a android.settings.SETTINGS",
-            output = null,
-            isSuccess = true,
-            summary = "设置应用已成功打开",
-        )
+    fun runningToolCallDefaultsToExpandedWithLiveStatus() {
+        val block = toolCall(command = "dumpsys battery", isRunning = true)
 
         compose.setContent {
             MaterialTheme {
-                MarkdownToolCallView(block = block)
+                MarkdownToolCallView(block = block, isStreaming = true)
             }
         }
 
-        // 验证成功摘要
-        compose.onNodeWithText("设置应用已成功打开").assertIsDisplayed()
-        compose.onNodeWithContentDescription("执行成功").assertIsDisplayed()
+        compose.onNodeWithText("执行中").assertIsDisplayed()
+        compose.onNodeWithContentDescription("执行中").assertIsDisplayed()
+        compose.onNodeWithText("命令").assertIsDisplayed()
+        compose.onNodeWithText("dumpsys battery").assertIsDisplayed()
+        // 运行中还没有输出，不显示「无输出」误导用户。
+        compose.onNodeWithText("无输出").assertDoesNotExist()
     }
 
     @Test
-    fun toolCallRendersFailureResultStrip() {
-        val block = TimelineBlock.ToolCallBlock(
-            toolName = "adb_shell",
+    fun interruptedToolCallCollapsesWithWarningAndRevealsCommandOnExpand() {
+        val block = toolCall(command = "sleep 999", isRunning = true)
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block, isStreaming = false)
+            }
+        }
+
+        compose.onNodeWithText("执行已中断 · 结果未知", substring = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("执行已中断").assertIsDisplayed()
+        compose.onNodeWithText("sleep 999").assertDoesNotExist()
+
+        compose.onNodeWithText("执行已中断", substring = true).performClick()
+
+        compose.onNodeWithText("命令").assertIsDisplayed()
+        compose.onNodeWithText("sleep 999").assertIsDisplayed()
+    }
+
+    @Test
+    fun failedToolCallCollapsedShowsErrorAndExpandsToErrorOutput() {
+        val block = toolCall(
             command = "am start -a non.existent",
-            output = null,
+            output = "ActivityNotFoundException: 无法找到 Activity",
             isSuccess = false,
             summary = "Activity not found",
         )
@@ -236,21 +375,20 @@ class ToolCallCardTest {
             }
         }
 
-        // 验证失败提示
+        // 失败摘要优先出现在徽标栏（规格 §4.2：状态或 summary）。
         compose.onNodeWithText("Activity not found").assertIsDisplayed()
         compose.onNodeWithContentDescription("执行失败").assertIsDisplayed()
+        compose.onNodeWithText("ActivityNotFoundException", substring = true).assertDoesNotExist()
+
+        compose.onNodeWithText("Activity not found").performClick()
+
+        compose.onNodeWithText("错误输出").assertIsDisplayed()
+        compose.onNodeWithText("ActivityNotFoundException", substring = true).assertIsDisplayed()
     }
 
     @Test
-    fun toolCallWithDetailedOutputExpandsAndCollapses() {
-        val detailedLog = "Starting: Intent { act=android.settings.SETTINGS }\nStatus: complete"
-        val block = TimelineBlock.ToolCallBlock(
-            toolName = "adb_shell",
-            command = "am start -a android.settings.SETTINGS",
-            output = detailedLog,
-            isSuccess = true,
-            summary = "执行成功",
-        )
+    fun successWithoutOutputShowsNoOutputAfterExpand() {
+        val block = toolCall(output = null, summary = null)
 
         compose.setContent {
             MaterialTheme {
@@ -258,23 +396,31 @@ class ToolCallCardTest {
             }
         }
 
-        // 初始状态：显示“查看输出”，未展示详细日志
-        compose.onNodeWithText("查看输出").assertIsDisplayed()
-        compose.onNodeWithText(detailedLog).assertDoesNotExist()
+        compose.onNodeWithText("执行成功").performClick()
 
-        // 点击“查看输出”展开
-        compose.onNodeWithText("查看输出").performClick()
+        compose.onNodeWithText("无输出").assertIsDisplayed()
+        compose.onNodeWithText("命令").assertIsDisplayed()
+    }
 
-        // 展开后状态：详细日志可见，按钮变为“收起输出”
-        compose.onNodeWithText("收起输出").assertIsDisplayed()
-        compose.onNodeWithText(detailedLog, substring = true).assertIsDisplayed()
+    @Test
+    fun toolCallShowsObservedDurationInSummaryBar() {
+        val clock = FakeClock()
+        val store = ExecutionTimingStore { clock.now }
+        store.observe("a1#0", running = true)
+        clock.now = 2_400L
+        store.observe("a1#0", running = false)
 
-        // 再次点击“收起输出”
-        compose.onNodeWithText("收起输出").performClick()
+        val block = toolCall()
 
-        // 收起后状态
-        compose.onNodeWithText("查看输出").assertIsDisplayed()
-        compose.onNodeWithText(detailedLog).assertDoesNotExist()
+        compose.setContent {
+            CompositionLocalProvider(LocalExecutionTiming provides store) {
+                MaterialTheme {
+                    MarkdownToolCallView(block = block, timingKey = "a1#0")
+                }
+            }
+        }
+
+        compose.onNodeWithText("执行成功", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("2.4 秒", substring = true).assertIsDisplayed()
     }
 }
-

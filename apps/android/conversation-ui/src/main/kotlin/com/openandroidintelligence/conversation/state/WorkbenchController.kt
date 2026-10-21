@@ -15,6 +15,10 @@ import com.openandroidintelligence.conversation.model.LocalSendAtom
 import com.openandroidintelligence.conversation.model.LocalSubmissionState
 import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import com.openandroidintelligence.conversation.model.reconcileSnapshotDeletions
+import com.openandroidintelligence.conversation.model.OriginalImageState
+import com.openandroidintelligence.conversation.workbench.OriginalImagePolicy
+import com.openandroidintelligence.conversation.workbench.compressOriginalImageForViewer
+import com.openandroidintelligence.conversation.workbench.readOriginalBytes
 import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
 import com.openandroidintelligence.gateway.http.EventSessionRejectedException
 import kotlinx.coroutines.CancellationException
@@ -208,6 +212,21 @@ class WorkbenchController(
     private val supportsConversationManagement: Boolean = false,
     private val externalBusyThreadIds: () -> Set<String> = { emptySet() },
     private val onClosed: () -> Unit = {},
+    /**
+     * 原图缓存最多保留几张。
+     *
+     * 默认 3 张（规格 3.4）；测试注入更小的值即可验证淘汰与清零，而不必加载真图。
+     */
+    private val originalImageCacheSize: Int = OriginalImagePolicy.CacheEntries,
+    /**
+     * 原图解码 + 压缩的注入缝。
+     *
+     * 生产默认走真实实现：先按 bounds 判断尺寸，再用 `ImageDecoder`（应用 EXIF 方向）
+     * 或 `BitmapFactory` 采样到最长边 2048px，最后压成 JPEG 85。24MB 读取上限与
+     * 2048px 上限都不在这条缝里，注入实现也无法绕过。
+     */
+    private val originalImageCompressor: (ByteArray) -> ByteArray? =
+        { bytes -> compressOriginalImageForViewer(bytes) },
 ) : AutoCloseable {
     private val controllerJob=SupervisorJob(scope.coroutineContext[Job])
     private val workScope=CoroutineScope(scope.coroutineContext+controllerJob)
@@ -507,11 +526,15 @@ class WorkbenchController(
         val localError: String? = null,
         val downloadState: com.openandroidintelligence.conversation.model.AttachmentDownloadState = com.openandroidintelligence.conversation.model.AttachmentDownloadState.IDLE,
         val downloadError: String? = null,
+        /** 原图是独立于缩略图的一次按需加载，状态也必须独立记录。 */
+        val originalState: OriginalImageState = OriginalImageState.IDLE,
+        val originalError: String? = null,
     )
     private val mediaPresentation = LinkedHashMap<HistoricalAttachmentKey, MediaPresentation>()
     private val mediaOwners = LinkedHashMap<HistoricalAttachmentKey, String>()
     private val mediaJobs = LinkedHashMap<HistoricalAttachmentKey, Job>()
     private val downloadJobs = LinkedHashMap<HistoricalAttachmentKey, Job>()
+    private val originalJobs = LinkedHashMap<HistoricalAttachmentKey, Job>()
     private val localArchiveJobs = LinkedHashMap<String, Job>()
     private val deletedMedia = linkedSetOf<HistoricalAttachmentKey>()
     private data class MediaMessageKey(val scope: ConversationScope, val threadId: String, val messageId: String)
@@ -525,6 +548,18 @@ class WorkbenchController(
     private val historicalAttachments = object : LruCache<HistoricalAttachmentKey, HistoricalAttachmentPreview>(MAX_HISTORY_ATTACHMENT_PREVIEWS) {
         override fun entryRemoved(evicted: Boolean, key: HistoricalAttachmentKey, oldValue: HistoricalAttachmentPreview, newValue: HistoricalAttachmentPreview?) {
             oldValue.attachment.previewBytes?.takeIf { it !== newValue?.attachment?.previewBytes }?.fill(0)
+        }
+    }
+    /**
+     * 已加载原图的最近使用缓存。
+     *
+     * 与缩略图缓存分开：缩略图预算按「30 条消息 × 256KB」计算，而一张按展示尺寸
+     * 压缩后的原图仍有数百 KB，两者不是同一个量级。只在打开大图预览时填充，最多
+     * 保留 [originalImageCacheSize] 张；淘汰和关闭时把字节清零，不把照片留在堆里。
+     */
+    private val originalImages = object : LruCache<HistoricalAttachmentKey, ByteArray>(originalImageCacheSize) {
+        override fun entryRemoved(evicted: Boolean, key: HistoricalAttachmentKey, oldValue: ByteArray, newValue: ByteArray?) {
+            if (oldValue !== newValue) oldValue.fill(0)
         }
     }
 
@@ -974,6 +1009,8 @@ class WorkbenchController(
         historicalAttachments.evictAll()
         mediaJobs.values.forEach { it.cancel() }; mediaJobs.clear()
         downloadJobs.values.forEach { it.cancel() }; downloadJobs.clear()
+        originalJobs.values.forEach { it.cancel() }; originalJobs.clear()
+        originalImages.evictAll()
         localArchiveJobs.values.forEach { it.cancel() }; localArchiveJobs.clear()
         bootstrapJob?.cancel()
         creationSendJob?.cancel()
@@ -2906,16 +2943,20 @@ class WorkbenchController(
 
     fun clearRetainedMediaPreviews() {
         historicalAttachments.evictAll()
+        // 退出账号/释放界面时原图同样不能留在堆里：它比缩略图大一个量级。
+        originalImages.evictAll()
         val rows = renderTimeline()
         update { it.copy(timeline=if(rows.isEmpty()) Loadable.Empty else Loadable.Ready(rows)) }
     }
 
     private fun invalidateMediaTask(key: HistoricalAttachmentKey) {
         mediaEpochs[key]=Math.addExact(mediaEpochs[key] ?: 0L,1L)
-        mediaJobs.remove(key)?.cancel(); downloadJobs.remove(key)?.cancel()
+        mediaJobs.remove(key)?.cancel(); downloadJobs.remove(key)?.cancel(); originalJobs.remove(key)?.cancel()
         localArchiveJobs.keys.filter { attachmentCoordinator?.remoteAttachmentId(it) == key.attachmentId }.toList()
             .forEach { localArchiveJobs.remove(it)?.cancel() }
         historicalAttachments.remove(key); mediaPresentation.remove(key)
+        // LruCache 的淘汰回调会把字节清零；这里只是提前释放当前打开过的原图。
+        originalImages.remove(key)
     }
     private fun mediaTaskCurrent(key: HistoricalAttachmentKey,epoch: Long): Boolean {
         val owner=mediaOwners[key]
@@ -3041,6 +3082,14 @@ class WorkbenchController(
             verified?.sizeBytes?.takeIf { hash != null },hash)
     }
 
+    /**
+     * 当前宿主是否装配了下载端口。
+     *
+     * 没有端口时“保存至本地”按钮不该出现：Dialog 会遮住宿主的 Snackbar，
+     * 点了只弹一个用户看不到的 notice，等同于假装保存。
+     */
+    val downloadsSupported: Boolean get() = downloads != null
+
     fun downloadAttachment(attachmentId: String) {
         val threadId = activeThreadId ?: return
         val port = downloads ?: run { update { it.copy(notice="DOWNLOAD_UNAVAILABLE") }; return }
@@ -3076,6 +3125,86 @@ class WorkbenchController(
                 repaintMedia(threadId)
             }
         }
+    }
+
+    /**
+     * 按需加载一张历史附件的原图。
+     *
+     * 缩略图随消息同步，原图却可能有几十 MB：只有用户真的打开大图预览时才去取。
+     * 读取有 24MB 硬上限，解码后最长边压到 2048px、JPEG 85 再进缓存；缓存只保留
+     * 最近 [originalImageCacheSize] 张，淘汰时清零。整个任务与缩略图/下载共用
+     * [mediaEpochs] 与 [mediaTaskCurrent]：附件被删除、账号切换或控制器关闭之后，
+     * 迟到的原图不能把界面重新点亮。
+     */
+    fun requestOriginalImage(attachmentId: String) {
+        val threadId = activeThreadId ?: return
+        if (closed) return
+        val key = historicalAttachmentKey(threadId, attachmentId)
+        // 已缓存的原图直接复用：重复打开预览不该再读一遍磁盘。
+        if (key in deletedMedia || originalImages[key] != null || originalJobs[key]?.isActive == true) return
+        val port = media
+        val epoch = mediaEpochs[key] ?: 0L
+        if (port == null) {
+            // 没有媒体端口就没有原件可取：明确失败，而不是让界面一直转圈。
+            originalJobs.remove(key)?.cancel()
+            mediaPresentation[key] = (mediaPresentation[key] ?: MediaPresentation()).copy(
+                originalState = OriginalImageState.FAILED,
+                originalError = "LOCAL_MEDIA_UNAVAILABLE",
+            )
+            repaintMedia(threadId)
+            return
+        }
+        mediaPresentation[key] = (mediaPresentation[key] ?: MediaPresentation()).copy(
+            originalState = OriginalImageState.LOADING,
+            originalError = null,
+        )
+        repaintMedia(threadId)
+        val job = workScope.launch {
+            // 端口用「原件代数」描述这一次读取属于哪一代；不实现的端口返回 null，不阻塞加载。
+            val portEpoch = runCatching { port.originalEpoch(threadId, attachmentId) }.getOrNull()
+            try {
+                val raw = withContext(mediaDispatcher) {
+                    // 先确保原件在本地，再打开它；顺序与下载链路一致。
+                    port.ensureLocal(threadId, attachmentId)
+                    port.openOriginal(threadId, attachmentId).use { input -> readOriginalBytes(input) }
+                }
+                val compressed = try {
+                    withContext(mediaDispatcher) { originalImageCompressor(raw) }
+                        ?: error("ORIGINAL_DECODE_FAILED")
+                } finally {
+                    // 原图字节可能带 EXIF/GPS；压缩成展示图之后立即清零，不在堆里留原件。
+                    raw.fill(0)
+                }
+                if (!mediaTaskCurrent(key, epoch)) return@launch
+                val commit = {
+                    originalImages.put(key, compressed)
+                    mediaPresentation[key] = (mediaPresentation[key] ?: MediaPresentation()).copy(
+                        originalState = OriginalImageState.READY,
+                        originalError = null,
+                    )
+                    repaintMedia(threadId)
+                }
+                if (portEpoch == null) {
+                    commit()
+                } else if (runCatching { port.withOriginalEpoch(threadId, attachmentId, portEpoch) { commit() } }.isFailure) {
+                    // 读取期间原件被替换/删除：这一份已经不属于当前代，必须丢弃。
+                    throw IllegalStateException("ORIGINAL_EPOCH_CHANGED")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (!mediaTaskCurrent(key, epoch)) return@launch
+                mediaPresentation[key] = (mediaPresentation[key] ?: MediaPresentation()).copy(
+                    originalState = OriginalImageState.FAILED,
+                    originalError = errorCodeOf(failure),
+                )
+                repaintMedia(threadId)
+            }
+        }
+        originalJobs[key] = job
+        // 完成后从在途表里移除，避免一张张原图把任务表涨成泄漏；
+        // 只移除自己，迟到的回调不能删掉后来者。
+        job.invokeOnCompletion { if (originalJobs[key] === job) originalJobs.remove(key) }
     }
 
     fun dismissNotice() {
@@ -3743,7 +3872,21 @@ class WorkbenchController(
                             )
                         }
                         val presentation = activeThreadId?.let { mediaPresentation[historicalAttachmentKey(it,id)] }
-                        if (presentation == null) visible else visible.copy(
+                        // 原图字节只在缓存里存在：缓存淘汰后必须回到 IDLE，
+                        // 不能让一条 READY 记录指向已经被清零的数组。
+                        val originalBytes = activeThreadId?.let { originalImages[historicalAttachmentKey(it, id)] }
+                        val originalState = when {
+                            originalBytes != null -> OriginalImageState.READY
+                            presentation?.originalState == OriginalImageState.LOADING ||
+                                presentation?.originalState == OriginalImageState.FAILED -> presentation.originalState
+                            else -> OriginalImageState.IDLE
+                        }
+                        val withOriginal = visible.copy(
+                            originalBytes = originalBytes,
+                            originalState = originalState,
+                            originalError = presentation?.originalError,
+                        )
+                        if (presentation == null) withOriginal else withOriginal.copy(
                             savedOffline=presentation.localState == com.openandroidintelligence.conversation.model.AttachmentLocalState.SAVED,
                             localState=presentation.localState,localError=presentation.localError,
                             downloadState=presentation.downloadState,downloadError=presentation.downloadError)

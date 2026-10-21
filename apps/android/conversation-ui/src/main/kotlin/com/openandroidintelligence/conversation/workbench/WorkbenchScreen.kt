@@ -89,6 +89,9 @@ fun WorkbenchScreen(
     val listState = rememberLazyListState()
     var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
+    // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
+    val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId)
+    val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     var showAttachmentLibrary by remember { mutableStateOf(false) }
     var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -109,15 +112,15 @@ fun WorkbenchScreen(
         entries.none { !it.isUser && it.isStreaming }
     val creatingThreadInThisThread = state.creatingThread &&
         state.creationSourceThreadId == state.activeThreadId
-    // item 0 永远是插件卡片槽位；其余是消息、创建中、思考中。
-    val itemCount = 1 + entries.size +
+    // item 0 永远是插件卡片槽位；其余是消息展示项、创建中、思考中。
+    val itemCount = 1 + displayItems.size +
         (if (creatingThreadInThisThread) 1 else 0) +
         (if (isThinking) 1 else 0)
     val lastItemIndex = itemCount - 1
 
     val freshEntryKeys = rememberFreshTimelineKeys(
         threadId = state.activeThreadId,
-        keys = (state.timeline as? Loadable.Ready)?.value?.map { it.key },
+        keys = displayItems.map { it.key },
     )
 
     LaunchedEffect(state.notice) {
@@ -165,7 +168,7 @@ fun WorkbenchScreen(
     val tailKey: String = when {
         isThinking -> "thinking_indicator"
         creatingThreadInThisThread -> "creating_thread"
-        else -> entries.lastOrNull()?.key ?: "protected_plugin_cards"
+        else -> displayItems.lastOrNull()?.key ?: "protected_plugin_cards"
     }
     val tailSignature = "$itemCount|$tailKey"
     var previousTailSignature by remember(state.activeThreadId, timelineReady) { mutableStateOf<String?>(null) }
@@ -361,7 +364,15 @@ fun WorkbenchScreen(
                                         "写下第一条消息，开始这段对话",
                                         controller::retryTimeline,
                                         modifier = Modifier.fillMaxSize(),
-                                        ready = { rows ->
+                                        ready = { _ ->
+                                            val downloadAction =
+                                                if (controller.downloadsSupported) controller::downloadAttachment else null
+                                            AttachmentPreviewHost(
+                                                attachments = entries.flatMap { it.attachments },
+                                                onDownload = downloadAction,
+                                                onRequestOriginal = controller::requestOriginalImage,
+                                                modifier = Modifier.fillMaxSize(),
+                                            ) { openPreview ->
                                             LazyColumn(
                                                 state = listState,
                                                 modifier = Modifier.fillMaxSize(),
@@ -379,10 +390,10 @@ fun WorkbenchScreen(
                                                         placementSpec = MotionSpecs.morph(reduceMotion),
                                                     )) { pluginCards() }
                                                 }
-                                                items(rows, key = { it.key }) { entry ->
-                                                    val fresh = entry.key in freshEntryKeys
-                                                    val isTail = entry.key == rows.lastOrNull()?.key
-                                                    val jumpTarget = entry.systemThreadId
+                                                items(displayItems, key = { it.key }) { item ->
+                                                    val fresh = item.key in freshEntryKeys
+                                                    val isTail = item.key == displayItems.lastOrNull()?.key
+                                                    val jumpTarget = (item as? TimelineDisplayItem.Single)?.entry?.systemThreadId
                                                     val rowModifier = Modifier
                                                         // M04：只有真正新增的消息淡入 + 8dp 上浮；
                                                         // 历史消息滚进视口不重放。
@@ -398,8 +409,8 @@ fun WorkbenchScreen(
                                                                     // 只有「同一条消息继续长高」才补差值。
                                                                     // 尾巴换成下一条消息时高度变化属于新条目，
                                                                     // 由条目数量变化那条路径平滑跟随，不能再叠加一次。
-                                                                    val sameRow = lastEntryKey == entry.key
-                                                                    lastEntryKey = entry.key
+                                                                    val sameRow = lastEntryKey == item.key
+                                                                    lastEntryKey = item.key
                                                                     lastEntryHeightPx = size.height
                                                                     // 只补「长高」的差值：缩短不应把用户往下拽。
                                                                     if (sameRow && followLatest && previous > 0 && size.height > previous) {
@@ -414,15 +425,18 @@ fun WorkbenchScreen(
                                                         )
                                                     if (jumpTarget != null) {
                                                         CreatedThreadJumpRow(
-                                                            label = entry.text,
+                                                            label = (item as TimelineDisplayItem.Single).entry.text,
                                                             onClick = { controller.openThread(jumpTarget) },
                                                             modifier = rowModifier,
                                                         )
                                                     } else {
-                                                        TimelineRow(
-                                                            entry = entry,
+                                                        TimelineDisplayRow(
+                                                            item = item,
                                                             onDecide = controller::decideApproval,
-                                                            onDownloadAttachment = controller::downloadAttachment,
+                                                            timing = executionTiming,
+                                                            onDownloadAttachment = downloadAction,
+                                                            onRequestOriginalAttachment = controller::requestOriginalImage,
+                                                            onOpenAttachmentPreview = openPreview,
                                                             modifier = rowModifier,
                                                         )
                                                     }
@@ -457,6 +471,7 @@ fun WorkbenchScreen(
                                                         )
                                                     }
                                                 }
+                                            }
                                             }
                                         },
                                     )
@@ -583,7 +598,8 @@ fun WorkbenchScreen(
                     onRetryAttachment = controller::retryAttachment,
                     onClose = { showAttachmentLibrary = false },
                     historical=entries.flatMap { it.attachments }.distinctBy { it.draftId },
-                    onDownloadHistorical=controller::downloadAttachment,
+                    onDownloadHistorical=if (controller.downloadsSupported) controller::downloadAttachment else null,
+                    onRequestOriginalHistorical=controller::requestOriginalImage,
                 )
             }
         }

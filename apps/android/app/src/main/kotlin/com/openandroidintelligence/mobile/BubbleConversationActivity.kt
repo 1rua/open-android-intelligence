@@ -23,11 +23,16 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.components.readableFailure
+import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
-import com.openandroidintelligence.conversation.workbench.TimelineRow
+import com.openandroidintelligence.conversation.workbench.AttachmentPreviewHost
+import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
+import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
+import com.openandroidintelligence.conversation.workbench.rememberTimelineDisplayItems
 import com.openandroidintelligence.conversation.workbench.ComposerBar
 import com.openandroidintelligence.conversation.workbench.ConversationBrowser
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /** The system embeds this Activity inside a native conversation bubble. */
@@ -188,13 +193,20 @@ private fun BubbleChat(
 ) {
     val state by controller.state.collectAsState()
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
+    val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId)
+    val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
+    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val downloadAction: ((String) -> Unit)? =
+        if (controller.downloadsSupported) controller::downloadAttachment else null
     val list = rememberLazyListState()
     val followLatest by remember { derivedStateOf {
         val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: Int.MAX_VALUE
         lastVisible >= list.layoutInfo.totalItemsCount - 2
     } }
-    LaunchedEffect(entries.lastOrNull()?.key, entries.lastOrNull()?.text) {
-        if (entries.isNotEmpty() && followLatest && !list.isScrollInProgress) list.animateScrollToItem(entries.lastIndex)
+    LaunchedEffect(displayItems.lastOrNull()?.key, entries.lastOrNull()?.text) {
+        if (displayItems.isNotEmpty() && followLatest && !list.isScrollInProgress) {
+            list.animateScrollToItem(displayItems.lastIndex)
+        }
     }
     Column(modifier.fillMaxWidth()) {
         if (status != null) Text(status.label(), Modifier.padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceTiny), style = MaterialTheme.typography.labelMedium)
@@ -204,10 +216,28 @@ private fun BubbleChat(
                 Text(readableFailure(timeline.code))
                 TextButton(onClick = controller::retryTimeline) { Text("重试") }
             }
-            else -> LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(Dimensions.SpaceCompact), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
-                if (entries.isEmpty()) item { Text("此会话暂无消息") }
-                items(entries, key = { it.key }) { entry ->
-                    TimelineRow(entry, controller::decideApproval, onDownloadAttachment = controller::downloadAttachment)
+            else -> AttachmentPreviewHost(
+                attachments = entries.flatMap { it.attachments },
+                onDownload = downloadAction,
+                onRequestOriginal = controller::requestOriginalImage,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            ) { openPreview ->
+                LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(Dimensions.SpaceCompact), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
+                    if (displayItems.isEmpty()) item { Text("此会话暂无消息") }
+                    items(displayItems, key = { it.key }) { item ->
+                        TimelineDisplayRow(
+                            item = item,
+                            onDecide = controller::decideApproval,
+                            timing = executionTiming,
+                            onDownloadAttachment = downloadAction,
+                            onRequestOriginalAttachment = controller::requestOriginalImage,
+                            onOpenAttachmentPreview = openPreview,
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = null,
+                                placementSpec = MotionSpecs.morph(reduceMotion),
+                            ),
+                        )
+                    }
                 }
             }
         }

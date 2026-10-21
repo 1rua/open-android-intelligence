@@ -87,6 +87,13 @@ object Dimensions {
     val ReadingWidth = 680.dp
     /** 消息气泡最大宽度。 */
     val MessageWidth = 640.dp
+    /**
+     * 聊天图片在气泡内的最大高度。
+     *
+     * 图片按比例完整显示，320dp 约等于手机视口的一半：够看清内容，又不会让
+     * 一张竖图独占整屏、把会话上下文挤走。大图预览在 Dialog 里另行铺满屏幕。
+     */
+    val AttachmentImageMaxHeight = 320.dp
     /** 用户气泡占可用宽度的比例上限。 */
     const val MessageWidthFraction = 0.86f
     /** 抽屉宽度。 */

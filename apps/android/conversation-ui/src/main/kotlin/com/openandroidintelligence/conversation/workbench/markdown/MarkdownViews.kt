@@ -45,6 +45,17 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 internal val LocalMarkdownQuoteDepth = compositionLocalOf { 0 }
 
 /**
+ * 是否处于「紧凑 Markdown」上下文（思维链正文、执行过程叙述）。
+ *
+ * 为 true 时段落/标题/列表/代码块与块间距统一收一档：
+ * - 正文走 [AppTextStyles.Thought]（13sp / 18.2sp），颜色降为从属色；
+ * - 块间距从 8dp 收到 4dp，代码块字号与内边距同步收紧。
+ *
+ * 普通正文（`MarkdownDocumentView` 默认调用方）不受影响。
+ */
+val LocalMarkdownCompact = compositionLocalOf { false }
+
+/**
  * 完整 Markdown 文档渲染器：根据 AST 节点分发渲染至具体组件，
  * 颜色与圆角一律取自 MaterialTheme 语义角色与 AppRadius 令牌。
  */
@@ -55,11 +66,14 @@ fun MarkdownDocumentView(
     modifier: Modifier = Modifier,
 ) {
     val colors = defaultMarkdownColors()
+    val compact = LocalMarkdownCompact.current
 
     Column(
         modifier = modifier.fillMaxWidth(),
-        // 块间距走 8dp 栅格令牌，和消息正文的行间节奏一致。
-        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+        // 块间距走间距令牌：普通正文 8dp；紧凑上下文收到 4dp，思维链读起来才连贯。
+        verticalArrangement = Arrangement.spacedBy(
+            if (compact) Dimensions.SpaceTiny else Dimensions.SpaceSmall,
+        ),
     ) {
         blocks.forEachIndexed { index, block ->
             val isLast = isStreaming && index == blocks.lastIndex
@@ -97,17 +111,31 @@ fun MarkdownHeadingView(
     modifier: Modifier = Modifier,
 ) {
     val level = block.level.coerceIn(1, 6)
-    val (fontSize, fontWeight, color, showBottomDivider) = when (level) {
-        1 -> Quadruple(18.sp, FontWeight.Bold, MaterialTheme.colorScheme.onSurface, true)
-        2 -> Quadruple(16.sp, FontWeight.Bold, MaterialTheme.colorScheme.onSurface, false)
-        3 -> Quadruple(15.sp, FontWeight.Bold, MaterialTheme.colorScheme.primary, false)
-        else -> Quadruple(14.sp, FontWeight.SemiBold, MaterialTheme.colorScheme.primary, false)
+    val compact = LocalMarkdownCompact.current
+    // 紧凑上下文收一档字号并取消 H1 分隔线：执行过程里的标题只是层级提示，不该抢正文。
+    val (fontSize, fontWeight, color, showBottomDivider) = if (compact) {
+        when (level) {
+            1 -> Quadruple(15.sp, FontWeight.Bold, MaterialTheme.colorScheme.onSurface, false)
+            2 -> Quadruple(14.sp, FontWeight.Bold, MaterialTheme.colorScheme.onSurface, false)
+            3 -> Quadruple(14.sp, FontWeight.SemiBold, MaterialTheme.colorScheme.primary, false)
+            else -> Quadruple(13.sp, FontWeight.SemiBold, MaterialTheme.colorScheme.primary, false)
+        }
+    } else {
+        when (level) {
+            1 -> Quadruple(18.sp, FontWeight.Bold, MaterialTheme.colorScheme.onSurface, true)
+            2 -> Quadruple(16.sp, FontWeight.Bold, MaterialTheme.colorScheme.onSurface, false)
+            3 -> Quadruple(15.sp, FontWeight.Bold, MaterialTheme.colorScheme.primary, false)
+            else -> Quadruple(14.sp, FontWeight.SemiBold, MaterialTheme.colorScheme.primary, false)
+        }
     }
 
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(top = 4.dp, bottom = 2.dp),
+            .padding(
+                top = if (compact) Dimensions.SpaceTiny else 4.dp,
+                bottom = 2.dp,
+            ),
     ) {
         MarkdownInlineText(
             text = block.text,
@@ -117,7 +145,7 @@ fun MarkdownHeadingView(
                 fontSize = fontSize,
                 fontWeight = fontWeight,
                 color = color,
-                lineHeight = (fontSize.value * 1.35).sp,
+                lineHeight = (fontSize.value * if (compact) 1.4f else 1.35f).sp,
             ),
             color = color,
         )
@@ -139,13 +167,15 @@ fun MarkdownParagraphView(
     modifier: Modifier = Modifier,
 ) {
     val quoteDepth = LocalMarkdownQuoteDepth.current
+    val compact = LocalMarkdownCompact.current
     // 引用内的正文降一级：字号收一档、斜体 + 从属色，与级联引用条一起表达层级。
-    val style = if (quoteDepth > 0) {
-        MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic)
-    } else {
-        MaterialTheme.typography.bodyLarge
+    // 紧凑上下文（思维链/过程叙述）再收一档，并统一用从属色。
+    val style = when {
+        compact -> AppTextStyles.Thought
+        quoteDepth > 0 -> MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic)
+        else -> MaterialTheme.typography.bodyLarge
     }
-    val color = if (quoteDepth > 0) {
+    val color = if (compact || quoteDepth > 0) {
         MaterialTheme.colorScheme.onSurfaceVariant
     } else {
         MaterialTheme.colorScheme.onSurface
@@ -217,7 +247,8 @@ fun MarkdownListView(
     modifier: Modifier = Modifier,
 ) {
     val quoteDepth = LocalMarkdownQuoteDepth.current
-    val baseColor = if (quoteDepth > 0) {
+    val compact = LocalMarkdownCompact.current
+    val baseColor = if (compact || quoteDepth > 0) {
         MaterialTheme.colorScheme.onSurfaceVariant
     } else {
         MaterialTheme.colorScheme.onSurface
@@ -228,15 +259,20 @@ fun MarkdownListView(
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
         // 标记只在首行居中：多行列表项保持圆点/复选框贴首行，而不是浮在整段中间
-        val markerLineHeight = MaterialTheme.typography.bodyLarge.lineHeight
+        val baseLineHeight = if (compact) {
+            AppTextStyles.Thought.lineHeight
+        } else {
+            MaterialTheme.typography.bodyLarge.lineHeight
+        }
         val markerHeight = with(LocalDensity.current) {
-            (if (markerLineHeight.isSpecified) markerLineHeight else 24.sp).toDp()
+            (if (baseLineHeight.isSpecified) baseLineHeight else 24.sp).toDp()
         }
 
         block.items.forEachIndexed { index, item ->
             val isLast = isStreaming && index == block.items.lastIndex
             val checked = item.taskState == TaskState.CHECKED
             val itemColor = if (checked) MaterialTheme.colorScheme.onSurfaceVariant else baseColor
+            val baseStyle = if (compact) AppTextStyles.Thought else MaterialTheme.typography.bodyLarge
 
             Row(
                 modifier = Modifier
@@ -251,7 +287,7 @@ fun MarkdownListView(
                     colors = colors,
                     isStreaming = isLast,
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyLarge.copy(
+                    style = baseStyle.copy(
                         textDecoration = if (checked) TextDecoration.LineThrough else TextDecoration.None,
                     ),
                     color = itemColor,
@@ -459,10 +495,13 @@ fun MarkdownTableView(
 
 @Composable
 fun MarkdownThematicBreakView(modifier: Modifier = Modifier) {
+    val compact = LocalMarkdownCompact.current
     HorizontalDivider(
         color = MaterialTheme.colorScheme.outlineVariant,
         thickness = 1.dp,
-        modifier = modifier.padding(vertical = 8.dp),
+        modifier = modifier.padding(
+            vertical = if (compact) Dimensions.SpaceTiny else Dimensions.SpaceSmall,
+        ),
     )
 }
 
@@ -474,13 +513,14 @@ fun MarkdownCodeBlock(
 ) {
     val clipboardManager = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
+    val compact = LocalMarkdownCompact.current
     // 沿用最高一级容器角色，让代码块与正文和卡片拉开一层深浅，避免写死编辑器主题色。
     val containerBg = MaterialTheme.colorScheme.surfaceContainerHighest
     val headerBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val borderColor = MaterialTheme.colorScheme.outlineVariant
 
     Surface(
-        shape = RoundedCornerShape(AppRadius.Medium),
+        shape = RoundedCornerShape(if (compact) AppRadius.Small else AppRadius.Medium),
         color = containerBg,
         border = BorderStroke(1.dp, borderColor),
         modifier = modifier
@@ -492,7 +532,10 @@ fun MarkdownCodeBlock(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(headerBg)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .padding(
+                        horizontal = if (compact) Dimensions.SpaceSmall else 12.dp,
+                        vertical = if (compact) Dimensions.SpaceTiny else 6.dp,
+                    ),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -502,7 +545,7 @@ fun MarkdownCodeBlock(
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
+                    fontSize = if (compact) 10.sp else 11.sp,
                 )
                 Row(
                     modifier = Modifier
@@ -534,7 +577,7 @@ fun MarkdownCodeBlock(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
-                    .padding(12.dp),
+                    .padding(if (compact) Dimensions.SpaceSmall else 12.dp),
             ) {
                 val cursorInlineId = "streaming_code_cursor"
                 val annotatedCode = remember(block.code, isStreaming) {
@@ -553,8 +596,8 @@ fun MarkdownCodeBlock(
                         inlineContent = inlineContent,
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
+                        fontSize = if (compact) 11.5.sp else 12.sp,
+                        lineHeight = if (compact) 16.sp else 18.sp,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                 }

@@ -93,7 +93,10 @@ fun FloatingConversationPanel(
     }
 
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
-    val visibleEntries = remember(entries) { entries.takeLast(FloatingMessageWindow) }
+    // 先按完整会话折叠执行段，再截取浮动面板窗口：否则尾部窗口可能把
+    // 最终回答与它的中间过程拆开，聚合面板会看不到前面的步骤。
+    val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId)
+    val visibleItems = remember(displayItems) { displayItems.takeLast(FloatingMessageWindow) }
     val latestStreaming = entries.lastOrNull()?.let { !it.isUser && it.isStreaming } == true
     val isThinking = (state.generation == GenerationState.QUEUED ||
         state.generation == GenerationState.RUNNING) && !latestStreaming
@@ -157,12 +160,15 @@ fun FloatingConversationPanel(
             },
         ) {
             FloatingMessageList(
-                entries = visibleEntries,
+                displayItems = visibleItems,
+                previewAttachments = entries.flatMap { it.attachments },
                 threadId = state.activeThreadId,
                 isThinking = isThinking,
                 onCreateThread = controller::createThread,
                 onDecide = controller::decideApproval,
-                onDownloadAttachment = controller::downloadAttachment,
+                onDownloadAttachment =
+                    if (controller.downloadsSupported) controller::downloadAttachment else null,
+                onRequestOriginalAttachment = controller::requestOriginalImage,
             )
         }
         if (explainSelection) {
@@ -199,17 +205,20 @@ fun FloatingConversationPanel(
  */
 @Composable
 private fun FloatingMessageList(
-    entries: List<com.openandroidintelligence.conversation.state.TimelineEntry>,
+    displayItems: List<TimelineDisplayItem>,
+    previewAttachments: List<com.openandroidintelligence.conversation.model.TimelineAttachment>,
     threadId: String?,
     isThinking: Boolean,
     onCreateThread: () -> Unit,
     onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit,
-    onDownloadAttachment: (String) -> Unit,
+    onDownloadAttachment: ((String) -> Unit)?,
+    onRequestOriginalAttachment: (String) -> Unit,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
-    val freshKeys = rememberFreshTimelineKeys(threadId, entries.map { it.key })
+    val executionTiming = rememberExecutionTimingStore(threadId)
+    val freshKeys = rememberFreshTimelineKeys(threadId, displayItems.map { it.key })
     val listState = rememberLazyListState()
-    if (entries.isEmpty() && !isThinking) {
+    if (displayItems.isEmpty() && !isThinking) {
         Column(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
@@ -225,6 +234,12 @@ private fun FloatingMessageList(
         }
         return
     }
+    AttachmentPreviewHost(
+        attachments = previewAttachments,
+        onDownload = onDownloadAttachment,
+        onRequestOriginal = onRequestOriginalAttachment,
+        modifier = Modifier.fillMaxSize(),
+    ) { openPreview ->
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
@@ -244,12 +259,15 @@ private fun FloatingMessageList(
                 )
             }
         }
-        items(entries.asReversed(), key = { it.key }) { entry ->
-            val fresh = entry.key in freshKeys
-            TimelineRow(
-                entry = entry,
+        items(displayItems.asReversed(), key = { it.key }) { item ->
+            val fresh = item.key in freshKeys
+            TimelineDisplayRow(
+                item = item,
                 onDecide = onDecide,
+                timing = executionTiming,
                 onDownloadAttachment = onDownloadAttachment,
+                onRequestOriginalAttachment = onRequestOriginalAttachment,
+                onOpenAttachmentPreview = openPreview,
                 modifier = Modifier
                     // M04：只有真正新增的消息淡入 + 8dp 上浮；历史不重放。
                     .animateItem(
@@ -260,5 +278,6 @@ private fun FloatingMessageList(
                     .fillMaxWidth(),
             )
         }
+    }
     }
 }
