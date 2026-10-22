@@ -71,6 +71,11 @@
 在仓库外临时目录、无根 `node_modules` 的条件下复现旧失败后，仅对该子包执行 `npm ci`，
 新版命令成功生成真实签名通知包，且 WASM 字节与编译输入一致。工具类型检查与 47 项测试再次通过。
 
+完整 Gradle 检查还暴露了生成资产的任务声明问题：原实现把任务输出直接放进 `sourceSets.full.assets`，
+仅给合并资产任务加依赖；Lint 把该目录当作静态源读取后，Gradle 报隐式任务依赖错误。
+现使用有类型的输入/输出属性，并通过 `variant.sources.assets.addGeneratedSourceDirectory` 注册。
+AGP 为打包消费者关联生产任务；Lint 按设计排除生成资产，不再把通知包目录误当作静态源读取。
+
 Android 复现时先按 Android README 构建真实签名包，配置 `HERMES_PLUGIN_ROOT`、
 `OPEN_ANDROID_GATEWAY_CONTRACT_ROOT` 与可运行插件夹具的 Python，再运行：
 

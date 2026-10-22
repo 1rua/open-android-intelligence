@@ -1,6 +1,17 @@
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.Properties
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Optional
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
 
 plugins {
     id("com.android.application")
@@ -58,21 +69,25 @@ tasks.withType<Test>().configureEach {
 // An absent optional local input must clear yesterday's asset, never reuse it.
 val bundledNotificationsPath = providers.environmentVariable("OAI_BUNDLED_NOTIFICATIONS_ALP").orElse("")
 val requireBundledNotifications = providers.gradleProperty("oai.requireBundledNotifications").map(String::toBoolean).orElse(false)
-val bundledNotificationAssets = layout.buildDirectory.dir("generated/bundled-notifications/assets")
-val stageBundledNotifications by tasks.registering {
-    inputs.property("bundlePath", bundledNotificationsPath)
-    inputs.property("required", requireBundledNotifications)
-    if (bundledNotificationsPath.get().isNotBlank()) {
-        inputs.file(file(bundledNotificationsPath.get())).withPropertyName("signedNotificationPackage")
-            .withPathSensitivity(org.gradle.api.tasks.PathSensitivity.NONE)
-    }
-    outputs.dir(bundledNotificationAssets)
-    doLast {
-        val destination = bundledNotificationAssets.get().asFile
-        delete(destination)
-        destination.mkdirs()
-        val source = bundledNotificationsPath.get().takeIf(String::isNotBlank)?.let(::file)
-        check(source?.isFile == true || !requireBundledNotifications.get()) {
+abstract class StageBundledNotifications : DefaultTask() {
+    @get:InputFile
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val signedPackage: RegularFileProperty
+
+    @get:Input
+    abstract val bundleRequired: Property<Boolean>
+
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    fun stage() {
+        val destination = outputDirectory.get().asFile
+        check(!destination.exists() || destination.deleteRecursively()) { "BUNDLED_NOTIFICATIONS_CLEANUP_FAILED" }
+        check(destination.mkdirs()) { "BUNDLED_NOTIFICATIONS_DIRECTORY_FAILED" }
+        val source = signedPackage.orNull?.asFile
+        check(source?.isFile == true || !bundleRequired.get()) {
             "BUNDLED_NOTIFICATIONS_REQUIRED: set OAI_BUNDLED_NOTIFICATIONS_ALP to the privately signed notification .alp"
         }
         if (source != null) {
@@ -82,6 +97,11 @@ val stageBundledNotifications by tasks.registering {
             source.copyTo(asset, overwrite = true)
         }
     }
+}
+val stageBundledNotifications by tasks.registering(StageBundledNotifications::class) {
+    bundleRequired.set(requireBundledNotifications)
+    bundledNotificationsPath.get().takeIf(String::isNotBlank)?.let { signedPackage.set(file(it)) }
+    outputDirectory.set(layout.buildDirectory.dir("generated/bundled-notifications/assets"))
 }
 
 // 固定调试签名（app/keystore/debug.keystore，见同目录 README.md）在根工程
@@ -147,8 +167,6 @@ android {
         }
     }
 
-    sourceSets.getByName("full").assets.srcDir(bundledNotificationAssets)
-
     buildFeatures {
         buildConfig = true
         compose = true
@@ -175,10 +193,12 @@ android {
     }
 }
 
-// Both APKs and Robolectric tests consume generated assets; input content changes
-// invalidate merge results. Play never sees the Full-only source set or task.
-tasks.matching { it.name.matches(Regex("mergeFull.*Assets")) }.configureEach {
-    dependsOn(stageBundledNotifications)
+// Let AGP own the generated asset and its producer instead of exposing a raw
+// sourceSets directory that Lint models read without a dependency. Play has no bundle.
+androidComponents {
+    onVariants(selector().withFlavor("distribution" to "full")) { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(stageBundledNotifications, StageBundledNotifications::outputDirectory)
+    }
 }
 
 // Fail before producing any release APK/AAB, including direct Gradle builds.
