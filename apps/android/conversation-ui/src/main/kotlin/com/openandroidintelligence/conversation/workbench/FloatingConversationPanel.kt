@@ -122,6 +122,7 @@ fun FloatingConversationPanel(
             title = state.activeThreadTitle.ifBlank { "浮动对话" },
             footer = {
                 ComposerBar(
+                    editorKey = controller to state.activeThreadId,
                     onPasteImages = onPasteImages,
                     draft = state.draft,
                     onDraftChange = controller::editDraft,

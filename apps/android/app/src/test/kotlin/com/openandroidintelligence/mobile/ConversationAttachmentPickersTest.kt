@@ -221,8 +221,112 @@ class ConversationAttachmentPickersTest {
         finally { first.close(); second.close(); job.cancel() }
     }
 
-    private fun controller(scope: CoroutineScope, attachments: AttachmentDraftCoordinator? = null) = WorkbenchController(scope, object : ConversationRepository {
-        override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
+    @Test fun largeUriBatchesAreBoundedBeforeReadingProviderMetadataOrStartingUploads() {
+        val prepared = CopyOnWriteArrayList<String>()
+        val reads = java.util.concurrent.atomic.AtomicInteger()
+        val uris = (1..MAX_COMPOSER_ATTACHMENTS * 4).map { Uri.parse("content://picker/large/$it") }
+        uris.forEachIndexed { index, uri ->
+            shadowOf(context.contentResolver).setCursor(uri, object : BaseCursor() {
+                override fun moveToFirst(): Boolean { reads.incrementAndGet(); return true }
+                override fun getColumnIndex(columnName: String) = if (columnName == OpenableColumns.DISPLAY_NAME) 0 else -1
+                override fun getString(columnIndex: Int) = "photo-$index.png"
+                override fun close() = Unit
+            })
+        }
+        withControllers(attachments = attachments { selection -> prepared += selection.filename }) { main, _, _ ->
+            main.openThread("thread-a")
+            val pickers = ConversationAttachmentPickerState().apply { controller = main }
+            val store = ViewModelStore().apply { put("pickers", pickers) }
+            try {
+                pickers.prepareUris(pickers.currentTarget(), context, uris)
+                val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+                while (main.state.value.attachments.size < MAX_COMPOSER_ATTACHMENTS && System.nanoTime() < deadline) {
+                    shadowOf(Looper.getMainLooper()).idle()
+                    Thread.sleep(5)
+                }
+                assertEquals(MAX_COMPOSER_ATTACHMENTS, prepared.size)
+                assertEquals(MAX_COMPOSER_ATTACHMENTS, reads.get())
+                assertEquals(MAX_COMPOSER_ATTACHMENTS, main.state.value.attachments.size)
+                // A second import cannot read another batch while the composer is full.
+                pickers.prepareUris(pickers.currentTarget(), context, uris)
+                shadowOf(Looper.getMainLooper()).idle()
+                assertEquals(MAX_COMPOSER_ATTACHMENTS, reads.get())
+                assertTrue(ShadowToast.getTextOfLatestToast().contains("最多添加"))
+            } finally { store.clear() }
+        }
+    }
+
+    @Test fun preparingDraftsReserveSlotsBeforeTheyAppearAndReleaseThemAfterRemoval() {
+        val release = CompletableDeferred<Unit>()
+        var started = 0
+        withControllers(attachments = attachments { started++; release.await() }) { main, _, _ ->
+            main.openThread("thread-a")
+            val selection = LocalAttachmentSelection("photo.png", "image/png", AttachmentContentSource { ByteArrayInputStream(byteArrayOf(1)) })
+            repeat(MAX_COMPOSER_ATTACHMENTS * 3) { main.addAttachment(selection) }
+            assertEquals(MAX_COMPOSER_ATTACHMENTS, started)
+            assertTrue(main.state.value.attachments.isEmpty())
+            assertEquals(0, main.availableAttachmentSlots)
+            release.complete(Unit)
+            assertEquals(MAX_COMPOSER_ATTACHMENTS, main.state.value.attachments.size)
+            assertEquals(0, main.availableAttachmentSlots)
+            main.removeAttachment(main.state.value.attachments.first().id.value)
+            assertEquals(1, main.availableAttachmentSlots)
+            main.addAttachment(selection)
+            assertEquals(MAX_COMPOSER_ATTACHMENTS + 1, started)
+            assertEquals(MAX_COMPOSER_ATTACHMENTS, main.state.value.attachments.size)
+        }
+    }
+
+    @Test fun coldStartSharesStayPendingUntilThreadRefreshSelectsADestinationAndReceiverAccepts() {
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Unconfined)
+        val threads = CompletableDeferred<ConversationPage>()
+        val main = controller(scope, threads = { threads.await() })
+        val pending = SharedConversationAttachments(SavedStateHandle())
+        val uri = Uri.parse("content://share/cold-start")
+        pending.receive(android.content.Intent(android.content.Intent.ACTION_SEND).putExtra(android.content.Intent.EXTRA_STREAM, uri))
+        var received = 0
+        try {
+            assertTrue(main.state.value.isOnline)
+            assertNull(main.state.value.activeThreadId)
+            assertFalse(pending.deliverTo(main) { received++; true })
+            assertEquals(0, received)
+            assertEquals(listOf(uri.toString()), pending.pending.value)
+            threads.complete(ConversationPage(listOf(ConversationSummary(ConversationId("selected-thread"), "Selected", 1)), null))
+            assertEquals("selected-thread", main.state.value.activeThreadId)
+            assertFalse(pending.deliverTo(main) { false })
+            assertEquals(listOf(uri.toString()), pending.pending.value)
+            assertTrue(pending.deliverTo(main) { files ->
+                assertEquals("selected-thread", main.state.value.activeThreadId)
+                assertEquals(listOf(uri), files)
+                received++
+                true
+            })
+            assertTrue(pending.pending.value.isEmpty())
+            assertFalse(pending.deliverTo(main) { received++; true })
+            assertEquals(1, received)
+        } finally { main.close(); job.cancel() }
+    }
+
+    private fun attachments(onPrepare: suspend (LocalAttachmentSelection) -> Unit) = object : AttachmentDraftCoordinator {
+        private var nextId = 0
+        override suspend fun prepare(selection: LocalAttachmentSelection): AttachmentDraft {
+            val id = AttachmentDraftId("prepared-${nextId++}")
+            onPrepare(selection)
+            return AttachmentDraft(id, selection.filename, selection.mediaType, 1, "0".repeat(64), AttachmentState.VERIFIED)
+        }
+        override fun observe(draftId: String) = flowOf(AttachmentDraftState(AttachmentDraftId(draftId), AttachmentState.VERIFIED))
+        override fun retry(draftId: String) = Unit
+        override fun remoteAttachmentId(draftId: String): String? = null
+        override suspend fun discard(draftId: String) = Unit
+        override suspend fun releaseAfterSubmit(draftId: String) = Unit
+        override suspend fun armSubmission(draftId: String, revision: Long): PendingSubmissionIntent = error("Must not auto-send")
+        override suspend fun cancelSubmission(intentId: String) = CancelSubmissionResult(true)
+    }
+
+    private fun controller(scope: CoroutineScope, attachments: AttachmentDraftCoordinator? = null,
+        threads: suspend () -> ConversationPage = { ConversationPage(emptyList(), null) }) = WorkbenchController(scope, object : ConversationRepository {
+        override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = threads()
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation = error("Unexpected create")
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance = error("Unexpected batch")

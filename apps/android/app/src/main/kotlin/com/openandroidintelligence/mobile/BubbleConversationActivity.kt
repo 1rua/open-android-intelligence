@@ -246,6 +246,7 @@ private fun BubbleChat(
                 color = MaterialTheme.colorScheme.error, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
         ComposerBar(
+            editorKey = controller to state.activeThreadId,
             onPasteImages = pickers.paste,
             draft = state.draft,
             onDraftChange = controller::editDraft,

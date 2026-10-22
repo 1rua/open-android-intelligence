@@ -531,6 +531,7 @@ fun WorkbenchScreen(
                                     ApprovalUnsupportedHint(onDismiss = { approvalHintDismissed = true })
                                 }
                                 ComposerBar(
+                                    editorKey = controller to state.activeThreadId,
                                     onPasteImages = onPasteImages,
                                     draft = state.draft,
                                     onDraftChange = { newDraft ->

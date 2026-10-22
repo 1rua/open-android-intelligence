@@ -14,6 +14,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowToast
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [31, 33, 35], application = Application::class)
@@ -55,7 +57,7 @@ class SharedConversationAttachmentsTest {
 
     @Test fun systemPhotoPickerResultRetainsAllSelectedImages() {
         val context = ApplicationProvider.getApplicationContext<Application>()
-        val contract = ActivityResultContracts.PickMultipleVisualMedia()
+        val contract = ActivityResultContracts.PickMultipleVisualMedia(MAX_COMPOSER_ATTACHMENTS)
         val request = contract.createIntent(context, PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         assertEquals("image/*", request.type)
         assertEquals(listOf(photo, otherPhoto), contract.parseResult(Activity.RESULT_OK, Intent().apply { clipData = clip(photo, otherPhoto) }))
@@ -65,11 +67,24 @@ class SharedConversationAttachmentsTest {
     @Test fun applicationIsRegisteredForImageAndDocumentShares() {
         val manager = ApplicationProvider.getApplicationContext<Application>().packageManager
         for (action in listOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) {
-            for (type in listOf("image/png", "application/pdf")) {
+            for (type in listOf("image/png", "application/pdf", "text/plain")) {
                 val targets = manager.queryIntentActivities(Intent(action).setType(type), 0)
                 assertTrue("$action $type must resolve to the main share receiver", targets.any { it.activityInfo.name == MainActivity::class.java.name })
             }
         }
+    }
+
+    @Test fun textAndUrlSharesShowAnExplicitRejectionWithoutDroppingPendingFiles() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val pending = SharedConversationAttachments(SavedStateHandle())
+        pending.receive(Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, document))
+        for (text in listOf("selected text", "https://example.com/page")) {
+            receiveSharedConversationAttachments(context, pending,
+                Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text))
+            assertEquals("未收到可读取的文件；文字或链接请复制后粘贴到输入框", ShadowToast.getTextOfLatestToast())
+            assertEquals(listOf(document.toString()), pending.pending.value)
+        }
+        assertEquals(listOf(document), pending.consume())
     }
 
     private fun clip(vararg uris: Uri) = ClipData("files", arrayOf("image/png", "application/pdf"), ClipData.Item(uris.first())).apply {

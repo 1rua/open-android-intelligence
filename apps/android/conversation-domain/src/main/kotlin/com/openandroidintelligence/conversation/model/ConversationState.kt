@@ -22,6 +22,9 @@ enum class MirrorSyncState {
     ACCOUNT_LOCKED, LOCAL_DATA_REMOVED, PAIRING_REVOKED,
 }
 
+/** Bound composer imports, including work that has not finished preparing a draft yet. */
+const val MAX_COMPOSER_ATTACHMENTS = 10
+
 data class AttachmentDraft(
     val id: AttachmentDraftId,
     val filename: String,

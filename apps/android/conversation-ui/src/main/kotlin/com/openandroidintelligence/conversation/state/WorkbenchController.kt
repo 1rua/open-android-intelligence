@@ -11,6 +11,7 @@ import com.openandroidintelligence.conversation.model.ClientMessageId
 import com.openandroidintelligence.conversation.model.ComposerState
 import com.openandroidintelligence.conversation.model.AttachmentState
 import com.openandroidintelligence.conversation.model.AttachmentDraftId
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import com.openandroidintelligence.conversation.model.LocalSendAtom
 import com.openandroidintelligence.conversation.model.LocalSubmissionState
 import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
@@ -291,6 +292,9 @@ class WorkbenchController(
     /** Picker results belong to the exact composer that launched them. */
     var attachmentTargetRevision: Long = 0
         private set
+    private var attachmentPreparations = 0
+    val availableAttachmentSlots: Int get() =
+        (MAX_COMPOSER_ATTACHMENTS - _state.value.attachments.size - attachmentPreparations).coerceAtLeast(0)
 
     /** Server-mirrored messages for the active thread, by message id. */
     private val submittingBatches=mutableSetOf<String>()
@@ -2061,6 +2065,10 @@ class WorkbenchController(
      */
     fun addAttachment(selection: com.openandroidintelligence.conversation.ports.LocalAttachmentSelection) {
         if (closed || _state.value.managingThreads || _state.value.activeThreadArchived) return
+        if (availableAttachmentSlots == 0) {
+            update { it.copy(notice = "每条消息最多添加 $MAX_COMPOSER_ATTACHMENTS 个附件，请先移除附件或发送后再添加") }
+            return
+        }
         val coordinator = attachmentCoordinator ?: run {
             update { it.copy(notice = "ATTACHMENT_UNAVAILABLE:NO_COORDINATOR") }
             return
@@ -2069,18 +2077,23 @@ class WorkbenchController(
         draftRevision++
         val targetRevision=attachmentTargetRevision
         val targetThreadEpoch=threadEpoch
+        attachmentPreparations++
         workScope.launch {
-            val draft = coordinator.prepare(selection)
-            val draftId = draft.id.value
-            if (closed || targetRevision != attachmentTargetRevision || targetThreadEpoch != threadEpoch) {
-                coordinator.discard(draftId)
-                return@launch
+            try {
+                val draft = coordinator.prepare(selection)
+                val draftId = draft.id.value
+                if (closed || targetRevision != attachmentTargetRevision || targetThreadEpoch != threadEpoch) {
+                    coordinator.discard(draftId)
+                    return@launch
+                }
+                selection.previewBytes?.let { attachmentPreviews[draftId] = it }
+                update { state ->
+                    state.copy(attachments = state.attachments + draft)
+                }
+                observeAttachment(coordinator,draftId)
+            } finally {
+                attachmentPreparations--
             }
-            selection.previewBytes?.let { attachmentPreviews[draftId] = it }
-            update { state ->
-                state.copy(attachments = state.attachments + draft)
-            }
-            observeAttachment(coordinator,draftId)
         }
     }
 
