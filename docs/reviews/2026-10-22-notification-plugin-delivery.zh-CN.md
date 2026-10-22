@@ -65,6 +65,12 @@
 测试运行中最初缺少 Robolectric 依赖的代理配置；给测试 JVM 配置当前环境代理和 Maven Central 后
 依赖下载及库测试通过。生产源码没有因测试环境而更改权限或网络校验。
 
+首次 GitHub Android CI 在签包步骤报 `tsx: not found`，尚未进入 Gradle。新增的签包命令使用了
+根目录恰好已安装的 `tsx`，但独立 `plugin-tooling` 未声明它；Android 与发布任务只安装该子包，
+所以干净 runner 会失败。现为 `plugin-tooling` 显式锁定 `tsx@4.23.1` 并更新其 lockfile。
+在仓库外临时目录、无根 `node_modules` 的条件下复现旧失败后，仅对该子包执行 `npm ci`，
+新版命令成功生成真实签名通知包，且 WASM 字节与编译输入一致。工具类型检查与 47 项测试再次通过。
+
 Android 复现时先按 Android README 构建真实签名包，配置 `HERMES_PLUGIN_ROOT`、
 `OPEN_ANDROID_GATEWAY_CONTRACT_ROOT` 与可运行插件夹具的 Python，再运行：
 
