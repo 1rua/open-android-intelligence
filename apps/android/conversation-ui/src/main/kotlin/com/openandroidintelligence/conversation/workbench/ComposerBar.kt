@@ -1,5 +1,15 @@
 package com.openandroidintelligence.conversation.workbench
 
+import android.net.Uri
+import android.os.Bundle
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.contentReceiver
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
@@ -30,6 +40,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -48,6 +60,9 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlin.math.roundToInt
+
+/** Keep the IME's URI permission token alive until the host has staged the selected images. */
+data class PastedImageContent(val uris: List<Uri>, val permissionOwner: Bundle? = null)
 
 /**
  * 共享消息输入底栏：
@@ -83,6 +98,7 @@ fun ComposerBar(
     voiceInputEnabled: Boolean = true,
     inFlightAttachmentIds: Set<String> = emptySet(),
     hasUnknownSubmissionOutcome: Boolean = false,
+    onPasteImages: ((PastedImageContent) -> Unit)? = null,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
@@ -143,6 +159,7 @@ fun ComposerBar(
                 onValueChange = onDraftChange,
                 isFocused = focused,
                 onFocusChange = { focused = it },
+                onPasteImages = onPasteImages,
                 modifier = Modifier.weight(1f),
             )
 
@@ -195,7 +212,7 @@ fun ComposerBar(
                 AttachmentChoice(
                     icon = Icons.Default.PhotoLibrary,
                     title = "相册选择",
-                    description = "从相册选择已有图片",
+                    description = "从相册选择一张或多张图片",
                 ) {
                     showAttachmentsSheet = false
                     onPickGallery()
@@ -255,17 +272,55 @@ private fun ComposerIconAction(
 }
 
 /** 输入框容器：`surfaceContainer` + 20dp 圆角 + 48dp 最小高度，聚焦时描边渐显。 */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ComposerInputField(
     value: String,
     onValueChange: (String) -> Unit,
     isFocused: Boolean,
     onFocusChange: (Boolean) -> Unit,
+    onPasteImages: ((PastedImageContent) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     val shape = RoundedCornerShape(AppRadius.Bubble)
+    // The state-based editor supports Android's image paste/IME content contract.
+    // Keep its selection and undo history while the controller remains the draft authority.
+    val editor = rememberTextFieldState(value)
+    val currentValue by rememberUpdatedState(value)
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    LaunchedEffect(value) {
+        if (editor.text.toString() != value) editor.edit { replace(0, length, value) }
+    }
+    val reportUserEdits = remember {
+        InputTransformation {
+            // Report in the input transaction, before Send or a thread switch can run.
+            // Programmatic draft restoration does not invoke this transformation.
+            val text = asCharSequence().toString()
+            if (text != currentValue) currentOnValueChange(text)
+        }
+    }
+    val resolver = LocalContext.current.contentResolver
+    val currentOnPasteImages by rememberUpdatedState(onPasteImages)
+    val receiver = remember(resolver) {
+        ReceiveContentListener { content ->
+            if (currentOnPasteImages == null) content else {
+                val images = mutableListOf<Uri>()
+                val remaining = content.consume { item ->
+                    val uri = item.uri
+                    val type = uri?.let { runCatching { resolver.getType(it) }.getOrNull() }
+                    val image = uri?.scheme == "content" &&
+                        (type?.startsWith("image/") ?: content.clipMetadata.clipDescription.hasMimeType("image/*"))
+                    if (image) images += checkNotNull(uri)
+                    image
+                }
+                if (images.isNotEmpty()) currentOnPasteImages?.invoke(
+                    PastedImageContent(images.distinct(), content.platformTransferableContent?.extras),
+                )
+                remaining
+            }
+        }
+    }
     val borderColor by animateColorAsState(
         targetValue = if (isFocused) {
             MaterialTheme.colorScheme.primary
@@ -283,31 +338,26 @@ private fun ComposerInputField(
             .animateContentSize(MotionSpecs.morph(reduced))
             .border(Dimensions.StrokeHairline, borderColor, shape),
     ) {
-        TextField(
-            value = value,
-            onValueChange = onValueChange,
-            placeholder = {
-                Text(
-                    "输入消息或 / 命令...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                )
-            },
+        BasicTextField(
+            state = editor,
+            inputTransformation = reportUserEdits,
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (onPasteImages != null) Modifier.contentReceiver(receiver) else Modifier)
                 .onFocusChanged { onFocusChange(it.isFocused) },
-            minLines = 1,
-            maxLines = 4,
-            shape = shape,
-            textStyle = MaterialTheme.typography.bodyLarge,
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-            ),
+            lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 1, maxHeightInLines = 4),
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            decorator = { innerTextField ->
+                Box(Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceCompact)) {
+                    if (editor.text.isEmpty()) Text(
+                        "输入消息或 / 命令...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                    innerTextField()
+                }
+            },
         )
     }
 }

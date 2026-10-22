@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,6 +59,7 @@ import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.workbench.FloatingConversationPanel
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
+import com.openandroidintelligence.conversation.workbench.PastedImageContent
 import com.openandroidintelligence.core.model.AssistantHandoffDecision
 import com.openandroidintelligence.core.model.AssistantHandoffDenialReason
 import com.openandroidintelligence.core.model.AssistantHandoffGate
@@ -83,11 +85,13 @@ import kotlinx.coroutines.withContext
  * 交给 [applySystemBarContrast]；这样「应用内深色 + 系统浅色」时状态栏图标仍然可读。
  */
 class MainActivity : ComponentActivity() {
+    private val sharedAttachments: SharedConversationAttachments by viewModels()
     private val pendingInvitation = androidx.compose.runtime.mutableStateOf<String?>(null)
     private val pendingReply = androidx.compose.runtime.mutableStateOf<ReplyNotificationTarget?>(null)
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        sharedAttachments.receive(intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
         ReplyNotificationTarget.from(intent)?.let { pendingReply.value = it }
     }
@@ -103,6 +107,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) sharedAttachments.receive(intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
         pendingReply.value = ReplyNotificationTarget.from(intent)
 
@@ -332,6 +337,16 @@ class MainActivity : ComponentActivity() {
                 val attachmentPickers = rememberConversationAttachmentPickers(controller) {
                     runtime.controller.value === it
                 }
+                val pendingShares by sharedAttachments.pending.collectAsState()
+                LaunchedEffect(controller, phase, pendingShares) {
+                    if (pendingShares.isNotEmpty() && phase is ConnectionPhase.Connected &&
+                        controller?.state?.value?.isOnline == true) {
+                        val uris = sharedAttachments.consume()
+                        attachmentPickers.receive(uris)
+                        showSettingsSheet = false
+                        showAssistant = false
+                    }
+                }
 
                 // 真实系统能力契约：屏幕圈选的截图来源（MediaProjection）。
                 // 授权必须由前台 Activity 发起系统对话框；授权结果先启动
@@ -465,6 +480,7 @@ class MainActivity : ComponentActivity() {
                                     onPickCamera = attachmentPickers.camera,
                                     onPickGallery = attachmentPickers.gallery,
                                     onPickDocument = attachmentPickers.document,
+                                    onPasteImages = attachmentPickers.paste,
                                     onVoiceInput = startVoiceInput,
                                     pluginCards = {
                                         com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(
@@ -488,6 +504,7 @@ class MainActivity : ComponentActivity() {
                                         onPickCamera = attachmentPickers.camera,
                                         onPickGallery = attachmentPickers.gallery,
                                         onPickDocument = attachmentPickers.document,
+                                        onPasteImages = attachmentPickers.paste,
                                         onVoiceInput = startVoiceInput,
                                         screenCaptureSource = screenCaptureSource,
                                         onNeedScreenCaptureAuthorization = {
@@ -601,10 +618,25 @@ internal fun GatewayWorkbenchScreen(
     offlineMirrorPhase: Boolean = false,
     onReconnectOfflineMirror: () -> Unit = {},
     reduceMotion: Boolean = false,
+    onPasteImages: ((PastedImageContent) -> Unit)? = null,
 ) {
     val operationNotice by runtime.operationNotice.collectAsState()
+    val phase by runtime.phase.collectAsState()
+    val profiles by runtime.savedProfiles.collectAsState()
+    val username = when (val current = phase) {
+        is ConnectionPhase.Connected -> current.username
+        is ConnectionPhase.OfflineMirror -> current.username
+        else -> ""
+    }
+    val profile = profiles.firstOrNull { it.gatewayBaseUrl == gatewayLabel && it.username == username }
+    val avatar = rememberAccountAvatarPicker(runtime, profile)
     Column(modifier.fillMaxSize()) {
         WorkbenchScreen(
+            accountName = username,
+            agentName = (phase as? ConnectionPhase.Connected)?.agentName ?: profile?.agentName,
+            accountAvatar = avatar.image,
+            onChangeAvatar = avatar.pick,
+            onPasteImages = onPasteImages,
             controller = controller,
             gatewayLabel = gatewayLabel,
             onOpenSettings = onOpenSettings,

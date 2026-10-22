@@ -18,9 +18,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.conversation.workbench.PastedImageContent
 import com.openandroidintelligence.mobile.util.ContentResolverExtensions
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.FilterInputStream
+import java.lang.ref.Reference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -30,6 +33,8 @@ internal data class ConversationAttachmentPickers(
     val camera: () -> Unit,
     val gallery: () -> Unit,
     val document: () -> Unit,
+    val receive: (List<Uri>) -> Boolean,
+    val paste: (PastedImageContent) -> Unit,
 )
 
 internal enum class ConversationAttachmentPicker { CAMERA, GALLERY, DOCUMENT }
@@ -62,20 +67,39 @@ internal class ConversationAttachmentPickerState : ViewModel() {
 
     fun accepts(target: AttachmentPickerTarget): Boolean = target.matches(controller) && isCurrentController(target.controller)
 
-    fun prepare(target: AttachmentPickerTarget?, context: Context, selection: () -> LocalAttachmentSelection) {
+    fun currentTarget(): AttachmentPickerTarget? = controller
+        ?.takeIf { it.state.value.isOnline && isCurrentController(it) }
+        ?.let { AttachmentPickerTarget(it, it.state.value.activeThreadId) }
+
+    fun prepare(target: AttachmentPickerTarget?, context: Context, selection: () -> LocalAttachmentSelection) =
+        prepareAll(target, context, listOf(selection))
+
+    fun prepareUris(target: AttachmentPickerTarget?, context: Context, uris: List<Uri>, permissionOwner: Any? = null) =
+        prepareAll(target, context, uris.distinct().map { uri -> { pickedAttachmentSelection(context, uri, permissionOwner) } })
+
+    private fun prepareAll(target: AttachmentPickerTarget?, context: Context, selections: List<() -> LocalAttachmentSelection>) {
         if (target == null || !accepts(target)) {
             notice(context, "对话已切换，附件未加入")
             return
         }
         viewModelScope.launch {
-            try {
-                val attachment = withContext(Dispatchers.IO) { selection() }
-                if (accepts(target)) target.controller.addAttachment(attachment)
-                else notice(context, "对话已切换，附件未加入")
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                notice(context, "附件处理失败：${failure.message}")
+            for (selection in selections) {
+                if (!accepts(target)) {
+                    notice(context, "对话已切换，剩余附件未加入")
+                    break
+                }
+                try {
+                    val attachment = withContext(Dispatchers.IO) { selection() }
+                    if (accepts(target)) target.controller.addAttachment(attachment)
+                    else {
+                        notice(context, "对话已切换，剩余附件未加入")
+                        break
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    notice(context, "附件无法读取，请重新选择或分享")
+                }
             }
         }
     }
@@ -97,15 +121,21 @@ internal fun rememberConversationAttachmentPickers(
         val target = state.consume(ConversationAttachmentPicker.CAMERA)
         if (bitmap != null) state.prepare(target, context) { cameraAttachmentSelection(bitmap) }
     }
-    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
         val target = state.consume(ConversationAttachmentPicker.GALLERY)
-        if (uri != null) state.prepare(target, context) { pickedAttachmentSelection(context, uri) }
+        if (uris.isNotEmpty()) state.prepareUris(target, context, uris)
     }
     val document = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val target = state.consume(ConversationAttachmentPicker.DOCUMENT)
         if (uri != null) state.prepare(target, context) { pickedAttachmentSelection(context, uri) }
     }
     return remember(state, camera, gallery, document) {
+        fun receive(uris: List<Uri>, permissionOwner: Any? = null): Boolean {
+            val target = state.currentTarget()
+            if (target != null) state.prepareUris(target, context, uris, permissionOwner)
+            else notice(context, "对话尚未就绪，无法添加附件")
+            return target != null
+        }
         fun launch(picker: ConversationAttachmentPicker, action: () -> Unit) {
             if (!state.capture(picker)) {
                 notice(context, "对话尚未就绪，无法选择附件")
@@ -124,11 +154,13 @@ internal fun rememberConversationAttachmentPickers(
                 gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             } },
             document = { launch(ConversationAttachmentPicker.DOCUMENT) { document.launch(arrayOf("*/*")) } },
+            receive = { receive(it) },
+            paste = { receive(it.uris, it.permissionOwner) },
         )
     }
 }
 
-internal fun pickedAttachmentSelection(context: Context, uri: Uri): LocalAttachmentSelection {
+internal fun pickedAttachmentSelection(context: Context, uri: Uri, permissionOwner: Any? = null): LocalAttachmentSelection {
     // SAF and the Photo Picker can grant durable read access. Some fallback providers only
     // grant temporary access; they are still staged immediately through the same stream path.
     try {
@@ -138,7 +170,16 @@ internal fun pickedAttachmentSelection(context: Context, uri: Uri): LocalAttachm
     } catch (_: UnsupportedOperationException) {
         // Older/fallback providers need not implement persisted grants.
     }
-    return ContentResolverExtensions.resolveAttachment(context.contentResolver, uri)
+    val selection = ContentResolverExtensions.resolveAttachment(context.contentResolver, uri)
+    if (permissionOwner == null) return selection
+    return selection.copy(contentSource = AttachmentContentSource {
+        object : FilterInputStream(selection.contentSource.openStream()) {
+            override fun close() {
+                try { super.close() }
+                finally { Reference.reachabilityFence(permissionOwner) }
+            }
+        }
+    })
 }
 
 internal fun cameraAttachmentSelection(bitmap: Bitmap): LocalAttachmentSelection = LocalAttachmentSelection(

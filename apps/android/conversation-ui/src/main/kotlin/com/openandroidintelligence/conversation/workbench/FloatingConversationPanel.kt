@@ -60,6 +60,7 @@ fun FloatingConversationPanel(
     onVoiceInput: () -> Unit, modifier: Modifier = Modifier,
     screenCaptureSource: ScreenCaptureSource? = null,
     onNeedScreenCaptureAuthorization: (() -> Unit)? = null,
+    onPasteImages: ((PastedImageContent) -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
     var expanded by rememberSaveable { mutableStateOf(true) }
@@ -121,6 +122,7 @@ fun FloatingConversationPanel(
             title = state.activeThreadTitle.ifBlank { "浮动对话" },
             footer = {
                 ComposerBar(
+                    onPasteImages = onPasteImages,
                     draft = state.draft,
                     onDraftChange = controller::editDraft,
                     generation = state.generation,

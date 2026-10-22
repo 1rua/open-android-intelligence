@@ -13,6 +13,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NegotiationClientTest {
+    @Test fun optionalAgentDisplayMetadataSurvivesNegotiationWithoutChangingIdentity() = runBlocking {
+        val result = clientWithVersion("2", "1", listOf(RawHeader(AGENT_NAME_HEADER, "Hermes"))).negotiate("neg_agent")
+        assertEquals("Hermes", result.agentName)
+        assertEquals("deploy_minor", result.deploymentId)
+        assertNull(clientWithVersion("2", "1").negotiate("neg_legacy").agentName)
+    }
     @Test fun refreshReplayRequiresAnUnambiguousExplicitGatewayCapability() = runBlocking {
         org.junit.Assert.assertFalse(clientWithVersion("2", "1").negotiate("neg_legacy").refreshReplaySupported)
         assertTrue(clientWithVersion("2", "1", listOf(RawHeader(REFRESH_REPLAY_HEADER, "v1")))

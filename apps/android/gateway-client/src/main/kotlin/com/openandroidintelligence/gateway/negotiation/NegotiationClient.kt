@@ -11,6 +11,8 @@ import com.openandroidintelligence.gateway.schema.SchemaContractHash
 /** generation-cancel-v1 在对话面能力闭集里的名字。 */
 const val GENERATION_CANCEL_FEATURE = "generation-cancel-v1"
 const val CONVERSATION_MANAGEMENT_FEATURE = "conversation-management-v1"
+/** Optional display metadata; does not change the closed v2 negotiation schema or identity checks. */
+const val AGENT_NAME_HEADER = "X-Open-Android-Intelligence-Agent-Name"
 
 /**
  * 本客户端声明实现、并随协商请求发出的对话面能力位。
@@ -42,6 +44,7 @@ data class NegotiationResult(
     val conversationUi: List<String> = emptyList(),
     /** Optional pre-auth refresh result replay, negotiated outside the closed JSON schema. */
     val refreshReplaySupported: Boolean = false,
+    val agentName: String? = null,
 ) {
     /**
      * 双方都同意可用的对话面能力：客户端声明过的 ∩ 网关确实同意的。
@@ -197,6 +200,7 @@ class NegotiationClient(
             refreshReplaySupported = com.openandroidintelligence.gateway.http.RawHeaders.single(
                 com.openandroidintelligence.gateway.http.RawHeaders.validate(response.headers), REFRESH_REPLAY_HEADER,
             ) == "v1",
+            agentName = advertisedAgentName(response.headers),
         )
     }
 
@@ -244,5 +248,12 @@ class NegotiationClient(
         val CONVERSATION_UI_FEATURES = DECLARED_CONVERSATION_UI_FEATURES
     }
 }
+
+/** Display-only names must be unambiguous and fit one line. Older Gateways may omit this header. */
+internal fun advertisedAgentName(headers: List<RawHeader>): String? = headers
+    .filter { it.name.equals(AGENT_NAME_HEADER, ignoreCase = true) }
+    .singleOrNull()?.value?.trim()?.takeIf { name ->
+        name.length in 1..128 && name.none { it.isISOControl() }
+    }
 
 const val REFRESH_REPLAY_HEADER = "X-Open-Android-Intelligence-Refresh-Replay"

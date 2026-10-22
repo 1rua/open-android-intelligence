@@ -119,6 +119,14 @@ Its persisted JobScheduler configuration also conflicts with
 the deliberate absence of `RECEIVE_BOOT_COMPLETED`; do not represent periodic
 work as reboot-resilient until that reviewed policy decision is made.
 
+## 附件导入与账号资料
+
+- 主窗口支持系统 `ACTION_SEND` / `ACTION_SEND_MULTIPLE` 的图片、文档等 `content://` 文件分享。冷启动收到的附件在登录后加入当前会话的待发送区；旋转屏幕不会重复导入。
+- 主窗口、浮动会话面板和原生气泡共用附件选择/上传逻辑。相册支持多选；输入框的系统粘贴支持图片，同时保留普通文字和混合内容中的文字粘贴。
+- 所有入口复用现有元数据解析、流式暂存、上传、校验和发送流程。处理期间切换账号、会话或发送消息，会阻止尚未处理的附件进入另一个输入草稿；读取失败的文件不阻断其余文件。
+- 侧边栏显示真实登录账号与账号名首字符头像。点击头像使用单选系统相册，将缩放至最长边 256px 的图片副本保存到该账号的 AccountManager 公开资料，独立于相册临时 URI 权限，退出或重新登录后保留，移除账号时删除。
+- Agent 状态由工作台的实时通道状态驱动，区分在线、连接中、重连和离线。名称优先使用协商响应的可选 `X-Open-Android-Intelligence-Agent-Name` 头（例如 `DSH`、`Hermes`，1–128 个字符、单行、单个值）；未提供时显示实际 `gatewayIdentity.deploymentId`。名称仅用于展示，不参与身份校验或授权，不更改 v2 JSON Schema 或契约摘要。
+
 ## Debug signing
 
 Debug variants are signed with the checked-in key `app/keystore/debug.keystore`

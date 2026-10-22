@@ -15,7 +15,9 @@ class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
 
     override fun list(): List<AccountProfile> = manager.getAccountsByType(TYPE).mapNotNull { account ->
         runCatching {
-            AccountProfile(account.name, required(account, "gateway"), required(account, "username"), manager.getUserData(account, "tlsTrustId").orEmpty())
+            AccountProfile(account.name, required(account, "gateway"), required(account, "username"),
+                manager.getUserData(account, "tlsTrustId").orEmpty(), manager.getUserData(account, "avatar"),
+                manager.getUserData(account, "agentName"))
         }.getOrNull()
     }
     override fun find(localProfileId: String): AccountProfile? = list().find { it.localProfileId == localProfileId }
@@ -27,10 +29,11 @@ class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
 
     private fun saveProfile(profile: AccountProfile, binding: Binding?) {
         val account = Account(profile.localProfileId, TYPE)
-        val values = mutableMapOf("gateway" to profile.gatewayBaseUrl, "username" to profile.username, "tlsTrustId" to profile.tlsTrustId)
+        val values = mutableMapOf("gateway" to profile.gatewayBaseUrl, "username" to profile.username,
+            "tlsTrustId" to profile.tlsTrustId, "avatar" to profile.avatarBase64, "agentName" to profile.agentName)
         binding?.let { values["binding"] = encode(it) }
         if (manager.getAccountsByType(TYPE).none { it == account }) {
-            val data = Bundle().apply { values.forEach { (key, value) -> putString(key, value) } }
+            val data = Bundle().apply { values.forEach { (key, value) -> if (value != null) putString(key, value) } }
             check(manager.addAccountExplicitly(account, null, data)) { "PROFILE_PERSISTENCE_FAILED" }
         } else values.forEach { (key, value) -> manager.setUserData(account, key, value) }
     }
@@ -39,6 +42,12 @@ class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
         check(find(profileId) != null) { "UNKNOWN_PROFILE" }
         val account = Account(profileId, TYPE)
         manager.setUserData(account, "binding", encode(binding))
+    }
+
+    /** Metadata edits must never recreate an account removed while an image was being decoded. */
+    fun saveAvatar(profileId: String, avatarBase64: String) {
+        check(find(profileId) != null) { "UNKNOWN_PROFILE" }
+        manager.setUserData(Account(profileId, TYPE), "avatar", avatarBase64)
     }
 
     fun binding(profileId: String): Binding? {
