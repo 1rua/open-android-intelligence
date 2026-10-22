@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.state.WorkbenchController
@@ -74,8 +75,13 @@ internal class ConversationAttachmentPickerState : ViewModel() {
     fun prepare(target: AttachmentPickerTarget?, context: Context, selection: () -> LocalAttachmentSelection) =
         prepareAll(target, context, listOf(selection))
 
-    fun prepareUris(target: AttachmentPickerTarget?, context: Context, uris: List<Uri>, permissionOwner: Any? = null) =
-        prepareAll(target, context, uris.distinct().map { uri -> { pickedAttachmentSelection(context, uri, permissionOwner) } })
+    fun prepareUris(target: AttachmentPickerTarget?, context: Context, uris: List<Uri>, permissionOwner: Any? = null) {
+        val bounded = uris.asSequence().distinct().take(MAX_COMPOSER_ATTACHMENTS + 1).toList()
+        if (bounded.size > MAX_COMPOSER_ATTACHMENTS) notice(context, "每次最多导入 $MAX_COMPOSER_ATTACHMENTS 个附件，其余文件请分批分享或选择")
+        prepareAll(target, context, bounded.take(MAX_COMPOSER_ATTACHMENTS).map { uri ->
+            { pickedAttachmentSelection(context, uri, permissionOwner) }
+        })
+    }
 
     private fun prepareAll(target: AttachmentPickerTarget?, context: Context, selections: List<() -> LocalAttachmentSelection>) {
         if (target == null || !accepts(target)) {
@@ -86,6 +92,10 @@ internal class ConversationAttachmentPickerState : ViewModel() {
             for (selection in selections) {
                 if (!accepts(target)) {
                     notice(context, "对话已切换，剩余附件未加入")
+                    break
+                }
+                if (target.controller.availableAttachmentSlots == 0) {
+                    notice(context, "每条消息最多添加 $MAX_COMPOSER_ATTACHMENTS 个附件，请先移除附件或发送后再添加")
                     break
                 }
                 try {
@@ -121,7 +131,7 @@ internal fun rememberConversationAttachmentPickers(
         val target = state.consume(ConversationAttachmentPicker.CAMERA)
         if (bitmap != null) state.prepare(target, context) { cameraAttachmentSelection(bitmap) }
     }
-    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_COMPOSER_ATTACHMENTS)) { uris ->
         val target = state.consume(ConversationAttachmentPicker.GALLERY)
         if (uris.isNotEmpty()) state.prepareUris(target, context, uris)
     }

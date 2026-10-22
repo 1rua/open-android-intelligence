@@ -91,7 +91,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        sharedAttachments.receive(intent)
+        receiveSharedConversationAttachments(this, sharedAttachments, intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
         ReplyNotificationTarget.from(intent)?.let { pendingReply.value = it }
     }
@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (savedInstanceState == null) sharedAttachments.receive(intent)
+        if (savedInstanceState == null) receiveSharedConversationAttachments(this, sharedAttachments, intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
         pendingReply.value = ReplyNotificationTarget.from(intent)
 
@@ -337,15 +337,10 @@ class MainActivity : ComponentActivity() {
                 val attachmentPickers = rememberConversationAttachmentPickers(controller) {
                     runtime.controller.value === it
                 }
-                val pendingShares by sharedAttachments.pending.collectAsState()
-                LaunchedEffect(controller, phase, pendingShares) {
-                    if (pendingShares.isNotEmpty() && phase is ConnectionPhase.Connected &&
-                        controller?.state?.value?.isOnline == true) {
-                        val uris = sharedAttachments.consume()
-                        attachmentPickers.receive(uris)
-                        showSettingsSheet = false
-                        showAssistant = false
-                    }
+                ReceivePendingConversationShares(sharedAttachments,
+                    controller.takeIf { phase is ConnectionPhase.Connected }, attachmentPickers.receive) {
+                    showSettingsSheet = false
+                    showAssistant = false
                 }
 
                 // 真实系统能力契约：屏幕圈选的截图来源（MediaProjection）。

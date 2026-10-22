@@ -59,6 +59,7 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import kotlinx.coroutines.flow.collect
 import kotlin.math.roundToInt
 
 /** Keep the IME's URI permission token alive until the host has staged the selected images. */
@@ -99,6 +100,8 @@ fun ComposerBar(
     inFlightAttachmentIds: Set<String> = emptySet(),
     hasUnknownSubmissionOutcome: Boolean = false,
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
+    /** Controller and conversation identity; a change discards selection, IME composition and undo. */
+    editorKey: Any? = null,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
@@ -114,7 +117,7 @@ fun ComposerBar(
         else -> hasPendingInput && canSend && !hasUnknownSubmissionOutcome
     }
 
-    var focused by remember { mutableStateOf(false) }
+    var focused by remember(editorKey) { mutableStateOf(false) }
     var showAttachmentsSheet by remember { mutableStateOf(false) }
 
     val insetModifier = Modifier
@@ -154,14 +157,16 @@ fun ComposerBar(
                 onClick = { showAttachmentsSheet = true },
             )
 
-            ComposerInputField(
-                value = draft,
-                onValueChange = onDraftChange,
-                isFocused = focused,
-                onFocusChange = { focused = it },
-                onPasteImages = onPasteImages,
-                modifier = Modifier.weight(1f),
-            )
+            key(editorKey) {
+                ComposerInputField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    isFocused = focused,
+                    onFocusChange = { focused = it },
+                    onPasteImages = onPasteImages,
+                    modifier = Modifier.weight(1f),
+                )
+            }
 
             ComposerIconAction(
                 icon = Icons.Default.Mic,
@@ -285,19 +290,41 @@ private fun ComposerInputField(
     val reduced = LocalMotionPolicy.current.reduceMotion
     val shape = RoundedCornerShape(AppRadius.Bubble)
     // The state-based editor supports Android's image paste/IME content contract.
-    // Keep its selection and undo history while the controller remains the draft authority.
+    // The caller keys this editor by controller/thread so editing state cannot cross conversations.
     val editor = rememberTextFieldState(value)
     val currentValue by rememberUpdatedState(value)
     val currentOnValueChange by rememberUpdatedState(onValueChange)
-    LaunchedEffect(value) {
-        if (editor.text.toString() != value) editor.edit { replace(0, length, value) }
+    var reportedValue by remember { mutableStateOf(value) }
+    // Observe the last report as well: editing and Send may both happen before the next
+    // composition, leaving the external string equal to its previous composed value.
+    val restoreExternalValue = value != reportedValue
+    SideEffect {
+        if (restoreExternalValue) {
+            if (editor.text.toString() != value) editor.edit { replace(0, length, value) }
+            reportedValue = value
+        }
+    }
+    LaunchedEffect(editor) {
+        // Undo/redo bypass InputTransformation. Only report a current editor change while
+        // the controller still agrees with the last report; late snapshots cannot undo Send
+        // or an external draft restoration.
+        snapshotFlow { editor.text.toString() to currentValue }.collect { (text, controllerText) ->
+            if (text != controllerText && controllerText == currentValue &&
+                text == editor.text.toString() && controllerText == reportedValue) {
+                reportedValue = text
+                currentOnValueChange(text)
+            }
+        }
     }
     val reportUserEdits = remember {
         InputTransformation {
             // Report in the input transaction, before Send or a thread switch can run.
             // Programmatic draft restoration does not invoke this transformation.
             val text = asCharSequence().toString()
-            if (text != currentValue) currentOnValueChange(text)
+            if (text != reportedValue) {
+                reportedValue = text
+                currentOnValueChange(text)
+            }
         }
     }
     val resolver = LocalContext.current.contentResolver
