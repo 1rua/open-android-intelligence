@@ -127,6 +127,8 @@ sealed interface ConnectionPhase {
         val requestedConversationUi: Set<String> = CLIENT_CONVERSATION_UI_OFFER,
         /** 网关声明的设备请求能力档（契约 §10）；null 表示网关未提供。 */
         val deviceRequests: String? = null,
+        /** Display metadata from negotiation, falling back to the actual deployment identity. */
+        val agentName: String? = null,
     ) : ConnectionPhase
 
     data class Failed(val code: String) : ConnectionPhase
@@ -317,6 +319,14 @@ class GatewayRuntime(
     val operationNotice: StateFlow<String?> = _operationNotice.asStateFlow()
     fun dismissOperationNotice() { _operationNotice.value = null }
 
+    suspend fun setAccountAvatar(profileId: String, bytes: ByteArray) = withContext(Dispatchers.IO) {
+        require(bytes.isNotEmpty() && bytes.size <= ACCOUNT_AVATAR_MAX_BYTES)
+        synchronized(accountProfiles) {
+            accountProfiles.saveAvatar(profileId, Base64.getEncoder().encodeToString(bytes))
+            _savedProfiles.value = accountProfiles.list()
+        }
+    }
+
     init {
         val stagingRoot = File(context.noBackupFilesDir, "attachment-staging")
         scope.launch(Dispatchers.IO) {
@@ -498,6 +508,7 @@ class GatewayRuntime(
                         tlsSpkiSha256 = tlsPin,
                         conversationUi = negotiated.conversationUi,
                         deviceRequests = negotiated.deviceRequests,
+                        agentName = negotiated.agentName ?: negotiated.deploymentId,
                         generationCancelCapability =
                             GenerationCancelCapability.fromNegotiation(negotiated),
                     )
@@ -988,7 +999,8 @@ class GatewayRuntime(
                             _controller.value = null
                         }
                         establish(endpoint, lastUser, profileId, session, tlsPin,
-                            negotiated.conversationUi, negotiated.deviceRequests, GenerationCancelCapability.fromNegotiation(negotiated), ::checkOwner)
+                            negotiated.conversationUi, negotiated.deviceRequests, GenerationCancelCapability.fromNegotiation(negotiated), ::checkOwner,
+                            agentName = negotiated.agentName ?: negotiated.deploymentId)
                         return@launch
                     } catch (cancelled: CancellationException) { throw cancelled }
                       catch (cause: Exception) {
@@ -1060,6 +1072,7 @@ class GatewayRuntime(
         deviceRequests: String?,
         generationCancelCapability: GenerationCancelCapability = GenerationCancelCapability.NotNegotiated,
         checkOwner: () -> Unit = {},
+        agentName: String? = null,
     ): Unit = initializePostLogin(InitializationStage.SESSION_SETUP) {
         checkOwner()
         val pins = setOfNotNull(tlsSpkiSha256)
@@ -1372,6 +1385,12 @@ class GatewayRuntime(
         }
         synchronized(backgroundOwnershipLock) {
             checkOwner()
+            runCatching {
+                synchronized(accountProfiles) {
+                    accountProfiles.find(profileId)?.let { accountProfiles.save(it.copy(agentName = agentName)) }
+                    _savedProfiles.value = accountProfiles.list()
+                }
+            }
             _phase.value = ConnectionPhase.Connected(
                 gatewayUrl = endpoint.baseUrl,
                 username = username,
@@ -1383,6 +1402,7 @@ class GatewayRuntime(
                 conversationUi = CLIENT_CONVERSATION_UI_OFFER intersect conversationUi.toSet(),
                 requestedConversationUi = CLIENT_CONVERSATION_UI_OFFER,
                 deviceRequests = deviceRequests,
+                agentName = agentName,
             )
             _loginStatus.value = GatewayLoginStatus.SIGNED_IN
             _credentialStatus.value = GatewayCredentialStatus.AVAILABLE
@@ -1686,9 +1706,13 @@ class GatewayRuntime(
         val endpoint = checkNotNull(GatewayEndpoint.parse(gatewayUrl))
         val retained = if (endpoint.isTls) checkNotNull(identityTrust.retained(endpoint, username)) else null
         val trustId = if (endpoint.isTls) (retained?.spki ?: "ca:${retained?.deploymentId}") else ""
-        accountProfiles.save(AccountProfile(profileId, gatewayUrl, username, trustId),
-            AndroidAccountProfileStore.Binding(session.accountId, session.deviceId, session.sessionId, DEVICE_KEY_ENCODING_VERSION))
-        _savedProfiles.value = accountProfiles.list()
+        synchronized(accountProfiles) {
+            val previous = accountProfiles.find(profileId)
+            accountProfiles.save(AccountProfile(profileId, gatewayUrl, username, trustId,
+                avatarBase64 = previous?.avatarBase64, agentName = previous?.agentName),
+                AndroidAccountProfileStore.Binding(session.accountId, session.deviceId, session.sessionId, DEVICE_KEY_ENCODING_VERSION))
+            _savedProfiles.value = accountProfiles.list()
+        }
         val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_LAST_GATEWAY, gatewayUrl)

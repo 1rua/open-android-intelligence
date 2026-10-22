@@ -91,6 +91,30 @@ class GatewaySessionRefreshTest {
         assertFalse(gateway.requests.any { it.target == REFRESH_PATH })
     }
 
+    @Test fun accountAvatarAndAdvertisedAgentNameSurviveLogoutAndCredentialRestore() {
+        gateway.respond("/open-android-intelligence/v2/sessions/current", "{\"data\":{}}")
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY,
+            headers = mapOf(com.openandroidintelligence.gateway.negotiation.AGENT_NAME_HEADER to "Hermes"))
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertEquals("Hermes", awaitConnected(runtime).agentName)
+        val bytes = byteArrayOf(1, 2, 3)
+        awaitAction("账号头像必须保存完成") { runtime.setAccountAvatar(profileId(), bytes) }
+        val avatar = runtime.savedProfiles.value.single().avatarBase64
+        assertEquals(Base64.getEncoder().encodeToString(bytes), avatar)
+        runtime.logout(revokeRefresh = false)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Disconnected })
+        val restored = runtime()
+        restored.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertEquals("Hermes", awaitConnected(restored).agentName)
+        assertEquals(avatar, restored.savedProfiles.value.single().avatarBase64)
+        val restarted = runtime()
+        restarted.restoreSessionIfAvailable()
+        assertEquals("Hermes", awaitConnected(restarted).agentName)
+        assertEquals(avatar, restarted.savedProfiles.value.single().avatarBase64)
+        assertEquals("Hermes", restarted.savedProfiles.value.single().agentName)
+    }
+
     @Test
     fun aGrantCleanupFailureAfterConfirmedUnpairStillDeletesRefreshAndSigningKeys() {
         val path = "/open-android-intelligence/v2/pairings/current"

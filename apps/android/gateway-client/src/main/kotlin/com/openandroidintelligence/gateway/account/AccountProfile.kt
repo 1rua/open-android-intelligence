@@ -20,6 +20,10 @@ data class AccountProfile(
     val gatewayBaseUrl: String,
     val username: String,
     val tlsTrustId: String,
+    /** Bounded, app-owned avatar image. Independent of temporary picker URI grants. */
+    val avatarBase64: String? = null,
+    /** Last display identity advertised by this account's Gateway. */
+    val agentName: String? = null,
 ) {
     init {
         val endpoint = GatewayEndpoint.parse(gatewayBaseUrl)

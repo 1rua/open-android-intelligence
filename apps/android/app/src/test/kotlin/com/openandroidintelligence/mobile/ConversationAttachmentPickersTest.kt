@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile
 import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Looper
 import android.provider.OpenableColumns
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
@@ -11,6 +12,7 @@ import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import java.io.ByteArrayInputStream
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
@@ -161,10 +163,59 @@ class ConversationAttachmentPickersTest {
         } finally { bitmap.recycle() }
     }
 
-    private fun withControllers(test: (WorkbenchController, WorkbenchController, CoroutineScope) -> Unit) {
+    @Test fun multipleUrisShareTheExistingStagingPathAndOneUnreadableFileDoesNotDropTheOthers() {
+        val prepared = CopyOnWriteArrayList<String>()
+        val coordinator = object : AttachmentDraftCoordinator {
+            override suspend fun prepare(selection: LocalAttachmentSelection): AttachmentDraft {
+                assertArrayEquals(byteArrayOf(1, 2, 3), selection.contentSource.openStream().use { it.readBytes() })
+                prepared += selection.filename
+                return AttachmentDraft(AttachmentDraftId(selection.filename), selection.filename, selection.mediaType,
+                    3, "0".repeat(64), AttachmentState.VERIFIED)
+            }
+            override fun observe(draftId: String) = flowOf(AttachmentDraftState(AttachmentDraftId(draftId), AttachmentState.VERIFIED))
+            override fun retry(draftId: String) = Unit
+            override fun remoteAttachmentId(draftId: String): String? = null
+            override suspend fun discard(draftId: String) = Unit
+            override suspend fun releaseAfterSubmit(draftId: String) = Unit
+            override suspend fun armSubmission(draftId: String, revision: Long): PendingSubmissionIntent = error("Must not auto-send")
+            override suspend fun cancelSubmission(intentId: String) = CancelSubmissionResult(true)
+        }
+        val uris = (1..3).map { Uri.parse("content://picker/batch/$it") }
+        uris.forEachIndexed { index, uri ->
+            shadowOf(context.contentResolver).setCursor(uri, object : BaseCursor() {
+                override fun moveToFirst(): Boolean {
+                    if (index == 1) throw SecurityException("Grant expired")
+                    return true
+                }
+                override fun getColumnIndex(columnName: String) = if (columnName == OpenableColumns.DISPLAY_NAME) 0 else -1
+                override fun getString(columnIndex: Int) = "document-$index.pdf"
+                override fun close() = Unit
+            })
+            shadowOf(context.contentResolver).registerInputStreamSupplier(uri) { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
+        }
+        withControllers(attachments = coordinator) { main, _, _ ->
+            main.openThread("thread-a")
+            main.editDraft("existing draft")
+            val pickers = ConversationAttachmentPickerState().apply { controller = main }
+            val store = ViewModelStore().apply { put("pickers", pickers) }
+            try {
+                pickers.prepareUris(pickers.currentTarget(), context, uris + uris.first())
+                val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+                while (main.state.value.attachments.size < 2 && System.nanoTime() < deadline) {
+                    shadowOf(Looper.getMainLooper()).idle()
+                    Thread.sleep(5)
+                }
+                assertEquals(listOf("document-0.pdf", "document-2.pdf"), prepared.toList())
+                assertEquals(2, main.state.value.attachments.size)
+                assertEquals("existing draft", main.state.value.draft)
+            } finally { store.clear() }
+        }
+    }
+
+    private fun withControllers(attachments: AttachmentDraftCoordinator? = null, test: (WorkbenchController, WorkbenchController, CoroutineScope) -> Unit) {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.Unconfined)
-        val first = controller(scope)
+        val first = controller(scope, attachments)
         val second = controller(scope)
         try { test(first, second, scope) }
         finally { first.close(); second.close(); job.cancel() }

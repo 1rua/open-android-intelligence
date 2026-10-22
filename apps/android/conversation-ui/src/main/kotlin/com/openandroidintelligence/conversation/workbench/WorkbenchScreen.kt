@@ -78,6 +78,11 @@ fun WorkbenchScreen(
      * 位置与宽度由工作台统一约束。
      */
     header: @Composable () -> Unit = {},
+    onPasteImages: ((PastedImageContent) -> Unit)? = null,
+    accountName: String = "",
+    agentName: String? = null,
+    accountAvatar: androidx.compose.ui.graphics.ImageBitmap? = null,
+    onChangeAvatar: (() -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -202,6 +207,11 @@ fun WorkbenchScreen(
 
         val drawerContent: @Composable () -> Unit = {
             ThreadDrawer(
+                accountName = accountName,
+                agentName = agentName,
+                avatar = accountAvatar,
+                onChangeAvatar = onChangeAvatar,
+                streamHealth = state.streamHealth,
                 gatewayLabel = gatewayLabel,
                 threads = state.threads,
                 activeThreadId = state.activeThreadId,
@@ -521,6 +531,7 @@ fun WorkbenchScreen(
                                     ApprovalUnsupportedHint(onDismiss = { approvalHintDismissed = true })
                                 }
                                 ComposerBar(
+                                    onPasteImages = onPasteImages,
                                     draft = state.draft,
                                     onDraftChange = { newDraft ->
                                         if (commandPopupDismissed && (newDraft.isEmpty() || !newDraft.startsWith(state.draft))) {

@@ -1,6 +1,8 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,6 +15,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -22,6 +29,7 @@ import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.state.Loadable
+import com.openandroidintelligence.conversation.model.StreamHealth
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -58,8 +66,12 @@ fun ThreadDrawer(
     busyThreadIds: Set<String> = emptySet(),
     actions: ConversationBrowserActions = ConversationBrowserActions(),
     selectedFolderId: String? = null,
+    accountName: String = "",
+    agentName: String? = null,
+    avatar: ImageBitmap? = null,
+    onChangeAvatar: (() -> Unit)? = null,
+    streamHealth: StreamHealth = StreamHealth.IDLE,
 ) {
-    val username = if (gatewayLabel.contains("@")) gatewayLabel.substringBefore("@") else "用户"
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -71,9 +83,13 @@ fun ThreadDrawer(
                 .navigationBarsPadding(),
         ) {
             DrawerHeader(
-                username = username,
+                username = accountName,
                 gatewayLabel = gatewayLabel,
                 online = online,
+                agentName = agentName,
+                avatar = avatar,
+                onChangeAvatar = onChangeAvatar,
+                streamHealth = streamHealth,
                 showClose = showClose,
                 onCloseDrawer = onCloseDrawer,
             )
@@ -170,6 +186,10 @@ private fun DrawerHeader(
     online: Boolean,
     showClose: Boolean,
     onCloseDrawer: () -> Unit,
+    agentName: String?,
+    avatar: ImageBitmap?,
+    onChangeAvatar: (() -> Unit)?,
+    streamHealth: StreamHealth,
 ) {
     Column(
         modifier = Modifier
@@ -215,6 +235,10 @@ private fun DrawerHeader(
             username = username,
             gatewayLabel = gatewayLabel,
             online = online,
+            agentName = agentName,
+            avatar = avatar,
+            onChangeAvatar = onChangeAvatar,
+            streamHealth = streamHealth,
         )
     }
 }
@@ -224,10 +248,14 @@ private fun DrawerAccountRow(
     username: String,
     gatewayLabel: String,
     online: Boolean,
+    agentName: String?,
+    avatar: ImageBitmap?,
+    onChangeAvatar: (() -> Unit)?,
+    streamHealth: StreamHealth,
 ) {
     val stateColors = LocalAppStateColors.current
     // 在线状态不是只靠颜色：文字始终在场，颜色只做第二通道。
-    val statusColor = if (online) stateColors.success else stateColors.warning
+    val statusColor = if (online && streamHealth == StreamHealth.LIVE) stateColors.success else stateColors.warning
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -237,11 +265,18 @@ private fun DrawerAccountRow(
             modifier = Modifier
                 .size(DrawerAvatarSize)
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
+                .background(MaterialTheme.colorScheme.primaryContainer)
+                .then(if (onChangeAvatar != null) Modifier.clickable(role = Role.Button, onClick = onChangeAvatar) else Modifier)
+                .semantics { contentDescription = if (onChangeAvatar != null) "更换账号头像" else "账号头像" },
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = username.take(1).uppercase(),
+            if (avatar != null) Image(
+                bitmap = avatar,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            ) else Text(
+                text = accountInitial(username),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -266,7 +301,9 @@ private fun DrawerAccountRow(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
-                modifier = Modifier.padding(top = Dimensions.SpaceTiny),
+                modifier = Modifier.padding(top = Dimensions.SpaceTiny).semantics(mergeDescendants = true) {
+                    contentDescription = accountConnectionLabel(agentName, online, streamHealth)
+                },
             ) {
                 Box(
                     modifier = Modifier
@@ -274,14 +311,39 @@ private fun DrawerAccountRow(
                         .clip(CircleShape)
                         .background(statusColor),
                 )
+                agentName?.trim()?.takeIf(String::isNotEmpty)?.let { name ->
+                    Text(
+                        text = name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
                 Text(
-                    text = if (online) "在线" else "离线",
+                    text = accountConnectionLabel(null, online, streamHealth),
                     style = MaterialTheme.typography.labelSmall,
                     color = statusColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
     }
+}
+
+internal fun accountInitial(username: String): String = username.trim().let { name ->
+    if (name.isEmpty()) "?" else String(Character.toChars(name.codePointAt(0))).uppercase(java.util.Locale.ROOT)
+}
+
+internal fun accountConnectionLabel(agentName: String?, online: Boolean, health: StreamHealth): String {
+    val status = when {
+        !online -> "离线"
+        health == StreamHealth.LIVE -> "在线"
+        else -> com.openandroidintelligence.conversation.components.connectionLabel(health)
+    }
+    return listOfNotNull(agentName?.trim()?.takeIf(String::isNotEmpty), status).joinToString(" ")
 }
 
 /** 抽屉底部的功能入口：与设置页共用同一套官方 ListItem 规范。 */
