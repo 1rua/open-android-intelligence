@@ -1,11 +1,14 @@
 package com.openandroidintelligence.conversation.workbench
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.*
@@ -94,8 +97,8 @@ class MessageBubbleLayoutTest {
         }
         sizes.forEachIndexed { index, (width, height) ->
             compose.runOnIdle { selected.value = index }
-            compose.waitUntil(10_000) { compose.onAllNodesWithTag("attachment-image:image$index").fetchSemanticsNodes().isNotEmpty() }
-            val bounds = compose.onNodeWithTag("attachment-image:image$index").getUnclippedBoundsInRoot()
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("attachment-image:image$index", useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty() }
+            val bounds = compose.onNodeWithTag("attachment-image:image$index", useUnmergedTree=true).getUnclippedBoundsInRoot()
             val ratio = width.toFloat() / height
             val expectedWidth = minOf(360f * 0.86f, 320f * ratio)
             assertEquals(expectedWidth, bounds.width.value, 1f)
@@ -104,6 +107,40 @@ class MessageBubbleLayoutTest {
             assertTrue(bounds.height.value <= 321)
             compose.onNodeWithTag("message-bubble:image").assertDoesNotExist()
         }
+    }
+
+    @Test
+    @Config(sdk=[31,35], qualifiers="w411dp-h891dp-420dpi")
+    fun extremeImagesHave48DpTransparentTouchTargetsWithoutStretchingTheirVisuals() {
+        val sizes=listOf(16 to 1600,1600 to 16)
+        val selected=mutableStateOf(0)
+        val opened=mutableListOf<String>()
+        val attachments=sizes.mapIndexed { index,(width,height) ->
+            TimelineAttachment("thin$index","thin$index.png","image/png",previewBytes=png(width,height),localState=AttachmentLocalState.SAVED)
+        }
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.width(300.dp).background(Color.Magenta)) {
+                    TimelineRow(entry("image","").copy(attachments=listOf(attachments[selected.value])),{_,_->},
+                        onOpenAttachmentPreview={ opened+=it })
+                }
+            }
+        }
+        sizes.forEachIndexed { index,(width,height) ->
+            compose.runOnIdle { selected.value=index }
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("attachment-image-target:thin$index").fetchSemanticsNodes().isNotEmpty() }
+            val target=compose.onNodeWithTag("attachment-image-target:thin$index")
+            val image=compose.onNodeWithTag("attachment-image:thin$index",useUnmergedTree=true).getUnclippedBoundsInRoot()
+            val bounds=target.getUnclippedBoundsInRoot()
+            assertTrue(bounds.width>=48.dp && bounds.height>=48.dp)
+            val expectedWidth=minOf(300f*0.86f,320f*width/height)
+            assertEquals(expectedWidth,image.width.value,1f)
+            assertEquals(expectedWidth*height/width,image.height.value,1f)
+            // A touch outside the aspect-fitted image must still open exactly this attachment.
+            target.performTouchInput { click(if (width<height) Offset(1f,center.y) else Offset(center.x,1f)) }
+            assertEquals("thin$index",opened.last())
+        }
+        assertEquals(listOf("thin0","thin1"),opened)
     }
 
     @Test fun fileDownloadIsBelowTheCardBesideItsStatusAndRetainsTheAttachmentIdentity() {
@@ -144,7 +181,7 @@ class MessageBubbleLayoutTest {
                 }
             }
         }
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("attachment-image:img").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("attachment-image:img", useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("说明").assertIsDisplayed()
         compose.onNodeWithContentDescription("复制代码").assertIsDisplayed()
         compose.onNodeWithText("项目").assertIsDisplayed()

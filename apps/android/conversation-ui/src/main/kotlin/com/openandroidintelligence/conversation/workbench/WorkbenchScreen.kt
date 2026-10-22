@@ -200,7 +200,7 @@ fun WorkbenchScreen(
                 gatewayLabel = gatewayLabel,
                 threads = state.threads,
                 activeThreadId = state.activeThreadId,
-                organization = state.organization,
+                organization = state.browserOrganization,
                 selectedFolderId = state.selectedFolderId,
                 managementSupported = state.conversationManagementSupported,
                 managing = state.managingThreads,

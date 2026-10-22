@@ -7,6 +7,9 @@ import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.state.*
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.test.*
 import java.io.File
 import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.*
@@ -17,10 +20,88 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34],application=Application::class)
+@OptIn(ExperimentalCoroutinesApi::class)
 class EncryptedMirrorRecoveryTest {
     private val context get()=ApplicationProvider.getApplicationContext<Application>()
     private val key=object:AesGcmKeyProvider {override fun getOrCreate()=SecretKeySpec(ByteArray(32){7},"AES");override fun delete(){}}
     private val scope=ConversationScope("profile_mirror","https://first.example","acct_same","install_one")
+    @Test fun aCrashAfterCursorCommitBeforeControllerDeliveryRetainsCancellationAndRevisionedAssociations() = runTest {
+        val testScope=scope.copy(profileId="cursor_cancel_crash")
+        val dispatcher=StandardTestDispatcher(testScheduler)
+        val mirror=EncryptedConversationMirror(context,testScope,key,dispatcher)
+        val question=TimelineMessage("question","user",listOf(MessagePart.Text("request")),1,"delivered",ConversationId("conv_a"),clientMessageId=ClientMessageId("client_a"))
+        val partial=TimelineMessage("partial","assistant",listOf(MessagePart.Text("partial output")),2,"STREAMING",ConversationId("conv_a"),generationId="gen_a")
+        val checkpoint=WorkbenchCheckpoint(listOf(ConversationSummary(ConversationId("conv_a"),"A",1)),"conv_a","A",listOf(question,partial),
+            emptyMap(),"",0,emptyList(),null,emptySet(),emptySet())
+        mirror.save(checkpoint)
+        mirror.saveTimeline("conv_a",TimelinePage(listOf(question,partial),null))
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_delivered",2,ConversationId("conv_a"),"question",ClientMessageId("client_a"),AgentMessageStatus.DELIVERED,1,null,"gen_a"))
+        mirror.applyAndCommit(VerifiedConversationEvent.GenerationCancelled("evt_cancel",3,"gen_a",ConversationId("conv_a")))
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_failed",4,ConversationId("conv_a"),"question",ClientMessageId("client_a"),AgentMessageStatus.FAILED,2,AgentMessageErrorCode.AGENT_UNAVAILABLE))
+        // An older surface's checkpoint cannot erase facts already committed by SSE.
+        mirror.save(checkpoint)
+        val reopened=EncryptedConversationMirror(context,testScope,key,dispatcher)
+        assertEquals("evt_failed",reopened.loadCursor(testScope.accountId))
+        assertEquals(listOf(SavedCancellation("conv_a","gen_a")),reopened.load()!!.cancellations)
+        assertEquals(setOf("question","client_a"),reopened.load()!!.messageGenerations.map { it.messageId }.toSet())
+        val offline=object : ConversationRepository by com.openandroidintelligence.mobile.conversations.OfflineMirrorRepository(reopened), GenerationTracker {
+            override val generationId=MutableStateFlow<String?>("gen_a")
+            override val generationState=MutableStateFlow(GenerationState.FAILED)
+            override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=ConversationPage(checkpoint.threads,null,authoritative=false)
+        }
+        val controllerScope=CoroutineScope(coroutineContext + requireNotNull(backgroundScope.coroutineContext[Job]))
+        val controller=WorkbenchController(controllerScope,offline,object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
+        },{testScope},persistence=reopened,persistenceDispatcher=dispatcher,replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
+        runCurrent()
+        val rows=(controller.state.value.timeline as Loadable.Ready).value
+        assertFalse(rows.any { it.isStreaming || it.messageStatus==AgentMessageStatus.FAILED })
+        assertTrue(rows.any { it.text=="partial output" })
+        assertEquals(GenerationState.CANCELLED,controller.state.value.generation)
+        assertNull(controller.state.value.notice)
+        controller.closeAndAwait()
+        // A newer real generation using the same message identities remains authoritative.
+        val newest=EncryptedConversationMirror(context,testScope,key,dispatcher)
+        newest.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_new",5,ConversationId("conv_a"),"question",ClientMessageId("client_a"),AgentMessageStatus.FAILED,3,AgentMessageErrorCode.AGENT_UNAVAILABLE,"gen_b"))
+        newest.save(checkpoint.copy(messageGenerations=listOf(SavedMessageGeneration("conv_a","question","gen_a",1))))
+        assertTrue(newest.load()!!.messageGenerations.all { it.generationId=="gen_b" })
+        newest.wipe()
+    }
+
+    @Test fun cancellationFactsMessageGenerationAndFolderRecoveryWorkRoundTripWithTheEventCursor() {
+        val testScope=scope.copy(profileId="cancel_and_folder_facts")
+        val mirror=EncryptedConversationMirror(context,testScope,key)
+        val question=TimelineMessage("question","user",listOf(MessagePart.Text("request")),1,"failed",ConversationId("conv_a"),
+            errorCode="AGENT_UNAVAILABLE",clientMessageId=ClientMessageId("client_a"))
+        val partial=TimelineMessage("partial","assistant",listOf(MessagePart.Text("partial output")),2,"CANCELLED",ConversationId("conv_a"),generationId="gen_a")
+        val checkpoint=WorkbenchCheckpoint(listOf(ConversationSummary(ConversationId("conv_a"),"A",1)),"conv_a","A",listOf(question,partial),
+            mapOf("question" to 3L),"",0,emptyList(),null,emptySet(),setOf("cancel_event","failed_event"),
+            cancellations=listOf(SavedCancellation("conv_a","gen_a")),
+            messageGenerations=listOf(SavedMessageGeneration("conv_a","question","gen_a",2),SavedMessageGeneration("conv_a","client_a","gen_a",2)),
+            pendingFolderAssignments=listOf(SavedFolderAssignment("conv_a","work")),pendingConversationCreation=SavedConversationCreation("original_client","work"))
+        mirror.save(checkpoint)
+        mirror.saveTimeline("conv_a",TimelinePage(listOf(question,partial),null))
+        val reopened=EncryptedConversationMirror(context,testScope,key)
+        val restored=reopened.load()!!
+        assertEquals(checkpoint.cancellations,restored.cancellations)
+        assertEquals(checkpoint.messageGenerations,restored.messageGenerations)
+        assertEquals(checkpoint.eventIds,restored.eventIds)
+        assertEquals(checkpoint.pendingFolderAssignments,restored.pendingFolderAssignments)
+        assertEquals(checkpoint.pendingConversationCreation,restored.pendingConversationCreation)
+        assertEquals("gen_a",restored.messages.single { it.id=="partial" }.generationId)
+        assertEquals("gen_a",reopened.timeline("conv_a")!!.messages.single { it.id=="partial" }.generationId)
+        assertEquals("failed",restored.messages.single { it.id=="question" }.state)
+        val otherAccount=EncryptedConversationMirror(context,testScope.copy(accountId="other"),key)
+        assertNull(otherAccount.load())
+        reopened.deleteConversation("conv_a")
+        reopened.save(checkpoint)
+        val deleted=reopened.load()!!
+        assertTrue(deleted.cancellations.isEmpty())
+        assertTrue(deleted.messageGenerations.isEmpty())
+        assertTrue(deleted.pendingFolderAssignments.isEmpty())
+        otherAccount.wipe(); reopened.wipe()
+    }
+
     @Test fun organizationArchiveAndCompleteHistoryRemainTogetherAfterReopenAndEmptyListClearsHistory() {
         val testScope=scope.copy(profileId="organization_roundtrip")
         val mirror=EncryptedConversationMirror(context,testScope,key)

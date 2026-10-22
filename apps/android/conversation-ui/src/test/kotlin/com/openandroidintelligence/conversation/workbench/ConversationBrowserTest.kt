@@ -17,6 +17,7 @@ import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.ports.ConversationSortMode
 import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.state.Loadable
+import com.openandroidintelligence.conversation.state.WorkbenchUiState
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -27,6 +28,29 @@ import org.junit.Test
 @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
 class ConversationBrowserTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun aConfirmedConversationRemainsInItsFolderWhileAssignmentIsPendingAndAfterConfirmation() {
+        val state=mutableStateOf(WorkbenchUiState(
+            threads=Loadable.Ready(listOf(thread("created","Created",2),thread("other","Other",1))),
+            organization=ConversationOrganization(4,folders=listOf(ConversationFolder("work","Work"))),
+            selectedFolderId="work",pendingFolderAssignments=mapOf("created" to "work")))
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(360.dp,800.dp)) {
+                    ConversationBrowser(threads=state.value.threads,activeThreadId="created",onOpenThread={},onCreateThread={},onRefresh={},
+                        organization=state.value.browserOrganization,selectedFolderId=state.value.selectedFolderId,managementSupported=true)
+                }
+            }
+        }
+        compose.onNodeWithTag("conversation:created").assertIsDisplayed()
+        compose.onNodeWithTag("conversation:other").assertDoesNotExist()
+        compose.runOnIdle {
+            state.value=state.value.copy(organization=state.value.organization.copy(revision=5,assignments=mapOf("created" to "work")),
+                pendingFolderAssignments=emptyMap())
+        }
+        compose.onNodeWithTag("conversation:created").assertIsDisplayed()
+        compose.onNodeWithTag("conversation:other").assertDoesNotExist()
+    }
 
     @Test fun folderSelectionSuppliesCreationContextAndAllThreadsClearsIt() {
         val folderId = mutableStateOf<String?>(null)

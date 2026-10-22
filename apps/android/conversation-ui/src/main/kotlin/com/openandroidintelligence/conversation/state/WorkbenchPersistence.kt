@@ -10,6 +10,11 @@ data class SavedBatch(val batchId:String,val conversationId:String,val messages:
 data class SavedSubmission(val text: String, val attachmentIds: List<String>, val revision: Long,
     val conversationId: String?, val clientMessageId: String)
 
+data class SavedCancellation(val conversationId: String, val generationId: String)
+data class SavedMessageGeneration(val conversationId: String, val messageId: String, val generationId: String, val revision: Long)
+data class SavedFolderAssignment(val conversationId: String, val folderId: String)
+data class SavedConversationCreation(val clientId: String, val folderId: String?)
+
 /** Durable state never contains preview/screenshot bytes and never implies permission to send. */
 data class WorkbenchCheckpoint(
     val threads: List<ConversationSummary>, val threadId: String?, val title: String,
@@ -22,6 +27,11 @@ data class WorkbenchCheckpoint(
     val threadsHydrated: Boolean = true,
     val threadsSnapshotRevision: Long? = null,
     val deletedThreadIds: Set<String> = emptySet(),
+    /** These facts must commit with the event cursor, including legacy statuses without a generation id. */
+    val cancellations: List<SavedCancellation> = emptyList(),
+    val messageGenerations: List<SavedMessageGeneration> = emptyList(),
+    val pendingFolderAssignments: List<SavedFolderAssignment> = emptyList(),
+    val pendingConversationCreation: SavedConversationCreation? = null,
 )
 
 interface WorkbenchPersistence {

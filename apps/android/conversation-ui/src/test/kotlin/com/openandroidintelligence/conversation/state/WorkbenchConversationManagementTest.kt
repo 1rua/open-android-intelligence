@@ -10,6 +10,134 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchConversationManagementTest {
+    @Test fun folderReadOrWriteFailureKeepsTheConfirmedConversationAndRetriesOnlyItsAssignmentAfterRestart() = runTest {
+        for (readFailure in listOf(false,true)) {
+            val host=Host().apply { organization=ConversationOrganization(4,folders=listOf(ConversationFolder("work","Work"))) }
+            val saved=MemoryPersistence()
+            val first=controller(host,saved)
+            runCurrent()
+            first.selectFolder("work")
+            if (readFailure) host.organizationReadFailure="read failed" else host.organizationUpdateFailure="ORGANIZATION_UPDATE_FAILED:OUTCOME_UNKNOWN"
+            first.createThread(); runCurrent()
+            assertEquals("created",first.state.value.activeThreadId)
+            assertTrue(rows(first).any { it.id.value=="created" })
+            assertEquals("work",first.state.value.browserOrganization.assignments["created"])
+            assertFalse(first.state.value.creatingThread)
+            assertFalse(first.state.value.notice.orEmpty().startsWith("CONVERSATION_CREATE_FAILED:"))
+            first.flushPendingPersistence()
+            assertNull(saved.checkpoint!!.pendingConversationCreation)
+            assertEquals(listOf(SavedFolderAssignment("created","work")),saved.checkpoint!!.pendingFolderAssignments)
+            first.close()
+            host.organizationReadFailure=null; host.organizationUpdateFailure=null
+            val restarted=controller(host,saved)
+            runCurrent()
+            assertEquals("created",restarted.state.value.activeThreadId)
+            assertEquals("work",host.organization.assignments["created"])
+            assertTrue(restarted.state.value.pendingFolderAssignments.isEmpty())
+            assertEquals(1,host.creationIds.size)
+            restarted.createThread(); runCurrent()
+            assertEquals("created_2",restarted.state.value.activeThreadId)
+            assertEquals(2,host.creationIds.toSet().size)
+            assertEquals("work",host.organization.assignments["created"])
+            restarted.close()
+        }
+    }
+
+    @Test fun lostFolderCommitResponseIsReconciledWithoutRepeatingEitherSuccessfulWriteOrCreation() = runTest {
+        val host=Host().apply {
+            organization=ConversationOrganization(4,folders=listOf(ConversationFolder("work","Work")))
+            loseOrganizationCommitResponse=true
+        }
+        val controller=controller(host,MemoryPersistence())
+        runCurrent()
+        controller.selectFolder("work"); controller.createThread(); runCurrent()
+        assertEquals("created",controller.state.value.activeThreadId)
+        assertEquals("work",host.organization.assignments["created"])
+        assertTrue(controller.state.value.pendingFolderAssignments.isNotEmpty())
+        host.loseOrganizationCommitResponse=false
+        controller.refreshThreads(); runCurrent()
+        assertTrue(controller.state.value.pendingFolderAssignments.isEmpty())
+        assertEquals(1,host.expectedRevisions.size)
+        assertEquals(1,host.creationIds.size)
+        controller.close()
+    }
+
+    @Test fun anUncertainCreationRetainsItsIdempotencyIdentityAcrossRestart() = runTest {
+        val host=Host().apply { loseCreationResponse=true }
+        val saved=MemoryPersistence()
+        val first=controller(host,saved)
+        runCurrent()
+        first.createThread(); runCurrent()
+        first.flushPendingPersistence()
+        val originalId=saved.checkpoint!!.pendingConversationCreation!!.clientId
+        first.close()
+        host.loseCreationResponse=false
+        val restarted=controller(host,saved)
+        runCurrent()
+        restarted.createThread(); runCurrent()
+        assertEquals(listOf(originalId,originalId),host.creationIds)
+        assertEquals(1,host.createdConversations.size)
+        assertEquals("created",restarted.state.value.activeThreadId)
+        restarted.close()
+    }
+
+    @Test fun firstMessageCanSendInTheConfirmedConversationWhileFolderAssignmentIsUnavailable() = runTest {
+        val host=Host().apply {
+            threads=emptyList()
+            organization=ConversationOrganization(4,folders=listOf(ConversationFolder("work","Work")))
+            sendGate.complete(Unit)
+        }
+        val controller=controller(host,MemoryPersistence())
+        runCurrent()
+        controller.selectFolder("work")
+        host.organizationUpdateFailure="ORGANIZATION_UPDATE_FAILED:OUTCOME_UNKNOWN"
+        controller.editDraft("第一条消息"); controller.sendDraft(); runCurrent()
+        assertEquals("created",controller.state.value.activeThreadId)
+        assertEquals(listOf("created"),host.sentConversations)
+        assertEquals(1,host.creationIds.size)
+        assertEquals(ComposerState.EDITING,controller.state.value.composer)
+        host.organizationUpdateFailure=null
+        controller.refreshThreads(); runCurrent()
+        assertEquals("work",host.organization.assignments["created"])
+        assertEquals(1,host.sentConversations.size)
+        assertEquals(1,host.creationIds.size)
+        controller.close()
+    }
+
+    @Test fun anotherCreationCanOpenAndQueueItsFolderWhileAnEarlierAssignmentIsInFlight() = runTest {
+        val host=Host().apply { organization=ConversationOrganization(4,folders=listOf(ConversationFolder("work","Work"))) }
+        val controller=controller(host,MemoryPersistence())
+        runCurrent()
+        controller.selectFolder("work")
+        val assignmentGate=CompletableDeferred<Unit>()
+        host.organizationUpdateGate=assignmentGate
+        controller.createThread(); runCurrent()
+        assertEquals("created",controller.state.value.activeThreadId)
+        assertFalse(controller.state.value.creatingThread)
+        controller.createThread(); runCurrent()
+        assertEquals("created_2",controller.state.value.activeThreadId)
+        assignmentGate.complete(Unit); runCurrent()
+        assertEquals(mapOf("created" to "work","created_2" to "work"),host.organization.assignments)
+        assertEquals(2,host.creationIds.toSet().size)
+        assertTrue(controller.state.value.pendingFolderAssignments.isEmpty())
+        controller.close()
+    }
+
+    @Test fun manualMoveOverridesPendingAutomaticAssignment() = runTest {
+        val host=Host().apply { organization=ConversationOrganization(4,folders=listOf(ConversationFolder("work","Work"),ConversationFolder("home","Home"))) }
+        val controller=controller(host,MemoryPersistence())
+        runCurrent()
+        controller.selectFolder("work")
+        host.organizationUpdateFailure="ORGANIZATION_UPDATE_FAILED:OUTCOME_UNKNOWN"
+        controller.createThread(); runCurrent()
+        host.organizationUpdateFailure=null
+        controller.assignThreadToFolder("created","home"); runCurrent()
+        controller.refreshThreads(); runCurrent()
+        assertEquals("home",host.organization.assignments["created"])
+        assertTrue(controller.state.value.pendingFolderAssignments.isEmpty())
+        controller.close()
+    }
+
     @Test fun newConversationsInheritTheSelectedFolderUsingTheExistingOrganizationStore() = runTest {
         val host = Host().apply {
             organization = ConversationOrganization(4, folders = listOf(ConversationFolder("work", "Work")))
@@ -493,6 +621,12 @@ class WorkbenchConversationManagementTest {
         var organizationUpdateGate:CompletableDeferred<Unit>?=null
         var alwaysConflict=false
         var organizationUpdateFailure:String?=null
+        var organizationReadFailure:String?=null
+        var loseOrganizationCommitResponse=false
+        var loseCreationResponse=false
+        val creationIds=mutableListOf<String>()
+        val createdConversations=linkedMapOf<String,Conversation>()
+        val sentConversations=mutableListOf<String>()
         var archives=0
         var deletes=0
         var authoritative=true
@@ -506,6 +640,7 @@ class WorkbenchConversationManagementTest {
             return ConversationPage(snapshot.drop(offset).take(page.limit),tail,snapshotRevision=revision,authoritative=authoritative)
         }
         override suspend fun readOrganization():ConversationOrganization {
+            organizationReadFailure?.let { error(it) }
             val snapshot=organization
             organizationReadGate?.let { gate ->
                 organizationReadGate=null
@@ -524,6 +659,7 @@ class WorkbenchConversationManagementTest {
             }
             check(expectedRevision==this.organization.revision) { "ORGANIZATION_UPDATE_FAILED:ORGANIZATION_CONFLICT" }
             this.organization=organization.copy(revision=expectedRevision+1)
+            if (loseOrganizationCommitResponse) throw java.io.IOException("lost organization response")
             return this.organization
         }
         override suspend fun setArchived(conversationId:String,archived:Boolean) { archives++; threads=threads.map { if(it.id.value==conversationId) it.copy(archived=archived) else it } }
@@ -531,12 +667,18 @@ class WorkbenchConversationManagementTest {
         override fun observeEvents(scope:ConversationScope)=events
         override suspend fun timeline(conversationId:String,page:PageRequest)=TimelinePage(emptyList(),null)
         override suspend fun submitMessage(message:OutgoingMessage):MessageAcceptance=error("thread required")
-        override suspend fun submitMessage(conversationId:String,message:OutgoingMessage):MessageAcceptance { sendGate.await(); return MessageAcceptance("server",message.clientMessageId.value) }
+        override suspend fun submitMessage(conversationId:String,message:OutgoingMessage):MessageAcceptance { sentConversations+=conversationId; sendGate.await(); return MessageAcceptance("server",message.clientMessageId.value) }
         override suspend fun submitBatch(batch:MessageBatch):BatchAcceptance=error("not used")
         override suspend fun createConversation(scope:ConversationScope,clientConversationId:String): Conversation {
+            creationIds+=clientConversationId
             creationGate?.await()
-            if (threads.none { it.id.value == "created" }) threads = threads + summary("created", 3)
-            return Conversation(ConversationId("created"),"Created",0)
+            val conversation=createdConversations.getOrPut(clientConversationId) {
+                val id=if (createdConversations.isEmpty()) "created" else "created_${createdConversations.size+1}"
+                threads=threads+summary(id,3)
+                Conversation(ConversationId(id),"Created",3)
+            }
+            if (loseCreationResponse) throw java.io.IOException("lost create response")
+            return conversation
         }
         override suspend fun cancelGeneration(generationId:String,requestId:String)=CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
     }

@@ -155,12 +155,16 @@ data class WorkbenchUiState(
     val organization: ConversationOrganization = ConversationOrganization(),
     /** Current browser selection also supplies the default for new conversations. */
     val selectedFolderId: String? = null,
+    val pendingFolderAssignments: Map<String, String> = emptyMap(),
     val conversationManagementSupported: Boolean = false,
     val managingThreads: Boolean = false,
     val busyThreadIds: Set<String> = emptySet(),
     /** Attachments held by an in-flight Gateway send, not new composer input. */
     val inFlightAttachmentIds: Set<String> = emptySet(),
 ) {
+    /** Keep a confirmed new conversation reachable while its durable folder work is pending. */
+    val browserOrganization: ConversationOrganization get() = organization.copy(assignments=organization.assignments +
+        pendingFolderAssignments.filter { (id, folderId) -> id !in organization.assignments && organization.folders.any { it.folderId == folderId } })
     val canSend: Boolean get() = isOnline && historyHydrated &&
         (draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }) &&
         !managingThreads && !activeThreadArchived &&
@@ -754,26 +758,66 @@ class WorkbenchController(
     private var bootstrapJob: Deferred<Result<String>>? = null
     private data class ConversationCreationAttempt(val scope: ConversationScope, val clientId: String, val folderId: String?)
     private var unconfirmedConversationCreation: ConversationCreationAttempt? = null
+    private val pendingFolderAssignments = LinkedHashMap<String, String>()
+    private var folderAssignmentJob: Job? = null
+    private var folderAssignmentScope: ConversationScope? = null
     private suspend fun createGatewayConversation(folderId: String? = _state.value.selectedFolderId): com.openandroidintelligence.conversation.ports.Conversation {
         val requestedScope = scopeFactory()
         val attempt = unconfirmedConversationCreation?.takeIf { it.scope == requestedScope }
             ?: ConversationCreationAttempt(requestedScope, "cconv_" + UUID.randomUUID().toString().replace("-", ""),
                 folderId.takeIf { supportsConversationManagement })
                 .also { unconfirmedConversationCreation = it }
+        // Retrying an uncertain creation, including after restart, uses its original identity.
+        flushPendingPersistence()
         val conversation = repository.createConversation(attempt.scope, attempt.clientId)
-        currentCoroutineContext().ensureActive()
-        if (attempt.folderId != null) {
-            organizationMutationEpoch++
-            threadRequestEpoch++
-            commitOrganizationChange(attempt.scope) { organization ->
-                // A folder deleted while creation was in flight must not be resurrected.
-                if (organization.folders.none { it.folderId == attempt.folderId }) organization
-                else organization.copy(assignments = organization.assignments + (conversation.id.value to attempt.folderId))
-            }
-        }
-        // A lost or cancelled receipt retains the identity until a retry confirms it.
         if (unconfirmedConversationCreation === attempt) unconfirmedConversationCreation = null
+        if (attempt.folderId != null) {
+            pendingFolderAssignments[conversation.id.value] = attempt.folderId
+            folderAssignmentScope = attempt.scope
+        }
+        // The create receipt is final even if the separate organization request fails.
+        update { state -> state.copy(threads=Loadable.Ready(state.organization.sort(
+            (state.threads as? Loadable.Ready)?.value.orEmpty().filterNot { it.id == conversation.id } +
+                ConversationSummary(conversation.id, conversation.title, conversation.createdAt)))) }
+        try { flushPendingPersistence() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) { update { it.copy(notice="LOCAL_SAVE_FAILED:${errorCodeOf(failure)}") } }
+        retryFolderAssignments()
         return conversation
+    }
+
+    /** Each refresh retries only classification, never the already-confirmed create request. */
+    private fun retryFolderAssignments() {
+        if (closed || !allowSending || !supportsConversationManagement || pendingFolderAssignments.isEmpty() || folderAssignmentJob?.isActive == true) return
+        val requestedScope = folderAssignmentScope ?: return
+        if (requestedScope != scopeFactory()) return
+        folderAssignmentJob = workScope.launch {
+            var changed = false
+            val attempted = mutableSetOf<String>()
+            while (true) {
+                val (threadId, folderId) = pendingFolderAssignments.entries.firstOrNull { it.key !in attempted } ?: break
+                attempted.add(threadId)
+                try {
+                    organizationMutationEpoch++
+                    threadRequestEpoch++
+                    val committed = commitOrganizationChange(requestedScope) { organization ->
+                        // A manual move, deletion or a lost successful response needs no second write.
+                        if (pendingFolderAssignments[threadId] != folderId || threadId in deletedThreads ||
+                            organization.folders.none { it.folderId == folderId } || organization.assignments[threadId] != null) organization
+                        else organization.copy(assignments=organization.assignments + (threadId to folderId))
+                    }
+                    if (!committed) return@launch
+                    if (pendingFolderAssignments[threadId] == folderId) pendingFolderAssignments.remove(threadId)
+                    changed = true
+                    update { it }
+                    flushPendingPersistence()
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) {
+                    update { it.copy(notice="CONVERSATION_MANAGEMENT_FAILED:${errorCodeOf(failure)}") }
+                }
+            }
+            if (changed) refreshThreads()
+        }
     }
 
     private fun creationBlocksActiveThread(): Boolean =
@@ -782,9 +826,13 @@ class WorkbenchController(
 
     private var draftRevision = 0L
     private val finishedGenerations = LinkedHashSet<Pair<String,String>>()
-    /** Cancellation is a presentation fact; retain the Gateway's raw message status. */
+    /** Gateway message status and confirmed cancellation are independent durable facts. */
     private val cancelledGenerations = LinkedHashSet<Pair<String, String>>()
-    private val requestedCancellations = LinkedHashSet<Pair<String, String>>()
+    private class PendingCancellation(val factRevision: Long) {
+        var terminalReceipt: VerifiedConversationEvent.MessageStatus? = null
+        var trackerTerminal: GenerationState? = null
+    }
+    private val requestedCancellations = LinkedHashMap<Pair<String, String>, PendingCancellation>()
     private data class MessageGeneration(val id: String, val revision: Long)
     private val messageGenerations = LinkedHashMap<Pair<String, String>, MessageGeneration>()
 
@@ -800,6 +848,8 @@ class WorkbenchController(
 
     private fun rememberCancelledGeneration(threadId: String, generationId: String) {
         cancelledGenerations.add(threadId to generationId)
+        finishedGenerations.add(threadId to generationId)
+        while (finishedGenerations.size > 4096) finishedGenerations.remove(finishedGenerations.first())
         while (cancelledGenerations.size > 4096) cancelledGenerations.remove(cancelledGenerations.first())
     }
 
@@ -970,32 +1020,34 @@ class WorkbenchController(
     private suspend fun commitOrganizationChange(
         requestedScope: ConversationScope,
         change: (ConversationOrganization) -> ConversationOrganization,
-    ) {
+    ): Boolean {
         repeat(MAX_ORGANIZATION_UPDATE_ATTEMPTS) { attempt ->
             currentCoroutineContext().ensureActive()
-            if (closed || requestedScope != scopeFactory()) return
+            if (closed || requestedScope != scopeFactory()) return false
             // Reapply the same action to each fresh CAS base so another surface's
             // unrelated edits and the user's original action are both retained.
             val current=repository.readOrganization()
             currentCoroutineContext().ensureActive()
-            if (closed || requestedScope != scopeFactory()) return
+            if (closed || requestedScope != scopeFactory()) return false
             val next=change(current)
+            if (next == current) { installOrganization(current); return true }
             try {
                 val committed=repository.updateOrganization(current.revision,next)
                 currentCoroutineContext().ensureActive()
-                if (closed || requestedScope != scopeFactory()) return
+                if (closed || requestedScope != scopeFactory()) return false
                 installOrganization(committed)
-                return
+                return true
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 currentCoroutineContext().ensureActive()
-                if (closed || requestedScope != scopeFactory()) return
+                if (closed || requestedScope != scopeFactory()) return false
                 // Only a confirmed CAS conflict permits another write. A lost
                 // response may already have committed and must remain visible.
                 if (attempt == MAX_ORGANIZATION_UPDATE_ATTEMPTS-1 ||
                     errorCodeOf(failure).substringAfterLast(':') != "ORGANIZATION_CONFLICT") throw failure
             }
         }
+        return false
     }
 
     private fun installOrganization(organization: ConversationOrganization) {
@@ -1030,9 +1082,12 @@ class WorkbenchController(
     fun deleteFolder(folderId: String) = changeOrganization { state ->
         state.copy(folders=state.folders.filterNot { it.folderId == folderId }, assignments=state.assignments.filterValues { it != folderId })
     }
-    fun assignThreadToFolder(threadId: String, folderId: String?) = changeOrganization { state ->
-        check(folderId == null || state.folders.any { it.folderId == folderId }) { "FOLDER_NOT_FOUND" }
-        state.copy(assignments=if (folderId == null) state.assignments-threadId else state.assignments+(threadId to folderId))
+    fun assignThreadToFolder(threadId: String, folderId: String?) {
+        pendingFolderAssignments.remove(threadId)
+        changeOrganization { state ->
+            check(folderId == null || state.folders.any { it.folderId == folderId }) { "FOLDER_NOT_FOUND" }
+            state.copy(assignments=if (folderId == null) state.assignments-threadId else state.assignments+(threadId to folderId))
+        }
     }
     fun setThreadSortMode(mode: ConversationSortMode) = changeOrganization { it.copy(sortMode=mode) }
     fun reorderThreads(orderedIds: List<String>) = changeOrganization { state ->
@@ -1125,6 +1180,11 @@ class WorkbenchController(
 
     init {
         persistence?.load()?.let { saved ->
+            saved.cancellations.forEach { rememberCancelledGeneration(it.conversationId, it.generationId) }
+            saved.messageGenerations.forEach { messageGenerations[it.conversationId to it.messageId] = MessageGeneration(it.generationId, it.revision) }
+            saved.pendingFolderAssignments.forEach { pendingFolderAssignments[it.conversationId] = it.folderId }
+            folderAssignmentScope = scopeFactory()
+            unconfirmedConversationCreation = saved.pendingConversationCreation?.let { ConversationCreationAttempt(scopeFactory(), it.clientId, it.folderId) }
             deletedThreads.addAll(saved.deletedThreadIds)
             threadsSnapshotRevision=saved.threadsSnapshotRevision
             hydrateInitialSendAtoms(buildSet {
@@ -1134,7 +1194,7 @@ class WorkbenchController(
             })
             saved.batches.forEach { b -> if (b.sealed) frozenBatches[b.batchId]=b else b.messages.forEach { collectingUnits[it.clientMessageId.value]=b.conversationId to it } }
             activeThreadId = saved.threadId
-            mirrored.putAll(saved.messages.associateBy { it.id })
+            mirrored.putAll(saved.messages.map(::withLatestMessageStatus).associateBy { it.id })
             mirroredRevisions.putAll(saved.revisions)
             handledEventIds.addAll(saved.eventIds)
             userRenamedThreads.addAll(saved.renamedThreads)
@@ -1143,7 +1203,7 @@ class WorkbenchController(
             saved.threadId?.let(::reconcileDeletedRecoveryUnits)
             val restoredRows = renderTimeline()
             _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(saved.threads)),
-                organization=saved.organization,
+                organization=saved.organization, pendingFolderAssignments=pendingFolderAssignments.toMap(),
                 activeThreadId = saved.threadId, activeThreadTitle = saved.title, draft = saved.draft.ifBlank { failedSubmission?.text.orEmpty() },
                 attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } }, timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
                 composer = if (failedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
@@ -1166,11 +1226,14 @@ class WorkbenchController(
             generationJob=workScope.launch { source.collect { generation ->
                 val generationId = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
                 observeGenerationIdentity(generationId)
+                val pending = requestedCancellations[activeThreadId to (generationId ?: lastObservedGenerationId)]
+                    ?.takeIf { it.factRevision == generationFactRevision }
+                if (generation in setOf(GenerationState.FAILED,GenerationState.COMPLETED)) pending?.trackerTerminal = generation
                 update { state ->
                     if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
                     else if (generation == GenerationState.FAILED && generationId != null && activeThreadId to generationId in cancelledGenerations)
                         state.copy(generation=GenerationState.CANCELLED)
-                    else if (generation == GenerationState.FAILED && generationId != null && activeThreadId to generationId in requestedCancellations)
+                    else if (pending != null && generation != GenerationState.COMPLETED)
                         state.copy(generation=GenerationState.CANCEL_REQUESTED)
                     else state.copy(generation=generation)
                 }
@@ -1294,6 +1357,7 @@ class WorkbenchController(
 
     fun refreshThreads() {
         if (closed || _state.value.managingThreads) return
+        retryFolderAssignments()
         val epoch=++threadRequestEpoch
         val mutationEpoch=organizationMutationEpoch
         val requestedScope=scopeFactory()
@@ -1401,7 +1465,8 @@ class WorkbenchController(
                     scheduleHistoricalMedia(threadId,page.messages)
                     page.messages.sortedWith(
                         compareBy<TimelineMessage> { it.timestamp }.thenBy { if (it.sender == "user") 0 else 1 }
-                    ).forEach { message ->
+                    ).forEach { rawMessage ->
+                        val message = withLatestMessageStatus(rawMessage)
                         val currentRevision = mirroredRevisions[message.id] ?: 0L
                         if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
                             if (message.sender == "assistant" && message.state == "CONFIRMED") {
@@ -2985,45 +3050,56 @@ class WorkbenchController(
             update { it.copy(notice = "STOP_UNAVAILABLE:NO_GENERATION") }
             return
         }
+        val key = threadId to generationId
+        if (key in requestedCancellations) return
         observeGenerationIdentity(generationId)
-        val requestedFactRevision = generationFactRevision
-        requestedCancellations.add(threadId to generationId)
+        val pending = PendingCancellation(generationFactRevision)
+        requestedCancellations[key] = pending
         update { it.copy(generation = GenerationState.CANCEL_REQUESTED) }
         workScope.launch {
+            var outcome = com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.OUTCOME_UNKNOWN
+            var notice: String? = null
             try {
                 val result = repository.cancelGeneration(threadId,generationId,"req_" + UUID.randomUUID().toString().replace("-", ""))
-                if (result.outcome == com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED) {
+                outcome = result.outcome
+                notice = result.message
+                if (outcome == com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED) {
                     rememberCancelledGeneration(threadId, generationId)
+                    // Also commit acknowledgements for a conversation the user has since left.
+                    flushPendingPersistence()
                 }
-                if (activeThreadId != threadId || threadEpoch != epoch) return@launch
-                val currentId = tracker.generationId.value
-                if (currentId != null && currentId != generationId) return@launch
-                if (generationFactRevision != requestedFactRevision) return@launch
-                val terminal = if (threadId to generationId in cancelledGenerations) GenerationState.CANCELLED else when (result.outcome) {
-                    com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED -> GenerationState.CANCELLED
-                    com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.ALREADY_COMPLETED -> GenerationState.COMPLETED
-                    com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.UNSUPPORTED -> GenerationState.UNSUPPORTED
-                    com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.OUTCOME_UNKNOWN -> GenerationState.OUTCOME_UNKNOWN
-                }
-                if (terminal in setOf(GenerationState.CANCELLED,GenerationState.COMPLETED)) finishStreaming(threadId,generationId,terminal)
-                update { it.copy(timeline=Loadable.Ready(renderTimeline(it.pendingBatch)),generation=terminal,
-                    notice=if (terminal == GenerationState.CANCELLED && result.outcome != com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED) null else result.message) }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (cause: Exception) {
-                if (activeThreadId == threadId && threadEpoch == epoch && tracker.generationId.value == generationId &&
-                    generationFactRevision == requestedFactRevision)
-                    update {
-                        if (threadId to generationId in cancelledGenerations) it.copy(generation=GenerationState.CANCELLED)
-                        else it.copy(generation=GenerationState.OUTCOME_UNKNOWN,notice=errorCodeOf(cause))
+            catch (cause: Exception) { notice = errorCodeOf(cause) }
+            finally {
+                requestedCancellations.remove(key)
+                val currentId = tracker.generationId.value
+                if (!closed && activeThreadId == threadId && threadEpoch == epoch &&
+                    (currentId == null || currentId == generationId) && generationFactRevision == pending.factRevision) {
+                    val receipt = pending.terminalReceipt
+                    val confirmed = key in cancelledGenerations
+                    val terminal = when {
+                        confirmed -> GenerationState.CANCELLED
+                        receipt?.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED -> GenerationState.FAILED
+                        receipt?.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED -> GenerationState.COMPLETED
+                        pending.trackerTerminal != null -> pending.trackerTerminal!!
+                        outcome == com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.ALREADY_COMPLETED -> GenerationState.COMPLETED
+                        outcome == com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.UNSUPPORTED -> GenerationState.UNSUPPORTED
+                        else -> GenerationState.OUTCOME_UNKNOWN
                     }
-            } finally {
-                requestedCancellations.remove(threadId to generationId)
-                // An unsupported/unknown stop must reveal any real failure that
-                // arrived while the cancellation result was still pending.
-                if (activeThreadId == threadId) update { state ->
-                    if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty)
-                        state.copy(timeline=Loadable.Ready(renderTimeline(state.pendingBatch)))
-                    else state
+                    if (terminal in setOf(GenerationState.CANCELLED,GenerationState.COMPLETED,GenerationState.FAILED)) {
+                        finishStreaming(threadId,generationId,terminal,receipt?.occurredAt ?: 0L,receipt?.clientMessageId?.value)
+                    }
+                    update { state -> state.copy(timeline=Loadable.Ready(renderTimeline(state.pendingBatch)), generation=terminal,
+                        notice=when {
+                            confirmed -> if (outcome == com.openandroidintelligence.conversation.ports.CancelGenerationOutcome.CANCELLED) notice else null
+                            receipt?.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED -> "AGENT_MESSAGE_FAILED:${receipt.errorCode?.wireValue}"
+                            terminal == GenerationState.COMPLETED -> null
+                            terminal == GenerationState.FAILED -> state.notice
+                            else -> notice
+                        }) }
+                } else if (activeThreadId == threadId) {
+                    // Only the old row may change; a newer turn owns the generation and composer.
+                    update { state -> state.copy(timeline=Loadable.Ready(renderTimeline(state.pendingBatch))) }
                 }
             }
         }
@@ -3449,8 +3525,14 @@ class WorkbenchController(
                                 mirrored[event.messageId] = existing.copy(
                                     state = event.status.wireValue,
                                     errorCode = event.errorCode?.wireValue,
+                                    generationId = event.generationId ?: existing.generationId,
                                 )
                             }
+                            val receiptGeneration = event.generationId ?: messageGenerations[currentActiveId to event.messageId]?.id
+                                ?: messageGenerations[currentActiveId to event.clientMessageId.value]?.id
+                            val pendingCancel = requestedCancellations[currentActiveId to receiptGeneration]
+                            if (event.status in setOf(com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED,
+                                    com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED)) pendingCancel?.terminalReceipt = event
                             val cancelling = isCancelledMessage(currentActiveId, event.generationId, event.messageId, event.clientMessageId.value)
                             val cancelled = isCancelledMessage(currentActiveId, event.generationId, event.messageId, event.clientMessageId.value, confirmedOnly=true)
                             val terminal = when (event.status) {
@@ -3460,10 +3542,10 @@ class WorkbenchController(
                                 else -> null
                             }
                             val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
-                            val settlesCurrent = event.generationId == null || currentGeneration == null || currentGeneration == event.generationId
-                            if (terminal == null || settlesCurrent) observeGenerationIdentity(event.generationId)
+                            val settlesCurrent = receiptGeneration == null || currentGeneration == null || currentGeneration == receiptGeneration
+                            if (terminal == null || settlesCurrent) observeGenerationIdentity(receiptGeneration)
                             if (terminal != null) finishStreaming(
-                                currentActiveId,event.generationId,terminal,event.occurredAt,event.clientMessageId.value,
+                                currentActiveId,receiptGeneration,terminal,event.occurredAt,event.clientMessageId.value,
                             )
                             val localKey = "local_${event.clientMessageId.value}"
                             update { state ->
@@ -3491,8 +3573,8 @@ class WorkbenchController(
                         }
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
+                            if (event.message.state == "STREAMING" && event.message.generationId?.let { currentActiveId to it in finishedGenerations } == true) return@collect
                             val message = withLatestMessageStatus(event.message)
-                            if (message.state == "STREAMING" && message.generationId?.let { currentActiveId to it in finishedGenerations } == true) return@collect
                             val eventConvId = message.conversationId?.value
                             if (eventConvId != null && eventConvId != currentActiveId) {
                                 refreshThreads()
@@ -3795,7 +3877,8 @@ class WorkbenchController(
             val deleted = page.deletedMessageIds + page.messages.filter { it.isDeleted }.map { it.id }
             snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.addAll(deleted)
             deleted.forEach { mirrored.remove(it); mirroredRevisions.remove(it) }
-            page.messages.filterNot { it.isDeleted || it.id in deleted }.forEach { message ->
+            page.messages.filterNot { it.isDeleted || it.id in deleted }.forEach { rawMessage ->
+                val message = withLatestMessageStatus(rawMessage)
                 val revision = message.contentRevision ?: 0L
                 if (message.id !in mirrored || revision >= (mirroredRevisions[message.id] ?: 0L)) {
                     mirrored[message.id] = message
@@ -3941,10 +4024,14 @@ class WorkbenchController(
         return !hasUserAfter && latestUserTimestamp > 0L && message.timestamp >= latestUserTimestamp - 5_000L
     }
 
-    private fun withLatestMessageStatus(message: TimelineMessage): TimelineMessage =
-        if (message.isDeleted) message else messageStatusesById[message.id]?.let { receipt ->
-            message.copy(state = receipt.status.wireValue, errorCode = receipt.errorCode?.wireValue)
+    private fun withLatestMessageStatus(message: TimelineMessage): TimelineMessage {
+        if (message.isDeleted) return message
+        val latest = messageStatusesById[message.id]?.let { receipt ->
+            message.copy(state=receipt.status.wireValue,errorCode=receipt.errorCode?.wireValue)
         } ?: message
+        return if (latest.state == "STREAMING" && isCancelledMessage(latest.conversationId?.value ?: activeThreadId,
+                latest.generationId,latest.id,latest.clientMessageId?.value,confirmedOnly=true)) latest.copy(state="CANCELLED") else latest
+    }
 
     private fun renderTimeline(pendingBatch: List<TimelineEntry> = _state.value.pendingBatch): List<TimelineEntry> {
         val activeAtoms = activeThreadId?.let { atomsFor(it).values.toList() }.orEmpty()
@@ -4231,7 +4318,11 @@ class WorkbenchController(
             pending?.let { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) },
             userRenamedThreads.toSet(), handledEventIds.toSet(), frozenBatches.values.toList()+collectingUnits.values.groupBy { it.first }.map { (id,units) -> SavedBatch("collecting",id,units.map { it.second },false) },
             organization=ui.organization, threadsHydrated=ui.threads is Loadable.Ready || ui.threads is Loadable.Empty,
-            threadsSnapshotRevision=threadsSnapshotRevision, deletedThreadIds=deletedThreads.toSet())
+            threadsSnapshotRevision=threadsSnapshotRevision, deletedThreadIds=deletedThreads.toSet(),
+            cancellations=cancelledGenerations.map { SavedCancellation(it.first,it.second) },
+            messageGenerations=messageGenerations.map { (key,value) -> SavedMessageGeneration(key.first,key.second,value.id,value.revision) },
+            pendingFolderAssignments=pendingFolderAssignments.map { SavedFolderAssignment(it.key,it.value) },
+            pendingConversationCreation=unconfirmedConversationCreation?.let { SavedConversationCreation(it.clientId,it.folderId) })
         pendingCheckpoint = checkpoint
         if (checkpointJob?.isActive == true) return
         checkpointJob = workScope.launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
@@ -4290,7 +4381,7 @@ class WorkbenchController(
                     atomsFor(threadId)[clientId]?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN
                 } || recoverableOrdinaryAtoms(threadId).any { it.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN }
             } == true
-            val next = transformed.copy(hasRecoverableSubmissions = recoverable,
+            val next = transformed.copy(pendingFolderAssignments=pendingFolderAssignments.toMap(), hasRecoverableSubmissions = recoverable,
                 hasUnknownSubmissionOutcome = unknownSubmissionOutcome,
                 conversationManagementSupported=supportsConversationManagement,
                 busyThreadIds=managementBusyThreadIds(transformed)+externalBusyThreadIds())
