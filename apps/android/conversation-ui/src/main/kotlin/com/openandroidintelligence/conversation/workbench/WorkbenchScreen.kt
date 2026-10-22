@@ -117,6 +117,11 @@ fun WorkbenchScreen(
         (if (creatingThreadInThisThread) 1 else 0) +
         (if (isThinking) 1 else 0)
     val lastItemIndex = itemCount - 1
+    val latestItemVisible by remember(listState, lastItemIndex) {
+        derivedStateOf {
+            listState.layoutInfo.visibleItemsInfo.any { it.index == lastItemIndex }
+        }
+    }
 
     val freshEntryKeys = rememberFreshTimelineKeys(
         threadId = state.activeThreadId,
@@ -145,7 +150,7 @@ fun WorkbenchScreen(
         if (timelineDragged) followLatest = false
     }
     // 用户自己滑回底部后恢复跟随（滑动手势或惯性都算），避免「已经在底部却还显示回到最新」。
-    LaunchedEffect(listState) {
+    LaunchedEffect(state.activeThreadId, listState) {
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
             .distinctUntilChanged()
             .collect { (scrolling, below) ->
@@ -479,7 +484,7 @@ fun WorkbenchScreen(
                                     )
                                 }
                                 ScrollToLatestButton(
-                                    visible = !followLatest && entries.isNotEmpty(),
+                                    visible = !followLatest && entries.isNotEmpty() && !latestItemVisible,
                                     onClick = {
                                         followLatest = true
                                         scope.launch {
