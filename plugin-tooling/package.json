@@ -10,7 +10,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "build:references": "tsx src/build-references.ts",
-    "build:fixtures": "tsx src/build-references.ts --fixtures"
+    "build:fixtures": "tsx src/build-references.ts --fixtures",
+    "build:android-notifications": "tsx src/build-android-notifications.ts"
   },
   "dependencies": {
     "@noble/curves": "2.2.0",

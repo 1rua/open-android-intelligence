@@ -40,13 +40,48 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Setup Node.js for signed device packages
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: "npm"
+          cache-dependency-path: plugin-tooling/package-lock.json
+
+      - name: Build the real notification plugin WASM
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
+          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications
+          npm ci --prefix plugin-tooling
+
+      - name: Sign the bundled notification device package
+        env:
+          OAI_PLUGIN_SIGNING_KEY_BASE64: ${{ secrets.OAI_PLUGIN_SIGNING_KEY_BASE64 }}
+        run: |
+          if [ -z "$OAI_PLUGIN_SIGNING_KEY_BASE64" ]; then
+            echo "::error::OAI_PLUGIN_SIGNING_KEY_BASE64 is required to ship the signed notification plugin."
+            exit 1
+          fi
+          umask 077
+          OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-plugin-seed.bin"
+          trap 'rm -f "$OAI_PLUGIN_KEY_FILE"' EXIT
+          printf '%s' "$OAI_PLUGIN_SIGNING_KEY_BASE64" | base64 --decode > "$OAI_PLUGIN_KEY_FILE"
+          OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE="$OAI_PLUGIN_KEY_FILE" \
+            npm run build:android-notifications --prefix plugin-tooling -- "$RUNNER_TEMP/notifications.alp"
+          echo "OAI_BUNDLED_NOTIFICATIONS_ALP=$RUNNER_TEMP/notifications.alp" >> "$GITHUB_ENV"
+
       - name: Build Full Debug APK
         working-directory: apps/android
         env:
           LC_ALL: C.UTF-8
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleFullDebug --stacktrace
+          ./gradlew :app:assembleFullDebug -Poai.requireBundledNotifications=true --stacktrace
+
+      - name: Verify the signed notification package in the APK
+        run: |
+          python3 apps/android/tools/verify_bundled_notifications.py \
+            --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
+            --package "$OAI_BUNDLED_NOTIFICATIONS_ALP"
 
       # 发布前确认签名身份与仓库固定调试密钥一致：开发预览包要能直接覆盖同签名的旧安装。
       - name: Verify Debug Signing Identity

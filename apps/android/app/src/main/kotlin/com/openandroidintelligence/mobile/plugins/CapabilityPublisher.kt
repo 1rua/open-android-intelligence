@@ -39,7 +39,11 @@ class CapabilityPublisher(context: Context,private val http: GatewayHttpClient,s
         val snapshot = host.capabilitySnapshot()
         check(localRevision() == local && host.revision.value == hostRevision) { "LOCAL_AUTHORIZATION_CHANGED" }
         val body = Json.of(mapOf("bindings" to snapshot.bindings,"localGrantRevision" to local,"expectedGrantRevision" to remoteRevision) +
-            if ((JsonFields.int(current,"capabilityPublicationVersion") ?: 1) >= 2) mapOf("inventory" to snapshot.inventory) else emptyMap()) as JsonValue.JObject
+            // An unreadable installed package makes absence unprovable. Omit the
+            // optional inventory so the Gateway uses ANDROID_STATE_UNKNOWN;
+            // ready, verified bindings remain publishable through the same protocol.
+            if ((JsonFields.int(current,"capabilityPublicationVersion") ?: 1) >= 2 && snapshot.inventoryComplete)
+                mapOf("inventory" to snapshot.inventory) else emptyMap()) as JsonValue.JObject
         pendingDigest = digest(body)
         // GET is authoritative after a lost POST response. Reposting the old
         // expectedGrantRevision can loop forever, or republish a revoked grant.

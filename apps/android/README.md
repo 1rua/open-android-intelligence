@@ -128,6 +128,39 @@ work as reboot-resilient until that reviewed policy decision is made.
 - 侧边栏显示真实登录账号与账号名首字符头像。点击头像使用单选系统相册，将缩放至最长边 256px 的图片副本保存到该账号的 AccountManager 公开资料，独立于相册临时 URI 权限，退出或重新登录后保留，移除账号时删除。
 - Agent 状态由工作台的实时通道状态驱动，区分在线、连接中、重连和离线。名称优先使用协商响应的可选 `X-Open-Android-Intelligence-Agent-Name` 头（例如 `DSH`、`Hermes`，1–128 个字符、单行、单个值）；未提供时显示实际 `gatewayIdentity.deploymentId`。名称仅用于展示，不参与身份校验或授权，不更改 v2 JSON Schema 或契约摘要。
 
+## Bundled notification plugin
+
+Full APKs can carry `assets/bundled-plugins/notifications.alp`. This is the existing
+protected WASM plugin, installed explicitly from plugin settings through the normal
+Ed25519 verifier. Installation leaves it disabled and creates no pairing or collection
+grant. Play builds exclude the asset.
+
+Build the real payload and sign the package with a private 32-byte Ed25519 seed file:
+
+```sh
+cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release \
+  --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications
+npm ci --prefix plugin-tooling
+OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE=/private/path/plugin-seed.bin \
+  npm run build:android-notifications --prefix plugin-tooling -- /tmp/notifications.alp
+cd apps/android
+OAI_BUNDLED_NOTIFICATIONS_ALP=/tmp/notifications.alp \
+  ./gradlew :app:assembleFullDebug -Poai.requireBundledNotifications=true
+```
+
+Both official publishing workflows require repository secret
+`OAI_PLUGIN_SIGNING_KEY_BASE64`: the base64 encoding of that private seed. Keep the
+same publisher key across releases. This is separate from APK signing; the public
+debug key and fixture seed cannot serve as a plugin publisher identity. Missing or
+unsafe plugin keys stop publishing. The workflow checks that the final APK contains
+the exact package produced by the signed build. PR CI uses an isolated random test
+author and does not need production secrets.
+
+Local source builds may omit `OAI_BUNDLED_NOTIFICATIONS_ALP`; plugin settings then
+explain that a signed `.alp` must be imported. Removing the input also clears any
+previous generated asset. Existing installed providers are never replaced by the
+bundled install button; updates keep using the ordinary signed package import path.
+
 ## Debug signing
 
 Debug variants are signed with the checked-in key `app/keystore/debug.keystore`

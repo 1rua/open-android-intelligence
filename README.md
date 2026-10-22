@@ -141,6 +141,8 @@
 
 到 [Releases](https://github.com/1rua/open-android-intelligence/releases) 下载 `nightly` 标签下的**开发预览测试版** APK，直接安装。
 
+读取手机通知还需在「设置 → 插件管理」安装 Full APK 随附的通知读取插件，显式启用并为当前 Gateway 配对授权；再按页面引导开启通知使用权、允许采集并选择应用范围。Hermes 账号需在 `hermes gateway setup` 中开启通知能力。详见[设备读取配置](docs/mvp/device-reads-and-reply-notifications.md)。
+
 > 预览版和正式版用的是不同签名，不能互相覆盖安装。正式版只发布用私有发行密钥签名的非 Debug 包，配置见 [Android README](apps/android/README.md#release-signing)。
 
 ### 2. 服务器装 Agent 侧插件
@@ -156,7 +158,7 @@
 
 ```bash
 # 安装并启用插件（固定提交，与本分支 App 配套）
-hermes plugins install 1rua/hermes-gateway-plugin --ref 7d21b862c85987568d8abc8a40ecff2b942a0d43 --enable
+hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
 
 # 创建手机连接账号
 hermes gateway setup
@@ -173,7 +175,7 @@ hermes open-android-intelligence contract status
 如果之前锁过旧提交（`9d642b4`），它会返回 `/models` 这类固定命令、并且漏报取消能力，需要显式覆盖安装后重启宿主：
 
 ```bash
-hermes plugins install 1rua/hermes-gateway-plugin --force --ref 7d21b862c85987568d8abc8a40ecff2b942a0d43 --enable
+hermes plugins install 1rua/hermes-gateway-plugin --force --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
 hermes gateway restart
 ```
 

@@ -12,6 +12,7 @@ import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
@@ -21,15 +22,18 @@ import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.NativePluginLoader
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
+import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PhoneLimits
 import com.openandroidintelligence.kernel.PluginKernel
 import com.openandroidintelligence.mobile.AppearancePreferences
+import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.PlatformSettingsEnvironment
 import com.openandroidintelligence.mobile.SettingsScreen
 import java.io.File
 import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -84,8 +88,8 @@ class PluginManagementScreenTest {
             }
         }
 
-        compose.onNodeWithText("未安装任何插件").assertIsDisplayed()
-        compose.onNodeWithText("宿主未装配插件运行时", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("未安装任何插件").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("宿主未装配插件运行时", substring = true).performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -105,7 +109,7 @@ class PluginManagementScreenTest {
             }
         }
 
-        compose.onNodeWithText("示例通知插件").assertIsDisplayed()
+        compose.onNodeWithText("示例通知插件").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("org.example.notifications", substring = true).assertExists()
         compose.onNodeWithText("未启用", substring = true).assertExists()
     }
@@ -208,6 +212,96 @@ class PluginManagementScreenTest {
         compose.onNodeWithText("当前分发渠道禁止安装插件", substring = true).assertExists()
         val node = compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).fetchSemanticsNode()
         assertFalse("渠道禁止时安装入口不得可点", node.config.getOrNull(SemanticsActions.OnClick) != null)
+    }
+
+    @Test fun theBundledNotificationButtonInstallsThroughTheVerifiedStore() {
+        val packageBytes = TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID, name = "通知读取插件")
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(true, false, {}, store = store, bundledNotificationPackage = { packageBytes })
+            }
+        }
+        compose.onNodeWithTag(BUNDLED_NOTIFICATION_INSTALL_TAG).performScrollTo().performClick()
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithText("通知读取插件已安装").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertEquals(NOTIFICATION_PLUGIN_ID, store.listInstalled().single().pluginId)
+        val node = compose.onNodeWithTag(BUNDLED_NOTIFICATION_INSTALL_TAG).fetchSemanticsNode()
+        assertFalse(node.config.getOrNull(SemanticsActions.OnClick) != null)
+        compose.onNodeWithText("已安装，未启用", substring = true).assertExists()
+    }
+
+    @Test fun theBundledNotificationButtonExplainsMissingAssetsAndKeepsFileImportAvailable() {
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(true, false, {}, store = store,
+                    bundledNotificationPackage = { throw BundledNotificationUnavailable() })
+            }
+        }
+        compose.onNodeWithTag(BUNDLED_NOTIFICATION_INSTALL_TAG).performScrollTo().performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("当前安装包未附带通知读取插件，请从文件导入已签名的 .alp 插件包。").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertTrue(store.listInstalled().isEmpty())
+        assertTrue(compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).fetchSemanticsNode().config.getOrNull(SemanticsActions.OnClick) != null)
+    }
+
+    @Test fun theBundledNotificationButtonIsBlockedByTheDistributionPolicy() {
+        var reads = 0
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(false, false, {}, store = store,
+                    bundledNotificationPackage = { reads++; TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID) })
+            }
+        }
+        val node = compose.onNodeWithTag(BUNDLED_NOTIFICATION_INSTALL_TAG).fetchSemanticsNode()
+        assertFalse(node.config.getOrNull(SemanticsActions.OnClick) != null)
+        assertEquals(0, reads)
+        assertTrue(store.listInstalled().isEmpty())
+    }
+
+    @Test fun anUnreadableManifestCanBeRemovedAfterExplicitConfirmation() {
+        val damaged = File(store.installRoot, "org.example.damaged").apply { mkdirs() }
+        File(damaged, "manifest.json").writeText("not-json")
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, false, {}, store = store) }
+        }
+        compose.onNodeWithTag("damaged-plugin-delete:org.example.damaged").performScrollTo().performClick()
+        assertTrue("打开确认窗口不能删除文件", damaged.exists())
+        compose.onNodeWithTag("damaged-plugin-delete-confirm").performClick()
+        compose.waitForIdle()
+        assertFalse(damaged.exists())
+        compose.onNodeWithText("未安装任何插件").assertExists()
+    }
+
+    @Test
+    @Config(application = OpenAndroidIntelligenceApplication::class)
+    fun aDisguisedDirectoryCannotControlOrRemoveItsLegitimateNamedPlugin() {
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        val host = app.pluginHost
+        app.pairingGrants.bind(PairingGrantBinding("https://gateway.example", "test_ui", "test_install"))
+        store.install(TestAlpPackages.compiledNotificationsPackage())
+        host.reload();host.enable(NOTIFICATION_PLUGIN_ID,true);host.grant(NOTIFICATION_PLUGIN_ID,true)
+        val authorized = app.pairingGrants.state.value!!.granted
+        val legitimate = File(store.installRoot, NOTIFICATION_PLUGIN_ID)
+        val disguised = File(store.installRoot, "org.example.disguised")
+        legitimate.copyRecursively(disguised)
+        host.reload()
+        assertEquals("PLUGIN_MANIFEST_INVALID",host.loadFailures[disguised.name])
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
+        }
+        // Only the legitimate row can expose normal actions or its declarative UI.
+        assertEquals(1,compose.onAllNodesWithText("配对授权").fetchSemanticsNodes().size)
+        compose.onNodeWithTag("damaged-plugin-delete:org.example.disguised").performScrollTo().performClick()
+        assertTrue(disguised.exists())
+        compose.onNodeWithTag("damaged-plugin-delete-confirm").performClick()
+        compose.waitForIdle()
+        assertFalse(disguised.exists())
+        assertTrue(legitimate.isDirectory)
+        assertTrue(host.isEnabled(NOTIFICATION_PLUGIN_ID))
+        assertEquals(authorized,app.pairingGrants.state.value!!.granted)
+        assertTrue(host.loadFailures.isEmpty())
     }
 
     // ------------------------------------------------------------------

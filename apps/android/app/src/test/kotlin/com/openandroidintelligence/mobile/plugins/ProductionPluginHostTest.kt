@@ -8,6 +8,7 @@ import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.kernel.*
 import com.openandroidintelligence.mobile.BuildConfig
 import com.openandroidintelligence.mobile.TestDocumentKeys
+import java.io.File
 import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.*
@@ -26,6 +27,115 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class ProductionPluginHostTest {
+    @Test
+    @Config(sdk = [34])
+    fun uninstallingADamagedPluginRevokesItsAuthorsWithoutRemovingSharedPrimitiveGrants() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        val audit = AndroidAuditStore()
+        val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(),audit).apply {
+            bind(PairingGrantBinding("https://host.example","acct_damaged","install_damaged"))
+        }
+        val trust = DeveloperTrustMode()
+        val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_damaged")
+        val bytes = TestAlpPackages.compiledNotificationsPackage()
+        val otherScoped = "plugin:org.example.other:other-author:kernel.notifications.read"
+        val preferences = context.getSharedPreferences("open_android_intelligence_pairing_grants",Application.MODE_PRIVATE)
+        try {
+            host.installStore.installRoot.deleteRecursively()
+            host.installStore.install(bytes)
+            val kernel = PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
+                audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },host::mediate)
+            host.attach(kernel);host.enable(NOTIFICATION_PLUGIN_ID,true);host.grant(NOTIFICATION_PLUGIN_ID,true)
+            grants.updatePrimitive(otherScoped,true)
+            val ownScoped = grants.state.value!!.granted.filter { it.startsWith("plugin:$NOTIFICATION_PLUGIN_ID:") }.toSet()
+            assertTrue(ownScoped.isNotEmpty())
+            preferences.edit().putStringSet("saved.granted",ownScoped + otherScoped).commit()
+            File(host.installStore.installRoot,"$NOTIFICATION_PLUGIN_ID/manifest.json").writeText("not-json")
+            host.reload()
+            assertTrue(host.loadFailures.containsKey(NOTIFICATION_PLUGIN_ID))
+            host.uninstall(NOTIFICATION_PLUGIN_ID)
+            assertTrue(grants.state.value!!.granted.none { it.startsWith("plugin:$NOTIFICATION_PLUGIN_ID:") })
+            assertTrue(otherScoped in grants.state.value!!.granted)
+            assertTrue("kernel.notifications.read" in grants.state.value!!.granted)
+            assertEquals(setOf(otherScoped),preferences.getStringSet("saved.granted",emptySet()))
+            host.installStore.install(bytes);host.reload();host.enable(NOTIFICATION_PLUGIN_ID,true)
+            assertEquals("LOCAL_GRANT_REQUIRED",host.capabilitySnapshot().inventory.single()["status"])
+            assertTrue(host.authorizedBindings().isEmpty())
+        } finally {
+            host.installStore.installRoot.deleteRecursively()
+            Thread.setDefaultUncaughtExceptionHandler(previousHandler)
+        }
+    }
+
+    @Test
+    @Config(sdk = [34])
+    fun rejectedInstalledBytesRemoveBindingsAndMakeTheInventoryIncompleteUntilRepaired() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        val previousProvider = KernelPrimitiveRegistry.provider("kernel.notifications.read")
+        val provider = object : KernelPrimitiveProvider {
+            override val primitiveId = "kernel.notifications.read"
+            override suspend fun invoke(context: LocalGrantContext,input: ByteArray): ByteArray = "{}".encodeToByteArray()
+        }
+        KernelPrimitiveRegistry.register(provider)
+        try {
+            val audit = AndroidAuditStore()
+            val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(),audit).apply {
+                bind(PairingGrantBinding("https://host.example","acct_integrity","install_integrity"))
+            }
+            val trust = DeveloperTrustMode()
+            val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_integrity")
+            host.installStore.installRoot.deleteRecursively()
+            host.installStore.install(TestAlpPackages.compiledNotificationsPackage())
+            host.attach(PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
+                audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },host::mediate))
+            val id = "org.openandroidintelligence.notifications"
+            host.enable(id,true); host.grant(id,true)
+            assertEquals(1,host.capabilitySnapshot().bindings.size)
+            assertTrue(host.capabilitySnapshot().inventoryComplete)
+
+            // A different directory must not borrow the valid provider's ID
+            // and cause reload() to verify that other package in its place.
+            val disguised = File(host.installStore.installRoot,"org.example.disguised")
+            disguised.mkdirs()
+            File(disguised,"manifest.json").writeBytes(File(host.installStore.installRoot,"$id/manifest.json").readBytes())
+            host.reload()
+            assertEquals("PLUGIN_MANIFEST_INVALID",host.loadFailures[disguised.name])
+            assertFalse(host.capabilitySnapshot().inventoryComplete)
+            assertEquals(1,host.capabilitySnapshot().bindings.size)
+            disguised.deleteRecursively(); host.reload()
+            assertTrue(host.capabilitySnapshot().inventoryComplete)
+
+            val payload = File(host.installStore.installRoot,"$id/payload/notifications.wasm")
+            val original = payload.readBytes()
+            payload.writeBytes(original + byteArrayOf(0))
+            host.reload()
+            assertEquals("PLUGIN_PACKAGE_INVALID",host.loadFailures[id])
+            assertTrue(host.entries(id).isEmpty())
+            assertTrue(host.capabilitySnapshot().bindings.isEmpty())
+            assertFalse(host.capabilitySnapshot().inventoryComplete)
+
+            payload.writeBytes(original)
+            host.reload()
+            assertTrue(host.loadFailures.isEmpty())
+            assertTrue(host.capabilitySnapshot().inventoryComplete)
+            assertFalse(host.isEnabled(id))
+            assertEquals("PLUGIN_DISABLED",host.capabilitySnapshot().inventory.single()["status"])
+            host.enable(id,true)
+            assertEquals(1,host.capabilitySnapshot().bindings.size)
+            host.uninstall(id)
+            assertTrue(host.capabilitySnapshot().inventoryComplete)
+            assertTrue(host.capabilitySnapshot().inventory.isEmpty())
+        } finally {
+            KernelPrimitiveRegistry.unregister(provider)
+            if (previousProvider != null) KernelPrimitiveRegistry.register(previousProvider)
+            Thread.setDefaultUncaughtExceptionHandler(previousHandler)
+        }
+    }
+
     @Test fun anEnabledSignedUpgradeAndRollbackKeepTheSelectedProviderAndAuthorScopedGrant() {
         assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val context=ApplicationProvider.getApplicationContext<Application>()

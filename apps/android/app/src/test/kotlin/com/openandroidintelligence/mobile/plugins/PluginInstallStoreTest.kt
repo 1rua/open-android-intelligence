@@ -62,6 +62,43 @@ class PluginInstallStoreTest {
         assertEquals("SIGNATURE_INVALID", failure!!.message)
     }
 
+    @Test fun bundledNotificationInstallationCannotInstallAnotherPlugin() {
+        val failure = runCatching { store.installBundledNotifications(TestAlpPackages.signedPackage()) }.exceptionOrNull()
+        assertEquals("BUNDLED_PLUGIN_ID_MISMATCH", failure?.message)
+        assertTrue(store.listInstalled().isEmpty())
+    }
+
+    @Test fun bundledNotificationInstallationStillRejectsInvalidSignatures() {
+        val failure = runCatching {
+            store.installBundledNotifications(TestAlpPackages.tamperedManifestPackage(id = NOTIFICATION_PLUGIN_ID))
+        }.exceptionOrNull()
+        assertTrue(failure is PackageRejected)
+        assertEquals("SIGNATURE_INVALID", failure?.message)
+        assertTrue(store.listInstalled().isEmpty())
+    }
+
+    @Test fun bundledNotificationInstallationNeverReplacesAnExistingProvider() {
+        val author = java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        store.install(TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID, author = author))
+        val original = File(store.installRoot, "$NOTIFICATION_PLUGIN_ID/manifest.json").readBytes()
+        val failure = runCatching {
+            store.installBundledNotifications(TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID, author = author, version = "2.0.0"))
+        }.exceptionOrNull()
+        assertEquals("BUNDLED_PLUGIN_ALREADY_INSTALLED", failure?.message)
+        assertTrue(original.contentEquals(File(store.installRoot, "$NOTIFICATION_PLUGIN_ID/manifest.json").readBytes()))
+        assertEquals("1.0.0", store.listInstalled().single().version)
+    }
+
+    @Test fun bundledNotificationInstallationPreservesAnUnreadableExistingDirectory() {
+        val directory = File(store.installRoot, NOTIFICATION_PLUGIN_ID).apply { mkdirs() }
+        val marker = File(directory, "user-data").apply { writeText("preserve") }
+        val failure = runCatching {
+            store.installBundledNotifications(TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID))
+        }.exceptionOrNull()
+        assertEquals("BUNDLED_PLUGIN_ALREADY_INSTALLED", failure?.message)
+        assertEquals("preserve", marker.readText())
+    }
+
     @Test
     fun installingTheSamePluginIdTwiceIsRefusedInsteadOfSilentlyUpdating() {
         val bytes=TestAlpPackages.signedPackage()
@@ -95,6 +132,20 @@ class PluginInstallStoreTest {
         val downgrade=runCatching { store.install(TestAlpPackages.signedPackage(author=author)) }.exceptionOrNull()
         assertTrue(downgrade?.message.orEmpty().contains("DOWNGRADE"))
         assertEquals("1.1.0",store.listInstalled().single().version)
+    }
+
+    @Test fun removingADamagedPackageCannotTraverseOrFollowItsSymlinks() {
+        val outside = File(store.installRoot.parentFile, "preserved-plugin-uninstall-test").apply { mkdirs() }
+        val sentinel = File(outside, "preserved").apply { writeText("keep") }
+        try {
+            val damaged = File(store.installRoot, "org.example.damaged").apply { mkdirs() }
+            java.nio.file.Files.createSymbolicLink(File(damaged, "linked").toPath(), outside.toPath())
+            store.uninstall("org.example.damaged")
+            assertEquals("keep", sentinel.readText())
+            assertTrue(!damaged.exists())
+            assertTrue(runCatching { store.uninstall("..") }.isFailure)
+            assertEquals("keep", sentinel.readText())
+        } finally { outside.deleteRecursively() }
     }
 
     @Test

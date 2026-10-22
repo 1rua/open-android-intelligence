@@ -224,7 +224,7 @@ internal fun NotificationCollectionScreen(
                         )
                     },
                     onOpenListenerSettings = { context ->
-                        binding.openSystemListenerSettings(context)
+                        if (!binding.openSystemListenerSettings(context)) rejection = "NOTIFICATION_SETTINGS_UNAVAILABLE"
                     },
                 )
                 AccessScopeGroup(
@@ -306,7 +306,9 @@ private fun RejectionNotice(reason: String) {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text(
-            text = "更新被拒绝：$reason",
+            text = if (reason == "NOTIFICATION_SETTINGS_UNAVAILABLE")
+                "无法打开系统通知使用权设置，请在 Android 设置中手动开启本应用的通知使用权。"
+                else "更新被拒绝：$reason",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(
                 horizontal = Dimensions.SpaceMedium,

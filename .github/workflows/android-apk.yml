@@ -46,6 +46,35 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Setup Node.js for signed device packages
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: "npm"
+          cache-dependency-path: plugin-tooling/package-lock.json
+
+      - name: Build the real notification plugin WASM
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
+          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications
+          npm ci --prefix plugin-tooling
+
+      - name: Sign the bundled notification device package
+        env:
+          OAI_PLUGIN_SIGNING_KEY_BASE64: ${{ secrets.OAI_PLUGIN_SIGNING_KEY_BASE64 }}
+        run: |
+          if [ -z "$OAI_PLUGIN_SIGNING_KEY_BASE64" ]; then
+            echo "::error::OAI_PLUGIN_SIGNING_KEY_BASE64 is required to ship the signed notification plugin."
+            exit 1
+          fi
+          umask 077
+          OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-plugin-seed.bin"
+          trap 'rm -f "$OAI_PLUGIN_KEY_FILE"' EXIT
+          printf '%s' "$OAI_PLUGIN_SIGNING_KEY_BASE64" | base64 --decode > "$OAI_PLUGIN_KEY_FILE"
+          OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE="$OAI_PLUGIN_KEY_FILE" \
+            npm run build:android-notifications --prefix plugin-tooling -- "$RUNNER_TEMP/notifications.alp"
+          echo "OAI_BUNDLED_NOTIFICATIONS_ALP=$RUNNER_TEMP/notifications.alp" >> "$GITHUB_ENV"
+
       - name: Build preview APK
         if: "!startsWith(github.ref, 'refs/tags/v')"
         working-directory: apps/android
@@ -53,7 +82,14 @@ jobs:
           LC_ALL: C.UTF-8
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleFullDebug --stacktrace
+          ./gradlew :app:assembleFullDebug -Poai.requireBundledNotifications=true --stacktrace
+
+      - name: Verify the preview APK notification package
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        run: |
+          python3 apps/android/tools/verify_bundled_notifications.py \
+            --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
+            --package "$OAI_BUNDLED_NOTIFICATIONS_ALP"
 
       # 固定 debug 签名的一致性是"能否直接覆盖安装"的前提：
       # 签名一旦与 app/keystore 里的固定密钥不符，安装时会报 INSTALL_FAILED_UPDATE_INCOMPATIBLE。
@@ -98,7 +134,14 @@ jobs:
           umask 077
           printf '%s' "$OAI_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$OAI_RELEASE_KEYSTORE"
           trap 'if [ -f "$OAI_RELEASE_KEYSTORE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_RELEASE_KEYSTORE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keystore"; fi' EXIT
-          ./gradlew :app:assembleFullRelease --stacktrace
+          ./gradlew :app:assembleFullRelease -Poai.requireBundledNotifications=true --stacktrace
+
+      - name: Verify the release APK notification package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python3 apps/android/tools/verify_bundled_notifications.py \
+            --apk apps/android/app/build/outputs/apk/full/release/app-full-release.apk \
+            --package "$OAI_BUNDLED_NOTIFICATIONS_ALP"
 
       - name: 核实正式版或编号测试版 APK 并生成发布清单
         if: startsWith(github.ref, 'refs/tags/v')

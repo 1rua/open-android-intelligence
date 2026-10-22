@@ -54,6 +54,36 @@ tasks.withType<Test>().configureEach {
     inputs.file(rootProject.projectDir.resolve("../../plugins/notifications/manifest.json")).withPropertyName("notificationsReferenceManifest")
 }
 
+// Full releases carry the same signed .alp installed through the ordinary verifier.
+// An absent optional local input must clear yesterday's asset, never reuse it.
+val bundledNotificationsPath = providers.environmentVariable("OAI_BUNDLED_NOTIFICATIONS_ALP").orElse("")
+val requireBundledNotifications = providers.gradleProperty("oai.requireBundledNotifications").map(String::toBoolean).orElse(false)
+val bundledNotificationAssets = layout.buildDirectory.dir("generated/bundled-notifications/assets")
+val stageBundledNotifications by tasks.registering {
+    inputs.property("bundlePath", bundledNotificationsPath)
+    inputs.property("required", requireBundledNotifications)
+    if (bundledNotificationsPath.get().isNotBlank()) {
+        inputs.file(file(bundledNotificationsPath.get())).withPropertyName("signedNotificationPackage")
+            .withPathSensitivity(org.gradle.api.tasks.PathSensitivity.NONE)
+    }
+    outputs.dir(bundledNotificationAssets)
+    doLast {
+        val destination = bundledNotificationAssets.get().asFile
+        delete(destination)
+        destination.mkdirs()
+        val source = bundledNotificationsPath.get().takeIf(String::isNotBlank)?.let(::file)
+        check(source?.isFile == true || !requireBundledNotifications.get()) {
+            "BUNDLED_NOTIFICATIONS_REQUIRED: set OAI_BUNDLED_NOTIFICATIONS_ALP to the privately signed notification .alp"
+        }
+        if (source != null) {
+            check(source.isFile && source.length() in 1..(32L * 1024 * 1024)) { "BUNDLED_NOTIFICATIONS_INVALID" }
+            val asset = destination.resolve("bundled-plugins/notifications.alp")
+            asset.parentFile.mkdirs()
+            source.copyTo(asset, overwrite = true)
+        }
+    }
+}
+
 // 固定调试签名（app/keystore/debug.keystore，见同目录 README.md）在根工程
 // build.gradle.kts 里对所有 APK 模块统一配置，此处无需重复声明。
 
@@ -117,6 +147,8 @@ android {
         }
     }
 
+    sourceSets.getByName("full").assets.srcDir(bundledNotificationAssets)
+
     buildFeatures {
         buildConfig = true
         compose = true
@@ -141,6 +173,12 @@ android {
             it.doFirst { testHome.mkdirs() }
         }
     }
+}
+
+// Both APKs and Robolectric tests consume generated assets; input content changes
+// invalidate merge results. Play never sees the Full-only source set or task.
+tasks.matching { it.name.matches(Regex("mergeFull.*Assets")) }.configureEach {
+    dependsOn(stageBundledNotifications)
 }
 
 // Fail before producing any release APK/AAB, including direct Gradle builds.

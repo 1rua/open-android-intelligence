@@ -6,12 +6,15 @@ import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.kernel.*
+import com.openandroidintelligence.mobile.BuildConfig
 import com.openandroidintelligence.mobile.TestDocumentKeys
+import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -124,5 +127,45 @@ class CapabilityPublisherTest {
         fixture.remote.version = 1
         fixture.publisher().sync()
         assertNull(JsonFields.field(fixture.remote.bodies.single(),"inventory"))
+    }
+
+    @Test fun unreadableInstallationOmitsInventoryAndLostAckRecoveryDoesNotClaimAbsence() = runBlocking {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val fixture = Fixture()
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        fixture.host.installStore.installRoot.deleteRecursively()
+        try {
+            val host = fixture.host
+            host.attach(PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
+                AndroidAuditStore(),fixture.trust,host.nativeLoader,host.selector,
+                { fixture.grants.currentKernelGrant(it) },host::mediate))
+            fixture.publisher().sync()
+            assertNotNull(JsonFields.field(fixture.remote.bodies.last(),"inventory"))
+
+            // An installed directory whose declaration cannot be verified is
+            // not evidence that a notification provider was never installed.
+            val manifest = File(host.installStore.installRoot,"org.example.broken/manifest.json")
+            manifest.parentFile!!.mkdirs(); manifest.writeText("{")
+            host.reload()
+            assertEquals("PLUGIN_MANIFEST_INVALID",host.loadFailures["org.example.broken"])
+            fixture.remote.failAfter = true
+            assertNotNull(runCatching { fixture.publisher().sync() }.exceptionOrNull())
+            val incomplete = fixture.remote.bodies.last()
+            assertNull(JsonFields.field(incomplete,"inventory"))
+            assertEquals(emptyList<JsonValue.JObject>(),JsonFields.objects(incomplete,"bindings"))
+            val acceptedCount = fixture.remote.bodies.size
+            fixture.publisher().sync()
+            assertEquals(acceptedCount,fixture.remote.bodies.size)
+            assertEquals(0,fixture.foreignChanges)
+
+            host.uninstall("org.example.broken")
+            fixture.publisher().sync()
+            assertTrue(host.loadFailures.isEmpty())
+            assertNotNull(JsonFields.field(fixture.remote.bodies.last(),"inventory"))
+            assertNotEquals(Json.canonical(incomplete),Json.canonical(fixture.remote.bodies.last()))
+        } finally {
+            fixture.host.installStore.installRoot.deleteRecursively()
+            Thread.setDefaultUncaughtExceptionHandler(previousHandler)
+        }
     }
 }

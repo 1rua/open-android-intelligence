@@ -73,6 +73,10 @@ class PluginInstallStore(private val context: Context) {
 
     fun install(stream: java.io.InputStream): InstalledPluginView = installVerified(false) { it.verify(stream) }
 
+    /** Explicit first install only: an APK update must never replace a user's installed provider. */
+    internal fun installBundledNotifications(packageBytes: ByteArray): InstalledPluginView =
+        installVerified(false, expectedPluginId = NOTIFICATION_PLUGIN_ID, requireNew = true) { it.verify(packageBytes) }
+
     /** Verify the signed manifest, checksum table and every payload again after restart. */
     fun openVerified(pluginId: String): com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage = verifyDirectory(File(installRoot, pluginId))
 
@@ -110,23 +114,28 @@ class PluginInstallStore(private val context: Context) {
     }
 
     fun uninstall(pluginId: String) {
-        require(Regex("[A-Za-z0-9.-]+").matches(pluginId))
+        require(Regex("[A-Za-z0-9][A-Za-z0-9.-]*").matches(pluginId)) { "INVALID_PLUGIN_DIRECTORY" }
+        require(!java.nio.file.Files.isSymbolicLink(installRoot.toPath())) { "INVALID_PLUGIN_ROOT" }
         deleteRecursively(File(installRoot,pluginId))
-        deleteRecursively(File(File(installRoot,".previous"),pluginId))
+        val previousRoot = File(installRoot,".previous")
+        if (java.nio.file.Files.isSymbolicLink(previousRoot.toPath())) deleteRecursively(previousRoot)
+        else deleteRecursively(File(previousRoot,pluginId))
     }
 
-    private fun installVerified(approvalGranted: Boolean, verify: (AlpVerifier) -> com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage): InstalledPluginView {
+    @Synchronized private fun installVerified(approvalGranted: Boolean, expectedPluginId: String? = null, requireNew: Boolean = false,
+        verify: (AlpVerifier) -> com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage): InstalledPluginView {
         val verifier = AlpVerifier(
             limits = limits,
             stagingRoot = File(installRoot, ".verify-staging").apply { mkdirs() },
         )
         val verified = verify(verifier)
-        val pluginId = verified.identity.pluginId
-        val destination = File(installRoot, pluginId)
-        val previous = if (destination.exists()) current(destination) else null
-        val installer = PluginInstaller(installRoot)
         val installed: InstalledPlugin = try {
-            installer.install(verified, current = previous, approvalGranted = approvalGranted)
+            val pluginId = verified.identity.pluginId
+            if (expectedPluginId != null && pluginId != expectedPluginId) throw PluginInstallRefused("BUNDLED_PLUGIN_ID_MISMATCH")
+            val destination = File(installRoot, pluginId)
+            if (requireNew && destination.exists()) throw PluginInstallRefused("BUNDLED_PLUGIN_ALREADY_INSTALLED")
+            val previous = if (destination.exists()) current(destination) else null
+            PluginInstaller(installRoot).install(verified, current = previous, approvalGranted = approvalGranted)
         } finally {
             // 校验暂存区在安装提交后即无用途；清理失败不影响安装结果。
             runCatching { deleteRecursively(verified.stagedDirectory) }
@@ -186,7 +195,7 @@ class PluginInstallStore(private val context: Context) {
     )
 
     private fun deleteRecursively(file: File) {
-        if (file.isDirectory) file.listFiles()?.forEach { deleteRecursively(it) }
-        file.delete()
+        if (!java.nio.file.Files.isSymbolicLink(file.toPath()) && file.isDirectory) file.listFiles()?.forEach { deleteRecursively(it) }
+        check(!java.nio.file.Files.exists(file.toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS) || file.delete()) { "PLUGIN_DELETE_FAILED" }
     }
 }

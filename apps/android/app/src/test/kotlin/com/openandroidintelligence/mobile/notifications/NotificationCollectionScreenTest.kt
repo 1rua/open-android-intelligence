@@ -87,14 +87,14 @@ class NotificationCollectionScreenTest {
         }
     }
 
-    private class FakeBindingPort(bound: Boolean = false) : NotificationBindingPort {
+    private class FakeBindingPort(bound: Boolean = false, val canOpenSettings: Boolean = true) : NotificationBindingPort {
         var isBound: Boolean = bound
         var openCalls: Int = 0
 
         override fun isListenerBound(): Boolean = isBound
         override fun openSystemListenerSettings(context: Context): Boolean {
             openCalls += 1
-            return true
+            return canOpenSettings
         }
     }
 
@@ -207,6 +207,16 @@ class NotificationCollectionScreenTest {
 
         assertEquals(1, binding.openCalls)
         assertEquals("打开系统设置页不得携带任何策略更新", 0, policy.updates.size)
+    }
+
+    @Test fun unavailable_system_settings_are_reported_without_granting_access() {
+        val policy = FakePolicyPort(installedSnapshot())
+        val binding = FakeBindingPort(canOpenSettings = false)
+        render(policy, binding)
+        scrollTo(hasText("打开系统通知使用权设置"))
+        compose.onNodeWithText("打开系统通知使用权设置").performClick()
+        compose.onNodeWithText("无法打开系统通知使用权设置，请在 Android 设置中手动开启本应用的通知使用权。").assertExists()
+        assertEquals(0, policy.updates.size)
     }
 
     @Test

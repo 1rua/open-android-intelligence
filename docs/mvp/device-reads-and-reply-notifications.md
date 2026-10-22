@@ -5,7 +5,7 @@
 ## 配置设备读取
 
 1. 使用允许设备插件的 Full 构建，登录支持设备请求的 Gateway。
-2. 在「设置 → 插件管理」安装并启用已签名的短信或通知 `.alp` 插件。
+2. 在「设置 → 插件管理」点击「安装通知读取插件」，安装 Full APK 随附的已签名通知 `.alp`，再显式启用。安装本身不会启用插件或授权读取。已有通知插件不会被此入口覆盖；旧版或自行构建的 APK 若未携带通知包，可继续通过文件或固定摘要的远程来源导入。短信仍通过 `.alp` 导入。
 3. 点击插件的「配对授权」，确认列出的能力；短信插件会请求 Android 短信读取权限。更换 Gateway 账号后需要为对应配对授权；可点击「撤销当前配对授权」停止对应访问。
 4. 对通知插件，打开「通知采集与访问范围」：开启「允许通知采集」，点击「选择应用」，搜索并勾选本机已安装应用后保存；需要标题、正文时开启内容访问。同时在系统设置中授予本 App「通知使用权」。
 
@@ -95,12 +95,13 @@ hermes open-android-intelligence capabilities set <账号> org.openandroidintell
 Gateway 开启后，手机仍必须安装、启用、为当前配对授权插件，并完成系统权限和本机采集策略授权。
 通知采集默认是空应用白名单、仅元数据；需要正文时还应在手机上选择内容访问范围。
 Agent 可用 `open_android_capabilities` 查看实际 ID、版本、Schema 和状态，不能直接调用 `kernel.notifications.read` 绕过设备插件。
+读取手机当前通知时，Agent 应在能力为 `READY` 后使用 `open_android_device`；宿主的 `terminal` 或 `adb devices` 无法替代 Gateway 的已配对设备通道。遇到未安装、未启用或未授权状态，应按诊断完成相应设置后重试。
 
 `GATEWAY_DISABLED` 表示该账号开关关闭；`PLUGIN_NOT_INSTALLED`、`PLUGIN_DISABLED`、`LOCAL_GRANT_REQUIRED`、
 `ANDROID_PERMISSION_REQUIRED` 分别表示未安装、未启用、本地未授权和缺少系统权限。
 `PROVIDER_UNAVAILABLE` 的 `reason=NOTIFICATION_LISTENER_UNAVAILABLE` 表示监听服务尚未连接。
 Android 插件管理页面会显示 Gateway 状态与 `SYNC_FAILED` 重试提示。只有旧版本的空 bindings 时，状态为
-`ANDROID_STATE_UNKNOWN`，应先更新两端后查看，不能据此断言插件未安装。
+`ANDROID_STATE_UNKNOWN`，应先更新两端后查看，不能据此断言插件未安装。已安装包验签或加载失败时，Android 也不会发布声称完整的清单：手机端显示加载失败，Gateway 对无法确认的能力返回 `ANDROID_STATE_UNKNOWN`；修复或卸载故障包后再同步。
 
 插件与配对授权变更会触发同步；系统权限、通知监听重连和 Gateway 开关由每 5 秒校对自动同步。
 Gateway 开关不会清除手机授权，也不能代替手机授权；外部配对授权撤销仍会清理本机配对授权。
