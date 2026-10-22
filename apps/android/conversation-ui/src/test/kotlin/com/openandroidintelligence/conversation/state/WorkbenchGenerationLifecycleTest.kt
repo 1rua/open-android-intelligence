@@ -10,6 +10,126 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchGenerationLifecycleTest {
+    @Test fun confirmedCancellationAndLegacyAssociationSurviveAControllerRestart() = runTest {
+        for (eventConfirmation in listOf(false, true)) {
+            val saved = MemoryPersistence()
+            val repository = Repository()
+            val first = controller(repository, persistence=saved)
+            runCurrent()
+            repository.generationId.value = "gen_a"
+            repository.events.emit(question()); runCurrent()
+            repository.events.emit(terminal("gen_a", AgentMessageStatus.DELIVERED).copy(eventId="delivered",revision=1)); runCurrent()
+            repository.events.emit(stream("progress", "gen_a", "已生成的内容")); runCurrent()
+            if (eventConfirmation) {
+                repository.events.emit(VerifiedConversationEvent.GenerationCancelled("cancelled",3,"gen_a",ConversationId("conv_a"))); runCurrent()
+            } else {
+                first.stopGeneration(); runCurrent()
+                repository.cancelResult.complete(CancelGenerationResult(CancelGenerationOutcome.CANCELLED)); runCurrent()
+            }
+            repository.events.emit(terminal(null, AgentMessageStatus.FAILED).copy(eventId="legacy_failure")); runCurrent()
+            first.flushPendingPersistence()
+            assertTrue(saved.checkpoint!!.cancellations.contains(SavedCancellation("conv_a","gen_a")))
+            assertTrue(saved.checkpoint!!.messageGenerations.any { it.messageId=="cm_question" && it.generationId=="gen_a" })
+            if (eventConfirmation) assertTrue("cancelled" in saved.checkpoint!!.eventIds)
+            first.close()
+            val restartedRepository = Repository()
+            val restarted = controller(restartedRepository, persistence=saved)
+            runCurrent()
+            assertFalse(rows(restarted).any { it.messageStatus==AgentMessageStatus.FAILED || it.isStreaming })
+            assertTrue(rows(restarted).any { it.text=="已生成的内容" })
+            restartedRepository.generationId.value="gen_a"
+            restartedRepository.generationState.value=GenerationState.FAILED; runCurrent()
+            assertEquals(GenerationState.CANCELLED,restarted.state.value.generation)
+            restartedRepository.events.emit(terminal(null, AgentMessageStatus.FAILED).copy(eventId="late_legacy_failure",revision=3)); runCurrent()
+            assertFalse(rows(restarted).any { it.messageStatus==AgentMessageStatus.FAILED })
+            restartedRepository.generationId.value="gen_b"
+            restartedRepository.events.emit(terminal("gen_b",AgentMessageStatus.FAILED).copy(eventId="new_real_failure",revision=4)); runCurrent()
+            assertEquals(GenerationState.FAILED,restarted.state.value.generation)
+            assertTrue(rows(restarted).any { it.messageStatus==AgentMessageStatus.FAILED })
+            restarted.close()
+        }
+    }
+
+    @Test fun uncertainCancelReconcilesFailureStreamingAndComposerWithOrWithoutAClearedTracker() = runTest {
+        for (outcome in listOf(null, CancelGenerationOutcome.OUTCOME_UNKNOWN, CancelGenerationOutcome.UNSUPPORTED, CancelGenerationOutcome.ALREADY_COMPLETED)) {
+            for (clearTracker in listOf(false,true)) {
+                val repository=Repository()
+                val controller=controller(repository)
+                runCurrent()
+                repository.generationId.value="gen_a"
+                repository.events.emit(question()); runCurrent()
+                repository.events.emit(stream("partial","gen_a","保留部分输出")); runCurrent()
+                repository.events.emit(terminal("gen_a",AgentMessageStatus.DELIVERED).copy(eventId="delivered",revision=1)); runCurrent()
+                controller.stopGeneration(); runCurrent()
+                if (clearTracker) repository.generationId.value=null
+                repository.events.emit(terminal(if (clearTracker) null else "gen_a",AgentMessageStatus.FAILED)); runCurrent()
+                repository.generationState.value=GenerationState.FAILED; runCurrent()
+                assertEquals(GenerationState.CANCEL_REQUESTED,controller.state.value.generation)
+                if (outcome==null) repository.cancelResult.completeExceptionally(java.io.IOException("lost cancel response"))
+                else repository.cancelResult.complete(CancelGenerationResult(outcome,"STOP_UNCONFIRMED"))
+                runCurrent()
+                assertEquals(GenerationState.FAILED,controller.state.value.generation)
+                assertEquals("AGENT_MESSAGE_FAILED:AGENT_UNAVAILABLE",controller.state.value.notice)
+                assertFalse(rows(controller).any { it.isStreaming })
+                assertTrue(rows(controller).any { it.text=="保留部分输出" })
+                assertEquals(ComposerState.EDITING,controller.state.value.composer)
+                controller.editDraft("下一条消息")
+                assertTrue(controller.state.value.canSend)
+                controller.sendDraft(); runCurrent()
+                assertEquals(1,repository.submissions)
+                controller.close()
+            }
+        }
+    }
+
+    @Test fun aNewerCompletedReceiptWinsOverADeferredFailureAndAnUnknownCancelResponse() = runTest {
+        val repository=Repository()
+        val controller=controller(repository)
+        runCurrent()
+        repository.generationId.value="gen_a"
+        repository.events.emit(stream("partial","gen_a","输出")); runCurrent()
+        controller.stopGeneration(); runCurrent()
+        repository.events.emit(terminal("gen_a",AgentMessageStatus.FAILED)); runCurrent()
+        repository.events.emit(terminal("gen_a",AgentMessageStatus.COMPLETED).copy(eventId="completed",revision=3)); runCurrent()
+        repository.cancelResult.complete(CancelGenerationResult(CancelGenerationOutcome.OUTCOME_UNKNOWN)); runCurrent()
+        assertEquals(GenerationState.COMPLETED,controller.state.value.generation)
+        assertNull(controller.state.value.notice)
+        assertFalse(rows(controller).any { it.isStreaming })
+        controller.close()
+    }
+
+    @Test fun pendingFailureAndLateCancelExceptionCannotSettleANewerTurnOrAnotherConversation() = runTest {
+        for (switchThread in listOf(false,true)) {
+            val repository=Repository()
+            val controller=controller(repository)
+            runCurrent()
+            repository.generationId.value="gen_a"
+            controller.stopGeneration(); runCurrent()
+            repository.events.emit(terminal("gen_a",AgentMessageStatus.FAILED)); runCurrent()
+            if (switchThread) controller.openThread("conv_b")
+            repository.generationId.value="gen_b"
+            repository.generationState.value=GenerationState.RUNNING; runCurrent()
+            repository.cancelResult.completeExceptionally(java.io.IOException("old cancel failed")); runCurrent()
+            assertEquals(GenerationState.RUNNING,controller.state.value.generation)
+            assertNull(controller.state.value.notice)
+            controller.close()
+        }
+    }
+
+    @Test fun confirmedCancellationEventWinsOverDeferredFailureAndAnUncertainHttpResponse() = runTest {
+        val repository=Repository()
+        val controller=controller(repository)
+        runCurrent()
+        repository.generationId.value="gen_a"
+        controller.stopGeneration(); runCurrent()
+        repository.events.emit(terminal("gen_a",AgentMessageStatus.FAILED)); runCurrent()
+        repository.events.emit(VerifiedConversationEvent.GenerationCancelled("cancel",4,"gen_a",ConversationId("conv_a"))); runCurrent()
+        repository.cancelResult.completeExceptionally(java.io.IOException("lost response")); runCurrent()
+        assertEquals(GenerationState.CANCELLED,controller.state.value.generation)
+        assertNull(controller.state.value.notice)
+        controller.close()
+    }
+
     @Test fun confirmedCancellationHidesFailureReceiptsInEitherArrivalOrderAndPreservesOutput() = runTest {
         for (failureFirst in listOf(false, true)) {
             val repository = Repository()
@@ -312,17 +432,30 @@ class WorkbenchGenerationLifecycleTest {
         assertTrue(rows(controller).any { it.text=="远端新轮输出" && it.isStreaming })
     }
 
+    private fun question() = VerifiedConversationEvent.TimelineUpsert("question",1,1,
+        TimelineMessage("msg_question","user",listOf(MessagePart.Text("问题")),1,"DELIVERED",
+            ConversationId("conv_a"),clientMessageId=ClientMessageId("cm_question"),generationId="gen_a"))
+
+    private class MemoryPersistence : WorkbenchPersistence {
+        var checkpoint: WorkbenchCheckpoint? = null
+        private val atoms=mutableMapOf<String,List<LocalSendAtom>>()
+        override fun load()=checkpoint
+        override fun save(checkpoint:WorkbenchCheckpoint) { this.checkpoint=checkpoint }
+        override fun loadSendAtoms(conversationId:String)=atoms[conversationId].orEmpty()
+        override fun saveSendAtoms(conversationId:String,atoms:List<LocalSendAtom>) { this.atoms[conversationId]=atoms }
+    }
+
     private fun rows(controller:WorkbenchController)=(controller.state.value.timeline as Loadable.Ready).value
     private fun stream(id:String,generation:String?,text:String,state:String="STREAMING")=VerifiedConversationEvent.TimelineUpsert(
         "event_$id",2,1,TimelineMessage(id,"assistant",listOf(MessagePart.Text(text)),2,state,ConversationId("conv_a"),generationId=generation))
     private fun terminal(generation:String?,status:AgentMessageStatus)=VerifiedConversationEvent.MessageStatus(
         "terminal_$generation",3,ConversationId("conv_a"),"msg_question",ClientMessageId("cm_question"),status,2,
         if(status==AgentMessageStatus.FAILED) AgentMessageErrorCode.AGENT_UNAVAILABLE else null,generation)
-    private fun TestScope.controller(repository:Repository,batches:Boolean=false)=WorkbenchController(
+    private fun TestScope.controller(repository:Repository,batches:Boolean=false,persistence:WorkbenchPersistence?=null)=WorkbenchController(
         workbenchTestScope(),repository,object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
         },{ ConversationScope("p","g","a","i") },
-        supportsMessageBatches=batches,
+        supportsMessageBatches=batches, persistence=persistence, persistenceDispatcher=StandardTestDispatcher(testScheduler),
         onActiveThreadChanged={ repository.generationId.value=null; repository.generationState.value=GenerationState.IDLE },
         replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
 
@@ -335,11 +468,13 @@ class WorkbenchGenerationLifecycleTest {
         val cancellations=mutableListOf<Pair<String,String>>()
         var sendGate:CompletableDeferred<Unit>?=null
         var submitFailure:Throwable?=null
+        var submissions=0
         override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=ConversationPage(
             listOf(ConversationSummary(ConversationId("conv_a"),"A",1)),null)
         override suspend fun createConversation(scope:ConversationScope,clientConversationId:String)=Conversation(ConversationId("conv_new"),"新对话",1)
         override suspend fun timeline(conversationId:String,page:PageRequest)=TimelinePage(emptyList(),null)
         override suspend fun submitMessage(message:OutgoingMessage):MessageAcceptance {
+            submissions++
             sendGate?.await()
             submitFailure?.let { throw it }
             return MessageAcceptance("message",message.clientMessageId.value)

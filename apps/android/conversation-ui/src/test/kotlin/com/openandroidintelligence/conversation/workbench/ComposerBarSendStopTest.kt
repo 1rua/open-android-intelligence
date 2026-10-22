@@ -183,6 +183,14 @@ class ComposerBarSendStopTest {
         compose.waitForIdle()
         compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
         assertEquals(0, sends)
+
+        // A reconciled authoritative failure releases the real composer action, preserving the draft.
+        compose.runOnIdle {
+            hasUnknownOutcome = false
+            generation = GenerationState.FAILED
+        }
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        assertEquals(1, sends)
     }
 
     private fun render(

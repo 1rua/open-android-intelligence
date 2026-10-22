@@ -73,7 +73,7 @@ fun ConversationBrowser(
         }
     ConversationBrowser(
         threads = state.threads,
-        organization = state.organization,
+        organization = state.browserOrganization,
         selectedFolderId = state.selectedFolderId,
         activeThreadId = activeThreadId ?: state.activeThreadId,
         managementSupported = state.conversationManagementSupported,

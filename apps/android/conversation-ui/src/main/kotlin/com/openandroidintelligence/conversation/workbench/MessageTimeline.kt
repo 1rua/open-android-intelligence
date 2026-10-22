@@ -397,19 +397,26 @@ private fun ImageAttachmentCard(
             BoxWithConstraints {
                 val ratio = image.width.toFloat() / image.height
                 val imageWidth = minOf(maxWidth, Dimensions.MessageWidth, Dimensions.AttachmentImageMaxHeight * ratio)
-                Image(
-                    bitmap = image,
-                    contentDescription = "查看大图：${attachment.filename.ifBlank { "图片" }}",
-                    contentScale = ContentScale.Fit,
+                // Only the image paints a background; the larger transparent wrapper owns touch/semantics.
+                Box(
                     modifier = Modifier
-                        .testTag("attachment-image:${attachment.draftId}")
-                        .size(width = imageWidth, height = imageWidth / ratio)
-                        .clip(RoundedCornerShape(AppRadius.Medium))
-                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                        .clickable(enabled = canOpen, role = Role.Button, onClickLabel = "查看大图") {
-                            openPreview()
-                        },
-                )
+                        .testTag("attachment-image-target:${attachment.draftId}")
+                        .sizeIn(minWidth = Dimensions.MinimumTouchTarget, minHeight = Dimensions.MinimumTouchTarget)
+                        .semantics { contentDescription = "查看大图：${attachment.filename.ifBlank { "图片" }}" }
+                        .clickable(enabled = canOpen, role = Role.Button, onClickLabel = "查看大图", onClick = openPreview),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Image(
+                        bitmap = image,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .testTag("attachment-image:${attachment.draftId}")
+                            .size(width = imageWidth, height = imageWidth / ratio)
+                            .clip(RoundedCornerShape(AppRadius.Medium))
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow),
+                    )
+                }
             }
         } else {
             ImageUnavailablePlaceholder(
