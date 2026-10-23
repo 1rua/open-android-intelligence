@@ -4,23 +4,24 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 
 ## 检测渠道与发布来源
 
-- 正式版：使用完整版本号标签，例如 `v2.2.0`，GitHub Release 的 `prerelease` 为 `false`。
-- 预览版：同时跟踪固定 `nightly` 标签的滚动开发构建，以及版本号中的测试阶段标签，例如 `v2.2.0-beta.1`、`v2.2.0-rc.1`；这些测试发布的 GitHub Release `prerelease` 必须为 `true`。此渠道也接受后续可升级的正式版，供 Beta、RC 用户过渡到正式版。
-- 滚动开发发布页名称统一为“开发预览测试版”。保留 `nightly` 标签和 `app-full-debug.apk` 文件名，以兼容已有下载链接。
+- 正式版由 `main` 上合并的 PR 发布，Tag 为包版本生成的 `vX.Y.Z`，GitHub Release 的 `prerelease` 为 `false`，并设置为 latest。
+- 开发预览版由 `dev` 上合并的 PR 或 `dev` push 发布，Tag 为 `vX.Y.Z-dev.<workflow run_number>`，GitHub Release 的 `prerelease` 为 `true`，并且不会成为 latest。
+- 历史 `nightly` Release 仍可由旧版 App 更新检测读取；新的开发预览工作流不再创建或移动固定 `nightly` Tag。
+- 正式发布说明直接取合并 PR 正文。手动正式发布会查找当前提交关联的已合并 main PR；找不到时停止发布。开发预览由 PR 触发时使用 PR 正文，push 触发时使用最新提交说明。
 
-正式版与带编号的测试版使用不可调试的 `FullRelease` 和私有发行签名；开发预览版使用 `FullDebug` 和仓库固定的公开调试签名。签名不一致时 Android 无法原地覆盖安装，更新界面必须明确呈现这个限制。发布流程不卸载现有 App、不修改现有账号和设备数据。
+正式版使用不可调试的 `FullRelease` 和私有发行签名；开发预览版使用 `FullDebug` 和仓库固定的公开调试签名。签名不一致时 Android 无法原地覆盖安装，更新界面必须明确呈现这个限制。发布流程不卸载现有 App、不修改现有账号和设备数据。
 
 ## 构建版本与更新顺序
 
-正式基线版本位于 `apps/android/app/version.properties`。版本号标签必须是以 `v` 开头的完整 SemVer，去掉 `v` 后成为实际 APK 的 `versionName`。开发构建使用 `<基线>-dev.<完整历史提交数>+<前十二位提交 SHA>`。
+`apps/android/app/version.properties` 中的 `versionName` 是当前 Android App 包的唯一 `X.Y.Z` 来源，Gradle 从该文件设置 APK 的 `versionName`。`apps/android/tools/extract_package_version.py` 根据应用配置格式提取严格的 `X.Y.Z`；它也支持 Node/RN/Electron 的 `package.json`、Flutter `pubspec.yaml`、Gradle `versionName`、iOS `Info.plist` 与 Rust/Tauri `Cargo.toml`。正式和开发 Tag 均由提取出的包版本拼成，工作流不从 Git Tag 推导或进位 X.Y.Z。
 
-`versionCode = 完整 Git 历史提交数 × 10 + 渠道阶段`，其中开发构建为 `0`，带编号测试版为 `1`，正式版为 `2`。例如同一源码提交的开发版、测试版、正式版安装代码分别为 `3970`、`3971`、`3972`，下一源码提交的开发版为 `3980`。
+开发预览 APK 的 `versionName` 为 `<包版本>-dev.<workflow run_number>`，正式 APK 的 `versionName` 就是包版本。重复运行产生不同的开发预览 Tag 与 Release，但同一提交的 `versionCode` 不变，因此同一源码的重复包不会被 App 更新检测当作可升级版本。
 
-该规则与 GitHub Actions 的流水线运行编号无关。同一源码提交重跑不会伪造新版；同一提交从测试阶段升为正式版也有明确安装顺序。发布必须使用完整 Git 历史，浅克隆会立即失败。版本代码必须为 `1..2100000000` 范围内整数。
+`versionCode = 完整 Git 历史提交数 × 10 + 渠道阶段`，其中开发构建为 `0`、开发预览为 `1`、正式版为 `2`。例如同一源码提交的开发版、开发预览版、正式版安装代码分别为 `3970`、`3971`、`3972`，下一源码提交的开发版为 `3980`。发布必须使用完整 Git 历史，浅克隆会立即失败。版本代码必须为 `1..2100000000` 范围内整数。
 
-自动顺序适用于保留祖先历史的主线发布。发布维护分支时必须确认其历史提交数生成的版本代码高于需要被覆盖的旧安装；改变 Git 历史或在同一源码上重贴多个测试标签不会自动产生递增安装代码。版本号优先用于展示和渠道识别，不能让名称更大的版本绕过较低安装代码造成降级。
+自动顺序适用于保留祖先历史的主线发布。发布维护分支时必须确认其历史提交数生成的版本代码高于需要被覆盖的旧安装；版本号用于展示和渠道识别，不能让名称更大的版本绕过较低安装代码造成降级。
 
-构建前脚本 `apps/android/tools/app_release_metadata.py prepare` 生成内部构建信息，并设置 `OAI_VERSION_NAME`、`OAI_VERSION_CODE`、`OAI_UPDATE_CHANNEL`、`OAI_GIT_COMMIT`。Gradle 将这些值写入真实 APK 版本字段及 `BuildConfig.UPDATE_CHANNEL`、`BuildConfig.GIT_COMMIT`。本地构建拥有完整 Git 历史时生成同样的开发版本；源码归档缺少 Git 元数据时使用属性文件基线、安装代码 `1`、`development` 渠道和空提交信息。
+构建前脚本 `apps/android/tools/app_release_metadata.py prepare` 调用包版本提取器生成内部构建信息，并设置 `OAI_VERSION_NAME`、`OAI_VERSION_CODE`、`OAI_UPDATE_CHANNEL`、`OAI_GIT_COMMIT`。Gradle 将这些值写入真实 APK 版本字段及 `BuildConfig.UPDATE_CHANNEL`、`BuildConfig.GIT_COMMIT`。本地构建仍由 Gradle 使用包配置版本和本地构建规则；正式发布工作流则使用同一提取器结果。
 
 ## 发布资源
 
@@ -54,9 +55,11 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 
 旧 Release 没有此清单时，无法证明 APK 的安装版本代码和签名兼容性，不得仅根据标签名、发布页名称或发布时间将它宣称为可原地覆盖的新版本。
 
-## 滚动发布顺序
+## 工作流与发布顺序
 
-开发预览发布只允许 `main` 分支触发，使用独立 GitHub Actions 并发组取消较旧的未完成构建。更新滚动标签前再次读取远端 `main` 的 SHA；如果已经出现新提交，停止旧构建发布，避免晚完成的旧 APK 覆盖新版。更新检测按清单中的版本代码比较，不依赖固定滚动发布页首次建立时的时间。
+`.github/workflows/dev-release.yml` 只处理 `dev` 分支，固定使用 `dev-release` 并发组且不取消进行中的构建。`.github/workflows/release.yml` 只处理合并到 `main` 的 PR 或 main 上的手动触发。若正式 Tag/Release 已存在，工作流将 Tag 移到当前发布提交、替换同名资产并将 Release 转为正式 latest。`.github/workflows/android-apk.yml` 仅手动生成供下载的 Actions 构建产物，不发布 GitHub Release。
+
+开发 Tag 携带运行编号，因此每个工作流运行都能创建独立发布资源。正式发布前会核对远端 main 仍指向本次构建提交，避免旧的排队构建覆盖较新的正式包。更新检测按清单中的 `versionCode` 判断是否可升级，不依赖 Release 发布时间。
 
 ## 最小验证命令
 
@@ -64,4 +67,4 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_app_release_metadata.py'
 ```
 
-该测试覆盖真实仓库的构建前 CLI、三类渠道、版本代码顺序、非法标签、浅历史拒绝、APK 信息错配、签名验证失败和发布说明。完整 APK 的生成、真实 APK 签名验证及元数据交叉检查仍须由发布流水线完成，不能用脚本单测替代。
+该测试覆盖真实仓库的构建前 CLI、三类渠道、包版本解析、版本代码顺序、非法版本、浅历史拒绝、APK 信息错配、签名验证失败和分支工作流守卫。完整 APK 的生成、真实 APK 签名验证及元数据交叉检查仍须由发布流水线完成，不能用脚本单测替代。

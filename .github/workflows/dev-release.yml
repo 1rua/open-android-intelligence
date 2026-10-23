@@ -1,69 +1,89 @@
-name: 开发预览测试版
+name: Development Preview Release
 
+# 合并后使用目标分支令牌权限，并只检出已合并提交；未合并 PR 不进入发布任务。
 on:
+  pull_request_target:
+    types: [closed]
+    branches: [dev]
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [dev]
 
 permissions:
   contents: write
+  pull-requests: read
 
 concurrency:
-  group: development-preview-release
-  cancel-in-progress: true
+  group: dev-release
+  cancel-in-progress: false
 
 jobs:
-  nightly-release:
-    name: 构建并发布开发预览测试版
-    if: github.ref == 'refs/heads/main'
+  release:
+    if: github.event_name == 'push' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout release commit
+        uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
+          # 仅在合并门禁通过后检出已进入目标分支的提交。
+          allow-unsafe-pr-checkout: true
 
-      - name: 生成开发预览版本信息
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Extract package version
+        id: package-version
+        run: echo "version=$(python3 apps/android/tools/extract_package_version.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release notes
+        run: python3 apps/android/tools/prepare_release_notes.py --branch dev --output "$RUNNER_TEMP/release-notes.md"
+
+      - name: Prepare build metadata
         run: |
           python3 apps/android/tools/app_release_metadata.py prepare \
-            --tag nightly \
+            --channel preview \
+            --run-number "$GITHUB_RUN_NUMBER" \
             --metadata "$RUNNER_TEMP/oai-release-metadata.json" \
             --github-env "$GITHUB_ENV"
 
       - name: Setup Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
-          distribution: "temurin"
+          distribution: temurin
           java-version: "21"
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
 
       - name: Setup Node.js for signed device packages
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24.18.0"
-          cache: "npm"
+          cache: npm
           cache-dependency-path: plugin-tooling/package-lock.json
 
-      - name: Build the real notification plugin WASM
+      - name: Build the notification plugin WASM
         run: |
           rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
           cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications
           npm ci --prefix plugin-tooling
 
-      - name: Sign the bundled notification device package
+      - name: Sign the bundled notification package
         env:
           OAI_PLUGIN_SIGNING_KEY_BASE64: ${{ secrets.OAI_PLUGIN_SIGNING_KEY_BASE64 }}
         run: |
           if [ -z "$OAI_PLUGIN_SIGNING_KEY_BASE64" ]; then
-            echo "::error::OAI_PLUGIN_SIGNING_KEY_BASE64 is required to ship the signed notification plugin."
+            echo "::error::OAI_PLUGIN_SIGNING_KEY_BASE64 is required."
             exit 1
           fi
           umask 077
           OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-plugin-seed.bin"
-          trap 'rm -f "$OAI_PLUGIN_KEY_FILE"' EXIT
+          trap 'if [ -f "$OAI_PLUGIN_KEY_FILE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_PLUGIN_KEY_FILE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-plugin-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.bin"; fi' EXIT
           printf '%s' "$OAI_PLUGIN_SIGNING_KEY_BASE64" | base64 --decode > "$OAI_PLUGIN_KEY_FILE"
           OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE="$OAI_PLUGIN_KEY_FILE" \
             npm run build:android-notifications --prefix plugin-tooling -- "$RUNNER_TEMP/notifications.alp"
@@ -77,55 +97,37 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleFullDebug -Poai.requireBundledNotifications=true --stacktrace
 
-      - name: Verify the signed notification package in the APK
+      - name: Verify the bundled notification package
         run: |
           python3 apps/android/tools/verify_bundled_notifications.py \
             --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
             --package "$OAI_BUNDLED_NOTIFICATIONS_ALP"
 
-      # 发布前确认签名身份与仓库固定调试密钥一致：开发预览包要能直接覆盖同签名的旧安装。
       - name: Verify Debug Signing Identity
         env:
           LC_ALL: C.UTF-8
-        run: |
-          bash apps/android/tools/verify-debug-signing.sh \
-            apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
+        run: bash apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
 
-      - name: 核实 APK 并生成更新清单和发布说明
+      - name: Verify APK and create update metadata
         run: |
           python3 apps/android/tools/app_release_metadata.py manifest \
             --metadata "$RUNNER_TEMP/oai-release-metadata.json" \
             --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
-            --manifest "$RUNNER_TEMP/oai-update.json" \
-            --notes "$RUNNER_TEMP/oai-release-notes.md" \
-            --repository "$GITHUB_REPOSITORY"
+            --manifest "$RUNNER_TEMP/oai-update.json"
 
-      - name: 确认当前提交仍为主分支最新并更新兼容标签
-        run: |
-          CURRENT_MAIN_SHA=$(git ls-remote origin refs/heads/main | cut -f1)
-          if [ "$CURRENT_MAIN_SHA" != "$GITHUB_SHA" ]; then
-            echo "主分支已有更新提交，停止发布过期开发预览包。"
-            exit 1
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f nightly
-          git push -f origin nightly
-
-      - name: 发布开发预览测试版
-        uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish development preview release
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: "nightly"
-          name: "开发预览测试版"
+          tag_name: v${{ steps.package-version.outputs.version }}-dev.${{ github.run_number }}
+          name: Development Preview v${{ steps.package-version.outputs.version }}-dev.${{ github.run_number }}
           prerelease: true
-          make_latest: false
-          target_commitish: ${{ github.sha }}
-          body_path: ${{ runner.temp }}/oai-release-notes.md
+          make_latest: "false"
+          target_commitish: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          body_path: ${{ runner.temp }}/release-notes.md
           fail_on_unmatched_files: true
-          # 按顺序等待 APK 上传成功后才更新清单，避免发布半完成时宣称已有新包。
           preserve_order: true
+          overwrite_files: true
+          append_body: false
           files: |
             apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
             ${{ runner.temp }}/oai-update.json

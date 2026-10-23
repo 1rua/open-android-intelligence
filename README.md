@@ -139,7 +139,7 @@
 
 ### 1. 手机装 App
 
-到 [Releases](https://github.com/1rua/open-android-intelligence/releases) 下载 `nightly` 标签下的**开发预览测试版** APK，直接安装。
+到 [Releases](https://github.com/1rua/open-android-intelligence/releases) 下载最新 `vX.Y.Z-dev.N` **开发预览测试版** APK，直接安装。
 
 读取手机通知还需在「设置 → 插件管理」安装 Full APK 随附的通知读取插件，显式启用并为当前 Gateway 配对授权；再按页面引导开启通知使用权、允许采集并选择应用范围。Hermes 账号需在 `hermes gateway setup` 中开启通知能力。详见[设备读取配置](docs/mvp/device-reads-and-reply-notifications.md)。
 
