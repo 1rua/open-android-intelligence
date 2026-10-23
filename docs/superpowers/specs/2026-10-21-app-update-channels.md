@@ -39,7 +39,7 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 | `applicationId` / `distribution` | Android 包名与 Full/Play 分发渠道 |
 | `signingCertificateSha256` | 实际 APK 签名证书的 SHA-256 指纹 |
 
-构建与发布清单必须一致，发布前从 APK 输出信息与真实签名核验。版本号提取脚本支持 Node/RN/Electron `package.json`、Flutter `pubspec.yaml`、Android Gradle `versionName`、iOS `Info.plist` 和 Rust/Tauri `Cargo.toml`。当前 Android App 的包配置是 `apps/android/app/version.properties`，Gradle 从此文件读取 `versionName`。工作流从该配置提取严格的 `X.Y.Z` 并生成 Tag，不解析 Git Tag 来确定或进位包版本。开发预览 APK 的 `versionName` 为 `<包版本>-dev.<run_number>`，正式 APK 使用 `<包版本>`。
+构建与发布清单必须一致，发布前从 APK 输出信息与真实签名核验。版本号提取脚本支持 Node/RN/Electron `package.json`、Flutter `pubspec.yaml`、Android Gradle `versionName`、iOS `Info.plist` 和 Rust/Tauri `Cargo.toml`。Flutter 常见的 `X.Y.Z+build` 会提取为 `X.Y.Z`。当前 Android App 的包配置是 `apps/android/app/version.properties`，Gradle 从此文件读取 `versionName`。工作流从该配置提取严格的 `X.Y.Z` 并生成 Tag，不解析 Git Tag 来确定或进位包版本。开发预览 APK 的 `versionName` 为 `<包版本>-dev.<run_number>`，正式 APK 使用 `<包版本>`。
 
 版本码默认取完整 Git 历史提交数乘以 10，再加渠道阶段（开发 0、开发预览 1、正式 2）。同一提交重跑不会产生更高安装版本码；开发预览运行编号只保证 Tag 和 Release 独立，不会让同一源码的重复构建成为 App 更新候选。发布分支如使用显式版本码，必须保证比其前驱构建更大。
 

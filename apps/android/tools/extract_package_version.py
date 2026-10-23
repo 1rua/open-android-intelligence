@@ -29,7 +29,13 @@ def _yaml_version(path: Path) -> str | None:
     for line in path.read_text(encoding="utf-8").splitlines():
         match = re.match(r"^\s*version\s*:\s*['\"]?([^\s'\"#]+)", line)
         if match:
-            return validate_version(match.group(1), path)
+            value = match.group(1)
+            flutter = re.fullmatch(
+                r"((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+                r"(?:\+[0-9A-Za-z.-]+)?",
+                value,
+            )
+            return validate_version(flutter.group(1) if flutter else value, path)
     return None
 
 

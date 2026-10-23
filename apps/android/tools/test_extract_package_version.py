@@ -19,7 +19,7 @@ class ExtractPackageVersionTest(unittest.TestCase):
 
     def test_reads_flutter_pubspec_version(self):
         root = workspace()
-        (root / "pubspec.yaml").write_text("name: example\nversion: 1.2.3\n", encoding="utf-8")
+        (root / "pubspec.yaml").write_text("name: example\nversion: 1.2.3+4\n", encoding="utf-8")
         self.assertEqual(extractor.extract_package_version(root), "1.2.3")
 
     def test_reads_android_gradle_version_name(self):
