@@ -158,6 +158,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("branches: [dev]", dev_workflow)
         self.assertIn("group: dev-release", dev_workflow)
         self.assertIn("cancel-in-progress: false", dev_workflow)
+        self.assertIn("queue: max", dev_workflow)
         self.assertIn("contents: write", dev_workflow)
         self.assertIn("pull-requests: read", dev_workflow)
         self.assertIn("allow-unsafe-pr-checkout: true", dev_workflow)

@@ -57,7 +57,7 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 
 ## 工作流与发布顺序
 
-`.github/workflows/dev-release.yml` 只处理 `dev` 分支，固定使用 `dev-release` 并发组且不取消进行中的构建。PR 合并还会产生 push 事件，工作流会识别并跳过这类重复 push，只让合并事件发布一次；直接 push 仍会发布。通知包签名在独立 job 中完成，APK 构建只下载签好的 `.alp`，不会接触原始插件签名密钥。`.github/workflows/release.yml` 只处理合并到 `main` 的 PR 或 main 上的手动触发。若正式 Tag/Release 已存在，工作流将 Tag 移到当前发布提交、替换同名资产并将 Release 转为正式 latest。`.github/workflows/android-apk.yml` 仅手动生成供下载的 Actions 构建产物，不发布 GitHub Release。
+`.github/workflows/dev-release.yml` 只处理 `dev` 分支，使用 `dev-release` 并发组且不取消进行中的构建；允许多个发布运行排队，避免等待中的运行被新 push 替换。PR 合并还会产生 push 事件，工作流会识别并跳过这类重复 push，只让合并事件发布一次；直接 push 仍会发布。通知包签名在独立 job 中完成，APK 构建只下载签好的 `.alp`，不会接触原始插件签名密钥。`.github/workflows/release.yml` 只处理合并到 `main` 的 PR 或 main 上的手动触发。若正式 Tag/Release 已存在，工作流将 Tag 移到当前发布提交、替换同名资产并将 Release 转为正式 latest。`.github/workflows/android-apk.yml` 仅手动生成供下载的 Actions 构建产物，不发布 GitHub Release。
 
 开发 Tag 携带运行编号，因此每个工作流运行都能创建独立发布资源。正式发布前会核对远端 main 仍指向本次构建提交，避免旧的排队构建覆盖较新的正式包。更新检测按清单中的 `versionCode` 判断是否可升级，不依赖 Release 发布时间。
 
