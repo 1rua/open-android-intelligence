@@ -159,6 +159,8 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("group: dev-release", dev_workflow)
         self.assertIn("cancel-in-progress: false", dev_workflow)
         self.assertIn("queue: max", dev_workflow)
+        release_contract = (release.REPOSITORY_ROOT / "docs/contracts/app-update-release-v1.md").read_text(encoding="utf-8")
+        self.assertIn("最多保留 100 个等待运行", release_contract)
         self.assertIn("contents: write", dev_workflow)
         self.assertIn("pull-requests: read", dev_workflow)
         self.assertIn("allow-unsafe-pr-checkout: true", dev_workflow)
