@@ -35,10 +35,16 @@ def _dispatch_pull_request_body(repository: str, commit: str, expected_branch: s
         if pull_request.get("base", {}).get("ref") == expected_branch
         and pull_request.get("merged_at")
     ]
-    if not candidates:
-        raise ValueError("Manual release requires a merged pull request for the selected commit")
-    candidates.sort(key=lambda item: item.get("merged_at") or "")
-    return candidates[-1].get("body") or ""
+    if candidates:
+        candidates.sort(key=lambda item: item.get("merged_at") or "")
+        return candidates[-1].get("body") or ""
+    result = subprocess.run(
+        ["git", "show", "-s", "--format=%B", commit],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
 
 
 def prepare_release_notes(

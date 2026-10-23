@@ -19,8 +19,24 @@ class ExtractPackageVersionTest(unittest.TestCase):
 
     def test_reads_flutter_pubspec_version(self):
         root = workspace()
-        (root / "pubspec.yaml").write_text("name: example\nversion: 1.2.3\n", encoding="utf-8")
+        (root / "pubspec.yaml").write_text("name: example\nversion: 1.2.3+4\n", encoding="utf-8")
         self.assertEqual(extractor.extract_package_version(root), "1.2.3")
+
+    def test_flutter_version_must_be_top_level(self):
+        root = workspace()
+        (root / "pubspec.yaml").write_text(
+            "dependencies:\n  versioned_package:\n    version: 9.8.7\nversion: 1.2.3+4\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(extractor.extract_package_version(root), "1.2.3")
+
+        nested_only = workspace()
+        (nested_only / "pubspec.yaml").write_text(
+            "dependencies:\n  versioned_package:\n    version: 9.8.7\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "No supported application version file"):
+            extractor.extract_package_version(nested_only)
 
     def test_reads_android_gradle_version_name(self):
         root = workspace()
@@ -40,6 +56,17 @@ class ExtractPackageVersionTest(unittest.TestCase):
         )
         (app / "version.properties").write_text("versionName=1.2.3\n", encoding="utf-8")
         self.assertEqual(extractor.extract_package_version(root), "1.2.3")
+
+    def test_android_app_version_takes_precedence_over_root_protocol_package(self):
+        root = workspace()
+        (root / "package.json").write_text(json.dumps({"name": "protocol", "version": "9.8.7"}), encoding="utf-8")
+        app = root / "apps/android/app"
+        app.mkdir(parents=True)
+        (app / "build.gradle.kts").write_text(
+            'android { defaultConfig { versionName = "1.2.3" } }\n', encoding="utf-8"
+        )
+        self.assertEqual(extractor.extract_package_version(root), "9.8.7")
+        self.assertEqual(extractor.extract_package_version(root, platform="android"), "1.2.3")
 
     def test_reads_ios_info_plist(self):
         root = workspace()
@@ -81,7 +108,7 @@ class ExtractPackageVersionTest(unittest.TestCase):
 
     def test_current_android_project_uses_the_gradle_package_version(self):
         root = Path(extractor.__file__).resolve().parents[3]
-        self.assertEqual(extractor.extract_package_version(root), "2.1.1")
+        self.assertEqual(extractor.extract_package_version(root, platform="android"), "2.1.1")
 
 
 if __name__ == "__main__":

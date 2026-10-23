@@ -32,6 +32,57 @@ class AppUpdateScreenTest {
     }
 
     @Test
+    fun developmentPreviewLabelIsUsedForInstalledAndAvailableDevVersions() {
+        show(
+            AppUpdateUiState(
+                AppUpdateChannel.PREVIEW,
+                result = AppUpdateResult.Available(
+                    AppUpdateRelease(
+                        versionName = "2.1.1-dev.42",
+                        versionCode = 2042,
+                        commit = "b".repeat(40),
+                        channel = "preview",
+                        releaseName = "开发预览运行 42",
+                        summary = "",
+                        releaseUrl = APP_RELEASES_URL,
+                        apkUrl = "$APP_RELEASES_URL/download/v2.1.1-dev.42/app-full-debug.apk",
+                        signingMatches = true,
+                    ),
+                ),
+            ),
+            installed = installedBuild().copy(versionName = "2.1.1-dev.41", channel = "preview"),
+        )
+
+        compose.onNodeWithText("开发预览测试版").assertExists()
+        compose.onNodeWithText("开发预览测试版 · 开发预览运行 42").assertExists()
+        compose.onNodeWithText("版本号测试版").assertDoesNotExist()
+    }
+
+    @Test
+    fun betaReleaseKeepsTheNumberedTestLabel() {
+        show(
+            AppUpdateUiState(
+                AppUpdateChannel.PREVIEW,
+                result = AppUpdateResult.Available(
+                    AppUpdateRelease(
+                        versionName = "2.2.0-beta.1",
+                        versionCode = 2201,
+                        commit = "c".repeat(40),
+                        channel = "preview",
+                        releaseName = "2.2.0 首次测试",
+                        summary = "",
+                        releaseUrl = APP_RELEASES_URL,
+                        apkUrl = "$APP_RELEASES_URL/download/v2.2.0-beta.1/app-full-release.apk",
+                        signingMatches = true,
+                    ),
+                ),
+            ),
+        )
+
+        compose.onNodeWithText("版本号测试版 · 2.2.0 首次测试").assertExists()
+    }
+
+    @Test
     fun checkingDisablesManualButtonAndDoesNotPretendTheVersionIsCurrent() {
         show(AppUpdateUiState(AppUpdateChannel.PREVIEW, isChecking = true))
         compose.onNodeWithText("正在检查更新…").assertIsNotEnabled()
@@ -62,6 +113,19 @@ class AppUpdateScreenTest {
         compose.onNodeWithText("网络连接失败，请检查网络后重试。").assertExists()
         compose.onNodeWithText("检查更新").performScrollTo().performClick()
         assertEquals(1, checks)
+    }
+
+    @Test
+    fun truncatedPreviewReleaseListIsNotReportedAsNoUpdate() {
+        show(
+            AppUpdateUiState(
+                AppUpdateChannel.PREVIEW,
+                result = AppUpdateResult.Unavailable(AppUpdateFailure.INCOMPLETE_RELEASE_LIST),
+            ),
+        )
+        compose.onNodeWithText("预览发布列表过长，未能完整检查；请稍后重试或查看全部发布。")
+            .performScrollTo().assertExists()
+        compose.onNodeWithText("暂无可升级版本").assertDoesNotExist()
     }
 
     @Test
@@ -109,6 +173,7 @@ class AppUpdateScreenTest {
 
     private fun show(
         state: AppUpdateUiState,
+        installed: InstalledAppBuild = installedBuild(),
         onSelect: (AppUpdateChannel) -> Unit = {},
         onCheck: () -> Unit = {},
         onOpen: (String) -> Unit = {},
@@ -116,7 +181,7 @@ class AppUpdateScreenTest {
         compose.setContent {
             MaterialTheme {
                 AppUpdateScreen(
-                    installed = installedBuild(),
+                    installed = installed,
                     state = state,
                     onBack = {},
                     onSelectChannel = onSelect,

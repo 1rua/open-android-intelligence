@@ -116,6 +116,15 @@ class AppUpdateViewModelTest {
         assertEquals(AppUpdateChannel.STABLE, defaultAppUpdateChannel(installedBuild().copy(channel = "stable")))
     }
 
+    @Test
+    fun developmentPreviewVersionKeepsItsDevelopmentLabelWhileBetaAndRcStayNumberedTests() {
+        assertEquals("开发预览测试版", appBuildChannelLabel("preview", "2.1.1-dev.42"))
+        assertEquals("开发预览测试版", appBuildChannelLabel("development", "2.1.1-dev.42+abcdef0"))
+        assertEquals("版本号测试版", appBuildChannelLabel("preview", "2.2.0-beta.1"))
+        assertEquals("版本号测试版", appBuildChannelLabel("preview", "2.2.0-rc.1"))
+        assertEquals("正式版", appBuildChannelLabel("stable", "2.2.0"))
+    }
+
     private fun await(predicate: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (!predicate() && System.nanoTime() < deadline) Thread.sleep(10)

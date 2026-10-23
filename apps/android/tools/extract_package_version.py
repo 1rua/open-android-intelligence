@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import plistlib
 import re
@@ -27,9 +28,15 @@ def _json_version(path: Path) -> str | None:
 
 def _yaml_version(path: Path) -> str | None:
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"^\s*version\s*:\s*['\"]?([^\s'\"#]+)", line)
+        match = re.match(r"^version\s*:\s*['\"]?([^\s'\"#]+)", line)
         if match:
-            return validate_version(match.group(1), path)
+            value = match.group(1)
+            flutter = re.fullmatch(
+                r"((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+                r"(?:\+[0-9A-Za-z.-]+)?",
+                value,
+            )
+            return validate_version(flutter.group(1) if flutter else value, path)
     return None
 
 
@@ -108,16 +115,8 @@ def _first_value(paths: list[Path], reader) -> str | None:
     return None
 
 
-def extract_package_version(root: Path) -> str:
+def extract_package_version(root: Path, platform: str | None = None) -> str:
     root = root.resolve()
-
-    # 先检查根目录的应用清单，避免仓库子模块版本覆盖应用版本。
-    root_version = _first_value([root / "package.json"], _json_version)
-    if root_version is not None:
-        return root_version
-    root_version = _first_value([root / "pubspec.yaml"], _yaml_version)
-    if root_version is not None:
-        return root_version
 
     android_paths = [
         root / "apps/android/app/build.gradle.kts",
@@ -129,9 +128,25 @@ def extract_package_version(root: Path) -> str:
         root / "build.gradle.kts",
         root / "build.gradle",
     ]
+    if platform not in (None, "android"):
+        raise ValueError(f"Unsupported application platform: {platform}")
+    if platform == "android":
+        android_version = _first_value(android_paths, _gradle_version)
+        if android_version is None:
+            raise ValueError("No Android application version file found")
+        return android_version
+
+    # 自动检测时优先采用根目录清单；多应用仓库由调用方明确指定平台。
+    root_version = _first_value([root / "package.json"], _json_version)
+    if root_version is not None:
+        return root_version
+
     android_version = _first_value(android_paths, _gradle_version)
     if android_version is not None:
         return android_version
+    root_version = _first_value([root / "pubspec.yaml"], _yaml_version)
+    if root_version is not None:
+        return root_version
 
     plist_paths = [
         root / "Info.plist",
@@ -179,10 +194,11 @@ def extract_package_version(root: Path) -> str:
 
 
 def main() -> None:
-    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
-    if len(sys.argv) > 2:
-        raise SystemExit("Usage: extract_package_version.py [project-root]")
-    print(extract_package_version(root))
+    parser = argparse.ArgumentParser(description="Extract the application package X.Y.Z version")
+    parser.add_argument("--platform", choices=("android",), help="Select an application platform in a multi-app repository")
+    parser.add_argument("project_root", nargs="?", type=Path, default=Path.cwd())
+    args = parser.parse_args()
+    print(extract_package_version(args.project_root, args.platform))
 
 
 if __name__ == "__main__":
