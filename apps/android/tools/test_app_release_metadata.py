@@ -37,7 +37,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
     def test_preview_and_stable_versions_are_derived_from_package_version(self):
         preview = self.metadata(channel="preview", run_number=42)
         stable = self.metadata(channel="stable")
-        self.assertEqual(preview["versionName"], "2.1.1-dev.42")
+        self.assertEqual(preview["versionName"], "2.1.1-dev")
         self.assertEqual(preview["channel"], "preview")
         self.assertEqual(preview["versionCode"], 3971)
         self.assertEqual(stable["versionName"], "2.1.1")
@@ -135,9 +135,9 @@ class AppReleaseMetadataTest(unittest.TestCase):
         for version in ("2.1", "02.1.1", "2.1.1-beta.1", "2.1.1+build", "2.1.1\n"):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 self.metadata(channel="stable", version=version)
-        for channel, run_number in (("unknown", None), ("preview", None), ("preview", 0)):
-            with self.subTest(channel=channel, run_number=run_number), self.assertRaises(ValueError):
-                self.metadata(channel=channel, run_number=run_number)
+        for channel in ("unknown",):
+            with self.subTest(channel=channel), self.assertRaises(ValueError):
+                self.metadata(channel=channel)
 
     def test_invalid_history_and_commit_are_rejected(self):
         for count, commit in ((0, COMMIT), (397, "1234567"), (210_000_001, COMMIT)):
@@ -221,7 +221,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertEqual(environment["OAI_VERSION_CODE"], str(metadata["versionCode"]))
         self.assertEqual(environment["OAI_GIT_COMMIT"], metadata["commit"])
         self.assertEqual(environment["OAI_UPDATE_CHANNEL"], "preview")
-        self.assertEqual(metadata["versionName"], "2.1.1-dev.42")
+        self.assertEqual(metadata["versionName"], "2.1.1-dev")
 
     @patch.object(release, "git_value", return_value="true")
     def test_prepare_rejects_shallow_checkout_before_writing_outputs(self, _git):
@@ -256,7 +256,8 @@ class AppReleaseMetadataTest(unittest.TestCase):
         publish_job = dev_workflow.split("  publish-preview:", 1)[1]
         self.assertIn("permissions:\n      contents: write", publish_job)
         self.assertNotIn("pull-requests: read", publish_job)
-        self.assertIn("v${{ needs.build-preview.outputs.package-version }}-dev.${{ github.run_number }}", dev_workflow)
+        self.assertIn("v${{ needs.build-preview.outputs.package-version }}-dev", dev_workflow)
+        self.assertIn("Move dev tag to published commit", dev_workflow)
         self.assertIn("prerelease: true", dev_workflow)
         self.assertIn('make_latest: "false"', dev_workflow)
         self.assertIn("body_path: ${{ runner.temp }}/release-assets/release-notes.md", dev_workflow)

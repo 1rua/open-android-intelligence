@@ -98,8 +98,8 @@ class AppUpdateChecker(
                     val current = latestReleaseByCandidateGroup[release.candidateGroup]
                     val isNewer = if (current == null) {
                         true
-                    } else if (release.candidateGroup == "development-preview") {
-                        (release.candidateSequence ?: 0L) > (current.candidateSequence ?: 0L)
+                    } else if (release.candidateGroup == "development-preview" && release.candidateSequence != null && current.candidateSequence != null) {
+                        release.candidateSequence > current.candidateSequence
                     } else {
                         release.publishedAt.isAfter(current.publishedAt)
                     }
@@ -275,7 +275,7 @@ class AppUpdateChecker(
         private const val MANIFEST_NAME = "oai-update.json"
         private const val API_RELEASES = "https://api.github.com/repos/1rua/open-android-intelligence/releases"
         private const val API_LATEST_RELEASE = "$API_RELEASES/latest"
-        private val DEVELOPMENT_PREVIEW_TAG = Regex("v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)-dev\\.([1-9][0-9]*)")
+        private val DEVELOPMENT_PREVIEW_TAG = Regex("v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)-dev(?:\\.([1-9][0-9]*))?")
         private val VERSION_TAG = Regex("v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?")
         private val APK_NAME = Regex("[A-Za-z0-9][A-Za-z0-9._-]*\\.apk")
     }

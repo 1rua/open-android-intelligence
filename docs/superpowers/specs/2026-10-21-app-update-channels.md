@@ -8,7 +8,7 @@ updated: 2026-10-23
 
 ## 用户要求与入口
 
-Android 宿主在“设置与平台管理 → 应用更新”中提供正式版和预览版检测。2026-10-23 起，App 包配置中的 `X.Y.Z` 是正式与开发预览版本号的唯一来源。开发预览每次运行使用 `vX.Y.Z-dev.<run_number>` 独立 Tag；正式版使用 `vX.Y.Z`。历史 `nightly` 发布继续兼容读取，但新工作流不再移动该 Tag。预览版检测同时接受开发预览、其他带版本号的测试版和后续正式版。
+Android 宿主在“设置与平台管理 → 应用更新”中提供正式版和预览版检测。2026-10-23 起，App 包配置中的 `X.Y.Z` 是正式与开发预览版本号的唯一来源。开发预览使用 `vX.Y.Z-dev` Tag（同版本多次推送移动该 Tag 并更新已发布的 Release 介绍，不新增标签）；正式版使用 `vX.Y.Z`。历史 `nightly` 发布继续兼容读取，但新工作流不再移动该 Tag。预览版检测同时接受开发预览、其他带版本号的测试版和后续正式版。
 
 本功能属于宿主设置，不增加主导航，不影响设备插件更新策略。它使用项目公开发布源，不依赖已登录 Gateway，不读取、发送或变更账号、配对、聊天和插件授权资料。架构边界依照模块化插件总规格及 ADR 0042。
 
@@ -17,7 +17,7 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 | 检测渠道 | 候选发布 | 默认使用场景 |
 | --- | --- | --- |
 | 正式版 | 已发布、非草稿、非测试标记的版本号发布 | 正式构建首次打开 |
-| 预览版 | `vX.Y.Z-dev.N` 开发预览版、历史 `nightly`、其他版本号测试版以及后续正式版 | 开发或测试构建首次打开 |
+| 预览版 | `vX.Y.Z-dev` 开发预览版、历史 `nightly`、其他版本号测试版以及后续正式版 | 开发或测试构建首次打开 |
 
 预览渠道纳入后续正式版，确保测试用户能从 Beta、RC 过渡到正式版。正式渠道不把开发测试包或版本号测试包当成正式版。渠道选择是独立的本机普通偏好，保存失败会明确提示。
 
@@ -39,9 +39,9 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 | `applicationId` / `distribution` | Android 包名与 Full/Play 分发渠道 |
 | `signingCertificateSha256` | 实际 APK 签名证书的 SHA-256 指纹 |
 
-构建与发布清单必须一致，发布前从 APK 输出信息与真实签名核验。版本号提取脚本支持 Node/RN/Electron `package.json`、Flutter `pubspec.yaml`、Android Gradle `versionName`、iOS `Info.plist` 和 Rust/Tauri `Cargo.toml`。Flutter 常见的 `X.Y.Z+build` 会提取为 `X.Y.Z`。当前 Android App 的包配置是 `apps/android/app/version.properties`，Gradle 从此文件读取 `versionName`。工作流通过 `--platform android` 明确选择该配置，不会被仓库根目录的协议包 `package.json` 覆盖；其他项目可继续使用自动识别。工作流从包配置提取严格的 `X.Y.Z` 并生成 Tag，不解析 Git Tag 来确定或进位包版本。开发预览 APK 的 `versionName` 为 `<包版本>-dev.<run_number>`，正式 APK 使用 `<包版本>`。
+构建与发布清单必须一致，发布前从 APK 输出信息与真实签名核验。版本号提取脚本支持 Node/RN/Electron `package.json`、Flutter `pubspec.yaml`、Android Gradle `versionName`、iOS `Info.plist` 和 Rust/Tauri `Cargo.toml`。Flutter 常见的 `X.Y.Z+build` 会提取为 `X.Y.Z`。当前 Android App 的包配置是 `apps/android/app/version.properties`，Gradle 从此文件读取 `versionName`。工作流通过 `--platform android` 明确选择该配置，不会被仓库根目录的协议包 `package.json` 覆盖；其他项目可继续使用自动识别。工作流从包配置提取严格的 `X.Y.Z` 并生成 Tag，不解析 Git Tag 来确定或进位包版本。开发预览 APK 的 `versionName` 为 `<包版本>-dev`，正式 APK 使用 `<包版本>`。同一版本的多次推送直接修改已发布的 Release 介绍（记录提交序号、哈希与提交时间），不新增标签。
 
-开发与预览版本码取构建目标提交的完整历史数；正式版本码取当前 main 与保留的 dev 分支两者中最大的历史数，不计入可能被 squash 或不可达的 PR 来源历史。最大历史数再乘以 10 并加渠道阶段（开发 0、开发预览 1、正式 2），所以 dev 预览历史高于 main 时，squash 合并也不会让正式版码低于已发布的预览版。若 main 历史未包含在 dev 中，开发预览发布会失败，需通过保留提交 SHA 的合并方式先将 main 合入 dev。为保持后续版本码单调，仓库必须保留 `dev` 分支且避免历史重写，正式与预览发布使用同一并发组串行执行。同一提交重跑不会产生更高安装版本码；开发预览运行编号只保证 Tag 和 Release 独立，不会让同一源码的重复构建成为 App 更新候选。
+开发与预览版本码取构建目标提交的完整历史数；正式版本码取当前 main 与保留的 dev 分支两者中最大的历史数，不计入可能被 squash 或不可达的 PR 来源历史。最大历史数再乘以 10 并加渠道阶段（开发 0、开发预览 1、正式 2），所以 dev 预览历史高于 main 时，squash 合并也不会让正式版码低于已发布的预览版。若 main 历史未包含在 dev 中，开发预览发布会失败，需通过保留提交 SHA 的合并方式先将 main 合入 dev。为保持后续版本码单调，仓库必须保留 `dev` 分支且避免历史重写，正式与预览发布使用同一并发组串行执行。同一版本的多次推送直接更新对应 Release 的资源与介绍，新提交的 versionCode 随历史提交数增加而单调递增，支持原地覆盖升级。
 
 更新候选必须匹配本机包名及分发渠道，并具有真实已上传的 APK 资源。以 Android 版本码决定是否可升级，不能按滚动标签名称或 GitHub 初次发布时间判断新旧，也不能提示用户安装更低版本码的 APK。Play 构建应通过原安装来源更新，不向它推荐 Full APK。
 

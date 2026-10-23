@@ -5,9 +5,9 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 ## 检测渠道与发布来源
 
 - 正式版由 `main` 上合并的 PR 发布，Tag 为包版本生成的 `vX.Y.Z`，GitHub Release 的 `prerelease` 为 `false`，并设置为 latest。
-- 开发预览版由 `dev` 上合并的 PR 或 `dev` push 发布，Tag 为 `vX.Y.Z-dev.<workflow run_number>`，GitHub Release 的 `prerelease` 为 `true`，并且不会成为 latest。
+- 开发预览版由 `dev` 上合并的 PR 或 `dev` push 发布，Tag 为包版本生成的 `vX.Y.Z-dev`，GitHub Release 的 `prerelease` 为 `true`，并且不会成为 latest。同一版本的多次推送直接移动该 Tag 并覆盖更新已发布的 Release 资源与说明，不增加新标签。
 - 历史 `nightly` Release 仍可由旧版 App 更新检测读取；新的开发预览工作流不再创建或移动固定 `nightly` Tag。
-- 正式发布说明直接取合并 PR 正文。手动正式发布会查找当前提交关联的已合并 main PR；找不到时停止发布。开发预览由 PR 触发时使用 PR 正文，push 触发时使用最新提交说明。
+- 正式发布说明直接取合并 PR 正文。手动正式发布会查找当前提交关联的已合并 main PR；找不到时停止发布。开发预览由 PR 触发时使用 PR 正文，push 触发时使用最新提交说明。发布说明前附加统一构建信息（包含提交序号、提交 SHA 与提交时间），便于在不新增标签的情况下核对发布历史。
 
 正式版使用不可调试的 `FullRelease` 和私有发行签名；开发预览版使用 `FullDebug` 和仓库固定的公开调试签名。签名不一致时 Android 无法原地覆盖安装，更新界面必须明确呈现这个限制。发布流程不卸载现有 App、不修改现有账号和设备数据。
 
@@ -15,7 +15,7 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 
 `apps/android/app/version.properties` 中的 `versionName` 是当前 Android App 包的唯一 `X.Y.Z` 来源，Gradle 从该文件设置 APK 的 `versionName`。`apps/android/tools/extract_package_version.py` 根据应用配置格式提取严格的 `X.Y.Z`；它也支持 Node/RN/Electron 的 `package.json`、Flutter `pubspec.yaml`、Gradle `versionName`、iOS `Info.plist` 与 Rust/Tauri `Cargo.toml`。发布工作流显式选择 Android 配置，避免根目录协议包的 `package.json` 覆盖 App 版本。正式和开发 Tag 均由提取出的包版本拼成，工作流不从 Git Tag 推导或进位 X.Y.Z。
 
-开发预览 APK 的 `versionName` 为 `<包版本>-dev.<workflow run_number>`，正式 APK 的 `versionName` 就是包版本。重复运行产生不同的开发预览 Tag 与 Release，但同一提交的 `versionCode` 不变，因此同一源码的重复包不会被 App 更新检测当作可升级版本。
+开发预览 APK 的 `versionName` 为 `<包版本>-dev`，正式 APK 的 `versionName` 就是包版本。同一版本的多次推送直接修改已发布的 Release 介绍（记录提交序号、哈希与提交时间），不增加新标签；同一提交的 `versionCode` 不变，新提交的 `versionCode` 随历史提交数增加而单调递增，确保可覆盖升级。
 
 `versionCode = 提交数 × 10 + 渠道阶段`，其中开发构建为 `0`、开发预览为 `1`、正式版为 `2`。开发构建和开发预览使用构建目标提交的完整历史提交数；正式版取当前 main 提交与保留的 dev 分支提交数中的最大值，不依赖不可达或被 squash 的 PR 来源历史。这样 squash 合并不会丢失 dev 的历史高水位，正式版码仍高于该预览版本。若 main 已前进而 dev 尚未合入，开发预览工作流会拒绝发布，必须先用保留提交历史的合并方式把 main 合入 dev，避免预览版本码落后于正式版。仓库必须保留 `dev` 分支并避免重写历史。发布必须使用完整 Git 历史，浅克隆会立即失败。版本代码必须为 `1..2100000000` 范围内整数。
 
@@ -59,7 +59,7 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 
 `.github/workflows/dev-release.yml` 只处理 `dev` 分支，使用 `dev-release` 并发组且不取消进行中的构建；允许多个发布运行排队，避免等待中的运行被新 push 替换。稳定版工作流共享该并发组，避免正式版本码确定期间出现更高版本码的预览发布。GitHub Actions 对每个并发组最多保留 100 个等待运行，超过上限时平台会取消新的等待运行。PR 合并还会产生 push 事件，工作流会识别并跳过这类重复 push，只让合并事件发布一次；直接 push 仍会发布。通知包签名在独立 job 中完成，APK 构建只下载签好的 `.alp`，不会接触原始插件签名密钥。`.github/workflows/release.yml` 只处理合并到 `main` 的 PR 或 main 上的手动触发；手动触发若关联到已合并 PR 则使用 PR 正文，否则使用当前 main 提交说明。若正式 Tag/Release 已存在，工作流将 Tag 移到当前发布提交、替换同名资产并将 Release 转为正式 latest。`.github/workflows/android-apk.yml` 仅手动生成供下载的 Actions 构建产物，不发布 GitHub Release。
 
-开发 Tag 携带运行编号，因此每个工作流运行都能创建独立发布资源。正式发布前会核对远端 main 仍指向本次构建提交，避免旧的排队构建覆盖较新的正式包。更新检测用 GitHub 的 latest-release 接口读取正式版，并且预览检查最多读取 Release 列表前五页；不扫描不断增长的全部历史 Release。它分别保留最高开发运行编号、最近带版本号测试版和历史 nightly 候选，再读取这些候选的 APK 元数据。旧开发运行即使较晚重跑，也不会替代运行编号更高的候选。若第五页仍满，客户端显示“列表不完整”的检查失败，不会把未完整扫描误报为“暂无可升级版本”。候选是否高于本机安装仍只由清单中的 `versionCode` 决定。
+开发 Tag 固定为 `vX.Y.Z-dev`，同一版本的多次推送直接更新对应 Release 的资源与介绍并移动 Tag 指向最新提交，不产生冗余的新标签。正式发布前会核对远端 main 仍指向本次构建提交，避免旧的排队构建覆盖较新的正式包。更新检测用 GitHub 的 latest-release 接口读取正式版，并且预览检查最多读取 Release 列表前五页；不扫描不断增长的全部历史 Release。它分别保留最新开发预览、最近带版本号测试版和历史 nightly 候选，再读取这些候选的 APK 元数据。若第五页仍满，客户端显示“列表不完整”的检查失败，不会把未完整扫描误报为“暂无可升级版本”。候选是否高于本机安装仍只由清单中的 `versionCode` 决定。
 
 ## 最小验证命令
 

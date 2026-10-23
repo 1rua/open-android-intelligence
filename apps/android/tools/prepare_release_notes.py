@@ -70,6 +70,35 @@ def prepare_release_notes(
     raise ValueError("Unsupported release event")
 
 
+def append_build_metadata(body: str, repository: Path | None = None) -> str:
+    repo = repository or Path.cwd()
+    try:
+        count = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-list", "--count", "HEAD"],
+            text=True,
+        ).strip()
+        sha = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+            text=True,
+        ).strip()
+        date = subprocess.check_output(
+            ["git", "-C", str(repo), "log", "-1", "--format=%ci", "HEAD"],
+            text=True,
+        ).strip()
+    except Exception:
+        return body
+
+    metadata_header = (
+        f"> **构建信息**\n"
+        f"> - **提交编号**: 第 {count} 次提交 (`{sha}`)\n"
+        f"> - **提交时间**: {date}\n\n"
+    )
+    trimmed_body = body.strip()
+    if trimmed_body:
+        return f"{metadata_header}### 变更说明\n\n{trimmed_body}\n"
+    return metadata_header
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare release notes from the triggering pull request")
     parser.add_argument("--branch", choices=("dev", "main"), required=True)
@@ -83,8 +112,9 @@ def main() -> None:
         os.environ.get("GITHUB_REPOSITORY", ""),
         os.environ.get("GITHUB_SHA", ""),
     )
+    full_notes = append_build_metadata(notes)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(notes, encoding="utf-8")
+    args.output.write_text(full_notes, encoding="utf-8")
 
 
 if __name__ == "__main__":

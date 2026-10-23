@@ -65,6 +65,20 @@ class PrepareReleaseNotesTest(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].args[0], ["gh", "api", "repos/owner/repo/commits/abc/pulls"])
         self.assertEqual(run.call_args_list[1].args[0], ["git", "show", "-s", "--format=%B", "abc"])
 
+    @patch.object(notes.subprocess, "check_output")
+    def test_append_build_metadata_formats_header_and_body(self, check_output):
+        check_output.side_effect = ["402\n", "6b28baf4\n", "2026-10-23 23:00:00 +0800\n"]
+        result = notes.append_build_metadata("Initial release notes\n")
+        self.assertIn("> **构建信息**", result)
+        self.assertIn("第 402 次提交 (`6b28baf4`)", result)
+        self.assertIn("2026-10-23 23:00:00 +0800", result)
+        self.assertIn("### 变更说明\n\nInitial release notes", result)
+
+    @patch.object(notes.subprocess, "check_output", side_effect=Exception("Git error"))
+    def test_append_build_metadata_falls_back_on_error(self, _check_output):
+        result = notes.append_build_metadata("Plain notes")
+        self.assertEqual(result, "Plain notes")
+
 
 if __name__ == "__main__":
     unittest.main()

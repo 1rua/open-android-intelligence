@@ -122,6 +122,20 @@ class AppUpdateCheckerTest {
             fixture.requests.filter { it.contains("/releases/download/") })
     }
 
+    @Test fun previewAcceptsUnnumberedDevReleaseAndSelectsHigherVersionCode() = Fixture().use { fixture ->
+        fixture.page(1, listOf(
+            fixture.release(
+                "v2.1.1-dev", 155, "preview", versionName = "2.1.1-dev",
+                publishedAt = "2026-10-23T22:00:00Z",
+            ),
+        ))
+
+        val result = fixture.check(AppUpdateChannel.PREVIEW, installed.copy(versionCode = 150)).available()
+
+        assertEquals("2.1.1-dev", result.versionName)
+        assertEquals(155L, result.versionCode)
+    }
+
     @Test fun previewReleaseLookupStopsAfterTheConfiguredPageLimit() = Fixture().use { fixture ->
         for (page in 1..5) {
             fixture.page(page, (1..100).map { index ->

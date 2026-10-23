@@ -141,7 +141,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          STABLE_TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+          STABLE_TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' 2>/dev/null) || STABLE_TAG=""
           MINIMUM_VERSION_CODE=0
           if [ -n "$STABLE_TAG" ]; then
             if ! [[ "$STABLE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
@@ -266,8 +266,8 @@ jobs:
       - name: Publish development preview release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ needs.build-preview.outputs.package-version }}-dev.${{ github.run_number }}
-          name: Development Preview v${{ needs.build-preview.outputs.package-version }}-dev.${{ github.run_number }}
+          tag_name: v${{ needs.build-preview.outputs.package-version }}-dev
+          name: Development Preview v${{ needs.build-preview.outputs.package-version }}-dev
           prerelease: true
           make_latest: "false"
           target_commitish: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
@@ -280,3 +280,19 @@ jobs:
           files: |
             ${{ runner.temp }}/release-assets/app-full-debug.apk
             ${{ runner.temp }}/release-assets/oai-update.json
+
+      - name: Move dev tag to published commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ needs.build-preview.outputs.package-version }}
+          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+        run: |
+          RELEASE_TAG="v${PACKAGE_VERSION}-dev"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            CURRENT_TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
+            if [ "$CURRENT_TAG_SHA" != "$TARGET_SHA" ]; then
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" -F force=true >/dev/null
+            fi
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" >/dev/null
+          fi

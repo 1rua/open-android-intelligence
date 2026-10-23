@@ -45,9 +45,7 @@ def release_metadata(
     if channel == "development":
         version_name = f"{base_version}-dev.{commit_count}+{commit[:12]}"
     elif channel == "preview":
-        if run_number is None or run_number < 1:
-            raise ValueError("Preview releases require a positive workflow run number")
-        version_name = f"{base_version}-dev.{run_number}"
+        version_name = f"{base_version}-dev"
     elif channel == "stable":
         version_name = base_version
     else:
