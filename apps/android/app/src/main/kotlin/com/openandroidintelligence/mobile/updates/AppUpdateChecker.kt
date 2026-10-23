@@ -23,6 +23,8 @@ import okhttp3.Request
 
 enum class AppUpdateChannel { STABLE, PREVIEW }
 
+private const val MAX_PREVIEW_RELEASE_PAGES = 5
+
 data class InstalledAppBuild(
     val versionName: String,
     val versionCode: Long,
@@ -253,7 +255,6 @@ class AppUpdateChecker(
 
     companion object {
         private const val PAGE_SIZE = 100
-        private const val MAX_PREVIEW_RELEASE_PAGES = 5
         private const val MAX_RELEASE_BYTES = 2 * 1024 * 1024
         private const val MAX_MANIFEST_BYTES = 32 * 1024
         private const val MAX_NAME_CHARS = 160
@@ -373,6 +374,7 @@ class GitHubAppUpdateHttp internal constructor(private val requestUrl: (URI) -> 
 
 internal object OfficialUpdateUrls {
     private const val REPOSITORY = "/1rua/open-android-intelligence"
+    private val RELEASE_PAGE_QUERY = Regex("per_page=100&page=([1-9][0-9]*)")
 
     fun releasePage(value: String, tag: String): Boolean = validUri(value)?.let {
         it.host == "github.com" && it.path == "$REPOSITORY/releases/tag/$tag" && it.rawQuery == null
@@ -382,10 +384,17 @@ internal object OfficialUpdateUrls {
         it.host == "github.com" && it.path == "$REPOSITORY/releases/download/$tag/$name" && it.rawQuery == null
     } == true
 
-    fun apiRequest(uri: URI): Boolean = basic(uri) && uri.host == "api.github.com" && when {
-        uri.path == "/repos$REPOSITORY/releases/latest" -> uri.rawQuery == null
-        uri.path == "/repos$REPOSITORY/releases" -> uri.rawQuery == "per_page=100&page=1"
-        else -> false
+    fun apiRequest(uri: URI): Boolean {
+        if (!basic(uri) || uri.host != "api.github.com") return false
+        return when {
+            uri.path == "/repos$REPOSITORY/releases/latest" -> uri.rawQuery == null
+            uri.path == "/repos$REPOSITORY/releases" -> {
+                val page = RELEASE_PAGE_QUERY.matchEntire(uri.rawQuery.orEmpty())
+                    ?.groupValues?.get(1)?.toIntOrNull()
+                page != null && page in 1..MAX_PREVIEW_RELEASE_PAGES
+            }
+            else -> false
+        }
     }
 
     fun manifestRequest(uri: URI): Boolean = basic(uri) && uri.host == "github.com" &&

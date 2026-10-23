@@ -255,6 +255,8 @@ class AppUpdateCheckerTest {
 
     @Test fun productionHttpRejectsNonHttpsAndForeignSourcesWithoutConnecting() {
         assertTrue(OfficialUpdateUrls.apiRequest(URI(LATEST_RELEASE)))
+        assertTrue(OfficialUpdateUrls.apiRequest(URI("$RELEASES?per_page=100&page=5")))
+        assertFalse(OfficialUpdateUrls.apiRequest(URI("$RELEASES?per_page=100&page=6")))
         listOf(
             "http://api.github.com/repos/1rua/open-android-intelligence/releases?per_page=100&page=1",
             "https://api.github.com/repos/other/repo/releases/latest",
