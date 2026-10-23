@@ -80,7 +80,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       package-version: ${{ steps.package-version.outputs.version }}
       apk-artifact-name: ${{ steps.artifact-name.outputs.name }}
@@ -247,6 +246,8 @@ jobs:
     needs: [build-stable-apk, verify-stable-apk]
     if: (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v7

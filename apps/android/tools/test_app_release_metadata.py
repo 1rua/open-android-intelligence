@@ -172,7 +172,11 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("preview-release-assets-$GITHUB_RUN_ATTEMPT", dev_workflow)
         self.assertIn("needs.sign-notification-package.outputs.signed-artifact-name", dev_workflow)
         build_job = dev_workflow.split("  build-preview:", 1)[1].split("  publish-preview:", 1)[0]
-        self.assertIn("permissions:\n      contents: read\n      pull-requests: read", build_job)
+        self.assertIn("permissions:\n      contents: read", build_job)
+        self.assertNotIn("pull-requests: read", build_job)
+        publish_job = dev_workflow.split("  publish-preview:", 1)[1]
+        self.assertIn("permissions:\n      contents: write", publish_job)
+        self.assertNotIn("pull-requests: read", publish_job)
         self.assertIn("v${{ needs.build-preview.outputs.package-version }}-dev.${{ github.run_number }}", dev_workflow)
         self.assertIn("prerelease: true", dev_workflow)
         self.assertIn('make_latest: "false"', dev_workflow)
@@ -181,6 +185,9 @@ class AppReleaseMetadataTest(unittest.TestCase):
 
         release_workflow = (release.REPOSITORY_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("branches: [main]", release_workflow)
+        self.assertIn("group: stable-release", release_workflow)
+        self.assertIn("cancel-in-progress: false", release_workflow)
+        self.assertIn("queue: max", release_workflow)
         self.assertIn("contents: write", release_workflow)
         self.assertIn("pull-requests: read", release_workflow)
         self.assertIn("allow-unsafe-pr-checkout: true", release_workflow)
@@ -188,6 +195,14 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("signed-notifications-$GITHUB_RUN_ATTEMPT", release_workflow)
         self.assertIn("stable-apk-inputs-$GITHUB_RUN_ATTEMPT", release_workflow)
         self.assertIn("stable-release-assets-$GITHUB_RUN_ATTEMPT", release_workflow)
+        stable_build_job = release_workflow.split("  build-stable-apk:", 1)[1].split("  verify-stable-apk:", 1)[0]
+        self.assertIn("permissions:\n      contents: read", stable_build_job)
+        self.assertNotIn("pull-requests: read", stable_build_job)
+        stable_verify_job = release_workflow.split("  verify-stable-apk:", 1)[1].split("  publish-stable:", 1)[0]
+        self.assertIn("permissions:\n      contents: read\n      pull-requests: read", stable_verify_job)
+        stable_publish_job = release_workflow.split("  publish-stable:", 1)[1]
+        self.assertIn("permissions:\n      contents: write", stable_publish_job)
+        self.assertNotIn("pull-requests: read", stable_publish_job)
         self.assertLess(release_workflow.index("build-stable-apk:"), release_workflow.index("verify-stable-apk:"))
         self.assertLess(release_workflow.index("verify-stable-apk:"), release_workflow.index("publish-stable:"))
         self.assertIn("workflow_dispatch", release_workflow)
