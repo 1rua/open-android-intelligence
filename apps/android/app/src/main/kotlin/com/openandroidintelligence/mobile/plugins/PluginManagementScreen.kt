@@ -99,6 +99,7 @@ fun PluginManagementScreen(
     modifier: Modifier = Modifier,
     store: PluginInstallStore? = null,
     onOpenNotificationSettings: (() -> Unit)? = null,
+    bundledNotificationPackage: (() -> ByteArray)? = null,
 ) {
     val context = LocalContext.current
     // 未显式给 store 时按应用上下文自建（真实存储：filesDir/plugins）。
@@ -111,6 +112,8 @@ fun PluginManagementScreen(
     var installed by remember { mutableStateOf(resolvedStore.listInstalled()) }
     var pendingApproval by remember { mutableStateOf<ByteArray?>(null) }
     var grantPlugin by remember { mutableStateOf<String?>(null) }
+    var removeDamagedPlugin by remember { mutableStateOf<String?>(null) }
+    var showNotificationSetup by remember { mutableStateOf(false) }
     var invokePlugin by remember { mutableStateOf<String?>(null) }
     var invokeCapability by remember { mutableStateOf("") }
     var invokeParameters by remember { mutableStateOf("{}") }
@@ -124,12 +127,14 @@ fun PluginManagementScreen(
     var installing by remember { mutableStateOf(false) }
 
     fun refresh() { host?.reload(); installed = resolvedStore.listInstalled() }
-    fun installBytes(bytes: ByteArray, approved: Boolean = false) {
+    fun installBytes(bytes: ByteArray, approved: Boolean = false, bundledNotification: Boolean = false) {
         if (installing) return
         installing = true
         installScope.launch {
             try {
-                val view = runInterruptible(Dispatchers.IO) { resolvedStore.install(bytes,approved) }
+                val view = runInterruptible(Dispatchers.IO) {
+                    if (bundledNotification) resolvedStore.installBundledNotifications(bytes) else resolvedStore.install(bytes,approved)
+                }
                 refresh(); pendingApproval = null
                 notice = "已安装 ${view.pluginId} v${view.version}，可启用并为当前配对授权。"
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -154,6 +159,7 @@ fun PluginManagementScreen(
     fun grantNow(id: String) { runCatching { host?.grant(id,true) ?: error("RUNTIME_UNAVAILABLE") }.fold(
         onSuccess = {
             notice = if (host?.entries(id).orEmpty().any { "kernel.notifications.read" in it.primitives }) {
+                showNotificationSetup = true
                 "已为当前配对授权。请在通知采集设置中允许采集、配置应用白名单，并授予系统通知使用权。"
             } else "已为当前配对授权并选择此提供者。"
         },onFailure = { notice = "授权失败，请先登录 Gateway 并检查插件状态。" }) }
@@ -183,6 +189,40 @@ fun PluginManagementScreen(
             text = { Text("该更新扩大了内核原语、联网、后台或资源范围。批准后仍需在配对中授予新增能力；作者和签名将再次核验。") },
             confirmButton = { TextButton(onClick = { installBytes(candidate,true) },enabled = !installing) { Text("批准更新") } },
             dismissButton = { TextButton(onClick = { pendingApproval = null }) { Text("取消") } })
+    }
+    removeDamagedPlugin?.let { directoryName ->
+        AlertDialog(
+            onDismissRequest = { removeDamagedPlugin = null },
+            title = { Text("卸载损坏包") },
+            text = { Text("将删除插件目录 $directoryName 的损坏包并撤销该插件的本机配对授权。重新安装后需重新启用、授权并检查通知采集设置。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    removeDamagedPlugin = null
+                    runCatching {
+                        require(isSafePluginDirectoryName(directoryName)) { "INVALID_PLUGIN_DIRECTORY" }
+                        if (app != null) app.pluginHost.uninstall(directoryName) else resolvedStore.uninstall(directoryName)
+                        refresh()
+                    }.fold(onSuccess = { notice = "损坏插件包已卸载，请重新安装、启用并授权。" },
+                        onFailure = { notice = "损坏插件包未能卸载，请检查本机存储。" })
+                }, modifier = Modifier.testTag("damaged-plugin-delete-confirm")) { Text("确认卸载") }
+            },
+            dismissButton = { TextButton(onClick = { removeDamagedPlugin = null }) { Text("取消") } },
+        )
+    }
+    if (showNotificationSetup) {
+        AlertDialog(
+            onDismissRequest = { showNotificationSetup = false },
+            title = { Text("完成通知读取设置") },
+            text = { Text("配对授权已保存。还需在通知采集中允许采集、选择可读取的应用和内容范围，并在 Android 系统设置中开启通知使用权。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showNotificationSetup = false
+                    if (onOpenNotificationSettings != null) onOpenNotificationSettings()
+                    else if (!openNotificationAccessSettings(context)) notice = "无法打开系统通知使用权设置，请在 Android 设置中手动开启本应用的通知使用权。"
+                }) { Text(if (onOpenNotificationSettings != null) "配置通知采集与范围" else "打开通知使用权设置") }
+            },
+            dismissButton = { TextButton(onClick = { showNotificationSetup = false }) { Text("稍后设置") } },
+        )
     }
     grantPlugin?.let { id ->
         val entries = host?.entries(id).orEmpty()
@@ -307,6 +347,37 @@ fun PluginManagementScreen(
                     icon = Icons.Default.Extension,
                     tone = if (pluginRuntimesWired) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
                 )
+                if (host?.loadFailures?.containsKey("*") == true) {
+                    SettingsListItem(headline = "插件目录读取失败", supporting = "无法确认完整插件清单，请检查本机存储后重试。", tone = SettingsTone.DANGER)
+                }
+            }
+
+            SectionLabel("通知读取")
+            SettingsSectionCard {
+                val alreadyInstalled = installed.any { it.pluginId == NOTIFICATION_PLUGIN_ID || it.directory.name == NOTIFICATION_PLUGIN_ID }
+                SettingsListItem(
+                    headline = if (alreadyInstalled) "通知读取插件已安装" else "安装通知读取插件",
+                    supporting = when {
+                        !allowRuntimePlugins -> "此分发渠道不支持通知插件，请使用支持插件的 Full 版本"
+                        alreadyInstalled && host?.loadFailures?.containsKey(NOTIFICATION_PLUGIN_ID) == true -> "现有包校验或加载失败，请先卸载损坏包，再重新安装并授权"
+                        alreadyInstalled -> "请在下方启用插件、授予当前配对，并配置通知采集与系统通知使用权"
+                        else -> "安装此 APK 附带的已签名插件；安装后需自行启用和授权"
+                    },
+                    icon = Icons.Default.InstallMobile,
+                    enabled = allowRuntimePlugins && !alreadyInstalled && !installing,
+                    onClick = if (allowRuntimePlugins && !alreadyInstalled && !installing) ({
+                        installScope.launch {
+                            try {
+                                val bytes = runInterruptible(Dispatchers.IO) {
+                                    bundledNotificationPackage?.invoke() ?: readBundledNotificationPackage(context)
+                                }
+                                installBytes(bytes, bundledNotification = true)
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (cause: Exception) { notice = installFailureNotice(cause) }
+                        }
+                    }) else null,
+                    modifier = Modifier.testTag(BUNDLED_NOTIFICATION_INSTALL_TAG),
+                )
             }
 
             // 已安装列表：真实存储扫描。
@@ -326,7 +397,14 @@ fun PluginManagementScreen(
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
                         InstalledPluginBlock(view = view, onAction = sink(view.pluginId ?: view.directory.name),host = host)
-                        view.pluginId?.let { id ->
+                        if (pluginLoadFailure(view,host) != null) {
+                            TextButton(
+                                onClick = { removeDamagedPlugin = view.directory.name },
+                                enabled = isSafePluginDirectoryName(view.directory.name),
+                                modifier = Modifier.testTag("damaged-plugin-delete:${view.directory.name}"),
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            ) { Text("卸载损坏包") }
+                        } else view.pluginId?.let { id ->
                             if (host != null) {
                                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                                     // 能力状态：图标 + 语义色 + 文字三件套，颜色不是唯一信号。
@@ -346,7 +424,9 @@ fun PluginManagementScreen(
                                             onOpenNotificationSettings?.let { openSettings ->
                                                 TextButton(onClick = openSettings) { Text("通知采集与访问范围") }
                                             }
-                                            TextButton(onClick = { context.startActivity(android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }) { Text("打开通知访问设置") }
+                                            TextButton(onClick = {
+                                                if (!openNotificationAccessSettings(context)) notice = "无法打开系统通知使用权设置，请在 Android 设置中手动开启本应用的通知使用权。"
+                                            }) { Text("打开通知访问设置") }
                                         }
                                     }
                                     // 危险动作单独一组：只有「卸载」和「撤销授权」，配色走 error 语义，
@@ -426,7 +506,8 @@ private fun InstalledPluginBlock(
     onAction: PluginUiActionSink,
     host: ProductionPluginHost? = null,
 ) {
-    val headline = view.displayName ?: view.directory.name
+    val failure = pluginLoadFailure(view,host)
+    val headline = if (failure != null) view.directory.name else view.displayName ?: view.directory.name
     val supporting = if (view.pluginId == null) {
         "插件目录 manifest 不可解析，已按未知包如实呈现"
     } else {
@@ -434,10 +515,20 @@ private fun InstalledPluginBlock(
             append(view.pluginId)
             view.version?.let { append(" · v$it") }
             view.runtimeType?.let { append(" · $it") }
-            append(if (host == null) " · 已安装，未启用（宿主未装配插件运行时）" else if (host.isEnabled(view.pluginId)) " · 已启用" else " · 已停用")
+            append(when {
+                host == null -> " · 已安装，未启用（宿主未装配插件运行时）"
+                host.loadFailures.containsKey(view.directory.name) -> " · 校验或加载失败"
+                host.isEnabled(view.pluginId) -> " · 已启用"
+                else -> " · 已停用"
+            })
         }
     }
     SettingsListItem(headline = headline, supporting = supporting)
+
+    if (failure != null) {
+        SettingsListItem(headline = "插件校验或加载失败", supporting = "$failure\n请先卸载损坏包，再重新安装并授权。", tone = SettingsTone.DANGER)
+        return
+    }
 
     if (host != null) {
         host.contributions(view.pluginId ?: "").forEach { contribution -> PluginDeclarativeUi(contribution = contribution,onAction = onAction) }
@@ -470,6 +561,12 @@ private fun InstalledPluginBlock(
         )
     }
 }
+
+private fun pluginLoadFailure(view: InstalledPluginView, host: ProductionPluginHost?): String? =
+    host?.loadFailures?.get(view.directory.name) ?: if (view.pluginId == null || view.pluginId != view.directory.name)
+        "PLUGIN_MANIFEST_INVALID" else null
+
+private fun isSafePluginDirectoryName(value: String): Boolean = Regex("[A-Za-z0-9][A-Za-z0-9.-]*").matches(value)
 
 /**
  * 能力状态行：图标 + 语义色 + 文字。
@@ -530,6 +627,7 @@ private fun CapabilityStatusRow(entryId: String, status: String) {
 
 /** 安装失败的如实说明：契约拒绝码原样给出，不回显原始异常文本。 */
 internal fun installFailureNotice(cause: Throwable): String = when (cause) {
+    is BundledNotificationUnavailable -> "当前安装包未附带通知读取插件，请从文件导入已签名的 .alp 插件包。"
     is PackageRejected -> "插件包校验未通过：${cause.message ?: "未知拒绝码"}"
     is PluginInstallRefused -> "安装被拒绝：${cause.message ?: cause::class.java.simpleName}"
     else -> "安装失败：无法读取或处理所选插件包。"

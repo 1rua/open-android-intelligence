@@ -95,8 +95,16 @@ class NotificationCapabilityHttpTest {
             }
             assertEquals(true,JsonFields.bool(control("switch",mapOf("capabilityId" to ID,"enabled" to true)),"ok"))
             publisher.sync();assertEquals("PLUGIN_NOT_INSTALLED",currentStatus())
-            host.installStore.install(TestAlpPackages.compiledNotificationsPackage());host.reload()
+            // Exercise the shipped APK package when supplied; ordinary source-only builds use the same signed installer.
+            val notificationsPackage = try { readBundledNotificationPackage(context) }
+                catch (_: BundledNotificationUnavailable) {
+                    check(System.getenv("OAI_BUNDLED_NOTIFICATIONS_ALP").isNullOrBlank()) { "Configured notification bundle missing from APK assets" }
+                    TestAlpPackages.compiledNotificationsPackage()
+                }
+            host.installStore.installBundledNotifications(notificationsPackage);host.reload()
             publisher.sync();assertEquals("PLUGIN_DISABLED",currentStatus())
+            assertFalse(host.isEnabled(PLUGIN))
+            assertTrue(host.authorizedBindings().isEmpty())
             val entry = host.entries(PLUGIN).single()
             host.enable(PLUGIN,true)
             publisher.sync();assertEquals("LOCAL_GRANT_REQUIRED",currentStatus())
@@ -134,6 +142,19 @@ class NotificationCapabilityHttpTest {
             assertEquals("succeeded",JsonFields.string(result,"outcome"))
             assertTrue(Json.canonical(result).contains("permitted message"))
             assertFalse(Json.canonical(result).contains("excluded secret"))
+            // An installed but damaged package cannot be diagnosed as absent, or retain a callable binding.
+            val payload = File(host.installStore.installRoot, "$PLUGIN/payload/notifications.wasm")
+            val verifiedPayload = payload.readBytes()
+            payload.writeBytes(verifiedPayload.copyOf().also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() })
+            host.reload()
+            assertEquals("PLUGIN_PACKAGE_INVALID", host.loadFailures[PLUGIN])
+            publisher.sync();assertEquals("ANDROID_STATE_UNKNOWN",currentStatus())
+            assertTrue(host.authorizedBindings().isEmpty())
+            payload.writeBytes(verifiedPayload);host.reload()
+            publisher.sync();assertEquals("PLUGIN_DISABLED",currentStatus())
+            host.enable(PLUGIN,true)
+            publisher.sync();assertEquals("READY",currentStatus())
+            assertEquals("succeeded",JsonFields.string(invoke(),"outcome"))
             assertEquals(true,JsonFields.bool(control("switch",mapOf("capabilityId" to ID,"enabled" to false)),"ok"))
             control("start",mapOf("capabilityId" to ID))
             assertEquals("GATEWAY_DISABLED",JsonFields.string(control("result"),"reason"))

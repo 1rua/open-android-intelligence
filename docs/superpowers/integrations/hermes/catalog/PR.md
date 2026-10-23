@@ -12,7 +12,7 @@ Intelligence 的手机端网关适配器。
 |---|---|
 | `name` | `open-android-intelligence-gateway` |
 | `repo` | `https://github.com/1rua/hermes-gateway-plugin` |
-| `sha` | `7d21b862c85987568d8abc8a40ecff2b942a0d43` |
+| `sha` | `190441415652ae34fbd1cb8cc485f6208fff944b` |
 | `category` | `platform` |
 | `tier` | `community` |
 
@@ -65,6 +65,6 @@ security scan: caution (existing historical log contains invisible Unicode)
 ```bash
 git clone https://github.com/1rua/hermes-gateway-plugin
 cd hermes-gateway-plugin
-git checkout 7d21b862c85987568d8abc8a40ecff2b942a0d43
+git checkout 190441415652ae34fbd1cb8cc485f6208fff944b
 hermes plugins validate .
 ```

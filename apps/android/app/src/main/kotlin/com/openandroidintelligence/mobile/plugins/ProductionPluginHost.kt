@@ -23,7 +23,8 @@ data class VerifiedCapability(val identity: PluginIdentity, val id: String, val 
         "capabilityId" to id,"capabilityVersion" to version,"schemaSha256" to Json.sha256(schema),"schema" to schema,"risk" to risk)
 }
 
-data class CapabilitySnapshot(val bindings: List<Map<String,Any?>>, val inventory: List<Map<String,Any?>>)
+data class CapabilitySnapshot(val bindings: List<Map<String,Any?>>, val inventory: List<Map<String,Any?>>,
+    val inventoryComplete: Boolean = true)
 
 /** Installed code is reverified once before registration; invocations use immutable verified bytes. */
 class ProductionPluginHost(private val context: Context, private val grants: PairingGrantStateHolder,
@@ -35,6 +36,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     private val defaults = ConcurrentHashMap<String,PluginIdentity>()
     val selector = CapabilityProviderSelector(defaults)
     val revision = MutableStateFlow(0L)
+    /** Local installation diagnostics only; unverified manifests never declare Agent capabilities. */
+    @Volatile var loadFailures: Map<String,String> = emptyMap(); private set
     private val modules = ConcurrentHashMap<PluginIdentity,ByteArray>()
     private val capabilities = ConcurrentHashMap<String,List<VerifiedCapability>>()
     private val uiDeclarations = ConcurrentHashMap<String,List<com.openandroidintelligence.plugin.ui.UiContribution>>()
@@ -80,8 +83,17 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     @Synchronized fun reload() {
         capabilities.keys.toList().forEach { kernel.unregister(it) }
         nativeLoader.unloadAll(); modules.clear(); capabilities.clear(); defaults.clear(); stores.clear(); proxies.clear(); uiDeclarations.clear();cardIds.clear()
-        for (view in installStore.listInstalled()) {
-            val id = view.pluginId ?: continue
+        val failures = linkedMapOf<String,String>()
+        val installed = runCatching { installStore.listInstalled() }.getOrElse {
+            failures["*"] = "PLUGIN_SCAN_FAILED"
+            emptyList()
+        }
+        for (view in installed) {
+            val id = view.pluginId
+            if (id == null || id != view.directory.name) {
+                failures[view.directory.name] = "PLUGIN_MANIFEST_INVALID"
+                continue
+            }
             runCatching {
                 val verified = installStore.openVerified(id)
                 try {
@@ -121,9 +133,13 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                     for (entry in entries) defaults.putIfAbsent(entry.key,verified.identity)
                     if (preferences.getString(id,null) == verified.identity.authorKeyFingerprint && !isQuarantined(id)) enableVerified(verified)
                 } finally { verified.stagedDirectory.deleteRecursively() }
-            }.onFailure { kernel.unregister(id); capabilities.remove(id); preferences.edit().remove(id).commit() }
+            }.onFailure {
+                kernel.unregister(id); capabilities.remove(id); preferences.edit().remove(id).commit()
+                failures[view.directory.name] = if (it is PackageRejected) "PLUGIN_PACKAGE_INVALID" else "PLUGIN_LOAD_FAILED"
+            }
         }
         selector.refreshOverrides(capabilities.values.flatten().groupBy { it.key }.mapValues { (_, entries) -> entries.map { it.identity } })
+        loadFailures = failures.toMap()
         revision.value++
     }
 
@@ -268,7 +284,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             mapOf("pluginId" to entry.identity.pluginId,"capabilityId" to entry.id,"capabilityVersion" to entry.version,
                 "status" to status,"reason" to reason)
         }
-        return CapabilitySnapshot(bindings, inventory)
+        return CapabilitySnapshot(bindings, inventory, inventoryComplete = loadFailures.isEmpty())
     }
     fun invoke(identity: PluginIdentity, accountId: String, capability: String, parameters: JsonValue, correlationId: String, background: Boolean = false): ByteArray {
         val entry = entries(identity.pluginId).firstOrNull { it.identity == identity && it.key == capability } ?: throw CapabilityDenied(capability)
@@ -365,18 +381,21 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         revision.value++
     }
     fun uninstall(pluginId: String) {
+        require(Regex("[A-Za-z0-9][A-Za-z0-9.-]*").matches(pluginId)) { "INVALID_PLUGIN_DIRECTORY" }
         val identity = kernel.registrationFor(pluginId)?.identity
-        if (grants.state.value != null && identity != null) grant(pluginId,false)
+        // Damaged packages have no verified registration; revoke their scoped grants by the actual directory ID.
+        val scopedGrants = grants.state.value?.granted.orEmpty().filter { it.startsWith("plugin:$pluginId:") }.toSet()
+        if (scopedGrants.isNotEmpty()) grants.updatePrimitives(scopedGrants,false)
         if (identity != null) {
             EncryptedPluginStateBackend(context).deletePluginPartitions(Base64.getUrlEncoder().withoutPadding().encodeToString(identity.pluginId.toByteArray()),
                 Base64.getUrlEncoder().withoutPadding().encodeToString(identity.authorKeyFingerprint.toByteArray()))
-            val pairingPreferences = context.getSharedPreferences("open_android_intelligence_pairing_grants",Context.MODE_PRIVATE)
-            val edit = pairingPreferences.edit()
-            pairingPreferences.all.filterKeys { it.endsWith(".granted") }.forEach { (key,value) ->
-                val set = (value as? Set<*>)?.filterIsInstance<String>().orEmpty().toSet()
-                edit.putStringSet(key,set.filterNot { it.startsWith("plugin:$pluginId:") }.toSet())
-            }; check(edit.commit())
         }
+        val pairingPreferences = context.getSharedPreferences("open_android_intelligence_pairing_grants",Context.MODE_PRIVATE)
+        val edit = pairingPreferences.edit()
+        pairingPreferences.all.filterKeys { it.endsWith(".granted") }.forEach { (key,value) ->
+            val set = (value as? Set<*>)?.filterIsInstance<String>().orEmpty().toSet()
+            edit.putStringSet(key,set.filterNot { it.startsWith("plugin:$pluginId:") }.toSet())
+        }; check(edit.commit())
         PluginJobScheduler.erasePlugin(context,pluginId)
         enable(pluginId,false); installStore.uninstall(pluginId); reload()
     }
