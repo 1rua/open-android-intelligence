@@ -168,6 +168,8 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("signed-notifications-$GITHUB_RUN_ATTEMPT", dev_workflow)
         self.assertIn("preview-release-assets-$GITHUB_RUN_ATTEMPT", dev_workflow)
         self.assertIn("needs.sign-notification-package.outputs.signed-artifact-name", dev_workflow)
+        build_job = dev_workflow.split("  build-preview:", 1)[1].split("  publish-preview:", 1)[0]
+        self.assertIn("permissions:\n      contents: read\n      pull-requests: read", build_job)
         self.assertIn("v${{ needs.build-preview.outputs.package-version }}-dev.${{ github.run_number }}", dev_workflow)
         self.assertIn("prerelease: true", dev_workflow)
         self.assertIn('make_latest: "false"', dev_workflow)

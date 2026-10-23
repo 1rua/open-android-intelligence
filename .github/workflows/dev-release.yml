@@ -101,6 +101,9 @@ jobs:
     needs: [release-event, sign-notification-package]
     if: needs.release-event.outputs.should-release == 'true' && (github.event_name == 'push' || github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       package-version: ${{ steps.package-version.outputs.version }}
       release-artifact-name: ${{ steps.artifact-name.outputs.name }}
