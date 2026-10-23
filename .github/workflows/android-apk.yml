@@ -1,6 +1,8 @@
 name: Android APK Artifact
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -136,7 +138,7 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
-          name: app-full-debug-${{ github.run_number }}-${{ github.run_attempt }}
+          name: app-full-debug
           path: |
             apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
             ${{ runner.temp }}/oai-update.json
