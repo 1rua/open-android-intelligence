@@ -41,7 +41,7 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 
 构建与发布清单必须一致，发布前从 APK 输出信息与真实签名核验。版本号提取脚本支持 Node/RN/Electron `package.json`、Flutter `pubspec.yaml`、Android Gradle `versionName`、iOS `Info.plist` 和 Rust/Tauri `Cargo.toml`。Flutter 常见的 `X.Y.Z+build` 会提取为 `X.Y.Z`。当前 Android App 的包配置是 `apps/android/app/version.properties`，Gradle 从此文件读取 `versionName`。工作流通过 `--platform android` 明确选择该配置，不会被仓库根目录的协议包 `package.json` 覆盖；其他项目可继续使用自动识别。工作流从包配置提取严格的 `X.Y.Z` 并生成 Tag，不解析 Git Tag 来确定或进位包版本。开发预览 APK 的 `versionName` 为 `<包版本>-dev.<run_number>`，正式 APK 使用 `<包版本>`。
 
-开发与预览版本码取构建目标提交的完整历史数；正式版本码取当前 main、合并 PR 来源提交和保留的 dev 分支三者中最大的历史数。工作流显式获取 PR head 引用，因此 fork PR 或删除来源分支不会让提交对象缺失。最大历史数再乘以 10 并加渠道阶段（开发 0、开发预览 1、正式 2），所以 squash 合并也不会让正式版码低于已发布的预览版。若 main 历史未包含在 dev 中，开发预览发布会失败，需先将 main 合入 dev。为保持后续版本码单调，仓库必须保留 `dev` 分支且避免历史重写，正式与预览发布使用同一并发组串行执行。同一提交重跑不会产生更高安装版本码；开发预览运行编号只保证 Tag 和 Release 独立，不会让同一源码的重复构建成为 App 更新候选。
+开发与预览版本码取构建目标提交的完整历史数；正式版本码取当前 main 与保留的 dev 分支两者中最大的历史数，不计入可能被 squash 或不可达的 PR 来源历史。最大历史数再乘以 10 并加渠道阶段（开发 0、开发预览 1、正式 2），所以 dev 预览历史高于 main 时，squash 合并也不会让正式版码低于已发布的预览版。若 main 历史未包含在 dev 中，开发预览发布会失败，需通过保留提交 SHA 的合并方式先将 main 合入 dev。为保持后续版本码单调，仓库必须保留 `dev` 分支且避免历史重写，正式与预览发布使用同一并发组串行执行。同一提交重跑不会产生更高安装版本码；开发预览运行编号只保证 Tag 和 Release 独立，不会让同一源码的重复构建成为 App 更新候选。
 
 更新候选必须匹配本机包名及分发渠道，并具有真实已上传的 APK 资源。以 Android 版本码决定是否可升级，不能按滚动标签名称或 GitHub 初次发布时间判断新旧，也不能提示用户安装更低版本码的 APK。Play 构建应通过原安装来源更新，不向它推荐 Full APK。
 

@@ -61,23 +61,18 @@ class AppReleaseMetadataTest(unittest.TestCase):
         ]
         self.assertEqual(codes, sorted(set(codes)))
 
-    def test_prepare_uses_the_greatest_target_pr_or_dev_history_for_stable_version_code(self):
-        source_sha = "abcdef0123456789abcdef0123456789abcdef01"
+    def test_prepare_uses_the_greatest_main_or_dev_history_for_stable_version_code(self):
         dev_sha = "abcdef0123456789abcdef0123456789abcdef02"
-        for target_count, source_count, dev_count, expected_count in (
-            (456, 457, 457, 457),
-            (458, 457, 457, 458),
-            (456, 457, 459, 459),
+        for target_count, dev_count, expected_count in (
+            (456, 457, 457),
+            (458, 457, 458),
+            (456, 459, 459),
         ):
-            git_output = (
-                "false", source_sha, dev_sha, str(target_count), str(source_count), str(dev_count), COMMIT,
-            )
+            git_output = ("false", dev_sha, str(target_count), str(dev_count), COMMIT)
             expected_calls = [
                 call("rev-parse", "--is-shallow-repository"),
-                call("rev-parse", "--verify", f"{source_sha}^{{commit}}"),
                 call("rev-parse", "--verify", f"{dev_sha}^{{commit}}"),
                 call("rev-list", "--count", "HEAD"),
-                call("rev-list", "--count", source_sha),
                 call("rev-list", "--count", dev_sha),
                 call("rev-parse", "HEAD"),
             ]
@@ -88,7 +83,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
                 release.prepare(argparse.Namespace(
                     channel="stable",
                     run_number=None,
-                    history_sha=[source_sha, dev_sha],
+                    history_sha=[dev_sha],
                     metadata=metadata_path,
                     github_env=None,
                 ))
@@ -270,13 +265,9 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("stable-apk-inputs-$GITHUB_RUN_ATTEMPT", release_workflow)
         self.assertIn("stable-release-assets-$GITHUB_RUN_ATTEMPT", release_workflow)
         stable_build_job = release_workflow.split("  build-stable-apk:", 1)[1].split("  verify-stable-apk:", 1)[0]
-        self.assertIn("permissions:\n      contents: read\n      pull-requests: read", stable_build_job)
-        self.assertIn("Resolve version-code history commit", stable_build_job)
-        self.assertIn("github.event.pull_request.head.sha", stable_build_job)
-        self.assertIn("commits/$TARGET_SHA/pulls", stable_build_job)
-        self.assertIn('HISTORY_SHA="$TARGET_SHA"', stable_build_job)
-        self.assertIn('git cat-file -e "$HISTORY_SHA^{commit}"', stable_build_job)
-        self.assertIn('refs/pull/$PR_NUMBER/head', stable_build_job)
+        self.assertIn("permissions:\n      contents: read", stable_build_job)
+        self.assertNotIn("pull-requests: read", stable_build_job)
+        self.assertIn("Resolve dev version-code history", stable_build_job)
         self.assertIn('+refs/heads/dev:refs/remotes/origin/dev', stable_build_job)
         self.assertIn("max(commit_counts)", (release.REPOSITORY_ROOT / "apps/android/tools/app_release_metadata.py").read_text(encoding="utf-8"))
         self.assertIn("--history-sha", stable_build_job)
