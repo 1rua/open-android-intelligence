@@ -116,6 +116,19 @@ class AppUpdateScreenTest {
     }
 
     @Test
+    fun truncatedPreviewReleaseListIsNotReportedAsNoUpdate() {
+        show(
+            AppUpdateUiState(
+                AppUpdateChannel.PREVIEW,
+                result = AppUpdateResult.Unavailable(AppUpdateFailure.INCOMPLETE_RELEASE_LIST),
+            ),
+        )
+        compose.onNodeWithText("预览发布列表过长，未能完整检查；请稍后重试或查看全部发布。")
+            .performScrollTo().assertExists()
+        compose.onNodeWithText("暂无可升级版本").assertDoesNotExist()
+    }
+
+    @Test
     fun missingMetadataIsNotShownAsUpToDate() {
         show(
             AppUpdateUiState(

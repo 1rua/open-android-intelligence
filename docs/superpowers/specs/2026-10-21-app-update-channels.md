@@ -25,7 +25,7 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 
 ## 发布源与版本信息
 
-唯一发布源是项目 `1rua/open-android-intelligence` 的 GitHub Releases。正式版通过 GitHub latest-release 接口读取；预览检查最多读取前五页，分别保留最近开发预览、带版本号测试版和历史 nightly 候选，不继续扫描全部历史页面。公开资源无需 App 保存 GitHub 凭证，依据 [GitHub Releases 接口说明](https://docs.github.com/en/rest/releases/releases)。
+唯一发布源是项目 `1rua/open-android-intelligence` 的 GitHub Releases。正式版通过 GitHub latest-release 接口读取；预览检查最多读取前五页，分别保留最近开发预览、带版本号测试版和历史 nightly 候选，不继续扫描全部历史页面。若第五页仍有 100 条发布，客户端显示列表不完整的检查失败，不会把未扫描的后续页面误报成暂无更新。公开资源无需 App 保存 GitHub 凭证，依据 [GitHub Releases 接口说明](https://docs.github.com/en/rest/releases/releases)。
 
 每个可检测发布须包含真实 APK 与 `oai-update.json`。清单字段为：
 

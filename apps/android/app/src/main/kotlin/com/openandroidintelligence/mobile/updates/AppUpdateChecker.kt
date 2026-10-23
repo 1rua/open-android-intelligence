@@ -48,7 +48,7 @@ data class AppUpdateRelease(
 )
 
 enum class AppUpdateUnsupportedReason { DISTRIBUTION, METADATA_MISSING }
-enum class AppUpdateFailure { NETWORK, RATE_LIMITED, SERVICE, INVALID_RESPONSE }
+enum class AppUpdateFailure { NETWORK, RATE_LIMITED, SERVICE, INVALID_RESPONSE, INCOMPLETE_RELEASE_LIST }
 
 sealed interface AppUpdateResult {
     data class Available(val release: AppUpdateRelease) : AppUpdateResult
@@ -101,6 +101,9 @@ class AppUpdateChecker(
                     }
                 }
                 if (values.size < PAGE_SIZE) break
+                if (page == MAX_PREVIEW_RELEASE_PAGES) {
+                    throw UpdateRequestFailure(AppUpdateFailure.INCOMPLETE_RELEASE_LIST)
+                }
                 page += 1
             }
         }

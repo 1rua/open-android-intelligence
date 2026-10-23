@@ -25,7 +25,7 @@ def git_value(*arguments: str, repository: Path = REPOSITORY_ROOT) -> str:
 
 
 def read_base_version() -> str:
-    return extract_package_version(REPOSITORY_ROOT)
+    return extract_package_version(REPOSITORY_ROOT, platform="android")
 
 
 def release_metadata(

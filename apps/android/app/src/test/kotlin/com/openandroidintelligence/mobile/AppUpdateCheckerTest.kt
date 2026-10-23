@@ -114,8 +114,12 @@ class AppUpdateCheckerTest {
                 )
             })
         }
+        fixture.page(6, listOf(fixture.release("v2.4.0-beta.1", 240, "preview")))
 
-        assertEquals(AppUpdateResult.NotPublished, fixture.check(AppUpdateChannel.PREVIEW))
+        assertEquals(
+            AppUpdateResult.Unavailable(AppUpdateFailure.INCOMPLETE_RELEASE_LIST),
+            fixture.check(AppUpdateChannel.PREVIEW),
+        )
         assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=5"))
         assertFalse(fixture.requests.any { it.contains("page=6") })
     }

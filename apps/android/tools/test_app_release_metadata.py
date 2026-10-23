@@ -47,6 +47,11 @@ class AppReleaseMetadataTest(unittest.TestCase):
     def test_package_version_changes_are_reflected_without_reading_a_tag(self):
         self.assertEqual(self.metadata(channel="stable", version="2.2.0")["versionName"], "2.2.0")
 
+    @patch.object(release, "extract_package_version", return_value="2.1.1")
+    def test_build_metadata_uses_the_android_package_version_source(self, extract_version):
+        self.assertEqual(release.read_base_version(), "2.1.1")
+        extract_version.assert_called_once_with(release.REPOSITORY_ROOT, platform="android")
+
     def test_version_code_orders_channels_and_later_commits(self):
         codes = [
             self.metadata(channel="development")["versionCode"],
