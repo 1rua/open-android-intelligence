@@ -14,8 +14,8 @@ DIGEST = "ab" * 32
 
 
 class AppReleaseMetadataTest(unittest.TestCase):
-    def metadata(self, channel="development", count=397, run_number=None, version="2.1.1"):
-        return release.release_metadata(version, COMMIT, count, channel, run_number)
+    def metadata(self, channel="development", count=397, run_number=None, version="2.1.1", minimum_version_code=None):
+        return release.release_metadata(version, COMMIT, count, channel, run_number, minimum_version_code)
 
     def output_metadata(self, metadata):
         return {
@@ -60,6 +60,15 @@ class AppReleaseMetadataTest(unittest.TestCase):
             self.metadata(channel="development", count=398)["versionCode"],
         ]
         self.assertEqual(codes, sorted(set(codes)))
+
+    def test_preview_version_code_must_exceed_latest_stable_high_water(self):
+        stable_high_water = self.metadata(channel="stable", count=457)["versionCode"]
+        with self.assertRaisesRegex(ValueError, "exceed the latest stable versionCode"):
+            self.metadata(channel="preview", count=457, run_number=43, minimum_version_code=stable_high_water)
+        self.assertEqual(
+            self.metadata(channel="preview", count=458, run_number=44, minimum_version_code=stable_high_water)["versionCode"],
+            4581,
+        )
 
     def test_prepare_uses_the_greatest_main_or_dev_history_for_stable_version_code(self):
         dev_sha = "abcdef0123456789abcdef0123456789abcdef02"
@@ -224,6 +233,8 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("branches: [dev]", dev_workflow)
         self.assertIn("extract_package_version.py --platform android", dev_workflow)
         self.assertIn("git merge-base --is-ancestor origin/main HEAD", dev_workflow)
+        self.assertIn("Resolve stable version-code high-water", dev_workflow)
+        self.assertIn("--minimum-version-code", dev_workflow)
         self.assertIn("group: dev-release", dev_workflow)
         self.assertIn("cancel-in-progress: false", dev_workflow)
         self.assertIn("queue: max", dev_workflow)

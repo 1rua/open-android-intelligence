@@ -34,6 +34,7 @@ def release_metadata(
     commit_count: int,
     channel: str,
     run_number: int | None = None,
+    minimum_version_code: int | None = None,
 ) -> dict:
     if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", base_version):
         raise ValueError("Package version must be X.Y.Z")
@@ -54,6 +55,10 @@ def release_metadata(
     version_code = commit_count * VERSION_CODE_CHANNEL_SCALE + CHANNEL_PHASE[channel]
     if version_code > MAX_VERSION_CODE:
         raise ValueError("Android versionCode is out of range")
+    if minimum_version_code is not None and minimum_version_code < 0:
+        raise ValueError("Minimum versionCode must not be negative")
+    if channel == "preview" and minimum_version_code is not None and version_code <= minimum_version_code:
+        raise ValueError("Preview versionCode must exceed the latest stable versionCode")
     return {
         "schemaVersion": 1,
         "versionName": version_name,
@@ -85,6 +90,7 @@ def prepare(args: argparse.Namespace) -> None:
     metadata = release_metadata(
         read_base_version(), git_value("rev-parse", "HEAD"),
         max(commit_counts), args.channel, args.run_number,
+        getattr(args, "minimum_version_code", None),
     )
     write_json(args.metadata, metadata)
     if args.github_env:
@@ -209,6 +215,7 @@ def main() -> None:
     prepare_parser = commands.add_parser("prepare", help="Create build metadata from the application package version")
     prepare_parser.add_argument("--channel", choices=CHANNEL_PHASE, required=True)
     prepare_parser.add_argument("--run-number", type=int)
+    prepare_parser.add_argument("--minimum-version-code", type=int)
     prepare_parser.add_argument(
         "--history-sha", action="append", default=[],
         help="Full commit SHA included when choosing the greatest history count",

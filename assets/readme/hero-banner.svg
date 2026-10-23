@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="100%" height="auto" role="img" aria-label="Open Android Intelligence 首屏横幅：手机连上你自己部署的 AI Agent，经 Gateway 协议 v2 加密链路；不 Root、不后台扫盘、插件按需装" fill="none">
-  <title>Open Android Intelligence · 让手机接上自托管 AI Agent</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="100%" height="auto" role="img" aria-label="Open Android Intelligence 首屏横幅：统一的安卓客户端，连接多种主流 Agent；无需手机部署、接入手机能力、远程 Agent 同步" fill="none">
+  <title>Open Android Intelligence · 连接多种主流 Agent 的统一安卓客户端</title>
 
   <defs>
     <linearGradient id="bgGrad" x1="0" y1="0" x2="1200" y2="400" gradientUnits="userSpaceOnUse">
@@ -44,39 +44,39 @@
     <!-- 左栏：胶囊标签 -->
     <rect x="64" y="56" width="360" height="36" rx="18" fill="#12211B" stroke="#2E4A3E" stroke-width="1.5"/>
     <circle cx="86" cy="74" r="6" fill="#34D399"/>
-    <text x="102" y="81" class="pill-label">自托管 AI Agent × Android 手机</text>
+    <text x="102" y="81" class="pill-label">主流 Agent × Android 客户端</text>
 
     <!-- 左栏：标题与白话价值主张 -->
     <text x="64" y="150" class="hero-title">Open Android Intelligence</text>
-    <text x="64" y="208" class="hero-sub">让你的手机接上自己部署的 AI Agent</text>
-    <text x="64" y="240" class="hero-sub">读什么、做什么，由你在手机上点头才算数</text>
+    <text x="64" y="208" class="hero-sub">一个统一的安卓客户端，用于连接多种主流 Agent</text>
+    <text x="64" y="240" class="hero-sub">客户端仅提供设备能力，决策全由 Agent 负责</text>
 
-    <!-- 左栏：三个承诺胶囊 -->
+    <!-- 左栏：三个承诺胶囊（项目解决的核心痛点） -->
     <g>
-      <rect x="64" y="292" width="136" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(80 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-        <path d="M12 2.5 19 5v5.6c0 4.6-3 8-7 9.4-4-1.4-7-4.8-7-9.4V5l7-2.5Z"/>
-        <path d="M8.8 11.4l2.3 2.3 4.1-4.2"/>
+      <rect x="64" y="292" width="176" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
+      <g transform="translate(78 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <rect x="5" y="2" width="14" height="20" rx="3"/>
+        <path d="M12 18h.01"/>
+        <path d="M9 5h6"/>
       </g>
-      <text x="114" y="321" class="chip-label">不 Root</text>
+      <text x="110" y="321" class="chip-label">无需手机部署</text>
     </g>
     <g>
-      <rect x="212" y="292" width="166" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(228 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-        <circle cx="10.5" cy="10.5" r="6"/>
-        <path d="M15 15l5 5"/>
-        <path d="M4.5 19.5 19.5 4.5"/>
-      </g>
-      <text x="262" y="321" class="chip-label">不后台扫盘</text>
-    </g>
-    <g>
-      <rect x="390" y="292" width="166" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(406 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <rect x="254" y="292" width="176" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
+      <g transform="translate(268 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
         <path d="M9 2.5v4M15 2.5v4"/>
         <path d="M6 6.5h12v4.5a6 6 0 0 1-12 0V6.5Z"/>
         <path d="M12 17v4.5"/>
       </g>
-      <text x="440" y="321" class="chip-label">插件按需装</text>
+      <text x="300" y="321" class="chip-label">接入手机能力</text>
+    </g>
+    <g>
+      <rect x="444" y="292" width="200" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
+      <g transform="translate(458 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <path d="M20 11A8.1 8.1 0 0 0 4.5 9M4 5v4h4"/>
+        <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/>
+      </g>
+      <text x="490" y="321" class="chip-label">远程 Agent 同步</text>
     </g>
 
     <!-- 右栏：链路面板 -->
@@ -95,7 +95,7 @@
     <!-- 手机到协议：加密隧道 -->
     <path d="M752 127v27" stroke="#2E4A3E" stroke-width="2" stroke-linecap="round"/>
     <polygon points="747,154 757,154 752,161" fill="#2E4A3E"/>
-    <text x="792" y="150" class="flow-note">HTTPS + SSE 加密隧道</text>
+    <text x="792" y="150" class="flow-note">HTTP(S) · WebSocket / SSE</text>
 
     <!-- 第 2 段：Gateway 协议 v2 -->
     <rect x="716" y="164" width="404" height="72" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
@@ -108,12 +108,12 @@
     <text x="792" y="194" class="seg-title">Gateway 协议 v2</text>
     <text x="792" y="218" class="seg-desc">签名 · 校验 · 防重放</text>
 
-    <!-- 协议到服务器：同一套契约 -->
+    <!-- 协议到宿主：按协商结果开放能力 -->
     <path d="M752 239v27" stroke="#2E4A3E" stroke-width="2" stroke-linecap="round"/>
     <polygon points="747,266 757,266 752,273" fill="#2E4A3E"/>
-    <text x="792" y="262" class="flow-note">同一套契约，两端逐条对齐</text>
+    <text x="792" y="262" class="flow-note">各宿主按协商结果开放能力</text>
 
-    <!-- 第 3 段：你的服务器 -->
+    <!-- 第 3 段：Agent 宿主 -->
     <rect x="716" y="276" width="404" height="72" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
     <rect x="730" y="290" width="44" height="44" rx="12" fill="#16281F"/>
     <g transform="translate(740 300)" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
@@ -121,7 +121,7 @@
       <rect x="3.5" y="13" width="17" height="7.5" rx="2"/>
       <path d="M7 7.25h2M7 16.75h2"/>
     </g>
-    <text x="792" y="306" class="seg-title">你的服务器</text>
-    <text x="792" y="330" class="seg-desc">Hermes / OpenClaw 原生插件</text>
+    <text x="792" y="306" class="seg-title">Agent 宿主</text>
+    <text x="792" y="330" class="seg-desc">Hermes / OpenClaw / DSH 插件</text>
   </g>
 </svg>
