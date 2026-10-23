@@ -181,16 +181,15 @@ Verify any debug APK against the pinned certificate:
 apps/android/tools/verify-debug-signing.sh [path/to/app-full-debug.apk]
 ```
 
-Preview CI and `nightly-release.yml` run the same script before uploading
+Preview CI and `dev-release.yml` run the same script before publishing
 or publishing a debug APK, so a regression fails the workflow instead of reaching a
 device. Key parameters and the regeneration procedure: `app/keystore/README.md`.
 This key is for debugging only and must never sign a release build.
 
 ## Release signing
 
-`v*` 版本标签构建 `:app:assembleFullRelease` 并发布
-`app-full-release.apk`。完整版本号（如 `v2.2.0`）发布为正式版；带测试阶段的版本号
-（如 `v2.2.0-beta.1`、`v2.2.0-rc.1`）发布为 GitHub 预发行版。Release builds are non-debuggable and require all four
+合并到 `main` 的 PR 或 main 上手动触发会构建 `:app:assembleFullRelease` 并发布
+`app-full-release.apk`。Tag `vX.Y.Z` 从 App 包配置中的 `versionName` 生成；正式版本身不从 Git Tag 读取。Release builds are non-debuggable and require all four
 external settings: `OAI_RELEASE_KEYSTORE`, `OAI_RELEASE_STORE_PASSWORD`,
 `OAI_RELEASE_KEY_ALIAS`, and `OAI_RELEASE_KEY_PASSWORD`. Gradle refuses missing
 configuration and refuses a certificate matching the checked-in public debug
@@ -211,14 +210,15 @@ The build does not uninstall existing apps or erase their data automatically.
 
 ## App 更新发布
 
-设置中的更新检测分为正式版与预览版。预览版同时检查固定 `nightly` 标签的
-“开发预览测试版”和未来带版本号发布的测试版，也会提示后续可升级的正式版，
-供 Beta、RC 用户过渡到正式版。旧 `nightly` 下载链接继续有效。
+设置中的更新检测分为正式版与预览版。新的 `dev-release.yml` 会给每次开发预览运行
+生成 `vX.Y.Z-dev.<run_number>` 预发行 Tag；正式 `release.yml` 使用包配置版本生成
+`vX.Y.Z`。历史 `nightly` 下载链接和 Release 仍可读取，新的工作流不再移动固定 `nightly` Tag。
 
 两类发布流水线都会附带 `oai-update.json`，构建时注入真实版本名、安装版本代码、
 源码提交、分发类型和渠道；发布前核对 APK 输出信息并验证实际签名。
-同一源码重跑不产生虚假的新版本，检查顺序不依赖流水线编号或滚动发布页时间。
-正式版/编号测试版与开发预览版使用不同签名，不能直接互相覆盖安装。
+包版本提取器支持 Node/RN/Electron、Flutter、Android、iOS 和 Rust/Tauri 配置。
+相同源码的开发预览运行有不同 Tag，但安装版本代码保持不变，不会被更新检测当作新安装版本。
+正式版与开发预览版使用不同签名，不能直接互相覆盖安装。手动 `Android APK Artifact` 工作流只上传 Actions 构建产物，不发布 GitHub Release。
 
 完整字段定义、版本顺序和最小验证命令见
 [`App 更新发布元数据 v1`](../../docs/contracts/app-update-release-v1.md)。

@@ -108,8 +108,11 @@ fun installedAppBuild(context: Context): InstalledAppBuild {
 internal fun defaultAppUpdateChannel(installed: InstalledAppBuild): AppUpdateChannel =
     if (installed.channel == "stable") AppUpdateChannel.STABLE else AppUpdateChannel.PREVIEW
 
-internal fun appBuildChannelLabel(channel: String): String = when (channel) {
-    "stable" -> "正式版"
-    "preview" -> "版本号测试版"
+internal fun appBuildChannelLabel(channel: String, versionName: String): String = when {
+    channel == "stable" -> "正式版"
+    channel == "development" || DEVELOPMENT_PREVIEW_VERSION.matches(versionName) -> "开发预览测试版"
+    channel == "preview" -> "版本号测试版"
     else -> "开发预览测试版"
 }
+
+private val DEVELOPMENT_PREVIEW_VERSION = Regex(".+-dev\\.[0-9]+(?:\\+[^+]+)?")

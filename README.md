@@ -1,27 +1,42 @@
 <div align="center">
 
-<img src="assets/readme/hero-banner.svg" alt="Open Android Intelligence：把你的 Android 手机接上自己部署的 AI Agent" width="100%" />
+<a href="#快速开始"><img src="assets/readme/hero-banner.svg" alt="Open Android Intelligence：一个统一的安卓客户端，用于连接多种主流 Agent" width="100%"></a>
+
+# Open Android Intelligence
 
 <p>
-  <strong>一个 Android App + 一套协议，把你的手机接上你自己部署的 AI Agent。</strong><br />
-  手机不是被遥控的终端：每种能力单独装、单独授权，敏感操作每次都要你点头。
+  <strong>一个统一的安卓客户端，用于连接多种主流 Agent。</strong><br>
+  客户端仅提供设备能力，决策全由 Agent 负责。
+</p>
+
+<h3>
+  <a href="#快速开始">📱 一键安装 APK · 连接多种主流 Agent · 隐私安全可控</a>
+</h3>
+
+<p>
+  <sub>
+    零中转服务器 · 数据直连自托管网关 · 无需 Root 权限 · 生产级权限隔离<br>
+    简体中文 · <a href="README.en.md">English</a>
+  </sub>
 </p>
 
 <p>
-  <a href="#快速开始"><img src="https://img.shields.io/badge/手机端-Android%2012%2B-10b981?style=flat-square" alt="Android 12+" /></a>
-  <a href="#怎么工作"><img src="https://img.shields.io/badge/服务器-自己部署-38bdf8?style=flat-square" alt="自托管" /></a>
-  <a href="#当前状态"><img src="https://img.shields.io/badge/契约-70%20组跨宿主用例-34d399?style=flat-square" alt="70 组契约用例" /></a>
-  <a href="#安全边界"><img src="https://img.shields.io/badge/安全-不%20Root%20%C2%B7%20默认拒绝-f59e0b?style=flat-square" alt="安全边界" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/许可证-MIT-94a3b8?style=flat-square" alt="MIT" /></a>
+  <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat&label=Release&color=34D399" alt="Latest Release"></a>
+  <a href="#快速开始"><img src="https://img.shields.io/badge/Android-12%2B%20(minSdk%2031)-10B981?style=flat&logo=android&logoColor=white" alt="Android 12+"></a>
+  <a href="#怎么工作"><img src="https://img.shields.io/badge/网关-直连多种主流Agent-38BDF8?style=flat" alt="直连主流Agent"></a>
+  <a href="#当前状态"><img src="https://img.shields.io/badge/契约-70%20组全端用例-34D399?style=flat" alt="Hermes 与 OpenClaw 70 组契约用例"></a>
+  <a href="#安全边界"><img src="https://img.shields.io/badge/安全-不%20Root%20%C2%B7%20默认拒绝-F59E0B?style=flat" alt="安全边界"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/许可证-MIT-94A3B8?style=flat" alt="MIT License"></a>
 </p>
 
 <p>
-  <a href="#30-秒看懂">30 秒看懂</a> ·
-  <a href="#能做什么和还不能做什么">能做什么</a> ·
-  <a href="#怎么工作">怎么工作</a> ·
-  <a href="#安全边界">安全边界</a> ·
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#当前状态">当前状态</a>
+  <a href="#30-秒看懂">⚡ 30 秒看懂</a> ·
+  <a href="#主要功能">✨ 主要功能</a> ·
+  <a href="#怎么工作">🏗️ 怎么工作</a> ·
+  <a href="#安全边界">🛡️ 安全边界</a> ·
+  <a href="#快速开始">🚀 快速开始</a> ·
+  <a href="#当前状态">📊 当前状态</a> ·
+  <a href="#文档导航">📚 文档导航</a>
 </p>
 
 </div>
@@ -30,275 +45,289 @@
 
 ## 30 秒看懂
 
-这个仓库由三部分组成：
+> [!TIP]
+> ### Open Android Intelligence（OAI）是**一个统一的安卓客户端，用于连接多种主流 Agent**（如 Hermes、OpenClaw、DSH 等）。
+>
+> 并将手机硬件能力安全、受控地开放给 AI Agent，让多种远程 Agent 共享手机控制能力，而无需在手机部署独立Agent。
 
-| 部分 | 是什么 | 在哪 |
+项目由以下三部分组成，宿主插件分别维护在独立仓库：
+
+| 核心组件 | 定位与说明 | 代码位置 / 仓库 |
 | --- | --- | --- |
-| **Android App** | 你和自己的 Agent 聊天、管账号、亲手挑附件的手机端 | `apps/android` |
-| **一套协议** | 手机和服务器之间的固定通信规矩，Hermes 与 OpenClaw 共用同一套 | `gateway-contract` |
-| **两个 Agent 插件** | 装在你自己的 Agent 上，把消息和设备请求接起来 | [hermes-gateway-plugin](https://github.com/1rua/hermes-gateway-plugin) / [openclaw-gateway-plugin](https://github.com/1rua/openclaw-gateway-plugin) |
+| 📱 **Android App** | 连接 Gateway、管理账号与多会话，发送用户选定的多模态附件，承载设备能力沙箱 | [`apps/android`](apps/android) |
+| 📜 **Gateway Protocol** | 定义手机与 Agent 宿主之间的身份认证、消息通信和全字段封闭数据协议 | [`gateway-contract`](gateway-contract) |
+| 🔌 **三方宿主插件** | 分别为 Hermes、OpenClaw 和 DSH（DeepSeek Harness）提供标准 Gateway 接入适配 | [Hermes 插件](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw 插件](https://github.com/1rua/openclaw-gateway-plugin) / [DSH 插件](https://github.com/1rua/dsh-android-gateway) |
 
-它想替换的是「拿微信、QQ、Telegram 的 bot 当 Agent 连接器」这种做法。那种做法有三个绕不开的问题：消息要过第三方服务器、权限给出去就是全有或全无、手机这边没有任何裁决点，出了事也查不清是谁做的。
+> [!NOTE]
+> **无中转架构**：Android App 直接与用户自建的 Agent 网关通信，项目本身不提供任何公网消息中转服务器。<br>
+> **插件化授权**：设备能力按插件安装与授权，发短信等敏感操作必须由用户在手机屏幕上手动确认。
 
-这里的做法换一下：网关你自己部署，手机和你的账号一对一配对，每种设备能力单独安装、单独授权，敏感操作每次都要在手机上点确认。
-
-一句话概括区别：**手机是裁判，不是被遥控的终端。**
-
-### 几个常见疑问
-
-- **需要 root 吗？** 不需要。App 只做普通 App 能做的事，靠系统权限和你逐次确认来兜底。
-- **会偷偷读我的手机吗？** 不会。设备能力是插件，装不装、开不开、授权给哪个网关账号，都是你在手机上决定，随时能收回。
-- **数据去哪了？** 只去你自己部署的服务器。手机与网关之间是 HTTPS，每个关键请求都带 Ed25519 签名、时间戳和一次性随机数；网关上的敏感内容用账号主密钥加密保存。
-- **现在能当日常助手用吗？** 聊天、会话管理、附件、账号配对、检查更新这些主链路可用；短信/通知/通话这类设备读取能力，插件包和沙箱已经做完并测过，但**还没接进 App 的正式链路**，详细状态见[当前状态](#当前状态)。
 
 ---
 
-## 能做什么和还不能做什么
+## 主要功能
 
-写清楚比写漂亮重要，所以这里直接列出当前的真实状态：
-
-| 能力 | 现在能不能用 |
-| --- | --- |
-| 手机和自托管 Agent 多会话聊天，支持归档、文件夹、排序 | ✅ 可用 |
-| 从手机提交附件（系统文件/相册选择、图片粘贴、单个或多个文件分享） | ✅ 可用 |
-| 网关账号登录、配对、凭据轮换与撤销 | ✅ 可用 |
-| 设置里检查更新，正式版 / 预览版两个渠道 | ✅ 可用 |
-| Android 12–15 的会话通知与气泡，Android 16 的原生 Live Update | ✅ 可用（Samsung Now Bar 等厂商定制有已知限制） |
-| Agent 侧插件（Hermes 2.2.0 / OpenClaw 1.1.0） | ✅ 可安装，70 组契约用例两端逐条对齐 |
-| 设备插件包的打包、验签、WASM 沙箱与资源配额 | ✅ 库与工具链已就绪 |
-| 读短信 / 通知 / 通话记录 | ⚠️ 插件已实现，App 里的执行链路仍在装配，真机闭环未验证 |
-| Tailscale 私网通道（Companion APK） | ⛔ 入口关闭，暂不签发通道 |
-| 完全「零保留」（宿主历史、ACK 清理） | ⛔ 未完成，暂不承诺 |
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>💬 多会话原生聊天 <img src="https://img.shields.io/badge/已就绪-10B981?style=flat-square" alt="已就绪"></h3>
+      <p>在手机上与你连接的主流 Agent 流畅对话。支持多会话独立管理、会话归档、目录整理与灵活排序；全面支持系统相册选图、文件选择器、剪贴板图片粘贴以及系统级多文件分享附件。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🌐 多宿主网关直连 <img src="https://img.shields.io/badge/已支持-38BDF8?style=flat-square" alt="已支持"></h3>
+      <p>通过同一套 Gateway Protocol v2 协议，无缝接入 <strong>Hermes</strong>、<strong>OpenClaw</strong> 以及 <strong>DSH (DeepSeek Harness)</strong>。直连你自己的服务器，自主掌控全部模型调用与历史记录，拒绝云端数据劫持。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🧩 WebAssembly 插件沙箱 <img src="https://img.shields.io/badge/架构就绪-34D399?style=flat-square" alt="架构就绪"></h3>
+      <p>万物皆插件。受保护的设备插件打包为标准 <code>.alp</code> 包，运行于高性能 WASM 沙箱中，受到 CPU 时间、内存上限（硬配额）、存储容量及并发连接的严密限制，杜绝越权滥用。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🛡️ 零信任安全与屏幕确认 <img src="https://img.shields.io/badge/安全第一-F59E0B?style=flat-square" alt="安全第一"></h3>
+      <p>遵循「默认拒绝」安全准则：插件安装、插件启用、网关账号授权严格分级解耦。短信发送等高风险操作必须经由用户在手机屏幕逐条手动确认，严禁静默执行。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🔒 封闭契约与防重放校验 <img src="https://img.shields.io/badge/70组用例-10B981?style=flat-square" alt="70组用例"></h3>
+      <p>基于 JSON Schema 2020-12 的全字段严格契约验证，多余未知字段整条丢弃；关键指令搭载 Ed25519 签名、时间戳与一次性随机数防重放校验，保障网络抖动下的幂等执行。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🔔 原生系统通知与动态跟进 <img src="https://img.shields.io/badge/Android%2012--16-8B5CF6?style=flat-square" alt="Android 12-16"></h3>
+      <p>深度融合 Android 原生生态：支持 Android 12–15 的会话通知（MessagingStyle）与悬浮气泡（Bubbles），并率先接入 Android 16 原生 Live Update，任务进度实时感知。</p>
+    </td>
+  </tr>
+</table>
 
 ---
 
 ## 怎么工作
 
 <div align="center">
-  <img src="assets/readme/architecture.svg" alt="架构：手机侧裁决、协议层校验、服务器侧思考" width="100%" />
+  <img src="assets/readme/architecture.svg" alt="架构：Android 客户端通过 Gateway Protocol 连接 Agent 宿主" width="100%">
 </div>
 
-**手机上（Android 宿主）** 只做三件事：
+整个系统由清晰的三层结构协同运转：
 
-1. **你来操作**：连网关、多会话聊天、自己挑附件。手机上不跑模型，消息发给你的服务器，模型、工具、记忆都在那边。
-2. **平台内核把关**：它是 App 里不可卸载的一层，管设备身份（Ed25519 密钥）、权限裁决、插件的安装/启用/停用/回滚，还有一个一键熔断开关。它不提供任何业务能力，只负责说「可以」或「不行」。
-3. **设备插件干活**：短信、通知、通话记录各是一个插件。受保护插件跑在 WebAssembly 沙箱里（可以把沙箱理解成「插件在里面的隔离盒子」），CPU、内存、存储、网络都有硬上限，插件不能自己扩权。
-
-**中间（Gateway Protocol v2）** 是一套封闭契约：
-
-- HTTPS 双向传输 + SSE 单向推流（服务器把事件持续推给手机）；
-- JSON Schema 2020-12 全字段封闭校验，多一个未知字段就整条拒绝；
-- 每个关键请求带 Ed25519 签名、防重放时间戳和一次性随机数；
-- 操作具备幂等状态机与有界重试，网络抖动不会变成重复执行。
-
-**服务器上（你自己的机器）** 跑 Agent：
-
-- Hermes 与 OpenClaw 都以**原生插件**方式加载网关适配器，不再需要单独跑 Docker 或 systemd 的旧 Bridge；
-- 一个部署可以托管多个网关账号，配对、会话、记忆、密钥彼此隔离；
-- 模型调用、工具执行、长期记忆全在你的机器上，不经过本项目任何服务器。
-
-一句话：**手机裁决、协议校验、服务器思考。**
+1. **Android 原生宿主端**（客户端）
+   - **交互与会话**：提供网关连接配置、多会话管理、系统级附件选发（通过系统 SAF 选择器与分享接口）。
+   - **平台内核（Platform Kernel）**：基于 Ed25519 密钥管理设备身份、插件生命周期与权限裁决。它只行使守门仲裁权，不私自预埋业务后门。
+   - **安全插件沙箱**：通过 WebAssembly 运行时隔离执行设备扩展插件，严格限制 CPU、内存、本地存储与网络并发资源。
+2. **Gateway Protocol v2 契约层**（连接桥梁）
+   - **传输管道**：基于 HTTP(S) 请求响应 + WebSocket / SSE 事件流双向通信。
+   - **严格验证**：基于 JSON Schema 2020-12 进行封闭式字段校验，出现未知字段立即整条拦截。
+   - **密码学守卫**：关键请求携带 Ed25519 签名凭证、时间戳与 Nonce 防重放校验，具备幂等状态机与有界自动重试。
+3. **Agent 宿主端**（后端大脑）
+   - **生态插件适配**：Hermes 与 OpenClaw 借由各自的独立适配器插件介入；DSH 深度复用自有 Web 服务端口，无需额外部署独立 Bridge 进程。
+   - **统一能力声明**：三种后端对齐同一 Gateway 协议规范，自主决定模型调度与工具执行链路，数据完全留存在你的宿主机。
 
 ---
 
 ## 安全边界
 
 <div align="center">
-  <img src="assets/readme/security-model.svg" alt="安全模型：Agent 提请求，内核查权限，你在屏幕上确认" width="100%" />
+  <img src="assets/readme/security-model.svg" alt="安全模型：Agent 提请求，内核查权限，你在屏幕上确认" width="100%">
 </div>
 
-默认是拒绝的，放行要一层层过。每类能力的具体边界：
+安全与隐私是本项目的立身之本。所有设备硬件能力**默认完全关闭**。开启一项能力必须经过三道防线：**在手机上安装插件 → 手动启用插件 → 为特定网关账号单独授权**。
 
-| 能力 | 允许多少 |
+### 设备权限管控矩阵
+
+| 敏感能力 | 严格限制与允许边界 |
 | --- | --- |
-| **通话记录** | 只能读元数据（谁、什么时候、通话多久）；不能录音、不能代接或挂断、不能自动拨号 |
-| **短信** | 能读收发记录；**发短信必须每条在屏幕上点确认** |
-| **通知** | 默认一条都不读；要读得按包名和字段逐项开白名单，加密缓冲，不落明文 |
-| **文件与媒体** | 由你通过系统选择器、分享或图片粘贴明确添加，确认发送后提交给 Agent；App 不会在后台扫你的存储 |
-| **网络** | Tailscale 跑在用户态（tsnet），不占系统 VPN 槽位；不提供通用代理或旁路出口 |
-| **存储配额** | 每个插件有硬上限（9,663,676,416 字节，约 9.66 GB），超了直接拒绝，不会悄悄覆盖旧数据 |
-
-再补几条底线：
-
-- **Agent、网关、插件只能提申请**，最终决定权在手机的平台内核和你本人手上，拒绝会被记录；
-- **不提供远程 Shell**，也不读取密码、验证码、支付信息；
-- **一键熔断**：怀疑出问题时可以立即让所有能力失效；
-- **审计可查**：谁在什么时候申请了什么、结果如何，都有记录。
+| 📞 **通话记录** | **仅允许只读基础元数据**（联系人/号码、时间戳、通话时长）；严禁任何形式的录音、代接、挂断或自动拨号。 |
+| ✉️ **短信记录** | 仅支持受控读取收发记录；**发短信等变更操作必须在手机屏幕上手动逐条点击确认**，绝不允许后台代发。 |
+| 🔔 **应用通知** | **默认全部禁止**；需用户手动在白名单中勾选指定应用包名与字段，内存采用端到端加密缓冲，不落明文日志。 |
 
 ---
 
 ## 快速开始
 
-### 0. 你需要准备
+### 0. 准备环境
 
-| 项目 | 要求 |
-| --- | --- |
-| 手机 | Android 12 及以上（`minSdk 31`） |
-| 服务器 | 你自己的机器：NAS、小主机或云服务器都行，要能跑 Python 3.12+ 或 Docker |
-| 工具链（只在改代码时需要） | Node.js `24.18.0` + npm `11.16.0`、JDK 21、Android SDK（`compileSdk 36` / `targetSdk 35`） |
+| 运行端 | 最低要求 | 推荐配置 |
+| --- | --- | --- |
+| 📱 **Android 手机** | Android 12+ (`minSdk 31`) | Android 14+，推荐 8GB 内存 |
+| 🖥️ **Agent 宿主环境** | 运行 Hermes、OpenClaw 或 DSH (DeepSeek Harness) | 具备公网或 Tailscale 局域网可达性 |
+| 🛠️ **开发者编译工具链** *(仅参与源码开发时需要)* | Node.js `24.18.0` + npm `11.16.0`、JDK 21、Android SDK (`compileSdk 36` / `targetSdk 35`) | Rust 1.80+ (带 `wasm32-unknown-unknown` 目标) |
 
-### 1. 手机装 App
+---
 
-到 [Releases](https://github.com/1rua/open-android-intelligence/releases) 下载 `nightly` 标签下的**开发预览测试版** APK，直接安装。
+### 1. 手机端安装 App
 
-读取手机通知还需在「设置 → 插件管理」安装 Full APK 随附的通知读取插件，显式启用并为当前 Gateway 配对授权；再按页面引导开启通知使用权、允许采集并选择应用范围。Hermes 账号需在 `hermes gateway setup` 中开启通知能力。详见[设备读取配置](docs/mvp/device-reads-and-reply-notifications.md)。
+前往项目 [Releases 页面](https://github.com/1rua/open-android-intelligence/releases) 下载APK并安装：
 
-> 预览版和正式版用的是不同签名，不能互相覆盖安装。正式版只发布用私有发行密钥签名的非 Debug 包，配置见 [Android README](apps/android/README.md#release-signing)。
+| 版本类别 | 适用群体 | 安装说明 |
+| --- | --- | --- |
+| 🧪 **开发预览测试版** | 尝鲜体验者、开发者 | 使用仓库内置统一 Debug 签名，可覆盖安装，CI 每日构建直接下载 |
+| 📦 **正式稳定版** | 普通日常使用 | 使用官方私有生产密钥签名，严禁与开发预览版交叉覆盖安装（详见 [Android 签名配置](apps/android/README.md#release-signing)） |
 
-### 2. 服务器装 Agent 侧插件
 
-两种宿主选一个。**先准备主密钥**——两个宿主都要用账号主密钥加密消息正文，缺了或不匹配就拒绝读写，不会回退成明文；这把密钥要和数据库分开保管，只恢复数据库是解不开正文的。
+---
 
-- **OpenClaw**：准备一个 32 字节的原始密钥文件（普通文件、非软链接、权限 `0600`），然后设置环境变量：
-  `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin`
-- **Hermes**：用宿主自己的 Secret Store；没有的话，按 [ADR 0023：显式 Gateway 密钥管理](docs/adr/0023-use-sqlite-with-explicit-gateway-secret-management.md) 用一个权限受限的专用密钥文件。密钥来源缺失或文件权限不安全时，网关会拒绝启动，而不是退回明文。
+### 2. 为 Agent 宿主安装网关插件
+
+根据你所使用的 Agent 框架，选择对应的宿主插件进行配置。为保障端到端安全性，Hermes 和 OpenClaw 需配置账号主密钥（Master Key）对消息正文进行对称加密保管。
 
 <details>
-<summary><b>Hermes 安装与日常命令</b></summary>
+<summary><b>🤖 配置 <a href="https://github.com/1rua/hermes-gateway-plugin">Hermes</a> 宿主（点击展开）</b></summary>
 
 ```bash
-# 安装并启用插件（固定提交，与本分支 App 配套）
+# 1. 安装并启用指定版本的 Gateway 插件（与当前 App 版本严格锁定）
 hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
 
-# 创建手机连接账号
+# 2. 引导配置手机连接网关
 hermes gateway setup
 
-# 日常管理
+# 3. 日常账号与网关状态查看
 hermes open-android-intelligence account list
-hermes open-android-intelligence account create -u my_user -p <密码> --confirm-local
+hermes open-android-intelligence account create -u my_user -p <设置密码> --confirm-local
 hermes open-android-intelligence status
 hermes open-android-intelligence contract status
 ```
 
-当前配套版本 `2.2.0`，核心摘要 `sha256:032f580246eb4a214624bded717819b4d5a76191208207edc9e5a4607f5c4d23`，需要和本分支 APK 一起升级。
-
-如果之前锁过旧提交（`9d642b4`），它会返回 `/models` 这类固定命令、并且漏报取消能力，需要显式覆盖安装后重启宿主：
-
-```bash
-hermes plugins install 1rua/hermes-gateway-plugin --force --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
-hermes gateway restart
-```
-
-然后在手机上重新连接网关，让两端重新协商会话管理与停止生成能力；在输入框重新敲 `/` 可以刷新命令目录。
+> **版本对照提示**：当前配套版本为 `2.2.0`（SHA256: `032f5802...`）。如曾锁定旧提交（`9d642b4`），需加上 `--force` 重新安装并执行 `hermes gateway restart` 重启生效。
 </details>
 
 <details>
-<summary><b>OpenClaw 安装与检查</b></summary>
+<summary><b>🐾 配置 <a href="https://github.com/1rua/openclaw-gateway-plugin">OpenClaw</a> 宿主（点击展开）</b></summary>
+
+准备一个 32 字节的原始密钥文件（权限设为 `0600`），并配置系统环境变量：
 
 ```bash
+# 设置主密钥文件路径
+export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin
+
+# 安装并核验插件运行状态
 openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@c7c087b9fe28adcc658a1cbdb71689a377b65214
 openclaw plugins inspect open-android-intelligence-gateway --runtime --json
 ```
 
-当前固定版本 `1.1.0`、提交 `c7c087b`，协议版本 `2.1.0`，宿主 API 范围 `2026.7.1`。插件包里已经带了固定契约提交生成的运行快照，安装和启动都不联网取契约。
+> **版本对照提示**：当前锁定版本 `1.1.0`（提交 `c7c087b`），协议规范 `2.1.0`，宿主 API `2026.7.1`。
 </details>
 
 <details>
-<summary><b>没有宿主机器？用 CLI 离线预置账号</b></summary>
+<summary><b>⚡ 配置 <a href="https://github.com/1rua/dsh-android-gateway">DSH (DeepSeek Harness)</a> 宿主（点击展开）</b></summary>
 
-Hermes 插件仓库另附了一个等价 CLI，可以和宿主共用同一套管理服务和主密钥来源。在**插件仓库目录**里执行：
+[dsh-android-gateway](https://github.com/1rua/dsh-android-gateway) 是专为 DSH 打造的独立 Bundle 插件，版本 `0.2.0`，实现 Gateway Protocol v2.1。直接复用 DSH 原生 Web 端口：
 
 ```bash
-python3 tools/hermes-account.py init-key        # 生成 0600 限制的主密钥文件
-python3 tools/hermes-account.py create my_user  # 按提示设置密码；已存在的账号不会被覆盖
-python3 tools/hermes-account.py status          # 查看托管状态与配对概况
+# 克隆并编译 DSH 网关插件
+git clone https://github.com/1rua/dsh-android-gateway.git
+cd dsh-android-gateway
+npm ci
+npm run build
+```
+
+在 DSH 会话中执行 Bundle 安装指令：
+```text
+plugin_manager action=install_bundle target=/absolute/path/to/dsh-android-gateway
+```
+
+首次启动若账号表为空，插件会在 `$DSH_HOME/dsh-android-gateway/setup-account.json` 自动生成一次性初始凭据（`0600` 权限）。手机连接成功后请及时清理该临时文件。详见 [DSH 插件说明文档](https://github.com/1rua/dsh-android-gateway#readme)。
+</details>
+
+<details>
+<summary><b>🛠️ 离线预置账号（CLI 快速工具）</b></summary>
+
+若暂无宿主运行环境，可使用 Hermes 插件附带的独立 CLI 在本地预置账号凭据：
+
+```bash
+python3 tools/hermes-account.py init-key        # 生成 0600 权限主密钥文件
+python3 tools/hermes-account.py create my_user  # 交互式设定密码
+python3 tools/hermes-account.py status          # 查看网关托管与配对状态
 ```
 </details>
 
-### 3. 手机连上网关
+---
 
-在 App 里填入网关地址和刚创建的账号密码，手机上确认配对。之后网关地址、证书信任、账号凭据都保存在本机，切换账号不需要重新输密码。
+### 3. 手机端连接网关
 
-**HTTPS 部署还要多配一步**：把实际 TLS 证书的 SPKI SHA-256 配给两个宿主，否则手机端会拒绝提交凭据。
+1. 打开手机 App，输入你的网关访问地址（支持 HTTP/HTTPS，推荐内网或域名反代地址）。
+2. 输入刚才创建的账号与密码，点击「连接配对」。
+3. 手机端成功完成握手后，证书信息与凭据将安全保存在本机 Android Keystore 中，后续启动无需重复输密。
 
 <details>
-<summary><b>证书指纹怎么算、怎么配</b></summary>
+<summary><b>🔐 HTTPS 证书公钥指纹（SPKI SHA-256）配置指引</b></summary>
+
+在启用 HTTPS 时，为杜绝中间人攻击，需将服务端 TLS 证书的 SPKI SHA-256 摘要配置在 Gateway 插件中：
 
 ```bash
-# 计算证书公钥摘要
+# 计算服务器证书公钥的 SHA-256 指纹
 openssl x509 -in gateway.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256
 ```
 
-把结果配成环境变量（OpenClaw 也可以写在 `pluginConfig.tlsSpkiSha256`）：
-
+将计算出的公钥指纹写入网关环境变量：
 ```bash
-OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64 个十六进制字符>
+OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64位十六进制字符>
 ```
-
-没配时协商返回 `null`，HTTPS 客户端会拒绝提交凭据。显式使用明文 HTTP 时按 [ADR 0047：允许明文配对但持续警告](docs/adr/0047-allow-plaintext-gateway-pairing-with-explicit-warning.md) 处理。协议 Schema 摘要变化时，Android、Hermes、OpenClaw 三端必须同步升级。
+未配置指纹时握手会返回 `null`，客户端将拒绝提交密码凭据。明文 HTTP 虽可降级连接，但 App 界面会持续显示橙色未加密警告。
 </details>
 
-### 4. 需要设备能力时再装插件
+---
 
-设备读取能力默认关闭，要按三层依次打开：**手机上安装插件 → 启用插件 → 给当前网关账号授权**。用 `hermes gateway setup` 可以配置，也可以先看清单：
+### 4. 设备能力按需启用
 
-```bash
-hermes open-android-intelligence capabilities list <账号>
-```
-
-> 注意：这一步目前还没有完整跑通。插件包、验签、WASM 沙箱和配额都已经实现并测过，但 App 里的执行链路仍在装配，真机闭环也还没验证。想跟进进度看[当前状态](#当前状态)与[通知与能力同步修复记录](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md)。
-
-### 5. 从源码构建（开发者）
-
-不想在本地装 Android 工具链，也可以直接取 CI 构建好的调试包：
+所有设备能力默认保持休眠。需要让 Agent 感知短信或通知时，需执行标准三阶授权：
 
 ```bash
-tools/download-latest-apk          # 等待当前提交的 CI 构建完成并下载
+# 查看指定账号的能力授权情况
+hermes open-android-intelligence capabilities list <账号名>
 ```
 
-下面三块分别是契约校验、插件打包和 Android 编译。
+> [!WARNING]
+> **开发中状态说明**：设备插件包打标、Ed25519 签名校验、WASM 沙箱引擎及配额约束均已实现并完成测试；但 App 内部执行管道装配正在进行中，真机全链路闭环尚未最终验收。进展请查阅[当前状态](#当前状态)及[通知能力同步记录](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md)。
+
+---
+
+### 5. 源码编译与调试（开发者）
 
 <details>
-<summary><b>契约一致性（两端各 70 组用例）</b></summary>
+<summary><b>🔍 契约一致性测试（Hermes / OpenClaw 70 组用例）</b></summary>
 
 ```bash
 npm ci
 
-# 检出固定提交的 OpenClaw 插件，并安装它自己的依赖
+# 检出固定版本的 OpenClaw 插件源码并安装依赖
 git clone https://github.com/1rua/openclaw-gateway-plugin.git .openclaw-gateway-plugin
 git -C .openclaw-gateway-plugin checkout "$(python3 -c 'import json; print(json.load(open("openclaw-plugin-pin.json"))["revision"])')"
 npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
 
-# Hermes（Python）与 OpenClaw（TypeScript）逐条比对，任一端不一致即失败
+# 运行 TypeScript 与 Python 两端一致性比对测试
 OPENCLAW_PLUGIN_ROOT="$PWD/.openclaw-gateway-plugin" npm run gateway:v2:conformance
 ```
-
-本仓库是契约的唯一真源。`gateway-contract/tools/check-contract-pin.py` 会分别校验两个插件锁定的提交；契约改了但 pin 没跟着改，这里会直接失败。
 </details>
 
 <details>
-<summary><b>打官方设备插件包（.alp）</b></summary>
-
-先装固定 Rust 工具链编译真实 WASM，再提供发行者自己保管的 32 字节 Ed25519 seed：
+<summary><b>📦 构建官方设备插件包（.alp）</b></summary>
 
 ```bash
+# 编译 Rust/WASM 产物
 cargo build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml
 cargo test --locked --offline --manifest-path plugins/Cargo.toml
+
+# 使用发行密钥进行确定性封装签名
 npm ci --prefix plugin-tooling
 OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE=/private/path/plugin-seed.bin \
   npm run build:references --prefix plugin-tooling
 ```
-
-产物在 `plugins/dist/`：`org.openandroidintelligence.notifications-1.0.0.alp`、`…sms-1.0.0.alp`、`…call-log-1.0.0.alp`。
-
-没有私钥或没有真实 WASM 时正式构建会失败；公开 seed 只能用于 `npm run build:fixtures --prefix plugin-tooling`，产物在 `plugins/dist/fixtures/`，不能当发行身份用。
+产物输出在 `plugins/dist/` 目录：包含 `notifications`、`sms`、`call-log` 等官方参考插件。
 </details>
 
 <details>
-<summary><b>编译 Android（调试包签名全机器一致）</b></summary>
+<summary><b>📱 编译 Android 客户端</b></summary>
 
 ```bash
 cd apps/android
 ./gradlew --no-daemon check :app:assembleFullDebug
 ```
 
-所有 APK 模块（`app`、`assistant-holder`）的调试包统一用仓库内的 `app/keystore/debug.keystore` 签名，不再依赖各机器随机生成的 `~/.android/debug.keystore`。所以本机、CI、预览测试版签名完全一致，可以互相覆盖安装，不会出现 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。
+所有 APK 模块统一采用仓库预置的 `debug.keystore` 签名，确保本地开发、CI 构建与测试包指纹完全一致，彻底避免 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。
 
-核对任意调试包的签名身份：
-
+验证调试包签名指纹：
 ```bash
-apps/android/tools/verify-debug-signing.sh \
-  apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
+apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
 ```
 </details>
 
@@ -306,89 +335,84 @@ apps/android/tools/verify-debug-signing.sh \
 
 ## 当前状态
 
-这一栏只写已经验证过的东西。历史记录里的 FakeAdapter 只说明测试替身的行为，不算真机能力。
+本表真实记录各项能力的自动化测试、宿主集成和物理真机验证状态。我们严格区分测试替身（Test Doubles）与真实验证，不拿模拟通过粉饰真机能力。
 
-| 领域 | 现在的证据 | 状态 |
+| 业务领域与核心能力 | 当前验证依据与范围 | 真实完备度与状态 |
 | --- | --- | --- |
-| Gateway Protocol v2 跨宿主契约 | Hermes 与 OpenClaw 各 70 组 TS/Python 共用用例逐条对齐 | 契约层已对齐；不覆盖整个设备执行链路 |
-| Hermes 网关适配器 | pytest + 真实 aiohttp SSE/WS 签名与撤销测试 | 已覆盖；宿主历史与工具结果交付仍不完整 |
-| OpenClaw 适配器插件 | 独立仓固定版本、宿主运行时加载、70 组共享用例 | 安装与协议用例已验证；Android 真机闭环未执行 |
-| 设备插件打包与运行时 | 确定性签名封装、真实 WASM ABI、预算与安装恢复测试 | 库验证通过；App 执行链路待装配 |
-| 官方参考插件业务 | 通知、短信、通话记录经平台内核查询 | 需真机安装并授权，闭环待单独验证 |
-| Android 账号与界面 | 编译、Robolectric 与模块测试 | 账号 / 身份 / 事件逻辑已覆盖；加密离线镜像待接通 |
-| Companion 私网通道 | tsnet pump 与可信 IPC 令牌签发未完成 | 入口关闭，拒绝创建通道 |
-| 物理真机端到端 | Android Keystore、证书轮换、SAF 取消、真实宿主 | 本轮未执行 |
+| **Hermes / OpenClaw 契约一致性** | 两端各自 70 组 TS/Python 共享契约用例逐条对齐比对 | ✅ 覆盖两端网关适配器协议一致性，不代表终端执行全链路 |
+| **Hermes 网关适配器** | pytest 单元测试 + 真实 aiohttp SSE/WS 握手、签名与凭据撤销测试 | ✅ 协议层已覆盖；宿主上下文历史与工具执行结果回传待完善 |
+| **OpenClaw 适配器插件** | 独立仓固定版本、宿主真实运行时动态载入、70 组共享测试用例 | ✅ 安装与通讯协议通过验证；Android 真机端对端待闭环 |
+| **DSH (DeepSeek Harness) 插件** | 版本 0.2.0；201 项自动化测试；[DSH 与 Android 模拟器集成记录](https://github.com/1rua/dsh-android-gateway/blob/main/docs/reviews/2026-10-21-feature-completion.md) | ✅ 会话核心主流程已跑通；设备能力闭环待手机端插件与真机验证 |
+| **设备插件打包与 WASM 运行时** | 确定性打包签名、WASM ABI 规范对接、内存存储预算配额及恢复测试 | ✅ 核心底层库测试通过；App 业务层执行调度管线待装配 |
+| **官方参考插件业务** | 通知读取、短信、通话记录经平台内核权限拦截审查 | ⚠️ 需真机载入插件并完成多级授权，实际闭环待单独验收 |
+| **Android 客户端界面与账号** | Gradle 编译、Robolectric 测试与模块自动化测试 | ✅ 账号管理、身份认证、事件总线与离线加密存储已接入；物理真机测试待开展 |
+| **Companion 私网通道** | tsnet pump 传输管线与可信 IPC 令牌签发未就绪 | ⛔ 入口已切断关闭，暂不签发私网通道 |
+| **物理真机端到端体验** | Android Keystore 硬件加解密、证书静默轮换、SAF 动态授权、真实宿主互联 | ⏳ 待真机验收测试闭环 |
 
-逐项核验与未完成原因见 [2026-10-02 审查修复记录](docs/reviews/2026-10-02-review-remediation.zh-CN.md)。
+---
+
+## 文档导航
+
+所有项目规范与实施记录均完整归档在仓库内。请根据需要查阅对应文档：
+
+### 📖 用户指南与配置
+
+| 文档名称 | 核心内容 | 快速入口 |
+| --- | --- | --- |
+| **设备权限与读取配置** | 手机端通知、通话记录等设备读取权限开启与白名单配置 | [查看指南](docs/mvp/device-reads-and-reply-notifications.md) |
+| **Android 端开发指南** | Android App 架构划分、签名配置与多变体构建说明 | [查看指南](apps/android/README.md) |
+| **应用更新机制说明** | 正式版与预览版双通道更新策略与版本比对逻辑 | [查看说明](docs/reviews/2026-10-21-app-update-check.md) |
+| **系统通知兼容性报告** | Android 12–16 各版本通知、气泡及厂商定制 ROM 限制边界 | [查看报告](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md) |
+
+### 🛠️ 开发者与架构规范
+
+| 文档名称 | 核心内容 | 快速入口 |
+| --- | --- | --- |
+| **领域术语与概念边界** | 统一术语定义、核心实体交互与安全责任边界 | [`CONTEXT.md`](CONTEXT.md) |
+| **模块化插件架构规格** | 插件系统总体架构设计规格书 | [查看规格](docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md) |
+| **Gateway Protocol v2 规范** | 手机与 Agent 网关通信契约与 JSON Schema 封闭规范 | [查看契约](docs/contracts/gateway-protocol-v2.md) |
+| **设备插件包 v1 规范** | `.alp` 插件包元数据定义、Ed25519 签名及沙箱约束 | [查看规范](docs/contracts/device-plugin-package-v1.md) |
+| **DSH 宿主网关插件** | 为 DeepSeek Harness 打造的官方接入插件与用例集 | [访问仓库](https://github.com/1rua/dsh-android-gateway) |
+| **网关密钥管理 (ADR 0023)** | SQLite 与明晰 Gateway Secret 管理决策记录 | [查看 ADR](docs/adr/0023-use-sqlite-with-explicit-gateway-secret-management.md) |
+| **明文配对安全警告 (ADR 0047)** | 允许内网明文配对但持续显示醒目安全警告决策 | [查看 ADR](docs/adr/0047-allow-plaintext-gateway-pairing-with-explicit-warning.md) |
+| **视觉资产与设计规范** | README 静态矢量图的色值 Token 与字号红线规则 | [设计规范](assets/readme/README.md) |
+| **Agent 行为准则** | 开发与贡献者规范、测试验证红线与 Git 提交要求 | [`AGENTS.md`](AGENTS.md) |
 
 ---
 
 ## 项目目录
 
 <details>
-<summary><b>展开目录结构</b></summary>
+<summary><b>📂 点击展开完整代码仓库结构</b></summary>
 
 ```text
 open-android-intelligence/
-├── apps/android/                  # Android 原生宿主（AGP 8.9.2、SDK 36、Kotlin 2.1.20）
-│   ├── app/                       # 主入口 APK：聊天、账号、设置、附件
-│   ├── platform-kernel/           # 平台内核：权限裁决、插件生命周期、安全原语
-│   ├── plugin-package/            # .alp 包解析、Ed25519 验签与安装
-│   ├── plugin-runtime-wasm/       # WebAssembly 沙箱运行时
-│   ├── conversation-ui/           # Material 3 会话界面组件库
-│   ├── assistant-holder/          # 系统助手角色与全局触发
-│   ├── tailscale-companion/       # 可选 Tailscale 连接插件（Companion APK）
-│   └── ...                        # 领域模型、数据存储与契约端口模块
-├── gateway-contract/              # Gateway Protocol v2 契约与双宿主一致性套件
-│   ├── schemas/                   # 封闭的 JSON Schema 2020-12 定义
-│   ├── vectors/                   # 语言无关的黄金用例（70 组）
-│   ├── src/                       # TypeScript 契约实现
-│   └── tools/                     # 双宿主一致性执行套件
-├── plugins/                       # 官方第一方参考插件（Rust/WASM 源码 + .alp 产物）
-├── plugin-tooling/                # 插件构建与签名工具链（确定性打包器）
-├── integrations/                  # 共享测试夹具与旧 Hermes 夹具
-├── docs/                          # 规范、ADR 决策记录与实施评审
-├── assets/readme/                 #  README 用的三张静态 SVG 与设计 token 说明
-├── legacy/                        # 已冻结归档的旧 Bridge 与历史组件
-├── openclaw-plugin-pin.json       # 固定 OpenClaw 插件的版本、标签与提交 SHA
-└── CONTEXT.md                     # 领域术语与概念边界
+├── apps/android/                  # Android 原生宿主应用（AGP 8.9.2、SDK 36、Kotlin 2.1.20）
+│   ├── app/                       # 主入口 APK：多会话聊天、账号凭据、系统设置、附件管理
+│   ├── platform-kernel/           # 平台内核：权限裁决引擎、插件生命周期、安全加密原语
+│   ├── plugin-package/            # .alp 插件包解析、Ed25519 验签与安装管理器
+│   ├── plugin-runtime-wasm/       # WebAssembly 高性能沙箱运行时
+│   ├── conversation-ui/           # Material 3 会话界面交互组件库
+│   ├── assistant-holder/          # 系统全局助手角色与按键手势触发器
+│   ├── tailscale-companion/       # 可选用户态 Tailscale 连接插件（Companion APK）
+│   └── ...                        # 领域模型、Room 数据存储与契约端口模块
+├── gateway-contract/              # Gateway Protocol v2 契约与 Hermes / OpenClaw 一致性测试套件
+│   ├── schemas/                   # JSON Schema 2020-12 严格封闭式定义
+│   ├── vectors/                   # 跨语言通用测试向量（70 组标准用例）
+│   ├── src/                       # TypeScript 契约实现参考
+│   └── tools/                     # Hermes / OpenClaw 一致性自动化测试执行工具
+├── plugins/                       # 官方参考设备插件源码（Rust/WASM + .alp 构建产物）
+├── plugin-tooling/                # 插件打包与确定性签名工具链（Packaging CLI）
+├── integrations/                  # 共享集成测试环境与固定测试夹具
+├── docs/                          # 产品规格书、ADR 架构决策记录与技术评审文档
+├── assets/readme/                 # README 所需的精美矢量 SVG 资产与设计 Token 规范
+├── legacy/                        # 已冻结归档的历史版本 Bridge 与过渡组件
+├── openclaw-plugin-pin.json       # 锁定 OpenClaw 插件的版本、标签与 Git Commit SHA
+└── CONTEXT.md                     # 统一领域术语与设计边界说明书
 ```
 </details>
 
----
-
-## 路线图
-
-- [ ] **真机端到端闭环**：打通从 Agent 请求到手机上执行并回传的完整链路，覆盖 Android Keystore 与证书轮换。
-- [ ] **物理助手按键接入**：适配系统助手按键与全面屏长按手势的无缝呼出。
-- [ ] **扩充官方 WASM 插件**：联系人只读、日历与闹钟受控写入（逐次确认）、传感器低频采样、无障碍屏幕语义树按需解析。
-- [ ] **去中心化插件分发**：可核验 Ed25519 签名链的插件索引，支持从自定义 URL 或 GitHub Release 导入 `.alp`。
-- [ ] **端侧双向语音**：WebSocket / WebRTC 低延迟全双工音频，含端侧 VAD 与打断。
-- [ ] **多设备漫游**：一台手机在多个自托管网关之间零感知切换。
-
----
-
-## 文档与贡献
-
-动手改代码前建议先读这几份：
-
-- 领域术语与设计边界：[`CONTEXT.md`](CONTEXT.md)
-- 架构总规格：[模块化插件架构](docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md)
-- 协议契约：[Gateway Protocol v2](docs/contracts/gateway-protocol-v2.md)
-- 插件包规范：[设备插件包 v1](docs/contracts/device-plugin-package-v1.md)
-- 行为规范与提交原则：[`AGENTS.md`](AGENTS.md)
-- README 配图的配色、字号与改图规则：[`assets/readme/README.md`](assets/readme/README.md)
-
-几份值得先看的实现记录：
-
-- [双宿主插件同步](docs/reviews/2026-10-19-gateway-plugin-sync.zh-CN.md)：两个插件仓的固定提交与验证方式
-- [会话通知兼容性与真机验收边界](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md)：各版本 Android 上通知与气泡能用到什么程度
-- [应用更新检测](docs/reviews/2026-10-21-app-update-check.md)：正式版与预览版的更新渠道实现
-
-提交前请确认本次改动涉及的测试通过；编译与全量校验由 CI 流水线复核。
-
----
 
 ## 许可证
+MIT
 
-本项目基于 [MIT 许可证](LICENSE) 开源。

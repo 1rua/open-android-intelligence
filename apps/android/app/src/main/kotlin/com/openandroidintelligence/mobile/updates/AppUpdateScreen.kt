@@ -150,7 +150,7 @@ internal fun AppUpdateScreen(
                 SettingsSectionCard {
                     SettingsCardHeader("当前版本")
                     Text(installed.versionName, style = MaterialTheme.typography.titleLarge)
-                    Text(appBuildChannelLabel(installed.channel), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(appBuildChannelLabel(installed.channel, installed.versionName), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 SettingsSectionCard {
                     SettingsCardHeader("更新渠道")
@@ -228,7 +228,7 @@ private fun AppUpdateResultCard(
                 val release = result.release
                 SettingsCardHeader("发现新版本")
                 Text(release.versionName, style = MaterialTheme.typography.titleLarge)
-                Text("${appBuildChannelLabel(release.channel)} · ${release.releaseName}")
+                Text("${appBuildChannelLabel(release.channel, release.versionName)} · ${release.releaseName}")
                 if (release.summary.isNotBlank()) {
                     Text(
                         release.summary,
@@ -271,6 +271,7 @@ private fun AppUpdateResultCard(
                         AppUpdateFailure.RATE_LIMITED -> "更新服务的访问次数已达上限，请稍后重试。"
                         AppUpdateFailure.SERVICE -> "更新服务暂时不可用，请稍后重试。"
                         AppUpdateFailure.INVALID_RESPONSE -> "发布信息不完整或无法验证，请稍后重试或查看发布页。"
+                        AppUpdateFailure.INCOMPLETE_RELEASE_LIST -> "预览发布列表过长，未能完整检查；请稍后重试或查看全部发布。"
                     },
                     color = MaterialTheme.colorScheme.error,
                 )
