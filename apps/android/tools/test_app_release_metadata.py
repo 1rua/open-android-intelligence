@@ -228,6 +228,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
         dev_workflow = (release.REPOSITORY_ROOT / ".github/workflows/dev-release.yml").read_text(encoding="utf-8")
         self.assertIn("branches: [dev]", dev_workflow)
         self.assertIn("extract_package_version.py --platform android", dev_workflow)
+        self.assertIn("git merge-base --is-ancestor origin/main HEAD", dev_workflow)
         self.assertIn("group: dev-release", dev_workflow)
         self.assertIn("cancel-in-progress: false", dev_workflow)
         self.assertIn("queue: max", dev_workflow)

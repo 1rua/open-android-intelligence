@@ -96,7 +96,14 @@ class AppUpdateChecker(
                     val release = publishedRelease(value, channel) ?: return@forEach
                     if (release.expectedChannel == "stable") return@forEach
                     val current = latestReleaseByCandidateGroup[release.candidateGroup]
-                    if (current == null || release.publishedAt.isAfter(current.publishedAt)) {
+                    val isNewer = if (current == null) {
+                        true
+                    } else if (release.candidateGroup == "development-preview") {
+                        (release.candidateSequence ?: 0L) > (current.candidateSequence ?: 0L)
+                    } else {
+                        release.publishedAt.isAfter(current.publishedAt)
+                    }
+                    if (isNewer) {
                         latestReleaseByCandidateGroup[release.candidateGroup] = release
                     }
                 }
@@ -188,6 +195,7 @@ class AppUpdateChecker(
             DEVELOPMENT_PREVIEW_TAG.matches(tag) -> "development-preview"
             else -> "numbered-preview"
         }
+        val candidateSequence = DEVELOPMENT_PREVIEW_TAG.matchEntire(tag)?.groupValues?.get(1)?.toLongOrNull()
         val publishedAt = fields.string("published_at")
         require(publishedAt.isNotBlank())
         val releaseUrl = fields.string("html_url")
@@ -203,6 +211,7 @@ class AppUpdateChecker(
             tag = tag,
             expectedChannel = expectedChannel,
             candidateGroup = candidateGroup,
+            candidateSequence = candidateSequence,
             publishedAt = Instant.parse(publishedAt),
             name = fields.optionalString("name").ifBlank { tag }.take(MAX_NAME_CHARS),
             summary = fields.optionalString("body").take(MAX_SUMMARY_CHARS),
@@ -249,6 +258,7 @@ class AppUpdateChecker(
         val tag: String,
         val expectedChannel: String,
         val candidateGroup: String,
+        val candidateSequence: Long?,
         val publishedAt: Instant,
         val name: String,
         val summary: String,
@@ -265,7 +275,7 @@ class AppUpdateChecker(
         private const val MANIFEST_NAME = "oai-update.json"
         private const val API_RELEASES = "https://api.github.com/repos/1rua/open-android-intelligence/releases"
         private const val API_LATEST_RELEASE = "$API_RELEASES/latest"
-        private val DEVELOPMENT_PREVIEW_TAG = Regex("v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)-dev\\.[1-9][0-9]*")
+        private val DEVELOPMENT_PREVIEW_TAG = Regex("v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)-dev\\.([1-9][0-9]*)")
         private val VERSION_TAG = Regex("v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?")
         private val APK_NAME = Regex("[A-Za-z0-9][A-Za-z0-9._-]*\\.apk")
     }

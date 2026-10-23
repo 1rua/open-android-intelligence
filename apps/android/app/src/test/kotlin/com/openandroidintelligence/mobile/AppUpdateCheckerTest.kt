@@ -103,6 +103,25 @@ class AppUpdateCheckerTest {
         assertEquals(2, fixture.requests.count { it.contains("/releases/download/") })
     }
 
+    @Test fun rerunOlderDevelopmentReleaseDoesNotHideHigherRunNumberCandidate() = Fixture().use { fixture ->
+        fixture.page(1, listOf(
+            fixture.release(
+                "v2.3.0-dev.45", 145, "preview", versionName = "2.3.0-dev.45",
+                publishedAt = "2026-10-22T00:00:00Z",
+            ),
+            fixture.release(
+                "v2.3.0-dev.44", 144, "preview", versionName = "2.3.0-dev.44",
+                publishedAt = "2026-10-23T00:00:00Z",
+            ),
+        ))
+
+        val result = fixture.check(AppUpdateChannel.PREVIEW).available()
+
+        assertEquals("2.3.0-dev.45", result.versionName)
+        assertEquals(listOf(fixture.metadataUrl("v2.3.0-dev.45")),
+            fixture.requests.filter { it.contains("/releases/download/") })
+    }
+
     @Test fun previewReleaseLookupStopsAfterTheConfiguredPageLimit() = Fixture().use { fixture ->
         for (page in 1..5) {
             fixture.page(page, (1..100).map { index ->

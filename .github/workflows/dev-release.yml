@@ -117,6 +117,13 @@ jobs:
           # 仅在合并门禁通过后检出已进入目标分支的提交。
           allow-unsafe-pr-checkout: true
 
+      - name: Require dev to include current main history
+        run: |
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "::error::Merge the current main history into dev before publishing to keep versionCode monotonic."
+            exit 1
+          fi
+
       - name: Setup Python
         uses: actions/setup-python@v7
         with:
