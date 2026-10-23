@@ -13,7 +13,7 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 
 ## 构建版本与更新顺序
 
-`apps/android/app/version.properties` 中的 `versionName` 是当前 Android App 包的唯一 `X.Y.Z` 来源，Gradle 从该文件设置 APK 的 `versionName`。`apps/android/tools/extract_package_version.py` 根据应用配置格式提取严格的 `X.Y.Z`；它也支持 Node/RN/Electron 的 `package.json`、Flutter `pubspec.yaml`、Gradle `versionName`、iOS `Info.plist` 与 Rust/Tauri `Cargo.toml`。正式和开发 Tag 均由提取出的包版本拼成，工作流不从 Git Tag 推导或进位 X.Y.Z。
+`apps/android/app/version.properties` 中的 `versionName` 是当前 Android App 包的唯一 `X.Y.Z` 来源，Gradle 从该文件设置 APK 的 `versionName`。`apps/android/tools/extract_package_version.py` 根据应用配置格式提取严格的 `X.Y.Z`；它也支持 Node/RN/Electron 的 `package.json`、Flutter `pubspec.yaml`、Gradle `versionName`、iOS `Info.plist` 与 Rust/Tauri `Cargo.toml`。发布工作流显式选择 Android 配置，避免根目录协议包的 `package.json` 覆盖 App 版本。正式和开发 Tag 均由提取出的包版本拼成，工作流不从 Git Tag 推导或进位 X.Y.Z。
 
 开发预览 APK 的 `versionName` 为 `<包版本>-dev.<workflow run_number>`，正式 APK 的 `versionName` 就是包版本。重复运行产生不同的开发预览 Tag 与 Release，但同一提交的 `versionCode` 不变，因此同一源码的重复包不会被 App 更新检测当作可升级版本。
 
@@ -57,9 +57,9 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 
 ## 工作流与发布顺序
 
-`.github/workflows/dev-release.yml` 只处理 `dev` 分支，使用 `dev-release` 并发组且不取消进行中的构建；允许多个发布运行排队，避免等待中的运行被新 push 替换。GitHub Actions 对每个并发组最多保留 100 个等待运行，超过上限时平台会取消新的等待运行。PR 合并还会产生 push 事件，工作流会识别并跳过这类重复 push，只让合并事件发布一次；直接 push 仍会发布。通知包签名在独立 job 中完成，APK 构建只下载签好的 `.alp`，不会接触原始插件签名密钥。`.github/workflows/release.yml` 只处理合并到 `main` 的 PR 或 main 上的手动触发；正式工作流也使用独立并发组，排队上限相同。若正式 Tag/Release 已存在，工作流将 Tag 移到当前发布提交、替换同名资产并将 Release 转为正式 latest。`.github/workflows/android-apk.yml` 仅手动生成供下载的 Actions 构建产物，不发布 GitHub Release。
+`.github/workflows/dev-release.yml` 只处理 `dev` 分支，使用 `dev-release` 并发组且不取消进行中的构建；允许多个发布运行排队，避免等待中的运行被新 push 替换。稳定版工作流共享该并发组，避免正式版本码确定期间出现更高版本码的预览发布。GitHub Actions 对每个并发组最多保留 100 个等待运行，超过上限时平台会取消新的等待运行。PR 合并还会产生 push 事件，工作流会识别并跳过这类重复 push，只让合并事件发布一次；直接 push 仍会发布。通知包签名在独立 job 中完成，APK 构建只下载签好的 `.alp`，不会接触原始插件签名密钥。`.github/workflows/release.yml` 只处理合并到 `main` 的 PR 或 main 上的手动触发；手动触发若关联到已合并 PR 则使用 PR 正文，否则使用当前 main 提交说明。若正式 Tag/Release 已存在，工作流将 Tag 移到当前发布提交、替换同名资产并将 Release 转为正式 latest。`.github/workflows/android-apk.yml` 仅手动生成供下载的 Actions 构建产物，不发布 GitHub Release。
 
-开发 Tag 携带运行编号，因此每个工作流运行都能创建独立发布资源。正式发布前会核对远端 main 仍指向本次构建提交，避免旧的排队构建覆盖较新的正式包。更新检测用 GitHub 的 latest-release 接口读取正式版，并且最多读取 Release 列表第一页以查找开发预览；不扫描不断增长的历史 Release。它只下载所选渠道候选的 APK 元数据。候选是否高于本机安装仍只由清单中的 `versionCode` 决定。
+开发 Tag 携带运行编号，因此每个工作流运行都能创建独立发布资源。正式发布前会核对远端 main 仍指向本次构建提交，避免旧的排队构建覆盖较新的正式包。更新检测用 GitHub 的 latest-release 接口读取正式版，并且预览检查最多读取 Release 列表前五页；不扫描不断增长的全部历史 Release。它分别保留最近开发预览、带版本号测试版和历史 nightly 候选，再读取这些候选的 APK 元数据。候选是否高于本机安装仍只由清单中的 `versionCode` 决定。
 
 ## 最小验证命令
 

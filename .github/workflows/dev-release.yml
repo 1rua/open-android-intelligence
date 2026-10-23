@@ -124,7 +124,7 @@ jobs:
 
       - name: Extract package version
         id: package-version
-        run: echo "version=$(python3 apps/android/tools/extract_package_version.py)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(python3 apps/android/tools/extract_package_version.py --platform android)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare release notes
         run: python3 apps/android/tools/prepare_release_notes.py --branch dev --output "$RUNNER_TEMP/release-notes.md"

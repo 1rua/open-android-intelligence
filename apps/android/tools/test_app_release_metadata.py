@@ -222,6 +222,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
     def test_workflows_are_branch_scoped_and_use_package_versions(self):
         dev_workflow = (release.REPOSITORY_ROOT / ".github/workflows/dev-release.yml").read_text(encoding="utf-8")
         self.assertIn("branches: [dev]", dev_workflow)
+        self.assertIn("extract_package_version.py --platform android", dev_workflow)
         self.assertIn("group: dev-release", dev_workflow)
         self.assertIn("cancel-in-progress: false", dev_workflow)
         self.assertIn("queue: max", dev_workflow)
@@ -251,7 +252,8 @@ class AppReleaseMetadataTest(unittest.TestCase):
 
         release_workflow = (release.REPOSITORY_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("branches: [main]", release_workflow)
-        self.assertIn("group: stable-release", release_workflow)
+        self.assertIn("group: dev-release", release_workflow)
+        self.assertIn("extract_package_version.py --platform android", release_workflow)
         self.assertIn("cancel-in-progress: false", release_workflow)
         self.assertIn("queue: max", release_workflow)
         self.assertIn("contents: write", release_workflow)
@@ -266,6 +268,8 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("Resolve version-code history commit", stable_build_job)
         self.assertIn("github.event.pull_request.head.sha", stable_build_job)
         self.assertIn("commits/$TARGET_SHA/pulls", stable_build_job)
+        self.assertIn('HISTORY_SHA="$TARGET_SHA"', stable_build_job)
+        self.assertIn('git cat-file -e "$HISTORY_SHA^{commit}"', stable_build_job)
         self.assertIn('refs/pull/$PR_NUMBER/head', stable_build_job)
         self.assertIn('+refs/heads/dev:refs/remotes/origin/dev', stable_build_job)
         self.assertIn("max(commit_counts)", (release.REPOSITORY_ROOT / "apps/android/tools/app_release_metadata.py").read_text(encoding="utf-8"))

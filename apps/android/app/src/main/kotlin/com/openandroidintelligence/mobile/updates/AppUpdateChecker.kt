@@ -80,30 +80,37 @@ class AppUpdateChecker(
     }
 
     private suspend fun checkPublished(channel: AppUpdateChannel, deadline: Long): AppUpdateResult {
-        val latestReleaseByChannel = mutableMapOf<String, PublishedRelease>()
+        val latestReleaseByCandidateGroup = mutableMapOf<String, PublishedRelease>()
         if (channel == AppUpdateChannel.PREVIEW) {
-            currentCoroutineContext().ensureActive()
-            val values = Json.parse(fetch("$API_RELEASES?per_page=$PAGE_SIZE&page=1", MAX_RELEASE_BYTES, deadline)).array()
-            require(values.size <= PAGE_SIZE)
-            values.forEach { value ->
+            var page = 1
+            while (page <= MAX_PREVIEW_RELEASE_PAGES) {
                 currentCoroutineContext().ensureActive()
-                val release = publishedRelease(value, channel) ?: return@forEach
-                if (release.expectedChannel == "stable") return@forEach
-                val current = latestReleaseByChannel[release.expectedChannel]
-                if (current == null || release.publishedAt.isAfter(current.publishedAt)) {
-                    latestReleaseByChannel[release.expectedChannel] = release
+                val values = Json.parse(
+                    fetch("$API_RELEASES?per_page=$PAGE_SIZE&page=$page", MAX_RELEASE_BYTES, deadline),
+                ).array()
+                require(values.size <= PAGE_SIZE)
+                values.forEach { value ->
+                    currentCoroutineContext().ensureActive()
+                    val release = publishedRelease(value, channel) ?: return@forEach
+                    if (release.expectedChannel == "stable") return@forEach
+                    val current = latestReleaseByCandidateGroup[release.candidateGroup]
+                    if (current == null || release.publishedAt.isAfter(current.publishedAt)) {
+                        latestReleaseByCandidateGroup[release.candidateGroup] = release
+                    }
                 }
+                if (values.size < PAGE_SIZE) break
+                page += 1
             }
         }
 
-        // GitHub 提供正式版直达接口，预览检查只需额外读取第一页，避免历史发布量增加请求数。
+        // GitHub 提供正式版直达接口；预览历史查询最多读取五页，限制每次检查的 API 请求数。
         fetchOptional(API_LATEST_RELEASE, MAX_RELEASE_BYTES, deadline)?.let { body ->
             val release = publishedRelease(Json.parse(body), AppUpdateChannel.STABLE)
                 ?: throw IllegalArgumentException("GitHub latest release is not a valid stable release")
-            latestReleaseByChannel[release.expectedChannel] = release
+            latestReleaseByCandidateGroup[release.candidateGroup] = release
         }
 
-        val releases = latestReleaseByChannel.values
+        val releases = latestReleaseByCandidateGroup.values
         if (releases.isEmpty()) return AppUpdateResult.NotPublished
 
         var incomplete = false
@@ -170,6 +177,12 @@ class AppUpdateChecker(
 
         val expectedChannel = if (development) "development" else if (prerelease) "preview" else "stable"
         if (channel == AppUpdateChannel.STABLE && expectedChannel != "stable") return null
+        val candidateGroup = when {
+            development -> "development"
+            expectedChannel == "stable" -> "stable"
+            DEVELOPMENT_PREVIEW_TAG.matches(tag) -> "development-preview"
+            else -> "numbered-preview"
+        }
         val publishedAt = fields.string("published_at")
         require(publishedAt.isNotBlank())
         val releaseUrl = fields.string("html_url")
@@ -184,6 +197,7 @@ class AppUpdateChecker(
         return PublishedRelease(
             tag = tag,
             expectedChannel = expectedChannel,
+            candidateGroup = candidateGroup,
             publishedAt = Instant.parse(publishedAt),
             name = fields.optionalString("name").ifBlank { tag }.take(MAX_NAME_CHARS),
             summary = fields.optionalString("body").take(MAX_SUMMARY_CHARS),
@@ -229,6 +243,7 @@ class AppUpdateChecker(
     private data class PublishedRelease(
         val tag: String,
         val expectedChannel: String,
+        val candidateGroup: String,
         val publishedAt: Instant,
         val name: String,
         val summary: String,
@@ -238,6 +253,7 @@ class AppUpdateChecker(
 
     companion object {
         private const val PAGE_SIZE = 100
+        private const val MAX_PREVIEW_RELEASE_PAGES = 5
         private const val MAX_RELEASE_BYTES = 2 * 1024 * 1024
         private const val MAX_MANIFEST_BYTES = 32 * 1024
         private const val MAX_NAME_CHARS = 160
@@ -245,6 +261,7 @@ class AppUpdateChecker(
         private const val MANIFEST_NAME = "oai-update.json"
         private const val API_RELEASES = "https://api.github.com/repos/1rua/open-android-intelligence/releases"
         private const val API_LATEST_RELEASE = "$API_RELEASES/latest"
+        private val DEVELOPMENT_PREVIEW_TAG = Regex("v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)-dev\\.[1-9][0-9]*")
         private val VERSION_TAG = Regex("v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?")
         private val APK_NAME = Regex("[A-Za-z0-9][A-Za-z0-9._-]*\\.apk")
     }

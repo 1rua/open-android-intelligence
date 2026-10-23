@@ -65,7 +65,8 @@ class ExtractPackageVersionTest(unittest.TestCase):
         (app / "build.gradle.kts").write_text(
             'android { defaultConfig { versionName = "1.2.3" } }\n', encoding="utf-8"
         )
-        self.assertEqual(extractor.extract_package_version(root), "1.2.3")
+        self.assertEqual(extractor.extract_package_version(root), "9.8.7")
+        self.assertEqual(extractor.extract_package_version(root, platform="android"), "1.2.3")
 
     def test_reads_ios_info_plist(self):
         root = workspace()
@@ -107,7 +108,7 @@ class ExtractPackageVersionTest(unittest.TestCase):
 
     def test_current_android_project_uses_the_gradle_package_version(self):
         root = Path(extractor.__file__).resolve().parents[3]
-        self.assertEqual(extractor.extract_package_version(root), "2.1.1")
+        self.assertEqual(extractor.extract_package_version(root, platform="android"), "2.1.1")
 
 
 if __name__ == "__main__":

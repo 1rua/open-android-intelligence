@@ -50,17 +50,19 @@ class AppUpdateCheckerTest {
         assertEquals(listOf("$LATEST_RELEASE", fixture.metadataUrl("v2.2.0")), fixture.requests)
     }
 
-    @Test fun previewChecksTheLatestDevelopmentPreviewAndStableBuildWithBoundedRequests() = Fixture().use { fixture ->
+    @Test fun previewChecksTheLatestCandidatesWithBoundedRequests() = Fixture().use { fixture ->
         fixture.page(1, listOf(
             fixture.release("v2.2.0-beta.1", 140, "preview", publishedAt = "2026-10-21T00:00:00Z"),
             fixture.release("nightly", 120, "development", publishedAt = "2026-10-20T00:00:00Z"),
             fixture.release("v2.1.1", 110, "stable"),
         ) + (1..97).map { mapOf("draft" to false, "prerelease" to true, "tag_name" to "unrelated-$it") })
+        fixture.page(2, emptyList())
         val result = fixture.check(AppUpdateChannel.PREVIEW).available()
         assertEquals("2.2.0-beta.1", result.versionName)
         assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=1"))
+        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=2"))
         assertTrue(fixture.requests.contains(LATEST_RELEASE))
-        assertFalse(fixture.requests.any { it.contains("page=2") })
+        assertFalse(fixture.requests.any { it.contains("page=3") })
     }
 
     @Test fun previewCanAdvanceFromReleaseCandidateToStable() = Fixture().use { fixture ->
@@ -80,6 +82,42 @@ class AppUpdateCheckerTest {
         assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=1"))
         assertFalse(fixture.requests.any { it.contains("page=2") })
         assertEquals(listOf(fixture.metadataUrl("v2.3.0-beta.1")), fixture.requests.filter { it.contains("/releases/download/") })
+    }
+
+    @Test fun previewFindsVersionedTestsAfterAFullPageOfDevelopmentReleases() = Fixture().use { fixture ->
+        fixture.page(1, (1..100).map { index ->
+            fixture.release(
+                "v2.3.0-dev.$index", 130L + index, "preview",
+                versionName = "2.3.0-dev.$index",
+            )
+        })
+        fixture.page(2, listOf(
+            fixture.release("v2.4.0-beta.1", 240, "preview", publishedAt = "2026-10-20T00:00:00Z"),
+        ))
+
+        val result = fixture.check(AppUpdateChannel.PREVIEW).available()
+
+        assertEquals("2.4.0-beta.1", result.versionName)
+        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=2"))
+        assertTrue(fixture.requests.contains(fixture.metadataUrl("v2.4.0-beta.1")))
+        assertEquals(2, fixture.requests.count { it.contains("/releases/download/") })
+    }
+
+    @Test fun previewReleaseLookupStopsAfterTheConfiguredPageLimit() = Fixture().use { fixture ->
+        for (page in 1..5) {
+            fixture.page(page, (1..100).map { index ->
+                mapOf(
+                    "draft" to false,
+                    "prerelease" to true,
+                    "tag_name" to "unrelated-$page-$index",
+                    "published_at" to "2026-10-20T00:00:00Z",
+                )
+            })
+        }
+
+        assertEquals(AppUpdateResult.NotPublished, fixture.check(AppUpdateChannel.PREVIEW))
+        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=5"))
+        assertFalse(fixture.requests.any { it.contains("page=6") })
     }
 
     @Test fun stableReleaseIsLoadedFromGitHubsLatestReleaseEndpoint() = Fixture().use { fixture ->

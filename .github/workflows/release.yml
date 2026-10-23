@@ -12,7 +12,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: stable-release
+  group: dev-release
   cancel-in-progress: false
   queue: max
 
@@ -101,7 +101,7 @@ jobs:
 
       - name: Extract package version
         id: package-version
-        run: echo "version=$(python3 apps/android/tools/extract_package_version.py)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(python3 apps/android/tools/extract_package_version.py --platform android)" >> "$GITHUB_OUTPUT"
 
       - name: Resolve version-code history commit
         id: version-code-history
@@ -116,18 +116,30 @@ jobs:
             HISTORY_SHA="$PULL_REQUEST_HEAD_SHA"
           else
             PR_INFO=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/pulls" --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | sort_by(.merged_at) | last | if . == null then empty else [.number, .head.sha] | @tsv end')
-            IFS=$'\t' read -r PR_NUMBER HISTORY_SHA <<< "$PR_INFO"
+            if [ -n "$PR_INFO" ]; then
+              IFS=$'\t' read -r PR_NUMBER HISTORY_SHA <<< "$PR_INFO"
+            else
+              HISTORY_SHA="$TARGET_SHA"
+            fi
           fi
-          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ && "$HISTORY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::A merged main pull request is required to determine stable version-code history."
+          if ! [[ "$HISTORY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::A full commit SHA is required to determine stable version-code history."
             exit 1
           fi
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          git -c http.extraheader="$AUTH_HEADER" fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
-          FETCHED_HEAD=$(git rev-parse FETCH_HEAD)
-          if [ "$FETCHED_HEAD" != "$HISTORY_SHA" ]; then
-            echo "::error::The fetched pull request head does not match the merged source commit."
-            exit 1
+          if [ -n "$PR_NUMBER" ]; then
+            if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+              echo "::error::The associated pull request number is invalid."
+              exit 1
+            fi
+            git -c http.extraheader="$AUTH_HEADER" fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+            FETCHED_HEAD=$(git rev-parse FETCH_HEAD)
+            if [ "$FETCHED_HEAD" != "$HISTORY_SHA" ]; then
+              echo "::error::The fetched pull request head does not match the merged source commit."
+              exit 1
+            fi
+          else
+            git cat-file -e "$HISTORY_SHA^{commit}"
           fi
           git -c http.extraheader="$AUTH_HEADER" fetch --no-tags origin "+refs/heads/dev:refs/remotes/origin/dev"
           DEV_SHA=$(git rev-parse --verify 'origin/dev^{commit}')

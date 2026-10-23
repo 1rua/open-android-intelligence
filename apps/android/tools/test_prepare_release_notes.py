@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import prepare_release_notes as notes
 
@@ -55,10 +55,15 @@ class PrepareReleaseNotesTest(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], ["gh", "api", "repos/owner/repo/commits/abc/pulls"])
 
     @patch.object(notes.subprocess, "run")
-    def test_manual_stable_release_fails_when_no_merged_main_pr_is_associated(self, run):
-        run.return_value.stdout = "[]"
-        with self.assertRaisesRegex(ValueError, "merged pull request"):
-            notes.prepare_release_notes("main", "workflow_dispatch", event_file({}), "owner/repo", "abc")
+    def test_manual_stable_release_falls_back_to_the_selected_main_commit_message(self, run):
+        run.side_effect = [
+            Mock(stdout="[]"),
+            Mock(stdout="Direct main release summary\n\nDetails\n"),
+        ]
+        body = notes.prepare_release_notes("main", "workflow_dispatch", event_file({}), "owner/repo", "abc")
+        self.assertEqual(body, "Direct main release summary\n\nDetails\n")
+        self.assertEqual(run.call_args_list[0].args[0], ["gh", "api", "repos/owner/repo/commits/abc/pulls"])
+        self.assertEqual(run.call_args_list[1].args[0], ["git", "show", "-s", "--format=%B", "abc"])
 
 
 if __name__ == "__main__":
