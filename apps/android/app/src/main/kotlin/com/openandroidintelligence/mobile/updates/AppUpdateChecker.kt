@@ -81,23 +81,28 @@ class AppUpdateChecker(
 
     private suspend fun checkPublished(channel: AppUpdateChannel, deadline: Long): AppUpdateResult {
         val latestReleaseByChannel = mutableMapOf<String, PublishedRelease>()
-        var page = 1
-        while (true) {
+        if (channel == AppUpdateChannel.PREVIEW) {
             currentCoroutineContext().ensureActive()
-            val values = Json.parse(fetch("$API_RELEASES?per_page=$PAGE_SIZE&page=$page", MAX_RELEASE_BYTES, deadline)).array()
+            val values = Json.parse(fetch("$API_RELEASES?per_page=$PAGE_SIZE&page=1", MAX_RELEASE_BYTES, deadline)).array()
             require(values.size <= PAGE_SIZE)
             values.forEach { value ->
                 currentCoroutineContext().ensureActive()
                 val release = publishedRelease(value, channel) ?: return@forEach
+                if (release.expectedChannel == "stable") return@forEach
                 val current = latestReleaseByChannel[release.expectedChannel]
                 if (current == null || release.publishedAt.isAfter(current.publishedAt)) {
                     latestReleaseByChannel[release.expectedChannel] = release
                 }
             }
-            // 扫描所有页面，只读取各渠道最近发布项的清单；是否可升级仍只比较 versionCode。
-            if (values.size < PAGE_SIZE) break
-            page += 1
         }
+
+        // GitHub 提供正式版直达接口，预览检查只需额外读取第一页，避免历史发布量增加请求数。
+        fetchOptional(API_LATEST_RELEASE, MAX_RELEASE_BYTES, deadline)?.let { body ->
+            val release = publishedRelease(Json.parse(body), AppUpdateChannel.STABLE)
+                ?: throw IllegalArgumentException("GitHub latest release is not a valid stable release")
+            latestReleaseByChannel[release.expectedChannel] = release
+        }
+
         val releases = latestReleaseByChannel.values
         if (releases.isEmpty()) return AppUpdateResult.NotPublished
 
@@ -188,10 +193,7 @@ class AppUpdateChecker(
     }
 
     private suspend fun fetch(url: String, maxBytes: Int, deadline: Long): String {
-        currentCoroutineContext().ensureActive()
-        if (System.nanoTime() >= deadline) throw UpdateRequestFailure(AppUpdateFailure.NETWORK)
-        val response = http.get(url, maxBytes, deadline)
-        currentCoroutineContext().ensureActive()
+        val response = request(url, maxBytes, deadline)
         when (response.status) {
             200 -> {
                 require(response.body.toByteArray(Charsets.UTF_8).size <= maxBytes)
@@ -200,6 +202,27 @@ class AppUpdateChecker(
             403, 429 -> throw UpdateRequestFailure(AppUpdateFailure.RATE_LIMITED)
             else -> throw UpdateRequestFailure(AppUpdateFailure.SERVICE)
         }
+    }
+
+    private suspend fun fetchOptional(url: String, maxBytes: Int, deadline: Long): String? {
+        val response = request(url, maxBytes, deadline)
+        if (response.status == 404) return null
+        if (response.status != 200) {
+            when (response.status) {
+                403, 429 -> throw UpdateRequestFailure(AppUpdateFailure.RATE_LIMITED)
+                else -> throw UpdateRequestFailure(AppUpdateFailure.SERVICE)
+            }
+        }
+        require(response.body.toByteArray(Charsets.UTF_8).size <= maxBytes)
+        return response.body
+    }
+
+    private suspend fun request(url: String, maxBytes: Int, deadline: Long): AppUpdateHttpResponse {
+        currentCoroutineContext().ensureActive()
+        if (System.nanoTime() >= deadline) throw UpdateRequestFailure(AppUpdateFailure.NETWORK)
+        val response = http.get(url, maxBytes, deadline)
+        currentCoroutineContext().ensureActive()
+        return response
     }
 
     private data class ReleaseAsset(val name: String, val url: String, val uploaded: Boolean)
@@ -221,6 +244,7 @@ class AppUpdateChecker(
         private const val MAX_SUMMARY_CHARS = 4_000
         private const val MANIFEST_NAME = "oai-update.json"
         private const val API_RELEASES = "https://api.github.com/repos/1rua/open-android-intelligence/releases"
+        private const val API_LATEST_RELEASE = "$API_RELEASES/latest"
         private val VERSION_TAG = Regex("v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?")
         private val APK_NAME = Regex("[A-Za-z0-9][A-Za-z0-9._-]*\\.apk")
     }
@@ -341,8 +365,11 @@ internal object OfficialUpdateUrls {
         it.host == "github.com" && it.path == "$REPOSITORY/releases/download/$tag/$name" && it.rawQuery == null
     } == true
 
-    fun apiRequest(uri: URI): Boolean = basic(uri) && uri.host == "api.github.com" &&
-        uri.path == "/repos$REPOSITORY/releases" && uri.rawQuery?.matches(Regex("per_page=100&page=[1-9][0-9]*")) == true
+    fun apiRequest(uri: URI): Boolean = basic(uri) && uri.host == "api.github.com" && when {
+        uri.path == "/repos$REPOSITORY/releases/latest" -> uri.rawQuery == null
+        uri.path == "/repos$REPOSITORY/releases" -> uri.rawQuery == "per_page=100&page=1"
+        else -> false
+    }
 
     fun manifestRequest(uri: URI): Boolean = basic(uri) && uri.host == "github.com" &&
         uri.path.matches(Regex("$REPOSITORY/releases/download/[^/]+/oai-update\\.json")) && uri.rawQuery == null

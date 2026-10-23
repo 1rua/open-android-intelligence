@@ -117,14 +117,7 @@ def _first_value(paths: list[Path], reader) -> str | None:
 def extract_package_version(root: Path) -> str:
     root = root.resolve()
 
-    # 先检查根目录的应用清单，避免仓库子模块版本覆盖应用版本。
-    root_version = _first_value([root / "package.json"], _json_version)
-    if root_version is not None:
-        return root_version
-    root_version = _first_value([root / "pubspec.yaml"], _yaml_version)
-    if root_version is not None:
-        return root_version
-
+    # 多应用仓库先使用 Android App 自身的包配置，避免根目录工具包版本覆盖它。
     android_paths = [
         root / "apps/android/app/build.gradle.kts",
         root / "apps/android/app/build.gradle",
@@ -138,6 +131,14 @@ def extract_package_version(root: Path) -> str:
     android_version = _first_value(android_paths, _gradle_version)
     if android_version is not None:
         return android_version
+
+    # 单应用仓库再检查根目录清单。
+    root_version = _first_value([root / "package.json"], _json_version)
+    if root_version is not None:
+        return root_version
+    root_version = _first_value([root / "pubspec.yaml"], _yaml_version)
+    if root_version is not None:
+        return root_version
 
     plist_paths = [
         root / "Info.plist",

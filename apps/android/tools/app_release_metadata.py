@@ -73,14 +73,18 @@ def write_json(path: Path, payload: dict) -> None:
 def prepare(args: argparse.Namespace) -> None:
     if git_value("rev-parse", "--is-shallow-repository") != "false":
         raise ValueError("Release builds require a complete Git history")
-    history_sha = args.history_sha or "HEAD"
-    if args.history_sha and not re.fullmatch(r"[0-9a-f]{40}", args.history_sha):
-        raise ValueError("Version-code history must be a full Git SHA")
-    if args.history_sha:
-        history_sha = git_value("rev-parse", "--verify", f"{args.history_sha}^{{commit}}")
+    history_shas = args.history_sha or []
+    if any(not re.fullmatch(r"[0-9a-f]{40}", sha) for sha in history_shas):
+        raise ValueError("Version-code history entries must be full Git SHAs")
+    resolved_history = [
+        git_value("rev-parse", "--verify", f"{sha}^{{commit}}")
+        for sha in history_shas
+    ]
+    commit_counts = [int(git_value("rev-list", "--count", "HEAD"))]
+    commit_counts.extend(int(git_value("rev-list", "--count", sha)) for sha in resolved_history)
     metadata = release_metadata(
         read_base_version(), git_value("rev-parse", "HEAD"),
-        int(git_value("rev-list", "--count", history_sha)), args.channel, args.run_number,
+        max(commit_counts), args.channel, args.run_number,
     )
     write_json(args.metadata, metadata)
     if args.github_env:
@@ -205,7 +209,10 @@ def main() -> None:
     prepare_parser = commands.add_parser("prepare", help="Create build metadata from the application package version")
     prepare_parser.add_argument("--channel", choices=CHANNEL_PHASE, required=True)
     prepare_parser.add_argument("--run-number", type=int)
-    prepare_parser.add_argument("--history-sha", help="Full source commit used for stable promotion version ordering")
+    prepare_parser.add_argument(
+        "--history-sha", action="append", default=[],
+        help="Full commit SHA included when choosing the greatest history count",
+    )
     prepare_parser.add_argument("--metadata", type=Path, required=True)
     prepare_parser.add_argument("--github-env", type=Path)
     prepare_parser.set_defaults(run=prepare)

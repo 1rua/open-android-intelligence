@@ -47,19 +47,20 @@ class AppUpdateCheckerTest {
         assertEquals("2.2.0", result.versionName)
         assertEquals(130L, result.versionCode)
         assertEquals("stable", result.channel)
-        assertEquals(listOf("$RELEASES?per_page=100&page=1", fixture.metadataUrl("v2.2.0")), fixture.requests)
+        assertEquals(listOf("$LATEST_RELEASE", fixture.metadataUrl("v2.2.0")), fixture.requests)
     }
 
-    @Test fun previewFollowsDevelopmentAndFutureNumberedPreviewsAcrossPages() = Fixture().use { fixture ->
-        fixture.page(1, (1..100).map { mapOf("draft" to false, "prerelease" to true, "tag_name" to "unrelated-$it") })
-        fixture.page(2, listOf(
-            fixture.release("nightly", 120, "development", publishedAt = "2026-10-20T00:00:00Z"),
+    @Test fun previewChecksTheLatestDevelopmentPreviewAndStableBuildWithBoundedRequests() = Fixture().use { fixture ->
+        fixture.page(1, listOf(
             fixture.release("v2.2.0-beta.1", 140, "preview", publishedAt = "2026-10-21T00:00:00Z"),
+            fixture.release("nightly", 120, "development", publishedAt = "2026-10-20T00:00:00Z"),
             fixture.release("v2.1.1", 110, "stable"),
-        ))
+        ) + (1..97).map { mapOf("draft" to false, "prerelease" to true, "tag_name" to "unrelated-$it") })
         val result = fixture.check(AppUpdateChannel.PREVIEW).available()
         assertEquals("2.2.0-beta.1", result.versionName)
-        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=2"))
+        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=1"))
+        assertTrue(fixture.requests.contains(LATEST_RELEASE))
+        assertFalse(fixture.requests.any { it.contains("page=2") })
     }
 
     @Test fun previewCanAdvanceFromReleaseCandidateToStable() = Fixture().use { fixture ->
@@ -71,69 +72,23 @@ class AppUpdateCheckerTest {
         assertEquals("stable", fixture.check(AppUpdateChannel.PREVIEW, installed.copy(versionCode = 140)).available().channel)
     }
 
-    @Test fun previewPaginationContinuesPastTwentyFullPagesAndFetchesOnlySelectedMetadata() = Fixture().use { fixture ->
-        for (page in 1..20) {
-            val unrelated = (1..99).map { index ->
-                mapOf(
-                    "draft" to false,
-                    "prerelease" to true,
-                    "tag_name" to "unrelated-$page-$index",
-                    "published_at" to "2026-10-20T00:00:00Z",
-                )
-            }
-            val releases = if (page == 1) {
-                unrelated + fixture.release("v2.3.0-beta.1", 150, "preview", publishedAt = "2026-10-21T00:00:00Z")
-            } else {
-                unrelated + mapOf(
-                    "draft" to false,
-                    "prerelease" to true,
-                    "tag_name" to "unrelated-$page-100",
-                    "published_at" to "2026-10-20T00:00:00Z",
-                )
-            }
-            fixture.page(page, releases)
-        }
-        fixture.page(21, listOf(
-            fixture.release("v2.3.0-beta.1", 160, "preview", publishedAt = "2026-10-23T00:00:00Z"),
-        ))
-
+    @Test fun previewReleaseLookupDoesNotWalkOldReleasePages() = Fixture().use { fixture ->
+        fixture.page(1, listOf(fixture.release("v2.3.0-beta.1", 160, "preview")))
         val result = fixture.check(AppUpdateChannel.PREVIEW).available()
 
         assertEquals("2.3.0-beta.1", result.versionName)
-        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=21"))
+        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=1"))
+        assertFalse(fixture.requests.any { it.contains("page=2") })
         assertEquals(listOf(fixture.metadataUrl("v2.3.0-beta.1")), fixture.requests.filter { it.contains("/releases/download/") })
     }
 
-    @Test fun stablePaginationFindsTheLatestStableReleaseBeyondTwentyPages() = Fixture().use { fixture ->
-        for (page in 1..20) {
-            val unrelated = (1..99).map { index ->
-                mapOf(
-                    "draft" to false,
-                    "prerelease" to true,
-                    "tag_name" to "unrelated-$page-$index",
-                    "published_at" to "2026-10-20T00:00:00Z",
-                )
-            }
-            val releases = if (page == 1) {
-                unrelated + fixture.release("v2.2.0", 150, "stable", publishedAt = "2026-10-21T00:00:00Z")
-            } else {
-                unrelated + mapOf(
-                    "draft" to false,
-                    "prerelease" to true,
-                    "tag_name" to "unrelated-$page-100",
-                    "published_at" to "2026-10-20T00:00:00Z",
-                )
-            }
-            fixture.page(page, releases)
-        }
-        fixture.page(21, listOf(
-            fixture.release("v2.3.0", 160, "stable", publishedAt = "2026-10-23T00:00:00Z"),
-        ))
-
+    @Test fun stableReleaseIsLoadedFromGitHubsLatestReleaseEndpoint() = Fixture().use { fixture ->
+        fixture.page(1, (1..100).map { mapOf("draft" to false, "prerelease" to true, "tag_name" to "preview-$it") })
+        fixture.latestStable(fixture.release("v2.3.0", 160, "stable"))
         val result = fixture.check(AppUpdateChannel.STABLE).available()
 
         assertEquals("2.3.0", result.versionName)
-        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=21"))
+        assertEquals(listOf(LATEST_RELEASE, fixture.metadataUrl("v2.3.0")), fixture.requests)
         assertEquals(listOf(fixture.metadataUrl("v2.3.0")), fixture.requests.filter { it.contains("/releases/download/") })
     }
 
@@ -160,8 +115,13 @@ class AppUpdateCheckerTest {
     @Test fun missingStableReleaseIsDifferentFromFailedCheck() = Fixture().use { fixture ->
         fixture.page(1, listOf(fixture.release("nightly", 120, "development")))
         assertEquals(AppUpdateResult.NotPublished, fixture.check(AppUpdateChannel.STABLE))
-        fixture.responses["$RELEASES?per_page=100&page=1"] = AppUpdateHttpResponse(503, "不可把错误正文当作无更新")
+        fixture.responses[LATEST_RELEASE] = AppUpdateHttpResponse(503, "不可把错误正文当作无更新")
         assertEquals(AppUpdateResult.Unavailable(AppUpdateFailure.SERVICE), fixture.check(AppUpdateChannel.STABLE))
+    }
+
+    @Test fun missingStableReleaseDoesNotBlockAPreviewUpdate() = Fixture().use { fixture ->
+        fixture.page(1, listOf(fixture.release("v2.2.0-beta.1", 120, "preview")))
+        assertEquals("2.2.0-beta.1", fixture.check(AppUpdateChannel.PREVIEW).available().versionName)
     }
 
     @Test fun missingMetadataOrApkNeverClaimsLatest() = Fixture().use { fixture ->
@@ -241,9 +201,9 @@ class AppUpdateCheckerTest {
     }
 
     @Test fun rateLimitNetworkAndInvalidBodyHaveDifferentFailures() = Fixture().use { fixture ->
-        fixture.responses["$RELEASES?per_page=100&page=1"] = AppUpdateHttpResponse(429, "不展示远程正文")
+        fixture.responses[LATEST_RELEASE] = AppUpdateHttpResponse(429, "不展示远程正文")
         assertEquals(AppUpdateResult.Unavailable(AppUpdateFailure.RATE_LIMITED), fixture.check(AppUpdateChannel.STABLE))
-        fixture.responses["$RELEASES?per_page=100&page=1"] = AppUpdateHttpResponse(200, "{")
+        fixture.responses[LATEST_RELEASE] = AppUpdateHttpResponse(200, "{")
         assertEquals(AppUpdateResult.Unavailable(AppUpdateFailure.INVALID_RESPONSE), fixture.check(AppUpdateChannel.STABLE))
         assertEquals(AppUpdateResult.Unavailable(AppUpdateFailure.NETWORK),
             runBlocking { AppUpdateChecker(installed, AppUpdateHttp { _, _ -> throw IOException("不可显示此异常") }).check(AppUpdateChannel.STABLE) })
@@ -256,8 +216,10 @@ class AppUpdateCheckerTest {
     }
 
     @Test fun productionHttpRejectsNonHttpsAndForeignSourcesWithoutConnecting() {
+        assertTrue(OfficialUpdateUrls.apiRequest(URI(LATEST_RELEASE)))
         listOf(
             "http://api.github.com/repos/1rua/open-android-intelligence/releases?per_page=100&page=1",
+            "https://api.github.com/repos/other/repo/releases/latest",
             "https://api.github.com/repos/other/repo/releases?per_page=100&page=1",
             "https://github.com/1rua/open-android-intelligence/releases/download/nightly/app.apk",
             "https://release-assets.githubusercontent.com/github-production-release-asset/1/abc",
@@ -278,17 +240,17 @@ class AppUpdateCheckerTest {
 
     @Test fun cancellationDisconnectsBlockedPageAndDoesNotRequestFurtherPages() = Fixture().use { fixture ->
         fixture.page(1, (1..100).map { mapOf("draft" to false, "prerelease" to true, "tag_name" to "unrelated-$it") })
-        val blocked = "$RELEASES?per_page=100&page=2"
-        assertCancellationStopsAt(fixture, blocked, listOf("$RELEASES?per_page=100&page=1", blocked))
+        val blocked = "$RELEASES?per_page=100&page=1"
+        assertCancellationStopsAt(fixture, blocked, listOf(blocked))
     }
 
     @Test fun cancellationDisconnectsBlockedMetadataAndDoesNotScanRemainingReleases() = Fixture().use { fixture ->
         fixture.page(1, listOf(
-            fixture.release("v2.2.0-beta.1", 120, "preview"),
-            fixture.release("v2.3.0-beta.1", 130, "preview"),
+            fixture.release("v2.2.0-beta.1", 120, "preview", publishedAt = "2026-10-20T00:00:00Z"),
+            fixture.release("v2.3.0-beta.1", 130, "preview", publishedAt = "2026-10-22T00:00:00Z"),
         ))
-        val blocked = fixture.metadataUrl("v2.2.0-beta.1")
-        assertCancellationStopsAt(fixture, blocked, listOf("$RELEASES?per_page=100&page=1", blocked))
+        val blocked = fixture.metadataUrl("v2.3.0-beta.1")
+        assertCancellationStopsAt(fixture, blocked, listOf("$RELEASES?per_page=100&page=1", LATEST_RELEASE, blocked))
     }
 
     private fun assertCancellationStopsAt(fixture: Fixture, blockedUrl: String, expectedRequests: List<String>) {
@@ -400,6 +362,21 @@ class AppUpdateCheckerTest {
 
         fun page(number: Int, releases: List<Map<String, Any?>>) {
             responses["$RELEASES?per_page=100&page=$number"] = AppUpdateHttpResponse(200, Json.canonical(Json.of(releases)))
+            if (number == 1) {
+                val latestStableRelease = releases
+                    .filter { it["draft"] == false && it["prerelease"] == false }
+                    .filter { (it["tag_name"] as? String)?.removePrefix("v")?.contains('-') == false }
+                    .maxByOrNull { it["published_at"] as? String ?: "" }
+                if (latestStableRelease == null) {
+                    responses[LATEST_RELEASE] = AppUpdateHttpResponse(404, "")
+                } else {
+                    latestStable(latestStableRelease)
+                }
+            }
+        }
+
+        fun latestStable(release: Map<String, Any?>) {
+            responses[LATEST_RELEASE] = AppUpdateHttpResponse(200, Json.canonical(Json.of(release)))
         }
 
         fun metadataUrl(tag: String) = "$REPOSITORY/releases/download/$tag/oai-update.json"
@@ -439,6 +416,7 @@ class AppUpdateCheckerTest {
     companion object {
         private const val REPOSITORY = "https://github.com/1rua/open-android-intelligence"
         private const val RELEASES = "https://api.github.com/repos/1rua/open-android-intelligence/releases"
+        private const val LATEST_RELEASE = "$RELEASES/latest"
         private val CERTIFICATE = "a".repeat(64)
         private val installed = InstalledAppBuild("2.1.1-dev", 100, "d".repeat(40), "development", "com.openandroidintelligence.mobile", "full", CERTIFICATE)
     }

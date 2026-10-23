@@ -57,6 +57,16 @@ class ExtractPackageVersionTest(unittest.TestCase):
         (app / "version.properties").write_text("versionName=1.2.3\n", encoding="utf-8")
         self.assertEqual(extractor.extract_package_version(root), "1.2.3")
 
+    def test_android_app_version_takes_precedence_over_root_protocol_package(self):
+        root = workspace()
+        (root / "package.json").write_text(json.dumps({"name": "protocol", "version": "9.8.7"}), encoding="utf-8")
+        app = root / "apps/android/app"
+        app.mkdir(parents=True)
+        (app / "build.gradle.kts").write_text(
+            'android { defaultConfig { versionName = "1.2.3" } }\n', encoding="utf-8"
+        )
+        self.assertEqual(extractor.extract_package_version(root), "1.2.3")
+
     def test_reads_ios_info_plist(self):
         root = workspace()
         app = root / "ios/Example"

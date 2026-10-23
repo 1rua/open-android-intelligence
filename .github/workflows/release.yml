@@ -109,23 +109,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
           PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
+            PR_NUMBER="$PULL_REQUEST_NUMBER"
             HISTORY_SHA="$PULL_REQUEST_HEAD_SHA"
           else
-            HISTORY_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/pulls" --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | sort_by(.merged_at) | last | .head.sha // empty')
+            PR_INFO=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/pulls" --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | sort_by(.merged_at) | last | if . == null then empty else [.number, .head.sha] | @tsv end')
+            IFS=$'\t' read -r PR_NUMBER HISTORY_SHA <<< "$PR_INFO"
           fi
-          if ! [[ "$HISTORY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ && "$HISTORY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::A merged main pull request is required to determine stable version-code history."
             exit 1
           fi
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$AUTH_HEADER" fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+          FETCHED_HEAD=$(git rev-parse FETCH_HEAD)
+          if [ "$FETCHED_HEAD" != "$HISTORY_SHA" ]; then
+            echo "::error::The fetched pull request head does not match the merged source commit."
+            exit 1
+          fi
+          git -c http.extraheader="$AUTH_HEADER" fetch --no-tags origin "+refs/heads/dev:refs/remotes/origin/dev"
+          DEV_SHA=$(git rev-parse --verify 'origin/dev^{commit}')
           echo "sha=$HISTORY_SHA" >> "$GITHUB_OUTPUT"
+          echo "dev-sha=$DEV_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Prepare build metadata
         run: |
           python3 apps/android/tools/app_release_metadata.py prepare \
             --channel stable \
             --history-sha "${{ steps.version-code-history.outputs.sha }}" \
+            --history-sha "${{ steps.version-code-history.outputs.dev-sha }}" \
             --metadata "$RUNNER_TEMP/oai-release-metadata.json" \
             --github-env "$GITHUB_ENV"
 

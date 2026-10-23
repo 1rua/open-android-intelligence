@@ -56,47 +56,69 @@ class AppReleaseMetadataTest(unittest.TestCase):
         ]
         self.assertEqual(codes, sorted(set(codes)))
 
-    def test_prepare_uses_the_promoted_pr_head_for_stable_version_code(self):
+    def test_prepare_uses_the_greatest_target_pr_or_dev_history_for_stable_version_code(self):
         source_sha = "abcdef0123456789abcdef0123456789abcdef01"
-        for channel, history_sha, git_output, expected_code, expected_calls in (
-            (
-                "preview", None, ("false", COMMIT, "457"), 4571,
-                [call("rev-parse", "--is-shallow-repository"), call("rev-parse", "HEAD"), call("rev-list", "--count", "HEAD")],
-            ),
-            (
-                "stable", source_sha, ("false", source_sha, COMMIT, "457"), 4572,
-                [
-                    call("rev-parse", "--is-shallow-repository"),
-                    call("rev-parse", "--verify", f"{source_sha}^{{commit}}"),
-                    call("rev-parse", "HEAD"),
-                    call("rev-list", "--count", source_sha),
-                ],
-            ),
+        dev_sha = "abcdef0123456789abcdef0123456789abcdef02"
+        for target_count, source_count, dev_count, expected_count in (
+            (456, 457, 457, 457),
+            (458, 457, 457, 458),
+            (456, 457, 459, 459),
         ):
-            with self.subTest(channel=channel):
-                metadata_path = Path(tempfile.mkdtemp(prefix="open-android-intelligence-release-test-")) / "metadata.json"
-                with patch.object(release, "read_base_version", return_value="2.1.1"), patch.object(
-                    release, "git_value", side_effect=git_output,
-                ) as git_value:
-                    release.prepare(argparse.Namespace(
-                        channel=channel,
-                        run_number=42 if channel == "preview" else None,
-                        history_sha=history_sha,
-                        metadata=metadata_path,
-                        github_env=None,
-                    ))
+            git_output = (
+                "false", source_sha, dev_sha, str(target_count), str(source_count), str(dev_count), COMMIT,
+            )
+            expected_calls = [
+                call("rev-parse", "--is-shallow-repository"),
+                call("rev-parse", "--verify", f"{source_sha}^{{commit}}"),
+                call("rev-parse", "--verify", f"{dev_sha}^{{commit}}"),
+                call("rev-list", "--count", "HEAD"),
+                call("rev-list", "--count", source_sha),
+                call("rev-list", "--count", dev_sha),
+                call("rev-parse", "HEAD"),
+            ]
+            metadata_path = Path(tempfile.mkdtemp(prefix="open-android-intelligence-release-test-")) / "metadata.json"
+            with patch.object(release, "read_base_version", return_value="2.1.1"), patch.object(
+                release, "git_value", side_effect=git_output,
+            ) as git_value:
+                release.prepare(argparse.Namespace(
+                    channel="stable",
+                    run_number=None,
+                    history_sha=[source_sha, dev_sha],
+                    metadata=metadata_path,
+                    github_env=None,
+                ))
 
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                self.assertEqual(metadata["versionCode"], expected_code)
-                self.assertEqual(git_value.call_args_list, expected_calls)
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["versionCode"], expected_count * release.VERSION_CODE_CHANNEL_SCALE + release.CHANNEL_PHASE["stable"])
+            self.assertEqual(git_value.call_args_list, expected_calls)
+
+    def test_prepare_uses_head_history_for_preview_version_code(self):
+        metadata_path = Path(tempfile.mkdtemp(prefix="open-android-intelligence-release-test-")) / "metadata.json"
+        with patch.object(release, "read_base_version", return_value="2.1.1"), patch.object(
+            release, "git_value", side_effect=("false", "457", COMMIT),
+        ) as git_value:
+            release.prepare(argparse.Namespace(
+                channel="preview",
+                run_number=42,
+                history_sha=[],
+                metadata=metadata_path,
+                github_env=None,
+            ))
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        self.assertEqual(metadata["versionCode"], 4571)
+        self.assertEqual(git_value.call_args_list, [
+            call("rev-parse", "--is-shallow-repository"),
+            call("rev-list", "--count", "HEAD"),
+            call("rev-parse", "HEAD"),
+        ])
 
     def test_prepare_rejects_invalid_version_code_history_sha(self):
         with patch.object(release, "git_value", return_value="false"), patch.object(
             release, "read_base_version", return_value="2.1.1",
         ):
-            with self.assertRaisesRegex(ValueError, "full Git SHA"):
+            with self.assertRaisesRegex(ValueError, "full Git SHAs"):
                 release.prepare(argparse.Namespace(
-                    channel="stable", run_number=None, history_sha="short",
+                    channel="stable", run_number=None, history_sha=["short"],
                     metadata=Path("unused.json"), github_env=None,
                 ))
 
@@ -244,6 +266,9 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("Resolve version-code history commit", stable_build_job)
         self.assertIn("github.event.pull_request.head.sha", stable_build_job)
         self.assertIn("commits/$TARGET_SHA/pulls", stable_build_job)
+        self.assertIn('refs/pull/$PR_NUMBER/head', stable_build_job)
+        self.assertIn('+refs/heads/dev:refs/remotes/origin/dev', stable_build_job)
+        self.assertIn("max(commit_counts)", (release.REPOSITORY_ROOT / "apps/android/tools/app_release_metadata.py").read_text(encoding="utf-8"))
         self.assertIn("--history-sha", stable_build_job)
         stable_verify_job = release_workflow.split("  verify-stable-apk:", 1)[1].split("  publish-stable:", 1)[0]
         self.assertIn("permissions:\n      contents: read\n      pull-requests: read", stable_verify_job)

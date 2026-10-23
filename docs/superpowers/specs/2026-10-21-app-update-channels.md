@@ -25,7 +25,7 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 
 ## 发布源与版本信息
 
-唯一发布源是项目 `1rua/open-android-intelligence` 的 GitHub Releases。检测必须读取所有分页，不能把 API 默认返回的首屏当作全部版本；为避免重复预览 Release 导致每次检查下载数千份清单，客户端按 `published_at` 为每个渠道保留最近发布的候选，再只读取这些候选的元数据。时间戳只用于渠道内选择候选，是否可升级仍由清单 `versionCode` 决定。公开资源无需 App 保存 GitHub 凭证，依据 [GitHub Releases 接口说明](https://docs.github.com/en/rest/releases/releases#list-releases)。
+唯一发布源是项目 `1rua/open-android-intelligence` 的 GitHub Releases。正式版通过 GitHub latest-release 接口读取；预览检查最多读取 Release 列表第一页，选择开发预览候选，不继续扫描历史页面。公开资源无需 App 保存 GitHub 凭证，依据 [GitHub Releases 接口说明](https://docs.github.com/en/rest/releases/releases)。
 
 每个可检测发布须包含真实 APK 与 `oai-update.json`。清单字段为：
 
@@ -41,7 +41,7 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 
 构建与发布清单必须一致，发布前从 APK 输出信息与真实签名核验。版本号提取脚本支持 Node/RN/Electron `package.json`、Flutter `pubspec.yaml`、Android Gradle `versionName`、iOS `Info.plist` 和 Rust/Tauri `Cargo.toml`。Flutter 常见的 `X.Y.Z+build` 会提取为 `X.Y.Z`。当前 Android App 的包配置是 `apps/android/app/version.properties`，Gradle 从此文件读取 `versionName`。工作流从该配置提取严格的 `X.Y.Z` 并生成 Tag，不解析 Git Tag 来确定或进位包版本。开发预览 APK 的 `versionName` 为 `<包版本>-dev.<run_number>`，正式 APK 使用 `<包版本>`。
 
-开发与预览版本码取构建目标提交的完整历史数，正式版本码取合并 PR 的来源提交历史数；手动正式发布使用当前 main 已合并 PR 的来源提交。两者再乘以 10 并加渠道阶段（开发 0、开发预览 1、正式 2），所以 squash 合并也不会让正式版码低于同一来源提交的预览版。同一提交重跑不会产生更高安装版本码；开发预览运行编号只保证 Tag 和 Release 独立，不会让同一源码的重复构建成为 App 更新候选。
+开发与预览版本码取构建目标提交的完整历史数；正式版本码取当前 main、合并 PR 来源提交和保留的 dev 分支三者中最大的历史数。工作流显式获取 PR head 引用，因此 fork PR 或删除来源分支不会让提交对象缺失。最大历史数再乘以 10 并加渠道阶段（开发 0、开发预览 1、正式 2），所以 squash 合并也不会让正式版码低于已发布的预览版。为保持后续版本码单调，仓库必须保留 `dev` 分支。同一提交重跑不会产生更高安装版本码；开发预览运行编号只保证 Tag 和 Release 独立，不会让同一源码的重复构建成为 App 更新候选。
 
 更新候选必须匹配本机包名及分发渠道，并具有真实已上传的 APK 资源。以 Android 版本码决定是否可升级，不能按滚动标签名称或 GitHub 初次发布时间判断新旧，也不能提示用户安装更低版本码的 APK。Play 构建应通过原安装来源更新，不向它推荐 Full APK。
 
@@ -55,6 +55,6 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 
 ## 验收
 
-自动化覆盖：正式/预览过滤、带编号的开发预览、历史 nightly、未来版本号测试包、同版本与更旧版本、分页、发布和 APK 缺失、损坏清单、网络与限流失败、签名差异、分发渠道、渠道保存、请求取消、重复点击及真实设置页面文案与按钮行为。发布工作流另行覆盖多平台包版本提取、PR 正文来源、正式 Tag 强制更新和分支触发守卫。
+自动化覆盖：正式/预览过滤、带编号的开发预览、历史 nightly、未来版本号测试包、同版本与更旧版本、固定上限的 Release 查询、发布和 APK 缺失、损坏清单、网络与限流失败、签名差异、分发渠道、渠道保存、请求取消、重复点击及真实设置页面文案与按钮行为。发布工作流另行覆盖多平台包版本提取、PR 正文来源、正式 Tag 强制更新和分支触发守卫。
 
 本地执行本次改动所需的最小测试后，中文提交并推送 `main`；独立子 Agent 审查此次提交，再由完整 CI 和 APK 发布流程复核。真机由用户验证：打开设置入口、切换并重启验证渠道记忆、断网重查、打开对应发布页，以及同签名新版覆盖后的账号和本地记录保留。
