@@ -101,9 +101,6 @@ jobs:
     needs: [release-event, sign-notification-package]
     if: needs.release-event.outputs.should-release == 'true' && (github.event_name == 'push' || github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
     outputs:
       package-version: ${{ steps.package-version.outputs.version }}
       release-artifact-name: ${{ steps.artifact-name.outputs.name }}
@@ -206,10 +203,15 @@ jobs:
     needs: [release-event, build-preview]
     if: needs.release-event.outputs.should-release == 'true' && (github.event_name == 'push' || github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: read
     steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          fetch-depth: 0
+          # 仅在合并门禁通过后检出已进入目标分支的提交。
+          allow-unsafe-pr-checkout: true
+
       - name: Download verified release assets
         uses: actions/download-artifact@v8
         with:
@@ -224,6 +226,7 @@ jobs:
           prerelease: true
           make_latest: "false"
           target_commitish: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          token: ${{ github.token }}
           body_path: ${{ runner.temp }}/release-assets/release-notes.md
           fail_on_unmatched_files: true
           preserve_order: true

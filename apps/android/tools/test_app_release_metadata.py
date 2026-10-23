@@ -186,7 +186,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertLess(release_workflow.index("build-stable-apk:"), release_workflow.index("verify-stable-apk:"))
         self.assertLess(release_workflow.index("verify-stable-apk:"), release_workflow.index("publish-stable:"))
         self.assertIn("workflow_dispatch", release_workflow)
-        self.assertIn("v${{ needs.verify-stable-apk.outputs.package-version }}", release_workflow)
+        self.assertIn("v${{ needs.build-stable-apk.outputs.package-version }}", release_workflow)
         self.assertIn("git/refs/tags/", release_workflow)
         self.assertIn("-F force=true", release_workflow)
         self.assertIn("prerelease: false", release_workflow)
