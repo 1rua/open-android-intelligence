@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      signed-artifact-name: ${{ steps.artifact-name.outputs.name }}
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v7
@@ -59,10 +61,14 @@ jobs:
           OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE="$OAI_PLUGIN_KEY_FILE" \
             npm run build:android-notifications --prefix plugin-tooling -- "$RUNNER_TEMP/notifications.alp"
 
+      - name: Set signed artifact name
+        id: artifact-name
+        run: echo "name=signed-notifications-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - name: Upload the signed notification package
         uses: actions/upload-artifact@v7
         with:
-          name: signed-notifications
+          name: ${{ steps.artifact-name.outputs.name }}
           path: ${{ runner.temp }}/notifications.alp
           if-no-files-found: error
           retention-days: 1
@@ -76,6 +82,7 @@ jobs:
       pull-requests: read
     outputs:
       package-version: ${{ steps.package-version.outputs.version }}
+      apk-artifact-name: ${{ steps.artifact-name.outputs.name }}
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v7
@@ -116,7 +123,7 @@ jobs:
       - name: Download the signed notification package
         uses: actions/download-artifact@v8
         with:
-          name: signed-notifications
+          name: ${{ needs.sign-notification-package.outputs.signed-artifact-name }}
           path: ${{ runner.temp }}/signed-notifications
 
       - name: Set the notification package path
@@ -158,10 +165,14 @@ jobs:
           cp "$RUNNER_TEMP/oai-release-metadata.json" "$RUNNER_TEMP/stable-apk-inputs/"
           cp "$OAI_BUNDLED_NOTIFICATIONS_ALP" "$RUNNER_TEMP/stable-apk-inputs/notifications.alp"
 
+      - name: Set APK input artifact name
+        id: artifact-name
+        run: echo "name=stable-apk-inputs-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - name: Upload APK build inputs
         uses: actions/upload-artifact@v7
         with:
-          name: stable-apk-inputs
+          name: ${{ steps.artifact-name.outputs.name }}
           path: ${{ runner.temp }}/stable-apk-inputs
           if-no-files-found: error
           retention-days: 1
@@ -175,6 +186,7 @@ jobs:
       pull-requests: read
     outputs:
       package-version: ${{ needs.build-stable-apk.outputs.package-version }}
+      release-artifact-name: ${{ steps.artifact-name.outputs.name }}
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v7
@@ -193,7 +205,7 @@ jobs:
       - name: Download APK build inputs
         uses: actions/download-artifact@v8
         with:
-          name: stable-apk-inputs
+          name: ${{ needs.build-stable-apk.outputs.apk-artifact-name }}
           path: ${{ runner.temp }}/stable-apk-inputs
 
       - name: Verify the bundled notification package
@@ -217,10 +229,14 @@ jobs:
           cp "$RUNNER_TEMP/stable-apk-inputs/app-full-release.apk" "$RUNNER_TEMP/release-assets/"
           cp "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/release-assets/"
 
+      - name: Set stable release artifact name
+        id: artifact-name
+        run: echo "name=stable-release-assets-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
       - name: Upload verified stable release assets
         uses: actions/upload-artifact@v7
         with:
-          name: stable-release-assets
+          name: ${{ steps.artifact-name.outputs.name }}
           path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
           retention-days: 1
@@ -236,7 +252,7 @@ jobs:
       - name: Download verified stable release assets
         uses: actions/download-artifact@v8
         with:
-          name: stable-release-assets
+          name: ${{ needs.verify-stable-apk.outputs.release-artifact-name }}
           path: ${{ runner.temp }}/release-assets
 
       - name: Confirm main is current and move the stable tag
