@@ -22,6 +22,22 @@ class ExtractPackageVersionTest(unittest.TestCase):
         (root / "pubspec.yaml").write_text("name: example\nversion: 1.2.3+4\n", encoding="utf-8")
         self.assertEqual(extractor.extract_package_version(root), "1.2.3")
 
+    def test_flutter_version_must_be_top_level(self):
+        root = workspace()
+        (root / "pubspec.yaml").write_text(
+            "dependencies:\n  versioned_package:\n    version: 9.8.7\nversion: 1.2.3+4\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(extractor.extract_package_version(root), "1.2.3")
+
+        nested_only = workspace()
+        (nested_only / "pubspec.yaml").write_text(
+            "dependencies:\n  versioned_package:\n    version: 9.8.7\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "No supported application version file"):
+            extractor.extract_package_version(nested_only)
+
     def test_reads_android_gradle_version_name(self):
         root = workspace()
         app = root / "app"

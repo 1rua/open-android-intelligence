@@ -5,6 +5,8 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
+import java.time.DateTimeException
+import java.time.Instant
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.CoroutineContext
@@ -72,56 +74,35 @@ class AppUpdateChecker(
             AppUpdateResult.Unavailable(AppUpdateFailure.NETWORK)
         } catch (_: IllegalArgumentException) {
             AppUpdateResult.Unavailable(AppUpdateFailure.INVALID_RESPONSE)
+        } catch (_: DateTimeException) {
+            AppUpdateResult.Unavailable(AppUpdateFailure.INVALID_RESPONSE)
         }
     }
 
     private suspend fun checkPublished(channel: AppUpdateChannel, deadline: Long): AppUpdateResult {
-        val releases = mutableMapOf<String, PublishedRelease>()
+        val latestReleaseByChannel = mutableMapOf<String, PublishedRelease>()
         var page = 1
         while (true) {
             currentCoroutineContext().ensureActive()
-            require(page <= MAX_RELEASE_PAGES)
             val values = Json.parse(fetch("$API_RELEASES?per_page=$PAGE_SIZE&page=$page", MAX_RELEASE_BYTES, deadline)).array()
             require(values.size <= PAGE_SIZE)
             values.forEach { value ->
                 currentCoroutineContext().ensureActive()
-                val fields = value.fields()
-                if (fields.boolean("draft")) return@forEach
-                val preview = fields.boolean("prerelease")
-                val tag = fields.string("tag_name")
-                val development = tag == "nightly"
-                if (!development && !VERSION_TAG.matches(tag)) return@forEach
-                val versionIsPreview = tag.removePrefix("v").substringBefore('+').contains('-')
-                if (!development && preview != versionIsPreview) return@forEach
-                if (channel == AppUpdateChannel.STABLE && (preview || development)) return@forEach
-                if (development && !preview) return@forEach
-                require(fields.string("published_at").isNotBlank())
-                val releaseUrl = fields.string("html_url")
-                require(OfficialUpdateUrls.releasePage(releaseUrl, tag))
-                val assets = fields.required("assets").array().map { it.fields() }.map { asset ->
-                    ReleaseAsset(
-                        asset.string("name"),
-                        asset.string("browser_download_url"),
-                        asset.string("state") == "uploaded" && asset.long("size") > 0,
-                    )
+                val release = publishedRelease(value, channel) ?: return@forEach
+                val current = latestReleaseByChannel[release.expectedChannel]
+                if (current == null || release.publishedAt.isAfter(current.publishedAt)) {
+                    latestReleaseByChannel[release.expectedChannel] = release
                 }
-                releases[tag] = PublishedRelease(
-                    tag = tag,
-                    expectedChannel = if (development) "development" else if (preview) "preview" else "stable",
-                    name = fields.optionalString("name").ifBlank { tag }.take(MAX_NAME_CHARS),
-                    summary = fields.optionalString("body").take(MAX_SUMMARY_CHARS),
-                    releaseUrl = releaseUrl,
-                    assets = assets,
-                )
             }
-            // 不依赖默认首屏或发布时间排序，完整扫描后只用 Android 版本码选择可升级包。
+            // 扫描所有页面，只读取各渠道最近发布项的清单；是否可升级仍只比较 versionCode。
             if (values.size < PAGE_SIZE) break
             page += 1
         }
+        val releases = latestReleaseByChannel.values
         if (releases.isEmpty()) return AppUpdateResult.NotPublished
 
         var incomplete = false
-        val candidates = releases.values.mapNotNull { release ->
+        val candidates = releases.mapNotNull { release ->
             currentCoroutineContext().ensureActive()
             val metadataAssets = release.assets.filter { it.name == MANIFEST_NAME && it.uploaded }
             if (metadataAssets.isEmpty()) {
@@ -165,10 +146,45 @@ class AppUpdateChecker(
         }
         val latest = candidates.maxWithOrNull(compareBy<AppUpdateRelease> { it.versionCode }.thenBy { it.versionName })
         if (latest != null && latest.versionCode > installed.versionCode) return AppUpdateResult.Available(latest)
-        // 缺元数据的历史发布无法比较版本码，因此不能断言当前已是最新。
+        // 最近渠道发布缺少元数据时，不能把尚未校验的 APK 当成最新版本。
         if (incomplete) return AppUpdateResult.Unsupported(AppUpdateUnsupportedReason.METADATA_MISSING)
         return if (latest == null) AppUpdateResult.Unsupported(AppUpdateUnsupportedReason.METADATA_MISSING)
         else AppUpdateResult.UpToDate(latest.versionName)
+    }
+
+    private fun publishedRelease(value: JsonValue, channel: AppUpdateChannel): PublishedRelease? {
+        val fields = value.fields()
+        if (fields.boolean("draft")) return null
+        val prerelease = fields.boolean("prerelease")
+        val tag = fields.string("tag_name")
+        val development = tag == "nightly"
+        if (!development && !VERSION_TAG.matches(tag)) return null
+        val versionIsPreview = tag.removePrefix("v").substringBefore('+').contains('-')
+        if (!development && prerelease != versionIsPreview) return null
+        if (development && !prerelease) return null
+
+        val expectedChannel = if (development) "development" else if (prerelease) "preview" else "stable"
+        if (channel == AppUpdateChannel.STABLE && expectedChannel != "stable") return null
+        val publishedAt = fields.string("published_at")
+        require(publishedAt.isNotBlank())
+        val releaseUrl = fields.string("html_url")
+        require(OfficialUpdateUrls.releasePage(releaseUrl, tag))
+        val assets = fields.required("assets").array().map { it.fields() }.map { asset ->
+            ReleaseAsset(
+                asset.string("name"),
+                asset.string("browser_download_url"),
+                asset.string("state") == "uploaded" && asset.long("size") > 0,
+            )
+        }
+        return PublishedRelease(
+            tag = tag,
+            expectedChannel = expectedChannel,
+            publishedAt = Instant.parse(publishedAt),
+            name = fields.optionalString("name").ifBlank { tag }.take(MAX_NAME_CHARS),
+            summary = fields.optionalString("body").take(MAX_SUMMARY_CHARS),
+            releaseUrl = releaseUrl,
+            assets = assets,
+        )
     }
 
     private suspend fun fetch(url: String, maxBytes: Int, deadline: Long): String {
@@ -190,6 +206,7 @@ class AppUpdateChecker(
     private data class PublishedRelease(
         val tag: String,
         val expectedChannel: String,
+        val publishedAt: Instant,
         val name: String,
         val summary: String,
         val releaseUrl: String,
@@ -198,7 +215,6 @@ class AppUpdateChecker(
 
     companion object {
         private const val PAGE_SIZE = 100
-        private const val MAX_RELEASE_PAGES = 20
         private const val MAX_RELEASE_BYTES = 2 * 1024 * 1024
         private const val MAX_MANIFEST_BYTES = 32 * 1024
         private const val MAX_NAME_CHARS = 160

@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import app_release_metadata as release
 
@@ -55,6 +55,50 @@ class AppReleaseMetadataTest(unittest.TestCase):
             self.metadata(channel="development", count=398)["versionCode"],
         ]
         self.assertEqual(codes, sorted(set(codes)))
+
+    def test_prepare_uses_the_promoted_pr_head_for_stable_version_code(self):
+        source_sha = "abcdef0123456789abcdef0123456789abcdef01"
+        for channel, history_sha, git_output, expected_code, expected_calls in (
+            (
+                "preview", None, ("false", COMMIT, "457"), 4571,
+                [call("rev-parse", "--is-shallow-repository"), call("rev-parse", "HEAD"), call("rev-list", "--count", "HEAD")],
+            ),
+            (
+                "stable", source_sha, ("false", source_sha, COMMIT, "457"), 4572,
+                [
+                    call("rev-parse", "--is-shallow-repository"),
+                    call("rev-parse", "--verify", f"{source_sha}^{{commit}}"),
+                    call("rev-parse", "HEAD"),
+                    call("rev-list", "--count", source_sha),
+                ],
+            ),
+        ):
+            with self.subTest(channel=channel):
+                metadata_path = Path(tempfile.mkdtemp(prefix="open-android-intelligence-release-test-")) / "metadata.json"
+                with patch.object(release, "read_base_version", return_value="2.1.1"), patch.object(
+                    release, "git_value", side_effect=git_output,
+                ) as git_value:
+                    release.prepare(argparse.Namespace(
+                        channel=channel,
+                        run_number=42 if channel == "preview" else None,
+                        history_sha=history_sha,
+                        metadata=metadata_path,
+                        github_env=None,
+                    ))
+
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                self.assertEqual(metadata["versionCode"], expected_code)
+                self.assertEqual(git_value.call_args_list, expected_calls)
+
+    def test_prepare_rejects_invalid_version_code_history_sha(self):
+        with patch.object(release, "git_value", return_value="false"), patch.object(
+            release, "read_base_version", return_value="2.1.1",
+        ):
+            with self.assertRaisesRegex(ValueError, "full Git SHA"):
+                release.prepare(argparse.Namespace(
+                    channel="stable", run_number=None, history_sha="short",
+                    metadata=Path("unused.json"), github_env=None,
+                ))
 
     def test_invalid_versions_channels_and_run_numbers_are_rejected(self):
         for version in ("2.1", "02.1.1", "2.1.1-beta.1", "2.1.1+build", "2.1.1\n"):
@@ -196,8 +240,11 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("stable-apk-inputs-$GITHUB_RUN_ATTEMPT", release_workflow)
         self.assertIn("stable-release-assets-$GITHUB_RUN_ATTEMPT", release_workflow)
         stable_build_job = release_workflow.split("  build-stable-apk:", 1)[1].split("  verify-stable-apk:", 1)[0]
-        self.assertIn("permissions:\n      contents: read", stable_build_job)
-        self.assertNotIn("pull-requests: read", stable_build_job)
+        self.assertIn("permissions:\n      contents: read\n      pull-requests: read", stable_build_job)
+        self.assertIn("Resolve version-code history commit", stable_build_job)
+        self.assertIn("github.event.pull_request.head.sha", stable_build_job)
+        self.assertIn("commits/$TARGET_SHA/pulls", stable_build_job)
+        self.assertIn("--history-sha", stable_build_job)
         stable_verify_job = release_workflow.split("  verify-stable-apk:", 1)[1].split("  publish-stable:", 1)[0]
         self.assertIn("permissions:\n      contents: read\n      pull-requests: read", stable_verify_job)
         stable_publish_job = release_workflow.split("  publish-stable:", 1)[1]
@@ -213,6 +260,11 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn('make_latest: "true"', release_workflow)
         self.assertIn("overwrite_files: true", release_workflow)
         self.assertIn("body_path: ${{ runner.temp }}/release-assets/release-notes.md", release_workflow)
+        self.assertLess(
+            release_workflow.index("Publish or replace the stable release"),
+            release_workflow.index("Move stable tag to published commit"),
+        )
+        self.assertIn("CURRENT_MAIN_SHA", release_workflow.split("Move stable tag to published commit", 1)[1])
         self.assertNotIn("--tag", release_workflow)
 
 

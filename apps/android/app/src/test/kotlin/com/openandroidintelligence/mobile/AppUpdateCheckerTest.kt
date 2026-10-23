@@ -53,8 +53,8 @@ class AppUpdateCheckerTest {
     @Test fun previewFollowsDevelopmentAndFutureNumberedPreviewsAcrossPages() = Fixture().use { fixture ->
         fixture.page(1, (1..100).map { mapOf("draft" to false, "prerelease" to true, "tag_name" to "unrelated-$it") })
         fixture.page(2, listOf(
-            fixture.release("nightly", 120, "development"),
-            fixture.release("v2.2.0-beta.1", 140, "preview"),
+            fixture.release("nightly", 120, "development", publishedAt = "2026-10-20T00:00:00Z"),
+            fixture.release("v2.2.0-beta.1", 140, "preview", publishedAt = "2026-10-21T00:00:00Z"),
             fixture.release("v2.1.1", 110, "stable"),
         ))
         val result = fixture.check(AppUpdateChannel.PREVIEW).available()
@@ -69,6 +69,72 @@ class AppUpdateCheckerTest {
             fixture.release("nightly", 130, "development"),
         ))
         assertEquals("stable", fixture.check(AppUpdateChannel.PREVIEW, installed.copy(versionCode = 140)).available().channel)
+    }
+
+    @Test fun previewPaginationContinuesPastTwentyFullPagesAndFetchesOnlySelectedMetadata() = Fixture().use { fixture ->
+        for (page in 1..20) {
+            val unrelated = (1..99).map { index ->
+                mapOf(
+                    "draft" to false,
+                    "prerelease" to true,
+                    "tag_name" to "unrelated-$page-$index",
+                    "published_at" to "2026-10-20T00:00:00Z",
+                )
+            }
+            val releases = if (page == 1) {
+                unrelated + fixture.release("v2.3.0-beta.1", 150, "preview", publishedAt = "2026-10-21T00:00:00Z")
+            } else {
+                unrelated + mapOf(
+                    "draft" to false,
+                    "prerelease" to true,
+                    "tag_name" to "unrelated-$page-100",
+                    "published_at" to "2026-10-20T00:00:00Z",
+                )
+            }
+            fixture.page(page, releases)
+        }
+        fixture.page(21, listOf(
+            fixture.release("v2.3.0-beta.1", 160, "preview", publishedAt = "2026-10-23T00:00:00Z"),
+        ))
+
+        val result = fixture.check(AppUpdateChannel.PREVIEW).available()
+
+        assertEquals("2.3.0-beta.1", result.versionName)
+        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=21"))
+        assertEquals(listOf(fixture.metadataUrl("v2.3.0-beta.1")), fixture.requests.filter { it.contains("/releases/download/") })
+    }
+
+    @Test fun stablePaginationFindsTheLatestStableReleaseBeyondTwentyPages() = Fixture().use { fixture ->
+        for (page in 1..20) {
+            val unrelated = (1..99).map { index ->
+                mapOf(
+                    "draft" to false,
+                    "prerelease" to true,
+                    "tag_name" to "unrelated-$page-$index",
+                    "published_at" to "2026-10-20T00:00:00Z",
+                )
+            }
+            val releases = if (page == 1) {
+                unrelated + fixture.release("v2.2.0", 150, "stable", publishedAt = "2026-10-21T00:00:00Z")
+            } else {
+                unrelated + mapOf(
+                    "draft" to false,
+                    "prerelease" to true,
+                    "tag_name" to "unrelated-$page-100",
+                    "published_at" to "2026-10-20T00:00:00Z",
+                )
+            }
+            fixture.page(page, releases)
+        }
+        fixture.page(21, listOf(
+            fixture.release("v2.3.0", 160, "stable", publishedAt = "2026-10-23T00:00:00Z"),
+        ))
+
+        val result = fixture.check(AppUpdateChannel.STABLE).available()
+
+        assertEquals("2.3.0", result.versionName)
+        assertTrue(fixture.requests.contains("$RELEASES?per_page=100&page=21"))
+        assertEquals(listOf(fixture.metadataUrl("v2.3.0")), fixture.requests.filter { it.contains("/releases/download/") })
     }
 
     @Test fun rollingDevelopmentBuildUsesMonotonicVersionCode() = Fixture().use { fixture ->
@@ -105,13 +171,24 @@ class AppUpdateCheckerTest {
         assertEquals(AppUpdateResult.Unsupported(AppUpdateUnsupportedReason.METADATA_MISSING), fixture.check(AppUpdateChannel.STABLE))
     }
 
-    @Test fun historicalMissingMetadataStillAllowsAnExplicitlyVerifiedNewBuild() = Fixture().use { fixture ->
+    @Test fun invalidPublishedAtIsAnInvalidResponse() = Fixture().use { fixture ->
         fixture.page(1, listOf(
-            fixture.release("v2.1.0", 90, "stable", metadata = false),
-            fixture.release("v2.2.0", 120, "stable"),
+            fixture.release("v2.2.0", 120, "stable", publishedAt = "not-a-timestamp"),
+        ))
+
+        assertEquals(
+            AppUpdateResult.Unavailable(AppUpdateFailure.INVALID_RESPONSE),
+            fixture.check(AppUpdateChannel.STABLE),
+        )
+    }
+
+    @Test fun historicalMissingMetadataDoesNotBlockAVerifiedLatestBuild() = Fixture().use { fixture ->
+        fixture.page(1, listOf(
+            fixture.release("v2.1.0", 90, "stable", metadata = false, publishedAt = "2026-10-20T00:00:00Z"),
+            fixture.release("v2.2.0", 120, "stable", publishedAt = "2026-10-21T00:00:00Z"),
         ))
         assertEquals("2.2.0", fixture.check(AppUpdateChannel.STABLE).available().versionName)
-        assertEquals(AppUpdateResult.Unsupported(AppUpdateUnsupportedReason.METADATA_MISSING),
+        assertEquals(AppUpdateResult.UpToDate("2.2.0"),
             fixture.check(AppUpdateChannel.STABLE, installed.copy(versionCode = 120)))
     }
 
@@ -336,6 +413,7 @@ class AppUpdateCheckerTest {
             apk: Boolean = true,
             versionName: String = if (tag == "nightly") "2.1.1-dev.20261021+abc1234" else tag.removePrefix("v"),
             overrides: Map<String, Any?> = emptyMap(),
+            publishedAt: String = "2026-10-21T00:00:00Z",
         ): Map<String, Any?> {
             val assetName = "open-android-intelligence-full.apk"
             val manifest = mapOf(
@@ -351,7 +429,7 @@ class AppUpdateCheckerTest {
             return mapOf(
                 "tag_name" to tag, "name" to if (channel == "development") "开发预览测试版" else versionName,
                 "body" to "公开发布说明", "draft" to draft, "prerelease" to (channel != "stable"),
-                "published_at" to "2026-10-21T00:00:00Z", "html_url" to "$REPOSITORY/releases/tag/$tag", "assets" to assets,
+                "published_at" to publishedAt, "html_url" to "$REPOSITORY/releases/tag/$tag", "assets" to assets,
             )
         }
 

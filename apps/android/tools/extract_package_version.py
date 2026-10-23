@@ -27,7 +27,7 @@ def _json_version(path: Path) -> str | None:
 
 def _yaml_version(path: Path) -> str | None:
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"^\s*version\s*:\s*['\"]?([^\s'\"#]+)", line)
+        match = re.match(r"^version\s*:\s*['\"]?([^\s'\"#]+)", line)
         if match:
             value = match.group(1)
             flutter = re.fullmatch(

@@ -25,7 +25,7 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 
 ## 发布源与版本信息
 
-唯一发布源是项目 `1rua/open-android-intelligence` 的 GitHub Releases。检测按页读取发布清单，不能把 API 默认返回的首屏当作全部版本。公开资源无需 App 保存 GitHub 凭证，依据 [GitHub Releases 接口说明](https://docs.github.com/en/rest/releases/releases#list-releases)。
+唯一发布源是项目 `1rua/open-android-intelligence` 的 GitHub Releases。检测必须读取所有分页，不能把 API 默认返回的首屏当作全部版本；为避免重复预览 Release 导致每次检查下载数千份清单，客户端按 `published_at` 为每个渠道保留最近发布的候选，再只读取这些候选的元数据。时间戳只用于渠道内选择候选，是否可升级仍由清单 `versionCode` 决定。公开资源无需 App 保存 GitHub 凭证，依据 [GitHub Releases 接口说明](https://docs.github.com/en/rest/releases/releases#list-releases)。
 
 每个可检测发布须包含真实 APK 与 `oai-update.json`。清单字段为：
 
@@ -41,13 +41,13 @@ Android 宿主在“设置与平台管理 → 应用更新”中提供正式版�
 
 构建与发布清单必须一致，发布前从 APK 输出信息与真实签名核验。版本号提取脚本支持 Node/RN/Electron `package.json`、Flutter `pubspec.yaml`、Android Gradle `versionName`、iOS `Info.plist` 和 Rust/Tauri `Cargo.toml`。Flutter 常见的 `X.Y.Z+build` 会提取为 `X.Y.Z`。当前 Android App 的包配置是 `apps/android/app/version.properties`，Gradle 从此文件读取 `versionName`。工作流从该配置提取严格的 `X.Y.Z` 并生成 Tag，不解析 Git Tag 来确定或进位包版本。开发预览 APK 的 `versionName` 为 `<包版本>-dev.<run_number>`，正式 APK 使用 `<包版本>`。
 
-版本码默认取完整 Git 历史提交数乘以 10，再加渠道阶段（开发 0、开发预览 1、正式 2）。同一提交重跑不会产生更高安装版本码；开发预览运行编号只保证 Tag 和 Release 独立，不会让同一源码的重复构建成为 App 更新候选。发布分支如使用显式版本码，必须保证比其前驱构建更大。
+开发与预览版本码取构建目标提交的完整历史数，正式版本码取合并 PR 的来源提交历史数；手动正式发布使用当前 main 已合并 PR 的来源提交。两者再乘以 10 并加渠道阶段（开发 0、开发预览 1、正式 2），所以 squash 合并也不会让正式版码低于同一来源提交的预览版。同一提交重跑不会产生更高安装版本码；开发预览运行编号只保证 Tag 和 Release 独立，不会让同一源码的重复构建成为 App 更新候选。
 
 更新候选必须匹配本机包名及分发渠道，并具有真实已上传的 APK 资源。以 Android 版本码决定是否可升级，不能按滚动标签名称或 GitHub 初次发布时间判断新旧，也不能提示用户安装更低版本码的 APK。Play 构建应通过原安装来源更新，不向它推荐 Full APK。
 
 ## 结果、下载与边界
 
-页面区分正在检查、发现新版本、暂无可升级版本、尚未发布、元信息缺失以及检查失败。网络失败、限流、服务失败或清单校验失败不能显示为“已是最新版本”。未提供可验证元信息的历史发布保留发布页入口。
+页面区分正在检查、发现新版本、暂无可升级版本、尚未发布、元信息缺失以及检查失败。网络失败、限流、服务失败或最近渠道候选的清单校验失败不能显示为“已是最新版本”。更早历史 Release 缺失元数据不会阻止验证当前渠道最近发布；发布页仍可从“查看所有发布”入口打开。
 
 发现新版本后展示版本名、渠道、发布名称与说明摘要。用户明确点击后通过系统浏览器打开对应发布页，在发布页选择安装包。本次不引入自动下载或自动安装权限。签名一致才视为已核对可覆盖；签名不同或未知时明确说明覆盖安装兼容性尚未确认，不引导卸载或清除原应用数据。
 

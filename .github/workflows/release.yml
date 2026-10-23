@@ -80,6 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       package-version: ${{ steps.package-version.outputs.version }}
       apk-artifact-name: ${{ steps.artifact-name.outputs.name }}
@@ -102,10 +103,29 @@ jobs:
         id: package-version
         run: echo "version=$(python3 apps/android/tools/extract_package_version.py)" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve version-code history commit
+        id: version-code-history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
+            HISTORY_SHA="$PULL_REQUEST_HEAD_SHA"
+          else
+            HISTORY_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/pulls" --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | sort_by(.merged_at) | last | .head.sha // empty')
+          fi
+          if ! [[ "$HISTORY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::A merged main pull request is required to determine stable version-code history."
+            exit 1
+          fi
+          echo "sha=$HISTORY_SHA" >> "$GITHUB_OUTPUT"
+
       - name: Prepare build metadata
         run: |
           python3 apps/android/tools/app_release_metadata.py prepare \
             --channel stable \
+            --history-sha "${{ steps.version-code-history.outputs.sha }}" \
             --metadata "$RUNNER_TEMP/oai-release-metadata.json" \
             --github-env "$GITHUB_ENV"
 
@@ -263,22 +283,15 @@ jobs:
           name: ${{ needs.verify-stable-apk.outputs.release-artifact-name }}
           path: ${{ runner.temp }}/release-assets
 
-      - name: Confirm main is current and move the stable tag
+      - name: Confirm main is current
         env:
           GH_TOKEN: ${{ github.token }}
-          PACKAGE_VERSION: ${{ needs.build-stable-apk.outputs.package-version }}
           TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
         run: |
           CURRENT_MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')
           if [ "$CURRENT_MAIN_SHA" != "$TARGET_SHA" ]; then
             echo "The main branch has advanced; refusing to publish a stale stable release."
             exit 1
-          fi
-          RELEASE_TAG="v$PACKAGE_VERSION"
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" -F force=true >/dev/null
-          else
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" >/dev/null
           fi
 
       - name: Publish or replace the stable release
@@ -298,3 +311,24 @@ jobs:
           files: |
             ${{ runner.temp }}/release-assets/app-full-release.apk
             ${{ runner.temp }}/release-assets/oai-update.json
+
+      - name: Move stable tag to published commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ needs.build-stable-apk.outputs.package-version }}
+          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+        run: |
+          CURRENT_MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')
+          if [ "$CURRENT_MAIN_SHA" != "$TARGET_SHA" ]; then
+            echo "The main branch has advanced; refusing to move a stale stable tag."
+            exit 1
+          fi
+          RELEASE_TAG="v$PACKAGE_VERSION"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            CURRENT_TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
+            if [ "$CURRENT_TAG_SHA" != "$TARGET_SHA" ]; then
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" -F force=true >/dev/null
+            fi
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" >/dev/null
+          fi

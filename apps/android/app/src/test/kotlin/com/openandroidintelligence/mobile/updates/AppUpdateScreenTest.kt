@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile.updates
 import android.app.Application
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -29,6 +30,57 @@ class AppUpdateScreenTest {
             .assertExists()
         compose.onNodeWithText("正式版").performClick()
         assertEquals(AppUpdateChannel.STABLE, selected)
+    }
+
+    @Test
+    fun developmentPreviewLabelIsUsedForInstalledAndAvailableDevVersions() {
+        show(
+            AppUpdateUiState(
+                AppUpdateChannel.PREVIEW,
+                result = AppUpdateResult.Available(
+                    AppUpdateRelease(
+                        versionName = "2.1.1-dev.42",
+                        versionCode = 2042,
+                        commit = "b".repeat(40),
+                        channel = "preview",
+                        releaseName = "开发预览运行 42",
+                        summary = "",
+                        releaseUrl = APP_RELEASES_URL,
+                        apkUrl = "$APP_RELEASES_URL/download/v2.1.1-dev.42/app-full-debug.apk",
+                        signingMatches = true,
+                    ),
+                ),
+            ),
+            installed = installedBuild().copy(versionName = "2.1.1-dev.41", channel = "preview"),
+        )
+
+        compose.onNodeWithText("开发预览测试版").assertExists()
+        compose.onNodeWithText("开发预览测试版 · 开发预览运行 42").assertExists()
+        compose.onNodeWithText("版本号测试版").assertDoesNotExist()
+    }
+
+    @Test
+    fun betaReleaseKeepsTheNumberedTestLabel() {
+        show(
+            AppUpdateUiState(
+                AppUpdateChannel.PREVIEW,
+                result = AppUpdateResult.Available(
+                    AppUpdateRelease(
+                        versionName = "2.2.0-beta.1",
+                        versionCode = 2201,
+                        commit = "c".repeat(40),
+                        channel = "preview",
+                        releaseName = "2.2.0 首次测试",
+                        summary = "",
+                        releaseUrl = APP_RELEASES_URL,
+                        apkUrl = "$APP_RELEASES_URL/download/v2.2.0-beta.1/app-full-release.apk",
+                        signingMatches = true,
+                    ),
+                ),
+            ),
+        )
+
+        compose.onNodeWithText("版本号测试版 · 2.2.0 首次测试").assertExists()
     }
 
     @Test
@@ -109,6 +161,7 @@ class AppUpdateScreenTest {
 
     private fun show(
         state: AppUpdateUiState,
+        installed: InstalledAppBuild = installedBuild(),
         onSelect: (AppUpdateChannel) -> Unit = {},
         onCheck: () -> Unit = {},
         onOpen: (String) -> Unit = {},
@@ -116,7 +169,7 @@ class AppUpdateScreenTest {
         compose.setContent {
             MaterialTheme {
                 AppUpdateScreen(
-                    installed = installedBuild(),
+                    installed = installed,
                     state = state,
                     onBack = {},
                     onSelectChannel = onSelect,
