@@ -24,7 +24,7 @@ export type PacketAudit = {
   missingArtifacts: string[];
 };
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const LOCK_PATH = resolve(ROOT, "docs/mvp/mvp-dependency-lock.md");
 const P0A_DECISIONS_PATH = resolve(ROOT, "docs/mvp/p0a-gate-decisions.md");
 
@@ -43,20 +43,20 @@ export const PACKETS: ReadonlyArray<{
     label: "controller lock and contract launcher",
     source: [
       "docs/mvp/mvp-dependency-lock.md",
-      "mvp-contract/tools/check-lock.ts",
-      "mvp-contract/test/dependency-lock.test.ts",
+      "legacy/mvp-contract/tools/check-lock.ts",
+      "legacy/mvp-contract/test/dependency-lock.test.ts",
     ],
   },
   {
     id: "WP-01",
     label: "closed schemas and deterministic fixtures",
     source: [
-      "mvp-contract/schemas/v1/notification-policy.schema.json",
-      "mvp-contract/schemas/v1/notification-record.schema.json",
-      "mvp-contract/schemas/v1/notification-api.schema.json",
-      "mvp-contract/schemas/v1/assistant-chat.schema.json",
-      "mvp-contract/src/wire-codec.ts",
-      "mvp-contract/test/mvp-contract.test.ts",
+      "legacy/mvp-contract/schemas/v1/notification-policy.schema.json",
+      "legacy/mvp-contract/schemas/v1/notification-record.schema.json",
+      "legacy/mvp-contract/schemas/v1/notification-api.schema.json",
+      "legacy/mvp-contract/schemas/v1/assistant-chat.schema.json",
+      "legacy/mvp-contract/src/wire-codec.ts",
+      "legacy/mvp-contract/test/mvp-contract.test.ts",
       "docs/mvp/mvp-vertical-slice-contract.md",
     ],
   },
@@ -93,19 +93,19 @@ export const PACKETS: ReadonlyArray<{
     id: "WP-04",
     label: "fake paired transport and trace harness",
     source: [
-      "apps/android/transport/src/testFixtures/kotlin/com/openandroidintelligence/transport/FakeUserspaceTransport.kt",
-      "bridge-contract/src/fake-bridge.ts",
-      "bridge-contract/test/fake-bridge.test.ts",
-      "bridge-contract/test/notification-flow.trace.test.ts",
+      "legacy/android-tailnet/transport/src/testFixtures/kotlin/com/openandroidintelligence/transport/FakeUserspaceTransport.kt",
+      "legacy/bridge-contract/src/fake-bridge.ts",
+      "legacy/bridge-contract/test/fake-bridge.test.ts",
+      "legacy/bridge-contract/test/notification-flow.trace.test.ts",
     ],
   },
   {
     id: "WP-05",
     label: "P0t userspace Tailnet spike",
     source: [
-      "apps/android/tailnet-core/src/main/kotlin/com/openandroidintelligence/tailnet/core/TailscaleUserspaceCore.kt",
-      "apps/android/tailnet-core/src/main/kotlin/com/openandroidintelligence/tailnet/core/VerifiedPairingTransportBinding.kt",
-      "apps/android/transport/src/main/kotlin/com/openandroidintelligence/transport/TsnetPairedBridgeTransport.kt",
+      "legacy/android-tailnet/tailnet-core/src/main/kotlin/com/openandroidintelligence/tailnet/core/TailscaleUserspaceCore.kt",
+      "legacy/android-tailnet/tailnet-core/src/main/kotlin/com/openandroidintelligence/tailnet/core/VerifiedPairingTransportBinding.kt",
+      "legacy/android-tailnet/transport/src/main/kotlin/com/openandroidintelligence/transport/TsnetPairedBridgeTransport.kt",
       "docs/mvp/p0t-mvp-evidence.md",
     ],
   },
@@ -113,17 +113,17 @@ export const PACKETS: ReadonlyArray<{
     id: "WP-06",
     label: "Bridge pairing, notification API and text chat",
     source: [
-      "bridge-contract/src/pairing-service.ts",
-      "bridge-contract/src/notification-service.ts",
-      "bridge-contract/src/notification-store.ts",
-      "bridge-contract/src/subscription-store.ts",
-      "bridge-contract/src/operation-dispatch.ts",
-      "bridge-contract/src/assistant-chat-service.ts",
-      "bridge-contract/src/durable-store.ts",
-      "bridge-contract/src/persistence.ts",
-      "bridge-contract/test/service-contract.test.ts",
-      "bridge-contract/test/durable-store.test.ts",
-      "bridge-contract/test/persistence-contract.test.ts",
+      "legacy/bridge-contract/src/pairing-service.ts",
+      "legacy/bridge-contract/src/notification-service.ts",
+      "legacy/bridge-contract/src/notification-store.ts",
+      "legacy/bridge-contract/src/subscription-store.ts",
+      "legacy/bridge-contract/src/operation-dispatch.ts",
+      "legacy/bridge-contract/src/assistant-chat-service.ts",
+      "legacy/bridge-contract/src/durable-store.ts",
+      "legacy/bridge-contract/src/persistence.ts",
+      "legacy/bridge-contract/test/service-contract.test.ts",
+      "legacy/bridge-contract/test/durable-store.test.ts",
+      "legacy/bridge-contract/test/persistence-contract.test.ts",
       // The bridge runtime moved under `legacy/` with the modular plugin
       // migration; the packet still covers it, at its current location.
       "legacy/bridge-runtime/src/durable-operation-dispatcher.ts",
@@ -206,9 +206,9 @@ export const PACKETS: ReadonlyArray<{
     id: "WP-10",
     label: "source-only selected attachment artifact contract",
     source: [
-      "artifact-contract/src/artifact-ticket.ts",
-      "artifact-contract/test/artifact-ticket.test.ts",
-      "artifact-contract/README.md",
+      "legacy/artifact-contract/src/artifact-ticket.ts",
+      "legacy/artifact-contract/test/artifact-ticket.test.ts",
+      "legacy/artifact-contract/README.md",
       "apps/android/artifact-ports/src/main/kotlin/com/openandroidintelligence/artifact/ArtifactSelectionPorts.kt",
       "apps/android/artifact-ports/build.gradle.kts",
       "apps/android/artifact-ports/README.md",
