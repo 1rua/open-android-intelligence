@@ -157,4 +157,55 @@ class GatewayTutorialsTest {
             assertTrue(tutorial.shortName.isNotBlank())
         }
     }
+
+    /**
+     * 回归测试：主密钥生成命令必须防覆盖。
+     *
+     * 对应缺陷：`head -c 32 /dev/urandom > 文件` 每次执行都会换密钥，
+     * 而网关已用它加密过历史消息 —— 换掉后旧消息永久无法解密。
+     * 教程允许用户随时重看，因此这条命令必须幂等。
+     */
+    @Test
+    fun `master key generation does not overwrite an existing file`() {
+        val openclaw = com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials.OPENCLAW
+        val keyStep = openclaw.steps.first { step ->
+            step.terminal?.command?.contains("urandom") == true
+        }
+        val command = keyStep.terminal!!.command
+
+        // 必须带存在性守卫，而不是无条件重定向。
+        assertTrue(
+            "主密钥生成必须防止覆盖已有文件",
+            command.contains("test -f") && command.contains("||"),
+        )
+        // 权限加固不能丢。
+        assertTrue("必须把主密钥权限收紧到 0600", command.contains("chmod 600"))
+    }
+
+    /**
+     * 回归测试：OpenClaw 的主密钥环境变量必须写在同一行。
+     *
+     * 对应缺陷：`export VAR=\\` 后接换行会保留下一行缩进，
+     * 使 $HOME/... 变为独立参数，Bash 报 not a valid identifier 且变量为空。
+     */
+    @Test
+    fun `master key export assigns on a single line`() {
+        val openclaw = com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials.OPENCLAW
+        val exportStep = openclaw.steps.first { step ->
+            step.terminal?.command?.contains("OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=") == true
+        }
+        val command = exportStep.terminal!!.command
+
+        // `=VAR=\` 后紧跟换行是缺陷形态。
+        assertTrue(
+            "export 赋值不得以续行反斜杠结束",
+            !command.contains("=\\"),
+        )
+        // 变量名与值必须在同一行。
+        val assignLine = command.lines().first { it.contains("MASTER_KEY_FILE=") }
+        assertTrue(
+            "赋值行必须同时包含取值表达式",
+            assignLine.contains("\$HOME") || assignLine.contains("/"),
+        )
+    }
 }

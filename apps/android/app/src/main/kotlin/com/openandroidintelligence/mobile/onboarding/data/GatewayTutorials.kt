@@ -147,10 +147,15 @@ object GatewayTutorials {
             TutorialStep(
                 title = "准备主密钥文件",
                 body = "生成一个 32 字节的随机密钥文件，并把权限设为 0600。" +
-                    "这是加密存储消息正文的根密钥，不要放进版本库。",
+                    "这是加密存储消息正文的根密钥，不要放进版本库。" +
+                    "命令带存在性判断：**密钥已存在时不会覆盖**——换掉密钥会让历史消息无法解密。",
                 terminal = TerminalBlock(
                     label = "Terminal · 生成主密钥",
-                    command = "head -c 32 /dev/urandom > ~/gateway-master-key.bin\n" +
+                    // 必须防覆盖：直接 `> 文件` 每次执行都会换一个新密钥，
+                    // 而网关已用它加密过历史消息 —— 换掉之后旧消息永久无法解密。
+                    // 这里先判断文件是否存在，只在缺失时生成。
+                    command = "test -f ~/gateway-master-key.bin || " +
+                        "head -c 32 /dev/urandom > ~/gateway-master-key.bin\n" +
                         "chmod 600 ~/gateway-master-key.bin",
                 ),
             ),
