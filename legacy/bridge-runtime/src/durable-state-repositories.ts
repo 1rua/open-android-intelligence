@@ -3,13 +3,13 @@ import {
   runDurableBridgeTransaction,
   type DurableBridgeStore,
   type DurableBridgeTransaction,
-} from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/durable-store.js";
 import {
   applyNotificationFilter,
   validateNotificationFilter,
   validateNotificationRecord,
-} from "../../../bridge-contract/src/notification-store.js";
-import type { PairingTicket, PairingTicketInput } from "../../../bridge-contract/src/pairing-service.js";
+} from "../../bridge-contract/src/notification-store.js";
+import type { PairingTicket, PairingTicketInput } from "../../bridge-contract/src/pairing-service.js";
 import {
   BridgeServiceError,
   equalIdentity,
@@ -21,7 +21,7 @@ import {
   type NotificationEventV1,
   type NotificationFilter,
   type NotificationRecordV1,
-} from "../../../bridge-contract/src/service-types.js";
+} from "../../bridge-contract/src/service-types.js";
 
 type StoredSession = Readonly<{
   tenantId: string;

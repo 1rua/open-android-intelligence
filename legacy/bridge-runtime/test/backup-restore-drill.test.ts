@@ -6,12 +6,12 @@ import {
   BRIDGE_STORE_NAMESPACES,
   type BridgeStoreNamespace,
   type DurableBridgeEntry,
-} from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/durable-store.js";
 import {
   NODE_SQLITE_BRIDGE_DRIVER,
   SQLITE_BRIDGE_ADAPTER_PORT,
   type SqliteBridgeAdapterPort,
-} from "../../../bridge-contract/src/persistence.js";
+} from "../../bridge-contract/src/persistence.js";
 import { runBridgeBackupRestoreDrill } from "../src/backup-restore-drill.js";
 import { FileBackedBridgeStore } from "../src/file-backed-store.js";
 

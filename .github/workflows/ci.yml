@@ -105,6 +105,9 @@ jobs:
           OPENCLAW_PLUGIN_ROOT: ${{ github.workspace }}/.openclaw-gateway-plugin
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT: ${{ github.workspace }}/gateway-contract
 
+      - name: Verify dependency lock
+        run: npm run lock:check
+
       - name: Typecheck
         run: |
           npm run typecheck
@@ -117,7 +120,6 @@ jobs:
           npm run build --prefix .openclaw-gateway-plugin
           python gateway-contract/patches/conversation-management/runtime-build-manifest.py \
             --runtime-root .openclaw-gateway-plugin/runtime --compare "$RUNNER_TEMP/oai-runtime-reviewed.json"
-          npm run typecheck --prefix plugin-tooling
 
       - name: Gateway v2 Cross-Host Conformance
         env:
@@ -132,7 +134,6 @@ jobs:
           HERMES_TEST_ISOLATION: ${{ runner.temp }}/oai-native-hermes-ci
         run: |
           npm test
-          npm test --prefix plugin-tooling
           # Native SDK imports alter process-wide host registries. Keep fake-host
           # tests isolated; the next step runs the real SDK/HTTP fixtures.
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT="$PWD/gateway-contract" \

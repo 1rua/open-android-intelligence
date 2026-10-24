@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { chmod, lstat, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { BridgeServiceError } from "../../../bridge-contract/src/service-types.js";
+import { BridgeServiceError } from "../../bridge-contract/src/service-types.js";
 import v1BootstrapExportSchema from "../../../gateway-contract/schemas/v1-bootstrap-export.schema.json" with { type: "json" };
 
 /**

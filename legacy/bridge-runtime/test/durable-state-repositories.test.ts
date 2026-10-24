@@ -2,12 +2,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { PairingTicket } from "../../../bridge-contract/src/pairing-service.js";
+import type { PairingTicket } from "../../bridge-contract/src/pairing-service.js";
 import type {
   BridgeSessionIdentity,
   NotificationRecordV1,
-} from "../../../bridge-contract/src/service-types.js";
-import { runDurableBridgeTransaction } from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/service-types.js";
+import { runDurableBridgeTransaction } from "../../bridge-contract/src/durable-store.js";
 import { DurableBridgeStateRepositories } from "../src/durable-state-repositories.js";
 import { FileBackedBridgeStore } from "../src/file-backed-store.js";
 

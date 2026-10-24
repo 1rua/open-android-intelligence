@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { PairingTicket } from "../../../bridge-contract/src/pairing-service.js";
+import type { PairingTicket } from "../../bridge-contract/src/pairing-service.js";
 import { openLocalPairingTicketVerifier } from "../src/local-pairing-ticket-verifier.js";
 
 const root = await mkdtemp(join(tmpdir(), "open-android-intelligence-pairing-verifier-"));

@@ -231,7 +231,6 @@ dependencies {
     implementation(project(":plugin-package"))
     implementation(project(":plugin-runtime-wasm"))
     implementation(project(":plugin-ui"))
-    implementation(project(":companion-bridge"))
     implementation(project(":encrypted-store"))
     implementation(project(":conversation-domain"))
     implementation(project(":conversation-data"))

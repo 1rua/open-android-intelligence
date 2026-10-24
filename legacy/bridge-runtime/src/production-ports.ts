@@ -1,6 +1,6 @@
-import type { DurableBridgeTransaction } from "../../../bridge-contract/src/durable-store.js";
-import type { PairingTicket } from "../../../bridge-contract/src/pairing-service.js";
-import { BridgeServiceError } from "../../../bridge-contract/src/service-types.js";
+import type { DurableBridgeTransaction } from "../../bridge-contract/src/durable-store.js";
+import type { PairingTicket } from "../../bridge-contract/src/pairing-service.js";
+import { BridgeServiceError } from "../../bridge-contract/src/service-types.js";
 
 export const BRIDGE_LEASE_COORDINATOR_PORT = "open-android-intelligence.bridge-lease-coordinator.v1" as const;
 export const PAIRING_TICKET_VERIFIER_PORT = "open-android-intelligence.pairing-ticket-verifier.v1" as const;

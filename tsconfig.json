@@ -6,7 +6,10 @@
     "resolveJsonModule": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "target": "ES2024"
+    "target": "ES2024",
+    "types": ["node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
-  "include": ["protocol/**/*.ts"]
+  "include": ["tools/**/*.ts"]
 }

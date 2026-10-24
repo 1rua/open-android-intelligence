@@ -3,11 +3,11 @@ import {
   runDurableBridgeTransaction,
   type DurableBridgeStore,
   type DurableBridgeTransaction,
-} from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/durable-store.js";
 import {
   BridgeServiceError,
   compareCodePoints,
-} from "../../../bridge-contract/src/service-types.js";
+} from "../../bridge-contract/src/service-types.js";
 import type {
   DurableTask9EventPathPort,
   Task9CaptureAuthorityRecord,
@@ -18,7 +18,7 @@ import type {
   Task9ServerDestination,
   Task9ServerSubscription,
   Task9SourceIdentity,
-} from "../../../bridge-contract/src/task9-events.js";
+} from "../../bridge-contract/src/task9-events.js";
 import {
   createVerifiedCaptureAuthority,
   createVerifiedEventAckAuthority,
@@ -29,11 +29,11 @@ import {
   type VerifiedDeviceEvent,
   type VerifiedEventAck,
   type VerifiedEventAckAuthority,
-} from "../../../protocol/src/event-contract.js";
+} from "../../protocol/src/event-contract.js";
 import {
   isReplayClaimReference,
   type ReplayClaimReference,
-} from "../../../protocol/src/replay-window.js";
+} from "../../protocol/src/replay-window.js";
 
 export type {
   Task9CaptureAuthorityRecord,
@@ -44,7 +44,7 @@ export type {
   Task9ServerDestination,
   Task9ServerSubscription,
   Task9SourceIdentity,
-} from "../../../bridge-contract/src/task9-events.js";
+} from "../../bridge-contract/src/task9-events.js";
 
 const AUTHORITY_NAMESPACE = "authorization.revisions" as const;
 const EVENT_NAMESPACE = "notification.records" as const;

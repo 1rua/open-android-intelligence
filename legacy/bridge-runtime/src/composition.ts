@@ -3,19 +3,19 @@ import {
   DURABLE_BRIDGE_STORE_PORT,
   type DurableBridgeStore,
   type DurableBridgeTransaction,
-} from "../../../bridge-contract/src/durable-store.js";
-import { assertConnectedSqliteBridgeAdapter, type SqliteBridgeAdapterPort } from "../../../bridge-contract/src/persistence.js";
+} from "../../bridge-contract/src/durable-store.js";
+import { assertConnectedSqliteBridgeAdapter, type SqliteBridgeAdapterPort } from "../../bridge-contract/src/persistence.js";
 import { isNodeSqliteLeaseCoordinator, NodeSqliteBridgeAdapter } from "./node-sqlite-adapter.js";
 import { LocalPairingTicketVerifier } from "./local-pairing-ticket-verifier.js";
-import type { PairingTicket, PairingTicketInput } from "../../../bridge-contract/src/pairing-service.js";
+import type { PairingTicket, PairingTicketInput } from "../../bridge-contract/src/pairing-service.js";
 import {
   NotificationService,
   type NotificationServiceOptions,
-} from "../../../bridge-contract/src/notification-service.js";
-import { PairingService } from "../../../bridge-contract/src/pairing-service.js";
-import { BridgeServiceError, type Authorize, type BridgeIdentity } from "../../../bridge-contract/src/service-types.js";
-import { NotificationStore } from "../../../bridge-contract/src/notification-store.js";
-import { SubscriptionStore } from "../../../bridge-contract/src/subscription-store.js";
+} from "../../bridge-contract/src/notification-service.js";
+import { PairingService } from "../../bridge-contract/src/pairing-service.js";
+import { BridgeServiceError, type Authorize, type BridgeIdentity } from "../../bridge-contract/src/service-types.js";
+import { NotificationStore } from "../../bridge-contract/src/notification-store.js";
+import { SubscriptionStore } from "../../bridge-contract/src/subscription-store.js";
 import {
   assertDurableOperationDispatcher,
   DurableOperationDispatcher,

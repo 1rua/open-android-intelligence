@@ -5,7 +5,6 @@ import com.openandroidintelligence.capability.CallNumberPresentation
 import com.openandroidintelligence.capability.CallsMetadata
 import com.openandroidintelligence.capability.CallsPayload
 import com.openandroidintelligence.capability.normalizeCallCounterpartyNumber
-import java.io.File
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.fail
@@ -113,15 +112,13 @@ class CallLogWireCodecTest {
     }
 
     private fun fixture(name: String): ByteArray {
-        var directory = File(System.getProperty("user.dir") ?: error("user.dir is missing"))
-        while (!File(directory, "mvp-contract/fixtures/v1/$name").isFile) directory = directory.parentFile ?: error("fixture not found")
         val bytes = rawFixture(name)
         return if (bytes.lastOrNull() == '\n'.code.toByte()) bytes.dropLast(1).toByteArray() else bytes
     }
 
     private fun rawFixture(name: String): ByteArray {
-        var directory = File(System.getProperty("user.dir") ?: error("user.dir is missing"))
-        while (!File(directory, "mvp-contract/fixtures/v1/$name").isFile) directory = directory.parentFile ?: error("fixture not found")
-        return File(directory, "mvp-contract/fixtures/v1/$name").readBytes()
+        val stream = javaClass.classLoader?.getResourceAsStream("fixtures/v1/$name")
+            ?: error("fixture not found: fixtures/v1/$name")
+        return stream.use { it.readBytes() }
     }
 }

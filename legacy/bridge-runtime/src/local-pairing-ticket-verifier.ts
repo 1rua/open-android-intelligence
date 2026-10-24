@@ -1,8 +1,8 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import type { KeyObject } from "node:crypto";
-import type { PairingTicket } from "../../../bridge-contract/src/pairing-service.js";
-import { BridgeServiceError } from "../../../bridge-contract/src/service-types.js";
+import type { PairingTicket } from "../../bridge-contract/src/pairing-service.js";
+import { BridgeServiceError } from "../../bridge-contract/src/service-types.js";
 import { PAIRING_TICKET_VERIFIER_PORT, type PairingTicketVerifierPort } from "./production-ports.js";
 
 export const PAIRING_TICKET_ENVELOPE = "open-android-intelligence.pairing-ticket/v1" as const;

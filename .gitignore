@@ -9,8 +9,8 @@
 /.trae/
 .claude/
 /third_party/tailscale
-/node_modules/
-**/node_modules/
+node_modules
+**/node_modules
 **/__pycache__/
 .env_check.txt
 .marscode/deviceInfo.json

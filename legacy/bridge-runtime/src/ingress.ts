@@ -3,7 +3,7 @@ import {
   PairingService,
   identityKey,
   type BridgeIdentity,
-} from "../../../bridge-contract/src/index.js";
+} from "../../bridge-contract/src/index.js";
 
 /**
  * The adapter is intentionally smaller than node's net/http listener API.
