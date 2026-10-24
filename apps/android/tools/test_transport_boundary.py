@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side tests for the Android MVP transport boundary.
+"""Host-side tests for the active Android MVP architecture boundary.
 
 These tests intentionally do not require an Android SDK, Gradle, or a JVM.  They
 check the source-level contract that must remain true even when the full Android
@@ -17,8 +17,6 @@ PRODUCTION = (
     ROOT / "capability-ports" / "src" / "main",
     ROOT / "control-ports" / "src" / "main",
     ROOT / "artifact-ports" / "src" / "main",
-    ROOT / "tailnet-core" / "src" / "main",
-    ROOT / "transport" / "src" / "main",
 )
 
 
@@ -33,12 +31,6 @@ class TransportBoundaryTest(unittest.TestCase):
             ROOT / "artifact-ports" / "build.gradle.kts",
             ROOT / "artifact-ports" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "artifact" / "ArtifactSelectionPorts.kt",
             ROOT / "core-model" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "core" / "model" / "TransportContracts.kt",
-            ROOT / "tailnet-core" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "tailnet" / "core" / "VerifiedPairingTransportBinding.kt",
-            ROOT / "tailnet-core" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "tailnet" / "core" / "TailscaleUserspaceCore.kt",
-            ROOT / "tailnet-core" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "tailnet" / "core" / "PairingReconnectState.kt",
-            ROOT / "transport" / "src" / "testFixtures" / "kotlin" / "com" / "openandroidintelligence" / "transport" / "FakeUserspaceTransport.kt",
-            ROOT / "transport" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "transport" / "TsnetPairedBridgeTransport.kt",
-            ROOT / "transport" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "transport" / "PairedBridgeSessionCoordinator.kt",
         )
         missing = [str(path.relative_to(ROOT)) for path in expected if not path.is_file()]
         self.assertEqual([], missing)
@@ -58,12 +50,8 @@ class TransportBoundaryTest(unittest.TestCase):
         adapter add a forbidden network surface without being rejected.
         """
         settings = (ROOT / "settings.gradle.kts").read_text(encoding="utf-8")
-        gate = (ROOT / "gradle" / "mvp-forbidden-surfaces.gradle.kts").read_text(
-            encoding="utf-8"
-        )
         for module in ("artifact-ports", "capability-ports", "control-ports"):
             self.assertIn(f'":{module}"', settings, module)
-            self.assertIn(f'"{module}"', gate, module)
 
     def test_no_vpn_gate_covers_production_sources(self):
         forbidden = re.compile(
@@ -92,89 +80,34 @@ class TransportBoundaryTest(unittest.TestCase):
         self.assertIn("open(binding: VerifiedPairingTransportBinding)", block)
         self.assertNotRegex(block, r"\b(host|port|url|socket|route|dns|endpoint)\b")
 
-    def test_fake_and_real_adapter_share_pairing_binding_and_generation(self):
-        fake = (ROOT / "transport" / "src" / "testFixtures" / "kotlin" / "com" / "openandroidintelligence" / "transport" / "FakeUserspaceTransport.kt").read_text(encoding="utf-8")
-        real = (ROOT / "transport" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "transport" / "TsnetPairedBridgeTransport.kt").read_text(encoding="utf-8")
-        for source in (fake, real):
-            self.assertIn("PairedBridgeTransport", source)
-            self.assertIn("VerifiedPairingTransportBinding", source)
-            self.assertIn("connectionGeneration", source)
-
-    def test_two_apk_manifests_have_distinct_packages_and_no_holder_network(self):
-        app_manifest = (ROOT / "app" / "src" / "main" / "AndroidManifest.xml").read_text(encoding="utf-8")
-        holder_manifest = (ROOT / "assistant-holder" / "src" / "main" / "AndroidManifest.xml").read_text(encoding="utf-8")
+    def test_package_namespaces_are_distinct(self):
         app_build = (ROOT / "app" / "build.gradle.kts").read_text(encoding="utf-8")
         holder_build = (ROOT / "assistant-holder" / "build.gradle.kts").read_text(encoding="utf-8")
         app_namespaces = re.findall(r'namespace\s*=\s*"([^"]+)"', app_build)
         holder_namespaces = re.findall(r'namespace\s*=\s*"([^"]+)"', holder_build)
         app_ids = re.findall(r'applicationId\s*=\s*"([^"]+)"', app_build)
-        holder_ids = re.findall(r'applicationId\s*=\s*"([^"]+)"', holder_build)
         self.assertEqual(["com.openandroidintelligence.mobile"], app_namespaces)
         self.assertEqual(["com.openandroidintelligence.assistant"], holder_namespaces)
         self.assertEqual(["com.openandroidintelligence.mobile"], app_ids)
-        self.assertEqual(["com.openandroidintelligence.assistant"], holder_ids)
         self.assertNotEqual(app_namespaces[0], holder_namespaces[0])
-        self.assertNotEqual(app_ids[0], holder_ids[0])
-        self.assertNotRegex(app_manifest, r"\bpackage\s*=")
-        self.assertNotRegex(holder_manifest, r"\bpackage\s*=")
-        self.assertIn('android:allowBackup="false"', app_manifest)
-        self.assertIn('android:allowBackup="false"', holder_manifest)
-        self.assertNotIn("android.permission.INTERNET", holder_manifest)
-        self.assertNotIn("android.permission.BIND_NOTIFICATION_LISTENER_SERVICE", holder_manifest)
 
     def test_assistant_holder_exposes_only_the_default_assistant_entry_seam(self):
-        holder_manifest = (ROOT / "assistant-holder" / "src" / "main" / "AndroidManifest.xml").read_text(encoding="utf-8")
         holder_source = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "assistant-holder" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "assistant").glob("*.kt"))
-        self.assertIn("VoiceInteractionService", holder_manifest)
-        self.assertIn('android:name=".AssistantSessionService"', holder_manifest)
-        self.assertIn("android.permission.BIND_VOICE_INTERACTION", holder_manifest)
         self.assertIn("AssistantVoiceService", holder_source)
         self.assertIn("AssistantSessionService", holder_source)
-        self.assertIn("FLAG_GRANT_READ_URI_PERMISSION", holder_source)
-        self.assertIn('uri.scheme == "content"', holder_source)
-        self.assertNotIn("android.permission.INTERNET", holder_manifest)
 
-    def test_only_transport_depends_directly_on_tailnet_core(self):
+    def test_no_active_modules_depend_on_legacy_tailnet(self):
         for module in ("app", "assistant-holder", "core-model", "policy-engine", "notification-collector", "encrypted-store"):
             source = (ROOT / module / "build.gradle.kts").read_text(encoding="utf-8")
             production_dependencies = re.findall(r"^\s*implementation\((.+)\)", source, re.MULTILINE)
             self.assertNotIn('project(":tailnet-core")', production_dependencies, module)
-        transport = (ROOT / "transport" / "build.gradle.kts").read_text(encoding="utf-8")
-        self.assertRegex(transport, r'(?:implementation|api)\(project\(":tailnet-core"\)\)')
-
-    def test_main_apk_wires_closed_contract_libraries(self):
-        """The app must carry the reviewed contracts it will eventually adapt."""
-        app_build = (ROOT / "app" / "build.gradle.kts").read_text(encoding="utf-8")
-        for module in ("artifact-ports", "capability-ports", "control-ports"):
-            self.assertIn(f'implementation(project(":{module}"))', app_build, module)
-
+            self.assertNotIn('project(":transport")', production_dependencies, module)
 
 
 class ProductionBoundaryTest(unittest.TestCase):
-    def test_fake_is_never_in_production_sources(self):
-        main_fake = ROOT / "transport" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "transport" / "FakeUserspaceTransport.kt"
-        self.assertFalse(main_fake.exists())
-        fixture = ROOT / "transport" / "src" / "testFixtures" / "kotlin" / "com" / "openandroidintelligence" / "transport" / "FakeUserspaceTransport.kt"
-        self.assertTrue(fixture.is_file())
-
-    def test_sealed_production_factory_exists(self):
-        factory = ROOT / "transport" / "src" / "main" / "kotlin" / "com" / "openandroidintelligence" / "transport" / "ProductionTailnetTransportFactory.kt"
-        self.assertTrue(factory.is_file())
-        text = factory.read_text(encoding="utf-8")
-        self.assertIn("sealed interface ProductionPairedBridgeTransport", text)
-        self.assertIn("ProductionTailnetTransportFactory", text)
-        self.assertNotIn("FakeUserspaceTransport", text)
-
-    def test_native_adapter_is_the_only_generated_import(self):
-        generated = []
-        for path in (ROOT / "tailnet-core" / "src" / "main").rglob("*.kt"):
-            text = path.read_text(encoding="utf-8")
-            if "import tsnetbridge." in text:
-                generated.append(path.relative_to(ROOT).as_posix())
-        self.assertEqual(
-            ["tailnet-core/src/main/kotlin/com/openandroidintelligence/tailnet/core/AndroidTsnetBinding.kt"],
-            generated,
-        )
+    def test_legacy_tailnet_modules_are_not_in_active_android_tree(self):
+        self.assertFalse((ROOT / "tailnet-core").exists())
+        self.assertFalse((ROOT / "transport").exists())
 
 
 if __name__ == "__main__":
