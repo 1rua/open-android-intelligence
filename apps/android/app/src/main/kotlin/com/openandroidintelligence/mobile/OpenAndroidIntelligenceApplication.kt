@@ -33,6 +33,16 @@ class OpenAndroidIntelligenceApplication : Application() {
         AppearancePreferences(this)
     }
 
+    /**
+     * 首次启动引导的进度与本机状态。
+     *
+     * 与 [appearancePreferences] 同构：只存「用户走到哪一步」，不涉及任何凭据，
+     * 也不参与连接判定——引导完成 ≠ Gateway 已连接。
+     */
+    val onboardingPreferences: com.openandroidintelligence.mobile.onboarding.OnboardingPreferences by lazy {
+        com.openandroidintelligence.mobile.onboarding.OnboardingPreferences(this)
+    }
+
     lateinit var kernel: PluginKernel
         private set
 

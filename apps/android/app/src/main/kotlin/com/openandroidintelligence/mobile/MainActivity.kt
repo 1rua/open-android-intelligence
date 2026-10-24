@@ -65,6 +65,7 @@ import com.openandroidintelligence.core.model.AssistantHandoffDenialReason
 import com.openandroidintelligence.core.model.AssistantHandoffGate
 import com.openandroidintelligence.core.model.AssistantHandoffRequest
 import com.openandroidintelligence.core.model.DefaultAssistantHandoffGate
+import com.openandroidintelligence.mobile.onboarding.OnboardingFlow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -389,6 +390,46 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // ===== 首次启动引导（前置分支）=====
+                // 引导是登录之前的一道独立流程，不参与「登录 ↔ 工作台」的状态判定，
+                // 也不新建 Activity：这样既不改动既有登录/配对/会话逻辑（需求五.5、六.9），
+                // 又能让系统返回键在引导内部逐级回退。
+                val onboardingPreferences = remember { app.onboardingPreferences }
+                val onboardingState by onboardingPreferences.state.collectAsState()
+                val onboardingVisible = onboardingState.shouldShow
+                // 已启用插件声明的 kernel primitive：决定「设备能力」权限卡片是否出现。
+                // 不存在的能力不展示，满足需求「不请求不存在或尚不需要的权限」。
+                // 依赖 pluginHost.revision：用户在设置里启停插件后，回到引导页会重新计算。
+                val onboardingPluginRevision by app.pluginHost.revision.collectAsState()
+                val enabledPrimitives = remember(onboardingPluginRevision) {
+                    // 只统计「已安装且已启用」的插件：未启用的插件即使声明了能力，
+                    // 也不会对 Agent 生效，把它算进来会误导用户去授权一个用不上的权限。
+                    app.pluginHost.installStore.listInstalled()
+                        .mapNotNull { it.pluginId }
+                        .filter { app.pluginHost.isEnabled(it) }
+                        .flatMap { id -> app.pluginHost.entries(id).flatMap { it.primitives } }
+                        .toSet()
+                }
+
+                if (onboardingVisible) {
+                    OnboardingFlow(
+                        state = onboardingState,
+                        onStageChange = onboardingPreferences::setStage,
+                        onGatewaySelected = onboardingPreferences::setLastGateway,
+                        onFinished = {
+                            // 完成引导只记录「用户走完了引导」，与 Gateway 是否连接无关：
+                            // 登录成功与否仍由 ConnectionPhase 决定，绝不伪造连接状态。
+                            onboardingPreferences.markCompleted()
+                        },
+                        onExit = {
+                            // 在欢迎页再按返回：退出本次引导。未完成状态保持不变，
+                            // 下次启动仍会展示（用户确实还没走完）。
+                            onboardingPreferences.endReplay()
+                        },
+                        pluginPrimitives = enabledPrimitives,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     // 根表面必须与各页面同色：登录 ↔ 工作台切换时不再出现色带。
@@ -545,6 +586,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+                }   // 结束 else（引导未展示时走原有登录/工作台分支）
             }
         }
     }
