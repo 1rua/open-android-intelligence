@@ -198,7 +198,14 @@ fun OnboardingFlow(
     }
 
     // 系统返回：流程内逐级回退；欢迎页再按则退出引导。
+    //
+    // 转场进行中必须**吞掉返回**：那段协程在结束时无条件调用 onFinished()，
+    // 若此时用户已经退回上一页，仍会被标记「引导已完成」——用户没走完却被判定完成。
     BackHandler(enabled = true) {
+        if (revealPhase !is RevealPhase.Idle) {
+            // 转场是关键过渡，期间忽略返回；用户可在转场结束后正常操作。
+            return@BackHandler
+        }
         val previous = state.previous()
         if (previous != null) onStageChange(previous) else onExit()
     }

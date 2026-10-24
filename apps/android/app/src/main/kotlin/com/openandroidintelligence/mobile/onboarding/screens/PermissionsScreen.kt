@@ -339,10 +339,12 @@ private fun PermissionCard(
     val statusText: String
     val actionText: String
     val action: () -> Unit
-    // 系统对话框型权限（屏幕采集）：授权只在每次使用时由 MediaProjection 对话框现场确认，
-    // **系统设置页里没有可以勾选的开关**（去应用详情页也授予不了投屏权限）。
-    // 因此这类权限不提供「前往设置」按钮，只如实说明机制。
-    val dialogOnly = entry.isSpecialSystemAccess && entry.manifestPermissions.isEmpty()
+    // 「每次使用现场确认」的权限只有屏幕采集一项。
+    //
+    // 不能只看 `isSpecialSystemAccess && manifestPermissions.isEmpty()`：
+    // 通知使用权也满足这两个条件，但它**在系统设置里有开关**，用户必须能跳过去开启。
+    // 用 id 精确判定，避免把「可去设置开启」误当成「无需操作」而堵死授权路径。
+    val dialogOnly = entry.id == "screen_capture"
     when {
         dialogOnly -> {
             statusText = "使用时由系统询问 · 无需现在授权"

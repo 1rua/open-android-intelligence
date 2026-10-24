@@ -130,4 +130,35 @@ class PermissionCatalogTest {
         assertTrue(entries.all { it.purpose.isNotBlank() })
         assertTrue(entries.all { it.displayName.isNotBlank() })
     }
+
+    /**
+     * 回归测试：通知使用权必须保留「可去系统设置开启」的路径。
+     *
+     * 对应缺陷：曾把「特殊系统访问 + 无 manifest 权限」统一当作「每次使用询问」，
+     * 导致通知使用权卡片没有设置按钮，用户无法完成授权。
+     * 判定差异：只有 screen_capture 是真正无设置开关的现场确认型权限。
+     */
+    @Test
+    fun `notification access stays actionable while screen capture is dialog only`() {
+        val entries = buildVisiblePermissions(
+            androidSdk = 34,
+            enabledPluginPrimitives = setOf(KERNEL_NOTIFICATIONS_READ),
+        )
+        val notificationAccess = entries.first { it.id == "notification_access" }
+        val screenCapture = entries.first { it.id == "screen_capture" }
+
+        // 两者都是特殊系统访问、都没有 manifest 权限……
+        assertTrue(notificationAccess.isSpecialSystemAccess)
+        assertTrue(notificationAccess.manifestPermissions.isEmpty())
+        assertTrue(screenCapture.isSpecialSystemAccess)
+        assertTrue(screenCapture.manifestPermissions.isEmpty())
+
+        // ……但只有屏幕采集属于「每次使用现场确认」，通知使用权必须在设置里可开启。
+        assertEquals("notification_access", notificationAccess.id)
+        assertEquals("screen_capture", screenCapture.id)
+        assertTrue(
+            "通知使用权不应被当作无需操作的权限",
+            notificationAccess.id != "screen_capture",
+        )
+    }
 }

@@ -67,7 +67,14 @@ class OnboardingPreferences(context: Context) {
      */
     fun startReplay() {
         val current = _state.value
-        _state.value = current.copy(stage = OnboardingStage.WELCOME, replay = true)
+        // 必须同时清除 dismissedThisSession：用户主动去设置里点「重新查看」，
+        // 就是明确要求现在看引导，此前「本次会话先别烦我」的选择应当失效。
+        // 不清除的话 shouldShow 仍为 false，入口看起来毫无作用。
+        _state.value = current.copy(
+            stage = OnboardingStage.WELCOME,
+            replay = true,
+            dismissedThisSession = false,
+        )
     }
 
     /** 退出重看模式，回到原本的完成态。 */
