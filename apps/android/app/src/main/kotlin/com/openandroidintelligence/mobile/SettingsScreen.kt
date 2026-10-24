@@ -279,6 +279,7 @@ fun SettingsScreen(
                 presentation = presentation,
                 onSetTheme = viewModel::setTheme,
                 onSetDynamicColor = viewModel::setDynamicColor,
+                onSetDynamicIconColor = viewModel::setDynamicIconColor,
                 onSetPalette = viewModel::setPalette,
                 onSetReduceMotion = viewModel::setReduceMotion,
             )
@@ -857,6 +858,7 @@ private fun AppearanceSubScreen(
     presentation: SettingsPresentation,
     onSetTheme: (ThemePreference) -> Unit,
     onSetDynamicColor: (Boolean) -> Unit,
+    onSetDynamicIconColor: (Boolean) -> Unit,
     onSetPalette: (ThemePalette) -> Unit,
     onSetReduceMotion: (Boolean) -> Unit,
 ) {
@@ -912,6 +914,15 @@ private fun AppearanceSubScreen(
                         icon = Icons.Default.ColorLens,
                         tone = SettingsTone.PRIMARY,
                         onCheckedChange = onSetDynamicColor,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    SettingsSwitchItem(
+                        headline = "图标动态取色",
+                        supporting = "桌面图标支持 Material You 动态取色（随壁纸变色）；关闭后保持经典黑白与橙色行星点原貌。",
+                        checked = uiState.appearance.dynamicIconColor,
+                        icon = Icons.Default.Palette,
+                        tone = SettingsTone.PRIMARY,
+                        onCheckedChange = onSetDynamicIconColor,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     ThemePalette.entries.forEachIndexed { index, palette ->

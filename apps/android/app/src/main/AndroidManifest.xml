@@ -32,7 +32,9 @@
     <application
         android:name=".OpenAndroidIntelligenceApplication"
         android:allowBackup="false"
-        android:label="Open Android Intelligence"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="OAI"
         android:supportsRtl="true"
         android:theme="@style/Theme.OpenAndroidIntelligence"
         android:usesCleartextTraffic="true">

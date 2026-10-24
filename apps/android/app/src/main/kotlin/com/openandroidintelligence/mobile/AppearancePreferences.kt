@@ -39,6 +39,7 @@ enum class ThemePreference {
 data class AppearanceSettings(
     val theme: ThemePreference = ThemePreference.SYSTEM,
     val dynamicColor: Boolean = supportsDynamicColor(),
+    val dynamicIconColor: Boolean = supportsDynamicColor(),
     val palette: ThemePalette = ThemePalette.INDIGO,
     val reduceMotion: Boolean = false,
 )
@@ -58,6 +59,10 @@ class AppearancePreferences(context: Context) {
 
     fun setDynamicColor(enabled: Boolean) {
         persist(_settings.value.copy(dynamicColor = enabled))
+    }
+
+    fun setDynamicIconColor(enabled: Boolean) {
+        persist(_settings.value.copy(dynamicIconColor = enabled))
     }
 
     /** 选择一套预设色板：同时关闭动态取色，选中的方案必须立刻可见。 */
@@ -80,6 +85,7 @@ class AppearancePreferences(context: Context) {
             ?: ThemePreference.SYSTEM,
         // 默认跟随系统动态取色（Android 12+）；用户显式关闭过则读回 false。
         dynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, supportsDynamicColor()),
+        dynamicIconColor = preferences.getBoolean(KEY_DYNAMIC_ICON_COLOR, supportsDynamicColor()),
         palette = preferences.getString(KEY_PALETTE, ThemePalette.INDIGO.name)
             ?.let { value -> runCatching { ThemePalette.valueOf(value) }.getOrNull() }
             ?: ThemePalette.INDIGO,
@@ -91,6 +97,7 @@ class AppearancePreferences(context: Context) {
             preferences.edit()
                 .putString(KEY_THEME, next.theme.name)
                 .putBoolean(KEY_DYNAMIC_COLOR, next.dynamicColor)
+                .putBoolean(KEY_DYNAMIC_ICON_COLOR, next.dynamicIconColor)
                 .putBoolean(KEY_REDUCE_MOTION, next.reduceMotion)
                 .putString(KEY_PALETTE, next.palette.name)
                 .commit(),
@@ -102,6 +109,7 @@ class AppearancePreferences(context: Context) {
         const val PREFERENCES_NAME = "open_android_intelligence_appearance"
         const val KEY_THEME = "theme"
         const val KEY_DYNAMIC_COLOR = "dynamic_color"
+        const val KEY_DYNAMIC_ICON_COLOR = "dynamic_icon_color"
         const val KEY_REDUCE_MOTION = "reduce_motion"
         const val KEY_PALETTE = "palette"
     }

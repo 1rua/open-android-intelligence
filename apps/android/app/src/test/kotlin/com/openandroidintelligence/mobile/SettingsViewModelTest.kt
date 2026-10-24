@@ -125,8 +125,34 @@ class SettingsViewModelTest {
         viewModel.setDynamicColor(false)
         assertFalse(viewModel.uiState.value.appearance.dynamicColor)
 
+        viewModel.setDynamicIconColor(false)
+        assertFalse(viewModel.uiState.value.appearance.dynamicIconColor)
+
+        viewModel.setDynamicIconColor(true)
+        assertTrue(viewModel.uiState.value.appearance.dynamicIconColor)
+
         viewModel.setReduceMotion(true)
         assertTrue(viewModel.uiState.value.appearance.reduceMotion)
+    }
+
+    @Test
+    fun dynamicIconColorPreferencePersistsAcrossInstances() = runBlocking {
+        val viewModel = SettingsViewModel(
+            environment = environment,
+            runtime = null,
+            externalScope = testScope,
+        )
+
+        viewModel.setDynamicIconColor(false)
+        assertFalse(viewModel.uiState.value.appearance.dynamicIconColor)
+
+        val newAppearance = AppearancePreferences(ApplicationProvider.getApplicationContext<Application>())
+        assertFalse(newAppearance.settings.value.dynamicIconColor)
+
+        viewModel.setDynamicIconColor(true)
+        assertTrue(viewModel.uiState.value.appearance.dynamicIconColor)
+        val updatedAppearance = AppearancePreferences(ApplicationProvider.getApplicationContext<Application>())
+        assertTrue(updatedAppearance.settings.value.dynamicIconColor)
     }
 
     @Test
