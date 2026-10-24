@@ -50,7 +50,7 @@ if [[ "$MODE" == "--release" ]]; then
   exit 0
 fi
 
-"$NODE_LAUNCHER" npx --no-install vitest --root "$ROOT_DIR" run \
+"$NODE_LAUNCHER" npx --no-install vitest --config "$ROOT_DIR/e2e/mvp/vitest.config.ts" --root "$ROOT_DIR" run \
   integrations \
   legacy/bridge-contract/test \
   legacy/bridge-runtime/test \

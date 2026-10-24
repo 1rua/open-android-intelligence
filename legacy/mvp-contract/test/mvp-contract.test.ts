@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   encodeAssistantRequest,
   encodeAssistantEvent,
@@ -15,7 +16,7 @@ import {
   validateWireNotificationOperation,
 } from "../src/wire-codec.ts";
 
-const schemaRoot = resolve(process.cwd(), "mvp-contract/schemas/v1");
+const schemaRoot = fileURLToPath(new URL("../schemas/v1", import.meta.url));
 const load = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(resolve(schemaRoot, name), "utf8")) as Record<string, unknown>;
 

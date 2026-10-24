@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildLockRows, openClawPluginLockFields } from "../../tools/compute-lock-hashes.ts";
+import { buildLockRows, openClawPluginLockFields } from "../../../tools/compute-lock-hashes.ts";
 import {
   EXPECTED_BLOCKS,
   EXPECTED_LOCK_IDS,
@@ -152,14 +152,14 @@ describe("MVP dependency lock gate", () => {
   });
 
   it("keeps the checked-in OpenClaw plugin lock row synchronized with the pin", () => {
-    const pin = JSON.parse(readFileSync(new URL("../../openclaw-plugin-pin.json", import.meta.url), "utf8")) as {
+    const pin = JSON.parse(readFileSync(new URL("../../../openclaw-plugin-pin.json", import.meta.url), "utf8")) as {
       repository: string;
       version: string;
       ref: string;
       revision: string;
     };
     const generated = buildLockRows(pin).find((value) => value.decision_id === "MVP-DEP-OPENCLAW-PLUGIN");
-    const lockMarkdown = readFileSync(new URL("../../docs/mvp/mvp-dependency-lock.md", import.meta.url), "utf8");
+    const lockMarkdown = readFileSync(new URL("../../../docs/mvp/mvp-dependency-lock.md", import.meta.url), "utf8");
     const locked = parseDependencyLock(lockMarkdown).rows.find((value) => value.decision_id === "MVP-DEP-OPENCLAW-PLUGIN");
 
     if (!generated) throw new Error("OpenClaw plugin row is missing from the lock generator");
