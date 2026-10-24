@@ -115,12 +115,12 @@ class NotificationCapabilityHttpTest {
             assertEquals(true,JsonFields.bool(control("switch",mapOf("capabilityId" to ID,"enabled" to true)),"ok"))
             publisher.sync();assertEquals("PLUGIN_NOT_INSTALLED",currentStatus())
             // Exercise the shipped APK package when supplied; ordinary source-only builds use the same signed installer.
-            val notificationsPackage = try { readBundledNotificationPackage(context) }
-                catch (_: BundledNotificationUnavailable) {
-                    check(System.getenv("OAI_BUNDLED_NOTIFICATIONS_ALP").isNullOrBlank()) { "Configured notification bundle missing from APK assets" }
+            val notificationsPackage = try { readBundledPluginPackage(context, BundledPlugin.NOTIFICATIONS) }
+                catch (_: BundledPluginUnavailable) {
+                    check(System.getenv("OAI_BUNDLED_PLUGINS_DIR").isNullOrBlank()) { "Configured notification bundle missing from APK assets" }
                     TestAlpPackages.compiledNotificationsPackage()
                 }
-            host.installStore.installBundledNotifications(notificationsPackage);host.reload()
+            host.installStore.installBundledPlugin(BundledPlugin.NOTIFICATIONS, notificationsPackage);host.reload()
             publisher.sync();assertEquals("PLUGIN_DISABLED",currentStatus())
             assertFalse(host.isEnabled(PLUGIN))
             assertTrue(host.authorizedBindings().isEmpty())
