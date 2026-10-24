@@ -139,7 +139,7 @@ internal fun NotificationAppPicker(
                         )
                         if (rejection != null) {
                             Text(
-                                text = "更新被拒绝：$rejection",
+                                text = "设置没有保存成功：$rejection",
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodyMedium,
                             )
@@ -170,7 +170,7 @@ internal fun NotificationAppPicker(
                                         supportingContent = {
                                             Text(
                                                 if (app.packageId in installedIds) app.packageId
-                                                else "未安装或当前不可见，原有选择可保留或取消",
+                                                else "未安装或当前不可见，可以保留或取消原有选择",
                                             )
                                         },
                                         leadingContent = { ApplicationIcon(app) },

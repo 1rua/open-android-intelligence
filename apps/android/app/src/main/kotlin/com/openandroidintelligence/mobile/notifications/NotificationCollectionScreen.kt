@@ -173,7 +173,7 @@ internal fun NotificationCollectionScreen(
         modifier = modifier.testTag("notification-collection-screen"),
         topBar = {
             TopAppBar(
-                title = { Text("通知采集") },
+                title = { Text("通知读取范围") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -278,13 +278,13 @@ private fun UninstalledNotice() {
     SettingsSectionCard {
         Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
             Text(
-                text = "通知采集未装配",
+                text = "本机暂不支持读取通知",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "宿主进程没有装配通知采集能力，采集与查询当前不可用。" +
-                    "这里不会出现任何开关；装配完成后本页会呈现真实的授权与范围设置。",
+                text = "这个版本没有装配通知读取能力，现在无法读取或查询通知。" +
+                    "因此这里不会出现任何开关；支持该能力的版本会在本页提供真实的授权与范围设置。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -307,8 +307,8 @@ private fun RejectionNotice(reason: String) {
     ) {
         Text(
             text = if (reason == "NOTIFICATION_SETTINGS_UNAVAILABLE")
-                "无法打开系统通知使用权设置，请在 Android 设置中手动开启本应用的通知使用权。"
-                else "更新被拒绝：$reason",
+                "无法打开系统通知使用权设置，请到 Android 系统设置里手动开启本应用的通知使用权。"
+                else "设置没有保存成功：$reason",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(
                 horizontal = Dimensions.SpaceMedium,
@@ -328,11 +328,11 @@ private fun ConsentGroup(
     val context = LocalContext.current
     SettingsSectionCard {
         SettingsSwitchItem(
-            headline = "允许通知采集",
+            headline = "允许读取通知",
             supporting = if (snapshot.granted) {
-                "已同意本地采集策略；Agent 查询走同一授权位"
+                "已允许：Agent 可以按下面的范围读取通知"
             } else {
-                "未同意；Agent 查询将被本地策略拒绝（LOCAL_GRANT_REQUIRED）"
+                "未允许：Agent 读取通知时会被拒绝"
             },
             checked = snapshot.granted,
             onCheckedChange = onGrantChanged,
@@ -341,9 +341,9 @@ private fun ConsentGroup(
         SettingsListItem(
             headline = "系统通知使用权",
             supporting = if (listenerBound) {
-                "已授予：系统监听服务已绑定"
+                "已开启：系统允许本应用读取通知"
             } else {
-                "未授予：监听服务未绑定，采集不会收到任何通知"
+                "未开启：系统不允许本应用读取通知，因此读不到任何通知"
             },
         )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -354,7 +354,7 @@ private fun ConsentGroup(
                 .fillMaxWidth()
                 .padding(vertical = Dimensions.SpaceSmall),
         ) {
-            Text(text = "打开系统通知使用权设置")
+            Text(text = "前往系统设置开启通知使用权")
         }
     }
 }
@@ -367,11 +367,11 @@ private fun AccessScopeGroup(
     val contentAccess = snapshot.fieldAccess == NotificationFieldAccess.CONTENT
     SettingsSectionCard {
         SettingsSwitchItem(
-            headline = "包含通知内容（标题与正文）",
+            headline = "读取通知的标题与正文",
             supporting = if (contentAccess) {
-                "内容可读：标题与正文会进入采集记录"
+                "已开启：通知的标题与正文会被读取"
             } else {
-                "仅元数据：应用名、时间与渠道；标题与正文即刻丢弃"
+                "已关闭：只读取应用名、时间等基本信息，标题与正文会被丢弃"
             },
             checked = contentAccess,
             onCheckedChange = { enabled ->
@@ -391,11 +391,11 @@ private fun DeliveryModeGroup(
     val autoSend = snapshot.mode == NotificationDeliveryMode.AUTO_SEND
     SettingsSectionCard {
         SettingsSwitchItem(
-            headline = "采集后自动发送到已配对网关",
+            headline = "自动把通知发送给 Gateway",
             supporting = if (autoSend) {
-                "自动发送：策略接受的通知进入加密 outbox 等待发送"
+                "已开启：符合条件的通知会自动发送给当前 Gateway"
             } else {
-                "仅按需：只有 Agent 查询时才读取当前可见通知"
+                "已关闭：只有 Agent 主动查询时才读取当前通知"
             },
             checked = autoSend,
             onCheckedChange = { enabled ->
@@ -416,7 +416,7 @@ private fun AllowlistGroup(
 ) {
     SettingsSectionCard {
         Text(
-            text = "应用白名单",
+            text = "读取哪些应用",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -433,8 +433,8 @@ private fun AllowlistGroup(
         if (snapshot.packageIds.isEmpty()) {
             // 空态不是"没有内容"：白名单为空时一条通知也不会采集，必须说清楚。
             Text(
-                text = "尚未添加任何应用：白名单为空时不会采集任何通知。" +
-                    "选择应用后，只有这些应用的通知会按上面的内容范围与投递模式处理。",
+                text = "还没有选择任何应用：没有选择就不会读取任何通知。" +
+                    "选择应用后，只有这些应用的通知会按上面的内容与发送方式处理。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = Dimensions.SpaceSmall),
