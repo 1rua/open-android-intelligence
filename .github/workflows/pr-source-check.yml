@@ -1,0 +1,76 @@
+name: PR Source Check
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify-source:
+    name: PR Source Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR Source Branch and Repository Identity
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO_ID: ${{ github.event.pull_request.base.repo.id }}
+          HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          python3 - << 'EOF'
+          import os
+          import sys
+
+          base_ref = (os.environ.get("BASE_REF") or "").strip()
+          head_ref = (os.environ.get("HEAD_REF") or "").strip()
+          base_repo = (os.environ.get("BASE_REPO") or "").strip()
+          head_repo = (os.environ.get("HEAD_REPO") or "").strip()
+          base_repo_id = (os.environ.get("BASE_REPO_ID") or "").strip()
+          head_repo_id = (os.environ.get("HEAD_REPO_ID") or "").strip()
+          is_fork_raw = (os.environ.get("IS_FORK") or "false").strip().lower()
+          is_fork = is_fork_raw in ("true", "1", "yes")
+
+          print("=== PR 来源分支与仓库身份校验 ===")
+          print(f"目标分支 (Base Ref): {base_ref}")
+          print(f"来源分支 (Head Ref): {head_ref}")
+          print(f"目标仓库 (Base Repo): {base_repo}")
+          print(f"来源仓库 (Head Repo): {head_repo}")
+          print(f"是否 Fork: {is_fork}")
+
+          errors = []
+          if not base_ref or not head_ref:
+              errors.append("缺少必要分支信息 (base_ref 或 head_ref 为空)")
+          if base_ref != "main":
+              errors.append(f"非法目标分支: 仅允许以 'main' 为目标分支，当前为 '{base_ref}'")
+          if head_ref != "dev":
+              errors.append(f"非法来源分支: main 分支仅接受来自 'dev' 分支的合并请求，当前来源为 '{head_ref}'。请先将变更合入 'dev' 分支！")
+          if not base_repo or not head_repo:
+              errors.append("缺少必要仓库信息 (base_repo 或 head_repo 为空)")
+          if base_repo.lower() != head_repo.lower():
+              errors.append(f"非法来源仓库: 来源仓库 '{head_repo}' 与目标仓库 '{base_repo}' 不一致，拒绝跨仓库合并！")
+          if is_fork:
+              errors.append("非法来源仓库: 拒绝来自 Fork 仓库的合并请求！")
+          if base_repo_id and head_repo_id and base_repo_id != head_repo_id:
+              errors.append(f"非法来源仓库: 仓库 ID 不匹配 (base: {base_repo_id}, head: {head_repo_id})！")
+
+          if errors:
+              for err in errors:
+                  print(f"::error::{err}", file=sys.stderr)
+                  print(f"❌ 校验失败: {err}", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"✅ 校验通过: 允许合法的本仓库 dev -> main 合并请求 ({head_repo}:{head_ref} -> {base_repo}:{base_ref})")
+          sys.exit(0)
+          EOF
