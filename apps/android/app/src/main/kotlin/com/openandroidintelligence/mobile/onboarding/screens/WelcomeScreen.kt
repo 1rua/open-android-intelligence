@@ -224,7 +224,7 @@ fun WelcomeScreen(
             }
             Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
             Text(
-                text = if (reduceMotion) "约 2 分钟 · 可随时跳过" else "约 2 分钟 · 可随时跳过",
+                text = "约 2 分钟 · 可随时跳过",
                 style = MaterialTheme.typography.labelSmall,
                 letterSpacing = 0.8.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

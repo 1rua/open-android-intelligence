@@ -9,7 +9,7 @@
 
 ## 1. 审查结论
 
-**FAIL。** 首次引导的页面结构和大部分基础设施已经实现，但目标提交仍有必须修复的重看退出缺陷，以及终局动效、特殊权限状态和返回处理方面的确定问题，不能据此验收完整流程。
+**FAIL。** 首次引导的页面结构和大部分基础设施已经实现，但目标提交仍有必须修复的重看退出缺陷，以及终局动效、特殊权限状态、返回处理和教程命令方面的确定问题，不能据此验收完整流程。
 
 - **阻断项：** 设置中重看引导并完成后，`replay` 不清除，宿主继续显示 `COMPLETED` 空页面，而不是回到登录页或工作台。
 - **核心动效不符合需求：** 普通模式下，转场没有接入登录内容；宽按钮起点实际绘制为大圆，而非按钮轮廓。
@@ -79,6 +79,20 @@
 - **线程安全澄清：** `isEnabled()` 本身不是发现点。其底层注册表为 `ConcurrentHashMap`，状态读取有可见性保证，没有证据支持“registrationFor 线程不安全”的判断。
 - **修复建议：** 由插件宿主暴露已计算的启用能力快照，或在 IO 调度器计算后发布状态；至少将仅用于引导的计算限制到引导需要它时。增加隐藏引导时不触发扫描、慢存储不阻塞主线程的检查。
 
+#### R11 · OpenClaw 环境变量命令在续行后被拆开，复制执行不能设置密钥路径
+
+- **位置：** `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/data/GatewayTutorials.kt:163`；对照同提交 `README.md:200`。
+- **问题：** 字符串拼接结果在 `export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=\` 后换行，下一行以四个空格再接 `$HOME/gateway-master-key.bin`。Shell 去掉反斜杠和换行，但保留缩进，最终把赋值和路径分成两个参数，而不是一个完整赋值。
+- **影响与证据：** 使用虚拟 `HOME` 的 Bash 探针，原命令返回 `export_exit=1`，提示路径 `not a valid identifier`，变量值为空；完整路径加引号的单行对照返回 `0`，变量值正确。终端组件原样复制该字符串，不会自动修复续行。用户照做后，启动宿主的环境没有教程要求的主密钥路径，部署步骤无法按描述完成。
+- **修复建议：** 改为单行 `export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE="$HOME/gateway-master-key.bin"`，并对实际复制字符串执行仅检查赋值的 Shell 回归测试。此检查无需生成密钥或启动宿主。
+
+#### R12 · DSH 凭据路径未加引号，含空格的安装目录会被拆成多个路径
+
+- **位置：** `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/data/GatewayTutorials.kt:226`、`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/data/GatewayTutorials.kt:234`。
+- **问题：** 读取和清理步骤直接使用未加引号的 `$DSH_HOME/dsh-android-gateway/setup-account.json`。当 DSH 数据目录含空格时，Shell 会按空白拆词，实际操作不再指向该凭据文件。
+- **影响与证据：** 参数记录函数以虚拟 `DSH_HOME='/__tutorial_probe__/home with spaces'` 检查同一表达式，原写法产生 `3` 个参数，加引号后为 `1` 个。读取会失败或读取错误路径；清理也会遗漏真实凭据文件，并可能处理非预期路径。本次只记录参数，未执行文件读取或删除，也未接触真实凭据。
+- **修复建议：** 引用完整路径 `"$DSH_HOME/dsh-android-gateway/setup-account.json"`，同时按照项目约定把永久删除示例改为安全清理方式。增加含空格目录的命令参数测试，不实际读取或删除文件。
+
 ### 🔵 轻微（可选）
 
 #### R08 · 半色调装饰的深浅主题判断反向
@@ -147,7 +161,7 @@
 | 1 | 欢迎页：品牌标识、应用名、简介、轨道示意、“开始使用” | `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/WelcomeScreen.kt:56`、同文件 `:85`、`:160`、`:171`、`:219`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/components/OrbitalDiagram.kt:68` | **✓ 结构齐全。** 轨道是装饰性说明，未拿它充当已连接状态。深浅色装饰分支另见 R08。 |
 | 2 | 权限卡片、三组区分、动态可见、标准申请/特殊设置、恢复刷新、可跳过、不阻断、不混淆 Agent 授权、不诱导/重复弹窗 | `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/PermissionCatalog.kt:73`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/PermissionsScreen.kt:76`、同文件 `:181`、`:266`、`:335`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/OnboardingFlow.kt:92`、同文件 `:104`、`:113` | **✗ 部分满足。** 分组、按平台/插件筛选、Activity Result 申请、恢复前台重查、跳过和授权边界说明存在；通知使用权不是真实状态，屏幕采集错导，见 R04。既有通知弹窗效果没有引导保护；系统撤权与永久拒绝细节未做设备验证。 |
 | 3 | A 已部署直接转场；B 未部署进入教程 | `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/DeploymentChoiceScreen.kt:74`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/OnboardingFlow.kt:236` | **✓ 分支选择实现。** A 直接调用 `beginReveal`，B 设置 `GUIDE`，A 不要求阅读教程；完成转场本身仍受 R01—R03 影响。 |
-| 4 | 三套教程、名称/简介/前置/安装/配置建号/验证、分步编号、终端框、复制、官方仓库、真实命令 | `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/data/GatewayTutorials.kt:78`、同文件 `:139`、`:191`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/GatewayGuideScreen.kt:87`、同文件 `:365`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/components/TerminalBlockView.kt:131` | **部分满足；命令与步骤须分别核验。** 三份数据和共享模板存在，剪贴板为真实写入，未假装部署成功。不能用“数据非空”的单测证明命令可部署或配置步骤完整；未执行真实宿主安装。 |
+| 4 | 三套教程、名称/简介/前置/安装/配置建号/验证、分步编号、终端框、复制、官方仓库、真实命令 | `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/data/GatewayTutorials.kt:78`、同文件 `:139`、`:191`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/GatewayGuideScreen.kt:87`、同文件 `:365`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/components/TerminalBlockView.kt:131` | **✗ 部分满足。** 三份数据和共享模板存在，剪贴板为真实写入，未假装部署成功；OpenClaw 赋值命令确定有误，DSH 路径存在拆词错误，见 R11/R12。其余命令主要与同提交 README 对照一致，但未执行真实宿主安装，不能用“数据非空”的单测证明命令可部署或配置完整。 |
 | 5 | 按钮位置与形状起点、非线性缓动、展开覆盖、登录内容渐进、减少动画、非简单淡入淡出 | `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/OnboardingFlow.kt:171`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/motion/ButtonRevealTransition.kt:115`、同文件 `:210`、`:325` | **✗。** 有按钮几何、强调缓动、覆盖几何和减少动画分支；每帧状态回写及最终四角覆盖检查通过，但起点错画为圆、登录内容没有接入，见 R02、R03。 |
 | 6 | 首启与进度恢复、完成直达、不伪造连接、设置重看、返回/系统导航、保持原登录逻辑 | `apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/OnboardingPreferences.kt:29`、同文件 `:74`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/SettingsScreen.kt:543`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/MainActivity.kt:397`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/OnboardingFlow.kt:193` | **✗。** 普通完成、持久化恢复、设置入口和原登录源码完整性通过；重看完成、首次返回、动画期间返回失败，见 R01、R05、R06。没有将“读完教程”写成“网关已连接”。 |
 | 7 | Compose+M3、无平行框架、屏幕/安全区/深浅色/字体缩放、可访问性、登录无缝整合、动效与内容解耦可扩展 | 四个 `screens/*.kt` 的滚动布局、系统栏 padding、语义；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/PermissionsScreen.kt:372`、`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/GatewayGuideScreen.kt:259`；`apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/motion/ButtonRevealTransition.kt:115` | **✗ 完整要求尚未满足。** 复用 Compose/M3、主题令牌、可滚动正文、安全区处理、读屏标签和内容插槽；但登录衔接有 R02，主题有 R08。未在不同屏幕、字体缩放、TalkBack 和减少动画系统设置下做 UI 验收，不能把这些项写成已通过。 |
@@ -235,7 +249,36 @@ gradle --offline --no-daemon --max-workers=2 --no-build-cache --console=plain \
 
 测试方法边界：偏好测试使用内存 `SharedPreferences` 实现替代磁盘，但调用真实生产状态方法；几何检查通过记录 `DrawScope` 调用并反射调用真实私有绘制/裁剪函数，不是截图；帧回调检查使用真实 Compose 动画和测试时钟，不是设备帧率测试。补充工具与原始日志放在审查临时目录，本文件保存了结论、用例、观察结果与限制，未把临时构建内容加入仓库。
 
-### 5.4 边界、资源释放与未验证项
+### 5.4 教程命令逐块核对与安全 Shell 探针
+
+并行审查机械还原了教程中的 **13 个命令块**，与同一提交的 README、锁定文件逐项对照；主审再次读取目标提交的相关源码，并在隔离 Bash 子进程中复核两处确定错误。未执行安装、构建宿主、生成密钥、读取账号文件或清理文件。
+
+| 教程 | 实际核对 | 结果与证据边界 |
+| --- | --- | --- |
+| Hermes | 插件安装、`gateway setup`、建号、状态和契约状态命令，与 `README.md:178`、`README.md:181`、`README.md:185`、`README.md:186`、`README.md:187` 对照 | 参数和锁定 ref 一致；新增的 `hermes --version` 未取得对应 CLI 实现，未判为错误，也不宣称已执行验证。状态命令是否输出教程声称的全部内容，仍需宿主核验。 |
+| OpenClaw | 32 字节主密钥要求、环境变量、安装与运行时检查命令，与 `README.md:196`、`README.md:200`、`README.md:203`、`README.md:204` 及插件锁定文件对照 | 安装 ref `c7c087b9fe28adcc658a1cbdb71689a377b65214` 一致；环境变量字符串被新增换行破坏，R11。未生成真实密钥或验证运行时 JSON 输出。 |
+| DSH | 克隆/构建、会话内安装语句、自动建号与凭据路径，与 `README.md:217`、`README.md:225`、`README.md:228` 对照 | 基础步骤一致；凭据读写路径的 Shell 引用有误，R12。`plugin_manager` 是 DSH 会话工具语句，不是本地 Shell；其续行形式未进行宿主验证，不据此推断安装必定失败。 |
+
+实际探针由 Python `subprocess.run` 调用 `bash --noprofile --norc -c`，环境和路径均为虚拟值。OpenClaw 分别运行原始赋值字符串、完整路径加引号的单行对照，并立即记录赋值返回码与变量值：
+
+```text
+openclaw-original: export_exit=1 value=<>
+export: `/__tutorial_probe__/home/gateway-master-key.bin': not a valid identifier
+openclaw-quoted-control: export_exit=0 value=</__tutorial_probe__/home/gateway-master-key.bin>
+```
+
+DSH 使用以下只打印参数的函数检查路径表达式，没有调用读取或删除命令：
+
+```bash
+DSH_HOME='/__tutorial_probe__/home with spaces'
+probe_args() { printf 'argc=%s\n' "$#"; printf 'arg=<%s>\n' "$@"; }
+probe_args $DSH_HOME/dsh-android-gateway/setup-account.json
+probe_args "$DSH_HOME/dsh-android-gateway/setup-account.json"
+```
+
+实际输出分别为 `argc=3` 和 `argc=1`。以上为 **JUnit 之外的额外检查**，不改变前述 39 项原测试、48 项合计及 3 个失败的计数。这里只证明具体的 Shell 语义和仓库说明一致性，不能替代三套 Gateway 的真实部署验证。
+
+### 5.5 边界、资源释放与未验证项
 
 - 原几何测试覆盖零尺寸容器、位于屏幕边缘的中心、进度端点和越界夹取；新增的实际绘制测试补上了“插值端点正确不代表调用了正确绘图原语”的缺口。
 - `GatewayTutorials.byId()` 对未知 ID 回退第一套教程；当前 `ALL` 是三项非空常量。流程中也直接使用 `ALL.first()`，如果未来允许空配置，需要同步移除这一假设；本提交没有可达的空教程列表崩溃证据。
@@ -244,4 +287,4 @@ gradle --offline --no-daemon --max-workers=2 --no-build-cache --console=plain \
 - 未执行 APK/Manifest 合并、Android 仪器测试、设备/模拟器操作、真实设置撤权、TalkBack、字体缩放/横屏截图、性能测量、真实 Gateway 安装或远程 CI。因此这些证据不能相互替代，也不宣称完整流程已经通过。
 - AndroidX `Animatable`、Android 运行时权限和 MediaProjection 官方说明仅用于核对框架语义；代码结论以固定提交源码及上述测试为准，不以网上示例替代项目实现。
 
-**建议修复顺序：** R01 → R04 → R02/R03 → R05/R06 → R07；随后补上宿主与流程级回归测试，重新验证权限状态和真实目标内容的中间帧，再做设备体验验收。
+**建议修复顺序：** R01 → R04/R11/R12 → R02/R03 → R05/R06 → R07；随后补上宿主与流程级回归测试，重新验证权限状态、教程复制字符串和真实目标内容的中间帧，再做设备体验验收。

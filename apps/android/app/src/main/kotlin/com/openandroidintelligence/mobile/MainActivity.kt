@@ -40,6 +40,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -399,16 +400,30 @@ class MainActivity : ComponentActivity() {
                 val onboardingVisible = onboardingState.shouldShow
                 // 已启用插件声明的 kernel primitive：决定「设备能力」权限卡片是否出现。
                 // 不存在的能力不展示，满足需求「不请求不存在或尚不需要的权限」。
-                // 依赖 pluginHost.revision：用户在设置里启停插件后，回到引导页会重新计算。
+                //
+                // 两点性能约束：
+                // 1. listInstalled() 会遍历目录、读清单并解析 JSON —— 不能在组合（主线程）里做；
+                // 2. 只有引导真正可见时才需要这份数据，引导隐藏时不必扫描。
+                // 因此用 produceState 放进 IO 调度器，并受 onboardingVisible 门控。
                 val onboardingPluginRevision by app.pluginHost.revision.collectAsState()
-                val enabledPrimitives = remember(onboardingPluginRevision) {
-                    // 只统计「已安装且已启用」的插件：未启用的插件即使声明了能力，
-                    // 也不会对 Agent 生效，把它算进来会误导用户去授权一个用不上的权限。
-                    app.pluginHost.installStore.listInstalled()
-                        .mapNotNull { it.pluginId }
-                        .filter { app.pluginHost.isEnabled(it) }
-                        .flatMap { id -> app.pluginHost.entries(id).flatMap { it.primitives } }
-                        .toSet()
+                val enabledPrimitives by produceState(
+                    initialValue = emptySet<String>(),
+                    onboardingVisible,
+                    onboardingPluginRevision,
+                ) {
+                    value = if (!onboardingVisible) {
+                        emptySet()
+                    } else {
+                        withContext(Dispatchers.IO) {
+                            // 只统计「已安装且已启用」的插件：未启用的插件即使声明了能力，
+                            // 也不会对 Agent 生效，把它算进来会误导用户授权一个用不上的权限。
+                            app.pluginHost.installStore.listInstalled()
+                                .mapNotNull { it.pluginId }
+                                .filter { app.pluginHost.isEnabled(it) }
+                                .flatMap { id -> app.pluginHost.entries(id).flatMap { it.primitives } }
+                                .toSet()
+                        }
+                    }
                 }
 
                 if (onboardingVisible) {

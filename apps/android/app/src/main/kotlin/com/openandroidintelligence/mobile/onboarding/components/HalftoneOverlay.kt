@@ -56,7 +56,11 @@ fun Modifier.halftone(
     dotSpacing: Dp = 6.dp,
 ): Modifier = composed {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val isDark = remember(onSurface) { onSurface.luminance() < 0.5f }
+    // 判断「背景是否深色」必须看**表面色**，不能看前景色：
+    // 浅色主题下 onSurface 是深色（luminance 低），用它判断会得出「背景是深色」，
+    // 于是给浅色背景套上 Screen 混合，网点反而变亮、失去加深效果。
+    val surface = MaterialTheme.colorScheme.surface
+    val isDark = remember(surface) { surface.luminance() < 0.5f }
 
     drawWithCache {
         val spacingPx = dotSpacing.toPx().coerceAtLeast(1f)
@@ -106,7 +110,11 @@ fun Modifier.halftone(
  */
 fun Modifier.printGrain(alpha: Float = 0.035f): Modifier = composed {
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val isDark = remember(onSurface) { onSurface.luminance() < 0.5f }
+    // 判断「背景是否深色」必须看**表面色**，不能看前景色：
+    // 浅色主题下 onSurface 是深色（luminance 低），用它判断会得出「背景是深色」，
+    // 于是给浅色背景套上 Screen 混合，网点反而变亮、失去加深效果。
+    val surface = MaterialTheme.colorScheme.surface
+    val isDark = remember(surface) { surface.luminance() < 0.5f }
 
     drawWithCache {
         val count = grainRectCount(size.width, size.height, density)
