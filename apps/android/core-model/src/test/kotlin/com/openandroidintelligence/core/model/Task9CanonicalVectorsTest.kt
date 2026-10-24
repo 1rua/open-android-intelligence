@@ -9,8 +9,8 @@ import org.junit.Test
 class Task9CanonicalVectorsTest {
     @Test
     fun event_and_ack_vectors_have_independent_jcs_bytes_and_digests() {
-        val fixture = locateFixture()
-        val root = JsonParser(fixture.readText()).parse() as Map<*, *>
+        val fixtureText = loadFixtureText()
+        val root = JsonParser(fixtureText).parse() as Map<*, *>
         assertEquals("task9-event-ack-v1", root["vector_set"])
         assertEquals("1.0", root["protocol_version"])
         val vectors = root["vectors"] as List<*>
@@ -33,14 +33,10 @@ class Task9CanonicalVectorsTest {
         }
     }
 
-    private fun locateFixture(): java.io.File {
-        var current: java.io.File? = java.io.File("").absoluteFile
-        while (current != null) {
-            val candidate = java.io.File(current, "protocol/test-only/event/v1/event-ack-vectors.json")
-            if (candidate.isFile) return candidate
-            current = current.parentFile
-        }
-        error("Task 9 canonical vector fixture not found from process working directory")
+    private fun loadFixtureText(): String {
+        val stream = javaClass.classLoader?.getResourceAsStream("fixtures/v1/event-ack-vectors.json")
+            ?: error("Task 9 canonical vector fixture not found in test resources")
+        return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
     }
 }
 

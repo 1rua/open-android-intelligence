@@ -9,6 +9,7 @@ tests remain runnable.
 
 `MVP-DEP-OPENCLAW` locks the OpenClaw host distribution. The separate
 `MVP-DEP-OPENCLAW-PLUGIN` row locks this project's adapter repository and immutable commit.
+`MVP-DEP-TSNET` records the archived legacy Tailnet/tsnet stack (now moved to `legacy/android-tailnet/`).
 
 | decision_id | official_reference | immutable_version | integrity | license_review | reviewer_time | evidence_expires_at | verify_command | status | blocks |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
