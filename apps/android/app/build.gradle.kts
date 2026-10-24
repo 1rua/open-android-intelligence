@@ -87,10 +87,16 @@ val bundledPluginsDirectory = providers.environmentVariable("OAI_BUNDLED_PLUGINS
 val requireBundledPlugins = providers.gradleProperty("oai.requireBundledPlugins").map(String::toBoolean).orElse(false)
 
 abstract class StageBundledPlugins : DefaultTask() {
-    /** 目录内按插件名取 `<name>.alp`；未设置时为空。 */
+    /**
+     * 目录内按插件名取 `<name>.alp`；未设置时为空。
+     *
+     * 用 RELATIVE 而非 NONE：暂存逻辑按文件名逐项取包，输入目录里的
+     * 重命名/删除必须让任务失效，否则会保留上次的暂存资产、绕过
+     * 缺包检查（发布强制开关会被旧产物骗过）。
+     */
     @get:InputDirectory
     @get:Optional
-    @get:PathSensitive(PathSensitivity.NONE)
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val signedPackages: DirectoryProperty
 
     /** 逗号分隔的 `<name>=<pluginId>`，供任务自证资产与插件身份对应。 */
