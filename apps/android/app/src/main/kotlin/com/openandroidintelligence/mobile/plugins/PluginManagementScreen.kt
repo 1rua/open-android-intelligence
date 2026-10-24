@@ -99,7 +99,8 @@ fun PluginManagementScreen(
     modifier: Modifier = Modifier,
     store: PluginInstallStore? = null,
     onOpenNotificationSettings: (() -> Unit)? = null,
-    bundledNotificationPackage: (() -> ByteArray)? = null,
+    /** 测试注入的内置包来源；缺省时按插件各自读取 APK 资产。 */
+    bundledPluginPackages: Map<BundledPlugin, () -> ByteArray> = emptyMap(),
 ) {
     val context = LocalContext.current
     // 未显式给 store 时按应用上下文自建（真实存储：filesDir/plugins）。
@@ -127,13 +128,13 @@ fun PluginManagementScreen(
     var installing by remember { mutableStateOf(false) }
 
     fun refresh() { host?.reload(); installed = resolvedStore.listInstalled() }
-    fun installBytes(bytes: ByteArray, approved: Boolean = false, bundledNotification: Boolean = false) {
+    fun installBytes(bytes: ByteArray, approved: Boolean = false, bundledPlugin: BundledPlugin? = null) {
         if (installing) return
         installing = true
         installScope.launch {
             try {
                 val view = runInterruptible(Dispatchers.IO) {
-                    if (bundledNotification) resolvedStore.installBundledNotifications(bytes) else resolvedStore.install(bytes,approved)
+                    if (bundledPlugin != null) resolvedStore.installBundledPlugin(bundledPlugin, bytes) else resolvedStore.install(bytes,approved)
                 }
                 refresh(); pendingApproval = null
                 notice = "已安装 ${view.pluginId} v${view.version}，可启用并为当前配对授权。"
@@ -352,32 +353,40 @@ fun PluginManagementScreen(
                 }
             }
 
-            SectionLabel("通知读取")
+            // 内置插件安装入口：每个插件一条，独立判断安装状态；
+            // 已安装或渠道禁止时如实说明，不渲染可点但无效的条目。
+            SectionLabel("内置插件")
             SettingsSectionCard {
-                val alreadyInstalled = installed.any { it.pluginId == NOTIFICATION_PLUGIN_ID || it.directory.name == NOTIFICATION_PLUGIN_ID }
-                SettingsListItem(
-                    headline = if (alreadyInstalled) "通知读取插件已安装" else "安装通知读取插件",
-                    supporting = when {
-                        !allowRuntimePlugins -> "此分发渠道不支持通知插件，请使用支持插件的 Full 版本"
-                        alreadyInstalled && host?.loadFailures?.containsKey(NOTIFICATION_PLUGIN_ID) == true -> "现有包校验或加载失败，请先卸载损坏包，再重新安装并授权"
-                        alreadyInstalled -> "请在下方启用插件、授予当前配对，并配置通知采集与系统通知使用权"
-                        else -> "安装此 APK 附带的已签名插件；安装后需自行启用和授权"
-                    },
-                    icon = Icons.Default.InstallMobile,
-                    enabled = allowRuntimePlugins && !alreadyInstalled && !installing,
-                    onClick = if (allowRuntimePlugins && !alreadyInstalled && !installing) ({
-                        installScope.launch {
-                            try {
-                                val bytes = runInterruptible(Dispatchers.IO) {
-                                    bundledNotificationPackage?.invoke() ?: readBundledNotificationPackage(context)
+                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                    BundledPlugin.entries.forEach { plugin ->
+                        val alreadyInstalled = installed.any { it.pluginId == plugin.pluginId || it.directory.name == plugin.pluginId }
+                        SettingsListItem(
+                            headline = if (alreadyInstalled) "${plugin.displayName}插件已安装" else "安装${plugin.displayName}插件",
+                            supporting = when {
+                                !allowRuntimePlugins -> "此分发渠道不支持内置插件，请使用支持插件的 Full 版本"
+                                alreadyInstalled && host?.loadFailures?.containsKey(plugin.pluginId) == true -> "现有包校验或加载失败，请先卸载损坏包，再重新安装并授权"
+                                alreadyInstalled -> if (plugin == BundledPlugin.NOTIFICATIONS)
+                                    "请在下方启用插件、授予当前配对，并配置通知采集与系统通知使用权"
+                                else "请在下方启用插件并授予当前配对；授权时会请求对应的系统读取权限"
+                                else -> "安装此 APK 附带的已签名插件；安装后需自行启用和授权"
+                            },
+                            icon = Icons.Default.InstallMobile,
+                            enabled = allowRuntimePlugins && !alreadyInstalled && !installing,
+                            onClick = if (allowRuntimePlugins && !alreadyInstalled && !installing) ({
+                                installScope.launch {
+                                    try {
+                                        val bytes = runInterruptible(Dispatchers.IO) {
+                                            bundledPluginPackages[plugin]?.invoke() ?: readBundledPluginPackage(context, plugin)
+                                        }
+                                        installBytes(bytes, bundledPlugin = plugin)
+                                    } catch (cancelled: CancellationException) { throw cancelled }
+                                    catch (cause: Exception) { notice = installFailureNotice(cause) }
                                 }
-                                installBytes(bytes, bundledNotification = true)
-                            } catch (cancelled: CancellationException) { throw cancelled }
-                            catch (cause: Exception) { notice = installFailureNotice(cause) }
-                        }
-                    }) else null,
-                    modifier = Modifier.testTag(BUNDLED_NOTIFICATION_INSTALL_TAG),
-                )
+                            }) else null,
+                            modifier = Modifier.testTag(plugin.installTag),
+                        )
+                    }
+                }
             }
 
             // 已安装列表：真实存储扫描。
@@ -627,7 +636,7 @@ private fun CapabilityStatusRow(entryId: String, status: String) {
 
 /** 安装失败的如实说明：契约拒绝码原样给出，不回显原始异常文本。 */
 internal fun installFailureNotice(cause: Throwable): String = when (cause) {
-    is BundledNotificationUnavailable -> "当前安装包未附带通知读取插件，请从文件导入已签名的 .alp 插件包。"
+    is BundledPluginUnavailable -> "当前安装包未附带${cause.plugin.displayName}插件，请从文件导入已签名的 .alp 插件包。"
     is PackageRejected -> "插件包校验未通过：${cause.message ?: "未知拒绝码"}"
     is PluginInstallRefused -> "安装被拒绝：${cause.message ?: cause::class.java.simpleName}"
     else -> "安装失败：无法读取或处理所选插件包。"

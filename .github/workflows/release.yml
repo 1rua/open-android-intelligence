@@ -14,7 +14,7 @@ concurrency:
   queue: max
 
 jobs:
-  sign-notification-package:
+  sign-plugin-packages:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -36,13 +36,14 @@ jobs:
           cache: npm
           cache-dependency-path: plugin-tooling/package-lock.json
 
-      - name: Build the notification plugin WASM
+      # 三个内置插件各自是一个 crate,统一用锁定工具链编译 WASM。
+      - name: Build the bundled plugin WASM
         run: |
           rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications
+          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications -p open-android-intelligence-sms -p open-android-intelligence-call-log
           npm ci --prefix plugin-tooling
 
-      - name: Sign the bundled notification package
+      - name: Sign the bundled plugin packages
         env:
           OAI_PLUGIN_SIGNING_KEY_BASE64: ${{ secrets.OAI_PLUGIN_SIGNING_KEY_BASE64 }}
         run: |
@@ -54,23 +55,25 @@ jobs:
           OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-plugin-seed.bin"
           trap 'if [ -f "$OAI_PLUGIN_KEY_FILE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_PLUGIN_KEY_FILE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-plugin-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.bin"; fi' EXIT
           printf '%s' "$OAI_PLUGIN_SIGNING_KEY_BASE64" | base64 --decode > "$OAI_PLUGIN_KEY_FILE"
+          mkdir -p "$RUNNER_TEMP/signed-plugins"
           OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE="$OAI_PLUGIN_KEY_FILE" \
-            npm run build:android-notifications --prefix plugin-tooling -- "$RUNNER_TEMP/notifications.alp"
+            npm run build:android-plugins --prefix plugin-tooling -- "$RUNNER_TEMP/signed-plugins"
 
       - name: Set signed artifact name
         id: artifact-name
-        run: echo "name=signed-notifications-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+        run: echo "name=signed-plugins-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the signed notification package
+      # 整目录上传,artifact 内含 notifications/sms/call-log 三个 .alp。
+      - name: Upload the signed plugin packages
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.artifact-name.outputs.name }}
-          path: ${{ runner.temp }}/notifications.alp
+          path: ${{ runner.temp }}/signed-plugins
           if-no-files-found: error
           retention-days: 1
 
   build-stable-apk:
-    needs: sign-notification-package
+    needs: sign-plugin-packages
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -124,14 +127,14 @@ jobs:
         with:
           cache-provider: basic
 
-      - name: Download the signed notification package
+      - name: Download the signed plugin packages
         uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.sign-notification-package.outputs.signed-artifact-name }}
-          path: ${{ runner.temp }}/signed-notifications
+          name: ${{ needs.sign-plugin-packages.outputs.signed-artifact-name }}
+          path: ${{ runner.temp }}/signed-plugins
 
-      - name: Set the notification package path
-        run: echo "OAI_BUNDLED_NOTIFICATIONS_ALP=$RUNNER_TEMP/signed-notifications/notifications.alp" >> "$GITHUB_ENV"
+      - name: Set the bundled plugins directory
+        run: echo "OAI_BUNDLED_PLUGINS_DIR=$RUNNER_TEMP/signed-plugins" >> "$GITHUB_ENV"
 
       - name: Prepare release signing key
         working-directory: apps/android
@@ -159,15 +162,18 @@ jobs:
         run: |
           trap 'if [ -f "$OAI_RELEASE_KEYSTORE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_RELEASE_KEYSTORE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keystore"; fi' EXIT
           chmod +x gradlew
-          ./gradlew :app:assembleFullRelease -Poai.requireBundledNotifications=true --stacktrace
+          ./gradlew :app:assembleFullRelease -Poai.requireBundledPlugins=true --stacktrace
 
+      # 三个 .alp 一起进入 stable-apk-inputs,供下游 verify-stable-apk 逐个校验。
       - name: Stage APK build inputs
         run: |
           mkdir -p "$RUNNER_TEMP/stable-apk-inputs"
           cp apps/android/app/build/outputs/apk/full/release/app-full-release.apk "$RUNNER_TEMP/stable-apk-inputs/"
           cp apps/android/app/build/outputs/apk/full/release/output-metadata.json "$RUNNER_TEMP/stable-apk-inputs/"
           cp "$RUNNER_TEMP/oai-release-metadata.json" "$RUNNER_TEMP/stable-apk-inputs/"
-          cp "$OAI_BUNDLED_NOTIFICATIONS_ALP" "$RUNNER_TEMP/stable-apk-inputs/notifications.alp"
+          for package in notifications sms call-log; do
+            cp "$OAI_BUNDLED_PLUGINS_DIR/$package.alp" "$RUNNER_TEMP/stable-apk-inputs/$package.alp"
+          done
 
       - name: Set APK input artifact name
         id: artifact-name
@@ -210,11 +216,14 @@ jobs:
           name: ${{ needs.build-stable-apk.outputs.apk-artifact-name }}
           path: ${{ runner.temp }}/stable-apk-inputs
 
-      - name: Verify the bundled notification package
+      # 三个插件资产逐一与 stable-apk-inputs 中暂存的包逐字节比对。
+      - name: Verify the bundled plugin packages
         run: |
-          python3 apps/android/tools/verify_bundled_notifications.py \
-            --apk "$RUNNER_TEMP/stable-apk-inputs/app-full-release.apk" \
-            --package "$RUNNER_TEMP/stable-apk-inputs/notifications.alp"
+          for package in notifications sms call-log; do
+            python3 apps/android/tools/verify_bundled_plugins.py \
+              --apk "$RUNNER_TEMP/stable-apk-inputs/app-full-release.apk" \
+              --package "$package=$RUNNER_TEMP/stable-apk-inputs/$package.alp"
+          done
 
       - name: Prepare release notes from the merged PR
         env:

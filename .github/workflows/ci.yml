@@ -88,7 +88,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_app_release_metadata.py'
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_extract_package_version.py'
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_prepare_release_notes.py'
-          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_bundled_notifications.py'
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_bundled_plugins.py'
 
       # The plugin packages a contract snapshot generated from a pinned commit.
       # Compare all contract inputs (source, schemas, registry and vectors)
@@ -243,16 +243,19 @@ jobs:
           cache: "npm"
           cache-dependency-path: plugin-tooling/package-lock.json
 
-      - name: Build a signed notification package with an isolated test author
+      # PR 场景没有生产私钥，这里用一次性随机 seed 作隔离测试作者，
+      # 一次性签出 notifications / sms / call-log 三个包供 APK 内置校验使用。
+      - name: Build signed plugin packages with an isolated test author
         run: |
           npm ci --prefix plugin-tooling
           umask 077
           OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-test-plugin-seed.bin"
-          trap 'rm -f "$OAI_PLUGIN_KEY_FILE"' EXIT
+          trap 'if [ -f "$OAI_PLUGIN_KEY_FILE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_PLUGIN_KEY_FILE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-test-plugin-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.bin"; fi' EXIT
           python3 -c 'import secrets,sys;open(sys.argv[1],"wb").write(secrets.token_bytes(32))' "$OAI_PLUGIN_KEY_FILE"
+          mkdir -p "$RUNNER_TEMP/signed-plugins"
           OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE="$OAI_PLUGIN_KEY_FILE" \
-            npm run build:android-notifications --prefix plugin-tooling -- "$RUNNER_TEMP/notifications.alp"
-          echo "OAI_BUNDLED_NOTIFICATIONS_ALP=$RUNNER_TEMP/notifications.alp" >> "$GITHUB_ENV"
+            npm run build:android-plugins --prefix plugin-tooling -- "$RUNNER_TEMP/signed-plugins"
+          echo "OAI_BUNDLED_PLUGINS_DIR=$RUNNER_TEMP/signed-plugins" >> "$GITHUB_ENV"
 
       - name: Run Android Tasks
         working-directory: apps/android
@@ -265,10 +268,13 @@ jobs:
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT: ${{ github.workspace }}/gateway-contract
         run: |
           chmod +x gradlew
-          ./gradlew check :app:assembleFullDebug -Poai.requireBundledNotifications=true --stacktrace --no-build-cache --max-workers=1
+          ./gradlew check :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace --no-build-cache --max-workers=1
 
-      - name: Verify the notification plugin reached the APK
+      # 三个插件资产必须逐一与签出的包逐字节一致；缺一个就说明内置链路断了。
+      - name: Verify the plugin packages reached the APK
         run: |
-          python3 apps/android/tools/verify_bundled_notifications.py \
-            --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
-            --package "$OAI_BUNDLED_NOTIFICATIONS_ALP"
+          for package in notifications sms call-log; do
+            python3 apps/android/tools/verify_bundled_plugins.py \
+              --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
+              --package "$package=$OAI_BUNDLED_PLUGINS_DIR/$package.alp"
+          done
