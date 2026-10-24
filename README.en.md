@@ -10,7 +10,7 @@
 </p>
 
 <h3>
-  <a href="#quick-start">📱 One-Click APK Install · Connect Multiple Mainstream Agents · Privacy & Safety Controlled</a>
+  <a href="https://github.com/1rua/open-android-intelligence/releases/latest/download/app-full-release.apk">One-Click APK Install</a> · Connect Multiple Mainstream Agents · Privacy & Safety Controlled
 </h3>
 
 <p>
@@ -30,13 +30,13 @@
 </p>
 
 <p>
-  <a href="#30-second-overview">⚡ 30-Second Overview</a> ·
-  <a href="#key-features">✨ Key Features</a> ·
-  <a href="#how-it-works">🏗️ How It Works</a> ·
-  <a href="#security-boundaries">🛡️ Security Boundaries</a> ·
-  <a href="#quick-start">🚀 Quick Start</a> ·
-  <a href="#current-status">📊 Current Status</a> ·
-  <a href="#documentation-navigation">📚 Documentation Navigation</a>
+  <a href="#30-second-overview">30-Second Overview</a> ·
+  <a href="#key-features">Key Features</a> ·
+  <a href="#how-it-works">How It Works</a> ·
+  <a href="#security-boundaries">Security Boundaries</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#current-status">Current Status</a> ·
+  <a href="#documentation-navigation">Documentation Navigation</a>
 </p>
 
 </div>
@@ -54,9 +54,9 @@ The project consists of three main components, with host adapter plugins maintai
 
 | Core Component | Role & Description | Repository / Path |
 | --- | --- | --- |
-| 📱 **Android App** | Connects to Gateways, manages accounts and multi-sessions, sends user-selected multimodal attachments, and hosts the device capability sandbox | [`apps/android`](apps/android) |
-| 📜 **Gateway Protocol** | Defines authentication, messaging, and closed-schema data contracts between the phone and Agent hosts | [`gateway-contract`](gateway-contract) |
-| 🔌 **Third-Party Host Plugins** | Provide standard Gateway adapters for Hermes, OpenClaw, and DSH (DeepSeek Harness) | [Hermes Plugin](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw Plugin](https://github.com/1rua/openclaw-gateway-plugin) / [DSH Plugin](https://github.com/1rua/dsh-android-gateway) |
+| **Android App** | Connects to Gateways, manages accounts and multi-sessions, sends user-selected multimodal attachments, and hosts the device capability sandbox | [`apps/android`](apps/android) |
+| **Gateway Protocol** | Defines authentication, messaging, and closed-schema data contracts between the phone and Agent hosts | [`gateway-contract`](gateway-contract) |
+| **Third-Party Host Plugins** | Provide standard Gateway adapters for Hermes, OpenClaw, and DSH (DeepSeek Harness) | [Hermes Plugin](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw Plugin](https://github.com/1rua/openclaw-gateway-plugin) / [DSH Plugin](https://github.com/1rua/dsh-android-gateway) |
 
 > [!NOTE]
 > **Zero Relay Architecture**: The Android App communicates directly with your self-hosted Agent Gateway. The project does not operate any public cloud message relay servers.<br>
@@ -69,31 +69,31 @@ The project consists of three main components, with host adapter plugins maintai
 <table>
   <tr>
     <td width="50%" valign="top">
-      <h3>💬 Native Multi-Session Chat <img src="https://img.shields.io/badge/Ready-10B981?style=flat-square" alt="Ready"></h3>
+      <h3>Native Multi-Session Chat <img src="https://img.shields.io/badge/Ready-10B981?style=flat-square" alt="Ready"></h3>
       <p>Enjoy fluid conversations with your connected mainstream Agents on your phone. Features independent multi-session management, session archiving, folder categorization, and flexible sorting; comprehensive support for system photo picker, file selector, clipboard image pasting, and system-level multi-file share attachments.</p>
     </td>
     <td width="50%" valign="top">
-      <h3>🌐 Direct Multi-Host Gateway <img src="https://img.shields.io/badge/Supported-38BDF8?style=flat-square" alt="Supported"></h3>
+      <h3>Direct Multi-Host Gateway <img src="https://img.shields.io/badge/Supported-38BDF8?style=flat-square" alt="Supported"></h3>
       <p>Seamlessly connect to <strong>Hermes</strong>, <strong>OpenClaw</strong>, and <strong>DSH (DeepSeek Harness)</strong> through a unified Gateway Protocol v2. Connect directly to your own server, retaining full sovereignty over model execution and history without cloud data hijacking.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <h3>🧩 WebAssembly Plugin Sandbox <img src="https://img.shields.io/badge/Architecture%20Ready-34D399?style=flat-square" alt="Architecture Ready"></h3>
+      <h3>WebAssembly Plugin Sandbox <img src="https://img.shields.io/badge/Architecture%20Ready-34D399?style=flat-square" alt="Architecture Ready"></h3>
       <p>Everything is a plugin. Protected device plugins are packaged as standard <code>.alp</code> bundles, running inside a high-performance WASM sandbox with strict constraints on CPU execution time, memory ceilings (hard quotas), storage capacity, and concurrent network connections to prevent privilege abuse.</p>
     </td>
     <td width="50%" valign="top">
-      <h3>🛡️ Zero-Trust Security & Screen Confirmation <img src="https://img.shields.io/badge/Security%20First-F59E0B?style=flat-square" alt="Security First"></h3>
+      <h3>Zero-Trust Security & Screen Confirmation <img src="https://img.shields.io/badge/Security%20First-F59E0B?style=flat-square" alt="Security First"></h3>
       <p>Follows the "Default Deny" security principle: plugin installation, plugin enablement, and Gateway account authorization are strictly decoupled across tiers. High-risk operations like sending SMS must be confirmed manually per item on the phone screen, strictly preventing silent execution.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <h3>🔒 Closed Contracts & Anti-Replay Verification <img src="https://img.shields.io/badge/70%20Vectors-10B981?style=flat-square" alt="70 Vectors"></h3>
+      <h3>Closed Contracts & Anti-Replay Verification <img src="https://img.shields.io/badge/70%20Vectors-10B981?style=flat-square" alt="70 Vectors"></h3>
       <p>Strict closed contract validation powered by JSON Schema 2020-12, dropping any extraneous unknown fields; critical commands are equipped with Ed25519 signatures, timestamps, and one-time nonces for anti-replay protection, ensuring idempotent execution across network jitter.</p>
     </td>
     <td width="50%" valign="top">
-      <h3>🔔 Native System Notifications & Live Updates <img src="https://img.shields.io/badge/Android%2012--16-8B5CF6?style=flat-square" alt="Android 12-16"></h3>
+      <h3>Native System Notifications & Live Updates <img src="https://img.shields.io/badge/Android%2012--16-8B5CF6?style=flat-square" alt="Android 12-16"></h3>
       <p>Deeply integrated into the native Android ecosystem: supports conversational notifications (MessagingStyle) and floating Bubbles on Android 12–15, with native Android 16 Live Updates integration for real-time task progress tracking.</p>
     </td>
   </tr>
@@ -135,9 +135,9 @@ Security and privacy are the foundation of this project. All hardware device cap
 
 | Sensitive Capability | Strict Limits & Permitted Boundaries |
 | --- | --- |
-| 📞 **Call Logs** | **Basic metadata read-only** (contacts/numbers, timestamps, call duration); recording, answering, hanging up, or auto-dialing is strictly prohibited in any form. |
-| ✉️ **SMS Records** | Controlled read access to sent and received records; **modifying operations like sending SMS must be manually clicked and confirmed on the phone screen one by one**, background dispatch is strictly prohibited. |
-| 🔔 **App Notifications** | **Denied by default**; requires the user to manually select specific app package names and fields in a whitelist. In-memory end-to-end encrypted buffering without plaintext logging. |
+| **Call Logs** | **Basic metadata read-only** (contacts/numbers, timestamps, call duration); recording, answering, hanging up, or auto-dialing is strictly prohibited in any form. |
+| **SMS Records** | Controlled read access to sent and received records; **modifying operations like sending SMS must be manually clicked and confirmed on the phone screen one by one**, background dispatch is strictly prohibited. |
+| **App Notifications** | **Denied by default**; requires the user to manually select specific app package names and fields in a whitelist. In-memory end-to-end encrypted buffering without plaintext logging. |
 
 ---
 
@@ -147,9 +147,9 @@ Security and privacy are the foundation of this project. All hardware device cap
 
 | Environment | Minimum Requirement | Recommended |
 | --- | --- | --- |
-| 📱 **Android Phone** | Android 12+ (`minSdk 31`) | Android 14+, 8GB RAM recommended |
-| 🖥️ **Agent Host Environment** | Running Hermes, OpenClaw, or DSH (DeepSeek Harness) | Accessible via public internet or Tailscale LAN |
-| 🛠️ **Developer Build Toolchain** *(Only needed for source development)* | Node.js `24.18.0` + npm `11.16.0`, JDK 21, Android SDK (`compileSdk 36` / `targetSdk 35`) | Rust 1.80+ (with `wasm32-unknown-unknown` target) |
+| **Android Phone** | Android 12+ (`minSdk 31`) | Android 14+, 8GB RAM recommended |
+| **Agent Host Environment** | Running Hermes, OpenClaw, or DSH (DeepSeek Harness) | Accessible via public internet or Tailscale LAN |
+| **Developer Build Toolchain** *(Only needed for source development)* | Node.js `24.18.0` + npm `11.16.0`, JDK 21, Android SDK (`compileSdk 36` / `targetSdk 35`) | Rust 1.80+ (with `wasm32-unknown-unknown` target) |
 
 ---
 
@@ -159,8 +159,8 @@ Go to the project [Releases Page](https://github.com/1rua/open-android-intellige
 
 | Release Channel | Target Audience | Installation Notes |
 | --- | --- | --- |
-| 🧪 **Developer Preview** | Early adopters, developers | Uses unified Debug keystore built into repo, supports in-place upgrade, directly downloadable from daily CI builds |
-| 📦 **Stable Release** | General daily use | Signed with official private production keys, cross-installing over Developer Preview is strictly prohibited (see [Android Signing Configuration](apps/android/README.md#release-signing)) |
+| **Developer Preview** | Early adopters, developers | Uses unified Debug keystore built into repo, supports in-place upgrade, directly downloadable from daily CI builds |
+| **Stable Release** | General daily use | Signed with official private production keys, cross-installing over Developer Preview is strictly prohibited (see [Android Signing Configuration](apps/android/README.md#release-signing)) |
 
 ---
 
@@ -169,7 +169,7 @@ Go to the project [Releases Page](https://github.com/1rua/open-android-intellige
 Choose and configure the corresponding host plugin according to your Agent framework. To ensure end-to-end security, Hermes and OpenClaw require configuring an account Master Key for symmetric encryption and storage of message payloads.
 
 <details>
-<summary><b>🤖 Configure <a href="https://github.com/1rua/hermes-gateway-plugin">Hermes</a> Host (Click to expand)</b></summary>
+<summary><b>Configure <a href="https://github.com/1rua/hermes-gateway-plugin">Hermes</a> Host (Click to expand)</b></summary>
 
 ```bash
 # 1. Install and enable the specified Gateway plugin version (strictly locked to current App version)
@@ -189,7 +189,7 @@ hermes open-android-intelligence contract status
 </details>
 
 <details>
-<summary><b>🐾 Configure <a href="https://github.com/1rua/openclaw-gateway-plugin">OpenClaw</a> Host (Click to expand)</b></summary>
+<summary><b>Configure <a href="https://github.com/1rua/openclaw-gateway-plugin">OpenClaw</a> Host (Click to expand)</b></summary>
 
 Prepare a 32-byte raw key file (permissions set to `0600`), and configure the system environment variable:
 
@@ -206,7 +206,7 @@ openclaw plugins inspect open-android-intelligence-gateway --runtime --json
 </details>
 
 <details>
-<summary><b>⚡ Configure <a href="https://github.com/1rua/dsh-android-gateway">DSH (DeepSeek Harness)</a> Host (Click to expand)</b></summary>
+<summary><b>Configure <a href="https://github.com/1rua/dsh-android-gateway">DSH (DeepSeek Harness)</a> Host (Click to expand)</b></summary>
 
 [dsh-android-gateway](https://github.com/1rua/dsh-android-gateway) is a standalone Bundle plugin built for DSH, version `0.2.0`, implementing Gateway Protocol v2.1. It directly reuses DSH's native web port:
 
@@ -227,7 +227,7 @@ On first startup, if the account store is empty, the plugin will automatically g
 </details>
 
 <details>
-<summary><b>🛠️ Offline Account Pre-provisioning (CLI Tool)</b></summary>
+<summary><b>Offline Account Pre-provisioning (CLI Tool)</b></summary>
 
 If you don't have an active host runtime environment yet, you can pre-provision account credentials locally using the standalone CLI bundled with the Hermes plugin:
 
@@ -247,7 +247,7 @@ python3 tools/hermes-account.py status          # Inspect gateway hosting and pa
 3. After the handshake completes successfully on the phone, certificate information and credentials will be safely stored in the local Android Keystore, so subsequent launches do not require re-entering passwords.
 
 <details>
-<summary><b>🔐 HTTPS Public Key Pinning (SPKI SHA-256) Setup Guide</b></summary>
+<summary><b>HTTPS Public Key Pinning (SPKI SHA-256) Setup Guide</b></summary>
 
 When enabling HTTPS, to prevent Man-in-the-Middle (MitM) attacks, configure the server TLS certificate's SPKI SHA-256 digest in the Gateway plugin:
 
@@ -282,7 +282,7 @@ hermes open-android-intelligence capabilities list <username>
 ### 5. Build and Debug from Source (Developers)
 
 <details>
-<summary><b>🔍 Contract Conformance Tests (70 Test Cases for Hermes / OpenClaw)</b></summary>
+<summary><b>Contract Conformance Tests (70 Test Cases for Hermes / OpenClaw)</b></summary>
 
 ```bash
 npm ci
@@ -298,7 +298,7 @@ OPENCLAW_PLUGIN_ROOT="$PWD/.openclaw-gateway-plugin" npm run gateway:v2:conforma
 </details>
 
 <details>
-<summary><b>📦 Build Official Device Plugins (.alp)</b></summary>
+<summary><b>Build Official Device Plugins (.alp)</b></summary>
 
 ```bash
 # Compile Rust/WASM artifacts
@@ -314,7 +314,7 @@ Artifacts are output to the `plugins/dist/` directory: including official refere
 </details>
 
 <details>
-<summary><b>📱 Compile Android Client</b></summary>
+<summary><b>Compile Android Client</b></summary>
 
 ```bash
 cd apps/android
@@ -353,7 +353,7 @@ This table genuinely records the automated testing, host integration, and physic
 
 All project specifications and implementation records are completely archived within the repository. Please refer to the corresponding documents as needed:
 
-### 📖 User Guides & Configuration
+### User Guides & Configuration
 
 | Document | Core Content | Quick Link |
 | --- | --- | --- |
@@ -362,7 +362,7 @@ All project specifications and implementation records are completely archived wi
 | **App Update Mechanics** | Dual-channel update strategy for Stable and Preview versions and version comparison logic | [View Overview](docs/reviews/2026-10-21-app-update-check.md) |
 | **System Notifications Compatibility Report** | Notification and bubble behavior across Android 12–16 versions and OEM ROM restriction boundaries | [View Report](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md) |
 
-### 🛠️ Developer & Architecture Specifications
+### Developer & Architecture Specifications
 
 | Document | Core Content | Quick Link |
 | --- | --- | --- |
@@ -381,7 +381,7 @@ All project specifications and implementation records are completely archived wi
 ## Project Structure
 
 <details>
-<summary><b>📂 Click to expand complete repository structure</b></summary>
+<summary><b>Click to expand complete repository structure</b></summary>
 
 ```text
 open-android-intelligence/
