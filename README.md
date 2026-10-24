@@ -156,7 +156,7 @@
 
 ### 1. 手机端安装 App
 
-前往项目 [Releases 页面](https://github.com/1rua/open-android-intelligence/releases) 下载APK并安装：
+前往项目 [Releases 页面](https://github.com/1rua/open-android-intelligence/releases) 下载 APK 并安装：
 
 | 版本类别 | 适用群体 | 安装说明 |
 | --- | --- | --- |
