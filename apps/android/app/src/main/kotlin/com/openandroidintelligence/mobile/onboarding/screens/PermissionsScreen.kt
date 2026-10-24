@@ -47,7 +47,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.mobile.onboarding.PERMISSION_NOTICE_BODY
@@ -185,6 +184,16 @@ fun PermissionsScreen(
             )
 
             // ===== 分组 =====
+            // 理论上至少有三项基础权限恒定存在；若上游传入空集（异常状态），
+            // 这里给一句明确说明而不是留一片空白，符合项目「空状态必须如实呈现」的约定。
+            if (grouped.isEmpty()) {
+                Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
+                Text(
+                    text = "当前没有需要授权的系统权限。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             grouped.forEach { (group, groupEntries) ->
                 Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
                 PermissionGroupHeader(group)

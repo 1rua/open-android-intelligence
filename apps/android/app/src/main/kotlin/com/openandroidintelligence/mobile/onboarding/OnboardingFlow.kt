@@ -19,9 +19,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import com.openandroidintelligence.conversation.theme.Dimensions
+import androidx.compose.ui.Alignment
+import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -29,9 +35,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.core.content.ContextCompat
@@ -47,7 +50,6 @@ import com.openandroidintelligence.mobile.onboarding.screens.DeploymentChoiceScr
 import com.openandroidintelligence.mobile.onboarding.screens.GatewayGuideScreen
 import com.openandroidintelligence.mobile.onboarding.screens.PermissionsScreen
 import com.openandroidintelligence.mobile.onboarding.screens.WelcomeScreen
-import com.openandroidintelligence.mobile.plugins.NOTIFICATION_PLUGIN_ID
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.launch
 
@@ -130,8 +132,10 @@ fun OnboardingFlow(
         pendingPermissionId = id
         when (id) {
             // 屏幕采集不是运行时权限：走 MediaProjection 授权对话框，由业务侧在使用时发起。
-            // 引导页只解释机制，不主动拉起投屏授权（那会让用户以为必须现在授权）。
-            "screen_capture" -> Unit
+            // 引导页只解释机制，**不主动拉起投屏授权**（那会让用户以为必须现在授权）。
+            // 因此这里把它标为「无需现在处理」，让卡片显示「使用时询问」而不是留下
+            // 一个点了没反应的按钮。
+            "screen_capture" -> statuses[id] = PermissionStatus.NOT_REQUIRED
             // 通知使用权是特殊权限：只能引导用户去系统设置页开启。
             "notification_access" -> openNotificationAccessSettings(context)
             "sms", "call_log" -> {
@@ -186,6 +190,10 @@ fun OnboardingFlow(
             }
             revealPhase = RevealPhase.Settled
             onFinished()
+            // 通知宿主之后立即把覆盖层复位：宿主的 Surface 才是登录页的载体，
+            // 覆盖层若停留在 Settled，会以整页实色盖住刚出现的登录界面。
+            // 复位放在 onFinished 之后，保证切换瞬间不会闪出未覆盖的空白帧。
+            revealPhase = RevealPhase.Idle
         }
     }
 
@@ -263,13 +271,10 @@ fun OnboardingFlow(
                 phase = revealPhase,
                 modifier = Modifier.fillMaxSize(),
             ) {
-                // 转场期间叠一层与页面同色的表面，随展开进度淡出引导页残留。
-                // 进度从 phase 里取（唯一的进度真相源），不再另存一份。
-                val expandingProgress = (revealPhase as? RevealPhase.Expanding)?.progress ?: 1f
-                FadingOnboardingSurface(
-                    progress = expandingProgress,
-                    reduceMotion = reduceMotion,
-                )
+                // 转场期间呈现登录页的品牌标识：它是登录界面的第一个元素，
+                // 被 ButtonRevealTransition 裁剪在扩展面内部，因此会真正「从按钮里长出来」。
+                // 完整登录表单由宿主在 onFinished 之后接管，此处不做第二份登录实现。
+                RevealLandingMark()
             }
         }
     }
@@ -282,26 +287,6 @@ fun OnboardingFlow(
  * 必须是同一个值，两处各写一份迟早会漂移。
  */
 private val RevealDurationMillis = RevealDurationMillisOfMotion
-
-/**
- * 转场期间叠在扩展面之上的引导页残留：随展开进度淡出。
- *
- * 不用整页截屏或位图，只做 alpha 收束，避免 Blank frame。
- */
-@Composable
-private fun FadingOnboardingSurface(progress: Float, reduceMotion: Boolean) {
-    // 进度在 0.42 之前仍是引导页主导，之后完全让位。
-    // 减少动态时线性淡出；否则跟随展开进度加速收束。
-    val alpha = if (reduceMotion) 1f - progress else (1f - progress / 0.42f).coerceIn(0f, 1f)
-    if (alpha <= 0.01f) return
-    Surface(
-        modifier = Modifier
-            .fillMaxSize()
-            // graphicsLayer 的 alpha 用 lambda：进度每帧变化只触发绘制，不触发重组。
-            .graphicsLayer { this.alpha = alpha },
-        color = MaterialTheme.colorScheme.surface,
-    ) {}
-}
 
 /** 打开本应用的系统详情页：权限被永久拒绝后的唯一可靠出口。 */
 private fun openAppDetailsSettings(context: Context) {
@@ -333,4 +318,36 @@ private fun manifestPermissionToEntryId(permission: String): String? = when (per
     Manifest.permission.READ_SMS -> "sms"
     Manifest.permission.READ_CALL_LOG -> "call_log"
     else -> null
+}
+
+/**
+ * 转场期间显示的品牌标识。
+ *
+ * 只画「信号缝线 + 字标 + 一句说明」这三样登录页本来就有的东西，
+ * 不复制登录表单——表单属于既有 [GatewayLoginScreen]，引导流程不重复实现。
+ * 它由 [ButtonRevealTransition] 裁剪在扩展面内，所以视觉上是随展开一起长出来的。
+ */
+@Composable
+private fun RevealLandingMark() {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        com.openandroidintelligence.conversation.components.SignalStitch(
+            modifier = Modifier.height(Dimensions.BrandMark),
+        )
+        Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
+        Text(
+            text = "Open Android Intelligence",
+            style = com.openandroidintelligence.conversation.theme.AppTextStyles.BrandWordmark,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
+        Text(
+            text = "连接你的 Agent Gateway",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }

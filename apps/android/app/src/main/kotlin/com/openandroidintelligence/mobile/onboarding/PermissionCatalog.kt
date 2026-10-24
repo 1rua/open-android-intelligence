@@ -202,23 +202,26 @@ fun resolvePermissionStatus(context: Context, entry: PermissionEntry): Permissio
 
     // 未授予时如何区分 DENIED 与 BLOCKED？
     //
-    // `shouldShowRequestPermissionRationale` 在这里**不能单独作为判据**：
-    // 它对「首次申请前」和「已永久拒绝后」都返回 false，两者状态完全不同
+    // `shouldShowRequestPermissionRationale` **不能单独作为判据**：
+    // 它对「首次申请前」和「已永久拒绝后」都返回 false，但两者状态完全不同
     // （前者再点会弹框，后者再点什么都不会发生）。
     //
-    // 可靠判据需要一个外部的「已申请过」标记。获得该标记的路径有两条：
-    // 1. [SessionPermissionRequests]：本会话内点过申请但没得到授权 → 视为已申请；
-    // 2. 调用方在 Activity 重建前持久化的历史标记。
+    // 判定顺序（从严到宽）：
+    // 1. 若系统仍愿意展示 rationale ⇒ 一定是可再申请的 DENIED；
+    // 2. 否则，只有在「本会话申请过」且「系统明确不再弹框」时才判 BLOCKED。
     //
-    // 没有标记时保守返回 [PermissionStatus.DENIED]：再次申请仍可能弹框，
-    // 最坏情况是多弹一次系统框；反过来误标 BLOCKED 会让用户永远点不开权限。
+    // 关键细节：用户可能去系统设置里**手动撤销**已授予的权限再回来。此时
+    // requestedInSession 仍含该权限，但系统对话框其实又可以被拉起了。
+    // 因此 BLOCKED 额外要求「rationale 不可见 + 本会话申请过」同时成立，
+    // 并且优先相信系统给出的 rationale 信号，避免把可恢复的权限锁死成「去设置」。
     val rationaleVisible = entry.manifestPermissions.any { permission ->
         ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED &&
             shouldShowRationale(context, permission)
     }
     if (rationaleVisible) return PermissionStatus.DENIED
 
-    // 本会话内已经申请过、且仍未授予 ⇒ 系统不再给弹框机会，只能去设置页。
+    // 到这里系统没给 rationale。只有同时满足「本会话确实申请过」才认定永久拒绝；
+    // 从未申请过的情况（首次进入）依然返回 DENIED，保证第一次点「开启」能弹框。
     val requestedThisSession = entry.manifestPermissions.any { it in requestedInSession }
     return if (requestedThisSession) PermissionStatus.BLOCKED else PermissionStatus.DENIED
 }
