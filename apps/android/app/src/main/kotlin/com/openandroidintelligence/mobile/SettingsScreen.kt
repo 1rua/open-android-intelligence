@@ -1229,7 +1229,12 @@ private fun PairingSubScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "授权对象是当前登录的 Gateway 账号。切换账号或解除配对后，需要重新授权。",
+                        text = "授权按账号分开保存：切换到别的账号不会带走这些授权；切回来时，这个账号原来的授权仍然有效，不需要重新授权。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "以下两种情况会清空本机授权，之后需要重新授权：主动解除设备配对；或 Gateway 报告该账号的授权已变更。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -274,20 +274,20 @@ fun PluginManagementScreen(
             ) {
                 Text("从网络地址安装", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "需要提供证书指纹或文件摘要；下载后仍会校验插件作者签名与内容。",
+                    "需要提供服务器证书的公钥指纹（SPKI，不是证书本身指纹）或文件摘要；下载后仍会校验插件作者签名与内容。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedTextField(sourceUrl,{sourceUrl=it},label={Text("插件包或索引的 HTTPS 地址")},modifier=Modifier.fillMaxWidth())
-                OutlinedTextField(sourcePin,{sourcePin=it},label={Text("证书指纹（sha256:…）")},modifier=Modifier.fillMaxWidth())
-                OutlinedTextField(sourceDigest,{sourceDigest=it},label={Text("文件摘要 SHA-256（可代替证书指纹）")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(sourcePin,{sourcePin=it},label={Text("证书公钥指纹 SPKI（sha256:…）")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(sourceDigest,{sourceDigest=it},label={Text("文件摘要 SHA-256（可代替公钥指纹）")},modifier=Modifier.fillMaxWidth())
                 OutlinedTextField(indexPluginId,{indexPluginId=it},label={Text("清单中的插件 ID（直接下载插件包时留空）")},modifier=Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     TextButton(onClick = { showRemote = false }) { Text("取消") }
                     Button(onClick = {
                         showRemote = false
                         installScope.launch { try { val bytes = runInterruptible(Dispatchers.IO) { RemotePluginSource.resolve(sourceUrl,sourcePin,sourceDigest,indexPluginId) }; installBytes(bytes) }
-                        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { notice = "下载失败，请检查地址、证书指纹或文件摘要。" } }
+                        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { notice = "下载失败，请检查地址、公钥指纹（SPKI）或文件摘要。" } }
                     }) { Text("下载并校验") }
                 }
             }
@@ -468,7 +468,7 @@ fun PluginManagementScreen(
                         onClick = { pickPackage.launch(arrayOf("*/*")) },
                         modifier = Modifier.testTag(PLUGIN_INSTALL_ENTRY_TAG),
                     )
-                    SettingsListItem(headline="从网络地址安装", supporting="需要提供证书指纹或文件摘要，安装前仍会校验插件作者签名", onClick={showRemote=true})
+                    SettingsListItem(headline="从网络地址安装", supporting="需要提供服务器证书公钥指纹或文件摘要，安装前仍会校验插件作者签名", onClick={showRemote=true})
                 } else {
                     SettingsListItem(
                         headline = "从文件安装插件",

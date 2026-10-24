@@ -108,6 +108,27 @@ class SettingsHonestyCopyTest {
         compose.onNodeWithText("配对身份标识（本机合成）").assertDoesNotExist()
     }
 
+    /**
+     * 授权按账号分开保存：切到别的账号不会带走授权，切回来时原来的授权仍然有效。
+     * `PairingGrantStateHolder.bind()` 会加载该账号已持久化的授权，因此文案不能把
+     * 「切换账号」与「解除配对」混为一谈——否则用户会误以为切换就作废了授权。
+     */
+    @Test
+    fun theAuthorisationNotesDoNotClaimSwitchingAccountsRevokesExistingGrants() {
+        compose.setContent {
+            MaterialTheme {
+                Surface {
+                    SettingsScreen(environment = settingsEnvironment(), runtime = null, onBack = {})
+                }
+            }
+        }
+
+        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+
+        compose.onNodeWithText("授权按账号分开保存", substring = true).performScrollTo().assertExists()
+        compose.onNodeWithText("切换账号或解除配对后，需要重新授权").assertDoesNotExist()
+    }
+
     private fun settingsEnvironment(): PlatformSettingsEnvironment {
         val context = ApplicationProvider.getApplicationContext<Application>()
         val trustMode = DeveloperTrustMode()
