@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "build:references": "tsx src/build-references.ts",
     "build:fixtures": "tsx src/build-references.ts --fixtures",
-    "build:android-notifications": "tsx src/build-android-notifications.ts"
+    "build:android-plugins": "tsx src/build-android-plugins.ts"
   },
   "dependencies": {
     "@noble/curves": "2.2.0",

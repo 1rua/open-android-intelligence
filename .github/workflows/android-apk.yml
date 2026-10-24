@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sign-notification-package:
+  sign-plugin-packages:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,13 +33,14 @@ jobs:
           cache: npm
           cache-dependency-path: plugin-tooling/package-lock.json
 
-      - name: Build the notification plugin WASM
+      # 三个内置插件各自是一个 crate,统一用锁定工具链编译 WASM。
+      - name: Build the bundled plugin WASM
         run: |
           rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications
+          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications -p open-android-intelligence-sms -p open-android-intelligence-call-log
           npm ci --prefix plugin-tooling
 
-      - name: Sign the bundled notification package
+      - name: Sign the bundled plugin packages
         env:
           OAI_PLUGIN_SIGNING_KEY_BASE64: ${{ secrets.OAI_PLUGIN_SIGNING_KEY_BASE64 }}
         run: |
@@ -51,23 +52,25 @@ jobs:
           OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-plugin-seed.bin"
           trap 'if [ -f "$OAI_PLUGIN_KEY_FILE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_PLUGIN_KEY_FILE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-plugin-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.bin"; fi' EXIT
           printf '%s' "$OAI_PLUGIN_SIGNING_KEY_BASE64" | base64 --decode > "$OAI_PLUGIN_KEY_FILE"
+          mkdir -p "$RUNNER_TEMP/signed-plugins"
           OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE="$OAI_PLUGIN_KEY_FILE" \
-            npm run build:android-notifications --prefix plugin-tooling -- "$RUNNER_TEMP/notifications.alp"
+            npm run build:android-plugins --prefix plugin-tooling -- "$RUNNER_TEMP/signed-plugins"
 
       - name: Set signed artifact name
         id: artifact-name
-        run: echo "name=signed-notifications-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+        run: echo "name=signed-plugins-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the signed notification package
+      # 整目录上传,artifact 内含 notifications/sms/call-log 三个 .alp。
+      - name: Upload the signed plugin packages
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.artifact-name.outputs.name }}
-          path: ${{ runner.temp }}/notifications.alp
+          path: ${{ runner.temp }}/signed-plugins
           if-no-files-found: error
           retention-days: 1
 
   apk:
-    needs: sign-notification-package
+    needs: sign-plugin-packages
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -100,14 +103,14 @@ jobs:
         with:
           cache-provider: basic
 
-      - name: Download the signed notification package
+      - name: Download the signed plugin packages
         uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.sign-notification-package.outputs.signed-artifact-name }}
-          path: ${{ runner.temp }}/signed-notifications
+          name: ${{ needs.sign-plugin-packages.outputs.signed-artifact-name }}
+          path: ${{ runner.temp }}/signed-plugins
 
-      - name: Set the notification package path
-        run: echo "OAI_BUNDLED_NOTIFICATIONS_ALP=$RUNNER_TEMP/signed-notifications/notifications.alp" >> "$GITHUB_ENV"
+      - name: Set the bundled plugins directory
+        run: echo "OAI_BUNDLED_PLUGINS_DIR=$RUNNER_TEMP/signed-plugins" >> "$GITHUB_ENV"
 
       - name: Build Full Debug APK
         working-directory: apps/android
@@ -115,13 +118,16 @@ jobs:
           LC_ALL: C.UTF-8
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleFullDebug -Poai.requireBundledNotifications=true --stacktrace
+          ./gradlew :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace
 
-      - name: Verify the bundled notification package
+      # 三个插件资产必须逐一与签出的包逐字节一致;缺一个就说明内置链路断了。
+      - name: Verify the bundled plugin packages
         run: |
-          python3 apps/android/tools/verify_bundled_notifications.py \
-            --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
-            --package "$OAI_BUNDLED_NOTIFICATIONS_ALP"
+          for package in notifications sms call-log; do
+            python3 apps/android/tools/verify_bundled_plugins.py \
+              --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
+              --package "$package=$OAI_BUNDLED_PLUGINS_DIR/$package.alp"
+          done
 
       - name: Verify Debug Signing Identity
         env:

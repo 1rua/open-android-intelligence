@@ -62,38 +62,47 @@ class PluginInstallStoreTest {
         assertEquals("SIGNATURE_INVALID", failure!!.message)
     }
 
-    @Test fun bundledNotificationInstallationCannotInstallAnotherPlugin() {
-        val failure = runCatching { store.installBundledNotifications(TestAlpPackages.signedPackage()) }.exceptionOrNull()
+    @Test fun bundledPluginInstallationCannotInstallAnotherPlugin() {
+        val failure = runCatching { store.installBundledPlugin(BundledPlugin.NOTIFICATIONS, TestAlpPackages.signedPackage()) }.exceptionOrNull()
         assertEquals("BUNDLED_PLUGIN_ID_MISMATCH", failure?.message)
         assertTrue(store.listInstalled().isEmpty())
     }
 
-    @Test fun bundledNotificationInstallationStillRejectsInvalidSignatures() {
+    /** 内置入口逐项固定期望 ID：SMS 入口只能装 SMS，通话记录入口只能装通话记录。 */
+    @Test fun eachBundledPluginEntryOnlyInstallsItsOwnDeclaredPluginId() {
+        val smsFailure = runCatching { store.installBundledPlugin(BundledPlugin.SMS, TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID)) }.exceptionOrNull()
+        assertEquals("BUNDLED_PLUGIN_ID_MISMATCH", smsFailure?.message)
+        val callLogFailure = runCatching { store.installBundledPlugin(BundledPlugin.CALL_LOG, TestAlpPackages.signedPackage(id = SMS_PLUGIN_ID)) }.exceptionOrNull()
+        assertEquals("BUNDLED_PLUGIN_ID_MISMATCH", callLogFailure?.message)
+        assertTrue(store.listInstalled().isEmpty())
+    }
+
+    @Test fun bundledPluginInstallationStillRejectsInvalidSignatures() {
         val failure = runCatching {
-            store.installBundledNotifications(TestAlpPackages.tamperedManifestPackage(id = NOTIFICATION_PLUGIN_ID))
+            store.installBundledPlugin(BundledPlugin.NOTIFICATIONS, TestAlpPackages.tamperedManifestPackage(id = NOTIFICATION_PLUGIN_ID))
         }.exceptionOrNull()
         assertTrue(failure is PackageRejected)
         assertEquals("SIGNATURE_INVALID", failure?.message)
         assertTrue(store.listInstalled().isEmpty())
     }
 
-    @Test fun bundledNotificationInstallationNeverReplacesAnExistingProvider() {
+    @Test fun bundledPluginInstallationNeverReplacesAnExistingProvider() {
         val author = java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         store.install(TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID, author = author))
         val original = File(store.installRoot, "$NOTIFICATION_PLUGIN_ID/manifest.json").readBytes()
         val failure = runCatching {
-            store.installBundledNotifications(TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID, author = author, version = "2.0.0"))
+            store.installBundledPlugin(BundledPlugin.NOTIFICATIONS, TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID, author = author, version = "2.0.0"))
         }.exceptionOrNull()
         assertEquals("BUNDLED_PLUGIN_ALREADY_INSTALLED", failure?.message)
         assertTrue(original.contentEquals(File(store.installRoot, "$NOTIFICATION_PLUGIN_ID/manifest.json").readBytes()))
         assertEquals("1.0.0", store.listInstalled().single().version)
     }
 
-    @Test fun bundledNotificationInstallationPreservesAnUnreadableExistingDirectory() {
+    @Test fun bundledPluginInstallationPreservesAnUnreadableExistingDirectory() {
         val directory = File(store.installRoot, NOTIFICATION_PLUGIN_ID).apply { mkdirs() }
         val marker = File(directory, "user-data").apply { writeText("preserve") }
         val failure = runCatching {
-            store.installBundledNotifications(TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID))
+            store.installBundledPlugin(BundledPlugin.NOTIFICATIONS, TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID))
         }.exceptionOrNull()
         assertEquals("BUNDLED_PLUGIN_ALREADY_INSTALLED", failure?.message)
         assertEquals("preserve", marker.readText())

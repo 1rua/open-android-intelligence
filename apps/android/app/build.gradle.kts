@@ -3,10 +3,9 @@ import java.security.MessageDigest
 import java.util.Properties
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
-import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
@@ -56,24 +55,53 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 }
 
 tasks.withType<Test>().configureEach {
-    inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/sms.wasm"))
-        .withPropertyName("compiledSmsReference")
-    inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/notifications.wasm"))
-        .withPropertyName("compiledNotificationsReference")
+    // 参考插件的真实编译产物与清单：测试用它们构造与发布同构的签名包，
+    // 因此这些输入变动必须让测试失效，不能复用旧结果。
+    for (spec in listOf(
+        "sms" to "sms.wasm",
+        "notifications" to "notifications.wasm",
+        "call-log" to "call_log.wasm",
+    )) {
+        inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/${spec.second}"))
+            .withPropertyName("compiled${spec.first.replace("-", "")}Reference".replaceFirstChar(Char::uppercase))
+        inputs.file(rootProject.projectDir.resolve("../../plugins/${spec.first}/manifest.json"))
+            .withPropertyName("${spec.first.replace("-", "")}ReferenceManifest")
+    }
     inputs.dir(rootProject.projectDir.resolve("../../plugins/schemas")).withPropertyName("referenceSchemas")
-    inputs.file(rootProject.projectDir.resolve("../../plugins/sms/manifest.json")).withPropertyName("referenceManifest")
-    inputs.file(rootProject.projectDir.resolve("../../plugins/notifications/manifest.json")).withPropertyName("notificationsReferenceManifest")
 }
 
 // Full releases carry the same signed .alp installed through the ordinary verifier.
-// An absent optional local input must clear yesterday's asset, never reuse it.
-val bundledNotificationsPath = providers.environmentVariable("OAI_BUNDLED_NOTIFICATIONS_ALP").orElse("")
-val requireBundledNotifications = providers.gradleProperty("oai.requireBundledNotifications").map(String::toBoolean).orElse(false)
-abstract class StageBundledNotifications : DefaultTask() {
-    @get:InputFile
+// An absent optional local input must clear yesterday's assets, never reuse them.
+//
+// 三个官方插件各自独立：缺失某一项只让它自己的入口如实说明「本包未附带」，
+// 不会连带其他插件。只有显式要求（-Poai.requireBundledPlugins=true）时，
+// 任意一项缺失才让构建失败——发布流程正是用它保证不会漏包。
+internal data class BundledPluginSpec(val name: String, val pluginId: String, val wasm: String)
+
+internal val bundledPlugins = listOf(
+    BundledPluginSpec("notifications", "org.openandroidintelligence.notifications", "notifications.wasm"),
+    BundledPluginSpec("sms", "org.openandroidintelligence.sms", "sms.wasm"),
+    BundledPluginSpec("call-log", "org.openandroidintelligence.call-log", "call_log.wasm"),
+)
+val bundledPluginsDirectory = providers.environmentVariable("OAI_BUNDLED_PLUGINS_DIR").orElse("")
+val requireBundledPlugins = providers.gradleProperty("oai.requireBundledPlugins").map(String::toBoolean).orElse(false)
+
+abstract class StageBundledPlugins : DefaultTask() {
+    /**
+     * 目录内按插件名取 `<name>.alp`；未设置时为空。
+     *
+     * 用 RELATIVE 而非 NONE：暂存逻辑按文件名逐项取包，输入目录里的
+     * 重命名/删除必须让任务失效，否则会保留上次的暂存资产、绕过
+     * 缺包检查（发布强制开关会被旧产物骗过）。
+     */
+    @get:InputDirectory
     @get:Optional
-    @get:PathSensitive(PathSensitivity.NONE)
-    abstract val signedPackage: RegularFileProperty
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val signedPackages: DirectoryProperty
+
+    /** 逗号分隔的 `<name>=<pluginId>`，供任务自证资产与插件身份对应。 */
+    @get:Input
+    abstract val pluginIds: Property<String>
 
     @get:Input
     abstract val bundleRequired: Property<Boolean>
@@ -84,24 +112,32 @@ abstract class StageBundledNotifications : DefaultTask() {
     @TaskAction
     fun stage() {
         val destination = outputDirectory.get().asFile
-        check(!destination.exists() || destination.deleteRecursively()) { "BUNDLED_NOTIFICATIONS_CLEANUP_FAILED" }
-        check(destination.mkdirs()) { "BUNDLED_NOTIFICATIONS_DIRECTORY_FAILED" }
-        val source = signedPackage.orNull?.asFile
-        check(source?.isFile == true || !bundleRequired.get()) {
-            "BUNDLED_NOTIFICATIONS_REQUIRED: set OAI_BUNDLED_NOTIFICATIONS_ALP to the privately signed notification .alp"
-        }
-        if (source != null) {
-            check(source.isFile && source.length() in 1..(32L * 1024 * 1024)) { "BUNDLED_NOTIFICATIONS_INVALID" }
-            val asset = destination.resolve("bundled-plugins/notifications.alp")
+        check(!destination.exists() || destination.deleteRecursively()) { "BUNDLED_PLUGINS_CLEANUP_FAILED" }
+        check(destination.mkdirs()) { "BUNDLED_PLUGINS_DIRECTORY_FAILED" }
+        val source = signedPackages.orNull?.asFile
+        val expected = pluginIds.get().split(',').filter(String::isNotBlank)
+        val missing = mutableListOf<String>()
+        for (entry in expected) {
+            val name = entry.substringBefore('=')
+            val packageFile = source?.resolve("$name.alp")
+            if (packageFile?.isFile != true) { missing += name; continue }
+            check(packageFile.length() in 1..(32L * 1024 * 1024)) { "BUNDLED_PLUGINS_INVALID:$name" }
+            val asset = destination.resolve("bundled-plugins/$name.alp")
             asset.parentFile.mkdirs()
-            source.copyTo(asset, overwrite = true)
+            packageFile.copyTo(asset, overwrite = true)
+        }
+        check(missing.isEmpty() || !bundleRequired.get()) {
+            "BUNDLED_PLUGINS_REQUIRED: set OAI_BUNDLED_PLUGINS_DIR to a directory containing " +
+                missing.joinToString { "$it.alp" }
         }
     }
 }
-val stageBundledNotifications by tasks.registering(StageBundledNotifications::class) {
-    bundleRequired.set(requireBundledNotifications)
-    bundledNotificationsPath.get().takeIf(String::isNotBlank)?.let { signedPackage.set(file(it)) }
-    outputDirectory.set(layout.buildDirectory.dir("generated/bundled-notifications/assets"))
+
+val stageBundledPlugins by tasks.registering(StageBundledPlugins::class) {
+    bundleRequired.set(requireBundledPlugins)
+    pluginIds.set(bundledPlugins.joinToString(",") { "${it.name}=${it.pluginId}" })
+    bundledPluginsDirectory.get().takeIf(String::isNotBlank)?.let { signedPackages.set(file(it)) }
+    outputDirectory.set(layout.buildDirectory.dir("generated/bundled-plugins/assets"))
 }
 
 // 固定调试签名（app/keystore/debug.keystore，见同目录 README.md）在根工程
@@ -197,7 +233,7 @@ android {
 // sourceSets directory that Lint models read without a dependency. Play has no bundle.
 androidComponents {
     onVariants(selector().withFlavor("distribution" to "full")) { variant ->
-        variant.sources.assets?.addGeneratedSourceDirectory(stageBundledNotifications, StageBundledNotifications::outputDirectory)
+        variant.sources.assets?.addGeneratedSourceDirectory(stageBundledPlugins, StageBundledPlugins::outputDirectory)
     }
 }
 
