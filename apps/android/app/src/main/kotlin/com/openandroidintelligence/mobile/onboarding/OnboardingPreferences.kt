@@ -48,7 +48,16 @@ class OnboardingPreferences(context: Context) {
      * （重复看一遍引导），远好于「写成功但页面没走」的假完成。
      */
     fun markCompleted() {
-        persist(_state.value.copy(stage = OnboardingStage.COMPLETED, finished = true))
+        // 必须同时清除 replay：若不清除，重看模式下走完流程后
+        // shouldShow 仍为 true（因为 replay=true），而 stage 已是 COMPLETED，
+        // OnboardingFlow 对 COMPLETED 渲染 Unit —— 结果是一片空白，回不到登录页。
+        persist(
+            _state.value.copy(
+                stage = OnboardingStage.COMPLETED,
+                finished = true,
+                replay = false,
+            ),
+        )
     }
 
     /**
@@ -68,6 +77,22 @@ class OnboardingPreferences(context: Context) {
         _state.value = current.copy(
             stage = if (current.finished) OnboardingStage.COMPLETED else OnboardingStage.WELCOME,
             replay = false,
+        )
+    }
+
+    /**
+     * 用户在首次启动的欢迎页按了返回：**本次会话**内不再展示引导，
+     * 但不写 `finished` —— 用户并没有走完流程，下次启动仍应看到引导。
+     *
+     * 只存在于内存（不改 SharedPreferences）：这是一个「当前这次先别烦我」的临时选择，
+     * 不是持久偏好。持久化会让「按了一次返回」永久跳过引导，与需求不符。
+     */
+    fun dismissForCurrentSession() {
+        val current = _state.value
+        _state.value = current.copy(
+            stage = OnboardingStage.WELCOME,
+            replay = false,
+            dismissedThisSession = true,
         )
     }
 

@@ -339,12 +339,15 @@ private fun PermissionCard(
     val statusText: String
     val actionText: String
     val action: () -> Unit
+    // 系统对话框型权限（屏幕采集）：授权只在每次使用时由 MediaProjection 对话框现场确认，
+    // **系统设置页里没有可以勾选的开关**（去应用详情页也授予不了投屏权限）。
+    // 因此这类权限不提供「前往设置」按钮，只如实说明机制。
+    val dialogOnly = entry.isSpecialSystemAccess && entry.manifestPermissions.isEmpty()
     when {
-        // 系统对话框型权限：没有持久授权位，说明「每次询问」而不是伪造状态。
-        entry.isSpecialSystemAccess && entry.manifestPermissions.isEmpty() -> {
-            statusText = if (granted) "已在系统设置开启" else "未开启 · 使用时可去系统设置"
-            actionText = if (granted) "已开启" else "前往设置"
-            action = onOpenSettings
+        dialogOnly -> {
+            statusText = "使用时由系统询问 · 无需现在授权"
+            actionText = "无需操作"
+            action = {}
         }
         granted -> {
             statusText = "已授权"
@@ -461,8 +464,14 @@ private fun PermissionCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
-            if (!granted) {
-                OutlinedButton(
+            when {
+                // 系统对话框型权限：没有可点的授权入口，只给状态文字，避免「点了没反应」。
+                dialogOnly -> Text(
+                    text = actionText,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                !granted -> OutlinedButton(
                     onClick = action,
                     shape = MaterialTheme.shapes.small,
                     modifier = Modifier
@@ -471,8 +480,7 @@ private fun PermissionCard(
                 ) {
                     Text(text = actionText, style = MaterialTheme.typography.labelMedium)
                 }
-            } else {
-                Text(
+                else -> Text(
                     text = actionText,
                     style = MaterialTheme.typography.labelMedium,
                     color = stateColors.success,

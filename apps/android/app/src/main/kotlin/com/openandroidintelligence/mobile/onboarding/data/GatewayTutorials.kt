@@ -160,8 +160,10 @@ object GatewayTutorials {
                     "改了之后需要重启宿主。",
                 terminal = TerminalBlock(
                     label = "Environment",
-                    command = "export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=\\\n" +
-                        "    \$HOME/gateway-master-key.bin",
+                    // 必须写在同一行：`export VAR=\\` 后接换行会保留下一行的缩进，
+                    // 使 $HOME/... 变成独立参数而非变量值，Bash 报 not a valid identifier。
+                    command = "export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=" +
+                        "\$HOME/gateway-master-key.bin",
                 ),
             ),
             TutorialStep(

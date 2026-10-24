@@ -422,9 +422,17 @@ class MainActivity : ComponentActivity() {
                             onboardingPreferences.markCompleted()
                         },
                         onExit = {
-                            // 在欢迎页再按返回：退出本次引导。未完成状态保持不变，
-                            // 下次启动仍会展示（用户确实还没走完）。
-                            onboardingPreferences.endReplay()
+                            // 在欢迎页再按返回：
+                            // - 重看模式：退出重看，回到原来的主界面；
+                            // - 首次启动：本次会话不再展示引导（不写 finished），
+                            //   同时结束 Activity —— 用户明确表达了「现在不想用引导」，
+                            //   停留在登录页反而会让他再面对一次同样的选择。
+                            if (onboardingState.replay) {
+                                onboardingPreferences.endReplay()
+                            } else {
+                                onboardingPreferences.dismissForCurrentSession()
+                                finish()
+                            }
                         },
                         pluginPrimitives = enabledPrimitives,
                         modifier = Modifier.fillMaxSize(),

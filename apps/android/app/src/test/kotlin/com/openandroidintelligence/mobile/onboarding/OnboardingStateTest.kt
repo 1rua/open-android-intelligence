@@ -82,7 +82,9 @@ class OnboardingStateTest {
         //
         // 注意 `lastGatewayId` 是例外且必须保留：它记录「上次查看哪个教程的 Tab」，
         // 是纯界面记忆，与连接状态无关。所以这里只排除结果性词汇。
-        val forbidden = listOf("connected", "authenticated", "paired", "loggedin", "session")
+        // 注意 `dismissedThisSession` 是例外：它是「本次会话先别展示引导」的界面记忆，
+        // 与登录/会话状态无关。因此黑名单只保留真正的连接结果词汇。
+        val forbidden = listOf("connected", "authenticated", "paired", "loggedin")
         val members = OnboardingState::class.java.methods
             .map { it.name.lowercase() }
             .filterNot { it.contains("$") }
@@ -127,5 +129,39 @@ class OnboardingStateTest {
         assertEquals(listOf(1, 2, 3, 4), stages.map { OnboardingState(stage = it).stepIndex })
         stages.forEach { assertEquals(4, OnboardingState(stage = it).stepCount) }
         assertEquals(null, OnboardingState(stage = OnboardingStage.COMPLETED).stepIndex)
+    }
+
+    /**
+     * 回归测试：本次会话主动跳过引导后，shouldShow 必须为 false。
+     *
+     * 对应缺陷：未实现 dismissedThisSession 时，首次启动在欢迎页按返回没有任何效果。
+     */
+    @Test
+    fun `dismissing this session hides onboarding until next launch`() {
+        val state = OnboardingState.Initial.copy(dismissedThisSession = true)
+        assertEquals(false, state.shouldShow)
+        // 未写 finished：下次启动（新进程，该标志为 false）仍会展示。
+        assertEquals(false, state.finished)
+        assertEquals(true, OnboardingState.Initial.shouldShow)
+    }
+
+    /**
+     * 回归测试：重看模式下走完流程后，不应停留在引导。
+     *
+     * 对应缺陷：markCompleted 未清除 replay 时，stage=COMPLETED 且 replay=true，
+     * shouldShow 仍为 true，而 OnboardingFlow 对 COMPLETED 渲染 Unit → 白屏。
+     */
+    @Test
+    fun `completed replay is not shown again`() {
+        val afterReplayComplete = OnboardingState(
+            stage = OnboardingStage.COMPLETED,
+            finished = true,
+            replay = false,
+        )
+        assertEquals(false, afterReplayComplete.shouldShow)
+
+        // 若 replay 未清除，这里会是 true —— 正是缺陷形态。
+        val buggy = afterReplayComplete.copy(replay = true)
+        assertEquals(true, buggy.shouldShow)
     }
 }

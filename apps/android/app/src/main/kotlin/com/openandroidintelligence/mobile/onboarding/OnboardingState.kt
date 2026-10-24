@@ -46,14 +46,21 @@ data class OnboardingState(
     val finished: Boolean = false,
     val lastGatewayId: String? = null,
     val replay: Boolean = false,
+    /**
+     * 用户是否在**本次会话**里主动按返回退出了引导。
+     *
+     * 只存在于内存，不进 SharedPreferences：它表达的是「这次先别烦我」，
+     * 而不是「以后都不要引导了」。下次启动时该标志自然为 false，引导照常展示。
+     */
+    val dismissedThisSession: Boolean = false,
 ) {
     /**
      * 本次启动是否应展示引导。
      *
      * 只有「未完成」才自动展示；已完成一律直达登录。用户主动重看时由
-     * [replay] 单独驱动，不修改 [finished]。
+     * [replay] 单独驱动，不修改 [finished]。本次会话已主动跳过时不再展示。
      */
-    val shouldShow: Boolean get() = replay || !finished
+    val shouldShow: Boolean get() = !dismissedThisSession && (replay || !finished)
 
     /** 流程内的下一个阶段；[OnboardingStage.COMPLETED] 没有下一个。 */
     fun next(): OnboardingStage = when (stage) {

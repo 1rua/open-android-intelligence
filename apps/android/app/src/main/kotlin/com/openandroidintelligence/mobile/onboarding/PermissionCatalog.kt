@@ -186,8 +186,19 @@ fun buildVisiblePermissions(enabledPluginPrimitives: Set<String>): List<Permissi
  * 把 3 与 4 混为一谈是「重复弹窗」的根因：BLOCKED 状态下再申请系统什么都不会做。
  */
 fun resolvePermissionStatus(context: Context, entry: PermissionEntry): PermissionStatus {
-    // 特殊系统访问权限（通知使用权）没有可查询的运行时状态，
-    // 由调用方在回到前台时另行读取系统设置；这里按「未开启」处理，不做假声明。
+    // 通知使用权是特殊系统权限，但**状态是可查询的**：
+    // 通过 NotificationManagerCompat.getEnabledListenerPackages 读取系统当前授权的监听器集合。
+    // 若这里偷懒返回「未开启」，用户去系统设置开启后回到本页仍会看到「未开启」，
+    // 卡片就会一直催他去设置——这正是「不重复弹窗」要避免的循环。
+    if (entry.id == "notification_access") {
+        return if (hasNotificationListenerAccess(context)) {
+            PermissionStatus.GRANTED
+        } else {
+            PermissionStatus.DENIED
+        }
+    }
+    // 其余特殊系统访问权限（屏幕采集）确实没有可持久查询的授权位：
+    // 每次使用都由系统投屏对话框现场确认，因此标记为 NOT_REQUIRED 而非「未授权」。
     if (entry.isSpecialSystemAccess && entry.manifestPermissions.isEmpty()) {
         return PermissionStatus.NOT_REQUIRED
     }
@@ -260,3 +271,20 @@ const val PERMISSION_NOTICE_TITLE = "权限 ≠ 授权"
 const val PERMISSION_NOTICE_BODY =
     "系统权限只决定应用能否访问某项能力；Agent 能否真正调用，取决于插件是否启用、" +
         "以及你是否在「设备能力与配对授权」里按账号授予。"
+
+/**
+ * 读取系统当前是否已授予本应用「通知使用权」。
+ *
+ * 这是 Android 官方提供的可查询状态：`NotificationManagerCompat.getEnabledListenerPackages`
+ * 返回系统设置里已勾选的监听器包名集合。用它而不是维护自己的布尔标记，
+ * 才能保证用户去系统设置改过之后，回到引导页看到的是**真实**状态。
+ */
+private fun hasNotificationListenerAccess(context: Context): Boolean = try {
+    android.app.NotificationManager::class.java
+    androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(context)
+        .contains(context.packageName)
+} catch (_: Exception) {
+    // 极少数 ROM 上该 API 可能抛异常；此时保守返回 false（显示「未开启」），
+    // 用户仍可通过「前往设置」手动确认，不伪造已授权。
+    false
+}
