@@ -413,6 +413,12 @@ class GatewayHttpClient(
                             deliverEvent(event, attemptedProfile)
                         }
                     }
+                    // 持续订阅遇到正常 EOF 也代表连接中断；空流不能绕过失败上限，
+                    // 已收过事件的流也不能在等待重连时继续显示 LIVE。
+                    if (autoReconnect && currentCoroutineContext().isActive) {
+                        streamFailed = true
+                        lastFailure = java.io.IOException("EVENT_STREAM_CLOSED")
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {

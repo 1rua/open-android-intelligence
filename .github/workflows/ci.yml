@@ -46,9 +46,9 @@ jobs:
       - name: Check out the Hermes Gateway plugin
         uses: actions/checkout@v4
         with:
-          repository: 1rua/hermes-gateway-plugin
-          # 固定配套的宿主桥接修复，保证联调不会随插件 main 漂移。
-          ref: 190441415652ae34fbd1cb8cc485f6208fff944b
+          repository: 1rua/hermes-android-gateway
+          # 固定配套的设备请求超时修复，保证联调不会随插件 main 漂移。
+          ref: ebe527da2426dd25877dd335786e80cf85d1cdde
           path: .hermes-gateway-plugin
 
       - name: Install the Hermes Gateway plugin
@@ -97,6 +97,7 @@ jobs:
         run: |
           python gateway-contract/tools/check-contract-pin.py --plugin-root-env HERMES_PLUGIN_ROOT
           python gateway-contract/tools/check-contract-pin.py --plugin-root-env OPENCLAW_PLUGIN_ROOT
+          python -m pytest -q gateway-contract/tools/test_check_contract_pin.py
           python tools/check-openclaw-plugin-pin.py
           npm --prefix .openclaw-gateway-plugin run contract:check
         env:
@@ -139,6 +140,11 @@ jobs:
               --ignore=.hermes-gateway-plugin/tests/test_native_history_complete.py \
               --ignore=.hermes-gateway-plugin/tests/test_native_history_projection.py \
               --ignore=.hermes-gateway-plugin/tests/test_native_streaming_delivery.py \
+              --ignore=.hermes-gateway-plugin/tests/test_native_turn_lifecycle.py \
+              --ignore=.hermes-gateway-plugin/tests/test_native_turn_review_boundaries.py \
+              --ignore=.hermes-gateway-plugin/tests/test_native_binding_http_failures.py \
+              --ignore=.hermes-gateway-plugin/tests/test_conversation_management.py \
+              --ignore=.hermes-gateway-plugin/tests/test_host_command_catalog.py \
               --ignore=.hermes-gateway-plugin/tests/test_android_echo_fixture.py
 
       - name: Verify the real Hermes native history and transports
@@ -189,8 +195,8 @@ jobs:
       - name: Checkout the Hermes Gateway plugin
         uses: actions/checkout@v4
         with:
-          repository: 1rua/hermes-gateway-plugin
-          ref: 190441415652ae34fbd1cb8cc485f6208fff944b
+          repository: 1rua/hermes-android-gateway
+          ref: ebe527da2426dd25877dd335786e80cf85d1cdde
           path: .hermes-gateway-plugin
 
       - name: Resolve the Android fixture OpenClaw pin
