@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { PairingService, type PairingTicketInput } from "../../../bridge-contract/src/pairing-service.js";
+import { PairingService, type PairingTicketInput } from "../../bridge-contract/src/pairing-service.js";
 import {
   BridgeIngress,
   ConnectionGenerationFence,

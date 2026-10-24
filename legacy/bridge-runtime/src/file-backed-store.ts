@@ -7,8 +7,8 @@ import {
   type DurableBridgeEntry,
   type DurableBridgeStore,
   type DurableBridgeTransaction,
-} from "../../../bridge-contract/src/durable-store.js";
-import { BridgeServiceError, compareCodePoints } from "../../../bridge-contract/src/service-types.js";
+} from "../../bridge-contract/src/durable-store.js";
+import { BridgeServiceError, compareCodePoints } from "../../bridge-contract/src/service-types.js";
 
 /**
  * File format owned by this deterministic local adapter. This is deliberately

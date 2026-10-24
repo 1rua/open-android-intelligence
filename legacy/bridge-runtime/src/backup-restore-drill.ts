@@ -2,12 +2,12 @@ import {
   BRIDGE_STORE_NAMESPACES,
   type BridgeStoreNamespace,
   type DurableBridgeEntry,
-} from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/durable-store.js";
 import {
   assertConnectedSqliteBridgeAdapter,
   type SqliteBridgeAdapterPort,
-} from "../../../bridge-contract/src/persistence.js";
-import { BridgeServiceError, compareCodePoints } from "../../../bridge-contract/src/service-types.js";
+} from "../../bridge-contract/src/persistence.js";
+import { BridgeServiceError, compareCodePoints } from "../../bridge-contract/src/service-types.js";
 
 export type BridgeBackupRestoreDrillOptions = Readonly<{
   source: unknown;

@@ -1,0 +1,61 @@
+{
+  "vector_set": "task9-event-ack-v1",
+  "protocol_version": "1.0",
+  "vectors": [
+    {
+      "id": "device_event_upsert_metadata_cursor_1",
+      "message_type": "device_event",
+      "payload": {
+        "source_epoch": "018f4f9a-4444-4444-8444-444444444444",
+        "occurrence_id": "018f4f9a-4444-4444-8444-444444444445",
+        "record_key": "notification.n1",
+        "record_revision": "1",
+        "cursor": "1",
+        "captured_at": "2026-08-11T00:00:00.000Z",
+        "event_kind": "upsert",
+        "source_capability": "notifications.metadata",
+        "capture_revision": {
+          "pairing_generation": "3",
+          "authorization_epoch": "7",
+          "scope_revisions": {
+            "notifications.metadata": "4"
+          }
+        },
+        "record": {
+          "schema_id": "urn:open-android-intelligence:mvp:v1:notification-record",
+          "source_epoch": "018f4f9a-4444-4444-8444-444444444444",
+          "cursor": "1",
+          "record_revision": "1",
+          "captured_at": "2026-08-11T00:00:00.000Z",
+          "event_kind": "upsert",
+          "metadata": {
+            "notification_id": "n1",
+            "package_name": "com.example",
+            "posted_at": "2026-08-11T00:00:00.000Z",
+            "category": null,
+            "is_ongoing": false,
+            "is_clearable": true
+          },
+          "content": null,
+          "loss": null
+        },
+        "loss": null
+      },
+      "jcs_base64": "eyJjYXB0dXJlX3JldmlzaW9uIjp7ImF1dGhvcml6YXRpb25fZXBvY2giOiI3IiwicGFpcmluZ19nZW5lcmF0aW9uIjoiMyIsInNjb3BlX3JldmlzaW9ucyI6eyJub3RpZmljYXRpb25zLm1ldGFkYXRhIjoiNCJ9fSwiY2FwdHVyZWRfYXQiOiIyMDI2LTA4LTExVDAwOjAwOjAwLjAwMFoiLCJjdXJzb3IiOiIxIiwiZXZlbnRfa2luZCI6InVwc2VydCIsImxvc3MiOm51bGwsIm9jY3VycmVuY2VfaWQiOiIwMThmNGY5YS00NDQ0LTQ0NDQtODQ0NC00NDQ0NDQ0NDQ0NDUiLCJyZWNvcmQiOnsiY2FwdHVyZWRfYXQiOiIyMDI2LTA4LTExVDAwOjAwOjAwLjAwMFoiLCJjb250ZW50IjpudWxsLCJjdXJzb3IiOiIxIiwiZXZlbnRfa2luZCI6InVwc2VydCIsImxvc3MiOm51bGwsIm1ldGFkYXRhIjp7ImNhdGVnb3J5IjpudWxsLCJpc19jbGVhcmFibGUiOnRydWUsImlzX29uZ29pbmciOmZhbHNlLCJub3RpZmljYXRpb25faWQiOiJuMSIsInBhY2thZ2VfbmFtZSI6ImNvbS5leGFtcGxlIiwicG9zdGVkX2F0IjoiMjAyNi0wOC0xMVQwMDowMDowMC4wMDBaIn0sInJlY29yZF9yZXZpc2lvbiI6IjEiLCJzY2hlbWFfaWQiOiJ1cm46b3Blbi1hbmRyb2lkLWludGVsbGlnZW5jZTptdnA6djE6bm90aWZpY2F0aW9uLXJlY29yZCIsInNvdXJjZV9lcG9jaCI6IjAxOGY0ZjlhLTQ0NDQtNDQ0NC04NDQ0LTQ0NDQ0NDQ0NDQ0NCJ9LCJyZWNvcmRfa2V5Ijoibm90aWZpY2F0aW9uLm4xIiwicmVjb3JkX3JldmlzaW9uIjoiMSIsInNvdXJjZV9jYXBhYmlsaXR5Ijoibm90aWZpY2F0aW9ucy5tZXRhZGF0YSIsInNvdXJjZV9lcG9jaCI6IjAxOGY0ZjlhLTQ0NDQtNDQ0NC04NDQ0LTQ0NDQ0NDQ0NDQ0NCJ9",
+      "sha256_base64url": "MdxppYfCli1wY3kzZCrPBZKG-gxCc5I4BttMWU5WE_A",
+      "utf8_bytes": "837"
+    },
+    {
+      "id": "event_ack_basic_metadata_cursor",
+      "message_type": "event_ack",
+      "payload": {
+        "source_epoch": "018f4f9a-4444-4444-8444-444444444444",
+        "source_capability": "notifications.metadata",
+        "highest_contiguous_cursor": "9"
+      },
+      "jcs_base64": "eyJoaWdoZXN0X2NvbnRpZ3VvdXNfY3Vyc29yIjoiOSIsInNvdXJjZV9jYXBhYmlsaXR5Ijoibm90aWZpY2F0aW9ucy5tZXRhZGF0YSIsInNvdXJjZV9lcG9jaCI6IjAxOGY0ZjlhLTQ0NDQtNDQ0NC04NDQ0LTQ0NDQ0NDQ0NDQ0NCJ9",
+      "sha256_base64url": "AtY-DK4LpeHjzdh3lLL-J-sSU1LWoDnUPFhYE-WhK-k",
+      "utf8_bytes": "132"
+    }
+  ]
+}

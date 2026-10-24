@@ -31,7 +31,7 @@ val forbiddenOutsideOwners = listOf(
     Regex("\\b(?:URL|openConnection|createSocket)\\s*\\(", RegexOption.IGNORE_CASE),
 )
 
-val networkOwnerModules = setOf("gateway-client", "tailscale-companion", "companion-bridge")
+val networkOwnerModules = setOf("gateway-client")
 
 /**
  * App 更新仅查询项目的公开 GitHub 发布，不携带账号凭据、不复用 Gateway
@@ -56,7 +56,6 @@ val generatedDirectoryNames = setOf("build", ".gradle", ".cxx", "generated")
  */
 val absenceAuditFiles = setOf(
     "app/src/androidTest/kotlin/com/openandroidintelligence/mobile/P0tAppNoVpnSurfaceInstrumentedTest.kt",
-    "tailnet-core/src/androidTest/kotlin/com/openandroidintelligence/tailnet/core/P0tVpnSurfaceInstrumentedTest.kt",
 )
 
 /**

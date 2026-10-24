@@ -9,7 +9,7 @@ import {
   type BridgeStoreNamespace,
   type DurableBridgeEntry,
   type DurableBridgeTransaction,
-} from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/durable-store.js";
 import {
   NODE_SQLITE_BRIDGE_DRIVER,
   SQLITE_BRIDGE_ADAPTER_PORT,
@@ -18,8 +18,8 @@ import {
   type BridgeRestoreReport,
   type SqliteBridgeAdapterPort,
   type SqliteMigrationWork,
-} from "../../../bridge-contract/src/persistence.js";
-import { BridgeServiceError } from "../../../bridge-contract/src/service-types.js";
+} from "../../bridge-contract/src/persistence.js";
+import { BridgeServiceError } from "../../bridge-contract/src/service-types.js";
 import {
   BRIDGE_LEASE_COORDINATOR_PORT,
   type BridgeLease,

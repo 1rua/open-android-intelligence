@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { BRIDGE_STORE_NAMESPACES } from "../../../bridge-contract/src/durable-store.js";
+import { BRIDGE_STORE_NAMESPACES } from "../../bridge-contract/src/durable-store.js";
 import { cleanupRealBridgeBackupRestoreDrill, runRealBridgeBackupRestoreDrill } from "../src/real-backup-restore-drill.js";
 
 const root = await mkdtemp(join(tmpdir(), "open-android-intelligence-real-drill-"));

@@ -1,11 +1,11 @@
 import { rm } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { join } from "node:path";
-import { BRIDGE_STORE_NAMESPACES } from "../../../bridge-contract/src/durable-store.js";
-import { BridgeServiceError } from "../../../bridge-contract/src/service-types.js";
+import { BRIDGE_STORE_NAMESPACES } from "../../bridge-contract/src/durable-store.js";
+import { BridgeServiceError } from "../../bridge-contract/src/service-types.js";
 import {
   NODE_SQLITE_BRIDGE_DRIVER,
-} from "../../../bridge-contract/src/persistence.js";
+} from "../../bridge-contract/src/persistence.js";
 import {
   openNodeSqliteBridgeAdapter,
   type NodeSqliteBridgeAdapter,

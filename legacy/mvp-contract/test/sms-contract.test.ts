@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import {
   encodeSmsQuery,
@@ -119,7 +120,7 @@ describe("closed SMS wire contract", () => {
   });
 
   it("applies the positive SMS record ID rule in the JSON Schema", () => {
-    const schema = JSON.parse(readFileSync(resolve(process.cwd(), "mvp-contract/schemas/v1/sms-record.schema.json"), "utf8"));
+    const schema = JSON.parse(readFileSync(fileURLToPath(new URL("../schemas/v1/sms-record.schema.json", import.meta.url)), "utf8"));
     const validateSchema = new Ajv2020({ strict: false }).compile(schema);
     const wire = encodeSmsRecord(recordInput);
     expect(validateSchema(wire)).toBe(true);

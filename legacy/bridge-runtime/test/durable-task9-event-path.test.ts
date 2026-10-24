@@ -6,19 +6,19 @@ import {
   createVerifiedCaptureAuthority,
   validateDeviceEvent,
   validateEventAck,
-} from "../../../protocol/src/event-contract.js";
+} from "../../protocol/src/event-contract.js";
 import {
   DeterministicReplayLedger,
   referenceReplayClaim,
   type ReplayClaimReference,
   type ReplaySpace,
-} from "../../../protocol/src/replay-window.js";
+} from "../../protocol/src/replay-window.js";
 import {
   DurableTask9EventPath,
   type Task9CaptureAuthorityRecord,
   type Task9SourceIdentity,
 } from "../src/durable-task9-event-path.js";
-import type { DurableBridgeStore } from "../../../bridge-contract/src/durable-store.js";
+import type { DurableBridgeStore } from "../../bridge-contract/src/durable-store.js";
 import { FileBackedBridgeStore } from "../src/file-backed-store.js";
 
 const roots: string[] = [];

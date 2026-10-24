@@ -2,13 +2,13 @@ import {
   assertDurableBridgeStore,
   runDurableBridgeTransaction,
   type DurableBridgeStore,
-} from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/durable-store.js";
 import {
   BridgeServiceError,
   type OperationDispatcherPort,
   type OperationRequest,
-} from "../../../bridge-contract/src/operation-dispatch.js";
-import { sessionKey } from "../../../bridge-contract/src/service-types.js";
+} from "../../bridge-contract/src/operation-dispatch.js";
+import { sessionKey } from "../../bridge-contract/src/service-types.js";
 
 export const DURABLE_OPERATION_DISPATCHER_PORT = "open-android-intelligence.operation-dispatcher.v1" as const;
 const OPERATION_NAMESPACE = "operation.claims" as const;

@@ -6,7 +6,7 @@ export default defineConfig({
     env: {
       TZ: "UTC"
     },
-    exclude: [".worktrees/**", ".toolchains/**", "third_party/**", "**/node_modules/**"],
+    exclude: [".worktrees/**", ".toolchains/**", "third_party/**", "**/node_modules/**", "legacy/**", "tmp/**"],
     fileParallelism: false,
     maxWorkers: 1,
     minWorkers: 1,
