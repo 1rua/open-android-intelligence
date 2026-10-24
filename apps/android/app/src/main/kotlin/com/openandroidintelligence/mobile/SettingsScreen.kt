@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -534,6 +535,20 @@ private fun SettingsOverviewScreen(
                     icon = Icons.Default.SystemUpdate,
                     onClick = { onNavigate(SettingsRoutes.APP_UPDATES) },
                 )
+                // 引导入口：已完成引导的用户仍需要一个能重新查看部署步骤与权限说明的地方。
+                // 重看只进入引导流程，不改写「已完成」状态 —— 关掉后仍回主界面。
+                (androidx.compose.ui.platform.LocalContext.current.applicationContext
+                    as? OpenAndroidIntelligenceApplication)?.let { app ->
+                    SettingsNavigationItem(
+                        headline = "新手引导与部署教程",
+                        supporting = "重新查看 Gateway 部署步骤与权限说明",
+                        icon = Icons.Default.MenuBook,
+                        onClick = {
+                            app.onboardingPreferences.startReplay()
+                            onBack()
+                        },
+                    )
+                }
             }
             (androidx.compose.ui.platform.LocalContext.current.applicationContext as? OpenAndroidIntelligenceApplication)?.let { app ->
                 val preferences=remember { com.openandroidintelligence.mobile.conversations.DebouncePreferences(app) }
