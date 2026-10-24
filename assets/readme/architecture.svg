@@ -18,12 +18,12 @@
   <style>
     .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #4E4E4E; }
     .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #111111; }
-    .mono-m { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #8B8B86; }
-    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 1.2px; fill: #A9502A; }
+    .mono-m { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #6F6F6A; }
+    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 1.2px; fill: #B8501F; }
     .disp { font-family: "Arial Black", "Inter", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-weight: 900; font-size: 44px; letter-spacing: -0.8px; fill: #111111; }
     .item { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #111111; }
     .body { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 400; fill: #4E4E4E; }
-    .host { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, sans-serif; font-size: 20px; font-weight: 900; letter-spacing: 0.6px; fill: #111111; }
+    .host { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", sans-serif; font-size: 20px; font-weight: 900; letter-spacing: 0.6px; fill: #111111; }
   </style>
 
   <rect width="1200" height="600" fill="#F7F7F5"/>
@@ -44,10 +44,9 @@
 
   <g clip-path="url(#archClip)">
     <g opacity="0.5">
-      <circle cx="1104" cy="150" r="40" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
-      <circle cx="1104" cy="150" r="68" fill="none" stroke="#D6D6CE" stroke-width="0.8" stroke-dasharray="2 6"/>
-      <circle cx="1104" cy="150" r="96" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
-      <path d="M1104 46V254M1000 150H1208" stroke="#D6D6CE" stroke-width="0.8"/>
+      <circle cx="1128" cy="536" r="26" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
+      <circle cx="1128" cy="536" r="52" fill="none" stroke="#D6D6CE" stroke-width="0.8" stroke-dasharray="2 6"/>
+      <path d="M1128 470V602M1062 536H1194" stroke="#D6D6CE" stroke-width="0.8"/>
     </g>
   </g>
 
@@ -81,17 +80,17 @@
   <text x="632" y="266" class="mono-d">Agent 宿主</text>
 
   <g>
-    <path d="M60 306H74" stroke="#A9502A" stroke-width="2.4"/>
+    <path d="M60 306H74" stroke="#B8501F" stroke-width="2.4"/>
     <text x="60" y="332" class="item">账号与会话</text>
     <text x="60" y="358" class="body">连接 Gateway、选取附件</text>
     <path d="M60 378H310" stroke="#D6D6CE" stroke-width="0.8"/>
 
-    <path d="M60 400H74" stroke="#A9502A" stroke-width="2.4"/>
+    <path d="M60 400H74" stroke="#B8501F" stroke-width="2.4"/>
     <text x="60" y="426" class="item">平台内核</text>
     <text x="60" y="452" class="body">管理身份、授权与插件</text>
     <path d="M60 472H310" stroke="#D6D6CE" stroke-width="0.8"/>
 
-    <path d="M60 494H74" stroke="#A9502A" stroke-width="2.4"/>
+    <path d="M60 494H74" stroke="#B8501F" stroke-width="2.4"/>
     <text x="60" y="520" class="item">设备插件</text>
   </g>
 
@@ -147,12 +146,12 @@
   </g>
 
   <g opacity="0.65">
-    <circle cx="52" cy="540" r="10" fill="url(#archHalftone)"/>
-    <circle cx="52" cy="540" r="10" fill="none" stroke="#111111" stroke-width="0.8"/>
+    <circle cx="52" cy="547" r="9" fill="url(#archHalftone)"/>
+    <circle cx="52" cy="547" r="9" fill="none" stroke="#111111" stroke-width="0.8"/>
     
   </g>
 
   <path d="M44 550H1156" stroke="#111111" stroke-width="1"/>
-  <text x="44" y="574" class="mono">FIG. 02 / THREE-LAYER TOPOLOGY · 设备能力链路仍在装配</text>
+  <text x="44" y="574" class="mono">SHEET 02 / THREE-LAYER TOPOLOGY · 设备能力链路仍在装配</text>
   <text x="1156" y="574" class="mono" text-anchor="end">NO RELAY · ED25519 · 70 VECTORS</text>
 </svg>

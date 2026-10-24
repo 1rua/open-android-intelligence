@@ -18,8 +18,8 @@
   <style>
     .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #4E4E4E; }
     .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #111111; }
-    .mono-m { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #8B8B86; }
-    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 1.2px; fill: #A9502A; }
+    .mono-m { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #6F6F6A; }
+    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 1.2px; fill: #B8501F; }
     .disp { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, "Noto Sans CJK SC", sans-serif; font-weight: 900; font-size: 64px; letter-spacing: -1.8px; fill: #111111; }
     .lede { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; letter-spacing: 0.2px; fill: #111111; }
     .body { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 400; letter-spacing: 0.2px; fill: #4E4E4E; }
@@ -38,7 +38,7 @@
   </g>
 
   <text x="44" y="47" class="mono-d" style="letter-spacing:1.4px">OPEN ANDROID INTELLIGENCE</text>
-  <text x="560" y="47" class="mono">TECHNICAL DOSSIER / SHEET 01</text>
+  <text x="600" y="47" class="mono">TECHNICAL DOSSIER / SHEET 01</text>
   <text x="1156" y="47" class="mono" text-anchor="end">REV 2.1.1 / 2026</text>
   <path d="M44 64H1156" stroke="#111111" stroke-width="1"/>
   <path d="M700 64V356" stroke="#111111" stroke-width="1"/>
@@ -47,7 +47,7 @@
   <text x="44" y="96" class="num">UNIFIED ANDROID CLIENT / MULTI-AGENT LINK</text>
   <text x="42" y="164" class="disp">OPEN ANDROID</text>
   <text x="42" y="228" class="disp">INTELLIGENCE</text>
-  <rect x="44" y="242" width="56" height="4" fill="#A9502A"/>
+  <rect x="44" y="242" width="56" height="4" fill="#B8501F"/>
   <text x="44" y="270" class="lede">一个统一的安卓客户端，用于连接多种主流 Agent</text>
   <text x="44" y="296" class="body">客户端仅提供设备能力，决策全由 Agent 负责</text>
   <path d="M44 314H674" stroke="#C9C9C2" stroke-width="1"/>
@@ -67,22 +67,16 @@
     <circle cx="928" cy="210" r="112" fill="none" stroke="#E2E2DA" stroke-width="0.8"/>
     <circle cx="928" cy="210" r="86" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
     <g stroke="#C9C9C2" stroke-width="0.8">
-      <path d="M928 92V102"/>
-      <path d="M928 318V328"/>
-      <path d="M724 204V216"/>
-      <path d="M1132 204V216"/>
-      <path d="M1072 96V106" transform="rotate(30 928 210)"/>
-      <path d="M1072 96V106" transform="rotate(60 928 210)"/>
-      <path d="M1072 96V106" transform="rotate(120 928 210)"/>
-      <path d="M1072 96V106" transform="rotate(150 928 210)"/>
+      <path d="M928 98V112M928 308V322M724 204V216M1132 204V216"/>
+      <path d="M1025 266L1018.1 262M984 307L980 300.1M872 307L876 300.1M831 266L837.9 262M831 154L837.9 158M872 113L876 119.9M984 113L980 119.9M1025 154L1018.1 158"/>
     </g>
 
     <ellipse cx="928" cy="210" rx="172" ry="52" fill="none" stroke="#111111" stroke-width="1.4" transform="rotate(-17 928 210)"/>
-    <ellipse cx="928" cy="210" rx="124" ry="37" fill="none" stroke="#8B8B86" stroke-width="0.8" stroke-dasharray="3 8" transform="rotate(-17 928 210)"/>
+    <ellipse cx="928" cy="210" rx="124" ry="37" fill="none" stroke="#6F6F6A" stroke-width="0.8" stroke-dasharray="3 8" transform="rotate(-17 928 210)"/>
 
     <circle cx="737" cy="302" r="20" fill="url(#heroHalftone)" opacity="0.55"/>
     <circle cx="737" cy="302" r="20" fill="none" stroke="#111111" stroke-width="0.8" stroke-opacity="0.4"/>
-    <g stroke="#8B8B86" stroke-width="0.8">
+    <g stroke="#6F6F6A" stroke-width="0.8">
       <path d="M737 276V282M737 322V328M711 302H717M757 302H763"/>
     </g>
   </g>
@@ -97,19 +91,19 @@
     <circle cx="768" cy="241" r="2.4" fill="#6F6F6A"/>
     <circle cx="994" cy="142" r="6" fill="#F7F7F5" stroke="#111111" stroke-width="1.6"/>
     <circle cx="994" cy="142" r="2.4" fill="#111111"/>
-    <circle cx="1093" cy="168" r="8.5" fill="#A9502A"/>
+    <circle cx="1093" cy="168" r="8.5" fill="#B8501F"/>
   </g>
 
   <g class="mono-d">
     <text x="746" y="266" text-anchor="middle" style="fill:#6F6F6A">01</text>
     <text x="994" y="126" text-anchor="middle">02</text>
-    <text x="1112" y="160" text-anchor="start" style="fill:#A9502A">03</text>
+    <text x="1112" y="160" text-anchor="start" style="fill:#B8501F">03</text>
   </g>
 
   <path d="M724 330H1156" stroke="#C9C9C2" stroke-width="0.9"/>
   <text x="724" y="350" class="mono"><tspan fill="#6F6F6A">01</tspan> DEVICE</text>
   <text x="858" y="350" class="mono"><tspan fill="#111111">02</tspan> GATEWAY</text>
-  <text x="1014" y="350" class="mono"><tspan fill="#A9502A">03</tspan> AGENT</text>
+  <text x="1014" y="350" class="mono"><tspan fill="#B8501F">03</tspan> AGENT</text>
 
   <text x="44" y="372" class="mono">FIG. 01 / UNIFIED DEVICE LINK</text>
   <text x="1156" y="372" class="mono" text-anchor="end">NO RELAY · NO ROOT · DIRECT LINK</text>
