@@ -45,10 +45,6 @@
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.OpenAndroidIntelligence">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-            <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -61,6 +57,36 @@
                 <data android:scheme="oai" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- 默认动态取色启动入口（包含 <monochrome> 单色图层，支持 Material You 动态取色） -->
+        <activity-alias
+            android:name=".MainActivityThemed"
+            android:targetActivity=".MainActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:label="OAI">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- 经典原版启动入口（不含 <monochrome> 图层，始终保持高保真黑白与橙色行星点原貌） -->
+        <activity-alias
+            android:name=".MainActivityClassic"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_classic"
+            android:roundIcon="@mipmap/ic_launcher_classic_round"
+            android:label="OAI">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
         <activity
             android:name=".BubbleConversationActivity"
             android:label="Agent 会话"

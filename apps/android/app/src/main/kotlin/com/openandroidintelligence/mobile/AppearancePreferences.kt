@@ -45,13 +45,18 @@ data class AppearanceSettings(
 )
 
 class AppearancePreferences(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences(
+    private val appContext = context.applicationContext
+    private val preferences = appContext.getSharedPreferences(
         PREFERENCES_NAME,
         Context.MODE_PRIVATE,
     )
 
     private val _settings = MutableStateFlow(read())
     val settings: StateFlow<AppearanceSettings> = _settings.asStateFlow()
+
+    init {
+        LauncherIconManager.applyDynamicIconPreference(appContext, _settings.value.dynamicIconColor)
+    }
 
     fun setTheme(theme: ThemePreference) {
         persist(_settings.value.copy(theme = theme))
@@ -63,6 +68,7 @@ class AppearancePreferences(context: Context) {
 
     fun setDynamicIconColor(enabled: Boolean) {
         persist(_settings.value.copy(dynamicIconColor = enabled))
+        LauncherIconManager.applyDynamicIconPreference(appContext, enabled)
     }
 
     /** 选择一套预设色板：同时关闭动态取色，选中的方案必须立刻可见。 */

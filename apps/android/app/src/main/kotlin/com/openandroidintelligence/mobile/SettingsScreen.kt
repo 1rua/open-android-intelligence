@@ -918,7 +918,7 @@ private fun AppearanceSubScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsSwitchItem(
                         headline = "图标动态取色",
-                        supporting = "桌面图标支持 Material You 动态取色（随壁纸变色）；关闭后保持经典黑白与橙色行星点原貌。",
+                        supporting = "桌面图标支持 Material You 动态取色（需系统 Android 13+ 且开启「主题图标」）；关闭后保持经典黑白与橙色行星点原貌。",
                         checked = uiState.appearance.dynamicIconColor,
                         icon = Icons.Default.Palette,
                         tone = SettingsTone.PRIMARY,
