@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlin.math.hypot
+import kotlin.math.abs
 import kotlin.math.min
 
 /*
@@ -313,23 +314,32 @@ private fun DrawScope.drawRevealCover(
     val halfHeight = lerpRevealCornerRadius(startHalfHeight, maxRadius, progress)
     // 起点圆角取按钮短边的胶囊半径：Compose 不向外部暴露按钮实际 shape，
     // 引导页主 CTA 是胶囊按钮，这是最接近的等效值。
-    val corner = lerpRevealCornerRadius(
-        min(origin.size.width, origin.size.height) / 2f,
-        maxRadius,
-        progress,
-    ).coerceAtMost(min(halfWidth, halfHeight))
+    val startCorner = min(origin.size.width, origin.size.height) / 2f
+    // 目标形态是「圆」，所以圆角上限取最终半径；不需要在过程中提前 clamp 成圆形。
+    val corner = lerpRevealCornerRadius(startCorner, maxRadius, progress)
 
     val topLeft = Offset(origin.center.x - halfWidth, origin.center.y - halfHeight)
     val coverSize = Size(halfWidth * 2f, halfHeight * 2f)
 
-    if (corner >= min(halfWidth, halfHeight) - 0.5f) {
+    // 何时可以切成 drawCircle？
+    //
+    // 判据必须是「宽高已经接近相等且圆角吃满」，而不是 `corner >= min(halfW, halfH)`：
+    // 后者对宽按钮（如 320×52）在动画一开始就成立，会立刻画成半径 160 的圆，
+    // 直接糊住周围内容，「按钮→全屏」的形态变换就消失了。
+    val almostSquare = abs(halfWidth - halfHeight) <= halfWidth * 0.02f + 0.5f
+    val fullyRounded = corner >= min(halfWidth, halfHeight) - 0.5f
+    if (almostSquare && fullyRounded && halfWidth > 0f) {
         drawCircle(color = surface, radius = halfWidth, center = origin.center)
     } else {
         drawRoundRect(
             color = surface,
             topLeft = topLeft,
             size = coverSize,
-            cornerRadius = CornerRadius(corner, corner),
+            // 圆角不能超过短边一半，否则某些渲染器会出现自交毛边。
+            cornerRadius = CornerRadius(
+                min(corner, min(halfWidth, halfHeight)),
+                min(corner, min(halfWidth, halfHeight)),
+            ),
         )
     }
 

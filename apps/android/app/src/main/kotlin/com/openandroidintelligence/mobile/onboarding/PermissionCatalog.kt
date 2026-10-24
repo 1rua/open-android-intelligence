@@ -203,8 +203,16 @@ fun resolvePermissionStatus(context: Context, entry: PermissionEntry): Permissio
         return PermissionStatus.NOT_REQUIRED
     }
     if (entry.manifestPermissions.isEmpty()) {
-        // 早期 Android 上通知默认开启；没有可申请的权限即视为已可用。
-        return PermissionStatus.GRANTED
+        // 早期 Android（API 32 及以下）没有 POST_NOTIFICATIONS 运行时权限，
+        // 但用户**仍可能在系统设置里关掉本应用的通知**。
+        // 若这里直接返回「已授权」，用户关掉通知后卡片会一直显示「已开启」，
+        // 引导他修复的按钮也就消失了。因此必须查系统真实开关。
+        return if (notificationsAllowedBySystem(context)) {
+            PermissionStatus.GRANTED
+        } else {
+            // 没有可申请的运行时权限，系统对话框也弹不出来 → 只能去设置。
+            PermissionStatus.BLOCKED
+        }
     }
     val allGranted = entry.manifestPermissions.all { permission ->
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
@@ -287,4 +295,19 @@ private fun hasNotificationListenerAccess(context: Context): Boolean = try {
     // 极少数 ROM 上该 API 可能抛异常；此时保守返回 false（显示「未开启」），
     // 用户仍可通过「前往设置」手动确认，不伪造已授权。
     false
+}
+
+/**
+ * 查询系统的「本应用通知」总开关是否允许（与运行时权限无关）。
+ *
+ * Android 12 及以下没有 POST_NOTIFICATIONS 运行时权限，用户在系统设置里
+ * 关掉通知后，`checkSelfPermission` 依然返回「已授予」。只有
+ * `NotificationManager.areNotificationsEnabled()` 能反映真实状态。
+ */
+private fun notificationsAllowedBySystem(context: Context): Boolean = try {
+    val manager = context.getSystemService(android.app.NotificationManager::class.java)
+    manager?.areNotificationsEnabled() ?: true
+} catch (_: Exception) {
+    // 极端 ROM 取不到服务时保守认为可用，避免把正常用户误判成「被拒绝」。
+    true
 }

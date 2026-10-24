@@ -41,6 +41,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials
 import com.openandroidintelligence.mobile.onboarding.motion.ButtonRevealTransition
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
@@ -108,6 +109,13 @@ fun OnboardingFlow(
     ) { granted ->
         pendingPermissionId?.let { id ->
             statuses[id] = if (granted) PermissionStatus.GRANTED else PermissionStatus.DENIED
+            // 通知权限的申请结果必须同步给既有的 ReplyNotificationSettings：
+            // 它用 permissionRequested 标记避免登录后再次自动弹窗。若只在引导内记录，
+            // 用户刚在这里拒绝，连上网关时又会被弹一次——正是需求禁止的重复弹窗。
+            if (id == "notifications") {
+                (context.applicationContext as? OpenAndroidIntelligenceApplication)
+                    ?.gatewayRuntime?.replyNotifications?.markPermissionRequested()
+            }
         }
         pendingPermissionId = null
         refreshPermissions()

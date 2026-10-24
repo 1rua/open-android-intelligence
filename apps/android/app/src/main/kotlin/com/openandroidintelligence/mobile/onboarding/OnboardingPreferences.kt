@@ -77,13 +77,23 @@ class OnboardingPreferences(context: Context) {
         )
     }
 
-    /** 退出重看模式，回到原本的完成态。 */
+    /**
+     * 退出重看模式。
+     *
+     * 分两种情况：
+     * 1. 已完成引导的用户：回到 COMPLETED，宿主显示登录/工作台；
+     * 2. **未完成**引导的用户（例如首次启动时按过返回跳过，又从设置进来重看）：
+     *    必须恢复 `dismissedThisSession = true`，否则 `shouldShow` 仍为 true，
+     *    用户会卡在欢迎页 —— 再按一次返回才退出 Activity，体验是坏的。
+     */
     fun endReplay() {
         val current = _state.value
         if (!current.replay) return
+        val wasUnfinished = !current.finished
         _state.value = current.copy(
             stage = if (current.finished) OnboardingStage.COMPLETED else OnboardingStage.WELCOME,
             replay = false,
+            dismissedThisSession = wasUnfinished,
         )
     }
 
