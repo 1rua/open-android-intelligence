@@ -1,5 +1,4 @@
 .worktrees/
-AGENTS.md
 .agents/
 /.toolchains/
 *.tsnet-toolchain.env
