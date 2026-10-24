@@ -43,13 +43,19 @@ def _pin(directory: Path, revision: str, repository: str | None = None) -> Path:
 
 def _run(main_kwargs: dict, env: dict) -> tuple[int, str]:
     saved = {key: os.environ.get(key) for key in env}
-    os.environ.update({key: value for key, value in env.items() if value is not None})
+    for key, value in env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
     try:
         import io
         import contextlib
+        from unittest.mock import patch
 
         buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
+        # 门禁自行解析命令行；隔离 pytest 的参数，按真实独立脚本调用。
+        with contextlib.redirect_stdout(buffer), patch.object(sys, "argv", [str(GATE_PATH)]):
             code = gate.main()
         return code, buffer.getvalue()
     finally:
@@ -61,14 +67,14 @@ def _run(main_kwargs: dict, env: dict) -> tuple[int, str]:
 
 
 def test_fails_closed_without_a_plugin_checkout():
-    code, output = _run({}, {gate.PLUGIN_ENV: None, "ALLOW_SKIP_PIN_GATE": None})
+    code, output = _run({}, {gate.DEFAULT_PLUGIN_ENV: None, "ALLOW_SKIP_PIN_GATE": None})
 
     assert code == 1
-    assert gate.PLUGIN_ENV in output
+    assert gate.DEFAULT_PLUGIN_ENV in output
 
 
 def test_skip_requires_an_explicit_opt_in():
-    code, _ = _run({}, {gate.PLUGIN_ENV: None, "ALLOW_SKIP_PIN_GATE": "1"})
+    code, _ = _run({}, {gate.DEFAULT_PLUGIN_ENV: None, "ALLOW_SKIP_PIN_GATE": "1"})
 
     assert code == 0
 
@@ -79,7 +85,7 @@ def test_fails_when_the_pinned_commit_is_absent_locally():
         _pin(plugin_root, "a" * 40)
 
         code, output = _run(
-            {}, {gate.PLUGIN_ENV: str(plugin_root), "ALLOW_SKIP_PIN_GATE": None},
+            {}, {gate.DEFAULT_PLUGIN_ENV: str(plugin_root), "ALLOW_SKIP_PIN_GATE": None},
         )
 
     assert code == 1
@@ -92,7 +98,7 @@ def test_fails_when_the_pin_names_another_repository():
         _pin(plugin_root, "b" * 40, repository="https://github.com/someone/else.git")
 
         code, output = _run(
-            {}, {gate.PLUGIN_ENV: str(plugin_root), "ALLOW_SKIP_PIN_GATE": None},
+            {}, {gate.DEFAULT_PLUGIN_ENV: str(plugin_root), "ALLOW_SKIP_PIN_GATE": None},
         )
 
     assert code == 1
@@ -105,7 +111,7 @@ def test_fails_when_the_pin_is_not_a_full_commit():
         _pin(plugin_root, "abc123")
 
         code, output = _run(
-            {}, {gate.PLUGIN_ENV: str(plugin_root), "ALLOW_SKIP_PIN_GATE": None},
+            {}, {gate.DEFAULT_PLUGIN_ENV: str(plugin_root), "ALLOW_SKIP_PIN_GATE": None},
         )
 
     assert code == 1

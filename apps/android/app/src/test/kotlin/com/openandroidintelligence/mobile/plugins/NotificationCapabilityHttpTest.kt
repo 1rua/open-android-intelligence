@@ -18,6 +18,7 @@ import com.openandroidintelligence.mobile.BuildConfig
 import com.openandroidintelligence.mobile.TestDocumentKeys
 import com.openandroidintelligence.notification.control.*
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyPairGenerator
@@ -71,7 +72,25 @@ class NotificationCapabilityHttpTest {
             val session = auth.loginWithPassword(negotiation.negotiationId,"alice","device-fixture-only".toCharArray(),
                 "Notification regression",ed25519WirePublicKey(keys.public))
             val profile = GatewayProfile(session.accountId,session.deviceId,session.sessionId,baseUrl,accessToken=session.accessToken)
-            val http = GatewayHttpClient(profile,GatewayTransport(profile,factory),{ bytes ->
+            var loseClaimReply = true
+            var loseResultReply = true
+            val wire = GatewayTransport(profile,factory)
+            val interruptedWire = object : GatewayByteTransport by wire {
+                override suspend fun execute(request: WireRequest): WireResponse {
+                    val response = wire.execute(request)
+                    // 服务器已接受后丢掉回包，检验真实 HTTP 收据与结果重试的幂等性。
+                    if (response.status == 200 && request.target.endsWith("/claim") && loseClaimReply) {
+                        loseClaimReply = false
+                        throw IOException("领取回包丢失夹具")
+                    }
+                    if (response.status == 200 && request.target.endsWith("/result") && loseResultReply) {
+                        loseResultReply = false
+                        throw IOException("结果回包丢失夹具")
+                    }
+                    return response
+                }
+            }
+            val http = GatewayHttpClient(profile,interruptedWire,{ bytes ->
                 Signature.getInstance("Ed25519").run { initSign(keys.private);update(bytes);sign() }
             },InMemoryEventCursorStore(),webSocketTransport=null)
             val binding = PairingGrantBinding(baseUrl,session.accountId,"notification_install")
@@ -129,19 +148,25 @@ class NotificationCapabilityHttpTest {
             listener.onListenerConnected()
             publisher.sync();assertEquals("READY",currentStatus())
 
+            var foreground = false
             val driver = DeviceExecutionDriver(context,executionScope,http,host,session.accountId,session.deviceId,session.pairingGeneration,
-                binding.storageKey,{ publisher.grantRevision },{ true },TestDocumentKeys)
+                binding.storageKey,{ publisher.grantRevision },{ foreground },TestDocumentKeys)
             suspend fun invoke(): JsonValue.JObject {
                 control("start",mapOf("capabilityId" to ID,"parameters" to mapOf("limit" to 10)))
                 var requestId: String? = null
                 withTimeout(5_000) { while(requestId == null) { requestId=JsonFields.string(control("pending"),"requestId");if(requestId == null) delay(20) } }
                 driver.accept(requestId!!)
-                return withContext(Dispatchers.IO) { control("result") }
+                val result = withContext(Dispatchers.IO) { control("result") }
+                withTimeout(5_000) { executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+                return result
             }
             val result = invoke()
             assertEquals("succeeded",JsonFields.string(result,"outcome"))
             assertTrue(Json.canonical(result).contains("permitted message"))
             assertFalse(Json.canonical(result).contains("excluded secret"))
+            assertFalse(loseClaimReply)
+            assertFalse(loseResultReply)
+            foreground = true
             // An installed but damaged package cannot be diagnosed as absent, or retain a callable binding.
             val payload = File(host.installStore.installRoot, "$PLUGIN/payload/notifications.wasm")
             val verifiedPayload = payload.readBytes()

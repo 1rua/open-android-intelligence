@@ -69,6 +69,35 @@ class GatewayEventStreamTest {
     }
 
     @Test
+    fun `设备请求接收失败后保留游标并重放请求与后续取消事件`() = runBlocking {
+        val cursors = MemoryCursorStore().apply { seed("acc_test", "evt_before") }
+        var failAcceptance = true
+        val applied = mutableListOf<String?>()
+        val frames = (
+            "id: evt_requested\nevent: device.requested\ndata: {\"payload\":{\"requestId\":\"req_test\"}}\n\n" +
+                "id: evt_cancel\nevent: device.request.cancel.requested\ndata: {\"payload\":{\"requestId\":\"req_test\"}}\n\n"
+            ).toByteArray()
+        val client = GatewayHttpClient(
+            profile(), RecordingTransport(listOf(frames)), { ByteArray(64) }, cursors,
+            handlePlatformEvent = { event ->
+                if (failAcceptance) throw java.io.IOException("DEVICE_LOOKUP_FAILED")
+                applied += event.event
+                true
+            },
+        )
+
+        val failure = runCatching { client.events(autoReconnect = false).toList() }.exceptionOrNull()
+        assertEquals("DEVICE_LOOKUP_FAILED", failure?.message)
+        assertEquals("evt_before", cursors.load("acc_test"))
+        assertTrue(applied.isEmpty())
+
+        failAcceptance = false
+        assertTrue(client.events(autoReconnect = false).toList().isEmpty())
+        assertEquals(listOf("device.requested", "device.request.cancel.requested"), applied)
+        assertEquals("evt_cancel", cursors.load("acc_test"))
+    }
+
+    @Test
     fun `expired cursor is cleared and never retried in the same subscription`() = runBlocking {
         val cursors = MemoryCursorStore().apply { seed("acc_test", "cur_expired") }
         var attempts = 0
@@ -420,6 +449,62 @@ class GatewayEventStreamTest {
         assertEquals(1, events.size)
         assertEquals(1, connectCount)
         assertEquals("evt_1", events[0].id)
+    }
+
+    @Test
+    fun `无帧正常关闭也必须在有限重试后报告失败`() = runBlocking {
+        var attempts = 0
+        val recordedDelays = mutableListOf<Long>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attempts++
+            }
+        }
+        val sink = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
+        val client = GatewayHttpClient(
+            profile(), transport, { ByteArray(64) }, MemoryCursorStore(),
+            webSocketTransport = null,
+            delayFn = {
+                recordedDelays += it
+                check(recordedDelays.size < 4) { "TEST_RETRY_LIMIT_EXCEEDED" }
+            },
+            statusSink = sink,
+            maxConsecutiveFailures = 3,
+        )
+
+        val failure = runCatching { client.events().toList() }.exceptionOrNull()
+
+        assertEquals("EVENT_STREAM_CLOSED", failure?.message)
+        assertEquals(3, attempts)
+        assertEquals(listOf(1_000L, 2_000L), recordedDelays)
+        assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.FAILED, sink.status.value)
+    }
+
+    @Test
+    fun `已收帧的连接正常关闭后必须先标记重连再恢复请求`() = runBlocking {
+        var attempts = 0
+        val sink = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
+        val cursors = MemoryCursorStore()
+        val statusDuringBackoff = mutableListOf<com.openandroidintelligence.gateway.events.EventStreamStatus>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                attempts++
+                if (attempts == 2) assertTrue(request.target.endsWith("?cursor=evt_1"))
+                emit("id: evt_$attempts\nevent: device.requested\ndata: {}\n\n".toByteArray())
+            }
+        }
+        val client = GatewayHttpClient(
+            profile(), transport, { ByteArray(64) }, cursors,
+            webSocketTransport = null,
+            delayFn = { statusDuringBackoff += sink.status.value },
+            statusSink = sink,
+        )
+
+        assertEquals(2, client.events().take(2).toList().size)
+        assertEquals(listOf(com.openandroidintelligence.gateway.events.EventStreamStatus.RECONNECTING), statusDuringBackoff)
+        assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, sink.status.value)
     }
 
     /**
