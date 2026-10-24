@@ -104,7 +104,13 @@ allprojects {
 
 Hermes 配套 [PR #6](https://github.com/1rua/hermes-android-gateway/pull/6) 固定提交为 `ebe527da2426dd25877dd335786e80cf85d1cdde`，主仓两处 CI 检出均锁定此提交。独立 Standards 与 Spec 审查均在推送后进行，分别为 0 个阻断问题；审查为只读源码检查，没有把审查误报为测试重跑。
 
-Hermes [CI 40050139586](https://github.com/1rua/hermes-android-gateway/actions/runs/40050139586) 已成功：完整独立矩阵 448 项通过，固定原生宿主矩阵 92 项通过。该结果对应上述精确提交，覆盖最后补充的截止边界用例。Android 提交后的独立审查和完整 CI 将继续记录。
+Hermes [CI 40050139586](https://github.com/1rua/hermes-android-gateway/actions/runs/40050139586) 已成功：完整独立矩阵 448 项通过，固定原生宿主矩阵 92 项通过。该结果对应上述精确提交，覆盖最后补充的截止边界用例。Android 生产修复提交为 `4bd54080c39745be8fe0b6c11be79fced4c06351`，基线为 `552fb2c8655126d564b78bf400f55f033ab97267`，由 [PR #27](https://github.com/1rua/open-android-intelligence/pull/27) 交付。提交后的两位独立代理已按固定差异正式审查：Standards（规范、缺陷与安全）为 0 个阻断问题、0 个待补修问题；Spec（需求与兼容）为 0 个阻断问题、0 个非阻断问题。
+
+Standards 审查逐文件核对了内容摘要：9 个文件中 8 个代码、测试及 CI 文件与预审一致，仅诊断报告新增主线同步后的证据说明。审查额外追踪了真实 HTTP 的取消断连、稳定操作键、已签发收据约束、执行前检查点、已保存结果优先及脱敏日志，未发现回归或授权旁路。
+
+Spec 审查确认了短预算、Claim 失败传播、逐条恢复、结果补传、SSE 有限失败和游标重放，后台 read 与前台确认 write 的边界仍然存在。两项审查均为只读源码与用例核对，没有把审查当作测试重跑。
+
+Android 完整 [CI 40052117271](https://github.com/1rua/open-android-intelligence/actions/runs/40052117271) 已由 PR 启动，记录本报告时尚在运行。仅补充本段审查记录的文档提交没有改变上述生产、测试或工作流内容；最终远程状态以 PR 的精确提交检查为准。
 
 ## 目标设备验收入口
 
