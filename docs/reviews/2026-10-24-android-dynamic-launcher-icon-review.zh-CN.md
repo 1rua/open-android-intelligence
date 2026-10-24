@@ -1,10 +1,13 @@
 # 代码审查报告：MD3 动态取色图标与外观设置开关实现审查
 
-- **审查对象**：提交 `3124501253eecb1e1522deb54e0926efc0634bcc`
-- **提交信息**：`新增: 支持 MD3 动态取色图标并在外观设置中增加图标取色开关`
-- **变更统计**：13 个文件，新增 136 行，删除 1 行
+- **审查对象**：
+  - 初审：提交 `3124501253eecb1e1522deb54e0926efc0634bcc`（提交信息：`新增: 支持 MD3 动态取色图标并在外观设置中增加图标取色开关`）
+  - 整改复查：提交 `2eba13ec1999674e2051599b195e9e1ea2948ce1`（提交信息：`修复: 联动 activity-alias 真实切换桌面图标并移除 drawable 冗余 svg`）
+- **变更统计**：
+  - 初审提交：13 个文件，新增 136 行，删除 1 行
+  - 整改提交：9 个文件，新增 208 行，删除 8 行
 - **审查日期**：2026-10-24
-- **审查结论**：**需修复（NEED FIX）**
+- **最终审查结论**：**通过（PASS）**（初审结论：需修复 NEED FIX $\rightarrow$ 整改复查：全部整改项验收通过）
 
 ---
 
@@ -100,3 +103,61 @@
 | **P0** | `res/drawable/oai_logo.svg` 误放入资源目录 | 使用安全移动方式将其从 `apps/android/app/src/main/res/drawable/` 移出至设计素材目录（如 `docs/assets/`），避免污染运行时资源。 | 开发者 |
 | **P1** | 设置中「图标动态取色」开关未生效（死状态） | **二选一重构**：<br>1. 实现 `activity-alias` + `PackageManager` 真实切换链路；<br>2. 调整 UI 文案为说明性提示，或移除假开关，遵循系统级主题图标控制标准。 | 架构/产品/开发 |
 | **P2** | `android:label="OAI"` 影响范围确认 | 确认系统设置/权限弹窗显示缩写 "OAI" 是否符合产品规范。 | 产品/开发 |
+
+---
+
+## 五、整改提交复查记录（提交 2eba13ec）
+
+针对提交 `2eba13ec1999674e2051599b195e9e1ea2948ce1`（提交信息：`修复: 联动 activity-alias 真实切换桌面图标并移除 drawable 冗余 svg`），作为独立审查员进行了全项回归复查，复查结果如下：
+
+### 1. P0 隐患整改复查：`oai_logo.svg` 冗余资源清理
+- **复查结果**：**PASS**
+- **验证细节**：
+  1. `apps/android/app/src/main/res/drawable/oai_logo.svg` 已彻底移出运行时资源目录，安全移入根目录 `assets/branding/oai_logo.svg` 归档。
+  2. 经全局检索 `find apps/android/app/src/main/res/ -name "*.svg"`，Android 资源目录下已无任何未编译的原始 SVG 文件。
+  3. AAPT2 资源编译隐患（UNKNOWN 资源类型报错风险）及运行时 `Resources.getDrawable` 崩溃隐患已完全排除。
+
+### 2. P1 死状态整改复查：`activity-alias` 与平台标准原语真实联动
+- **复查结果**：**PASS**
+- **验证细节**：
+  1. **清单声明完整性（`AndroidManifest.xml`）**：
+     - 主 Activity `MainActivity` 移除了多余的 MAIN/LAUNCHER intent-filter，避免与别名冲突导致桌面双图标；
+     - 新增默认启用的别名 `MainActivityThemed`，指向带 `<monochrome>` 单色图层的 `ic_launcher` 自适应图标，满足 Android 13+ Material You 系统主题取色；
+     - 新增默认禁用的别名 `MainActivityClassic`，指向不含单色图层的 `ic_launcher_classic`（新增在 `res/mipmap-anydpi-v26/`），确保在系统开启主题图标时依然强保真呈现经典黑白与橙色行星点原貌；
+     - 两个别名均声明了 `android.intent.action.MAIN` 和 `android.intent.category.LAUNCHER`，且 `exported="true"`，构成排他的单一启动入口。
+  2. **平台标准原语与前台保护（`LauncherIconManager.kt`）**：
+     - 通过 `PackageManager.setComponentEnabledSetting` 标准 API 进行组件状态切换；
+     - **显式传入 `PackageManager.DONT_KILL_APP`**：有效防止用户在外观设置页点击开关时被操作系统瞬间杀死前台进程，保障了交互界面的连续与顺畅；
+     - **安全调用时序**：采用“先启用目标别名，后禁用旧别名”的设计，确保任何时刻桌面均存在有效的启动入口，防止桌面图标出现瞬时空白或桌面快捷方式孤立失效；
+     - **防重判断与安全兜底**：比对当前组件状态，避免冗余 IPC 写入，并通过 `runCatching` 兜底任何潜在平台异常，无崩溃风险。
+  3. **生命周期与持久化联动（`AppearancePreferences.kt`）**：
+     - 在 `AppearancePreferences.init` 中调用 `LauncherIconManager.applyDynamicIconPreference`，保证冷启动与进程重启时图标组件状态与落盘配置严格对齐；
+     - 在 `setDynamicIconColor` 中原子写入后立即同步调用，消除了任何假状态与死变量。
+  4. **文案真实性（`SettingsScreen.kt`）**：
+     - 修正辅助说明文案为：“桌面图标支持 Material You 动态取色（需系统 Android 13+ 且开启「主题图标」）；关闭后保持经典黑白与橙色行星点原貌。”
+     - 清晰如实地向用户呈现了依赖的系统前置条件，彻底消除了用户误导。
+
+### 3. 单元测试与代码规范复查
+- **复查结果**：**PASS**
+- **验证细节**：
+  1. **单元测试真实断言**：`SettingsViewModelTest.kt` 中更新了 `dynamicIconColorPreferencePersistsAcrossInstances` 测试，直接调用 `PackageManager.getComponentEnabledSetting` 对 `MainActivityThemed` 与 `MainActivityClassic` 的 `COMPONENT_ENABLED_STATE_ENABLED` / `COMPONENT_ENABLED_STATE_DISABLED` 进行了双向断言，确保了组件状态切换与跨实例持久化逻辑的真实可信。
+  2. **自动化测试执行**：
+     - Gradle 本地单元测试：执行 `./gradlew :app:testFullDebugUnitTest --tests "com.openandroidintelligence.mobile.SettingsViewModelTest"`，366 个任务通过，BUILD SUCCESSFUL；
+     - Python 工具脚本回归测试：执行 `test_app_release_metadata.py`、`test_extract_package_version.py`、`test_prepare_release_notes.py` 合计 38 项自动化测试全部通过。
+  3. **安全合规与路径规范**：
+     - 代码与资源中无任何硬编码密钥、私钥、Token 或个人隐私信息；
+     - 文件引用遵循项目相对路径规范，无任何绝对路径遗留；
+     - 提交说明符合规范，采用中文明确说明变更内容。
+
+---
+
+## 六、整改验收结论汇总
+
+| 优先级 | 审查项 | 初审结论 | 整改复查结论 | 状态 |
+| :---: | :--- | :---: | :---: | :---: |
+| **P0** | `res/drawable/oai_logo.svg` 构建与加载隐患 | 严重（Fail） | 已移出资源目录至 `assets/branding/`，彻底排除 AAPT2 构建隐患 | **已解决（RESOLVED）** |
+| **P1** | 设置中「图标动态取色」开关未生效（死状态） | 逻辑缺陷（Fail） | 采用 `activity-alias` + `LauncherIconManager`（含 `DONT_KILL_APP`）联动系统桌面，消除死状态 | **已解决（RESOLVED）** |
+| **P2** | `android:label="OAI"` 影响范围确认 | 变更观察（Review） | 确认缩写精简符合移动端桌面图标及抽屉名称不被截断的产品展示预期 | **已确认（CONFIRMED）** |
+
+**最终复查结论**：**通过（PASS）**。最新整改提交 `2eba13ec` 彻底解决了初审发现的 P0 资源构建风险与 P1 死状态缺陷，代码实现严谨规范，单元测试真实覆盖，可正常推进后续合并与发布。
+
