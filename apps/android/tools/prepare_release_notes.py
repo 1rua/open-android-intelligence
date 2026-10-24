@@ -55,7 +55,7 @@ def prepare_release_notes(
     commit: str,
 ) -> str:
     event = json.loads(event_path.read_text(encoding="utf-8"))
-    if event_name in {"pull_request", "pull_request_target"}:
+    if expected_branch == "dev" and event_name in {"pull_request", "pull_request_target"}:
         return _merged_pull_request_body(event, expected_branch)
     if expected_branch == "dev" and event_name == "push":
         result = subprocess.run(

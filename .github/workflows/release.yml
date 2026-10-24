@@ -1,10 +1,7 @@
 name: Stable Release
 
-# 合并后只检出已进入目标分支的提交；未合并 PR 不进入正式发布流程。
+# 稳定版发布由维护者在 main 分支上手动触发（workflow_dispatch）。
 on:
-  pull_request_target:
-    types: [closed]
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +15,7 @@ concurrency:
 
 jobs:
   sign-notification-package:
-    if: (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,11 +25,9 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-          # 仅在合并门禁通过后检出已进入目标分支的提交。
-          allow-unsafe-pr-checkout: true
 
       - name: Setup Node.js for signed device packages
         uses: actions/setup-node@v7
@@ -76,7 +71,7 @@ jobs:
 
   build-stable-apk:
     needs: sign-notification-package
-    if: (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -87,11 +82,9 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-          # 仅在合并门禁通过后检出已进入目标分支的提交。
-          allow-unsafe-pr-checkout: true
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -190,7 +183,7 @@ jobs:
 
   verify-stable-apk:
     needs: build-stable-apk
-    if: (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -202,11 +195,9 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-          # 仅在合并门禁通过后检出已进入目标分支的提交。
-          allow-unsafe-pr-checkout: true
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -255,7 +246,7 @@ jobs:
 
   publish-stable:
     needs: [build-stable-apk, verify-stable-apk]
-    if: (github.event_name == 'pull_request_target' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -263,10 +254,8 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
-          # 仅检出已合并提交；本任务不运行仓库脚本。
-          allow-unsafe-pr-checkout: true
 
       - name: Download verified stable release assets
         uses: actions/download-artifact@v8
@@ -277,7 +266,7 @@ jobs:
       - name: Confirm main is current
         env:
           GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          TARGET_SHA: ${{ github.sha }}
         run: |
           CURRENT_MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')
           if [ "$CURRENT_MAIN_SHA" != "$TARGET_SHA" ]; then
@@ -292,7 +281,7 @@ jobs:
           name: v${{ needs.build-stable-apk.outputs.package-version }}
           prerelease: false
           make_latest: "true"
-          target_commitish: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          target_commitish: ${{ github.sha }}
           token: ${{ github.token }}
           body_path: ${{ runner.temp }}/release-assets/release-notes.md
           fail_on_unmatched_files: true
@@ -307,7 +296,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_VERSION: ${{ needs.build-stable-apk.outputs.package-version }}
-          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          TARGET_SHA: ${{ github.sha }}
         run: |
           CURRENT_MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')
           if [ "$CURRENT_MAIN_SHA" != "$TARGET_SHA" ]; then
