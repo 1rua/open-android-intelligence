@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 通知采集设置子页的界面契约：
- * - 未装配（registry deny-first）时整组如实渲染「通知采集未装配」，无任何开关；
+ * - 未装配（registry deny-first）时整组如实渲染「本机暂不支持读取通知」，无任何开关；
  * - 已装配时所有控件走 NotificationPolicyPort 真实读写，绑定入口走
  *   NotificationBindingPort，绝不出现本地假状态。
  */
@@ -160,27 +160,27 @@ class NotificationCollectionScreenTest {
         NotificationControlRegistry.reset()
         render(NotificationControlRegistry.policyPort(), NotificationControlRegistry.bindingPort())
 
-        compose.onNodeWithText("通知采集未装配").assertIsDisplayed()
-        compose.onNodeWithText("允许通知采集").assertDoesNotExist()
-        compose.onNodeWithText("打开系统通知使用权设置").assertDoesNotExist()
-        compose.onNodeWithText("包含通知内容（标题与正文）").assertDoesNotExist()
-        compose.onNodeWithText("采集后自动发送到已配对网关").assertDoesNotExist()
+        compose.onNodeWithText("本机暂不支持读取通知").assertIsDisplayed()
+        compose.onNodeWithText("允许读取通知").assertDoesNotExist()
+        compose.onNodeWithText("前往系统设置开启通知使用权").assertDoesNotExist()
+        compose.onNodeWithText("读取通知的标题与正文").assertDoesNotExist()
+        compose.onNodeWithText("自动把通知发送给 Gateway").assertDoesNotExist()
     }
 
     @Test
     fun installed_policy_renders_grant_switch_and_listener_settings_entry() {
         render(FakePolicyPort(installedSnapshot(granted = false)), FakeBindingPort(bound = false))
 
-        compose.onNodeWithText("允许通知采集").assertIsDisplayed()
+        compose.onNodeWithText("允许读取通知").assertIsDisplayed()
 
-        scrollTo(hasText("打开系统通知使用权设置"))
-        compose.onNodeWithText("打开系统通知使用权设置").assertIsDisplayed()
+        scrollTo(hasText("前往系统设置开启通知使用权"))
+        compose.onNodeWithText("前往系统设置开启通知使用权").assertIsDisplayed()
 
-        scrollTo(hasText("包含通知内容（标题与正文）"))
-        compose.onNodeWithText("包含通知内容（标题与正文）").assertIsDisplayed()
+        scrollTo(hasText("读取通知的标题与正文"))
+        compose.onNodeWithText("读取通知的标题与正文").assertIsDisplayed()
 
-        scrollTo(hasText("采集后自动发送到已配对网关"))
-        compose.onNodeWithText("采集后自动发送到已配对网关").assertIsDisplayed()
+        scrollTo(hasText("自动把通知发送给 Gateway"))
+        compose.onNodeWithText("自动把通知发送给 Gateway").assertIsDisplayed()
     }
 
     @Test
@@ -188,7 +188,7 @@ class NotificationCollectionScreenTest {
         val policy = FakePolicyPort(installedSnapshot(granted = false, revision = 5u))
         render(policy, FakeBindingPort())
 
-        compose.onNodeWithText("允许通知采集").performClick()
+        compose.onNodeWithText("允许读取通知").performClick()
 
         assertEquals(1, policy.updates.size)
         val update = policy.updates.single()
@@ -202,8 +202,8 @@ class NotificationCollectionScreenTest {
         val policy = FakePolicyPort(installedSnapshot())
         render(policy, binding)
 
-        scrollTo(hasText("打开系统通知使用权设置"))
-        compose.onNodeWithText("打开系统通知使用权设置").performClick()
+        scrollTo(hasText("前往系统设置开启通知使用权"))
+        compose.onNodeWithText("前往系统设置开启通知使用权").performClick()
 
         assertEquals(1, binding.openCalls)
         assertEquals("打开系统设置页不得携带任何策略更新", 0, policy.updates.size)
@@ -213,9 +213,9 @@ class NotificationCollectionScreenTest {
         val policy = FakePolicyPort(installedSnapshot())
         val binding = FakeBindingPort(canOpenSettings = false)
         render(policy, binding)
-        scrollTo(hasText("打开系统通知使用权设置"))
-        compose.onNodeWithText("打开系统通知使用权设置").performClick()
-        compose.onNodeWithText("无法打开系统通知使用权设置，请在 Android 设置中手动开启本应用的通知使用权。").assertExists()
+        scrollTo(hasText("前往系统设置开启通知使用权"))
+        compose.onNodeWithText("前往系统设置开启通知使用权").performClick()
+        compose.onNodeWithText("无法打开系统通知使用权设置，请到 Android 系统设置里手动开启本应用的通知使用权。").assertExists()
         assertEquals(0, policy.updates.size)
     }
 
@@ -224,8 +224,8 @@ class NotificationCollectionScreenTest {
         val policy = FakePolicyPort(installedSnapshot(fieldAccess = NotificationFieldAccess.METADATA))
         render(policy, FakeBindingPort())
 
-        scrollTo(hasText("包含通知内容（标题与正文）"))
-        compose.onNodeWithText("包含通知内容（标题与正文）").performClick()
+        scrollTo(hasText("读取通知的标题与正文"))
+        compose.onNodeWithText("读取通知的标题与正文").performClick()
 
         val update = policy.updates.single()
         assertEquals(NotificationFieldAccess.CONTENT, update.fieldAccess)
@@ -236,8 +236,8 @@ class NotificationCollectionScreenTest {
         val policy = FakePolicyPort(installedSnapshot(mode = NotificationDeliveryMode.ON_DEMAND))
         render(policy, FakeBindingPort())
 
-        scrollTo(hasText("采集后自动发送到已配对网关"))
-        compose.onNodeWithText("采集后自动发送到已配对网关").performClick()
+        scrollTo(hasText("自动把通知发送给 Gateway"))
+        compose.onNodeWithText("自动把通知发送给 Gateway").performClick()
 
         val update = policy.updates.single()
         assertEquals(NotificationDeliveryMode.AUTO_SEND, update.mode)
@@ -328,8 +328,8 @@ class NotificationCollectionScreenTest {
         compose.waitForIdle()
 
         assertTrue(policy.snapshot().packageIds.isEmpty())
-        scrollTo(hasText("尚未添加任何应用：白名单为空时不会采集任何通知。", substring = true))
-        compose.onNodeWithText("尚未添加任何应用：白名单为空时不会采集任何通知。", substring = true)
+        scrollTo(hasText("还没有选择任何应用：没有选择就不会读取任何通知。", substring = true))
+        compose.onNodeWithText("还没有选择任何应用：没有选择就不会读取任何通知。", substring = true)
             .assertIsDisplayed()
     }
 
@@ -409,7 +409,7 @@ class NotificationCollectionScreenTest {
         compose.onNodeWithTag("notification-app-save").performClick()
         compose.waitForIdle()
 
-        compose.onNodeWithText("更新被拒绝：REVISION_STALE").assertIsDisplayed()
+        compose.onNodeWithText("设置没有保存成功：REVISION_STALE").assertIsDisplayed()
         assertEquals(listOf("com.example.othermail"), policy.snapshot().packageIds)
         assertEquals(5uL, policy.updates.last().expectedRevision)
         compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
@@ -428,9 +428,9 @@ class NotificationCollectionScreenTest {
         val policy = FakePolicyPort(installedSnapshot()).apply { nextRejection = "REVISION_STALE" }
         render(policy, FakeBindingPort())
 
-        compose.onNodeWithText("允许通知采集").performClick()
+        compose.onNodeWithText("允许读取通知").performClick()
         compose.waitForIdle()
 
-        compose.onNodeWithText("更新被拒绝：REVISION_STALE").assertIsDisplayed()
+        compose.onNodeWithText("设置没有保存成功：REVISION_STALE").assertIsDisplayed()
     }
 }

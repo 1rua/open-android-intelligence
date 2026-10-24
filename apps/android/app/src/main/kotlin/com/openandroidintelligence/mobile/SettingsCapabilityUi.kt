@@ -51,9 +51,9 @@ const val SCREENSHOT_SOURCE_WIRED = true
 const val PUSH_CHANNEL_WIRED = true
 
 fun replyNotificationPresentation(wired: Boolean, systemAllowed: Boolean): CapabilityPresentation = when {
-    !wired -> CapabilityPresentation(false, "任务回复通知未装配")
-    !systemAllowed -> CapabilityPresentation(true, "系统通知未获允许；开启以请求权限或前往系统通知设置")
-    else -> CapabilityPresentation(true, "运行时更新中间回复与最终回复，可在会话气泡内查看和回复")
+    !wired -> CapabilityPresentation(false, "当前版本未接入任务回复通知")
+    !systemAllowed -> CapabilityPresentation(true, "系统尚未允许通知；打开开关会请求权限，或前往系统设置手动允许")
+    else -> CapabilityPresentation(true, "任务进行中与完成时会通知你，可直接在通知里查看并回复")
 }
 
 @Composable

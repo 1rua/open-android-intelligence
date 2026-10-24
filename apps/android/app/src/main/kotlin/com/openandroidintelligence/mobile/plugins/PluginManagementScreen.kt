@@ -75,8 +75,8 @@ import com.openandroidintelligence.plugin.ui.UiRejected
 /** 安装入口条目的 testTag，供渠道策略的点击门控测试定位。 */
 const val PLUGIN_INSTALL_ENTRY_TAG = "plugin-install-entry"
 
-/** 内核未装配插件运行时这一事实的统一措辞。 */
-const val KERNEL_ABSENT_NOTICE = "内核未装配，设置项不可交互"
+/** 插件运行环境未就绪这一事实的统一措辞（对用户不使用「内核」这类内部术语）。 */
+const val KERNEL_ABSENT_NOTICE = "当前版本暂不支持插件运行，这里的设置无法操作"
 
 /**
  * 设置内插件管理区域（规格 modular-plugin-architecture §4.1）。
@@ -160,9 +160,9 @@ fun PluginManagementScreen(
         onSuccess = {
             notice = if (host?.entries(id).orEmpty().any { "kernel.notifications.read" in it.primitives }) {
                 showNotificationSetup = true
-                "已为当前配对授权。请在通知采集设置中允许采集、配置应用白名单，并授予系统通知使用权。"
+                "已为当前配对授权。接下来请到「通知管理 → 通知读取范围」允许读取通知、选择要读取的应用，并在系统设置中开启通知使用权。"
             } else "已为当前配对授权并选择此提供者。"
-        },onFailure = { notice = "授权失败，请先登录 Gateway 并检查插件状态。" }) }
+        },onFailure = { notice = "授权失败：请先登录 Gateway，并确认插件状态正常。" }) }
     var permissionPlugin by remember { mutableStateOf<String?>(null) }
     val requestPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val id = permissionPlugin; permissionPlugin = null
@@ -181,7 +181,7 @@ fun PluginManagementScreen(
                     is PluginUiActionValue.ChoiceValue -> value.optionId
                     else -> error("UI_ACTION_INVALID")
                 })
-            }.fold(onSuccess = { notice = "设置已保存到当前账号。" },onFailure = { notice = "设置保存失败，请先登录 Gateway。" })
+            }.fold(onSuccess = { notice = "设置已保存到当前账号。" },onFailure = { notice = "保存失败：请先登录 Gateway。" })
         }
     }
     pendingApproval?.let { candidate ->
@@ -194,7 +194,7 @@ fun PluginManagementScreen(
         AlertDialog(
             onDismissRequest = { removeDamagedPlugin = null },
             title = { Text("卸载损坏包") },
-            text = { Text("将删除插件目录 $directoryName 的损坏包并撤销该插件的本机配对授权。重新安装后需重新启用、授权并检查通知采集设置。") },
+            text = { Text("将删除插件目录 $directoryName 的损坏包并撤销该插件的本机配对授权。重新安装后需要重新启用、授权，并重新检查通知读取范围。") },
             confirmButton = {
                 TextButton(onClick = {
                     removeDamagedPlugin = null
@@ -213,21 +213,21 @@ fun PluginManagementScreen(
         AlertDialog(
             onDismissRequest = { showNotificationSetup = false },
             title = { Text("完成通知读取设置") },
-            text = { Text("配对授权已保存。还需在通知采集中允许采集、选择可读取的应用和内容范围，并在 Android 系统设置中开启通知使用权。") },
+            text = { Text("配对授权已保存。还需要在「通知读取范围」里允许读取、选择要读取的应用与内容，并在 Android 系统设置中开启通知使用权。") },
             confirmButton = {
                 TextButton(onClick = {
                     showNotificationSetup = false
                     if (onOpenNotificationSettings != null) onOpenNotificationSettings()
-                    else if (!openNotificationAccessSettings(context)) notice = "无法打开系统通知使用权设置，请在 Android 设置中手动开启本应用的通知使用权。"
-                }) { Text(if (onOpenNotificationSettings != null) "配置通知采集与范围" else "打开通知使用权设置") }
+                    else if (!openNotificationAccessSettings(context)) notice = "无法打开系统通知使用权设置，请到 Android 系统设置里手动开启本应用的通知使用权。"
+                }) { Text(if (onOpenNotificationSettings != null) "配置通知读取范围" else "打开通知使用权设置") }
             },
             dismissButton = { TextButton(onClick = { showNotificationSetup = false }) { Text("稍后设置") } },
         )
     }
     grantPlugin?.let { id ->
         val entries = host?.entries(id).orEmpty()
-        AlertDialog(onDismissRequest = { grantPlugin = null },title = { Text("授权当前 Gateway 配对") },
-            text = { Text("$id\n" + entries.joinToString("\n") { "${it.key}：${it.risk}\n${it.primitives.joinToString()}" }) },
+        AlertDialog(onDismissRequest = { grantPlugin = null },title = { Text("允许这个插件为当前账号服务") },
+            text = { Text("$id\n" + entries.joinToString("\n") { "${it.key}（风险：${it.risk}）\n需要：${it.primitives.joinToString()}" }) },
             confirmButton = { TextButton(onClick = {
                 grantPlugin = null
                 val primitives = entries.flatMap { it.primitives }.toSet()
@@ -236,7 +236,7 @@ fun PluginManagementScreen(
                     if ("kernel.call-log.read" in primitives) add(android.Manifest.permission.READ_CALL_LOG)
                 }.filter { context.checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
                 if (permissions.isEmpty()) grantNow(id) else { permissionPlugin = id; requestPermissions.launch(permissions.toTypedArray()) }
-            }) { Text("授予所列能力") } },dismissButton = { TextButton(onClick = { grantPlugin = null }) { Text("取消") } })
+            }) { Text("允许以上能力") } },dismissButton = { TextButton(onClick = { grantPlugin = null }) { Text("取消") } })
     }
     invokePlugin?.let { id ->
         AlertDialog(onDismissRequest = { invokePlugin = null },title = { Text("调用插件能力") },
@@ -272,23 +272,23 @@ fun PluginManagementScreen(
                     ),
                 verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
             ) {
-                Text("从远程来源安装", style = MaterialTheme.typography.titleLarge)
+                Text("从网络地址安装", style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "来源必须提供 TLS SPKI pin 或固定发布摘要；下载后的包仍要通过作者签名与契约校验。",
+                    "需要提供证书指纹或文件摘要；下载后仍会校验插件作者签名与内容。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedTextField(sourceUrl,{sourceUrl=it},label={Text("HTTPS 包或索引地址")},modifier=Modifier.fillMaxWidth())
-                OutlinedTextField(sourcePin,{sourcePin=it},label={Text("TLS SPKI pin（sha256:…）")},modifier=Modifier.fillMaxWidth())
-                OutlinedTextField(sourceDigest,{sourceDigest=it},label={Text("固定发布 SHA-256（可代替 pin）")},modifier=Modifier.fillMaxWidth())
-                OutlinedTextField(indexPluginId,{indexPluginId=it},label={Text("索引中的插件 ID（直接包留空）")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(sourceUrl,{sourceUrl=it},label={Text("插件包或索引的 HTTPS 地址")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(sourcePin,{sourcePin=it},label={Text("证书指纹（sha256:…）")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(sourceDigest,{sourceDigest=it},label={Text("文件摘要 SHA-256（可代替证书指纹）")},modifier=Modifier.fillMaxWidth())
+                OutlinedTextField(indexPluginId,{indexPluginId=it},label={Text("清单中的插件 ID（直接下载插件包时留空）")},modifier=Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     TextButton(onClick = { showRemote = false }) { Text("取消") }
                     Button(onClick = {
                         showRemote = false
                         installScope.launch { try { val bytes = runInterruptible(Dispatchers.IO) { RemotePluginSource.resolve(sourceUrl,sourcePin,sourceDigest,indexPluginId) }; installBytes(bytes) }
-                        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { notice = "远程来源读取失败，请检查地址、pin 或摘要。" } }
-                    }) { Text("下载并验签") }
+                        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { notice = "下载失败，请检查地址、证书指纹或文件摘要。" } }
+                    }) { Text("下载并校验") }
                 }
             }
         }
@@ -335,12 +335,12 @@ fun PluginManagementScreen(
             }
 
             // 运行时事实：能否执行、能否启用，只由内核装配状态决定。
-            SectionLabel("插件运行时")
+            SectionLabel("插件运行环境")
             SettingsSectionCard {
                 SettingsListItem(
-                    headline = if (pluginRuntimesWired) "插件运行时已装配" else "宿主未装配插件运行时",
+                    headline = if (pluginRuntimesWired) "插件运行环境已就绪" else "当前版本暂不支持运行插件",
                     supporting = if (pluginRuntimesWired) {
-                        "已安装且启用的插件由平台内核按六项交集裁决执行"
+                        "已安装并启用的插件，只有在应用声明的能力、你的授权和系统权限全部满足时才会执行"
                     } else {
                         "已安装插件不会运行，「启用」不可用；安装仍会校验并保管包内容"
                     },
@@ -348,7 +348,7 @@ fun PluginManagementScreen(
                     tone = if (pluginRuntimesWired) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
                 )
                 if (host?.loadFailures?.containsKey("*") == true) {
-                    SettingsListItem(headline = "插件目录读取失败", supporting = "无法确认完整插件清单，请检查本机存储后重试。", tone = SettingsTone.DANGER)
+                    SettingsListItem(headline = "无法读取插件列表", supporting = "无法确认已安装的插件，请检查手机存储后重试。", tone = SettingsTone.DANGER)
                 }
             }
 
@@ -358,10 +358,10 @@ fun PluginManagementScreen(
                 SettingsListItem(
                     headline = if (alreadyInstalled) "通知读取插件已安装" else "安装通知读取插件",
                     supporting = when {
-                        !allowRuntimePlugins -> "此分发渠道不支持通知插件，请使用支持插件的 Full 版本"
-                        alreadyInstalled && host?.loadFailures?.containsKey(NOTIFICATION_PLUGIN_ID) == true -> "现有包校验或加载失败，请先卸载损坏包，再重新安装并授权"
-                        alreadyInstalled -> "请在下方启用插件、授予当前配对，并配置通知采集与系统通知使用权"
-                        else -> "安装此 APK 附带的已签名插件；安装后需自行启用和授权"
+                        !allowRuntimePlugins -> "当前版本不支持通知插件，请使用支持插件的完整版本"
+                        alreadyInstalled && host?.loadFailures?.containsKey(NOTIFICATION_PLUGIN_ID) == true -> "现有的包已损坏，请先卸载它，再重新安装并授权"
+                        alreadyInstalled -> "请在下方启用插件、授予当前配对，并配置通知读取范围与系统通知使用权"
+                        else -> "安装应用自带的插件，安装后还需要启用并授权"
                     },
                     icon = Icons.Default.InstallMobile,
                     enabled = allowRuntimePlugins && !alreadyInstalled && !installing,
@@ -415,17 +415,17 @@ fun PluginManagementScreen(
                                     }
                                     // 常规动作：FlowRow 自动换行，窄屏不会再被挤成一条溢出屏幕的长行。
                                     FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                                        TextButton(onClick = { runCatching { host.enable(id,!host.isEnabled(id)) }.fold(onSuccess={notice="插件状态已更新。"},onFailure={notice="启用失败：请检查原生信任模式、包兼容性或安全模式。"}) }) { Text(if(host.isEnabled(id)) "停用" else "启用") }
+                                        TextButton(onClick = { runCatching { host.enable(id,!host.isEnabled(id)) }.fold(onSuccess={notice="插件状态已更新。"},onFailure={notice="启用失败：请检查开发者信任模式、插件兼容性或安全限制。"}) }) { Text(if(host.isEnabled(id)) "停用" else "启用") }
                                         TextButton(onClick = { grantPlugin = id }) { Text("配对授权") }
-                                        TextButton(onClick = { runCatching { resolvedStore.rollback(id); refresh() }.fold(onSuccess={notice="已回滚到上一版本。"},onFailure={notice="没有可回滚的有效版本。"}) }) { Text("回滚") }
-                                        if (host.hasNativeUi(id)) TextButton(onClick = { runCatching { host.selectNativeUi(id) }.fold(onSuccess={notice="原生界面已启用，可随时恢复宿主界面。"},onFailure={notice="请先开启信任模式并启用插件。"}) }) { Text("使用原生界面") }
-                                        if (host.isQuarantined(id)) TextButton(onClick = { host.recoverNative(id); refresh() }) { Text("解除安全模式（保持停用）") }
+                                        TextButton(onClick = { runCatching { resolvedStore.rollback(id); refresh() }.fold(onSuccess={notice="已恢复到上一个版本。"},onFailure={notice="没有可以恢复的版本。"}) }) { Text("恢复上一版本") }
+                                        if (host.hasNativeUi(id)) TextButton(onClick = { runCatching { host.selectNativeUi(id) }.fold(onSuccess={notice="已切换为该插件自带的界面，随时可以切回来。"},onFailure={notice="需要先开启开发者信任模式并启用插件。"}) }) { Text("使用插件界面") }
+                                        if (host.isQuarantined(id)) TextButton(onClick = { host.recoverNative(id); refresh() }) { Text("解除安全限制（保持停用）") }
                                         if (host.entries(id).any { "kernel.notifications.read" in it.primitives }) {
                                             onOpenNotificationSettings?.let { openSettings ->
-                                                TextButton(onClick = openSettings) { Text("通知采集与访问范围") }
+                                                TextButton(onClick = openSettings) { Text("通知读取范围") }
                                             }
                                             TextButton(onClick = {
-                                                if (!openNotificationAccessSettings(context)) notice = "无法打开系统通知使用权设置，请在 Android 设置中手动开启本应用的通知使用权。"
+                                                if (!openNotificationAccessSettings(context)) notice = "无法打开系统通知使用权设置，请到 Android 系统设置里手动开启本应用的通知使用权。"
                                             }) { Text("打开通知访问设置") }
                                         }
                                     }
@@ -458,21 +458,21 @@ fun PluginManagementScreen(
             }
 
             // 安装入口：渠道策略真实控制可用性。
-            SectionLabel("安装插件包")
+            SectionLabel("安装新插件")
             SettingsSectionCard {
                 if (allowRuntimePlugins) {
                     SettingsListItem(
-                        headline = "从文件安装插件包 (.alp)",
-                        supporting = "选择本机 .alp 文件，先经 Ed25519 签名与契约校验再落盘",
+                        headline = "从文件安装插件",
+                        supporting = "选择一个插件包文件，应用会先校验它的签名与内容再安装",
                         icon = Icons.Default.InstallMobile,
                         onClick = { pickPackage.launch(arrayOf("*/*")) },
                         modifier = Modifier.testTag(PLUGIN_INSTALL_ENTRY_TAG),
                     )
-                    SettingsListItem(headline="从 HTTPS 发布、组织来源或索引安装", supporting="来源需提供 pin 或固定摘要，包仍须通过作者验签", onClick={showRemote=true})
+                    SettingsListItem(headline="从网络地址安装", supporting="需要提供证书指纹或文件摘要，安装前仍会校验插件作者签名", onClick={showRemote=true})
                 } else {
                     SettingsListItem(
-                        headline = "从文件安装插件包 (.alp)",
-                        supporting = "当前分发渠道禁止安装插件",
+                        headline = "从文件安装插件",
+                        supporting = "当前版本不允许安装插件",
                         icon = Icons.Default.InstallMobile,
                         enabled = false,
                         modifier = Modifier.testTag(PLUGIN_INSTALL_ENTRY_TAG),
@@ -509,15 +509,15 @@ private fun InstalledPluginBlock(
     val failure = pluginLoadFailure(view,host)
     val headline = if (failure != null) view.directory.name else view.displayName ?: view.directory.name
     val supporting = if (view.pluginId == null) {
-        "插件目录 manifest 不可解析，已按未知包如实呈现"
+        "这个插件的配置文件无法读取，已按未知插件列出"
     } else {
         buildString {
             append(view.pluginId)
             view.version?.let { append(" · v$it") }
             view.runtimeType?.let { append(" · $it") }
             append(when {
-                host == null -> " · 已安装，未启用（宿主未装配插件运行时）"
-                host.loadFailures.containsKey(view.directory.name) -> " · 校验或加载失败"
+                host == null -> " · 已安装，未启用（当前版本暂不支持运行插件）"
+                host.loadFailures.containsKey(view.directory.name) -> " · 载入失败"
                 host.isEnabled(view.pluginId) -> " · 已启用"
                 else -> " · 已停用"
             })
@@ -526,7 +526,7 @@ private fun InstalledPluginBlock(
     SettingsListItem(headline = headline, supporting = supporting)
 
     if (failure != null) {
-        SettingsListItem(headline = "插件校验或加载失败", supporting = "$failure\n请先卸载损坏包，再重新安装并授权。", tone = SettingsTone.DANGER)
+        SettingsListItem(headline = "这个插件无法载入", supporting = "请先卸载它，再重新安装并授权。", tone = SettingsTone.DANGER)
         return
     }
 
@@ -553,8 +553,8 @@ private fun InstalledPluginBlock(
             onFailure = { cause ->
                 val code = (cause as? UiRejected)?.message ?: cause::class.java.simpleName
                 SettingsListItem(
-                    headline = "声明式设置被拒绝",
-                    supporting = "该贡献无法被宿主安全渲染：$code",
+                    headline = "插件设置无法显示",
+                    supporting = "这个插件提供的设置项无法被安全显示：$code",
                     tone = SettingsTone.DANGER,
                 )
             },
