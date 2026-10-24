@@ -9,6 +9,7 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+      - edited
 
 permissions:
   contents: read
@@ -74,3 +75,4 @@ jobs:
           print(f"✅ 校验通过: 允许合法的本仓库 dev -> main 合并请求 ({head_repo}:{head_ref} -> {base_repo}:{base_ref})")
           sys.exit(0)
           EOF
+
