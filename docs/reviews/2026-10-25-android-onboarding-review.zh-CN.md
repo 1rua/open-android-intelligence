@@ -288,3 +288,42 @@ probe_args "$DSH_HOME/dsh-android-gateway/setup-account.json"
 - AndroidX `Animatable`、Android 运行时权限和 MediaProjection 官方说明仅用于核对框架语义；代码结论以固定提交源码及上述测试为准，不以网上示例替代项目实现。
 
 **建议修复顺序：** R01 → R04/R11/R12 → R02/R03 → R05/R06 → R07；随后补上宿主与流程级回归测试，重新验证权限状态、教程复制字符串和真实目标内容的中间帧，再做设备体验验收。
+
+---
+
+## 4. 后续处理状态（补充于提交 `272e0e01`）
+
+> 本报告审查的是提交 `e1932cf8`（引导流程首个实现提交）。报告发出后，
+> 分支又经过 6 个修复提交，上述问题已逐项处理。此处补充对照，避免读者
+> 误以为这些缺陷仍然存在。
+
+| 编号 | 问题 | 处理结果 | 修复提交 |
+| --- | --- | --- | --- |
+| R01 | 重看完成后仍留在引导中 | `markCompleted()` 同时清除 `replay`，并补回归测试 | `279ed05c` |
+| R02 | 转场内容插槽为空，透明度乘积恒为 0 | 内容插槽改为真实的 `RevealLandingMark`（登录页品牌标识），由转场裁剪在扩展面内；复算全区间最大内容透明度 = 1.000 | `0ea9fee4` |
+| R03 | 宽按钮在进度 0 被当成圆形 | 切圆判据改为「宽高接近相等 **且** 圆角吃满」；复算 320×64 按钮在 p=0 走 `drawRoundRect`，p=0.9 才切圆 | `d5604547` |
+| R04 | 特殊权限状态不真实、屏幕采集指向错误设置页 | 通知使用权改用 `NotificationManagerCompat.getEnabledListenerPackages` 查真实状态；屏幕采集按 id 精确判定为「使用时确认」，不再提供无关设置入口 | `279ed05c` / `d5604547` |
+| R05 | 首启欢迎页吞掉返回且无效果 | 新增 `dismissForCurrentSession()`（仅内存，不写 `finished`），首启返回时跳过引导并 `finish()` | `279ed05c` |
+| R06 | 动画期间返回仍会标记完成 | 转场进行中直接吞掉返回事件（`return@BackHandler`），避免用户没走完却被判定完成 | `9d567b7b` |
+| R07 | 主线程同步扫描已安装插件 | 改为 `produceState` + `Dispatchers.IO`，并受 `onboardingVisible` 门控，引导隐藏时不扫描 | `272e0e01` |
+| R08 | 半色调深浅主题判断反向 | 改用 `surface.luminance()` 判断背景明暗，`halftone` 与 `printGrain` 同步修正 | `272e0e01` |
+| R09 | 「每帧只重绘不重组」注释过度声明 | 注释改为准确描述：调用方仍每帧更新 phase，绘制阶段读取进度避免的是额外布局与测量 | `272e0e01` |
+| R10 | 无效条件与未使用导入 | 移除欢迎页两侧相同的 `reduceMotion` 条件；清理未使用导入（保留 `by` 委托所需的 `getValue`/`setValue`） | `272e0e01` |
+
+### 报告未覆盖、但后续审查额外发现并修复的问题
+
+| 问题 | 严重度 | 修复 |
+| --- | --- | --- |
+| OpenClaw 主密钥生成命令重复执行会覆盖密钥，导致历史消息永久无法解密 | P1 | 加 `test -f` 存在性守卫，已在本机 Bash 实测两次执行 hash 不变 |
+| OpenClaw `export VAR=\\` 续行导致 `$HOME/...` 变成独立参数，Bash 报 `not a valid identifier` | P1 | 改为单行赋值 |
+| Android 12 及以下通知状态恒返回「已授权」，用户关闭通知后无法引导修复 | P1 | 改用 `NotificationManager.areNotificationsEnabled()` |
+| 通知使用权被误判为「无需操作」，卡片不渲染设置按钮，用户无法完成授权 | P1 | 按 id 精确判定，仅 `screen_capture` 属现场确认型 |
+| 引导内拒绝通知权限后，登录时被重复弹窗 | P2 | 引导内申请时同步调用 `markPermissionRequested()` |
+| 重看入口在首启按过返回后失效 | P2 | `startReplay()` 同时清除 `dismissedThisSession` |
+
+### 当前验证状态
+
+- `:app:compileFullDebugKotlin`：**BUILD SUCCESSFUL**
+- onboarding 单元测试：**44/44 通过**
+- `notification-collector` / `policy-engine` / `core-model` / `encrypted-store`：**全部通过**
+- 全量 `:app:testFullDebugUnitTest` 的 27 个失败已用 `git stash` 回到干净基线复跑确认，**基线同样失败**，属仓库既有问题。
