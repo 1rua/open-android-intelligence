@@ -79,7 +79,14 @@ def test_skip_requires_an_explicit_opt_in():
     assert code == 0
 
 
-def test_fails_when_the_pinned_commit_is_absent_locally():
+def test_fails_when_the_pinned_commit_is_absent_locally(monkeypatch):
+    """A pin that cannot be retrieved anywhere must still fail the gate.
+
+    Retrieval is stubbed out: the assertion is about the gate refusing an
+    unobtainable commit, not about how fast this sandbox can reach origin —
+    a real fetch here made the suite depend on network latency.
+    """
+    monkeypatch.setattr(gate, "fetch_pinned_commit", lambda revision: False)
     with tempfile.TemporaryDirectory() as raw:
         plugin_root = Path(raw)
         _pin(plugin_root, "a" * 40)
