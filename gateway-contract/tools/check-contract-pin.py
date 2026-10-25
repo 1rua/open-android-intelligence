@@ -65,18 +65,46 @@ def this_repository() -> str:
     return normalise_repository(url)
 
 
-def contract_matches(revision: str):
-    """Whether the pinned commit carries the same contract as this checkout.
-
-    None means the pinned commit is not present locally, so the question cannot
-    be answered here. Comparing every pinned contract input rather than the
-    application commit keeps unrelated application changes from forcing a bump.
-    """
+def commit_present(revision: str) -> bool:
     present = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{revision}^{{commit}}"],
         capture_output=True,
     )
-    if present.returncode != 0:
+    return present.returncode == 0
+
+
+def fetch_pinned_commit(revision: str) -> bool:
+    """Fetch a pinned commit that is no longer reachable from any branch.
+
+    A pin legitimately outlives the branch it was cut from: plugins keep
+    validating against the contract commit they shipped with, while the app
+    branch that produced it gets deleted after merge. Clicking the delete
+    button therefore must not turn a perfectly compatible pin into a red gate,
+    so retrieve the commit by SHA instead of trusting branch reachability.
+    """
+    print(f"提示：本地缺少插件仓锁定的提交 {revision}，尝试从 origin 补抓……")
+    fetched = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "fetch", "--no-tags", "--quiet", "origin", revision],
+        capture_output=True,
+        text=True,
+    )
+    if fetched.returncode != 0:
+        detail = (fetched.stderr or "").strip()
+        if detail:
+            print(f"   补抓失败：{detail}")
+        return False
+    return commit_present(revision)
+
+
+def contract_matches(revision: str):
+    """Whether the pinned commit carries the same contract as this checkout.
+
+    None means the pinned commit could not be made available, so the question
+    cannot be answered here. Comparing every pinned contract input rather than
+    the application commit keeps unrelated application changes from forcing a
+    bump.
+    """
+    if not commit_present(revision) and not fetch_pinned_commit(revision):
         return None
     # The contract proper, named file by file. Directories would be wrong in
     # both directions: gateway-contract/tools is repository tooling rather than
