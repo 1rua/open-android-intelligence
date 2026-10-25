@@ -444,7 +444,12 @@ class GatewayHttpClient(
                 }
             }
 
-            if (receivedWsEventInAttempt) {
+            // A round that delivered data proves a channel works. The socket
+            // ending afterwards is a reconnect, not a downgrade worth keeping,
+            // so ask for the preferred channel again: a WebSocket that was only
+            // briefly unreachable must not be abandoned in favour of SSE for
+            // the rest of the session.
+            if (receivedAnyEventInAttempt) {
                 preferWebSocket = (webSocketTransport != null)
             }
 

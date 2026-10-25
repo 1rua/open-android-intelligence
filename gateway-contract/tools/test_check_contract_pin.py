@@ -79,7 +79,14 @@ def test_skip_requires_an_explicit_opt_in():
     assert code == 0
 
 
-def test_fails_when_the_pinned_commit_is_absent_locally():
+def test_fails_when_the_pinned_commit_is_absent_locally(monkeypatch):
+    """A pin that cannot be retrieved anywhere must still fail the gate.
+
+    Retrieval is stubbed out: the assertion is about the gate refusing an
+    unobtainable commit, not about how fast this sandbox can reach origin —
+    a real fetch here made the suite depend on network latency.
+    """
+    monkeypatch.setattr(gate, "fetch_pinned_commit", lambda revision: False)
     with tempfile.TemporaryDirectory() as raw:
         plugin_root = Path(raw)
         _pin(plugin_root, "a" * 40)
@@ -131,8 +138,32 @@ def test_contract_paths_cover_the_dispatched_registry():
     assert "gateway-contract/tools" not in gate.CONTRACT_PATHS
 
 
-def test_matches_reports_none_for_an_unknown_commit():
+def test_matches_reports_none_for_an_unknown_commit(monkeypatch):
+    """A commit that cannot be retrieved must not be silently treated as matching."""
+    monkeypatch.setattr(gate, "fetch_pinned_commit", lambda revision: False)
+
     assert gate.contract_matches("c" * 40) is None
+
+
+def test_retrieves_a_pinned_commit_that_no_branch_references(monkeypatch):
+    """A pin outlives the branch it was cut from.
+
+    Plugins keep validating the contract commit they shipped with, while the
+    app branch that produced it is deleted after merge. Deleting the branch
+    must not turn a compatible pin into a red gate, so the commit is fetched
+    by SHA rather than assumed reachable.
+    """
+    revision = "d" * 40
+    fetched = []
+
+    monkeypatch.setattr(gate, "commit_present", lambda candidate: False)
+    monkeypatch.setattr(gate, "fetch_pinned_commit", lambda candidate: fetched.append(candidate) or True)
+
+    # Retrieval succeeded, so the gate must go on to compare the contract
+    # instead of answering None. The comparison itself fails here only because
+    # the fake revision carries no content; that is False, not None.
+    assert gate.contract_matches(revision) is not None
+    assert fetched == [revision], "不可达的 pin 必须按 SHA 补抓后再比对"
 
 
 def test_detects_a_contract_change_against_the_pinned_commit():
