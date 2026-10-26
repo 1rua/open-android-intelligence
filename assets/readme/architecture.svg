@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="100%" height="auto" role="img" aria-label="架构：Android 客户端通过 Gateway Protocol v2 连接 Agent 宿主">
-  <title>设备、协议与宿主的连接结构</title>
-  <desc>航天工程制图风格的三层架构：设备侧由 Android 宿主、平台内核与设备插件组成；Gateway Protocol v2 负责传输与校验；Hermes、OpenClaw 与 DSH 通过各自插件提供网关服务。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="100%" height="auto" role="img" aria-label="架构：Android 客户端连接单一 OAI Core 地址，Core 承载 Gateway Protocol v2 设备协议与原生 Agent 会话接入">
+  <title>设备、OAI Core 与 Agent 宿主的连接结构</title>
+  <desc>航天工程制图风格的三层架构：设备侧由 Android 宿主、平台内核与设备插件组成；OAI Core 以一个监听地址承载 Gateway v2 设备协议、设备调用面与原生 Agent 会话面；Hermes、DSH 与 Codex 通过各自会话适配器接入，OpenClaw 保留旧 Gateway 兼容路径。</desc>
 
   <defs>
     <pattern id="archGrain" width="7" height="7" patternUnits="userSpaceOnUse">
@@ -39,7 +39,7 @@
 
   <text x="44" y="47" class="mono-d" style="letter-spacing:1.4px">OPEN ANDROID INTELLIGENCE / SYSTEM ARCHIVE</text>
   <text x="600" y="47" class="mono">TECHNICAL DOSSIER / SHEET 02</text>
-  <text x="1156" y="47" class="mono" text-anchor="end">REV 2.1.1 / 2026</text>
+  <text x="1156" y="47" class="mono" text-anchor="end">CORE 0.1.0 / 2026</text>
   <path d="M44 64H1156" stroke="#111111" stroke-width="1"/>
 
   <g clip-path="url(#archClip)">
@@ -51,8 +51,8 @@
   </g>
 
   <text x="44" y="96" class="num">FIG. 02 / SYSTEM TOPOLOGY</text>
-  <text x="42" y="146" class="disp">设备、协议与宿主的连接结构</text>
-  <text x="44" y="174" class="mono">ANDROID HOST → GATEWAY PROTOCOL V2 → AGENT HOST</text>
+  <text x="42" y="146" class="disp">设备、OAI Core 与宿主的连接结构</text>
+  <text x="44" y="174" class="mono">ANDROID HOST → OAI CORE (ONE LISTENER) → AGENT HOST</text>
 
   <text x="1156" y="96" class="mono" text-anchor="end">RELAY / 0.00</text>
   <text x="1156" y="118" class="mono" text-anchor="end">AUTH / ED25519</text>
@@ -72,17 +72,18 @@
   <text x="310" y="240" class="mono-m" text-anchor="end">LOCAL</text>
   <text x="60" y="266" class="mono-d">Android 宿主</text>
 
-  <text x="366" y="240" class="num">02 / PROTOCOL</text>
-  <text x="366" y="266" class="mono-d">Gateway v2</text>
+  <text x="366" y="240" class="num">02 / CORE</text>
+  <text x="366" y="266" class="mono-d">OAI Core</text>
+  <text x="576" y="240" class="mono-m" text-anchor="end">SERVE</text>
 
   <text x="632" y="240" class="num">03 / HOST</text>
-  <text x="1140" y="240" class="mono-m" text-anchor="end">HERMES · OPENCLAW · DSH</text>
-  <text x="632" y="266" class="mono-d">Agent 宿主</text>
+  <text x="1140" y="240" class="mono-m" text-anchor="end">HERMES · DSH · CODEX</text>
+  <text x="632" y="266" class="mono-d">Agent 宿主 / Session Adapter</text>
 
   <g>
     <path d="M60 306H74" stroke="#B8501F" stroke-width="2.4"/>
     <text x="60" y="332" class="item">账号与会话</text>
-    <text x="60" y="358" class="body">连接 Gateway、选取附件</text>
+    <text x="60" y="358" class="body">连接 Core、选取附件</text>
     <path d="M60 378H310" stroke="#D6D6CE" stroke-width="0.8"/>
 
     <path d="M60 400H74" stroke="#B8501F" stroke-width="2.4"/>
@@ -101,17 +102,17 @@
     <circle cx="366" cy="408" r="5" fill="#F7F7F5" stroke="#111111" stroke-width="1.4"/>
     <circle cx="366" cy="464" r="5" fill="#F7F7F5" stroke="#111111" stroke-width="1.4"/>
 
-    <text x="384" y="302" class="mono-d">HTTP(S) / SSE</text>
-    <text x="384" y="326" class="body">双向事件流</text>
+    <text x="384" y="302" class="mono-d">DEVICE /v2</text>
+    <text x="384" y="326" class="body">签名 · 配对 · 事件流</text>
 
-    <text x="384" y="358" class="mono-d">JSON SCHEMA</text>
-    <text x="384" y="382" class="body">2020-12 封闭校验</text>
+    <text x="384" y="358" class="mono-d">CORE /v1</text>
+    <text x="384" y="382" class="body">设备 CLI / API / MCP</text>
 
-    <text x="384" y="414" class="mono-d">ED25519</text>
-    <text x="384" y="438" class="body">签名与防重放</text>
+    <text x="384" y="414" class="mono-d">V2 /AGENTS</text>
+    <text x="384" y="438" class="body">原生 Agent 会话流</text>
 
     <text x="384" y="470" class="mono-d">IDEMPOTENT</text>
-    <text x="384" y="494" class="body">幂等执行</text>
+    <text x="384" y="494" class="body">回执不含聊天正文</text>
   </g>
 
   <path d="M326 362H346" stroke="#111111" stroke-width="1.2"/>
@@ -122,27 +123,27 @@
   <g>
     <text x="632" y="314" class="num">01</text>
     <text x="664" y="314" class="host">HERMES</text>
-    <text x="775" y="314" class="body">独立插件 / 主密钥</text>
-    <text x="1140" y="314" class="mono-m" text-anchor="end">ADAPTER / 2.2.0</text>
+    <text x="775" y="314" class="body">会话桥 / 账号隔离</text>
+    <text x="1140" y="314" class="mono-m" text-anchor="end">BRIDGE / 8792</text>
     <path d="M632 330H1140" stroke="#D6D6CE" stroke-width="0.8"/>
 
     <text x="632" y="368" class="num">02</text>
-    <text x="664" y="368" class="host">OPENCLAW</text>
-    <text x="790" y="368" class="body">独立插件 / 主密钥</text>
-    <text x="1140" y="368" class="mono-m" text-anchor="end">ADAPTER / 1.1.0</text>
+    <text x="664" y="368" class="host">DSH</text>
+    <text x="722" y="368" class="body">会话桥 / 部署共享</text>
+    <text x="1140" y="368" class="mono-m" text-anchor="end">BRIDGE / 8791</text>
     <path d="M632 384H1140" stroke="#D6D6CE" stroke-width="0.8"/>
 
     <text x="632" y="422" class="num">03</text>
-    <text x="664" y="422" class="host">DSH</text>
-    <text x="722" y="422" class="body">复用原生端口</text>
-    <text x="1140" y="422" class="mono-m" text-anchor="end">BUNDLE / 0.2.0</text>
+    <text x="664" y="422" class="host">CODEX</text>
+    <text x="764" y="422" class="body">app-server / 实例目录</text>
+    <text x="1140" y="422" class="mono-m" text-anchor="end">SUBPROCESS</text>
     <path d="M632 438H1140" stroke="#D6D6CE" stroke-width="0.8"/>
 
-    <text x="632" y="472" class="body">多账号隔离</text>
-    <text x="764" y="472" class="body">配对、会话与数据按账号隔离</text>
+    <text x="632" y="472" class="body">接入范围</text>
+    <text x="764" y="472" class="body">Hermes 按账号隔离，DSH/Codex 部署内共享</text>
     <path d="M632 488H1140" stroke="#D6D6CE" stroke-width="0.8"/>
-    <text x="632" y="516" class="body">能力声明</text>
-    <text x="764" y="516" class="body">由 Agent 宿主按会话协商</text>
+    <text x="632" y="516" class="mono-d">OPENCLAW</text>
+    <text x="764" y="516" class="body">旧 Gateway 路径，未注册到 Core</text>
   </g>
 
   <g opacity="0.65">
@@ -152,6 +153,6 @@
   </g>
 
   <path d="M44 550H1156" stroke="#111111" stroke-width="1"/>
-  <text x="44" y="574" class="mono">SHEET 02 / THREE-LAYER TOPOLOGY · 设备能力链路仍在装配</text>
+  <text x="44" y="574" class="mono">SHEET 02 / ONE CORE LISTENER · THREE API SURFACES · 真机验收待闭环</text>
   <text x="1156" y="574" class="mono" text-anchor="end">NO RELAY · ED25519 · 70 VECTORS</text>
 </svg>

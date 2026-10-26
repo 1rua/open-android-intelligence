@@ -1,6 +1,6 @@
 # 原生会话适配器部署与验证
 
-本文件记录统一 Core 中 Hermes 与 DSH 的真实接入边界。手机只连接 `oai serve`；下面的 loopback 会话桥只供 Core 调用，不是手机连接入口，也不提供设备请求接口。
+本文件记录统一 Core 中 Hermes、DSH 与 Codex 的真实接入边界。手机只连接 `oai serve`；下面的 loopback 会话桥只供 Core 调用，不是手机连接入口，也不提供设备请求接口。各行为的代码依据见[架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。
 
 ## 调研证据
 

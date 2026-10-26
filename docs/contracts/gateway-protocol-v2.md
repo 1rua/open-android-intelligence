@@ -11,6 +11,13 @@ version: 2.1.0
 
 本契约定义 Android 宿主与一个账号所属逻辑 Gateway 之间的应用层协议。它不定义 Hermes/OpenClaw 内部 API、插件 WASM ABI 或 Companion IPC。
 
+**实现差异说明（2026-10-26）**：统一 OAI Core（`oai serve`）实现本契约中的账号、认证、
+签名、配对、设备事件与设备请求部分，并以其自有扩展承载原生 Agent 会话（第 17 节）与
+设备调用面（第 18 节）。Core **不实现第 7 节的 `/conversations` 聊天路由与
+`conversationUi` 可选能力**——命中这些路由返回 `CAPABILITY_UNSUPPORTED`，聊天由第 17 节
+的原生会话面唯一承载。行为依据见
+[架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。
+
 V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme 无关，但传输必须满足：HTTPS 是默认且唯一身份可核验的链路，客户端在协商返回 `tlsSpkiSha256` 时必须固定该身份；只有当用户显式输入 `http://` 地址时才允许明文连接，此时没有可核验的 Gateway 身份，客户端必须持续显示未加密警告，且声明了 TLS 指纹的账号不得降级到明文（见 ADR 0047）。事件流原生支持 RFC 6455 WebSocket 与 SSE (Server-Sent Events) 双通道传输，客户端优先协商 WebSocket 并支持自动降级至 SSE。
 
 部署实际 TLS 证书的 SPKI 摘要由本地配置 `OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64位小写hex>` 提供（OpenClaw 也支持 `pluginConfig.tlsSpkiSha256`）。未配置时协商字段为 `null`，仅允许显式 HTTP 客户端继续；HTTPS 客户端必须在发送密码或刷新凭据前拒绝。全零摘要无效，不得表示证书身份。此 Schema 修正会改变 core 摘要，客户端与 Gateway 必须一起升级。
@@ -131,6 +138,8 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 ```
 
 协议主版本不同、核心 Schema 不兼容、未知安全字段或未知高风险能力时返回 `PROTOCOL_INCOMPATIBLE`。2.1 的 core Schema hash 与 2.0 不兼容，Android、Hermes 和 OpenClaw 必须同版本发布。次版本差异只启用双方声明的交集。协商结果由 `negotiationId` 绑定后续认证会话，客户端不能在单次请求中自行扩大功能。
+
+**原生会话协商标记（2026-10-26）**：协商成功（HTTP 200）时，实现第 17 节扩展的服务端在响应头返回 `X-OAI-Agent-Sessions: 1`；新版 App 仅在该标记存在时装配原生 `/agents` 会话界面，旧宿主无需处理未知探测路由。OAI Core 的协商响应同时剔除 `conversationUi` 字段，因为它不提供第 7 节的聊天端点。该标记不改变本节任何 schema 语义，core Schema hash 不变。
 
 `messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`agent-approval-cards-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`、`conversation-management-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
 
@@ -424,6 +433,10 @@ Gateway 随后校验账号、设备、配对 generation、时间窗、nonce、�
 读请求重复可以安全重试。所有创建、副作用和附件提交请求必须携带 `Idempotency-Key`，且值必须逐字节精确等于已签名的 `X-Open-Android-Intelligence-Request-Id`。同一账号、设备和 request ID 在保留期内返回同一终态，不重复执行。客户端重试可以更换 timestamp 和 nonce，但必须保持 request ID 不变。
 
 ## 7. 对话
+
+> **实现状态（2026-10-26）**：本节端点由旧独立 Gateway 适配器实现。统一 OAI Core
+> 不提供这些聊天路由，命中返回 `CAPABILITY_UNSUPPORTED`；其会话能力由第 17 节的
+> 原生 Agent 会话扩展承载。本节保留作为旧部署的协议规范。
 
 ### 共享历史与会话管理（2026-10-18）
 
@@ -909,6 +922,38 @@ ACCOUNT_DELETING
 INTERNAL_ERROR
 ```
 
+**OAI Core 扩展错误码（2026-10-26）**，仅由第 17、18 节的扩展面返回，不改变既有代码语义：
+
+```text
+MESSAGE_TOO_LARGE                 413  会话请求超过 1 MiB 预算或消息超过 262144 字符，在记录回执或开启 SSE 之前拒绝
+INVALID_REQUEST                   400  请求体字段不在该端点允许的白名单内
+INVALID_JSON                      400  请求体不是合法 UTF-8 JSON
+INVALID_SESSION_ID                400  会话标识包含路径分隔符、空字节或超长
+INVALID_TITLE                     400  标题缺失、非字符串或超过 1000 字符
+INVALID_MESSAGE                   400  消息正文为空、非字符串或超过 262144 字符
+INVALID_ACTION                    400  管理动作不是 rename/archive 或取值类型错误
+IDEMPOTENCY_KEY_REQUIRED          400  无签名上下文的写请求缺少合法 Idempotency-Key
+AGENT_NOT_FOUND                   404  Agent 未在服务端注册
+UNSUPPORTED_CAPABILITY            405  该 Agent 未声明所请求的能力
+AGENT_ACCOUNT_NOT_CONNECTED       403  当前账号未映射到该 Hermes 宿主账号
+SESSION_NOT_FOUND                 404  会话不存在于该宿主
+SESSION_BUSY                      409  同一会话已有进行中的发送
+REQUEST_ALREADY_EXECUTED          409  相同幂等键的发送已执行过，正文须从宿主历史读取
+OUTCOME_UNKNOWN                   409  写操作已受理但终态未知，不得猜测重试
+SESSION_REVOKED                   401  凭据在请求期间被撤销
+DEVICE_CONTEXT_REQUIRED           403  发送需要已配对设备上下文，CLI 服务令牌不满足
+NATIVE_APPROVAL_UNSUPPORTED       502  宿主要求交互审批而当前无审批界面，已明确拒绝
+AGENT_UNSAFE_DEVICE_CREDENTIALS   503  检测到共享宿主继承 OAI 设备凭据，拒绝启动
+AGENT_TIMEOUT                     504  宿主操作超时；超时的原生变更不自动重试
+INVALID_AGENT_RESPONSE            502  宿主返回无法解析的响应
+INVALID_AGENT_EVENT               502  宿主流事件不是 delta/done/error
+AGENT_STREAM_INTERRUPTED          503  流在终态事件前中断，结果未知
+STREAM_INTERRUPTED                502  会话桥在终态事件前断开
+AGENT_OFFLINE                     503  宿主进程不可达或未启动
+AGENT_UNAVAILABLE                 503  宿主请求失败或服务端内部错误
+CAPABILITY_UNSUPPORTED            405  请求了本部署不提供的端点（如 Core 上的旧聊天路由）
+```
+
 `INVALID_STATE_TRANSITION` 只属于纯 reducer 和黄金向量的内部错误，不是 Gateway wire error code。HTTP endpoint 对 malformed input 返回 `SCHEMA_INVALID`，对同一幂等键绑定不同输入返回 `IDEMPOTENCY_CONFLICT`，对已 claim 操作无法确定真实终态返回 `OUTCOME_UNKNOWN`；若未来需要公开其他状态机映射，必须单独修改本契约。
 
 认证失败不泄露账号是否存在。安全、身份、摘要、授权和 generation 错误默认不可自动重试；网络中断和明确 `retryable: true` 的限流错误按退避策略处理。
@@ -935,6 +980,9 @@ Android、Hermes 和 OpenClaw 实现必须共同通过语言无关向量：
 - 提供者切换、授权 revision 和 Companion 故障关闭；
 - 多账号文件级隔离、备份不含活动身份、账号删除；
 - Android/Gateway correlation ID 对应且审计不含正文。
+
+第 17、18 节的 OAI Core 扩展面不在本一致性套件内，由 `oai-core/tests` 覆盖
+（当前为 Python 63 项、DSH 会话桥 16 项，全部通过）。
 
 六个 JSON 向量文件必须由版本化 meta-schema `gateway-contract/vectors/vector-set-1.0.0.schema.json` 验证，顶层结构固定为：
 
@@ -1162,3 +1210,88 @@ type NormalizedActualResult =
 `status` 只有 `pass` 或 `fail`：normalized actual result 与 case expected 投影按 JCS bytes 完全相等时为 `pass`，否则为 `fail`。`resultHash = "sha256:" + lowercaseHex(SHA-256(JCS_UTF8(normalizedActualResult)))`。runner JSONL 输出 `{ vectorId, operation, implementation, status, resultHash }`；`implementation`、`status`、vendor diagnostics、堆栈、宿主 ID、时间和路径都不进入 hash。两个实现只比较相同 vector 的 normalized accepted/rejected outcome 与 `resultHash`，不比较 Ajv/Python/Kotlin 错误文本。
 
 任一实现只有在同一向量版本全部通过后才能声明 `Gateway Protocol 2.1` 兼容。
+
+## 17. 原生 Agent 会话（OAI Core 扩展）
+
+本节为 OAI Core 的自有扩展，不属于 v2.1 core Schema；旧 Gateway 不实现也不需要实现。
+全部路由位于 `/open-android-intelligence/v2/agents` 前缀，随协商响应头
+`X-OAI-Agent-Sessions: 1` 宣告（见第 4 节）。规范正文以
+[架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) 为事实来源。
+
+### 17.1 路由
+
+| 方法与路径 | 请求 | 响应/行为 |
+| --- | --- | --- |
+| GET `/agents` | — | `{agents:[{id,name,kind,online,sessionScope,deviceTools,capabilities}]}` |
+| GET `/agents/{agent}/sessions` | — | `{sessions:[{id,title,updatedAt,archived}]}` |
+| POST `/agents/{agent}/sessions` | `{title?}` | `{session:{...}}` |
+| GET `/agents/{agent}/sessions/{id}/history` | — | `{messages:[{id,role,text,createdAt}]}` |
+| POST `/agents/{agent}/sessions/{id}/messages` | `{text}` | SSE `event: message`，`type: delta/done/error` |
+| PATCH `/agents/{agent}/sessions/{id}` | `{action:"rename"\|"archive", value?}` | `{session:{...}}` |
+| DELETE `/agents/{agent}/sessions/{id}` | — | 原生删除，需能力声明 |
+| POST `/agents/{agent}/sessions/{id}/cancel` | — | 原生取消，需能力声明 |
+
+### 17.2 Agent 描述符与能力
+
+- 能力枚举固定 9 项：`list`、`history`、`create`、`send`、`rename`、`archive`、
+  `delete`、`cancel`、`stream`；值为布尔，缺失按 `false` 处理。
+- `sessionScope` 只有 `account` 与 `deployment`；以账号密码建立会话身份的宿主
+  （Hermes）必须是 `account`。
+- `online` 来自对宿主的真实握手或查询（超时视为离线），不得由配置存在与否推断。
+- 发现边界是服务端配置：只有显式声明的实例出现在 `/agents` 中（ADR 0058）。
+- 认证先于 Agent 与会话查找；每个写操作在服务端再次检查能力声明。
+
+### 17.3 流式回复
+
+- 事件名为 `message`，数据 JSON 的 `type` 闭集为 `delta`、`done`、`error`。
+- 流空闲期间每 5 秒写入 `: heartbeat` 注释帧，用于观察客户端断连与凭据撤销。
+- 未收到终态事件时服务端明确发出 `type: error, code: AGENT_STREAM_INTERRUPTED`；
+  禁止把流中断表述为成功回复。
+- 凭据在流期间被撤销时发出 `type: error, code: SESSION_REVOKED` 并结束流。
+
+### 17.4 请求预算
+
+- 请求体为紧凑 UTF-8 JSON，实际字节数必须**严格小于** 1 MiB（`1048576`）。
+- 消息正文另有 262144 字符上限，标题上限 1000 字符。
+- 服务端在记录写操作回执或开启 SSE **之前**完成预算检查；超限返回
+  `413 MESSAGE_TOO_LARGE`，不留下结果未知的操作回执。
+- 多字节文本不得转义为 ASCII 序列后再计算或传输。
+
+### 17.5 幂等与回执
+
+- 无签名上下文的写请求必须携带 `Idempotency-Key`，取值匹配
+  `[A-Za-z0-9._~-]{1,128}`；签名写操作绑定原 request ID。
+- 相同幂等键与相同请求摘要返回已存回执；摘要不同返回 `409 IDEMPOTENCY_CONFLICT`。
+- 发送命中已执行回执时返回 `409 REQUEST_ALREADY_EXECUTED`，正文以宿主历史为准，
+  Core 不回放聊天内容。
+- 写操作已受理但终态未知时返回 `409 OUTCOME_UNKNOWN`。
+- 回执只保存请求摘要与管理结果，不保存聊天正文。
+
+### 17.6 认证与身份
+
+- 除复用 v2 签名会话外，扩展面接受受限 Bearer token，绑定账号、设备、配对代次与
+  授权版本；撤销或授权变更立即失效。
+- 请求体不得携带任何账号、设备或身份字段；字段白名单之外的键整体拒绝
+  （`INVALID_REQUEST`）。
+- 会话桥令牌仅用于 Core 与宿主之间的内部认证，不是设备凭据，也不能替代本节认证。
+
+## 18. 设备调用面（OAI Core core/v1）
+
+本节描述 OAI Core 为 CLI、HTTP 客户端与 MCP 提供的设备调用面前缀
+`/open-android-intelligence/core/v1`。除登录外全部使用第 17.6 节的受限 Bearer token；
+写请求需要 `Idempotency-Key`。CLI、MCP 与 REST 共用同一实现，不提供第二套任务状态。
+
+| 方法与路径 | 行为 |
+| --- | --- |
+| POST `/tokens` | 账号密码 + 已配对设备换取受限凭据 |
+| DELETE `/tokens/current` | 撤销当前凭据 |
+| GET `/devices` | 列出账号下已配对设备及在线状态 |
+| GET `/capabilities` | 返回该凭据可用的能力 schema 与授权 |
+| POST `/device-requests` | 提交设备操作，需 `Idempotency-Key` |
+| GET `/device-requests/{id}` | 读取请求状态与已返回的结果 |
+| POST `/device-requests/{id}/cancel` | 请求取消；`cancel_requested` 表示结果仍未知 |
+| POST `/device-requests/{id}/ack` | 确认结果已消费，触发临时正文清理 |
+
+服务端本机管理命令（`oai account`、`oai policy`）不进入该远程调用面；远程请求不接受
+账号或设备身份覆盖。设备请求的排队、认领、超时、取消与结果状态机由被固定的上游
+GatewayCore 实现（ADR 0055）。

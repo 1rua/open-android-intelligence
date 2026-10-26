@@ -24,7 +24,7 @@
   <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat&label=Release&color=34D399" alt="Latest Release"></a>
   <a href="#快速开始"><img src="https://img.shields.io/badge/Android-12%2B%20(minSdk%2031)-10B981?style=flat&logo=android&logoColor=white" alt="Android 12+"></a>
   <a href="#怎么工作"><img src="https://img.shields.io/badge/网关-直连多种主流Agent-38BDF8?style=flat" alt="直连主流Agent"></a>
-  <a href="#当前状态"><img src="https://img.shields.io/badge/契约-70%20组全端用例-34D399?style=flat" alt="Hermes 与 OpenClaw 70 组契约用例"></a>
+  <a href="#当前状态"><img src="https://img.shields.io/badge/契约-70%20条共享用例-34D399?style=flat" alt="Hermes 与 OpenClaw 共享 70 条契约用例"></a>
   <a href="#安全边界"><img src="https://img.shields.io/badge/安全-不%20Root%20%C2%B7%20默认拒绝-F59E0B?style=flat" alt="安全边界"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/许可证-MIT-94A3B8?style=flat" alt="MIT License"></a>
 </p>
