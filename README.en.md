@@ -45,29 +45,32 @@
 
 ## 30-Second Overview
 
-`dev` adds **OAI Core + CLI/MCP + Agent Adapters + Android App + Device Plugins**.
-The phone connects to one Core address; Core owns device authentication, authorization,
-and request scheduling. See [OAI Core](oai-core/README.md) for deployment and commands,
-and the [migration and rollback plan](docs/plans/2026-10-25-unified-core-migration.zh-CN.md).
-Hermes preserves account isolation. Explicitly connected DSH/Codex native sessions are
-shared within the deployment; device permissions remain account scoped. The standalone
-Gateway instructions below remain for existing deployments. OpenClaw is unchanged.
+The `feature/unified-oai-core` architecture refactoring introduces a unified deployment entrypoint: **OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**.
+The phone connects to a single OAI Core address, which simultaneously serves three API surfaces:
+1. **Android Device Protocol** (`/open-android-intelligence/v2`): Authentication, Ed25519 request signatures, pairing, and platform event streams;
+2. **Device Invocation Surface** (`/open-android-intelligence/core/v1`): Local REST, CLI, and official FastMCP stdio interface for controlling device operations;
+3. **Native Agent Sessions Surface** (`/open-android-intelligence/v2/agents`): Directly reads and writes native sessions on Hermes, DSH, and Codex without duplicate chat storage.
+
+Hermes preserves account isolation. Explicitly connected DSH and Codex native sessions are shared within the deployment; device permissions and invocation tokens strictly remain account-isolated. Standalone Gateway instructions below remain for existing deployments; OpenClaw preserves its legacy compatibility path.
+See [OAI Core](oai-core/README.md) and the [Architecture Baseline](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) for details.
 
 > [!TIP]
-> ### Open Android Intelligence (OAI) is **a unified Android client for connecting multiple mainstream Agents** (such as Hermes, OpenClaw, DSH, etc.).
+> ### Open Android Intelligence (OAI) is **a unified Android client for connecting multiple mainstream Agents** (such as Hermes, DSH, Codex, OpenClaw, etc.).
 >
 > It securely and controllability exposes phone hardware capabilities to AI Agents, allowing multiple remote Agents to share phone control without deploying standalone Agents on the phone.
 
-The project consists of three main components, with host adapter plugins maintained in separate repositories:
+Core system components:
 
 | Core Component | Role & Description | Repository / Path |
 | --- | --- | --- |
-| **Android App** | Connects to Gateways, manages accounts and multi-sessions, sends user-selected multimodal attachments, and hosts the device capability sandbox | [`apps/android`](apps/android) |
-| **Gateway Protocol** | Defines authentication, messaging, and closed-schema data contracts between the phone and Agent hosts | [`gateway-contract`](gateway-contract) |
-| **Third-Party Host Plugins** | Provide standard Gateway adapters for Hermes, OpenClaw, and DSH (DeepSeek Harness) | [Hermes Plugin](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw Plugin](https://github.com/1rua/openclaw-gateway-plugin) / [DSH Plugin](https://github.com/1rua/dsh-android-gateway) |
+| **Android App** | Connects to Core or Gateway, manages accounts and native sessions, sends multimodal attachments, and hosts the device capability sandbox | [`apps/android`](apps/android) |
+| **OAI Core** | Single Python service daemon managing device authority, dispatching requests, and offering CLI/MCP and session adapters | [`oai-core`](oai-core) |
+| **Gateway Protocol** | Defines authentication, device event streaming, and closed-schema data contracts between phone and server | [`gateway-contract`](gateway-contract) |
+| **Session Adapters** | Host-side lightweight session bridges for DSH and Hermes; reads native transcripts without mirror databases | [`integrations`](integrations) |
+| **Third-Party Host Plugins** | Traditional standalone Gateway adapter plugins for existing deployments (Hermes / OpenClaw / DSH) | [Hermes Plugin](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw Plugin](https://github.com/1rua/openclaw-gateway-plugin) / [DSH Plugin](https://github.com/1rua/dsh-android-gateway) |
 
 > [!NOTE]
-> **Zero Relay Architecture**: The Android App communicates directly with your self-hosted Agent Gateway. The project does not operate any public cloud message relay servers.<br>
+> **Zero Relay Architecture**: The Android App communicates directly with your self-hosted OAI Core service. The project operates no public relay servers.<br>
 > **Plugin-Based Authorization**: Device capabilities are installed and authorized as isolated plugins. Sensitive operations such as sending SMS must be manually confirmed by the user on the phone screen.
 
 ---
@@ -121,13 +124,14 @@ The entire system operates across three tightly integrated layers:
    - **Interaction & Sessions**: Provides Gateway connection configuration, multi-session management, and system-level attachment selection (via system SAF pickers and share interfaces).
    - **Platform Kernel**: Manages device identity based on Ed25519 keys, plugin lifecycles, and permission arbitration. Acts strictly as an enforcement gatekeeper without business backdoors.
    - **Secure Plugin Sandbox**: Isolates device extension plugins inside a WebAssembly runtime, enforcing strict bounds on CPU, memory, persistent local storage, and concurrent network resources.
-2. **Gateway Protocol v2 Contract Layer** (Bridge)
-   - **Transport Pipeline**: Bidirectional communication via HTTP(S) request/response + WebSocket / SSE event streams.
-   - **Strict Validation**: Closed-schema field validation based on JSON Schema 2020-12, rejecting any unexpected fields immediately.
-   - **Cryptographic Guardrails**: Critical requests carry Ed25519 signature credentials, timestamps, and nonce anti-replay verification, supported by idempotent state machines and bounded automatic retries.
-3. **Agent Host Brain** (Backend)
-   - **Ecosystem Adapters**: Hermes and OpenClaw integrate via dedicated standalone adapter plugins; DSH deeply reuses its native web service port without requiring a separate bridge process.
-   - **Unified Capability Declaration**: All three backends align with the same Gateway protocol specification, independently determining model orchestration and tool execution pipelines while keeping your data entirely on your host.
+2. **OAI Core & Gateway Protocol v2 Layer** (The Bridge & Scheduler)
+   - **Unified Listener**: `oai serve` exposes the `/v2` device protocol, `/core/v1` invocation surface, and `/v2/agents` native session surface over a single address.
+   - **Device Security Runtime**: Reuses the pinned upstream Hermes GatewayCore state machines for queuing, expiration, replay defense, cancellation, and acknowledgement.
+   - **Strict Closed Contracts**: Full-field schema validation; Ed25519 signatures, timestamp bounds, and nonces prevent replay attacks; mutation requests require idempotency keys.
+3. **Agent Host & Native Session Layer** (The Backend Brain)
+   - **Lightweight Session Adapters**: Hermes and DSH connect via loopback session bridges; Codex connects via native `app-server` subprocess.
+   - **Zero Transcript Mirroring**: All operations read and write native host stores directly; unconfigured instances are strictly excluded from discovery.
+   - **Authorization Isolation**: Deployment-shared Agent sessions share transcript visibility only; device permissions are never inherited by shared agent processes.
 
 ---
 
@@ -172,77 +176,65 @@ Go to the project [Releases Page](https://github.com/1rua/open-android-intellige
 
 ---
 
-### 2. Install Gateway Plugin on Agent Host
+### 2. Server Deployment & Agent Connectivity
 
-Choose and configure the corresponding host plugin according to your Agent framework. To ensure end-to-end security, Hermes and OpenClaw require configuring an account Master Key for symmetric encryption and storage of message payloads.
+**Recommended (New Deployments)**: Deploy [OAI Core](oai-core/README.md) to serve both phone device management and multi-Agent native session streaming from a single address.
 
-<details>
-<summary><b>Configure <a href="https://github.com/1rua/hermes-gateway-plugin">Hermes</a> Host (Click to expand)</b></summary>
+<details open>
+<summary><b>Start OAI Core Service (Recommended, click to collapse)</b></summary>
+
+Requires Python 3.11+. Install and launch from the repository root:
 
 ```bash
-# 1. Install and enable the specified Gateway plugin version (strictly locked to current App version)
-hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
+# 1. Create virtual environment and install oai-core
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ./oai-core
 
-# 2. Guided wizard to configure mobile connection to gateway
-hermes gateway setup
+# 2. Create account locally on the server (password via interactive prompt)
+oai account create --config oai-core/examples/core.json --username alice
 
-# 3. Routine account and gateway status inspection
-hermes open-android-intelligence account list
-hermes open-android-intelligence account create -u my_user -p <set_password> --confirm-local
-hermes open-android-intelligence status
-hermes open-android-intelligence contract status
+# 3. Start unified Core listener (default 127.0.0.1:8045)
+oai serve --config oai-core/examples/core.json
 ```
 
-> **Version Pin Notice**: Currently paired with version `2.2.0` (SHA256: `032f5802...`). If previously locked to an older commit (`9d642b4`), append `--force` to reinstall and run `hermes gateway restart` for changes to take effect.
+Once running, connect your target Agents via the `agents` array in `oai-core/examples/core.json`:
+- **DSH**: Install the lightweight [`integrations/dsh-session-adapter`](integrations/dsh-session-adapter/README.md) bundle (default port 8791);
+- **Hermes**: Install the lightweight [`integrations/hermes-session-adapter`](integrations/hermes-session-adapter/README.md) plugin (default port 8792, requires one-to-one account mapping);
+- **Codex**: Configure `codex app-server` and a dedicated `codexHome`, mapping model API keys via `envFrom`.
+
+After pairing phone and server, invoke device operations directly via CLI or MCP:
+```bash
+oai login --url http://127.0.0.1:8045 --username alice --device <DEVICE_ID>
+oai capabilities
+oai mcp  # Start official FastMCP stdio server
+```
 </details>
 
 <details>
-<summary><b>Configure <a href="https://github.com/1rua/openclaw-gateway-plugin">OpenClaw</a> Host (Click to expand)</b></summary>
+<summary><b>Existing Deployments: Standalone Host Gateway Plugins (Click to expand)</b></summary>
 
-Prepare a 32-byte raw key file (permissions set to `0600`), and configure the system environment variable:
+For existing standalone Gateway deployments, install the respective third-party plugins. Hermes and OpenClaw require configuring an account Master Key:
 
+#### Configure Hermes Host
 ```bash
-# Set master key file path
-export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin
+hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
+hermes gateway setup
+hermes open-android-intelligence account create -u my_user -p <set_password> --confirm-local
+```
 
-# Install and verify plugin runtime status
+#### Configure OpenClaw Host
+```bash
+export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin
 openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@c7c087b9fe28adcc658a1cbdb71689a377b65214
 openclaw plugins inspect open-android-intelligence-gateway --runtime --json
 ```
 
-> **Version Pin Notice**: Currently locked to version `1.1.0` (commit `c7c087b`), protocol specification `2.1.0`, host API `2026.7.1`.
-</details>
-
-<details>
-<summary><b>Configure <a href="https://github.com/1rua/dsh-android-gateway">DSH (DeepSeek Harness)</a> Host (Click to expand)</b></summary>
-
-[dsh-android-gateway](https://github.com/1rua/dsh-android-gateway) is a standalone Bundle plugin built for DSH, version `0.2.0`, implementing Gateway Protocol v2.1. It directly reuses DSH's native web port:
-
+#### Configure DSH (DeepSeek Harness) Host
 ```bash
-# Clone and build DSH gateway plugin
 git clone https://github.com/1rua/dsh-android-gateway.git
-cd dsh-android-gateway
-npm ci
-npm run build
-```
-
-Execute the Bundle installation command inside the DSH session:
-```text
-plugin_manager action=install_bundle target=/absolute/path/to/dsh-android-gateway
-```
-
-On first startup, if the account store is empty, the plugin will automatically generate one-time initial credentials in `$DSH_HOME/dsh-android-gateway/setup-account.json` (`0600` permissions). Please delete this temporary file promptly after the phone connects successfully. See [DSH Plugin Documentation](https://github.com/1rua/dsh-android-gateway#readme) for details.
-</details>
-
-<details>
-<summary><b>Offline Account Pre-provisioning (CLI Tool)</b></summary>
-
-If you don't have an active host runtime environment yet, you can pre-provision account credentials locally using the standalone CLI bundled with the Hermes plugin:
-
-```bash
-python3 tools/hermes-account.py init-key        # Generate 0600 master key file
-python3 tools/hermes-account.py create my_user  # Interactively set password
-python3 tools/hermes-account.py status          # Inspect gateway hosting and pairing status
+cd dsh-android-gateway && npm ci && npm run build
+# In DSH session: plugin_manager action=install_bundle target=/absolute/path/to/dsh-android-gateway
 ```
 </details>
 
@@ -345,6 +337,7 @@ This table genuinely records the automated testing, host integration, and physic
 
 | Domain & Core Capability | Verification Basis & Scope | Real-World Status & Completeness |
 | --- | --- | --- |
+| **OAI Core Service & Session Adapters** | 63 Python tests pass (real HTTP/signatures/idempotency/device events/MCP/Hermes native SDK); 16 DSH bridge tests pass | ✅ Protocol double tests pass; physical device and production model loops pending end-to-end verification |
 | **Hermes / OpenClaw Contract Conformance** | 70 shared TS/Python contract test cases verified item by item | ✅ Covers protocol consistency across gateway adapters; does not represent end-to-end device execution |
 | **Hermes Gateway Adapter** | pytest unit tests + real aiohttp SSE/WS handshake, signing, and credential revocation tests | ✅ Protocol layer covered; host context history and tool execution result callbacks pending completion |
 | **OpenClaw Adapter Plugin** | Standalone repo pinned version, loaded in live host runtime, 70 shared test cases | ✅ Installation and communication protocol verified; physical Android end-to-end loop pending |
@@ -375,6 +368,10 @@ All project specifications and implementation records are completely archived wi
 | Document | Core Content | Quick Link |
 | --- | --- | --- |
 | **Domain Terminology & Conceptual Boundaries** | Unified terminology definitions, core entity interactions, and security responsibility boundaries | [`CONTEXT.md`](CONTEXT.md) |
+| **OAI Core Architecture Baseline** | Code traceability and verified test evidence for each architecture conclusion | [View Baseline](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) |
+| **OAI Core Deployment Guide** | Single service listener, CLI/MCP usage, and native session adapters | [`oai-core/README.md`](oai-core/README.md) |
+| **Unified Core Migration Plan** | Protocol deltas, phased delivery, data compatibility, and rollback | [View Plan](docs/plans/2026-10-25-unified-core-migration.zh-CN.md) |
+| **Native Session Adapters Deployment** | Host integration, credentials, and verification for DSH, Hermes, and Codex | [View Plan](docs/plans/2026-10-25-native-session-adapters.zh-CN.md) |
 | **Modular Plugin Architecture Specification** | Overall architectural design specification for the plugin system | [View Specification](docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md) |
 | **Gateway Protocol v2 Specification** | Communication contract and JSON Schema closed specification between phone and Agent Gateway | [View Contract](docs/contracts/gateway-protocol-v2.md) |
 | **Device Plugin Package v1 Specification** | `.alp` plugin package metadata definition, Ed25519 signing, and sandbox constraints | [View Specification](docs/contracts/device-plugin-package-v1.md) |
@@ -407,9 +404,15 @@ open-android-intelligence/
 │   ├── vectors/                   # Cross-language standard test vectors (70 golden test cases)
 │   ├── src/                       # TypeScript contract reference implementation
 │   └── tools/                     # Automated Hermes / OpenClaw conformance test runners
+├── oai-core/                      # OAI Core service daemon, CLI, MCP, and session adapters (Python 3.11+)
+│   ├── src/oai_core/              # Service listener, auth, device scheduler, and Agent session adapters
+│   ├── examples/                  # Deployment configuration examples (core.json)
+│   └── tests/                     # Core protocol, device events, anti-replay, and native SDK regressions
 ├── plugins/                       # Official reference device plugin source code (Rust/WASM + .alp artifacts)
 ├── plugin-tooling/                # Plugin packaging and deterministic signing toolchain (Packaging CLI)
-├── integrations/                  # Shared integration test environments and fixed fixtures
+├── integrations/                  # Shared integration test environments and lightweight session adapters
+│   ├── dsh-session-adapter/       # DSH host-side Cordis Bundle (reads/writes native sessions, port 8791)
+│   └── hermes-session-adapter/    # Hermes host-side session plugin (account-isolated sessions, port 8792)
 ├── docs/                          # Product specifications, ADR architectural decision records, and technical reviews
 ├── assets/readme/                 # Beautiful vector SVG assets and design token specs for README
 ├── legacy/                        # Frozen and archived legacy bridge code and transitional components

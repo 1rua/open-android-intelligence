@@ -45,28 +45,32 @@
 
 ## 30 秒看懂
 
-`dev` 新增统一部署入口：**OAI Core + CLI/MCP + Agent Adapters + Android App + Device Plugins**。
-手机只连接 Core 的一个地址，设备认证、授权和请求调度由 Core 统一处理。
-部署与命令见 [OAI Core](oai-core/README.md)，协议兼容、分阶段迁移与回滚见
-[迁移方案](docs/plans/2026-10-25-unified-core-migration.zh-CN.md)。
-Hermes 保持账号隔离；明确接入的 DSH/Codex 原生会话为部署内共享空间，设备授权仍按账号隔离。
-下文独立 Gateway 的安装说明保留供旧部署使用，OpenClaw 本次不迁移。
+`feature/unified-oai-core` 重构引入统一服务入口：**OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**。
+手机只连接 Core 的一个监听地址。该地址同时承载三套接口：
+1. **Android 设备协议**（`/open-android-intelligence/v2`）：设备认证、Ed25519 签名、配对与平台事件总线；
+2. **设备调用面**（`/open-android-intelligence/core/v1`）：面向本机的 REST、CLI 与标准 MCP stdio 服务；
+3. **原生 Agent 会话面**（`/open-android-intelligence/v2/agents`）：直接读写 Hermes、DSH 与 Codex 的真实会话，无需两套聊天存储。
+
+Hermes 保持账号隔离；显式配置的 DSH/Codex 原生会话在部署内共享，但设备授权与调用凭据始终按账号严格隔离。旧独立 Gateway 安装保留供既有部署使用，OpenClaw 保持兼容路径。
+部署与命令详见 [OAI Core 说明](oai-core/README.md) 与 [架构事实基线](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。
 
 > [!TIP]
-> ### Open Android Intelligence（OAI）是**一个统一的安卓客户端，用于连接多种主流 Agent**（如 Hermes、OpenClaw、DSH 等）。
+> ### Open Android Intelligence（OAI）是**一个统一的安卓客户端，用于连接多种主流 Agent**（如 Hermes、DSH、Codex、OpenClaw 等）。
 >
-> 并将手机硬件能力安全、受控地开放给 AI Agent，让多种远程 Agent 共享手机控制能力，而无需在手机部署独立Agent。
+> 并将手机硬件能力安全、受控地开放给 AI Agent，让多种远程 Agent 共享手机控制能力，而无需在手机部署独立 Agent。
 
-项目由以下三部分组成，宿主插件分别维护在独立仓库：
+项目核心构成：
 
 | 核心组件 | 定位与说明 | 代码位置 / 仓库 |
 | --- | --- | --- |
-| **Android App** | 连接 Gateway、管理账号与多会话，发送用户选定的多模态附件，承载设备能力沙箱 | [`apps/android`](apps/android) |
-| **Gateway Protocol** | 定义手机与 Agent 宿主之间的身份认证、消息通信和全字段封闭数据协议 | [`gateway-contract`](gateway-contract) |
-| **三方宿主插件** | 分别为 Hermes、OpenClaw 和 DSH（DeepSeek Harness）提供标准 Gateway 接入适配 | [Hermes 插件](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw 插件](https://github.com/1rua/openclaw-gateway-plugin) / [DSH 插件](https://github.com/1rua/dsh-android-gateway) |
+| **Android App** | 连接 Core 或 Gateway、管理账号与原生会话，发送用户选定的多模态附件，承载设备能力沙箱 | [`apps/android`](apps/android) |
+| **OAI Core** | 单一 Python 服务进程，统一管理设备权威、调度设备请求并提供 CLI/MCP 与会话适配 | [`oai-core`](oai-core) |
+| **Gateway Protocol** | 定义手机与服务端之间的身份认证、设备事件流和全字段封闭数据协议 | [`gateway-contract`](gateway-contract) |
+| **会话适配器** | 宿主侧轻量 Session Adapter，直通 DSH 与 Hermes 原生会话，不维护第二份聊天历史 | [`integrations`](integrations) |
+| **三方宿主插件** | 面向既有独立网关部署的适配插件（Hermes / OpenClaw / DSH） | [Hermes 插件](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw 插件](https://github.com/1rua/openclaw-gateway-plugin) / [DSH 插件](https://github.com/1rua/dsh-android-gateway) |
 
 > [!NOTE]
-> **无中转架构**：Android App 直接与用户自建的 Agent 网关通信，项目本身不提供任何公网消息中转服务器。<br>
+> **无中转架构**：Android App 直接与用户自托管的 OAI Core 服务端通信，项目本身不提供任何公网中转服务器。<br>
 > **插件化授权**：设备能力按插件安装与授权，发短信等敏感操作必须由用户在手机屏幕上手动确认。
 
 
@@ -121,13 +125,14 @@ Hermes 保持账号隔离；明确接入的 DSH/Codex 原生会话为部署内�
    - **交互与会话**：提供网关连接配置、多会话管理、系统级附件选发（通过系统 SAF 选择器与分享接口）。
    - **平台内核（Platform Kernel）**：基于 Ed25519 密钥管理设备身份、插件生命周期与权限裁决。它只行使守门仲裁权，不私自预埋业务后门。
    - **安全插件沙箱**：通过 WebAssembly 运行时隔离执行设备扩展插件，严格限制 CPU、内存、本地存储与网络并发资源。
-2. **Gateway Protocol v2 契约层**（连接桥梁）
-   - **传输管道**：基于 HTTP(S) 请求响应 + WebSocket / SSE 事件流双向通信。
-   - **严格验证**：基于 JSON Schema 2020-12 进行封闭式字段校验，出现未知字段立即整条拦截。
-   - **密码学守卫**：关键请求携带 Ed25519 签名凭证、时间戳与 Nonce 防重放校验，具备幂等状态机与有界自动重试。
-3. **Agent 宿主端**（后端大脑）
-   - **生态插件适配**：Hermes 与 OpenClaw 借由各自的独立适配器插件介入；DSH 深度复用自有 Web 服务端口，无需额外部署独立 Bridge 进程。
-   - **统一能力声明**：三种后端对齐同一 Gateway 协议规范，自主决定模型调度与工具执行链路，数据完全留存在你的宿主机。
+2. **OAI Core 服务端与协议契约层**（连接桥梁与调度中心）
+   - **单一服务监听**：`oai serve` 同时暴露 `/v2` 设备协议、`core/v1` 设备调用面及 `/v2/agents` 原生会话面。
+   - **设备安全运行时**：复用被固定的 Hermes GatewayCore 状态机，负责排队、超时、防重放、取消与结果确认。
+   - **严格契约守卫**：全字段封闭校验，关键请求搭载 Ed25519 签名、时间戳与 Nonce 防重放，写操作绑定幂等键。
+3. **Agent 宿主与原生会话端**（后端大脑）
+   - **轻量会话桥（Session Adapter）**：Hermes 与 DSH 通过 loopback 会话桥接入；Codex 走原生 `app-server` 进程。
+   - **直读真实会话**：所有操作直通宿主原生存储，不建立影子会话数据库；未接入实例严格隔离，配置即发现边界。
+   - **凭据与授权隔离**：共享 Agent 会话仅共享会话文本可见性，绝不继承手机设备凭据；设备操作必须通过受限凭据独立调用。
 
 ---
 
@@ -173,77 +178,65 @@ Hermes 保持账号隔离；明确接入的 DSH/Codex 原生会话为部署内�
 
 ---
 
-### 2. 为 Agent 宿主安装网关插件
+### 2. 服务端部署与 Agent 接入
 
-根据你所使用的 Agent 框架，选择对应的宿主插件进行配置。为保障端到端安全性，Hermes 和 OpenClaw 需配置账号主密钥（Master Key）对消息正文进行对称加密保管。
+**推荐方案（全新部署）**：部署 [OAI Core](oai-core/README.md)，一个服务地址搞定手机连接与多 Agent 会话直通。
 
-<details>
-<summary><b>配置 <a href="https://github.com/1rua/hermes-gateway-plugin">Hermes</a> 宿主（点击展开）</b></summary>
+<details open>
+<summary><b>启动 OAI Core 服务端（推荐，点击收起）</b></summary>
+
+需 Python 3.11+。在仓库根目录安装与启动：
 
 ```bash
-# 1. 安装并启用指定版本的 Gateway 插件（与当前 App 版本严格锁定）
-hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
+# 1. 创建虚拟环境并安装 oai-core
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ./oai-core
 
-# 2. 引导配置手机连接网关
-hermes gateway setup
+# 2. 服务端本地创建账号（交互式输入密码）
+oai account create --config oai-core/examples/core.json --username alice
 
-# 3. 日常账号与网关状态查看
-hermes open-android-intelligence account list
-hermes open-android-intelligence account create -u my_user -p <设置密码> --confirm-local
-hermes open-android-intelligence status
-hermes open-android-intelligence contract status
+# 3. 启动 Core 统一服务监听（默认 127.0.0.1:8045）
+oai serve --config oai-core/examples/core.json
 ```
 
-> **版本对照提示**：当前配套版本为 `2.2.0`（SHA256: `032f5802...`）。如曾锁定旧提交（`9d642b4`），需加上 `--force` 重新安装并执行 `hermes gateway restart` 重启生效。
+服务就绪后，在 `oai-core/examples/core.json` 的 `agents` 数组中按需接入目标 Agent：
+- **DSH**：安装轻量 bundle [`integrations/dsh-session-adapter`](integrations/dsh-session-adapter/README.md)（默认端口 8791）；
+- **Hermes**：安装轻量插件 [`integrations/hermes-session-adapter`](integrations/hermes-session-adapter/README.md)（默认端口 8792，需账号一对一映射）；
+- **Codex**：配置 `codex app-server` 与专属 `codexHome`，通过 `envFrom` 映射模型凭据。
+
+手机端与服务端配对后，即可使用 `oai` 命令行或 MCP 工具直接调用手机硬件能力：
+```bash
+oai login --url http://127.0.0.1:8045 --username alice --device <DEVICE_ID>
+oai capabilities
+oai mcp  # 启动标准 FastMCP stdio 接口
+```
 </details>
 
 <details>
-<summary><b>配置 <a href="https://github.com/1rua/openclaw-gateway-plugin">OpenClaw</a> 宿主（点击展开）</b></summary>
+<summary><b>既有部署：为 Agent 宿主安装独立网关插件（点击展开）</b></summary>
 
-准备一个 32 字节的原始密钥文件（权限设为 `0600`），并配置系统环境变量：
+若仍使用既有独立网关架构，可分别配置三方宿主插件。Hermes 和 OpenClaw 需配置账号主密钥（Master Key）：
 
+#### 配置 Hermes 宿主
 ```bash
-# 设置主密钥文件路径
-export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin
+hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
+hermes gateway setup
+hermes open-android-intelligence account create -u my_user -p <设置密码> --confirm-local
+```
 
-# 安装并核验插件运行状态
+#### 配置 OpenClaw 宿主
+```bash
+export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin
 openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@c7c087b9fe28adcc658a1cbdb71689a377b65214
 openclaw plugins inspect open-android-intelligence-gateway --runtime --json
 ```
 
-> **版本对照提示**：当前锁定版本 `1.1.0`（提交 `c7c087b`），协议规范 `2.1.0`，宿主 API `2026.7.1`。
-</details>
-
-<details>
-<summary><b>配置 <a href="https://github.com/1rua/dsh-android-gateway">DSH (DeepSeek Harness)</a> 宿主（点击展开）</b></summary>
-
-[dsh-android-gateway](https://github.com/1rua/dsh-android-gateway) 是专为 DSH 打造的独立 Bundle 插件，版本 `0.2.0`，实现 Gateway Protocol v2.1。直接复用 DSH 原生 Web 端口：
-
+#### 配置 DSH (DeepSeek Harness) 宿主
 ```bash
-# 克隆并编译 DSH 网关插件
 git clone https://github.com/1rua/dsh-android-gateway.git
-cd dsh-android-gateway
-npm ci
-npm run build
-```
-
-在 DSH 会话中执行 Bundle 安装指令：
-```text
-plugin_manager action=install_bundle target=/absolute/path/to/dsh-android-gateway
-```
-
-首次启动若账号表为空，插件会在 `$DSH_HOME/dsh-android-gateway/setup-account.json` 自动生成一次性初始凭据（`0600` 权限）。手机连接成功后请及时清理该临时文件。详见 [DSH 插件说明文档](https://github.com/1rua/dsh-android-gateway#readme)。
-</details>
-
-<details>
-<summary><b>离线预置账号（CLI 快速工具）</b></summary>
-
-若暂无宿主运行环境，可使用 Hermes 插件附带的独立 CLI 在本地预置账号凭据：
-
-```bash
-python3 tools/hermes-account.py init-key        # 生成 0600 权限主密钥文件
-python3 tools/hermes-account.py create my_user  # 交互式设定密码
-python3 tools/hermes-account.py status          # 查看网关托管与配对状态
+cd dsh-android-gateway && npm ci && npm run build
+# 在 DSH 会话中安装：plugin_manager action=install_bundle target=/absolute/path/to/dsh-android-gateway
 ```
 </details>
 
@@ -346,6 +339,7 @@ apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/fu
 
 | 业务领域与核心能力 | 当前验证依据与范围 | 真实完备度与状态 |
 | --- | --- | --- |
+| **OAI Core 服务端与会话桥** | Python 63 项测试（含真实 HTTP/签名/幂等/设备事件/MCP/Hermes原生SDK）；DSH 会话桥 16 项测试通过 | ✅ 协议替身测试通过；物理真机与生产模型端到端联调待闭环 |
 | **Hermes / OpenClaw 契约一致性** | 两端各自 70 组 TS/Python 共享契约用例逐条对齐比对 | ✅ 覆盖两端网关适配器协议一致性，不代表终端执行全链路 |
 | **Hermes 网关适配器** | pytest 单元测试 + 真实 aiohttp SSE/WS 握手、签名与凭据撤销测试 | ✅ 协议层已覆盖；宿主上下文历史与工具执行结果回传待完善 |
 | **OpenClaw 适配器插件** | 独立仓固定版本、宿主真实运行时动态载入、70 组共享测试用例 | ✅ 安装与通讯协议通过验证；Android 真机端对端待闭环 |
@@ -376,6 +370,10 @@ apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/fu
 | 文档名称 | 核心内容 | 快速入口 |
 | --- | --- | --- |
 | **领域术语与概念边界** | 统一术语定义、核心实体交互与安全责任边界 | [`CONTEXT.md`](CONTEXT.md) |
+| **OAI Core 架构事实基线** | 每条架构结论的代码出处与实测依据 | [查看基线](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) |
+| **OAI Core 统一服务说明** | 单一服务监听、CLI/MCP 使用与原生会话接入 | [`oai-core/README.md`](oai-core/README.md) |
+| **统一 Core 迁移方案** | 协议增量、分阶段交付、数据兼容与回滚 | [查看方案](docs/plans/2026-10-25-unified-core-migration.zh-CN.md) |
+| **原生会话适配器部署** | DSH、Hermes 与 Codex 宿主接入、鉴权与验证 | [查看方案](docs/plans/2026-10-25-native-session-adapters.zh-CN.md) |
 | **模块化插件架构规格** | 插件系统总体架构设计规格书 | [查看规格](docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md) |
 | **Gateway Protocol v2 规范** | 手机与 Agent 网关通信契约与 JSON Schema 封闭规范 | [查看契约](docs/contracts/gateway-protocol-v2.md) |
 | **设备插件包 v1 规范** | `.alp` 插件包元数据定义、Ed25519 签名及沙箱约束 | [查看规范](docs/contracts/device-plugin-package-v1.md) |
@@ -408,9 +406,15 @@ open-android-intelligence/
 │   ├── vectors/                   # 跨语言通用测试向量（70 组标准用例）
 │   ├── src/                       # TypeScript 契约实现参考
 │   └── tools/                     # Hermes / OpenClaw 一致性自动化测试执行工具
+├── oai-core/                      # OAI Core 统一服务、CLI、MCP 及会话适配器（Python 3.11+）
+│   ├── src/oai_core/              # 服务监听、鉴权、设备调度与各 Agent 会话适配器实现
+│   ├── examples/                  # 部署配置示例（core.json）
+│   └── tests/                     # Core 协议、设备事件、防重放与原生 SDK 契约回归
 ├── plugins/                       # 官方参考设备插件源码（Rust/WASM + .alp 构建产物）
 ├── plugin-tooling/                # 插件打包与确定性签名工具链（Packaging CLI）
-├── integrations/                  # 共享集成测试环境与固定测试夹具
+├── integrations/                  # 共享集成环境与轻量原生会话适配器
+│   ├── dsh-session-adapter/       # DSH 宿主侧 Cordis Bundle（只读写原生会话，端口 8791）
+│   └── hermes-session-adapter/    # Hermes 宿主侧仅会话插件（按账号隔离会话，端口 8792）
 ├── docs/                          # 产品规格书、ADR 架构决策记录与技术评审文档
 ├── assets/readme/                 # README 所需的精美矢量 SVG 资产与设计 Token 规范
 ├── legacy/                        # 已冻结归档的历史版本 Bridge 与过渡组件
