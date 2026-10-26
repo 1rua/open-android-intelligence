@@ -290,3 +290,27 @@ def test_sync_hermes_adapter_env_updates_hermes_env(tmp_path, monkeypatch):
     assert env_map["OAI_HERMES_GATEWAY_ROOT"] == str(hermes_home / "open-android-intelligence-gateway" / "accounts")
 
 
+def test_sync_dsh_adapter_env_updates_env_and_credentials(tmp_path, monkeypatch):
+    dsh_home = tmp_path / ".dsh-cline"
+    dsh_home.mkdir(parents=True)
+    monkeypatch.setenv("DSH_HOME", str(dsh_home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    env_file = dsh_home / ".env"
+    env_file.write_text("EXISTING_VAR=foo\n", encoding="utf-8")
+
+    cred_file = dsh_home / ".credentials.yaml"
+    cred_file.write_text("version: 1\nrefs:\n  EXISTING_TOKEN: bar\n", encoding="utf-8")
+
+    HELPER["sync_dsh_adapter_env"]("synthetic-dsh-token-32-chars-long-1234")
+
+    env_lines = env_file.read_text(encoding="utf-8").splitlines()
+    assert "EXISTING_VAR=foo" in env_lines
+    assert "OAI_DSH_ADAPTER_TOKEN=synthetic-dsh-token-32-chars-long-1234" in env_lines
+
+    cred_text = cred_file.read_text(encoding="utf-8")
+    assert "EXISTING_TOKEN: bar" in cred_text
+    assert "OAI_DSH_ADAPTER_TOKEN: synthetic-dsh-token-32-chars-long-1234" in cred_text
+
+
+

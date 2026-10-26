@@ -220,6 +220,12 @@ configure_agent_integrations() {
         info "  hermes plugins enable open-android-intelligence-gateway"
         info "  hermes gateway restart"
     fi
+
+    if [ "$INSTALL_DSH" -eq 1 ]; then
+        info "本向导已配置 Core 会话桥，并自动将生成的 OAI_DSH_ADAPTER_TOKEN 注入至 DSH 环境及凭据文件（~/.dsh*）。"
+        info "若已安装适配器插件，重启 DSH profile 即可上线；若尚未安装，请在 DSH 中执行:"
+        info "  plugin_manager action=install_bundle target=${TARGET_DIR}/integrations/dsh-session-adapter"
+    fi
     return 0
 }
 

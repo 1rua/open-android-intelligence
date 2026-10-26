@@ -336,8 +336,10 @@ configure_agent_plugins() {
     # DSH 插件说明
     if [ "$INSTALL_DSH_PLUGIN" -eq 1 ]; then
         info "已为您启用 DSH 会话接入配置。"
-        info "如需在 DSH 会话中生效，可在 DSH 会话内运行:"
+        info "向导已自动将生成的 OAI_DSH_ADAPTER_TOKEN 注入并同步至 DSH 环境及凭据文件（~/.dsh*）。"
+        info "如需在 DSH 会话中生效，请在 DSH 会话内运行:"
         info "  plugin_manager action=install_bundle target=${TARGET_DIR}/integrations/dsh-session-adapter"
+        info "安装后重启 DSH profile 即可自动建立连接。"
     fi
 }
 

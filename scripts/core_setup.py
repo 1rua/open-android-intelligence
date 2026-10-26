@@ -208,6 +208,121 @@ def configure(root: Path, host: str, port: int, username: str, selected: list[st
     if "hermes" in selected_or_existing and "OAI_HERMES_SESSION_TOKEN" in tokens:
         sync_hermes_adapter_env(tokens["OAI_HERMES_SESSION_TOKEN"], hermes_account or username)
 
+    # 当启用 DSH 适配器且宿主存在时，自动将 Token 同步至 DSH 环境及凭据配置中
+    if "dsh" in selected_or_existing and "OAI_DSH_ADAPTER_TOKEN" in tokens:
+        sync_dsh_adapter_env(tokens["OAI_DSH_ADAPTER_TOKEN"])
+
+
+def sync_dsh_adapter_env(token: str) -> None:
+    dsh_homes = []
+    env_home = os.environ.get("DSH_HOME")
+    if env_home:
+        dsh_homes.append(Path(env_home))
+    dsh_homes.extend([Path.home() / ".dsh-cline", Path.home() / ".dsh"])
+    
+    # 查找所有真实存在的 DSH 目录（去重）
+    valid_homes = []
+    seen_paths = set()
+    for h in dsh_homes:
+        try:
+            resolved = h.resolve()
+            if h.is_dir() and resolved not in seen_paths:
+                seen_paths.add(resolved)
+                valid_homes.append(h)
+        except OSError:
+            continue
+
+    if not valid_homes:
+        return
+
+    for home_dir in valid_homes:
+        # 1. 写入/更新 $DSH_HOME/.env
+        env_file = home_dir / ".env"
+        existing_lines = []
+        if env_file.exists():
+            try:
+                existing_lines = env_file.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                existing_lines = []
+
+        updated_lines = []
+        found = False
+        for line in existing_lines:
+            if line.startswith("OAI_DSH_ADAPTER_TOKEN=") or line.startswith("export OAI_DSH_ADAPTER_TOKEN="):
+                updated_lines.append(f"OAI_DSH_ADAPTER_TOKEN={token}")
+                found = True
+            else:
+                updated_lines.append(line)
+        if not found:
+            updated_lines.append(f"OAI_DSH_ADAPTER_TOKEN={token}")
+
+        try:
+            private_write(env_file, "\n".join(updated_lines) + "\n")
+            print(f"[INFO] 已自动将 OAI_DSH_ADAPTER_TOKEN 同步至 DSH 环境文件: {env_file}")
+        except Exception as exc:
+            print(f"[WARN] 尝试写入 DSH 环境文件 {env_file} 失败 ({exc})")
+
+        # 2. 写入/更新 $DSH_HOME/.credentials.yaml 的 refs（保持简单 0600 YAML 文本，不强制依赖 PyYAML）
+        cred_file = home_dir / ".credentials.yaml"
+        try:
+            update_dsh_credentials_yaml(cred_file, "OAI_DSH_ADAPTER_TOKEN", token)
+            print(f"[INFO] 已自动将 OAI_DSH_ADAPTER_TOKEN 同步至 DSH 凭据文件: {cred_file}")
+        except Exception as exc:
+            print(f"[WARN] 尝试写入 DSH 凭据文件 {cred_file} 失败 ({exc})")
+
+
+def update_dsh_credentials_yaml(path: Path, key: str, value: str) -> None:
+    content = ""
+    if path.exists():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            content = ""
+
+    lines = content.splitlines() if content else []
+    output_lines = []
+    in_refs = False
+    ref_updated = False
+    has_version = any(line.strip().startswith("version:") for line in lines)
+    has_refs = any(line.strip() == "refs:" for line in lines)
+
+    if not lines or not has_version:
+        output_lines.append("version: 1")
+
+    if not lines or not has_refs:
+        if "version: 1" in output_lines:
+            pass
+        elif lines:
+            output_lines.extend(lines)
+        output_lines.append("refs:")
+        output_lines.append(f"  {key}: {value}")
+        private_write(path, "\n".join(output_lines) + "\n")
+        return
+
+    for line in lines:
+        if line.strip() == "refs:":
+            in_refs = True
+            output_lines.append(line)
+            continue
+        if in_refs:
+            if line and not line.startswith(" ") and not line.startswith("\t"):
+                # 退出 refs 块前如果还没写入，在此处追加
+                if not ref_updated:
+                    output_lines.append(f"  {key}: {value}")
+                    ref_updated = True
+                in_refs = False
+            elif line.strip().startswith(f"{key}:"):
+                output_lines.append(f"  {key}: {value}")
+                ref_updated = True
+                continue
+        output_lines.append(line)
+
+    if in_refs and not ref_updated:
+        output_lines.append(f"  {key}: {value}")
+        ref_updated = True
+
+    private_write(path, "\n".join(output_lines) + "\n")
+
 
 def sync_hermes_adapter_env(token: str, account_id: str) -> None:
     hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
