@@ -1,6 +1,6 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import JSZip from "jszip";
@@ -19,7 +19,7 @@ function abiModule(): Uint8Array {
     ...section(7, exports), ...section(10, [1, 2, 0, 11])]);
 }
 
-// 三个内置插件的期望清单：目录、wasm 产物名、输出文件名、内核原语列表
+// 内置插件的期望清单：目录、wasm 产物名、输出文件名、内核原语列表
 const EXPECTED = [
   {
     directory: "notifications",
@@ -51,6 +51,12 @@ const EXPECTED = [
     kernelPrimitives: ["kernel.call-log.read"],
     schemas: ["call-log.json"],
   },
+  { directory: "screen-reader", wasm: "screen_reader.wasm", output: "screen-reader.alp",
+    id: "org.openandroidintelligence.screen-reader", kernelPrimitives: ["kernel.screen.read"], schemas: ["screen-read.json"] },
+  { directory: "screen-capture", wasm: "screen_capture.wasm", output: "screen-capture.alp",
+    id: "org.openandroidintelligence.screen-capture", kernelPrimitives: ["kernel.screen.capture"], schemas: ["screen-capture.json"] },
+  { directory: "screen-control", wasm: "screen_control.wasm", output: "screen-control.alp",
+    id: "org.openandroidintelligence.screen-control", kernelPrimitives: ["kernel.screen.control"], schemas: ["screen-control.json"] },
 ] as const;
 
 // 在临时目录里搭建一个最小仓库：真实 manifest 与 schema 从源仓库拷贝，wasm 用 ABI 桩代替
@@ -70,14 +76,14 @@ async function setupFakeRepository(): Promise<string> {
       abiModule(),
     );
   }
-  for (const schema of ["notifications.json", "sms.json", "sms-schedule.json", "sms-job-status.json", "sms-cancel.json", "call-log.json"]) {
+  for (const schema of ["notifications.json", "sms.json", "sms-schedule.json", "sms-job-status.json", "sms-cancel.json", "call-log.json", "screen-read.json", "screen-capture.json", "screen-control.json"]) {
     await writeFile(join(root, "plugins/schemas", schema), await readFile(join(sourceRoot, "plugins/schemas", schema)));
   }
   return root;
 }
 
 describe("bundled plugin packages delivered in Full APKs", () => {
-  it("signs all three checked-in manifests/schemas and exact compiled inputs deterministically", async () => {
+  it("signs all checked-in manifests/schemas and exact compiled inputs deterministically", async () => {
     const root = await setupFakeRepository();
     try {
       const seed = randomBytes(32);
@@ -86,11 +92,11 @@ describe("bundled plugin packages delivered in Full APKs", () => {
       await writeFile(seedFile, seed, { mode: 0o600 });
 
       const built = await buildBundledPlugins(root, seedFile, outputDirectory);
-      // 恰好三个包，顺序为 notifications / sms / call-log
+      // 每项必须各自独立签名，且保持声明顺序
       expect(built.map((item) => item.manifest.plugin.id)).toEqual(EXPECTED.map((item) => item.id));
-      expect(built.map((item) => item.manifest.plugin.version)).toEqual(["1.0.0", "1.0.0", "1.0.0"]);
+      expect(built.map((item) => item.manifest.plugin.version)).toEqual(EXPECTED.map(() => "1.0.0"));
 
-      // 确定性：同一输入再次构建，三个包的 sha256 必须逐一相同
+      // 确定性：同一输入再次构建，每个包的 sha256 必须逐一相同
       const rebuilt = await buildBundledPlugins(root, seedFile, outputDirectory);
       expect(rebuilt.map((item) => item.sha256)).toEqual(built.map((item) => item.sha256));
 
@@ -135,7 +141,9 @@ describe("bundled plugin packages delivered in Full APKs", () => {
       await writeFile(join(root, "plugins/target/wasm32-unknown-unknown/release/sms.wasm"), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
       await expect(buildBundledPlugins(root, seedFile, outputDirectory)).rejects.toThrow("PLUGIN_WASM_ABI_INVALID");
     } finally {
-      await rm(root, { recursive: true, force: true });
+      const trash = join(tmpdir(), "open-android-intelligence-trash");
+      await mkdir(trash, { recursive: true });
+      await rename(root, join(trash, basename(root)));
     }
   });
 });

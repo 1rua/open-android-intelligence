@@ -33,6 +33,7 @@ val appAndroid12RuntimeLibraries = setOf(
     ":conversation-domain",
     ":conversation-ui",
     ":core-model",
+    ":control-ports",
     ":device-primitives",
     ":encrypted-store",
     ":gateway-client",
@@ -45,6 +46,7 @@ val appAndroid12RuntimeLibraries = setOf(
     ":plugin-ui",
     ":policy-engine",
     ":sms-collector",
+    ":screen-control",
 )
 
 allprojects {

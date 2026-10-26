@@ -1,0 +1,100 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "snapshot",
+        "search",
+        "state"
+      ]
+    },
+    "maxNodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 512
+    },
+    "maxDepth": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32
+    },
+    "maxBytes": {
+      "type": "integer",
+      "minimum": 4096,
+      "maximum": 48000
+    },
+    "previousHash": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "resourceId": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "required": [
+            "resourceId"
+          ]
+        },
+        {
+          "required": [
+            "description"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "operation"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "operation": {
+          "const": "snapshot"
+        }
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "state"
+        }
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "search"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  ]
+}

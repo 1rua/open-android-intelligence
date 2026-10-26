@@ -146,6 +146,9 @@ class OpenAndroidIntelligenceApplication : Application() {
         )
 
         pluginHost.attach(kernel)
+        kernel.onEmergencyStop { stopped ->
+            if (stopped) com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
+        }
 
         // Visibility is a process fact, not an Activity one: a background gap
         // can leave the event stream nominally alive while the Gateway dropped

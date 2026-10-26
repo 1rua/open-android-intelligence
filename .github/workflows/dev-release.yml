@@ -54,11 +54,11 @@ jobs:
           cache: npm
           cache-dependency-path: plugin-tooling/package-lock.json
 
-      # 三个内置插件各自是一个 crate,统一用锁定工具链编译 WASM。
+      # 内置插件各自是一个 crate,统一用锁定工具链编译 WASM。
       - name: Build the bundled plugin WASM
         run: |
           rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications -p open-android-intelligence-sms -p open-android-intelligence-call-log
+          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications -p open-android-intelligence-sms -p open-android-intelligence-call-log -p open-android-intelligence-screen-reader -p open-android-intelligence-screen-capture -p open-android-intelligence-screen-control
           npm ci --prefix plugin-tooling
 
       - name: Sign the bundled plugin packages
@@ -81,7 +81,7 @@ jobs:
         id: artifact-name
         run: echo "name=signed-plugins-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-      # 整目录上传,artifact 内含 notifications/sms/call-log 三个 .alp。
+      # 整目录上传,artifact 内含 六个独立授权的 .alp。
       - name: Upload the signed plugin packages
         uses: actions/upload-artifact@v7
         with:
@@ -217,10 +217,10 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace
 
-      # 三个插件资产必须逐一与签出的包逐字节一致;缺一个就说明内置链路断了。
+      # 六个插件资产必须逐一与签出的包逐字节一致;缺一个就说明内置链路断了。
       - name: Verify the bundled plugin packages
         run: |
-          for package in notifications sms call-log; do
+          for package in notifications sms call-log screen-reader screen-capture screen-control; do
             python3 apps/android/tools/verify_bundled_plugins.py \
               --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
               --package "$package=$OAI_BUNDLED_PLUGINS_DIR/$package.alp"

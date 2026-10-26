@@ -8,7 +8,7 @@ import type { PluginManifest } from "../src/manifest.js";
 /**
  * 契约依据：docs/contracts/device-plugin-package-v1.md §5（:87-156）。
  *
- * 三份参考插件源 manifest（plugins/{notifications,sms,call-log}/manifest.json）
+ * 参考插件源 manifest（读取数据与独立屏幕能力）
  * 必须与构建器（build-references.ts）产出的 manifest 同形，且满足 §5 的每个必选节。
  * §5:156 规定「所有对象默认拒绝未知字段」，因此根级与各节的键集合是封闭的。
  */
@@ -22,7 +22,7 @@ const REFERENCE_PUBLIC_KEY_B64 = Buffer.from(
   ed25519.getPublicKey(REFERENCE_SEED),
 ).toString("base64url");
 
-const REFERENCE_PLUGINS = ["notifications", "sms", "call-log"] as const;
+const REFERENCE_PLUGINS = ["notifications", "sms", "call-log", "screen-reader", "screen-capture", "screen-control"] as const;
 
 const ROOT_FIELDS = [
   "author",

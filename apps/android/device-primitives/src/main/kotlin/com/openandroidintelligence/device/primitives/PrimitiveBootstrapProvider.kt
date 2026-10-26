@@ -42,6 +42,7 @@ class PrimitiveBootstrapProvider : ContentProvider() {
             permissionGranted = { notifications.bindingPort.isListenerBound() },
             listenerConnected = { NotificationRuntimeFactoryRegistry.isListenerConnected() },
         ))
+        ScreenPrimitiveInstaller.install(app)
         return true
     }
 

@@ -1,0 +1,13 @@
+[package]
+name = "open-android-intelligence-screen-reader"
+version = "0.1.0"
+edition = "2021"
+description = "Open Android Intelligence Screen Reader 参考插件"
+publish = false
+
+[lib]
+name = "screen_reader"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+open-android-intelligence-sdk = { path = "../sdk-rust" }

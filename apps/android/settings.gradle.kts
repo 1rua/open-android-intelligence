@@ -30,6 +30,7 @@ include(
     ":capability-sync-runtime",
     ":core-model",
     ":control-ports",
+    ":screen-control",
     ":gateway-client",
     ":conversation-domain",
     ":conversation-data",

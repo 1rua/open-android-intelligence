@@ -1278,6 +1278,10 @@ class GatewayRuntime(
                     session.accountId,session.deviceId,session.pairingGeneration,binding.storageKey,{ publisher.grantRevision },
                     isForeground = { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) })
                 executionDriver = executor
+                com.openandroidintelligence.control.ScreenHostRegistry.current?.connect(
+                    session.accountId, binding.pairingId, session.pairingGeneration.toLong(),
+                    localRevision = { pairingGrants.state.value?.revision ?: -1L },
+                )
                 sessionScope.launch { executor.confirmation.collect { deviceConfirmation.value = it } }
                 sessionScope.launch(Dispatchers.IO) {
                     while (isActive) {
@@ -1288,6 +1292,7 @@ class GatewayRuntime(
                 }
                 sessionScope.launch(Dispatchers.IO) {
                     kotlinx.coroutines.flow.combine(pairingGrants.state,pluginHost.revision) { _, _ -> Unit }.collectLatest {
+                        com.openandroidintelligence.control.ScreenHostRegistry.current?.refreshAuthorization()
                         while (isActive) {
                             // OS permission changes and listener reconnects need
                             // reconciliation even when plugin/local-grant flows are unchanged.
@@ -1554,10 +1559,14 @@ class GatewayRuntime(
         val streamOwnerLock = Any()
         var authenticationBlocked = false
         var blockedSnapshot: GatewayProfile? = null
+        fun updateScreenConnection(live: Boolean) {
+            if (sessionJob === ownedJob) com.openandroidintelligence.control.ScreenHostRegistry.current?.connectionChanged(live)
+        }
         // The public connection fact is independent of login and device grants.
         sessionScope.launch {
             platformStatus.status.collect { status ->
                 if (sessionJob === ownedJob) _connectionStatus.value = status
+                updateScreenConnection(status == EventStreamStatus.LIVE)
                 if (status == EventStreamStatus.LIVE && sessionJob === ownedJob) {
                     withContext(Dispatchers.IO) { reconcileNotifications(force = true) }
                     _controller.value?.refreshThreads()
@@ -1575,9 +1584,14 @@ class GatewayRuntime(
                         while (isActive && sessionJob === ownedJob) {
                             try {
                                 _connectionStatus.value = EventStreamStatus.CONNECTING
-                                platformHttp.events().collect { _connectionStatus.value = EventStreamStatus.LIVE }
+                                updateScreenConnection(false)
+                                platformHttp.events().collect {
+                                    _connectionStatus.value = EventStreamStatus.LIVE
+                                    updateScreenConnection(true)
+                                }
                             } catch (cancelled: CancellationException) { throw cancelled }
                               catch (rejected: EventSessionRejectedException) {
+                                updateScreenConnection(false)
                                 // A fresh session was already tried once. A misconfigured
                                 // event channel cannot revoke the user's device grant.
                                 authenticationBlocked = true
@@ -1586,12 +1600,14 @@ class GatewayRuntime(
                                 _operationNotice.value = "Gateway 事件通道认证仍被拒绝，已暂停该通道。登录和本机授权已保留，请检查 Gateway 会话与设备认证配置。"
                                 return@launch
                             } catch (cause: RefreshOutcomeUnknownException) {
+                                updateScreenConnection(false)
                                 authenticationBlocked = true
                                 blockedSnapshot = renewal.current
                                 _connectionStatus.value = EventStreamStatus.FAILED
                                 _operationNotice.value = renewalFailureNotice(cause)
                                 return@launch
                             } catch (cause: Exception) {
+                                updateScreenConnection(false)
                                 if (sessionJob !== ownedJob) return@launch
                                 if (!isTransientConnectionFailure(cause)) {
                                     authenticationBlocked = true
@@ -1690,6 +1706,7 @@ class GatewayRuntime(
         bubbleWorkspace = null
         _controller.value?.close()
         executionDriver?.cancelAll()
+        com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
         executionDriver = null
         capabilityPublisher = null
         deviceCapabilityStatuses.value = emptyMap()

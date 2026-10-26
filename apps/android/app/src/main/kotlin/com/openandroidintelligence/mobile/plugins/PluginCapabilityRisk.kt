@@ -4,6 +4,7 @@ package com.openandroidintelligence.mobile.plugins
 internal object PluginCapabilityRisk {
     private val readOnly = setOf(
         "kernel.sms.read", "kernel.call-log.read", "kernel.notifications.read",
+        "kernel.screen.read", "kernel.screen.capture",
         "kernel.store.read", "kernel.store.keys", "kernel.scheduler.read",
         "kernel.background.run",
     )
