@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -137,6 +138,46 @@ internal fun NotificationAppPicker(
                             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                             modifier = Modifier.fillMaxWidth().testTag("notification-app-search"),
                         )
+                        if (apps != null && !loadFailed && candidates.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                            ) {
+                                val targetApps = if (filtered.isNotEmpty()) filtered else candidates
+                                val targetIds = remember(targetApps) { targetApps.map { it.packageId }.toSet() }
+                                val allTargetSelected = targetIds.isNotEmpty() && targetIds.all { it in selectedIds }
+
+                                TextButton(
+                                    onClick = {
+                                        if (allTargetSelected) {
+                                            onSelectionChanged((selectedIds - targetIds).toList())
+                                        } else {
+                                            onSelectionChanged((selectedIds + targetIds).toList())
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("notification-app-select-all"),
+                                ) {
+                                    Text(if (allTargetSelected) "取消全选" else "全选")
+                                }
+
+                                TextButton(
+                                    onClick = {
+                                        val newSelection = selectedIds.toMutableSet()
+                                        for (id in targetIds) {
+                                            if (id in newSelection) {
+                                                newSelection.remove(id)
+                                            } else {
+                                                newSelection.add(id)
+                                            }
+                                        }
+                                        onSelectionChanged(newSelection.toList())
+                                    },
+                                    modifier = Modifier.testTag("notification-app-invert-selection"),
+                                ) {
+                                    Text("反选")
+                                }
+                            }
+                        }
                         if (rejection != null) {
                             Text(
                                 text = "设置没有保存成功：$rejection",

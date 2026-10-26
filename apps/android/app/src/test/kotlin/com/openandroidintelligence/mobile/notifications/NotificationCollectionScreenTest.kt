@@ -433,4 +433,45 @@ class NotificationCollectionScreenTest {
 
         compose.onNodeWithText("设置没有保存成功：REVISION_STALE").assertIsDisplayed()
     }
+
+    @Test
+    fun select_all_and_invert_selection_work_correctly() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
+        render(policy, FakeBindingPort())
+        openPicker()
+        waitForApp("com.example.chat")
+
+        // 初始已选 mail，未选 chat 与 othermail
+        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
+        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOff()
+
+        // 点击全选
+        compose.onNodeWithTag("notification-app-select-all").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
+        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOn()
+
+        // 点击反选（全选状态反选后应全部取消勾选）
+        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOff()
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
+        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOff()
+
+        // 勾选 chat，再点击反选，chat 变 off，mail 和 othermail 变 on
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
+        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
+        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
+        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOn()
+
+        // 保存并验证策略
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("com.example.mail", "com.example.othermail"), policy.snapshot().packageIds)
+    }
 }
