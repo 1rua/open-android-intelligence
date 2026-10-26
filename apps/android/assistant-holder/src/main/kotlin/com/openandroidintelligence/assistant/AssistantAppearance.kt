@@ -30,7 +30,7 @@ internal data class AssistantAppearance(
     }
 
     fun resolvedPalette(): ThemePalette =
-        runCatching { ThemePalette.valueOf(palette) }.getOrNull() ?: ThemePalette.INDIGO
+        runCatching { ThemePalette.valueOf(palette) }.getOrNull() ?: ThemePalette.EMBER
 }
 
 /** 兜底读取：只在没有桥接状态时使用，语义是"上次保存的偏好"而不是实时值。 */
@@ -38,8 +38,8 @@ internal fun readFallbackAppearance(context: Context): AssistantAppearance {
     val prefs = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     return AssistantAppearance(
         theme = prefs.getString(KEY_THEME, THEME_SYSTEM) ?: THEME_SYSTEM,
-        dynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, true),
-        palette = prefs.getString(KEY_PALETTE, ThemePalette.INDIGO.name) ?: ThemePalette.INDIGO.name,
+        dynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, false),
+        palette = prefs.getString(KEY_PALETTE, ThemePalette.EMBER.name) ?: ThemePalette.EMBER.name,
         reduceMotion = prefs.getBoolean(KEY_REDUCE_MOTION, false),
     )
 }

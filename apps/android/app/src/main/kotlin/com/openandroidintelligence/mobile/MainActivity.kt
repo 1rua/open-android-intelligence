@@ -429,6 +429,8 @@ class MainActivity : ComponentActivity() {
                 if (onboardingVisible) {
                     OnboardingFlow(
                         state = onboardingState,
+                        appearanceSettings = appearanceSettings,
+                        appearancePreferences = app.appearancePreferences,
                         onStageChange = onboardingPreferences::setStage,
                         onGatewaySelected = onboardingPreferences::setLastGateway,
                         onFinished = {

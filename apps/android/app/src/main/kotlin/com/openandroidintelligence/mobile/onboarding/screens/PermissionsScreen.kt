@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHeader
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.mobile.onboarding.PERMISSION_NOTICE_BODY
 import com.openandroidintelligence.mobile.onboarding.PERMISSION_NOTICE_TITLE
@@ -91,64 +92,12 @@ fun PermissionsScreen(
             .fillMaxSize()
             .testTag("onboarding-permissions"),
     ) {
-        // ===== 顶部：返回 + 步骤 =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceSmall),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.semantics { contentDescription = "返回" },
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = "SYSTEM ACCESS",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 2.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "02/04",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 1.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
-        }
-
-        // ===== 进度刻度：瑞士式刻度尺 =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Dimensions.ScreenHorizontal)
-                .padding(bottom = Dimensions.SpaceCompact),
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            repeat(4) { index ->
-                val active = index <= 1
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(2.dp)
-                        .background(
-                            when {
-                                index == 1 -> MaterialTheme.colorScheme.tertiary
-                                active -> MaterialTheme.colorScheme.onSurfaceVariant
-                                else -> MaterialTheme.colorScheme.outlineVariant
-                            },
-                        ),
-                )
-            }
-        }
+        OnboardingStepHeader(
+            categoryTitle = "SYSTEM ACCESS",
+            stepIndex = 3,
+            totalSteps = 5,
+            onBack = onBack,
+        )
 
         Column(
             modifier = Modifier

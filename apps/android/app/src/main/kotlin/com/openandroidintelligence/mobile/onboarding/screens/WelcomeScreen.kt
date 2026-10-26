@@ -2,6 +2,8 @@ package com.openandroidintelligence.mobile.onboarding.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -84,23 +86,38 @@ fun WelcomeScreen(
                         .fillMaxSize()
                         .halftone(alpha = 0.22f, dotSpacing = 7.dp),
                 )
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(contentAlignment = Alignment.BottomEnd) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
                         Text(
-                            text = "OAI",
+                            text = "OA",
                             fontSize = 54.sp,
                             fontWeight = FontWeight.ExtraBold,
                             letterSpacing = (-2.4).sp,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
-                        // 图标上的那颗橙点：全页唯一的高饱和色，位置与图标一致（字标右上）。
-                        Box(
-                            modifier = Modifier
-                                .padding(bottom = 34.dp)
-                                .size(11.dp)
-                                .clip(CircleShape)
-                                .background(accent),
-                        )
+                        Box(contentAlignment = Alignment.TopCenter) {
+                            Text(
+                                text = "I",
+                                fontSize = 54.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = (-2.4).sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            // 图标同款小橙点：位于 "I" 顶部中央上方
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(accent),
+                            )
+                        }
                     }
                     Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
                     Text(
@@ -171,7 +188,7 @@ fun WelcomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
-                // ===== 参数表：四行真实信息 =====
+                // ===== 参数表：两行清晰明了的说明 =====
                 Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
                 Box(
                     modifier = Modifier
@@ -179,11 +196,6 @@ fun WelcomeScreen(
                         .height(Dimensions.StrokeHairline)
                         .background(MaterialTheme.colorScheme.outlineVariant),
                 )
-                TelemetryRow(
-                    key = "Setup",
-                    value = GatewayTutorials.ALL.joinToString(" · ") { it.shortName },
-                )
-                TelemetryRow(key = "Protocol", value = "Gateway Protocol v2.1 · 数据直连")
                 TelemetryRow(key = "Storage", value = "凭据存于 Android Keystore · 自托管 Core")
                 TelemetryRow(key = "Device", value = "设备能力默认拒绝 · 逐项授权")
 
@@ -222,14 +234,6 @@ fun WelcomeScreen(
                     style = MaterialTheme.typography.labelLarge,
                 )
             }
-            Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
-            Text(
-                text = "约 2 分钟 · 可随时跳过",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 0.8.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
         }
     }
 }

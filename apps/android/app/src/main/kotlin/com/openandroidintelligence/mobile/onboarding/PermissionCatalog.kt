@@ -6,18 +6,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 
-/**
- * 权限的分组。
- *
- * 分组不是视觉分类，而是**对用户承诺不同的东西**：
- * - [REQUIRED] 关掉会明显损失主要体验，但仍然不阻断登录；
- * - [OPTIONAL] 纯增强，跳过没有任何后果；
- * - [DEVICE_CAPABILITY] 授予后也只是「应用能访问」，Agent 能不能用还要另过一道授权。
- */
-enum class PermissionGroup {
-    REQUIRED,
-    OPTIONAL,
-    DEVICE_CAPABILITY,
+/** 权限的分组。 */
+enum class PermissionGroup(val label: String) {
+    REQUIRED("基础功能"),
+    OPTIONAL("可选增强"),
+    DEVICE_CAPABILITY("设备能力"),
 }
 
 /** 该权限在当前设备/当前插件状态下是否真的存在。 */
@@ -99,7 +92,7 @@ fun buildVisiblePermissions(
             PermissionEntry(
                 id = "microphone",
                 displayName = "麦克风",
-                purpose = "发送语音消息。仅在按下录音时采集，音频直接发往你的 Gateway。",
+                purpose = "发送语音消息。仅在按下录音时采集，音频直接发往你的 Agent，不进行转录。",
                 group = PermissionGroup.OPTIONAL,
                 isSpecialSystemAccess = false,
                 availability = PermissionAvailability.AVAILABLE,
@@ -110,7 +103,7 @@ fun buildVisiblePermissions(
             PermissionEntry(
                 id = "screen_capture",
                 displayName = "屏幕采集",
-                purpose = "圈选屏幕内容发送给 Agent。每次使用都需系统弹窗确认，不会后台持续录屏。",
+                purpose = "圈选屏幕内容发送给 Agent。",
                 group = PermissionGroup.OPTIONAL,
                 // 投屏授权由系统 MediaProjection 对话框现场询问，没有可持久查询的状态。
                 isSpecialSystemAccess = true,
@@ -119,46 +112,42 @@ fun buildVisiblePermissions(
             ),
         )
 
-        // ---- 设备能力：完全由插件存在性决定 ----
-        if (KERNEL_NOTIFICATIONS_READ in enabledPluginPrimitives) {
-            add(
-                PermissionEntry(
-                    id = "notification_access",
-                    displayName = "通知使用权",
-                    purpose = "仅当安装并启用通知插件后需要。用于让 Agent 查询通知，需在系统设置中手动开启。",
-                    group = PermissionGroup.DEVICE_CAPABILITY,
-                    isSpecialSystemAccess = true,
-                    availability = PermissionAvailability.AVAILABLE,
-                    manifestPermissions = emptyList(),
+        // ---- 设备能力扩展（短信、通话、通知使用权等） ----
+        add(
+            PermissionEntry(
+                id = "sms",
+                displayName = "短信读取",
+                purpose = "用于让 Agent 查询短信验证码与消息通知。",
+                group = PermissionGroup.DEVICE_CAPABILITY,
+                isSpecialSystemAccess = false,
+                availability = PermissionAvailability.AVAILABLE,
+                manifestPermissions = listOf(Manifest.permission.READ_SMS),
+            ),
+        )
+        add(
+            PermissionEntry(
+                id = "call_log",
+                displayName = "通话与电话状态",
+                purpose = "用于让 Agent 查询通话记录或感知来电状态，协助进行电话管理。",
+                group = PermissionGroup.DEVICE_CAPABILITY,
+                isSpecialSystemAccess = false,
+                availability = PermissionAvailability.AVAILABLE,
+                manifestPermissions = listOf(
+                    Manifest.permission.READ_CALL_LOG,
                 ),
-            )
-        }
-        if (KERNEL_SMS_READ in enabledPluginPrimitives) {
-            add(
-                PermissionEntry(
-                    id = "sms",
-                    displayName = "短信读取",
-                    purpose = "仅当安装并启用短信插件后需要。用于让 Agent 查询短信，应用本身不读取这些数据。",
-                    group = PermissionGroup.DEVICE_CAPABILITY,
-                    isSpecialSystemAccess = false,
-                    availability = PermissionAvailability.AVAILABLE,
-                    manifestPermissions = listOf(Manifest.permission.READ_SMS),
-                ),
-            )
-        }
-        if (KERNEL_CALL_LOG_READ in enabledPluginPrimitives) {
-            add(
-                PermissionEntry(
-                    id = "call_log",
-                    displayName = "通话记录读取",
-                    purpose = "仅当安装并启用通话记录插件后需要。用于让 Agent 查询通话记录。",
-                    group = PermissionGroup.DEVICE_CAPABILITY,
-                    isSpecialSystemAccess = false,
-                    availability = PermissionAvailability.AVAILABLE,
-                    manifestPermissions = listOf(Manifest.permission.READ_CALL_LOG),
-                ),
-            )
-        }
+            ),
+        )
+        add(
+            PermissionEntry(
+                id = "notification_access",
+                displayName = "通知使用权",
+                purpose = "用于让 Agent 查询系统其它应用通知与提醒，需在系统设置中手动开启。",
+                group = PermissionGroup.DEVICE_CAPABILITY,
+                isSpecialSystemAccess = true,
+                availability = PermissionAvailability.AVAILABLE,
+                manifestPermissions = emptyList(),
+            ),
+        )
     }
 
     // 稳定排序：REQUIRED → OPTIONAL → DEVICE_CAPABILITY，同组保持声明顺序。

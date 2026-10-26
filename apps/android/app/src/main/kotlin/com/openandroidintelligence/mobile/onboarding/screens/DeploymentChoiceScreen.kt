@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHeader
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import androidx.compose.foundation.clickable
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
@@ -80,41 +81,12 @@ fun DeploymentChoiceScreen(
             .fillMaxSize()
             .testTag("onboarding-deployment"),
     ) {
-        // ===== 顶部导航 =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceSmall),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.semantics { contentDescription = "返回" },
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = "CORE SETUP",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 2.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "03/04",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 1.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
-        }
-
-        StepRail(activeIndex = 2)
+        OnboardingStepHeader(
+            categoryTitle = "CORE SETUP",
+            stepIndex = 4,
+            totalSteps = 5,
+            onBack = onBack,
+        )
 
         Column(
             modifier = Modifier
@@ -194,8 +166,7 @@ fun DeploymentChoiceScreen(
                     )
                     Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
                     Text(
-                        text = "完成引导不代表 OAI Core 已连接。登录成功只说明凭据有效，" +
-                            "真实连接状态始终以「未连接 / 已连接」指示为准。",
+                        text = "暂不提供统一云端服务，需连接自托管服务器",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
