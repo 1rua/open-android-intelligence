@@ -5,7 +5,27 @@
 Hermes GatewayCore，不在 Adapter 内另写排队、超时、取消或结果状态机。
 Android Platform Kernel、`.alp` 签名、WASM 沙箱与本地确认机制保持原样。
 
+同一个进程对外提供三套接口：Android 设备协议 `/open-android-intelligence/v2`、
+设备 CLI/API/MCP `/open-android-intelligence/core/v1`、原生 Agent 会话
+`/open-android-intelligence/v2/agents`。每条结论的可核对依据见
+[架构事实基线](../docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。
+
 ## 安装与启动
+
+### 一键安装脚本（推荐）
+
+使用 curl 命令一键完成依赖检查、环境安装、已存在 Agent 适配器探测与初始化配置向导：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+```
+
+或在仓库根目录直接运行：
+```sh
+./scripts/install.sh
+```
+
+### 手动安装与启动
 
 Python 3.11+。在仓库根目录安装，契约来自本仓库的 `gateway-contract`：
 
@@ -34,10 +54,12 @@ oai capabilities
 ```
 
 `account` 和 `policy` 为服务端本机管理命令。远程 CLI/API/MCP 请求不接受账号或设备身份覆盖；
-登录凭据绑定该账号下已配对设备、配对代次、授权版本和过期时间。撤销或授权变更立即使旧凭据失效。
-客户端配置以 `0600` 保存，退出使用 `oai ... logout` 撤销凭据。
-上述登录和后续命令使用同一个默认客户端配置。需要自定义路径时，每条客户端命令均加
-`--client-config`。在操作人的独立终端环境登录，避免给共享原生 Agent 的运行身份保存设备凭据。
+登录凭据绑定该账号下已配对设备、配对代次、授权版本和过期时间，默认有效期 86400 秒。
+撤销或授权变更立即使旧凭据失效。
+客户端配置默认写入 `~/.config/oai/client.json`，以 `0600` 保存，退出使用 `oai ... logout`
+撤销凭据。上述登录和后续命令使用同一个默认客户端配置。需要自定义路径时，每条客户端命令均加
+`--client-config`。`--device` 取 `oai devices` 返回的设备 ID。在操作人的独立终端环境登录，
+避免给共享原生 Agent 的运行身份保存设备凭据。
 
 ## 设备 CLI / API / MCP
 
@@ -64,6 +86,21 @@ Android 继续使用原 `/open-android-intelligence/v2` 的签名、配对及设
 会话使用本次新版 App 的 `/agents` 接口；旧 `/conversations` 聊天 API 在 Core 不可用，
 对应可选会话能力不会宣告。旧 App 聊天需保留或回滚到原 Gateway。
 成功协商响应头 `X-OAI-Agent-Sessions: 1` 用于新版 App 选择原生会话界面，旧宿主无需接收 `/agents` 探测。
+
+## 会话接口
+
+原生会话路由位于 `/open-android-intelligence/v2/agents`：
+`GET /agents`、`GET|POST /agents/{agent}/sessions`、
+`GET /agents/{agent}/sessions/{id}/history`、
+`POST /agents/{agent}/sessions/{id}/messages`（SSE，`type: delta/done/error`）、
+`PATCH /agents/{agent}/sessions/{id}`（`action: rename|archive`）、
+`DELETE /agents/{agent}/sessions/{id}`、
+`POST /agents/{agent}/sessions/{id}/cancel`。
+
+能力为 `list`、`history`、`create`、`send`、`rename`、`archive`、`delete`、`cancel`、
+`stream` 九项布尔值，缺失按 false；`sessionScope` 取 `account` 或 `deployment`。
+认证先于 Agent 与会话查找，每个写操作服务端再次检查能力声明。流中断不伪造成功：
+未收到终态事件时明确发出 `AGENT_STREAM_INTERRUPTED`。
 
 ## 接入原生 Agent
 
@@ -109,6 +146,7 @@ DSH 接入宿主的轻量 Session Adapter：
 
 宿主安装方式见 [DSH Session Adapter](../integrations/dsh-session-adapter/README.md)。
 它使用原生 `sessionQuery.listSessions/readSurface` 与 `sessionController`，不处理设备调用。
+删除与归档因尚未核实可完整读取的原生生命周期接口而不宣告，App 侧对应操作禁用。
 环境变量引用的适配器令牌用于 Core 到宿主的内部认证，不能作为 Core 账号或设备凭据。
 
 Hermes 通过宿主中的 Session Adapter 保留账号映射：
@@ -140,5 +178,29 @@ npm ci
 npx vitest run integrations/dsh-session-adapter/adapter.test.js
 ```
 
+固定 Hermes 原生 SDK 的契约回归需要额外设置：
+
+```sh
+export HERMES_SDK_ROOT=/按固定 checkout 75b083e9 检出的 Hermes 源码目录
+python -m pip install PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
+PYTHONPATH=oai-core/src python -m pytest oai-core/tests/test_hermes_native.py -q
+```
+
+未设置 `HERMES_SDK_ROOT` 时该项明确跳过，不能把跳过当作宿主兼容性已通过。
+本仓库最近一次全量结果为 63 项 Python 通过、16 项 DSH 桥通过，均无跳过（见
+[验证记录](../docs/reviews/2026-10-25-unified-core-validation.zh-CN.md)）。
+
 测试中的模型/宿主为原生协议替身；实际部署还需对应 Hermes/DSH/Codex 宿主与 Android
 设备进行联调。真机本地确认、真实模型输出和服务端网络可达性不能由单元测试替代。
+
+## 文档导航
+
+| 文档 | 内容 |
+| --- | --- |
+| [架构事实基线](../docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) | 每条行为对应的代码位置，文档更新的事实来源 |
+| [统一 Core 迁移方案](../docs/plans/2026-10-25-unified-core-migration.zh-CN.md) | 协议增量、分阶段交付、数据兼容与回滚 |
+| [原生会话适配器部署](../docs/plans/2026-10-25-native-session-adapters.zh-CN.md) | Hermes/DSH 宿主接入、环境变量、验证与回滚 |
+| [Codex 设备隔离边界](docs/codex-device-isolation.zh-CN.md) | 共享会话与设备授权的边界与拒绝条件 |
+| [DSH Session Adapter](../integrations/dsh-session-adapter/README.md) | DSH 宿主侧 Cordis bundle 安装 |
+| [Hermes Session Adapter](../integrations/hermes-session-adapter/README.md) | Hermes 宿主侧仅会话插件安装 |
+| [Gateway Protocol v2](../docs/contracts/gateway-protocol-v2.md) | 设备协议与本次扩展的规范正文 |

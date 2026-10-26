@@ -1,6 +1,6 @@
 # 原生会话适配器部署与验证
 
-本文件记录统一 Core 中 Hermes 与 DSH 的真实接入边界。手机只连接 `oai serve`；下面的 loopback 会话桥只供 Core 调用，不是手机连接入口，也不提供设备请求接口。
+本文件记录统一 Core 中 Hermes、DSH 与 Codex 的真实接入边界。手机只连接 `oai serve`；下面的 loopback 会话桥只供 Core 调用，不是手机连接入口，也不提供设备请求接口。各行为的代码依据见[架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。
 
 ## 调研证据
 
@@ -85,6 +85,30 @@ Hermes 会话列表仅返回既有账号绑定到真实原生 Session ID 的记�
 
 桥接模式没有自行调用设备的授权。需要 Android 设备能力时，Hermes 工具应使用统一 Core CLI/MCP 的当前账号凭据；不得重新启用旧 Gateway 设备调度器。
 
+## Codex
+
+Codex 适配器通过配置明确指定的 `command` 数组和实例目录接入原生 app-server：
+
+```json
+{
+  "id": "codex",
+  "name": "Codex",
+  "type": "codex",
+  "command": ["codex", "app-server"],
+  "codexHome": "../runtime/codex",
+  "envFrom": {"OPENAI_API_KEY": "CODEX_MODEL_API_KEY"}
+}
+```
+
+- 原生 app-server 的 JSON-RPC 接口（`thread/*`、`turn/*`）提供会话列表、历史、创建、发送、重命名、归档和取消；原生 `delete` 明确不支持（能力位设为 `false`）。
+- 模型提供方凭据只能通过 `envFrom` 显式映射到对应环境变量；子进程只继承 `RUNTIME_ENV` 及 `LC_*` 白名单变量，不继承 Core 的完整环境。
+- 启动前强行检测安全边界：若存在 `~/.config/oai/client.json`，或其 `config.toml` 中配置了调用 `oai` 或带 `OAI_` 变量的 MCP server，则拒绝启动并报错 `AGENT_UNSAFE_DEVICE_CREDENTIALS`。
+- 原生审批请求（如命令执行或文件修改审批）会被显式拒绝并向流返回 `NATIVE_APPROVAL_UNSUPPORTED`，不伪造用户批准。详见 [Codex 设备隔离边界](../../oai-core/docs/codex-device-isolation.zh-CN.md)。
+
+## 请求预算与编码
+
+原生会话请求在 Core 与 Hermes/DSH 会话桥均须严格小于 1 MiB（1048576 字节）；消息文本另保留 262144 字符上限，标题上限 1000 字符。Core 在记录写操作或开启 SSE 前检查紧凑 JSON 的实际 UTF-8 字节数，超限返回 HTTP 413 `MESSAGE_TOO_LARGE`，不创建未知结果的操作回执。桥传输使用紧凑 UTF-8 JSON，避免多字节文本转成更大的 ASCII 转义序列。
+
 ## 兼容、回滚与验收
 
 本阶段不改 Hermes 原生历史存储格式、原账号目录、SessionStore keys 或压缩链。Core 的账号/设备库与 Hermes 会话桥目录应分别配置，不对相同账号库双写。回滚时先停 Core 与会话桥，再停用新 Hermes 插件、启用原插件与原平台配置，恢复手机旧服务器配置；仅在变更前的备份上恢复文件，不反向拷贝 Core 设备库覆盖 Hermes 数据。
@@ -100,9 +124,9 @@ npm test -- integrations/dsh-session-adapter/adapter.test.js
 
 ```sh
 python -m pip install PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
-HERMES_SDK_ROOT=.toolchains/hermes-native-sdk PYTHONPATH=oai-core/src python -m pytest oai-core/tests/test_hermes_native.py
+HERMES_SDK_ROOT=.toolchains/hermes-native-clean-75b083e PYTHONPATH=oai-core/src python -m pytest oai-core/tests/test_hermes_native.py
 ```
 
-该测试在新的隔离子进程和临时 Hermes Home 中使用真实 `parse_manifest_file`、`PluginContext`、平台注册、`SessionStore` 和 `SessionDB`，验证原生创建/历史/标题/归档/删除、账号隔离、实际 BasePlatformAdapter 消息生命周期、重新配对后的取消及不支持审批的明确拒绝。模型回调仅返回合成文本，不使用模型凭据，不读取真实用户目录。未设置 SDK checkout 时此项明确跳过，不能把跳过当作宿主兼容性已通过。
+该测试在新的隔离子进程和临时 Hermes Home 中使用真实 `parse_manifest_file`、`PluginContext`、平台注册、`SessionStore` 和 `SessionDB`，验证原生创建/历史/标题/归档/删除、账号隔离、实际 BasePlatformAdapter 消息生命周期、重新配对后的取消及不支持审批的明确拒绝。模型回调仅返回合成文本，不使用模型凭据，不读取真实用户目录。未设置 SDK checkout 或缺少依赖时此项明确跳过或失败，不能把跳过当作宿主兼容性已通过。本地全量测试在配置 SDK 路径后实测 63 项通过、0 项跳过。
 
 发布前仍需在实际 Hermes/DSH 运行环境和实体 Android 设备上验证宿主版本、插件加载、旧会话读取、App/终端交叉创建、原生流式回复、账号切换、设备授权隔离及敏感操作本机确认；协议与宿主 seam 测试不能冒充真实模型推理或真机验收。

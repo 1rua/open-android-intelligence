@@ -1,6 +1,6 @@
 # open-android-intelligence 领域语境
 
-open-android-intelligence 让 Android 设备连接到用户拥有的 Agent Gateway，同时确保手机端始终是本机数据与设备操作的最终授权者。产品由极简 Android 宿主、可安装设备插件和 Agent 宿主内的 Gateway 适配器组成。
+open-android-intelligence 让 Android 设备连接到用户拥有的 Agent Gateway，同时确保手机端始终是本机数据与设备操作的最终授权者。产品由极简 Android 宿主、可安装设备插件、Agent 宿主内的 Gateway 适配器，以及可独立安装部署、把设备权威与多个 Agent 原生会话接入收拢到同一进程里的 OAI Core 组成。
 
 ## Android 端
 
@@ -127,24 +127,68 @@ _Avoid_: 内置功能、系统插件、强制安装
 ## Agent 端
 
 **Gateway**:
-属于单个 Gateway 账号的逻辑 open-android-intelligence 通信入口；一台手机可以保存多个 Gateway，一个 Gateway 可以配对多台手机，而同一适配器部署可以承载多个彼此隔离的 Gateway。
+属于单个 Gateway 账号的逻辑 open-android-intelligence 通信入口；一台手机可以保存多个 Gateway，一个 Gateway 可以配对多台手机，而同一部署可以承载多个彼此隔离的 Gateway。
 _Avoid_: 物理插件进程、共享租户、独立 Device Bridge
 
 **Gateway 部署（Gateway Deployment）**:
-安装在一个 Hermes 或 OpenClaw Agent 宿主中的物理 Gateway 适配器运行单元；它可以承载多个账号，但不允许账号之间共享逻辑 Gateway 状态。
+承载 Gateway 适配器或原生会话接入的一套物理运行单元；无论入口由宿主内的适配器提供还是由 OAI Core 这类独立进程提供，它都可以承载多个账号，但不允许账号之间共享逻辑 Gateway 状态。
 _Avoid_: 逻辑 Gateway、用户账号、中央 Bridge
 
 **Gateway 账号（Gateway Account）**:
 由 Gateway 部署所有者创建或邀请、用于标识一个 Agent 用户的稳定逻辑身份；每个账号拥有一个独立逻辑 Gateway，用户名只是可变显示与登录名，不作为隔离主键。
 _Avoid_: 用户名、设备身份、公开自注册用户
 
+**OAI Core**:
+一个独立可安装、独立运行的统一服务进程，用同一个监听地址同时承载设备权威与多个 Agent 宿主的原生会话接入；它是一个交付形态，不是各宿主适配器共同遵守的行为规范。
+_Avoid_: Gateway Core、Core 服务、统一网关
+
 **Gateway Core**:
-Hermes 与 OpenClaw 适配器共同遵守的 Gateway 行为、数据边界与一致性测试，包括配对、设备协议、消息可靠性、附件生命周期和审计语义；它不表示两端必须运行同一个二进制文件。
+被 OAI Core 复用的上游设备协议行为与一致性规范，固定来自提交 `b64dda00a0de9ff1a95a375dcf92f62b5a1027b3` 的实现，覆盖配对、设备协议、消息可靠性、附件生命周期和审计语义；OAI Core 直接依赖该实现而非重写设备状态机。它描述跨宿主必须一致的行为，不表示各形态必须运行同一个二进制文件。
 _Avoid_: 通用宿主插件、共享二进制、Docker Bridge
 
 **Gateway 适配器（Gateway Adapter）**:
-安装到特定 Agent 宿主并把 open-android-intelligence 注册为消息入口的宿主插件；Hermes 与 OpenClaw 分别拥有自己的适配器，并共享 Gateway Core，一个适配器部署可以承载多个 Gateway 账号。
+安装到特定 Agent 宿主并把 open-android-intelligence 注册为消息或会话入口的宿主插件；Hermes 与 OpenClaw 分别拥有自己的适配器并共享 Gateway Core，一个适配器部署可以承载多个 Gateway 账号。宿主也可以只提供原生会话接入这一形态，此时它不注册任何设备工具、不承载设备授权。
 _Avoid_: 单一跨宿主二进制、Bridge 客户端
+
+**原生会话适配器（Session Adapter）**:
+Gateway 适配器的一种形态，只把某个 Agent 宿主自己拥有的会话接入统一服务进程，不为该宿主注册任何设备工具或设备授权。它的价值在于让不同 Agent 的会话出现在同一个入口里，而对话内容始终留在宿主侧。
+_Avoid_: 设备适配器、聊天后端、会话镜像
+
+**会话接入范围（Session Scope）**:
+声明一个被接入的 Agent 实例按什么边界隔离其会话，只有账号隔离与部署共享两种取值；以账号密码建立会话身份的宿主必须选择账号隔离，不得以部署整体为名让不同账号看到彼此会话。
+_Avoid_: 可见范围、共享级别、设备授权范围
+
+**设备协议面（Device Protocol Surface）**:
+Android 设备沿用既有配对、认证、签名与设备事件语义到达服务进程所经过的接口面；它是手机作为最终授权者的那条通道，不承载原生会话读写。
+_Avoid_: 设备调用面、原生会话面、聊天通道
+
+**设备调用面（Device Invocation Surface）**:
+服务端本机的命令行、接口与工具入口凭受限设备凭据调用设备能力所经过的接口面；它复用设备协议面的账号、配对与授权事实，但不携带手机侧授权，也不改变手机的本机确认边界。
+_Avoid_: 设备协议面、账号登录会话、管理员入口
+
+**原生会话面（Native Session Surface）**:
+宿主原生 Agent 会话的列举、读取、创建、发送与生命周期操作所经过的接口面；它不接受设备身份或账号覆盖，也不因会话可见而给出任何设备授权。
+_Avoid_: 聊天路由、设备协议面、Gateway 对话线程
+
+**原生会话（Native Session）**:
+由 Agent 宿主拥有并维护的真实会话，OAI 一侧只按宿主声明的能力读写它，不另建、不缓存也不合并出第二份聊天历史；会话的编辑、删除与生成状态以宿主为唯一权威。
+_Avoid_: 对话线程、本地对话镜像、Gateway 会话副本
+
+**原生操作回执（Native Operation Receipt）**:
+一次原生会话写操作完成后留下的幂等凭据，只记录请求摘要与该次管理动作的结果，用于重复请求返回同一答案、未知结果不猜测成功；它不包含聊天正文。
+_Avoid_: 消息记录、对话历史副本、审计正文
+
+**部署共享会话（Deployment-Shared Session）**:
+同一部署内经认证的各个账号共同可见的原生会话，用于让协作者看到同一个 Agent 的对话；共享的只有会话可见性，任何账号的设备授权、配对与凭据都不随之共享或继承。
+_Avoid_: 共享设备授权、跨账号 Gateway、团队租户
+
+**会话请求预算（Session Request Budget）**:
+原生会话面接受的一次请求的体积上限，即紧凑后的 UTF-8 JSON 必须严格小于一 MiB；超限请求在记录回执或开始流式输出之前被明确拒绝，因此不会留下结果未知的操作。
+_Avoid_: 附件大小限制、Gateway 消息上限、内存配额
+
+**受限设备凭据（Scoped Device Credential）**:
+为服务端本机的设备调用签发、同时绑定账号、设备、配对代次与授权版本的短期凭据；配对解除、改密或授权变更即刻使其失效，它只授权设备能力调用，不构成账号身份，也不授予任何原生会话可见性。
+_Avoid_: 账号密码、刷新凭据、会话桥令牌、永久令牌
 
 **旧 Bridge（Legacy Bridge）**:
 被 Gateway Protocol v2 与宿主内 Gateway 适配器取代的独立 Docker/systemd Device Bridge；迁移期间仅作为既有安全语义、存储逻辑、测试和 tsnet 证据的冻结来源，不再获得新功能。
@@ -203,8 +247,8 @@ Android 宿主为每个 Gateway 保存的、最近一次由用户明确打开、
 _Avoid_: 最近 Gateway 认证会话、最新后台事件、全局默认线程
 
 **Agent 对话会话（Agent Conversation Session）**:
-Hermes 或 OpenClaw 拥有并与一个 open-android-intelligence 对话线程绑定的对话运行上下文；它不等于 Gateway 账号登录会话，也不作为 Android 的认证身份。
-_Avoid_: Gateway sessionId、账号登录会话、设备会话
+Agent 宿主拥有并与一个 open-android-intelligence 对话线程绑定的对话运行上下文；接入的宿主可以是消息型适配器宿主，也可以只提供原生会话接入。它不等于 Gateway 账号登录会话，也不作为 Android 的认证身份。
+_Avoid_: Gateway sessionId、账号登录会话、设备会话、原生会话面
 
 **Agent 命令目录（Agent Command Catalog）**:
 当前 Agent 按 Gateway 和语言声明、由该 Gateway 全部对话线程共用的版本化斜杠命令及展示说明集合；Android 用它帮助用户发现命令，但目录本身不授予任何设备能力。
@@ -215,8 +259,8 @@ _Avoid_: Android 权限目录、插件授权、远程界面代码
 _Avoid_: App 本地命令、设备自动化 DSL、插件权限
 
 **新建对话（Create Conversation）**:
-由 Gateway 创建接口或用户主动发送的 Agent `/new` 命令建立的不继承原对话上下文的新对话线程与 Agent 对话会话；App 新建按钮直接调用 Gateway 创建接口，它不改变 Gateway 账号登录会话、配对或插件授权。
-_Avoid_: 重新登录、重置 Gateway sessionId、删除旧对话
+由原生会话面的创建入口或用户主动发送的 Agent `/new` 命令建立的不继承原对话上下文的新对话线程与 Agent 对话会话；App 新建按钮请求的是该 Agent 宿主自己的原生会话创建能力，宿主未声明支持时该入口不可用，它不改变 Gateway 账号登录会话、配对或插件授权。
+_Avoid_: 重新登录、重置 Gateway sessionId、删除旧对话、Gateway 聊天创建接口
 
 **本地对话镜像（Local Conversation Mirror）**:
 Android 按 Gateway、账号和安装实例隔离保存的完整加密对话持久副本，可供离线阅读并跟随 Agent 端编辑或删除更新；跨设备长期权威仍属于 Agent 工作状态。
@@ -283,8 +327,8 @@ Gateway 暂停对外入口、以事务迁移协议状态并验证后再恢复服
 _Avoid_: 在线就地修改、可携带备份、尽力迁移
 
 **Agent 工作状态（Agent Working State）**:
-Hermes 或 OpenClaw 拥有的对话、任务、模型运行和长期记忆状态；它不作为设备配对、防重放或设备审计的权威来源。
-_Avoid_: Gateway 协议状态、设备授权状态
+Agent 宿主自己拥有的对话、任务、模型运行和长期记忆状态；OAI 不复制它作为第二份历史，也不把它当作设备配对、防重放或设备审计的权威来源。
+_Avoid_: Gateway 协议状态、设备授权状态、本地对话镜像
 
 **Gateway Protocol v2**:
 Android 宿主与 Agent 内 Gateway 之间的新一代版本化设备协议；它复用既有安全语义，但不兼容以独立 Device Bridge 为中心的旧网络接口。
@@ -327,7 +371,7 @@ _Avoid_: 身份克隆、Bridge v1 兼容、静默授权继承
 _Avoid_: 共享数据库行过滤、文件名前缀隔离、部署目录
 
 **Gateway 暴露方式（Gateway Exposure Mode）**:
-Gateway Protocol v2 获得 HTTPS 入口的部署选择，包括宿主已有路由、本机监听配合反向代理，或用户显式配置证书的直接监听；三者不得改变设备协议与认证语义。
+Gateway Protocol v2 获得 HTTPS 入口的部署选择，包括宿主已有路由、本机监听配合反向代理，或用户显式配置证书的直接监听；OAI Core 属于最后这一类由自己持有监听地址的形态。三者不得改变设备协议与认证语义。
 _Avoid_: 独立 Bridge、默认公网监听、协议变体
 
 **宿主兼容范围（Host Compatibility Range）**:
@@ -391,8 +435,8 @@ Android 设置中用于管理插件、权限、安全、审计和开发者信任
 _Avoid_: 无恢复入口的界面接管、WebView 管理台、插件拥有的紧急停用
 
 **Gateway 管理入口（Gateway Management Surface）**:
-Hermes 或 OpenClaw 宿主界面与具备等价能力的本地命令行入口，用于账号、邀请、证书、备份、插件状态和审计管理；敏感操作仍要求安全的本机确认。
-_Avoid_: 仅宿主界面、仅命令行、远程无确认管理
+Agent 宿主界面、统一服务进程自带的本机命令行，以及具备等价能力的其他本地入口，用于账号、邀请、证书、备份、插件状态、能力授权开关和审计管理；命令行只面向服务端本机运维，不构成远程管理面，敏感操作仍要求安全的本机确认。
+_Avoid_: 仅宿主界面、仅命令行、远程无确认管理、把本机管理命令当作设备凭据
 
 **密钥轮换证明（Key Rotation Proof）**:
 由旧信任材料对新密钥或证书作出的连续性声明；它减少重新建立身份的歧义，但敏感作者或证书变化仍可要求用户确认。
