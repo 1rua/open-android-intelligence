@@ -221,7 +221,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertEqual(environment["OAI_VERSION_CODE"], str(metadata["versionCode"]))
         self.assertEqual(environment["OAI_GIT_COMMIT"], metadata["commit"])
         self.assertEqual(environment["OAI_UPDATE_CHANNEL"], "preview")
-        self.assertEqual(metadata["versionName"], "2.1.1-dev")
+        self.assertEqual(metadata["versionName"], "2.2.1-dev")
 
     @patch.object(release, "git_value", return_value="true")
     def test_prepare_rejects_shallow_checkout_before_writing_outputs(self, _git):

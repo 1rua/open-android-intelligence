@@ -186,11 +186,34 @@ jobs:
       - name: Set the bundled plugins directory
         run: echo "OAI_BUNDLED_PLUGINS_DIR=$RUNNER_TEMP/signed-plugins" >> "$GITHUB_ENV"
 
+      - name: Prepare release signing key (optional)
+        working-directory: apps/android
+        env:
+          OAI_RELEASE_KEYSTORE_BASE64: ${{ secrets.OAI_RELEASE_KEYSTORE_BASE64 }}
+          OAI_RELEASE_KEYSTORE: ${{ runner.temp }}/oai-release.keystore
+          OAI_RELEASE_STORE_PASSWORD: ${{ secrets.OAI_RELEASE_STORE_PASSWORD }}
+          OAI_RELEASE_KEY_ALIAS: ${{ secrets.OAI_RELEASE_KEY_ALIAS }}
+          OAI_RELEASE_KEY_PASSWORD: ${{ secrets.OAI_RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$OAI_RELEASE_KEYSTORE_BASE64" ]; then
+            test -n "$OAI_RELEASE_STORE_PASSWORD"
+            test -n "$OAI_RELEASE_KEY_ALIAS"
+            test -n "$OAI_RELEASE_KEY_PASSWORD"
+            umask 077
+            printf '%s' "$OAI_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$OAI_RELEASE_KEYSTORE"
+            echo "OAI_RELEASE_KEYSTORE=$OAI_RELEASE_KEYSTORE" >> "$GITHUB_ENV"
+            echo "OAI_RELEASE_STORE_PASSWORD=$OAI_RELEASE_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "OAI_RELEASE_KEY_ALIAS=$OAI_RELEASE_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "OAI_RELEASE_KEY_PASSWORD=$OAI_RELEASE_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "Using unified GitHub Secrets release key for preview build."
+          fi
+
       - name: Build Full Debug APK
         working-directory: apps/android
         env:
           LC_ALL: C.UTF-8
         run: |
+          trap 'if [ -n "$OAI_RELEASE_KEYSTORE" ] && [ -f "$OAI_RELEASE_KEYSTORE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_RELEASE_KEYSTORE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keystore"; fi' EXIT
           chmod +x gradlew
           ./gradlew :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace
 
@@ -204,6 +227,7 @@ jobs:
           done
 
       - name: Verify Debug Signing Identity
+        if: env.OAI_RELEASE_KEYSTORE == ''
         env:
           LC_ALL: C.UTF-8
         run: bash apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk

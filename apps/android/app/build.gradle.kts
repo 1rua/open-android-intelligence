@@ -207,12 +207,27 @@ android {
         buildConfig = true
         compose = true
     }
+    val releaseStoreFile = providers.environmentVariable("OAI_RELEASE_KEYSTORE").orNull?.let(::file)
+    val releaseStorePassword = providers.environmentVariable("OAI_RELEASE_STORE_PASSWORD").orNull
+    val releaseKeyAlias = providers.environmentVariable("OAI_RELEASE_KEY_ALIAS").orNull
+    val releaseKeyPassword = providers.environmentVariable("OAI_RELEASE_KEY_PASSWORD").orNull
+
     signingConfigs {
         create("release") {
-            storeFile = providers.environmentVariable("OAI_RELEASE_KEYSTORE").orNull?.let(::file)
-            storePassword = providers.environmentVariable("OAI_RELEASE_STORE_PASSWORD").orNull
-            keyAlias = providers.environmentVariable("OAI_RELEASE_KEY_ALIAS").orNull
-            keyPassword = providers.environmentVariable("OAI_RELEASE_KEY_PASSWORD").orNull
+            storeFile = releaseStoreFile
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
+        // 当 CI 或本地提供了外部统一发行密钥时，将 debug 签名也指向该密钥，
+        // 使得测试版与正式版产物拥有完全一致的签名证书，升级覆盖安装时无需卸载。
+        if (releaseStoreFile != null && releaseStoreFile.isFile) {
+            getByName("debug").apply {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
     buildTypes.getByName("release") {
