@@ -225,6 +225,7 @@ python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native
 
 | 文档 | 内容 |
 | --- | --- |
+| [第三方 Agent 适配器开发指南](../docs/guides/agent-adapter-development-guide.zh-CN.md) | 统一会话协议、能力声明、通用 Remote 适配器与插件模板 |
 | [架构事实基线](../docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) | 每条行为对应的代码位置，文档更新的事实来源 |
 | [独立部署与安全切换](../docs/deployment/2026-10-26-core-independent.zh-CN.md) | 干净安装、私密配置、Hermes 备份切换与回滚 |
 | [统一 Core 迁移方案](../docs/plans/2026-10-25-unified-core-migration.zh-CN.md) | 协议增量、分阶段交付、数据兼容与回滚 |

@@ -377,6 +377,7 @@ apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/fu
 | **OAI Core 统一服务说明** | 单一服务监听、CLI/MCP 使用与原生会话接入 | [`oai-core/README.md`](oai-core/README.md) |
 | **统一 Core 迁移方案** | 协议增量、分阶段交付、数据兼容与回滚 | [查看方案](docs/plans/2026-10-25-unified-core-migration.zh-CN.md) |
 | **原生会话适配器部署** | DSH、Hermes 与 Codex 宿主接入、鉴权与验证 | [查看方案](docs/plans/2026-10-25-native-session-adapters.zh-CN.md) |
+| **第三方 Agent 适配器开发指南** | 统一 Agent 插件接入协议、能力声明与独立适配器开发模板 | [查看开发指南](docs/guides/agent-adapter-development-guide.zh-CN.md) |
 | **模块化插件架构规格** | 插件系统总体架构设计规格书 | [查看规格](docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md) |
 | **Gateway Protocol v2 规范** | 手机与 Agent 网关通信契约与 JSON Schema 封闭规范 | [查看契约](docs/contracts/gateway-protocol-v2.md) |
 | **设备插件包 v1 规范** | `.alp` 插件包元数据定义、Ed25519 签名及沙箱约束 | [查看规范](docs/contracts/device-plugin-package-v1.md) |
