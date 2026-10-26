@@ -13,4 +13,3 @@ fn main() {
     println!("cargo:rustc-link-arg=-zstack-size={STACK_SIZE_BYTES}");
     println!("cargo:rerun-if-changed=build.rs");
 }
-
