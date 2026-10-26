@@ -204,6 +204,54 @@ def configure(root: Path, host: str, port: int, username: str, selected: list[st
         print(f"[SUCCESS] 账号 {username} 已创建。")
     write_start_script(root)
 
+    # 当启用 Hermes 适配器且宿主存在时，自动配置 Hermes 侧所需环境
+    if "hermes" in selected_or_existing and "OAI_HERMES_SESSION_TOKEN" in tokens:
+        sync_hermes_adapter_env(tokens["OAI_HERMES_SESSION_TOKEN"], hermes_account or username)
+
+
+def sync_hermes_adapter_env(token: str, account_id: str) -> None:
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    if not hermes_home.is_dir():
+        return
+    env_file = hermes_home / ".env"
+    existing_lines = []
+    if env_file.exists():
+        try:
+            existing_lines = env_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+
+    keys_to_update = {
+        "OAI_HERMES_SESSION_TOKEN": token,
+        "OAI_HERMES_GATEWAY_ROOT": str(hermes_home / "open-android-intelligence-gateway" / "accounts"),
+        "OAI_HERMES_ACCOUNTS": json.dumps([account_id]),
+        "OAI_HERMES_SESSION_PORT": "8792",
+    }
+
+    updated_lines = []
+    seen = set()
+    for line in existing_lines:
+        matched_key = None
+        for k in keys_to_update:
+            if line.startswith(f"{k}=") or line.startswith(f"export {k}="):
+                matched_key = k
+                break
+        if matched_key:
+            updated_lines.append(f"{matched_key}={keys_to_update[matched_key]}")
+            seen.add(matched_key)
+        else:
+            updated_lines.append(line)
+
+    for k, v in keys_to_update.items():
+        if k not in seen:
+            updated_lines.append(f"{k}={v}")
+
+    try:
+        private_write(env_file, "\n".join(updated_lines) + "\n")
+        print(f"[INFO] 已自动将 OAI 桥接配置同步至 Hermes 环境文件: {env_file}")
+    except Exception as exc:
+        print(f"[WARN] 尝试写入 Hermes 环境文件失败 ({exc})，请手动添加桥接变量。")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)

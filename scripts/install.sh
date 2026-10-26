@@ -326,9 +326,11 @@ configure_agent_plugins() {
 
     # 宿主安装与停用旧 Gateway 是部署切换步骤，不在 Core 安装时执行。
     if [ "$INSTALL_HERMES_PLUGIN" -eq 1 ]; then
-        info "仅配置 Core 的 Hermes 会话桥；Hermes 是可选组件。"
-        info "在 Hermes 自身 Python 环境单独安装: python -m pip install ./oai-core ./integrations/hermes-session-adapter"
-        info "先验证独立 Core 并备份，再停止旧 Gateway、启动新 Adapter；不会自动操作现有服务。"
+        info "已为您启用 Core 的 Hermes 会话桥配置。"
+        info "配置向导已自动将生成的凭据与账号配置同步至 Hermes 环境（若检测到 ~/.hermes）。"
+        info "请确保在 Hermes 环境安装适配器并启用插件："
+        info "  hermes plugins enable open-android-intelligence-gateway"
+        info "  hermes gateway restart"
     fi
 
     # DSH 插件说明
