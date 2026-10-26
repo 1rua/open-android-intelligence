@@ -13,6 +13,9 @@ enum class OnboardingStage(val persistValue: String) {
     /** 欢迎介绍页。 */
     WELCOME("welcome"),
 
+    /** 外观与主题设置页。 */
+    APPEARANCE("appearance"),
+
     /** 系统权限页。 */
     PERMISSIONS("permissions"),
 
@@ -64,7 +67,8 @@ data class OnboardingState(
 
     /** 流程内的下一个阶段；[OnboardingStage.COMPLETED] 没有下一个。 */
     fun next(): OnboardingStage = when (stage) {
-        OnboardingStage.WELCOME -> OnboardingStage.PERMISSIONS
+        OnboardingStage.WELCOME -> OnboardingStage.APPEARANCE
+        OnboardingStage.APPEARANCE -> OnboardingStage.PERMISSIONS
         OnboardingStage.PERMISSIONS -> OnboardingStage.DEPLOYMENT
         OnboardingStage.DEPLOYMENT -> OnboardingStage.GUIDE
         OnboardingStage.GUIDE -> OnboardingStage.COMPLETED
@@ -74,24 +78,26 @@ data class OnboardingState(
     /** 流程内的上一个阶段；欢迎页之前没有更早的页面（由调用方决定退出）。 */
     fun previous(): OnboardingStage? = when (stage) {
         OnboardingStage.WELCOME -> null
-        OnboardingStage.PERMISSIONS -> OnboardingStage.WELCOME
+        OnboardingStage.APPEARANCE -> OnboardingStage.WELCOME
+        OnboardingStage.PERMISSIONS -> OnboardingStage.APPEARANCE
         OnboardingStage.DEPLOYMENT -> OnboardingStage.PERMISSIONS
         OnboardingStage.GUIDE -> OnboardingStage.DEPLOYMENT
         OnboardingStage.COMPLETED -> null
     }
 
-    /** 页面对应的进度序号（1..4）；非页面阶段返回 null。 */
+    /** 页面对应的进度序号（1..5）；非页面阶段返回 null。 */
     val stepIndex: Int?
         get() = when (stage) {
             OnboardingStage.WELCOME -> 1
-            OnboardingStage.PERMISSIONS -> 2
-            OnboardingStage.DEPLOYMENT -> 3
-            OnboardingStage.GUIDE -> 4
+            OnboardingStage.APPEARANCE -> 2
+            OnboardingStage.PERMISSIONS -> 3
+            OnboardingStage.DEPLOYMENT -> 4
+            OnboardingStage.GUIDE -> 5
             OnboardingStage.COMPLETED -> null
         }
 
-    /** 页面总数：欢迎、权限、部署选择、教程。 */
-    val stepCount: Int get() = 4
+    /** 页面总数：欢迎、外观、权限、部署选择、教程。 */
+    val stepCount: Int get() = 5
 
     companion object {
         /** 全新安装时的初始状态。 */

@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHeader
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.mobile.onboarding.components.TerminalBlockView
 import com.openandroidintelligence.mobile.onboarding.components.halftone
@@ -100,41 +101,12 @@ fun GatewayGuideScreen(
             .fillMaxSize()
             .testTag("onboarding-guide"),
     ) {
-        // ===== 顶部导航 =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceSmall),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.semantics { contentDescription = "返回" },
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = "DEPLOYMENT GUIDE",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 2.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "04/04",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 1.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
-        }
-
-        StepRail(activeIndex = 4)
+        OnboardingStepHeader(
+            categoryTitle = "CORE & AGENTS GUIDE",
+            stepIndex = 5,
+            totalSteps = 5,
+            onBack = onBack,
+        )
 
         // ===== Gateway 切换 Tab =====
         Row(

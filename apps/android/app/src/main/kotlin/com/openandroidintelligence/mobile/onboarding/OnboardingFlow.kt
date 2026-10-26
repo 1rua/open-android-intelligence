@@ -42,6 +42,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
+import com.openandroidintelligence.conversation.theme.ThemePalette
+import com.openandroidintelligence.mobile.AppearancePreferences
+import com.openandroidintelligence.mobile.AppearanceSettings
+import com.openandroidintelligence.mobile.ThemePreference
+import com.openandroidintelligence.mobile.onboarding.screens.AppearanceSetupScreen
 import com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials
 import com.openandroidintelligence.mobile.onboarding.motion.ButtonRevealTransition
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
@@ -72,6 +77,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun OnboardingFlow(
     state: OnboardingState,
+    appearanceSettings: AppearanceSettings,
+    appearancePreferences: AppearancePreferences,
     onStageChange: (OnboardingStage) -> Unit,
     onGatewaySelected: (String) -> Unit,
     onFinished: () -> Unit,
@@ -235,7 +242,17 @@ fun OnboardingFlow(
             ) { stage ->
                 when (stage) {
                     OnboardingStage.WELCOME -> WelcomeScreen(
-                        onStart = { onStageChange(OnboardingStage.PERMISSIONS) },
+                        onStart = { onStageChange(OnboardingStage.APPEARANCE) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                    OnboardingStage.APPEARANCE -> AppearanceSetupScreen(
+                        settings = appearanceSettings,
+                        onSetTheme = appearancePreferences::setTheme,
+                        onSetDynamicColor = appearancePreferences::setDynamicColor,
+                        onSetPalette = appearancePreferences::selectPalette,
+                        onNext = { onStageChange(OnboardingStage.PERMISSIONS) },
+                        onBack = { onStageChange(OnboardingStage.WELCOME) },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -252,7 +269,7 @@ fun OnboardingFlow(
                         },
                         onNext = { onStageChange(OnboardingStage.DEPLOYMENT) },
                         onSkipOptional = { onStageChange(OnboardingStage.DEPLOYMENT) },
-                        onBack = { onStageChange(OnboardingStage.WELCOME) },
+                        onBack = { onStageChange(OnboardingStage.APPEARANCE) },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -360,7 +377,7 @@ private fun RevealLandingMark() {
         )
         Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
         Text(
-            text = "连接你的 Agent Gateway",
+            text = "连接你的 OAI Core",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

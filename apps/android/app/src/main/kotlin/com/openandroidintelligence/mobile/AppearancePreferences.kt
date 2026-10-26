@@ -38,9 +38,9 @@ enum class ThemePreference {
  */
 data class AppearanceSettings(
     val theme: ThemePreference = ThemePreference.SYSTEM,
-    val dynamicColor: Boolean = supportsDynamicColor(),
-    val dynamicIconColor: Boolean = supportsDynamicColor(),
-    val palette: ThemePalette = ThemePalette.INDIGO,
+    val dynamicColor: Boolean = false,
+    val dynamicIconColor: Boolean = false,
+    val palette: ThemePalette = ThemePalette.EMBER,
     val reduceMotion: Boolean = false,
 )
 
@@ -89,12 +89,12 @@ class AppearancePreferences(context: Context) {
         theme = preferences.getString(KEY_THEME, ThemePreference.SYSTEM.name)
             ?.let { value -> runCatching { ThemePreference.valueOf(value) }.getOrNull() }
             ?: ThemePreference.SYSTEM,
-        // 默认跟随系统动态取色（Android 12+）；用户显式关闭过则读回 false。
-        dynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, supportsDynamicColor()),
-        dynamicIconColor = preferences.getBoolean(KEY_DYNAMIC_ICON_COLOR, supportsDynamicColor()),
-        palette = preferences.getString(KEY_PALETTE, ThemePalette.INDIGO.name)
+        // 首次启动默认不打开动态取色，默认使用图标同款配色（EMBER）；用户显式更改过则读回配置。
+        dynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, false),
+        dynamicIconColor = preferences.getBoolean(KEY_DYNAMIC_ICON_COLOR, false),
+        palette = preferences.getString(KEY_PALETTE, ThemePalette.EMBER.name)
             ?.let { value -> runCatching { ThemePalette.valueOf(value) }.getOrNull() }
-            ?: ThemePalette.INDIGO,
+            ?: ThemePalette.EMBER,
         reduceMotion = preferences.getBoolean(KEY_REDUCE_MOTION, false),
     )
 

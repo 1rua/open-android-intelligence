@@ -14,52 +14,32 @@ import org.junit.Test
  */
 class PermissionCatalogTest {
 
-    /** 空插件集：只有三项基础/增强权限，设备能力组整体缺席。 */
+    /** 引导展示完整的基础功能、可选增强以及设备能力项。 */
     @Test
-    fun `empty plugin set exposes only base permissions`() {
+    fun `visible permissions expose standard items`() {
         val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
 
         assertEquals(
-            listOf("notifications", "microphone", "screen_capture"),
+            listOf("notifications", "microphone", "screen_capture", "sms", "call_log", "notification_access"),
             entries.map { it.id },
         )
-        // 设备能力组一项都不该出现 —— 不是禁用态，是不存在。
-        assertTrue(entries.none { it.group == PermissionGroup.DEVICE_CAPABILITY })
+        assertTrue(entries.any { it.group == PermissionGroup.DEVICE_CAPABILITY })
     }
 
-    /** 短信插件启用后，短信权限才出现；未启用时不得出现。 */
+    /** 短信权限与通知使用权均被声明并展示。 */
     @Test
-    fun `sms permission appears only when plugin primitive is enabled`() {
-        val withSms = buildVisiblePermissions(
-            androidSdk = 34,
-            enabledPluginPrimitives = setOf(KERNEL_SMS_READ),
-        )
-        assertTrue(withSms.any { it.id == "sms" })
-
-        val withoutSms = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
-        assertTrue(withoutSms.none { it.id == "sms" })
-    }
-
-    /** 通知插件启用后，通知使用权才出现。 */
-    @Test
-    fun `notification access appears only when notifications plugin is enabled`() {
-        val entries = buildVisiblePermissions(
-            androidSdk = 34,
-            enabledPluginPrimitives = setOf(KERNEL_NOTIFICATIONS_READ),
-        )
+    fun `sms and notification access are present`() {
+        val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
+        assertTrue(entries.any { it.id == "sms" })
         val entry = entries.firstOrNull { it.id == "notification_access" }
         assertTrue("通知使用权应当出现", entry != null)
-        // 特殊系统访问：必须走系统设置页，而不是运行时弹窗。
         assertTrue("通知使用权应标记为特殊系统访问", entry!!.isSpecialSystemAccess)
     }
 
-    /** 通话记录同理。 */
+    /** 通话记录权限被声明并展示。 */
     @Test
-    fun `call log permission follows its plugin primitive`() {
-        val entries = buildVisiblePermissions(
-            androidSdk = 34,
-            enabledPluginPrimitives = setOf(KERNEL_CALL_LOG_READ),
-        )
+    fun `call log permission is present`() {
+        val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
         assertTrue(entries.any { it.id == "call_log" })
     }
 
