@@ -218,15 +218,15 @@ install_python_env() {
     local pip_bin="${venv_dir}/bin/pip"
 
     info "正在安装/更新 build 依赖 (setuptools, wheel)..."
-    "${pip_bin}" install -i "${PIP_INDEX_URL}" --upgrade pip setuptools wheel || {
+    "${pip_bin}" install --timeout 15 -i "${PIP_INDEX_URL}" --upgrade pip setuptools wheel || {
         warn "通过镜像源更新 pip/setuptools 失败，尝试默认源..."
-        "${pip_bin}" install --upgrade pip setuptools wheel || true
+        "${pip_bin}" install --timeout 15 --upgrade pip setuptools wheel || true
     }
 
     info "正在安装 OAI Core 及网关契约包..."
-    "${pip_bin}" install -i "${PIP_INDEX_URL}" -e ./oai-core || {
+    "${pip_bin}" install --timeout 15 -i "${PIP_INDEX_URL}" -e ./oai-core || {
         warn "通过镜像源安装 oai-core 失败，尝试默认官方源安装..."
-        "${pip_bin}" install -e ./oai-core
+        "${pip_bin}" install --timeout 15 -e ./oai-core
     }
 
     if [ -f "${venv_dir}/bin/oai" ]; then
@@ -452,26 +452,32 @@ EOF
     # 5. 调用 oai account create 自动创建管理员账号
     info "正在创建服务端本地用户: ${cfg_username}..."
 
-    "${TARGET_DIR}/.venv/bin/python" -c "
+    OAI_INIT_CONFIG="${config_file}" \
+    OAI_INIT_ADMIN_USERNAME="${cfg_username}" \
+    OAI_INIT_ADMIN_PASSWORD="${cfg_password}" \
+    "${TARGET_DIR}/.venv/bin/python" -c '
+import os
 import sys
 from pathlib import Path
 from oai_core.server import load_config, create_core
 
-cfg = load_config(Path('${config_file}'))
+cfg_path = Path(os.environ["OAI_INIT_CONFIG"])
+username = os.environ["OAI_INIT_ADMIN_USERNAME"]
+password = os.environ["OAI_INIT_ADMIN_PASSWORD"]
+
+cfg = load_config(cfg_path)
 core = create_core(cfg)
-username = '${cfg_username}'
-password = '''${cfg_password}'''
 
 if core.account_exists(username):
-    print(f'[INFO] 用户 {username} 已存在，跳过新建。')
+    print(f"[INFO] 用户 {username} 已存在，跳过新建。")
 else:
     account = core.open_gateway_account(username)
     try:
         account.credentials.create_password(password)
-        print(f'[SUCCESS] 用户 {username} 创建成功！')
+        print(f"[SUCCESS] 用户 {username} 创建成功！")
     finally:
         account.close()
-"
+'
 }
 
 # 快捷启动包装与环境变量脚本
@@ -479,23 +485,33 @@ generate_convenience_scripts() {
     local start_script="${TARGET_DIR}/start-core.sh"
     info "正在生成快捷启动脚本: ${start_script}..."
 
-    cat > "${start_script}" << 'EOF'
+    # 导出各 Agent 会话适配器可能使用的随机 Token，若环境变量未设置则提供默认回退
+    local env_exports=""
+    if [ -n "${OAI_DSH_ADAPTER_TOKEN:-}" ]; then
+        env_exports="${env_exports}export OAI_DSH_ADAPTER_TOKEN=\"\${OAI_DSH_ADAPTER_TOKEN:-${OAI_DSH_ADAPTER_TOKEN}}\"\n"
+    fi
+    if [ -n "${OAI_HERMES_SESSION_TOKEN:-}" ]; then
+        env_exports="${env_exports}export OAI_HERMES_SESSION_TOKEN=\"\${OAI_HERMES_SESSION_TOKEN:-${OAI_HERMES_SESSION_TOKEN}}\"\n"
+    fi
+
+    cat > "${start_script}" << EOF
 #!/usr/bin/env bash
 set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${DIR}"
+DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+cd "\${DIR}"
 
-if [ -f "${DIR}/.venv/bin/activate" ]; then
+if [ -f "\${DIR}/.venv/bin/activate" ]; then
     # shellcheck disable=SC1091
-    source "${DIR}/.venv/bin/activate"
+    source "\${DIR}/.venv/bin/activate"
 fi
 
+$(printf "%b" "${env_exports}")
 echo "=========================================="
 echo "正在启动 Open Android Intelligence Core..."
-echo "配置文件: ${DIR}/core.json"
+echo "配置文件: \${DIR}/core.json"
 echo "=========================================="
 
-exec oai serve --config "${DIR}/core.json"
+exec oai serve --config "\${DIR}/core.json"
 EOF
     chmod +x "${start_script}"
     success "快捷启动脚本已生成: ${start_script}"
