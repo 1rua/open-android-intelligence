@@ -2,7 +2,8 @@ package com.openandroidintelligence.mobile.onboarding.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -116,7 +117,9 @@ fun AppearanceSetupScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectableGroup(),
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
                 val themeOptions = listOf(
@@ -130,7 +133,11 @@ fun AppearanceSetupScreen(
                         modifier = Modifier
                             .weight(1f)
                             .clip(MaterialTheme.shapes.small)
-                            .clickable(role = Role.RadioButton) { onSetTheme(pref) }
+                            .selectable(
+                                selected = selected,
+                                role = Role.RadioButton,
+                                onClick = { onSetTheme(pref) },
+                            )
                             .then(
                                 if (selected) {
                                     Modifier.border(
@@ -236,6 +243,7 @@ fun AppearanceSetupScreen(
             Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
 
             Column(
+                modifier = Modifier.selectableGroup(),
                 verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
                 ThemePalette.entries.forEach { palette ->
@@ -244,9 +252,13 @@ fun AppearanceSetupScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(MaterialTheme.shapes.medium)
-                            .clickable(
+                            .selectable(
+                                selected = isSelected,
                                 role = Role.RadioButton,
-                                onClick = { onSetPalette(palette) },
+                                onClick = {
+                                    if (settings.dynamicColor) onSetDynamicColor(false)
+                                    onSetPalette(palette)
+                                },
                             )
                             .then(
                                 if (isSelected) {

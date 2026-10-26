@@ -312,38 +312,6 @@ private fun ChoiceCard(
 /** 卡片几何缺失时的兜底尺寸（不影响正确性，只避免转场起点落在 0 尺寸）。 */
 private fun coordsSize() = IntSize(width = 320, height = 120)
 
-/**
- * 四段式步骤刻度：引导流程里各页共用同一套进度语言。
- *
- * @param activeIndex 从 1 开始的当前页；之前的段落为「已完成」。
- */
-@Composable
-internal fun StepRail(activeIndex: Int) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Dimensions.ScreenHorizontal)
-            .padding(bottom = Dimensions.SpaceCompact),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-    ) {
-        repeat(4) { offset ->
-            val index = offset + 1
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(2.dp)
-                    .background(
-                        when {
-                            index == activeIndex -> MaterialTheme.colorScheme.tertiary
-                            index < activeIndex -> MaterialTheme.colorScheme.onSurfaceVariant
-                            else -> MaterialTheme.colorScheme.outlineVariant
-                        },
-                    ),
-            )
-        }
-    }
-}
-
 /** [androidx.compose.ui.geometry.Size] → [IntSize]：RevealOrigin 需要整数尺寸。 */
 private fun androidx.compose.ui.geometry.Size.toIntSize(): IntSize =
     IntSize(width = width.toInt(), height = height.toInt())

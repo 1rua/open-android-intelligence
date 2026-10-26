@@ -28,6 +28,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.Dimensions
+import androidx.compose.animation.core.snap
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /**
  * 引导流程顶栏与随步骤平滑指示的进度刻度条。
@@ -81,6 +83,7 @@ fun OnboardingStepHeader(
             Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
         }
 
+        val reduceMotion = LocalMotionPolicy.current.reduceMotion
         // 步骤指示条：段落颜色随当前步骤状态平滑动效过渡
         Row(
             modifier = Modifier
@@ -98,7 +101,7 @@ fun OnboardingStepHeader(
                 }
                 val animatedColor by animateColorAsState(
                     targetValue = targetColor,
-                    animationSpec = tween(durationMillis = 300),
+                    animationSpec = if (reduceMotion) snap() else tween(durationMillis = 300),
                     label = "step_rail_color_$index",
                 )
                 Box(
