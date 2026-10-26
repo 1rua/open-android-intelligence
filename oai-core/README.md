@@ -21,9 +21,16 @@ Android Platform Kernel、`.alp` 签名、WASM 沙箱与本地确认机制保持
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
 ```
 
+或在需要单独重新配置端口、账号或 Agent 时运行独立配置脚本：
+```sh
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+```
+
 或在仓库根目录直接运行：
 ```sh
 ./scripts/install.sh
+# 或
+./scripts/setup.sh
 ```
 
 向导只安装 Core；发现 Hermes 不会自动安装插件、停用旧网关或启用会话桥。

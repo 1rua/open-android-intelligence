@@ -181,9 +181,15 @@
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
 ```
 
+若后续需要**重新配置**端口、初始化新账号或调整 Agent 接入，可随时运行独立配置脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+```
+
 > **提示**：
 > - 若已克隆本仓库，可在根目录直接运行 `./scripts/install.sh` 进行就地安装与交互式配置。
-> - 若需要**重新配置**端口、初始化新账号或调整 Agent 接入，可随时运行独立配置脚本：`./scripts/setup.sh`（或通过 curl 运行 `curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash`）。
+> - 在本地仓库中亦可随时运行 `./scripts/setup.sh` 进行独立配置。
 
 <details open>
 <summary><b>手动安装 OAI Core 服务端（点击收起）</b></summary>

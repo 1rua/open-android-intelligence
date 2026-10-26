@@ -29,6 +29,13 @@ def test_script_syntax(name):
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("name", ["install.sh", "setup.sh"])
+def test_script_header_contains_curl_command(name):
+    content = (REPOSITORY / "scripts" / name).read_text(encoding="utf-8")
+    expected = f"curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/{name} | bash"
+    assert expected in content
+
+
 def test_install_script_resolves_its_own_repository():
     result = run_bash(f'source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}\nresolve_repo_root\nprintf "%s\\n" "$TARGET_DIR" "$IS_LOCAL_REPO"')
     assert result.stdout.splitlines()[-2:] == [str(REPOSITORY), "1"]

@@ -2,6 +2,9 @@
 #
 # Open Android Intelligence (OAI) Core 独立配置脚本 (setup.sh / configure.sh)
 #
+# 支持直接通过 curl 运行：
+#   curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+#
 # 用于在已安装 OAI Core 后独立运行配置向导：
 # 1. 保留既有账号凭据，仅为新账号设置密码；
 # 2. 重新配置监听端口与主机地址；
@@ -354,10 +357,39 @@ save_configuration_and_account() {
     local agents_csv
     agents_csv=$(IFS=,; printf '%s' "${selected_agents[*]}")
     local helper="${TARGET_DIR}/scripts/core_setup.py"
-    [ -f "$helper" ] || helper="${OAI_SETUP_SCRIPT_DIR}/core_setup.py"
+    if [ ! -f "$helper" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ] && [ -f "${OAI_SETUP_SCRIPT_DIR}/core_setup.py" ]; then
+        helper="${OAI_SETUP_SCRIPT_DIR}/core_setup.py"
+    fi
+    if [ ! -f "$helper" ]; then
+        # 当通过 curl | bash 远程运行时，若本地没有 core_setup.py 则尝试下载到临时路径
+        local tmp_helper="${TARGET_DIR}/.tmp_core_setup.py"
+        local branch="${OAI_BRANCH:-dev}"
+        local helper_url="https://raw.githubusercontent.com/1rua/open-android-intelligence/${branch}/scripts/core_setup.py"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "${helper_url}" -o "${tmp_helper}" 2>/dev/null || true
+        elif command -v wget >/dev/null 2>&1; then
+            wget -qO "${tmp_helper}" "${helper_url}" 2>/dev/null || true
+        fi
+        if [ -f "${tmp_helper}" ]; then
+            helper="${tmp_helper}"
+        fi
+    fi
+    if [ ! -f "$helper" ]; then
+        error "未找到配置辅助脚本 core_setup.py，请确保已安装 OAI Core 或网络连通。"
+        exit 1
+    fi
     OAI_INIT_ADMIN_PASSWORD="${CFG_PASSWORD}" "${VENV_PYTHON}" "$helper" \
         --root "${TARGET_DIR}" --host "${CFG_HOST}" --port "${CFG_PORT}" \
         --username "${CFG_USERNAME}" --agents "$agents_csv" --hermes-account "$hermes_account"
+    if [ "${helper}" = "${TARGET_DIR}/.tmp_core_setup.py" ]; then
+        # 兼容清理临时文件（遵循工作区安全删除规则，优先使用 trash-cli 或移至 /tmp）
+        if command -v trash-put >/dev/null 2>&1; then
+            trash-put "${helper}" 2>/dev/null || true
+        else
+            mkdir -p /tmp/oai-trash
+            mv "${helper}" /tmp/oai-trash/ 2>/dev/null || true
+        fi
+    fi
     success "配置与启动脚本已保存；既有账号密码、密钥和存储路径已保留。"
     info "桥接凭据存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
 }

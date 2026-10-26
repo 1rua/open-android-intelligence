@@ -188,9 +188,15 @@ Run the automated setup wizard via `curl`. It checks prerequisites, installs or 
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
 ```
 
+To **reconfigure** ports, admin credentials, or Agent integrations later, run the standalone configuration wizard anytime:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+```
+
 > **Tip**:
 > - If you have already cloned this repository, you can run `./scripts/install.sh` directly in the root directory.
-> - To **reconfigure** ports, admin credentials, or Agent integrations later, run the standalone configuration wizard anytime: `./scripts/setup.sh` (or `curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash`).
+> - You can also run `./scripts/setup.sh` directly in the repository for standalone configuration.
 
 <details open>
 <summary><b>Manual OAI Core Installation (Click to collapse)</b></summary>
