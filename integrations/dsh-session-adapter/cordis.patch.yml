@@ -1,0 +1,6 @@
+- insert:
+    - id: oai-session-adapter
+      name: oai-dsh-session-adapter
+      config:
+        port: 8791
+        tokenEnv: OAI_DSH_ADAPTER_TOKEN

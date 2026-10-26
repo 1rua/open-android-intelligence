@@ -8,11 +8,15 @@ import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
@@ -841,6 +845,32 @@ class GatewaySessionRefreshTest {
     )
 
     @Test
+    fun legacyNegotiationNeverProbesTheHostsUnknownAgentRoute() {
+        val agents = "/open-android-intelligence/v2/agents"
+        gateway.respond(agents, """{"error":{"code":"HOST_AUTH_REQUIRED"}}""", 401)
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        assertNull(runtime.nativeAgents.value)
+        assertFalse(gateway.requests.any { it.target == agents })
+    }
+
+    @Test
+    fun aCoreMarkerEnablesDiscoveryThroughTheExistingAuthenticatedConnection() {
+        val agents = "/open-android-intelligence/v2/agents"
+        val negotiation = NEGOTIATE_BODY.replace(Regex("\"conversationUi\":\\s*\\[[^]]*]"), "\"conversationUi\":[]")
+        gateway.respond(NEGOTIATE_PATH, negotiation, headers = mapOf("X-OAI-Agent-Sessions" to "1"))
+        gateway.respond(agents, """{"agents":[]}""")
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.nativeAgents.value?.state?.value?.supported == true })
+        val request = gateway.requests.first { it.target == agents }
+        assertTrue(request.headers.any { it == "Authorization: Bearer token_1" })
+        assertTrue(request.headers.any { it.startsWith("X-Open-Android-Intelligence-Signature:", true) })
+    }
+
+    @Test
     fun unpairUsesTheRevocationEndpointAndClearsTheActualSigningKeyAfterConfirmation() {
         val path = "/open-android-intelligence/v2/pairings/current"
         gateway.respond(path, """{"protocol":"2.1","data":{"deviceId":"dev_stub","deviceKeysRevoked":true,"refreshRevoked":true,"grantsRevoked":true,"deviceRequestsRevoked":true,"unconfirmedAttachmentsRevoked":true,"sessionsRevoked":true}}""")
@@ -853,6 +883,24 @@ class GatewaySessionRefreshTest {
         assertTrue(gateway.targetsOf("DELETE").contains(path))
         assertFalse(credentialStore.hasRefresh(profileId()))
         assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
+    }
+
+    @Test
+    fun anUnpairRequestedAsARestoredSessionBecomesConnectedStillReachesTheServer() {
+        val path = "/open-android-intelligence/v2/pairings/current"
+        gateway.respond(path, """{"error":{"code":"SESSION_REVOKED"}}""", 401)
+        val initial = runtime()
+        initial.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(initial)
+        val restored = runtime()
+        restored.restoreSessionIfAvailable()
+        awaitConnected(restored)
+        restored.unpair()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { restored.operationNotice.value?.contains("解除配对未获") == true })
+        assertTrue(gateway.targetsOf("DELETE").contains(path))
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertTrue(credentialStore.hasRefresh(profileId()))
+        assertTrue(restored.phase.value is ConnectionPhase.Connected)
     }
 
     @Test
@@ -1026,6 +1074,21 @@ class GatewaySessionRefreshTest {
         } finally {
             offlineScope.cancel()
         }
+    }
+
+    @Test
+    fun choosingAnotherAccountImmediatelyOnConnectedWaitsForTheSameInitializer() {
+        val runtime = runtime()
+        val choice = runtimeScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            runtime.phase.filterIsInstance<ConnectionPhase.Connected>().first()
+            runtime.chooseAnotherAccount()
+        }
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitAccountChooser(runtime)
+        assertTrue(choice.isCompleted)
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertTrue(credentialStore.hasRefresh(profileId()))
+        assertFalse(gateway.requests.any { it.target.contains("pairings/current") })
     }
 
     @Test

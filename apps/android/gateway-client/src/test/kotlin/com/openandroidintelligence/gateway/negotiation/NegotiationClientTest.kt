@@ -13,6 +13,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NegotiationClientTest {
+    @Test fun nativeAgentSessionsRequireAnUnambiguousCoreMarker() = runBlocking {
+        assertTrue(!clientWithVersion("2", "1").negotiate("neg_legacy").nativeAgentSessions)
+        assertTrue(clientWithVersion("2", "1", listOf(RawHeader(NATIVE_AGENT_SESSIONS_HEADER, "1")))
+            .negotiate("neg_core").nativeAgentSessions)
+        assertTrue(!clientWithVersion("2", "1", listOf(RawHeader(NATIVE_AGENT_SESSIONS_HEADER, "2")))
+            .negotiate("neg_future").nativeAgentSessions)
+        assertTrue(runCatching { clientWithVersion("2", "1", listOf(
+            RawHeader(NATIVE_AGENT_SESSIONS_HEADER, "1"), RawHeader(NATIVE_AGENT_SESSIONS_HEADER.lowercase(), "1")))
+            .negotiate("neg_duplicate") }.exceptionOrNull() is IllegalArgumentException)
+    }
     @Test fun optionalAgentDisplayMetadataSurvivesNegotiationWithoutChangingIdentity() = runBlocking {
         val result = clientWithVersion("2", "1", listOf(RawHeader(AGENT_NAME_HEADER, "Hermes"))).negotiate("neg_agent")
         assertEquals("Hermes", result.agentName)

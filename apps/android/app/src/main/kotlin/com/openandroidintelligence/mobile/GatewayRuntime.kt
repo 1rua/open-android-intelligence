@@ -314,6 +314,8 @@ class GatewayRuntime(
 
     private val _controller = MutableStateFlow<WorkbenchController?>(null)
     val controller: StateFlow<WorkbenchController?> = _controller.asStateFlow()
+    private val _nativeAgents = MutableStateFlow<NativeAgentsController?>(null)
+    val nativeAgents: StateFlow<NativeAgentsController?> = _nativeAgents.asStateFlow()
 
     private val _operationNotice = MutableStateFlow<String?>(null)
     val operationNotice: StateFlow<String?> = _operationNotice.asStateFlow()
@@ -440,6 +442,7 @@ class GatewayRuntime(
     }
 
     private var connectionJob: Job? = null
+    private var establishingJob: Job? = null
     private var sessionJob: Job? = null
     private var gatewayGrantRevision = -1L
     private var activeAttachmentStaging: LocalAttachmentStagingStore? = null
@@ -507,6 +510,7 @@ class GatewayRuntime(
                         session = session,
                         tlsSpkiSha256 = tlsPin,
                         conversationUi = negotiated.conversationUi,
+                        nativeAgentSessions = negotiated.nativeAgentSessions,
                         deviceRequests = negotiated.deviceRequests,
                         agentName = negotiated.agentName ?: negotiated.deploymentId,
                         generationCancelCapability =
@@ -537,6 +541,7 @@ class GatewayRuntime(
             _operationNotice.value = "当前离线，无法向 Gateway 确认退出，请先重新连接。"
             return
         }
+        if (deferUntilSessionEstablished { logout(revokeRefresh) }) return
         if (connectionJob?.isActive == true) return
         val current = _phase.value as? ConnectionPhase.Connected ?: return
         val profileId = profileIdFor(current.gatewayUrl, current.username)
@@ -605,12 +610,14 @@ class GatewayRuntime(
     }
 
     fun chooseAnotherAccount() {
+        if (deferUntilSessionEstablished(::chooseAnotherAccount)) return
         if (connectionJob?.isActive == true && !restoringSession) return
         cancelRestoration()
         leaveWorkbench { clearLastProfile() }
     }
 
     fun selectSavedAccount(profileId: String) {
+        if (deferUntilSessionEstablished { selectSavedAccount(profileId) }) return
         if (connectionJob?.isActive == true && !restoringSession) return
         cancelRestoration()
         val profile = accountProfiles.find(profileId) ?: return
@@ -742,7 +749,24 @@ class GatewayRuntime(
         }
     }
 
+    /** Connected may publish just before the initializer releases its operation gate. */
+    private fun deferUntilSessionEstablished(action: () -> Unit): Boolean {
+        val initializing = connectionJob ?: return false
+        if (!initializing.isActive || initializing !== establishingJob ||
+            _phase.value !is ConnectionPhase.Connected) return false
+        val expectedHttp = activeHttpClient ?: return false
+        val expectedSession = sessionJob ?: return false
+        scope.launch {
+            initializing.join()
+            if (!initializing.isCancelled && (connectionJob === initializing || connectionJob == null) &&
+                activeHttpClient === expectedHttp && sessionJob === expectedSession && expectedSession.isActive &&
+                _phase.value is ConnectionPhase.Connected) action()
+        }
+        return true
+    }
+
     fun unpair() {
+        if (deferUntilSessionEstablished(::unpair)) return
         if (connectionJob?.isActive == true) return
         val current = _phase.value as? ConnectionPhase.Connected ?: return
         val http = activeHttpClient ?: return
@@ -800,6 +824,7 @@ class GatewayRuntime(
 
     /** Manual and automatic renewal share the same rotation and keep in-flight work alive. */
     fun refreshSession() {
+        if (deferUntilSessionEstablished(::refreshSession)) return
         if (connectionJob?.isActive == true || _isRefreshingSession.value) return
         val renewal = sessionRenewal ?: return
         val current = _phase.value as? ConnectionPhase.Connected ?: return
@@ -1000,7 +1025,8 @@ class GatewayRuntime(
                         }
                         establish(endpoint, lastUser, profileId, session, tlsPin,
                             negotiated.conversationUi, negotiated.deviceRequests, GenerationCancelCapability.fromNegotiation(negotiated), ::checkOwner,
-                            agentName = negotiated.agentName ?: negotiated.deploymentId)
+                            agentName = negotiated.agentName ?: negotiated.deploymentId,
+                            nativeAgentSessions = negotiated.nativeAgentSessions)
                         return@launch
                     } catch (cancelled: CancellationException) { throw cancelled }
                       catch (cause: Exception) {
@@ -1073,7 +1099,9 @@ class GatewayRuntime(
         generationCancelCapability: GenerationCancelCapability = GenerationCancelCapability.NotNegotiated,
         checkOwner: () -> Unit = {},
         agentName: String? = null,
+        nativeAgentSessions: Boolean = false,
     ): Unit = initializePostLogin(InitializationStage.SESSION_SETUP) {
+        establishingJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         checkOwner()
         val pins = setOfNotNull(tlsSpkiSha256)
         val profile = GatewayProfile(
@@ -1207,6 +1235,10 @@ class GatewayRuntime(
         val ownedJob = SupervisorJob(scope.coroutineContext[Job])
         sessionJob = ownedJob
         val sessionScope = CoroutineScope(ownedJob + Dispatchers.Main.immediate)
+        _nativeAgents.value?.close()
+        _nativeAgents.value = if (nativeAgentSessions) {
+            NativeAgentsController(com.openandroidintelligence.gateway.agents.AgentSessionClient(http), sessionScope)
+        } else null
         sessionScope.launch {
             combine(repository.generationId, repository.generationState) { id, state ->
                 id != null && state in setOf(com.openandroidintelligence.conversation.model.GenerationState.QUEUED,
@@ -1293,6 +1325,15 @@ class GatewayRuntime(
             fun requireRecoveryOwner() {
                 ownedJob.ensureActive()
                 if (activeHttpClient !== http || sessionJob !== ownedJob) throw CancellationException("SNAPSHOT_OWNER_CHANGED")
+            }
+            if (nativeAgentSessions || _nativeAgents.value?.state?.value?.supported == true) {
+                requireRecoveryOwner()
+                val baseline = recoverPlatformSnapshot(http,
+                    syncCapabilities = { requireRecoveryOwner(); capabilityPublisher?.sync() },
+                    acceptRequest = { requireRecoveryOwner(); executionDriver?.accept(it) },
+                    recoverLocalRequests = { requireRecoveryOwner(); executionDriver?.recoverPending() })
+                requireRecoveryOwner()
+                return@setCursorRecovery baseline
             }
             repeat(3) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -1586,6 +1627,9 @@ class GatewayRuntime(
     private class PostLoginInitializationException(code: String) : IllegalStateException(code)
 
     private fun teardown() {
+        establishingJob = null
+        _nativeAgents.value?.close()
+        _nativeAgents.value = null
         restartPlatformStream = null
         sessionRenewal?.close()
         sessionRenewal = null

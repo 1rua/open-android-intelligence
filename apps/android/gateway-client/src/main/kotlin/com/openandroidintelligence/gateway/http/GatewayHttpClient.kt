@@ -10,6 +10,7 @@ import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.events.SseParser
 import com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
@@ -86,6 +87,7 @@ class GatewayHttpClient(
     private val maxConsecutiveFailures: Int = 6,
     private val handlePlatformEvent: suspend (GatewayEvent) -> Boolean = { false },
     private val sessionRenewal: GatewaySessionRenewal? = null,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     init {
         if (sessionRenewal != null) {
@@ -228,7 +230,7 @@ class GatewayHttpClient(
 
     private suspend fun executeOnce(request: SignedGatewayRequest, snapshot: GatewayProfile): GatewayResponse {
         val wire = signedWireRequest(request, snapshot)
-        return withContext(Dispatchers.IO) {
+        return withContext(ioDispatcher) {
             val response = transport.execute(wire)
             GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
         }
@@ -244,7 +246,7 @@ class GatewayHttpClient(
         var canRecover = sessionRenewal != null
         while (true) {
             val wire = signedWireRequest(replayable, snapshot)
-            val result = withContext(Dispatchers.IO) {
+            val result = withContext(ioDispatcher) {
                 transport.consumeResponse(wire) { status, rawHeaders, stream ->
                     val headers = RawHeaders.validate(rawHeaders)
                     if (status == 401 && canRecover) ResponseAttempt.Rejected
