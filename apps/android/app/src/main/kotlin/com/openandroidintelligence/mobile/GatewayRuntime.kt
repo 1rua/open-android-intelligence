@@ -41,6 +41,9 @@ import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingSto
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.filterNotNull
+import com.openandroidintelligence.conversation.ports.ConversationRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1375,33 +1378,76 @@ class GatewayRuntime(
             }
             error("SNAPSHOT_STALE")
         }
+        val coreAgentRepo = if (nativeAgentSessions) {
+            com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
+                client = com.openandroidintelligence.gateway.agents.AgentSessionClient(http),
+                currentAgent = { _nativeAgents.value?.state?.value?.agent },
+                activeConversationId = { activeThread.get() },
+                parentScope = sessionScope,
+            )
+        } else null
+        val activeRepo: ConversationRepository = coreAgentRepo ?: mirroredRepository
+        val activeCatalogRepo: com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository =
+            if (nativeAgentSessions) {
+                object : com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository {
+                    override suspend fun get(gatewayId: String, languageCode: String): com.openandroidintelligence.conversation.ports.AgentCommandCatalog =
+                        com.openandroidintelligence.conversation.ports.AgentCommandCatalog(
+                            version = com.openandroidintelligence.conversation.model.CatalogVersion("core-native"),
+                            commands = emptyList(),
+                        )
+                }
+            } else catalogRepository
+
+        fun buildWorkbenchController(currentAgentName: String? = null): WorkbenchController {
+            return WorkbenchController(
+                scope = sessionScope,
+                repository = activeRepo,
+                catalogRepository = activeCatalogRepo,
+                languageCode = java.util.Locale.getDefault().toLanguageTag(),
+                scopeFactory = { conversationScope },
+                attachmentCoordinator = attachmentCoordinator,
+                supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
+                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
+                supportsApprovalCards = approvalClient != null,
+                supportsConversationManagement = "conversation-management-v1" in conversationUi || nativeAgentSessions,
+                externalBusyThreadIds = {
+                    bubbleBusyConversationIds() + nativeConversationNotifications.sessions.value
+                        .filter { it.isRunning }.map { it.target.conversationId }
+                },
+                onActiveThreadChanged = { threadId -> activeThread.set(threadId); repository.activeConversationChanged() },
+                streamHealthSource = (activeRepo as? com.openandroidintelligence.conversation.model.StreamHealthSource) ?: workbenchRepository,
+                persistence = if (nativeAgentSessions) null else mirror,
+                media = mediaCache,
+                downloads = downloads,
+            )
+        }
+
         _controller.value = initializePostLogin(InitializationStage.WORKBENCH) {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
                 checkOwner()
-                WorkbenchController(
-                    scope = sessionScope,
-                    repository = mirroredRepository,
-                    catalogRepository = catalogRepository,
-                    languageCode = java.util.Locale.getDefault().toLanguageTag(),
-                    scopeFactory = { conversationScope },
-                    attachmentCoordinator = attachmentCoordinator,
-                    supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
-                    debouncePolicy=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
-                    // This describes manually submitted `/new`; the new-thread button
-                    // uses the authoritative POST /conversations endpoint directly.
-                    supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
-                    supportsApprovalCards = approvalClient != null,
-                    supportsConversationManagement = "conversation-management-v1" in conversationUi,
-                    externalBusyThreadIds = {
-                        bubbleBusyConversationIds() + nativeConversationNotifications.sessions.value
-                            .filter { it.isRunning }.map { it.target.conversationId }
-                    },
-                    onActiveThreadChanged = { threadId -> activeThread.set(threadId);repository.activeConversationChanged() },
-                    streamHealthSource = workbenchRepository,
-                    persistence = mirror,
-                    media = mediaCache,
-                    downloads = downloads,
-                )
+                buildWorkbenchController()
+            }
+        }
+
+        if (nativeAgentSessions) {
+            sessionScope.launch {
+                var previousAgentId: String? = null
+                _nativeAgents.filterNotNull().flatMapLatest { it.state }.collect { nState: NativeAgentsState ->
+                    val selected = nState.selectedAgentId
+                    if (selected != null && selected != previousAgentId) {
+                        previousAgentId = selected
+                        val newAgent = nState.agent
+                        val newAgentName: String = newAgent?.name ?: selected
+                        val currentPhase = _phase.value
+                        if (currentPhase is ConnectionPhase.Connected && currentPhase.agentName != newAgentName) {
+                            _phase.value = currentPhase.copy(agentName = newAgentName)
+                        }
+                        // Recreate workbench controller cleanly on agent switch
+                        _controller.value?.close()
+                        _controller.value = buildWorkbenchController(newAgentName)
+                    }
+                }
             }
         }
         clearBubbleWorkTracking()
