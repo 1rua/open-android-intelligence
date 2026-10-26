@@ -1,6 +1,6 @@
 # Android 屏幕读取与控制：前端界面实施计划
 
-- 状态：实施中
+- 状态：已实施（PR #50 → `dev`）
 - 日期：2026-10-27
 - 依据：[前端交接](../guides/android-screen-frontend-handoff.zh-CN.md)、[接口说明](../guides/android-screen-interfaces.zh-CN.md)
 - 范围：`apps/android/app` 新增屏幕能力界面与授权流程；不改动内核原语、传输协议、Core 调用面
@@ -156,3 +156,42 @@ M3 `AlertDialog`，三行 `Checkbox`：
 3. `:app:assembleFullDebug` 编译通过；
 4. 真机项（无障碍授权、系统投影弹窗、旋转、锁屏、撤权）**无设备时不标记为已通过**，
    在交付说明中如实列为待真机验收。
+
+## 七、实施结果（2026-10-27）
+
+### 实际验证证据
+
+| 项目 | 命令 | 结果 |
+| --- | --- | --- |
+| Kotlin 编译 | `:app:compileFullDebugKotlin` | 通过 |
+| APK 打包 | `:app:assembleFullDebug` | 通过（`app-full-debug.apk`，约 64 MB） |
+| 新增测试 | `--tests "com.openandroidintelligence.mobile.screen.*"` | 32 个全部通过 |
+| 令牌守卫 | `MaterialTokenGuardTest` | 通过（无硬编码色值 / 离栅格圆角） |
+| 架构边界 | `ArchitectureBoundaryTest` | 通过 |
+
+新增测试类：`ScreenCapabilityPresentationTest`（10）、`ScreenErrorMessagesTest`（7）、
+`ScreenControlCopyTest`（12）、`AccessibilityServiceWiringTest`（1）。
+
+### 环境说明（复现构建需要）
+
+1. `local.properties` 在 worktree 中需自行创建（已被 `.gitignore` 忽略）；本机
+   `sdk.dir` 指向 `.toolchains/android-sdk`；
+2. 单元测试需要 **JDK 21**：Robolectric 对 compileSdk 36 会校验
+   `Android SDK 36 requires Java 21`，JDK 17 下大量既有测试直接报
+   `UnsupportedOperationException`，与本次改动无关；
+3. Robolectric 的 `android-all-*.jar` 由 `testOptions` 固定到
+   `<project>/.gradle/robolectric-home`，worktree 需先补齐该缓存。
+
+### 与交接文档的一处偏离
+
+文档提到可用 `Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS` +
+`Settings.EXTRA_ACCESSIBILITY_SERVICE_COMPONENT_NAME` 直达服务详情页。核实
+`android.jar`（compileSdk 36）后确认**这两个常量不在公开 SDK**，只有
+`Settings.ACTION_ACCESSIBILITY_SETTINGS`。硬拼裸字符串属于依赖非公开 API，会在不同
+厂商 ROM 上行为不一致，因此采用文档允许的退让路径（只用标准设置页），并在代码注释中写明原因。
+
+### 未能验证的部分
+
+本环境 `adb devices` 无可用设备，以下项**未真机验证，不得视为已通过**：
+无障碍系统授权、MediaProjection 系统弹窗、分屏/旋转、节点失效、锁屏、
+系统撤销、断网、取消、切换账号、紧急停止、附件圈选回归。
