@@ -45,15 +45,6 @@
 
 ## 30 秒看懂
 
-`dev` 分支现已包含统一服务入口：**OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**。
-手机只连接 Core 的一个监听地址。该地址同时承载三套接口：
-1. **Android 设备协议**（`/open-android-intelligence/v2`）：设备认证、Ed25519 签名、配对与平台事件总线；
-2. **设备调用面**（`/open-android-intelligence/core/v1`）：面向本机的 REST、CLI 与标准 MCP stdio 服务；
-3. **原生 Agent 会话面**（`/open-android-intelligence/v2/agents`）：直接读写 Hermes、DSH 与 Codex 的真实会话，无需两套聊天存储。
-
-Hermes 保持账号隔离；显式配置的 DSH/Codex 原生会话在部署内共享，但设备授权与调用凭据始终按账号严格隔离。旧独立 Gateway 安装保留供既有部署使用，OpenClaw 保持兼容路径。
-部署与命令详见 [OAI Core 说明](oai-core/README.md) 与 [架构事实基线](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。
-
 > [!TIP]
 > ### Open Android Intelligence（OAI）是**一个统一的安卓客户端，用于连接多种主流 Agent**（如 Hermes、DSH、Codex、OpenClaw 等）。
 >
