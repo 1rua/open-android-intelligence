@@ -220,13 +220,78 @@ configure_agent_integrations() {
 
 configure_autostart() {
     local answer=""
-    prompt_read "是否配置开机自启 systemd user 服务？(y/n)" answer "y"
-    if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
-        # 写入 systemd user service
-        local user_service_dir="${HOME}/.config/systemd/user"
-        mkdir -p "${user_service_dir}"
-        local service_file="${user_service_dir}/oai-core.service"
-        cat <<EOF > "${service_file}"
+    prompt_read "是否配置开机自启服务？(y/n)" answer "y"
+    if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
+        return 0
+    fi
+
+    local os_type
+    os_type="$(uname -s 2>/dev/null || echo "Unknown")"
+
+    case "${os_type}" in
+        Darwin)
+            # macOS: 使用 LaunchAgents (用户级后台自启服务)
+            local launch_agents_dir="${HOME}/Library/LaunchAgents"
+            mkdir -p "${launch_agents_dir}"
+            local plist_file="${launch_agents_dir}/com.openandroidintelligence.core.plist"
+            cat <<EOF > "${plist_file}"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.openandroidintelligence.core</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${TARGET_DIR}/start-core.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${TARGET_DIR}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${TARGET_DIR}/runtime/core.log</string>
+    <key>StandardErrorPath</key>
+    <string>${TARGET_DIR}/runtime/core.log</string>
+</dict>
+</plist>
+EOF
+            if command -v launchctl >/dev/null 2>&1; then
+                launchctl unload "${plist_file}" 2>/dev/null || true
+                launchctl load -w "${plist_file}" 2>/dev/null || true
+                success "已配置并启用 macOS LaunchAgent 自启项: ${plist_file}"
+            else
+                info "已生成 macOS LaunchAgent 配置文件: ${plist_file}"
+            fi
+            ;;
+
+        MINGW*|MSYS*|CYGWIN*)
+            # Windows (Git Bash / MSYS / Cygwin)
+            local startup_dir="${APPDATA}/Microsoft/Windows/Start Menu/Programs/Startup"
+            if [ -d "${startup_dir}" ]; then
+                local vbs_script="${startup_dir}/oai-core.vbs"
+                cat <<EOF > "${vbs_script}"
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run chr(34) & "${TARGET_DIR}/start-core.sh" & Chr(34), 0
+Set WshShell = Nothing
+EOF
+                success "已添加 Windows 开机启动项: ${vbs_script}"
+            else
+                info "未检测到 Windows 启动目录，请手动添加 ${TARGET_DIR}/start-core.sh 到开机启动"
+            fi
+            ;;
+
+        *)
+            # Linux 及其他类 Unix 系统
+            local configured=0
+
+            # 1. systemd 用户级服务（适用于大部分现代 Linux 发行版，支持进程守护与崩溃重启）
+            local user_service_dir="${HOME}/.config/systemd/user"
+            mkdir -p "${user_service_dir}"
+            local service_file="${user_service_dir}/oai-core.service"
+            cat <<EOF > "${service_file}"
 [Unit]
 Description=Open Android Intelligence Core Service
 After=network.target
@@ -241,11 +306,18 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl --user daemon-reload 2>/dev/null || true
+                systemctl --user enable oai-core.service 2>/dev/null || true
+                systemctl --user restart oai-core.service 2>/dev/null || true
+                configured=1
+            fi
 
-        # 写入 XDG 桌面会话自启项，兼顾所有桌面环境登录自启
-        local autostart_dir="${HOME}/.config/autostart"
-        mkdir -p "${autostart_dir}"
-        cat <<EOF > "${autostart_dir}/oai-core.desktop"
+            # 2. XDG 桌面环境登录自启（兼容 GNOME、KDE Plasma、XFCE、LXQt、Cinnamon、MATE、DWM、Niri、Hyprland 等桌面/窗口管理器）
+            local autostart_dir="${HOME}/.config/autostart"
+            mkdir -p "${autostart_dir}"
+            local desktop_file="${autostart_dir}/oai-core.desktop"
+            cat <<EOF > "${desktop_file}"
 [Desktop Entry]
 Type=Application
 Name=OAI Core
@@ -254,17 +326,20 @@ Terminal=false
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
 Comment=Open Android Intelligence Core Service
 EOF
-        if command -v systemctl >/dev/null 2>&1; then
-            systemctl --user daemon-reload 2>/dev/null || true
-            systemctl --user enable oai-core.service 2>/dev/null || true
-            systemctl --user restart oai-core.service 2>/dev/null || true
-            success "已配置并启用 systemd user 自启服务: oai-core.service"
-        else
-            info "已生成服务单元 ${service_file}（未检测到可用 systemctl 命令）"
-        fi
-    fi
+            configured=1
+
+            # 3. 如果系统没有 systemctl，尝试补充 cron @reboot 兜底机制
+            if ! command -v systemctl >/dev/null 2>&1 && command -v crontab >/dev/null 2>&1; then
+                local cron_cmd="@reboot ${TARGET_DIR}/start-core.sh >/dev/null 2>&1 &"
+                (crontab -l 2>/dev/null | grep -Fv "start-core.sh" ; echo "${cron_cmd}") | crontab - 2>/dev/null || true
+            fi
+
+            success "已配置开机与桌面会话自启服务（systemd user + XDG autostart）"
+            ;;
+    esac
 }
 
 save_configuration_and_account() {
