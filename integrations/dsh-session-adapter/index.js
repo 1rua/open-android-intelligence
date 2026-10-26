@@ -5,6 +5,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 export const name = "oai-session-adapter";
 export const inject = ["sessionQuery"];
 const PREFIX = "/oai/session-adapter/v1";
+const MAX_REQUEST_BYTES = 1024 * 1024;
 const methods = ["list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream"];
 const fail = (code, status = 409) => Object.assign(new Error(code), { code, status });
 const textOf = (message) => (message?.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("");
@@ -38,9 +39,14 @@ export const Config = {
 async function bodyOf(req) {
   let size = 0;
   const chunks = [];
-  for await (const chunk of req) {
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > 65536) throw fail("PAYLOAD_TOO_LARGE", 413);
+    if (size >= MAX_REQUEST_BYTES) {
+      // Keep the socket available long enough to deliver the 413. Discard
+      // remaining bytes without retaining another request-sized buffer.
+      req.resume();
+      throw fail("PAYLOAD_TOO_LARGE", 413);
+    }
     chunks.push(chunk);
   }
   try {

@@ -96,6 +96,35 @@ describe("DSH native Session Adapter", () => {
     expect(Object.keys(prompt).sort()).toEqual(["content", "mode", "requestId", "sessionId"]);
     expect([...h.listeners.values()].every((value) => value.size === 0)).toBe(true);
   });
+  it.each([
+    ["70k ASCII", "a".repeat(70000)],
+    ["multibyte UTF-8", "消息".repeat(12000)],
+    ["one byte below 1 MiB", "😀".repeat(262141)],
+  ])("accepts a %s request above the old 64 KiB bridge limit", async (_, text) => {
+    const h = await host();
+    const bytes = Buffer.byteLength(JSON.stringify({ text }));
+    expect(bytes).toBeGreaterThan(65536);
+    expect(bytes).toBeLessThan(1024 * 1024);
+    const response = await h.request("/sessions/terminal/messages", "POST", { text });
+    expect(response.status).toBe(200);
+    const events = (await response.text()).trim().split("\n").map(JSON.parse);
+    expect(events.at(-1)).toEqual({ type: "done", text: "native reply" });
+    expect(h.calls.filter((item) => item[0] === "prompt")).toHaveLength(1);
+    expect(h.calls.find((item) => item[0] === "prompt")[1].content).toEqual([{ type: "text", text }]);
+    expect(h.records.map((record) => record.header.id)).toEqual(["terminal"]);
+  });
+  it.each([0, 1])("rejects a request at 1 MiB plus %i bytes before starting a native turn or stream", async (extra) => {
+    const h = await host();
+    const text = "😀".repeat(262141) + "a".repeat(1 + extra);
+    expect(Buffer.byteLength(JSON.stringify({ text }))).toBe(1024 * 1024 + extra);
+    const response = await h.request("/sessions/terminal/messages", "POST", { text });
+    expect(response.status).toBe(413);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({ code: "PAYLOAD_TOO_LARGE" });
+    expect(h.calls.some((item) => item[0] === "prompt")).toBe(false);
+    expect(h.listeners.size).toBe(0);
+    expect(h.records.map((record) => record.header.id)).toEqual(["terminal"]);
+  });
   it("reports real query failure offline and never advertises unsupported deletion/archive", async () => {
     const h = await host();
     let status = await (await h.request("/status")).json();

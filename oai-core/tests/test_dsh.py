@@ -5,7 +5,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from oai_core.adapters.dsh import DshSessionAdapter
 from oai_core.auth import Principal
-from oai_core.sessions import AdapterError
+from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES, session_request_json
 
 
 @pytest.mark.asyncio
@@ -51,3 +51,30 @@ def test_dsh_requires_an_explicit_secure_origin_and_token():
             DshSessionAdapter(url, "test-token-with-at-least-thirty-two-characters")
     with pytest.raises(ValueError):
         DshSessionAdapter("http://localhost", "short")
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_uses_compact_utf8_for_all_outgoing_json_requests():
+    received = []
+
+    async def host(request):
+        raw = await request.read()
+        received.append(raw)
+        if request.path.endswith("/messages"):
+            return web.Response(body=b'{"type":"done"}\n', content_type="application/x-ndjson")
+        return web.json_response({"session": {"id": "native"}})
+
+    app = web.Application(client_max_size=SESSION_REQUEST_MAX_BYTES)
+    app.router.add_route("POST", "/{tail:.*}", host)
+    async with TestClient(TestServer(app)) as client:
+        adapter = DshSessionAdapter(str(client.make_url("/")).rstrip("/"), "test-only-dsh-session-token-1234567890")
+        for text in ("a" * 70000, "文" * 24000, "😀" * 100000):
+            # The final case would exceed 1 MiB with Python's default ASCII escapes.
+            events = [item async for item in adapter.send(Principal("alice"), "native", text)]
+            assert events == [{"type": "done"}]
+            assert received[-1] == session_request_json({"text": text}).encode()
+            assert 65536 < len(received[-1]) < SESSION_REQUEST_MAX_BYTES
+        await adapter.create(Principal("alice"), "中文 title")
+        assert received[-1] == b'{"title":"\xe4\xb8\xad\xe6\x96\x87 title"}'
+        await adapter.manage(Principal("alice"), "native", "rename", "中文 rename")
+        assert received[-1] == session_request_json({"value": "中文 rename"}).encode()

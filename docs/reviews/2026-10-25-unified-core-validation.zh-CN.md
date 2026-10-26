@@ -18,13 +18,13 @@ python -m pip wheel --no-deps --wheel-dir ./tmp/wheels ./oai-core
 git diff --check
 ```
 
-Core Python 51 项通过，无跳过。覆盖真实 HTTP 登录、Ed25519 签名、持久 nonce、防重放、
+Core Python 63 项通过，无跳过。覆盖真实 HTTP 登录、Ed25519 签名、持久 nonce、防重放、
 账号及设备授权隔离、幂等冲突、SSE/WS 设备事件、手机 claim/result/ack、取消和重启后的未知结果。
 CLI 与官方 MCP SDK stdio 客户端握手及工具调用通过；设备调用不接受账号或设备身份覆盖。
 固定 Hermes 原生 SDK 在临时 Home 中验证真实插件注册和 SessionStore 生命周期，未调用模型。
 Python 仅有 aiohttp 请求存储字符串键的建议性警告。
 
-DSH 会话桥 11 项通过，包括与公开原生接口一致的消息形状、终端会话发现、后续会话刷新、
+DSH 会话桥 16 项通过，包括与公开原生接口一致的消息形状、终端会话发现、后续会话刷新、
 turn 关联、流式回复、认证拒绝及非成功终态。
 wheel 构建与独立目录安装导入成功，CLI 入口可运行，`pip check` 无依赖冲突。
 
@@ -36,12 +36,13 @@ Android 验证使用 JDK 21、Gradle 8.12、Android SDK 35/36，在 `apps/androi
   :app:testFullDebugUnitTest \
   --tests '*NativeAgentsControllerTest' --tests '*GatewayTutorialsTest' \
   --tests '*GatewaySessionRefreshTest' --tests '*GatewayWorkbenchLogoutTest' \
-  --tests '*DeviceExecutionRecoveryTest' --tests '*PlatformSnapshotRecoveryTest'
+  --tests '*DeviceExecutionRecoveryTest' --tests '*PlatformSnapshotRecoveryTest' \
+  --tests '*NativeAgentBackgroundWorkTest'
 ```
 
-Android 最终结果：`gateway-client` 279 项通过，选中的 App 回归 77 项通过，全部无失败、错误或跳过；
+Android 最终结果：`gateway-client` 281 项通过，选中的 App 回归 85 项通过，全部无失败、错误或跳过；
 `compileFullDebugKotlin` 成功。包括会话续期 45 项、退出工作台 6 项、原生 Agent 控制器 3 项、
-部署教程 12 项、平台快照恢复 3 项、设备执行恢复 8 项。
+部署教程 12 项、平台快照恢复 3 项、设备执行恢复 8 项、原生聊天后台保活 8 项。
 
 ## 独立审查修复
 
@@ -57,6 +58,7 @@ Android 最终结果：`gateway-client` 279 项通过，选中的 App 回归 77 
 - CLI `--wait` 只结束本地等待，取消通过明确命令进行；安装环境、客户端凭据路径和能力 ID 示例已统一。
 - Android 管理动作遇到已连接但仍在收尾的初始化时等待完成，再复核相同会话及客户端所有者，避免账号切换或解除配对被静默丢弃。
 - 发送流 I/O 中断明确显示结果未知，不自动重发；Core 的设备快照恢复不依赖旧聊天列表。
+- GitHub 自动审查的三项 P2 均已补测修复：CLI 密码校验使用最多四项有界后台任务且签发前重查凭据/配对；所有会话桥与 Core 统一严格小于 1MiB 的 UTF-8 请求预算，超限在写回执或 SSE 前返回 413；原生发送纳入既有前台保活观察与快照，保留用户通知开关及权限门控。
 
 ## 仍需部署验收的范围
 

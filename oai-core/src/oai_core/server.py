@@ -165,7 +165,7 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
 
     @routes.post(DEVICE_API + "/tokens")
     async def login(request: web.Request) -> web.Response:
-        return web.json_response(auth.login(await request.json(), request.remote or ""), headers={"Cache-Control": "no-store"})
+        return web.json_response(await auth.async_login(await request.json(), request.remote or ""), headers={"Cache-Control": "no-store"})
 
     @routes.delete(DEVICE_API + "/tokens/current")
     async def logout(request: web.Request) -> web.Response:

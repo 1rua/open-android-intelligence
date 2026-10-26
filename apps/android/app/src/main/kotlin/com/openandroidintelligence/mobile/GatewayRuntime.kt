@@ -341,6 +341,12 @@ class GatewayRuntime(
                 else workbench.hasActiveWork.collect { refreshBackgroundWork() }
             }
         }
+        scope.launch {
+            _nativeAgents.collectLatest { native ->
+                if (native == null) refreshBackgroundWork()
+                else native.state.map { it.sending }.distinctUntilChanged().collect { refreshBackgroundWork() }
+            }
+        }
         scope.launch { hasRecoveredGatewayWork.collect { refreshBackgroundWork() } }
         scope.launch {
             combine(
@@ -429,7 +435,8 @@ class GatewayRuntime(
         // A bubble can stop before its asynchronous observer is scheduled.
         // Read its owned submission facts without acquiring the tracking lock.
         (nativeConversationNotifications.sessions.value.any { it.isRunning } || bubbleWorkJobs.keys.any { it.hasActiveWork.value } ||
-            _controller.value?.hasActiveWork?.value == true || hasRecoveredGatewayWork.value)
+            _controller.value?.hasActiveWork?.value == true || _nativeAgents.value?.state?.value?.sending == true ||
+            hasRecoveredGatewayWork.value)
 
     private fun refreshBackgroundWork(foregrounded: Boolean = false) {
         synchronized(backgroundOwnershipLock) {

@@ -11,7 +11,7 @@ from urllib.parse import quote, urlsplit
 
 import aiohttp
 
-from ..sessions import AdapterError
+from ..sessions import AdapterError, session_request_json
 
 
 CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream")
@@ -38,7 +38,7 @@ class DshSessionAdapter:
 
     def _session(self, headers: dict[str, str] | None = None) -> aiohttp.ClientSession:
         return aiohttp.ClientSession(headers={"Authorization": f"Bearer {self.token}", **(headers or {})},
-                                     timeout=aiohttp.ClientTimeout(total=30))
+                                     timeout=aiohttp.ClientTimeout(total=30), json_serialize=session_request_json)
 
     async def _request(self, method: str, path: str, body: Any = None, *, headers: dict[str, str] | None = None) -> Any:
         try:

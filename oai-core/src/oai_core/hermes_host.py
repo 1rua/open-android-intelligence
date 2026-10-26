@@ -17,7 +17,7 @@ from typing import Any
 from aiohttp import web
 
 from .adapters.hermes import HermesSessionAdapter
-from .sessions import AdapterError
+from .sessions import AdapterError, SESSION_REQUEST_MAX_BYTES
 
 PREFIX = "/oai/session-adapter/v1"
 IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
@@ -77,19 +77,26 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             return response
         except AdapterError as exc:
             return web.json_response({"code": exc.code}, status=exc.status)
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response({"code": "MESSAGE_TOO_LARGE"}, status=413)
         except (ValueError, json.JSONDecodeError, TypeError):
             return web.json_response({"code": "SCHEMA_INVALID"}, status=400)
 
-    app = web.Application(middlewares=[authenticate], client_max_size=65536)
+    app = web.Application(middlewares=[authenticate], client_max_size=SESSION_REQUEST_MAX_BYTES)
 
     async def status(request):
         return web.json_response({"online": await adapter.status(), "capabilities": adapter.descriptor()["capabilities"]})
+
+    async def body_for(request):
+        if len(await request.read()) >= SESSION_REQUEST_MAX_BYTES:
+            raise AdapterError("MESSAGE_TOO_LARGE", 413)
+        return await request.json()
 
     async def sessions(request):
         principal = request["principal"]
         if request.method == "GET":
             return web.json_response({"sessions": await adapter.list_sessions(principal)})
-        body = await request.json()
+        body = await body_for(request)
         if not isinstance(body, dict) or set(body) - {"title"}:
             raise AdapterError("SCHEMA_INVALID", 400)
         title = body.get("title")
@@ -103,7 +110,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             return web.json_response({"messages": await adapter.history(principal, session_id)})
         if request.method != "POST" or action not in {"messages", "rename", "archive", "delete", "cancel"}:
             raise AdapterError("NOT_FOUND", 404)
-        body = await request.json()
+        body = await body_for(request)
         if not isinstance(body, dict):
             raise AdapterError("SCHEMA_INVALID", 400)
         if action != "messages":

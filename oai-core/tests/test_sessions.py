@@ -8,7 +8,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from open_android_intelligence_gateway.core import GatewayError
 
-from oai_core.sessions import AgentRegistry, Principal, create_agent_routes
+from oai_core.sessions import (AgentRegistry, Principal, SESSION_REQUEST_MAX_BYTES,
+                               create_agent_routes, session_request_json)
 from oai_core.operations import NativeOperations, OperationConflict
 
 BASE = "/open-android-intelligence/v2/agents"
@@ -136,6 +137,81 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
         result = await response.text()
         self.assertIn("AGENT_STREAM_INTERRUPTED", result)
         self.assertNotIn('"type": "done"', result)
+
+    async def test_message_budget_counts_utf8_json_bytes_for_every_agent_kind(self):
+        # Four-byte code points reach the byte budget before the character limit.
+        largest = "😀" * 262141
+        self.assertEqual(SESSION_REQUEST_MAX_BYTES - 1, len(session_request_json({"text": largest}).encode()))
+        self.registry.register(NativeHost("dsh"))
+        for agent in ("codex", "hermes", "dsh"):
+            path = BASE + f"/{agent}/sessions/terminal-1/messages"
+            response = await self.client.post(path, data=session_request_json({"text": largest}).encode(), headers=self.user())
+            self.assertEqual(200, response.status)
+            self.assertIn('"type": "done"', await response.text())
+            for extra in ("a", "aa"):
+                headers = self.user()
+                response = await self.client.post(path, data=session_request_json({"text": largest + extra}).encode(), headers=headers)
+                self.assertEqual(413, response.status)
+                self.assertEqual({"error": {"code": "MESSAGE_TOO_LARGE"}}, await response.json())
+                self.assertNotEqual("text/event-stream", response.content_type)
+                # A corrected retry may reuse the key: rejection never began a write.
+                retry = await self.client.post(path, json={"text": "retry"}, headers=headers)
+                self.assertEqual(200, retry.status)
+                await retry.read()
+
+    async def test_character_limit_and_invalid_unicode_still_precede_operations(self):
+        path = BASE + "/codex/sessions/terminal-1/messages"
+        for body, code in ((session_request_json({"text": "x" * 262145}).encode(), "INVALID_MESSAGE"),
+                           (b'{"text":"\\ud800"}', "INVALID_JSON")):
+            response = await self.client.post(path, data=body, headers=self.user())
+            self.assertEqual(400, response.status)
+            self.assertEqual(code, (await response.json())["error"]["code"])
+        self.assertEqual([], self.host.calls)
+        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+
+    async def test_route_budget_is_checked_even_with_a_larger_outer_listener(self):
+        # Prove route validation itself rejects UTF-8 and escaped control payloads,
+        # rather than relying only on aiohttp's raw-request limit.
+        async def authenticate(request):
+            return Principal("alice")
+        app = web.Application(client_max_size=2 * SESSION_REQUEST_MAX_BYTES)
+        app.add_routes(create_agent_routes(self.registry, authenticate, lambda p: True))
+        async with TestClient(TestServer(app)) as client:
+            path = BASE + "/codex/sessions/terminal-1/messages"
+            for text in ("😀" * 262144, "\x01" * 175000):
+                response = await client.post(path, data=session_request_json({"text": text}).encode(), headers=self.user())
+                self.assertEqual(413, response.status)
+                self.assertEqual({"error": {"code": "MESSAGE_TOO_LARGE"}}, await response.json())
+        self.assertEqual([], self.host.calls)
+        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+
+    async def test_smaller_non_utf8_input_cannot_hide_an_oversized_utf8_host_request(self):
+        # A permitted JSON charset can be more compact than the host's UTF-8 JSON.
+        # Check the actual outgoing representation before starting any operation.
+        body = session_request_json({"text": "文" * 350000})
+        self.assertLess(len(body.encode("gb18030")), SESSION_REQUEST_MAX_BYTES)
+        self.assertGreater(len(body.encode("utf-8")), SESSION_REQUEST_MAX_BYTES)
+        headers = self.user() | {"Content-Type": "application/json; charset=gb18030"}
+        response = await self.client.post(BASE + "/codex/sessions/terminal-1/messages",
+                                         data=body.encode("gb18030"), headers=headers)
+        self.assertEqual(413, response.status)
+        self.assertEqual({"error": {"code": "MESSAGE_TOO_LARGE"}}, await response.json())
+        self.assertEqual([], self.host.calls)
+        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+
+    async def test_raw_budget_during_authentication_returns_the_same_stable_error(self):
+        async def authenticate(request):
+            await request.read()  # Signed authentication reads before body_for.
+            return Principal("alice")
+        app = web.Application(client_max_size=SESSION_REQUEST_MAX_BYTES)
+        app.add_routes(create_agent_routes(self.registry, authenticate, lambda p: True))
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(BASE + "/codex/sessions/terminal-1/messages",
+                                         data=b" " * (SESSION_REQUEST_MAX_BYTES + 1), headers=self.user())
+            self.assertEqual(413, response.status)
+            self.assertEqual({"error": {"code": "MESSAGE_TOO_LARGE"}}, await response.json())
+        self.assertEqual([], self.host.calls)
+        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
 
     async def test_revocation_denies_native_calls(self):
         self.active = False

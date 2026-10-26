@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import secrets
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +14,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from open_android_intelligence_gateway.capability_policy import DeviceCapabilityPolicy
-from open_android_intelligence_gateway.core import _jcs
+from open_android_intelligence_gateway.core import CredentialStore, _jcs
 
 from oai_core.server import AUTH_KEY, CORE_KEY, DEVICE_API, create_app, create_core
 from oai_core.sessions import AgentRegistry
@@ -82,6 +83,23 @@ async def token(client, bundle):
     return {"Authorization": "Bearer " + (await response.json())["token"]}
 
 
+def pause_password_checks(monkeypatch):
+    """Pause real verification after reading its credential, without DB locks."""
+    loop = asyncio.get_running_loop()
+    started = asyncio.Queue()
+    release = threading.Event()
+    verify_password = CredentialStore.verify_password
+
+    def verify(self, password):
+        result = verify_password(self, password)
+        loop.call_soon_threadsafe(started.put_nowait, threading.get_ident())
+        assert release.wait(10), "password worker was not released"
+        return result
+
+    monkeypatch.setattr(CredentialStore, "verify_password", verify)
+    return started, release
+
+
 @pytest.mark.asyncio
 async def test_core_does_not_advertise_unavailable_legacy_chat_features(gateway):
     client, core, _ = gateway
@@ -118,6 +136,112 @@ async def test_real_phone_signatures_nonce_replay_and_cli_tokens_are_account_dev
     assert response.status == 400
     assert (await client.delete(DEVICE_API + "/tokens/current", headers=cli)).status == 200
     assert (await client.get(DEVICE_API + "/devices", headers=cli)).status == 401
+
+
+@pytest.mark.asyncio
+async def test_password_check_does_not_block_devices_or_live_events(gateway, monkeypatch):
+    client, core, app = gateway
+    bundle, key = await phone_login(client, core)
+    binding, _ = await publish(client, core, bundle, key)
+    cli = await token(client, bundle)
+    _, headers = signed(bundle, key, "GET", PREFIX + "/events")
+    stream = await client.ws_connect(PREFIX + "/events", headers=headers)
+    started, release = pause_password_checks(monkeypatch)
+    login = asyncio.create_task(client.post(DEVICE_API + "/tokens", json={
+        "username": "alice", "password": "test-only-password", "deviceId": bundle["deviceId"]}))
+    try:
+        assert await asyncio.wait_for(started.get(), 2) != threading.get_ident()
+        async with asyncio.timeout(2):
+            response = await client.get(DEVICE_API + "/devices", headers=cli)
+            assert response.status == 200, await response.text()
+            response = await client.post(DEVICE_API + "/device-requests", json={
+                "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}},
+                headers={**cli, "Idempotency-Key": "during-password-check"})
+            assert response.status == 200, await response.text()
+            request_id = (await response.json())["requestId"]
+            while True:
+                frame = await stream.receive_json()
+                if frame["event"] == "device.requested" and json.loads(frame["data"])["payload"]["requestId"] == request_id:
+                    break
+    finally:
+        release.set()
+        response = await login
+        await stream.close()
+    assert response.status == 200, await response.text()
+
+
+@pytest.mark.asyncio
+async def test_password_admission_stays_bounded_after_cancellation_and_keeps_token_identity(gateway, monkeypatch):
+    client, core, app = gateway
+    alice, _ = await phone_login(client, core)
+    bob, _ = await phone_login(client, core, "bob")
+    auth = app[AUTH_KEY]
+    bodies = [{"username": bundle["accountId"], "password": "test-only-password", "deviceId": bundle["deviceId"]}
+              for bundle in (alice, bob, alice, bob)]
+    owner = threading.get_ident()
+    database_threads = []
+    auth.database.set_trace_callback(lambda _: database_threads.append(threading.get_ident()))
+    started, release = pause_password_checks(monkeypatch)
+    logins = [asyncio.create_task(auth.async_login(body)) for body in bodies]
+    try:
+        async with asyncio.timeout(2):
+            workers = [await started.get() for _ in logins]
+            assert all(worker != owner for worker in workers)
+            response = await client.post(DEVICE_API + "/tokens", json=bodies[0])
+            assert response.status == 429, await response.text()
+            assert (await response.json())["error"]["code"] == "RATE_LIMITED"
+            logins[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await logins[0]
+            response = await client.post(DEVICE_API + "/tokens", json=bodies[0])
+            assert response.status == 429, await response.text()
+            assert started.empty()
+    finally:
+        release.set()
+        results = await asyncio.gather(*logins, return_exceptions=True)
+    for body, result in zip(bodies[1:], results[1:]):
+        assert isinstance(result, dict), result
+        response = await client.get(DEVICE_API + "/devices", headers={"Authorization": "Bearer " + result["token"]})
+        assert response.status == 200, await response.text()
+        assert {row["deviceId"] for row in (await response.json())["devices"]} == {body["deviceId"]}
+    assert auth.database.execute("SELECT count(*) FROM core_tokens").fetchone()[0] == len(logins) - 1
+    assert set(database_threads) == {owner}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["password", "pairing", "grant"])
+async def test_token_issuance_rechecks_credentials_and_pairing_after_worker(gateway, monkeypatch, change):
+    client, core, app = gateway
+    bundle, _ = await phone_login(client, core)
+    started, release = pause_password_checks(monkeypatch)
+    login = asyncio.create_task(client.post(DEVICE_API + "/tokens", json={
+        "username": "alice", "password": "test-only-password", "deviceId": bundle["deviceId"]}))
+    try:
+        await asyncio.wait_for(started.get(), 2)
+        account = core.open_gateway_account("alice")
+        try:
+            if change == "password":
+                account.credentials.set_password("replacement-password")
+            elif change == "pairing":
+                account.sessions.revoke_device_keys(bundle["deviceId"], "during-password-check")
+            else:
+                account.bump_grant_revision(bundle["deviceId"], "during-password-check")
+        finally:
+            account.close()
+    finally:
+        release.set()
+        response = await login
+    if change == "grant":
+        assert response.status == 200, await response.text()
+        cli = {"Authorization": "Bearer " + (await response.json())["token"]}
+        assert (await client.get(DEVICE_API + "/devices", headers=cli)).status == 200
+        row = app[AUTH_KEY].database.execute("SELECT account_id, device_id, generation, revision FROM core_tokens").fetchone()
+        assert tuple(row) == ("alice", bundle["deviceId"], 1, 2)
+    else:
+        assert response.status in {400, 401}, await response.text()
+        expected = "AUTHENTICATION_FAILED" if change == "password" else "PAIRING_REQUIRED"
+        assert (await response.json())["error"]["code"] == expected
+        assert app[AUTH_KEY].database.execute("SELECT count(*) FROM core_tokens").fetchone()[0] == 0
 
 
 async def publish(client, core, bundle, key, risk="read"):

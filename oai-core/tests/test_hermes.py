@@ -3,15 +3,18 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import uuid
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from oai_core.adapters.hermes import HermesRemoteSessionAdapter, HermesSessionAdapter
 from oai_core.auth import Principal
 from oai_core.hermes_host import UnsupportedApprovalMixin, create_hermes_bridge_app
 from oai_core.server import create_core
-from oai_core.sessions import AdapterError
+from oai_core.sessions import (AdapterError, AgentRegistry, SESSION_REQUEST_MAX_BYTES,
+                               create_agent_routes, session_request_json)
 
 CONTRACT = Path(__file__).resolve().parents[2] / "gateway-contract"
 
@@ -78,6 +81,82 @@ async def test_remote_mapping_is_one_to_one_and_header_identity_cannot_be_inject
         assert response.status == 400
     with pytest.raises(ValueError):
         HermesRemoteSessionAdapter("http://localhost:8792", token, {"first": "alice", "second": "alice"})
+
+
+@pytest.mark.asyncio
+async def test_core_and_real_hermes_http_bridge_share_the_bounded_message_budget(core):
+    received = []
+
+    class Runtime:
+        _loop = asyncio.get_running_loop()
+        _session_store = object()
+        _message_handler = staticmethod(lambda: None)
+        services = SimpleNamespace(core=core)
+
+        def _track_background_task(self, task, label):
+            self.task = task
+
+        async def _notify_agent_inbound(self, path, body, response, owner):
+            received.append(json.loads(body)["text"])
+            account = core.open_gateway_account(owner)
+            try:
+                account.conversations.workflow.settle(response["data"]["messageId"], "completed")
+            finally:
+                account.close()
+
+    native = HermesSessionAdapter(core, Runtime())
+    conversation = (await native.list_sessions(Principal("alice")))[0]["id"]
+    token = "test-only-hermes-bridge-token-1234567890"
+    bridge = create_hermes_bridge_app(native, token, ["alice"])
+    async with TestClient(TestServer(bridge)) as host:
+        remote = HermesRemoteSessionAdapter(str(host.make_url("/")).rstrip("/"), token, {"core-alice": "alice"})
+        registry = AgentRegistry([remote])
+        assert (await registry.discover())[0]["online"]
+
+        async def authenticate(request):
+            return Principal("core-alice", device_id="phone")
+
+        app = web.Application(client_max_size=SESSION_REQUEST_MAX_BYTES)
+        app.add_routes(create_agent_routes(registry, authenticate, lambda p: True))
+        try:
+            async with TestClient(TestServer(app)) as client:
+                path = f"/open-android-intelligence/v2/agents/hermes/sessions/{conversation}/messages"
+                for text in ("a" * 70000, "文" * 24000, "😀" * 100000):
+                    body = session_request_json({"text": text}).encode()
+                    assert 65536 < len(body) < SESSION_REQUEST_MAX_BYTES
+                    response = await client.post(path, data=body, headers={"Idempotency-Key": uuid.uuid4().hex})
+                    assert response.status == 200
+                    assert '"type": "done"' in await response.text()
+                    assert received[-1] == text
+                before = len(received)
+                headers = {"Idempotency-Key": uuid.uuid4().hex}
+                oversized = session_request_json({"text": "😀" * 262144}).encode()
+                response = await client.post(path, data=oversized, headers=headers)
+                assert response.status == 413
+                assert response.content_type == "application/json"
+                assert await response.json() == {"error": {"code": "MESSAGE_TOO_LARGE"}}
+                assert len(received) == before
+                assert registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0] == before
+                retry = await client.post(path, json={"text": "retry"}, headers=headers)
+                assert retry.status == 200
+                assert '"type": "done"' in await retry.text()
+                assert len(received) == before + 1
+            # The same original native session remains the sole account binding.
+            assert [row["id"] for row in await native.list_sessions(Principal("alice"))] == [conversation]
+            account = core.open_gateway_account("alice")
+            try:
+                assert len(account.agent_sessions.list()) == 1
+            finally:
+                account.close()
+            # The internal listener independently rejects oversized direct requests.
+            before = len(received)
+            response = await host.post(f"/oai/session-adapter/v1/sessions/{conversation}/messages", data=oversized,
+                                       headers={"Authorization": "Bearer " + token, "X-OAI-Account": "alice", "X-OAI-Device": "phone"})
+            assert response.status == 413
+            assert await response.json() == {"code": "MESSAGE_TOO_LARGE"}
+            assert len(received) == before
+        finally:
+            await registry.close()
 
 
 @pytest.mark.asyncio

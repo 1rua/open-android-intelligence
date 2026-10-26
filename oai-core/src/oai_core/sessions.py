@@ -22,6 +22,13 @@ from .operations import NativeOperations, OperationConflict
 logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
 CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream")
+# Keep one explicit boundary across aiohttp versions and both session bridges.
+SESSION_REQUEST_MAX_BYTES = 1024 * 1024
+
+
+def session_request_json(body: Any) -> str:
+    """Use the same UTF-8 JSON representation for validation and host requests."""
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":"))
 
 
 class AdapterError(Exception):
@@ -178,12 +185,20 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
 
     async def body_for(request: web.Request, fields: set[str]) -> dict[str, Any]:
         try:
+            if len(await request.read()) >= SESSION_REQUEST_MAX_BYTES:
+                raise AdapterError("MESSAGE_TOO_LARGE", 413)
             body = await request.json()
         except (ValueError, UnicodeError):
             raise AdapterError("INVALID_JSON") from None
         # No identity or device authority can be supplied in an Agent request.
         if not isinstance(body, dict) or not set(body).issubset(fields):
             raise AdapterError("INVALID_REQUEST")
+        try:
+            size = len(session_request_json(body).encode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise AdapterError("INVALID_JSON") from None
+        if size >= SESSION_REQUEST_MAX_BYTES:
+            raise AdapterError("MESSAGE_TOO_LARGE", 413)
         return body
 
     def operation(request: web.Request, principal: Principal, body: Any) -> tuple[str, dict[str, Any] | None]:
@@ -209,6 +224,9 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
             except GatewayError as exc:
                 body = {"error": {"code": exc.code}}
                 return web.json_response(body, status=_status(body))
+            except web.HTTPRequestEntityTooLarge:
+                # Reading may happen during signed authentication, before body_for.
+                return web.json_response({"error": {"code": "MESSAGE_TOO_LARGE"}}, status=413)
             except web.HTTPException:
                 raise
             except Exception:

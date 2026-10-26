@@ -1,6 +1,7 @@
 """Authenticated principals. Device identity is selected only at authentication."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 import sqlite3
@@ -54,6 +55,8 @@ class ReplayProtectedVerifier(GatewayRequestVerifier):
 class Authentication:
     """Signed phone requests and revocable, account/device-bound CLI tokens."""
 
+    MAX_PASSWORD_CHECKS = 4
+
     def __init__(self, core: Any, database: Path, token_lifetime: int = 86400):
         self.core = core
         self.verifier = ReplayProtectedVerifier(core, self)
@@ -66,6 +69,7 @@ class Authentication:
         self.database.execute("CREATE TABLE IF NOT EXISTS signed_nonces (digest TEXT PRIMARY KEY, expires REAL NOT NULL)")
         self.database.commit()
         self._attempts: dict[tuple[str, str], tuple[float, int]] = {}
+        self._password_checks: set[asyncio.Task[str]] = set()
 
     def consume_nonce(self, raw: Any, context: VerifiedRequestContext) -> bool:
         # The signature verifier already rejected duplicate singleton headers.
@@ -86,7 +90,7 @@ class Authentication:
     def close(self) -> None:
         self.database.close()
 
-    def login(self, body: Any, remote: str = "") -> dict[str, Any]:
+    def _prepare_login(self, body: Any, remote: str) -> tuple[str, str, str]:
         if not isinstance(body, dict) or set(body) != {"username", "password", "deviceId"} or any(not isinstance(v, str) or not v for v in body.values()):
             raise GatewayError("SCHEMA_INVALID")
         username, password, device_id = body["username"], body["password"], body["deviceId"]
@@ -105,23 +109,70 @@ class Authentication:
                 raise GatewayError("RATE_LIMITED")
         if not self.core.account_exists(username):
             raise GatewayError("AUTHENTICATION_FAILED")
+        return username, password, device_id
+
+    def _verify_login(self, username: str, password: str) -> str:
+        # Each worker owns and closes its account connection. The token database
+        # and admission/rate-limit state belong to the listener's thread.
+        if not self.core.account_exists(username):
+            raise GatewayError("AUTHENTICATION_FAILED")
         account = self.core.open_gateway_account(username)
         try:
-            if not account.credentials.verify_password(password):
+            digest = account.credentials.password_digest()
+            if digest is None or not account.credentials.verify_password(password):
                 raise GatewayError("AUTHENTICATION_FAILED")
-            row = account.store.database.execute("SELECT pairing_generation, grant_revision FROM device_keys WHERE device_id=?", (device_id,)).fetchone()
-            if row is None:
-                raise GatewayError("PAIRING_REQUIRED")
-            token = secrets.token_urlsafe(32)
-            digest = hashlib.sha256(token.encode()).hexdigest()
-            expires = now + self.token_lifetime
-            self.database.execute("DELETE FROM core_tokens WHERE expires <= ?", (now,))
-            self.database.execute("INSERT INTO core_tokens VALUES (?,?,?,?,?,?)", (digest, username, device_id, int(row[0]), int(row[1]), expires))
-            self.database.commit()
-            self._attempts.pop(key, None)
-            return {"token": token, "expiresAt": datetime.fromtimestamp(expires, timezone.utc).isoformat()}
+            return digest
         finally:
             account.close()
+
+    def _issue_login(self, username: str, device_id: str, credential_digest: str, remote: str) -> dict[str, Any]:
+        if not self.core.account_exists(username):
+            raise GatewayError("AUTHENTICATION_FAILED")
+        account = self.core.open_gateway_account(username)
+        try:
+            # Recheck credentials and pairing after the worker completes. Hold
+            # the account write lock so a password reset or pairing revocation
+            # cannot race the token's binding to the current account/device.
+            with account.store.transaction():
+                if account.credentials.password_digest() != credential_digest:
+                    raise GatewayError("AUTHENTICATION_FAILED")
+                row = account.store.database.execute("SELECT pairing_generation, grant_revision FROM device_keys WHERE device_id=?", (device_id,)).fetchone()
+                if row is None:
+                    raise GatewayError("PAIRING_REQUIRED")
+                token = secrets.token_urlsafe(32)
+                digest = hashlib.sha256(token.encode()).hexdigest()
+                now = time.time()
+                expires = now + self.token_lifetime
+                with self.database:
+                    self.database.execute("DELETE FROM core_tokens WHERE expires <= ?", (now,))
+                    self.database.execute("INSERT INTO core_tokens VALUES (?,?,?,?,?,?)", (digest, username, device_id, int(row[0]), int(row[1]), expires))
+                self._attempts.pop((remote, username), None)
+                return {"token": token, "expiresAt": datetime.fromtimestamp(expires, timezone.utc).isoformat()}
+        finally:
+            account.close()
+
+    def login(self, body: Any, remote: str = "") -> dict[str, Any]:
+        username, password, device_id = self._prepare_login(body, remote)
+        return self._issue_login(username, device_id, self._verify_login(username, password), remote)
+
+    async def async_login(self, body: Any, remote: str = "") -> dict[str, Any]:
+        username, password, device_id = self._prepare_login(body, remote)
+        # Reject excess work instead of accumulating an unbounded worker queue.
+        if len(self._password_checks) >= self.MAX_PASSWORD_CHECKS:
+            raise GatewayError("RATE_LIMITED")
+        check = asyncio.create_task(asyncio.to_thread(self._verify_login, username, password))
+        self._password_checks.add(check)
+
+        def finished(task: asyncio.Task[str]) -> None:
+            self._password_checks.discard(task)
+            if not task.cancelled():
+                task.exception()
+
+        check.add_done_callback(finished)
+        # A disconnected/cancelled caller still occupies its slot until its
+        # password worker exits; cancellation cannot bypass the admission cap.
+        credential_digest = await asyncio.shield(check)
+        return self._issue_login(username, device_id, credential_digest, remote)
 
     async def authenticate(self, request: web.Request) -> Principal:
         if "x-open-android-intelligence-signature" in request.headers:

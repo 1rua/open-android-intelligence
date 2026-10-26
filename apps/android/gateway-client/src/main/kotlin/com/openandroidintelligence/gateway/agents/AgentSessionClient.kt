@@ -11,6 +11,7 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import java.io.IOException
+import java.io.InputStream
 
 data class AgentCapabilities(
     val list: Boolean = false, val history: Boolean = false,
@@ -84,7 +85,11 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             .copy(headers = listOf(RawHeader("Content-Type", "application/json"), RawHeader("Accept", "text/event-stream")))
         try {
             http.consumeResponse(request) { status, headers, stream ->
-                if (status !in 200..299) throw AgentSessionException("AGENT_SEND_FAILED", status)
+                if (status !in 200..299) {
+                    val failure = try { readErrorBody(stream)?.let(::responseRoot) }
+                    catch (_: IOException) { null }
+                    throw AgentSessionException(errorCode(failure, "AGENT_SEND_FAILED"), status)
+                }
                 check(RawHeaders.single(headers, "Content-Type")?.substringBefore(';')?.trim() == "text/event-stream") {
                     "AGENT_STREAM_INVALID"
                 }
@@ -117,12 +122,29 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
 
     private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null): JsonValue.JObject {
         val response = http.execute(jsonRequest(method, target, body))
-        val root = runCatching { JsonFields.obj(Json.parse(response.body.decodeToString())) }.getOrNull()
+        val root = responseRoot(response.body)
         if (response.status !in 200..299) {
-            val failure = JsonFields.obj(JsonFields.field(root, "error"))
-            throw AgentSessionException(JsonFields.string(failure, "code") ?: "AGENT_REQUEST_FAILED", response.status)
+            throw AgentSessionException(errorCode(root, "AGENT_REQUEST_FAILED"), response.status)
         }
         return JsonFields.obj(JsonFields.field(root, "data")) ?: root ?: error("AGENT_RESPONSE_INVALID")
+    }
+
+    private fun responseRoot(body: ByteArray): JsonValue.JObject? =
+        runCatching { JsonFields.obj(Json.parse(body.decodeToString())) }.getOrNull()
+
+    private fun errorCode(root: JsonValue.JObject?, fallback: String): String =
+        JsonFields.string(JsonFields.obj(JsonFields.field(root, "error")), "code") ?: fallback
+
+    /** Error responses are small JSON envelopes; never buffer an unbounded rejected stream. */
+    private fun readErrorBody(stream: InputStream): ByteArray? {
+        val buffer = ByteArray(MAX_ERROR_BODY_BYTES + 1)
+        var size = 0
+        while (size < buffer.size) {
+            val read = stream.read(buffer, size, buffer.size - size)
+            if (read < 0) return buffer.copyOf(size)
+            size += read
+        }
+        return null
     }
 
     private fun jsonRequest(method: String, target: String, body: Map<String, Any?>?): SignedGatewayRequest =
@@ -145,6 +167,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
 
     companion object {
         const val ROOT = "/open-android-intelligence/v2/agents"
+        private const val MAX_ERROR_BODY_BYTES = 8 * 1024
         internal fun segment(value: String): String {
             require(value.isNotBlank() && value !in setOf(".", "..") && value.none { it == '/' || it == '\\' }) {
                 "AGENT_IDENTIFIER_INVALID"

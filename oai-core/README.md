@@ -72,6 +72,11 @@ Android 继续使用原 `/open-android-intelligence/v2` 的签名、配对及设
 Hermes 单独保留账号绑定；所有操作均读取或修改真实宿主，不保存第二份聊天历史。
 在线状态由宿主握手/查询得出；宿主不支持的能力在服务端和 App 同时禁用。
 
+原生会话请求在 Core 与 Hermes/DSH 会话桥均须小于 1 MiB；消息另保留 262144 字符上限。
+Core 在记录写操作或开启 SSE 前检查紧凑 JSON 的实际 UTF-8 字节数，过大请求返回
+HTTP 413 `MESSAGE_TOO_LARGE`，不会创建未知结果的操作回执。桥传输使用紧凑 UTF-8 JSON，
+避免把多字节文本转成更大的 ASCII 转义序列。
+
 Codex 使用明确指定的 app-server 和实例目录：
 
 ```json

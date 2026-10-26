@@ -75,6 +75,7 @@ jobs:
           :app:compileFullDebugKotlin
           :app:testFullDebugUnitTest
           --tests '*NativeAgentsControllerTest'
+          --tests '*NativeAgentBackgroundWorkTest'
           --tests '*GatewayTutorialsTest'
           --tests '*GatewaySessionRefreshTest'
           --tests '*GatewayWorkbenchLogoutTest'
