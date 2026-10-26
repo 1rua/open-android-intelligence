@@ -45,7 +45,7 @@
 
 ## 30 秒看懂
 
-`feature/unified-oai-core` 重构引入统一服务入口：**OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**。
+`dev` 分支现已包含统一服务入口：**OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**。
 手机只连接 Core 的一个监听地址。该地址同时承载三套接口：
 1. **Android 设备协议**（`/open-android-intelligence/v2`）：设备认证、Ed25519 签名、配对与平台事件总线；
 2. **设备调用面**（`/open-android-intelligence/core/v1`）：面向本机的 REST、CLI 与标准 MCP stdio 服务；
@@ -426,6 +426,7 @@ open-android-intelligence/
 │   ├── dsh-session-adapter/       # DSH 宿主侧 Cordis Bundle（只读写原生会话，端口 8791）
 │   └── hermes-session-adapter/    # Hermes 宿主侧仅会话插件（按账号隔离会话，端口 8792）
 ├── docs/                          # 产品规格书、ADR 架构决策记录与技术评审文档
+├── scripts/                       # 自动化安装向导与运维脚本（install.sh）
 ├── assets/readme/                 # README 所需的精美矢量 SVG 资产与设计 Token 规范
 ├── legacy/                        # 已冻结归档的历史版本 Bridge 与过渡组件
 ├── openclaw-plugin-pin.json       # 锁定 OpenClaw 插件的版本、标签与 Git Commit SHA

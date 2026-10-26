@@ -45,7 +45,7 @@
 
 ## 30-Second Overview
 
-The `feature/unified-oai-core` architecture refactoring introduces a unified deployment entrypoint: **OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**.
+The `dev` branch now features a unified deployment entrypoint: **OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**.
 The phone connects to a single OAI Core address, which simultaneously serves three API surfaces:
 1. **Android Device Protocol** (`/open-android-intelligence/v2`): Authentication, Ed25519 request signatures, pairing, and platform event streams;
 2. **Device Invocation Surface** (`/open-android-intelligence/core/v1`): Local REST, CLI, and official FastMCP stdio interface for controlling device operations;
@@ -424,6 +424,7 @@ open-android-intelligence/
 │   ├── dsh-session-adapter/       # DSH host-side Cordis Bundle (reads/writes native sessions, port 8791)
 │   └── hermes-session-adapter/    # Hermes host-side session plugin (account-isolated sessions, port 8792)
 ├── docs/                          # Product specifications, ADR architectural decision records, and technical reviews
+├── scripts/                       # Automated installation and management scripts (install.sh)
 ├── assets/readme/                 # Beautiful vector SVG assets and design token specs for README
 ├── legacy/                        # Frozen and archived legacy bridge code and transitional components
 ├── openclaw-plugin-pin.json       # Pinned OpenClaw plugin version, tag, and Git commit SHA
