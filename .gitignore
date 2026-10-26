@@ -33,6 +33,7 @@ apps/android/**/*.aab
 # IDE
 .idea/
 .vscode/
+.zcode/
 
 # OS
 .DS_Store
@@ -53,6 +54,7 @@ Thumbs.db
 /logs/
 /tmp/
 /docs/test-evidence
+.mimosa/
 
 # Temp
 *.tmp
