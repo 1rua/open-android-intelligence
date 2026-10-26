@@ -7,7 +7,7 @@ from verify_bundled_plugins import BUNDLED_PLUGINS, verify
 
 
 class BundledPluginsDeliveryTest(unittest.TestCase):
-    """三个内置插件资产必须逐项、逐字节与签出的包一致。"""
+    """六个内置插件资产必须逐项、逐字节与签出的包一致。"""
 
     def build_apk(self, root: Path, entries: list[tuple[str, bytes]]) -> Path:
         apk = root / "app.apk"
@@ -16,7 +16,7 @@ class BundledPluginsDeliveryTest(unittest.TestCase):
                 archive.writestr(name, content)
         return apk
 
-    def test_all_three_assets_present_pass(self):
+    def test_all_assets_present_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             packages = {name: root / f"{name}.alp" for name in BUNDLED_PLUGINS}

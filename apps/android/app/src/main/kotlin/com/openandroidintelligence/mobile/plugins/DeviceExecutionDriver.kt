@@ -6,6 +6,7 @@ import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.kernel.CapabilityDenied
+import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.plugin.pkg.PluginIdentity
 import java.io.IOException
 import java.time.Instant
@@ -79,8 +80,14 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
         }
     }
     fun decide(requestId: String, approved: Boolean) { confirmations[requestId]?.complete(approved) }
-    fun cancel(requestId: String) { confirmations[requestId]?.complete(false); running[requestId]?.cancel() }
-    fun cancelAll() { running.values.forEach { it.cancel() }; confirmations.values.forEach { it.complete(false) } }
+    fun cancel(requestId: String) {
+        ScreenHostRegistry.current?.cancelRequest(requestId)
+        confirmations[requestId]?.complete(false); running[requestId]?.cancel()
+    }
+    fun cancelAll() {
+        ScreenHostRegistry.current?.revoke()
+        running.values.forEach { it.cancel() }; confirmations.values.forEach { it.complete(false) }
+    }
     suspend fun recoverPending() = recoveryLock.withLock {
         for (id in documents.keys()) {
             try {
@@ -99,6 +106,7 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
         var claim: ClaimReceipt? = null
         var invocationStarted = false
         var invocationRisk = JsonFields.string(request,"risk")
+        var screenInvocation = false
         var stage = "claim"
         var result: DeviceRequestResult = DeviceRequestResult.OutcomeUnknown
         var persistedResult: DeviceRequestResult? = null
@@ -132,6 +140,7 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
                         it.key == key && "sha256:${it.identity.authorKeyFingerprint}" == JsonFields.string(provider,"authorKeyId")
                     } ?: throw CapabilityDenied(key)
                     val parameters = JsonFields.field(request,"parameters") ?: error("DEVICE_REQUEST_INVALID")
+                    screenInvocation = entry.primitives.any { it.startsWith("kernel.screen.") }
                     if (entry.risk != "read") invocationRisk = entry.risk
                     val requiresConfirmation = JsonFields.bool(request,"requiresForegroundConfirmation") == true ||
                         JsonFields.string(request,"risk") in setOf("write","high-privilege-ephemeral") ||
@@ -153,6 +162,13 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
                         check(Instant.parse(JsonFields.string(request,"expiresAt")!!).toEpochMilli() > System.currentTimeMillis() &&
                             grantRevision == currentGrantRevision()) { "REQUEST_LEASE_EXPIRED" }
                         stage = "invoke"
+                        if ("kernel.screen.control" in entry.primitives) {
+                            // Only a successful existing foreground confirmation reaches here.
+                            // Confirmation data from remote parameters is never trusted.
+                            val expiresAt = Instant.parse(JsonFields.string(request,"expiresAt")!!).toEpochMilli()
+                            ScreenHostRegistry.current?.installConfirmation(id, Json.sha256(parameters), expiresAt)
+                                ?: throw CapabilityDenied("SCREEN_PROVIDER_UNAVAILABLE")
+                        }
                         invocationStarted = true
                         diagnostic(id,stage,"STARTED")
                         val output = runInterruptible(Dispatchers.IO) { host.invoke(entry.identity,accountId,key,parameters,id) }
@@ -169,17 +185,23 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
                 else DeviceRequestResult.Failed(mapOf("code" to "DEVICE_REQUEST_TIMEOUT"))
             diagnostic(id,stage,"DEVICE_REQUEST_TIMEOUT")
         } catch (_: CancellationException) {
-            result = DeviceRequestResult.OutcomeUnknown
+            result = if (screenInvocation && (!invocationStarted || invocationRisk == "read"))
+                DeviceRequestResult.Cancelled(mapOf("code" to "SCREEN_REQUEST_CANCELLED")) else DeviceRequestResult.OutcomeUnknown
             diagnostic(id,stage,"EXECUTION_CANCELLED")
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
             val code = when(stage) {
                 "claim" -> "DEVICE_CLAIM_FAILED"
                 "authorization" -> "DEVICE_AUTHORIZATION_CHECK_FAILED"
                 else -> "PLUGIN_EXECUTION_FAILED"
             }
-            result = if (invocationStarted && invocationRisk != "read") DeviceRequestResult.OutcomeUnknown
-                else DeviceRequestResult.Failed(mapOf("code" to code))
+            result = if (screenInvocation) ScreenExecutionErrors.result(failure)
+                ?: if (invocationStarted && invocationRisk != "read") DeviceRequestResult.OutcomeUnknown
+                    else DeviceRequestResult.Failed(mapOf("code" to code))
+                else if (invocationStarted && invocationRisk != "read") DeviceRequestResult.OutcomeUnknown
+                    else DeviceRequestResult.Failed(mapOf("code" to code))
             diagnostic(id,stage,code)
+        } finally {
+            ScreenHostRegistry.current?.finishRequest(id)
         }
         // 未获得并核对服务器收据时，保留日志等待恢复；不得自行构造收据或上传结果。
         val receipt = claim ?: return

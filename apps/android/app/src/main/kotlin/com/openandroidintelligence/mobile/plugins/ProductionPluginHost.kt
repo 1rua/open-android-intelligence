@@ -274,8 +274,10 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                     }.orEmpty()
                     status = when (reason) {
                         "" -> "READY"
-                        "READ_SMS_REQUIRED", "READ_CALL_LOG_REQUIRED", "NOTIFICATION_ACCESS_REQUIRED" -> "ANDROID_PERMISSION_REQUIRED"
-                        "LOCAL_GRANT_REQUIRED", "LOCAL_POLICY_CORRUPTED" -> "LOCAL_GRANT_REQUIRED"
+                        "READ_SMS_REQUIRED", "READ_CALL_LOG_REQUIRED", "NOTIFICATION_ACCESS_REQUIRED",
+                        "ACCESSIBILITY_SERVICE_UNAVAILABLE", "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED" -> "ANDROID_PERMISSION_REQUIRED"
+                        "LOCAL_GRANT_REQUIRED", "LOCAL_POLICY_CORRUPTED", "SCREEN_SESSION_REQUIRED",
+                        "SCREEN_SESSION_EXPIRED", "SCREEN_SESSION_BINDING_CHANGED", "SCREEN_PERMISSION_REQUIRED" -> "LOCAL_GRANT_REQUIRED"
                         else -> "PROVIDER_UNAVAILABLE"
                     }
                 }

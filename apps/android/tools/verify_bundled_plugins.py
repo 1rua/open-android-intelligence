@@ -1,6 +1,6 @@
 """Verify the delivered APK contains exactly the signed .alp packages built by the signed build.
 
-三个内置插件（notifications / sms / call-log）逐项校验：APK 内必须恰好
+内置数据读取与屏幕插件逐项校验：APK 内必须恰好
 出现一次对应资产，且与签出的包逐字节一致；任何缺失、重复或内容偏差
 都视为内置链路断裂，直接失败。
 """
@@ -12,6 +12,9 @@ BUNDLED_PLUGINS: dict[str, str] = {
     "notifications": "assets/bundled-plugins/notifications.alp",
     "sms": "assets/bundled-plugins/sms.alp",
     "call-log": "assets/bundled-plugins/call-log.alp",
+    "screen-reader": "assets/bundled-plugins/screen-reader.alp",
+    "screen-capture": "assets/bundled-plugins/screen-capture.alp",
+    "screen-control": "assets/bundled-plugins/screen-control.alp",
 }
 
 

@@ -1,0 +1,93 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "capture",
+        "read",
+        "release"
+      ]
+    },
+    "maxWidth": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 2048
+    },
+    "imageId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8388608
+    }
+  },
+  "required": [
+    "operation"
+  ],
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "capture"
+        },
+        "maxWidth": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 2048
+        }
+      },
+      "required": [
+        "operation"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "read"
+        },
+        "imageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8388608
+        }
+      },
+      "required": [
+        "operation",
+        "imageId",
+        "offset"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "release"
+        },
+        "imageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "operation",
+        "imageId"
+      ]
+    }
+  ]
+}

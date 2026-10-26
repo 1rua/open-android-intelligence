@@ -5,6 +5,8 @@ dependencies {
     implementation(project(":gateway-client"))
     implementation(project(":core-model"))
     implementation(project(":capability-ports"))
+    implementation(project(":control-ports"))
+    implementation(project(":screen-control"))
     implementation(project(":sms-collector"))
     implementation(project(":call-log-collector"))
     implementation(project(":notification-collector"))

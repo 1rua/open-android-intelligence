@@ -251,7 +251,7 @@ jobs:
           cache-dependency-path: plugin-tooling/package-lock.json
 
       # PR 场景没有生产私钥，这里用一次性随机 seed 作隔离测试作者，
-      # 一次性签出 notifications / sms / call-log 三个包供 APK 内置校验使用。
+      # 一次性签出数据读取与屏幕能力六个包供 APK 内置校验使用。
       - name: Build signed plugin packages with an isolated test author
         run: |
           npm ci --prefix plugin-tooling
@@ -278,10 +278,10 @@ jobs:
           export PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH"
           ./gradlew check :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace --no-build-cache --max-workers=1
 
-      # 三个插件资产必须逐一与签出的包逐字节一致；缺一个就说明内置链路断了。
+      # 六个插件资产必须逐一与签出的包逐字节一致；缺一个就说明内置链路断了。
       - name: Verify the plugin packages reached the APK
         run: |
-          for package in notifications sms call-log; do
+          for package in notifications sms call-log screen-reader screen-capture screen-control; do
             python3 apps/android/tools/verify_bundled_plugins.py \
               --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
               --package "$package=$OAI_BUNDLED_PLUGINS_DIR/$package.alp"

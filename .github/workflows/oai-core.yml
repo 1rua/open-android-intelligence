@@ -12,6 +12,7 @@ on:
       - 'integrations/dsh-session-adapter/**'
       - 'integrations/hermes-session-adapter/**'
       - 'gateway-contract/**'
+      - 'plugins/**'
       - 'apps/android/**'
       - '.github/workflows/oai-core.yml'
   push:
@@ -25,6 +26,7 @@ on:
       - 'integrations/dsh-session-adapter/**'
       - 'integrations/hermes-session-adapter/**'
       - 'gateway-contract/**'
+      - 'plugins/**'
       - 'apps/android/**'
       - '.github/workflows/oai-core.yml'
   workflow_dispatch:
@@ -118,6 +120,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.12'
+      - name: Screen primitives, local authorization and projection lifecycle
+        working-directory: apps/android
+        run: >-
+          gradle --no-daemon --max-workers=2 --no-build-cache
+          :control-ports:testDebugUnitTest
+          :capability-ports:testDebugUnitTest
+          :screen-control:testDebugUnitTest
+          :device-primitives:testDebugUnitTest
+          noVpnSurfaceCheck
       - name: Core connection, Agent sessions, platform recovery and transport regressions
         working-directory: apps/android
         run: >-
@@ -132,3 +143,22 @@ jobs:
           --tests '*GatewayWorkbenchLogoutTest'
           --tests '*DeviceExecutionRecoveryTest'
           --tests '*PlatformSnapshotRecoveryTest'
+          --tests '*ScreenExecutionErrorsTest'
+          --tests '*PluginCapabilityRiskTest'
+          --tests '*CapabilityPublisherTest'
+          --tests '*ApplicationCompositionTest'
+          --tests '*AndroidApiCompatibilityTest'
+          --tests '*CoreAgentConversationRepositoryTest'
+      - name: Play screen integration and Android API compatibility
+        working-directory: apps/android
+        run: >-
+          gradle --no-daemon --max-workers=2 --no-build-cache
+          :app:compilePlayDebugKotlin
+          :app:testPlayDebugUnitTest
+          --tests '*ScreenExecutionErrorsTest'
+          --tests '*PluginCapabilityRiskTest'
+          --tests '*DeviceExecutionRecoveryTest'
+          --tests '*CapabilityPublisherTest'
+          --tests '*ApplicationCompositionTest'
+          --tests '*AndroidApiCompatibilityTest'
+          --tests '*CoreAgentConversationRepositoryTest'

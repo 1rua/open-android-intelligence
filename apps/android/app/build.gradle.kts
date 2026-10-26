@@ -61,6 +61,9 @@ tasks.withType<Test>().configureEach {
         "sms" to "sms.wasm",
         "notifications" to "notifications.wasm",
         "call-log" to "call_log.wasm",
+        "screen-reader" to "screen_reader.wasm",
+        "screen-capture" to "screen_capture.wasm",
+        "screen-control" to "screen_control.wasm",
     )) {
         inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/${spec.second}"))
             .withPropertyName("compiled${spec.first.replace("-", "")}Reference".replaceFirstChar(Char::uppercase))
@@ -73,7 +76,7 @@ tasks.withType<Test>().configureEach {
 // Full releases carry the same signed .alp installed through the ordinary verifier.
 // An absent optional local input must clear yesterday's assets, never reuse them.
 //
-// 三个官方插件各自独立：缺失某一项只让它自己的入口如实说明「本包未附带」，
+// 官方插件各自独立：缺失某一项只让它自己的入口如实说明「本包未附带」，
 // 不会连带其他插件。只有显式要求（-Poai.requireBundledPlugins=true）时，
 // 任意一项缺失才让构建失败——发布流程正是用它保证不会漏包。
 internal data class BundledPluginSpec(val name: String, val pluginId: String, val wasm: String)
@@ -82,6 +85,9 @@ internal val bundledPlugins = listOf(
     BundledPluginSpec("notifications", "org.openandroidintelligence.notifications", "notifications.wasm"),
     BundledPluginSpec("sms", "org.openandroidintelligence.sms", "sms.wasm"),
     BundledPluginSpec("call-log", "org.openandroidintelligence.call-log", "call_log.wasm"),
+    BundledPluginSpec("screen-reader", "org.openandroidintelligence.screen-reader", "screen_reader.wasm"),
+    BundledPluginSpec("screen-capture", "org.openandroidintelligence.screen-capture", "screen_capture.wasm"),
+    BundledPluginSpec("screen-control", "org.openandroidintelligence.screen-control", "screen_control.wasm"),
 )
 val bundledPluginsDirectory = providers.environmentVariable("OAI_BUNDLED_PLUGINS_DIR").orElse("")
 val requireBundledPlugins = providers.gradleProperty("oai.requireBundledPlugins").map(String::toBoolean).orElse(false)
@@ -276,6 +282,7 @@ dependencies {
     implementation(project(":core-model"))
     implementation(project(":assistant-holder"))
     implementation(project(":capability-ports"))
+    implementation(project(":control-ports"))
     implementation(project(":notification-control"))
     implementation(project(":gateway-client"))
     implementation(project(":platform-kernel"))
