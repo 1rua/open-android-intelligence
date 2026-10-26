@@ -1,0 +1,20 @@
+manifest_version: 2
+name: oai-hermes-session-adapter
+label: OAI Hermes Session Adapter
+version: 0.1.0
+description: Native account-isolated Hermes sessions for OAI Core; no device gateway.
+author: Open Android Intelligence
+kind: platform
+license: MIT
+python_runtime: ">=3.11"
+requires_hermes: ">=0.20.0"
+provides_tools: []
+provides_hooks: []
+requires_env:
+  - OAI_HERMES_SESSION_TOKEN
+  - OAI_HERMES_GATEWAY_ROOT
+  - OAI_HERMES_ACCOUNTS
+optional_env:
+  - OAI_HERMES_SESSION_PORT
+  - OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE
+  - OPEN_ANDROID_GATEWAY_CONTRACT_ROOT

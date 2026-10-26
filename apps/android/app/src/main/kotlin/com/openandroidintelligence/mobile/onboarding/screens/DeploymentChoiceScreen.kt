@@ -134,7 +134,7 @@ fun DeploymentChoiceScreen(
             ChoiceCard(
                 index = "B",
                 title = "我还未部署",
-                description = "查看 OAI Core 安装、账号创建与启动步骤，以及各 Agent 插件接入教程。",
+                description = "查看 OAI Core 安装、账号创建与 oai serve 启动步骤，也保留旧 OpenClaw 兼容指南。",
                 trailing = "查看教程",
                 accent = false,
                 onClick = onNotDeployed,

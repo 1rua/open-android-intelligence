@@ -16,11 +16,11 @@ import org.junit.Test
 class GatewayTutorialsTest {
 
     @Test
-    fun `three gateways are covered`() {
+    fun `core is the default and openclaw retains its compatibility guide`() {
         val all = com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials.ALL
-        assertEquals(3, all.size)
+        assertEquals(2, all.size)
         assertEquals(
-            listOf("hermes", "openclaw", "dsh"),
+            listOf("core", "openclaw"),
             all.map { it.id },
         )
     }
@@ -80,24 +80,15 @@ class GatewayTutorialsTest {
         }
     }
 
-    /** Hermes：安装命令与锁定提交必须与项目 README 一致。 */
     @Test
-    fun `hermes commands match the pinned commit`() {
-        val hermes = com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials.HERMES
-        val joined = hermes.steps.mapNotNull { it.terminal?.command }.joinToString("\n")
-
-        assertTrue("缺少 hermes plugins install", joined.contains("hermes plugins install"))
-        assertTrue(
-            "锁定提交不匹配 README",
-            joined.contains("190441415652ae34fbd1cb8cc485f6208fff944b"),
-        )
-        assertTrue("缺少 --enable", joined.contains("--enable"))
-        assertTrue("缺少 gateway setup", joined.contains("hermes gateway setup"))
-        assertTrue(
-            "缺少账号创建命令",
-            joined.contains("hermes open-android-intelligence account create"),
-        )
-        assertTrue("缺少状态验证", joined.contains("hermes open-android-intelligence status"))
+    fun `core guide uses the real unified serve and account commands`() {
+        val core = com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials.CORE
+        val commands = core.steps.mapNotNull { it.terminal?.command }.joinToString("\n")
+        assertTrue(commands.contains("python3 -m venv .venv"))
+        assertTrue(commands.contains("pip install -e ./oai-core"))
+        assertTrue(commands.contains("oai account create --config oai-core/examples/core.json --username alice"))
+        assertTrue(commands.contains("oai serve --config oai-core/examples/core.json"))
+        assertTrue(core.steps.any { it.body.contains("同一个地址与端口") })
     }
 
     /** OpenClaw：安装命令、锁定提交与主密钥环境变量。 */
@@ -121,16 +112,12 @@ class GatewayTutorialsTest {
         )
     }
 
-    /** DSH：构建、Bundle 安装与一次性凭据路径。 */
     @Test
-    fun `dsh commands cover build install and credentials`() {
-        val dsh = com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials.DSH
-        val joined = dsh.steps.mapNotNull { it.terminal?.command }.joinToString("\n")
-
-        assertTrue(joined.contains("npm ci"))
-        assertTrue(joined.contains("npm run build"))
-        assertTrue(joined.contains("plugin_manager action=install_bundle"))
-        assertTrue(joined.contains("setup-account.json"))
+    fun `old hermes and dsh tutorial selections migrate to core without a second phone endpoint`() {
+        val tutorials = com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials
+        assertEquals("core", tutorials.byId("hermes").id)
+        assertEquals("core", tutorials.byId("dsh").id)
+        assertEquals("openclaw", tutorials.byId("openclaw").id)
     }
 
     /** 未知 id 回退到第一个教程，保证界面永远有内容而不是空白页。 */
@@ -142,7 +129,7 @@ class GatewayTutorialsTest {
             fallback.id,
         )
         assertEquals(
-            "hermes",
+            "core",
             com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials.byId(null).id,
         )
     }

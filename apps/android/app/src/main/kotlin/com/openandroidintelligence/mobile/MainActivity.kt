@@ -691,6 +691,20 @@ internal fun GatewayWorkbenchScreen(
         else -> ""
     }
     val profile = profiles.firstOrNull { it.gatewayBaseUrl == gatewayLabel && it.username == username }
+    val nativeAgents by runtime.nativeAgents.collectAsState()
+    val nativeState = nativeAgents?.state?.collectAsState()?.value
+    if (phase is ConnectionPhase.Connected && nativeAgents != null && nativeState?.supported == null) {
+        Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator()
+            Text("正在读取 Agent 列表…")
+        }
+        return
+    }
+    if (phase is ConnectionPhase.Connected && nativeState?.supported == true) {
+        NativeAgentSessionsScreen(checkNotNull(nativeAgents), runtime, username, onOpenSettings, modifier)
+        return
+    }
     val avatar = rememberAccountAvatarPicker(runtime, profile)
     Column(modifier.fillMaxSize()) {
         WorkbenchScreen(

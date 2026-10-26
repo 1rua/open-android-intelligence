@@ -1,5 +1,13 @@
 # 会话本地恢复与附件下载升级说明
 
+> **适用边界**：本文件描述 Android 本地对话镜像在 Gateway Protocol v2.1 下的升级与恢复行为，
+> 适用于仍连接独立 Gateway 聊天端点的既有部署。统一 OAI Core 不提供 `/conversations` 聊天路由，
+> 会话改由 `/open-android-intelligence/v2/agents` 原生会话面承载，其请求预算、幂等回执与
+> 宿主能力边界见
+> [架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) 与
+> [统一 Core 迁移方案](../plans/2026-10-25-unified-core-migration.zh-CN.md)。
+> 本地镜像、附件下载与清理规则本身不因本次重构改变。
+
 这次升级使用新的附件事件核心 Schema。配套版本为 Android 2.1.1、Hermes 插件 2.1.1、OpenClaw 插件 1.0.2，核心摘要是 `sha256:63223ba149355032800eeae8a9f0827d542bbde7ca9e4eeb19f93df30e7febde`。最终源码固定值、CI 和 APK 下载入口以本轮交付报告为准。只升级手机或插件会在登录协商时得到 `PROTOCOL_INCOMPATIBLE`。
 
 先取得匹配 APK，再在维护窗口更新所使用的 Gateway 插件和 App。保留宿主状态目录、原账号数据库、主密钥、设备配对、手机账号和安装签名；升级无需新建账号、清除 App 数据或重新配对。插件更新后按宿主正常流程重新加载。固定调试签名 APK 可以覆盖相同签名的既有调试安装，发行签名的安装仍需相同发行身份。

@@ -62,75 +62,61 @@ data class TerminalBlock(
 )
 
 /**
- * 项目当前实际支持的全部 Agent Gateway 教程。
- *
- * 内容来源（2026-10 核实）：
- * - 项目 README.md「为 Agent 宿主安装网关插件」一节；
- * - `openclaw-plugin-pin.json` 固定的版本与提交；
- * - 对 `1rua/hermes-gateway-plugin`、`1rua/openclaw-gateway-plugin`、
- *   `1rua/dsh-android-gateway` 三个仓库的实际检出与 `package.json` 核对。
- *
- * 版本号与提交 SHA 会随插件升级失效，届时只需改这里一处。
+ * 新部署默认使用 OAI Core。OpenClaw 保留旧 Gateway 兼容教程。
+ * Core 命令来源：仓库 oai-core/README.md；OpenClaw 来源：openclaw-plugin-pin.json。
+ * 旧 Hermes/DSH 教程 id 恢复时由 byId 回退到 Core，不迁移账号或设备密钥。
  */
 object GatewayTutorials {
 
-    /** Hermes Agent：Python 宿主，插件按提交 SHA 锁定。 */
-    val HERMES = GatewayTutorial(
-        id = "hermes",
-        shortName = "Hermes",
-        displayName = "Hermes Agent",
-        tagline = "Python 原生宿主。插件以固定提交锁定，与当前 App 版本严格对应。",
-        chips = listOf("Python 3.11+", "Protocol v2.1", "插件 v2.2.0"),
-        repoUrl = "https://github.com/1rua/hermes-gateway-plugin",
+    /** 手机只登录 Core；Agent 接入在同一服务端配置中完成。 */
+    val CORE = GatewayTutorial(
+        id = "core",
+        shortName = "OAI Core",
+        displayName = "OAI Core",
+        tagline = "一个服务端地址连接手机，统一管理设备调用与已接入 Agent 的原生会话。",
+        chips = listOf("Python 3.11+", "Protocol v2.1", "Core v0.1.0"),
+        repoUrl = "https://github.com/1rua/open-android-intelligence/tree/dev/oai-core",
         steps = listOf(
             TutorialStep(
-                title = "确认 Hermes 已安装",
-                body = "在宿主机上执行下面的命令，能正常输出版本号即可。需要 Python 3.11+，" +
-                    "并确保手机能访问这台主机（局域网或 Tailscale）。",
+                title = "安装 OAI Core 与 CLI",
+                body = "在服务端主机创建独立 Python 环境。Core、CLI 与 MCP 来自同一个项目。",
                 terminal = TerminalBlock(
-                    label = "Terminal · 校验环境",
-                    command = "hermes --version",
+                    label = "Terminal · 安装 Core",
+                    command = "git clone --branch dev https://github.com/1rua/open-android-intelligence.git\n" +
+                        "cd open-android-intelligence\n" +
+                        "python3 -m venv .venv\n" +
+                        ".venv/bin/python -m pip install -e ./oai-core",
                 ),
             ),
             TutorialStep(
-                title = "安装并启用 Gateway 插件",
-                body = "用与当前 App 版本锁定的提交安装。--enable 会在同一步完成启用，" +
-                    "不需要再单独执行 enable。",
-                terminal = TerminalBlock(
-                    label = "Terminal · 安装插件",
-                    command = "hermes plugins install 1rua/hermes-gateway-plugin \\\n" +
-                        "    --ref 190441415652ae34fbd1cb8cc485f6208fff944b \\\n" +
-                        "    --enable",
-                ),
+                title = "配置一个手机可访问的地址",
+                body = "编辑 oai-core/examples/core.json。示例仅监听本机；远程连接前须配置 " +
+                    "listen.host 和 TLS 证书 tls.certFile、tls.keyFile。agents 数组只填写明确接入的 " +
+                    "Hermes、DSH 或 Codex 实例；具体适配器配置见官方文档。手机始终连接 Core 的同一个地址与端口。",
             ),
             TutorialStep(
-                title = "生成主密钥并完成网关配置",
-                body = "这条命令会引导你生成 32 字节主密钥文件（权限 0600）并写入网关配置。" +
-                    "消息正文用它做对称加密，请勿提交到版本库。",
-                terminal = TerminalBlock(
-                    label = "Terminal · 配置网关",
-                    command = "hermes gateway setup",
-                ),
-            ),
-            TutorialStep(
-                title = "创建手机登录账号",
-                body = "为手机端单独创建一个账号，把 my_user 和密码换成你自己的。" +
-                    "--confirm-local 表示确认这是本机操作。",
+                title = "创建 OAI 登录账号",
+                body = "密码通过交互输入。设备能力逐账号授权；Hermes 会话保留账号隔离，" +
+                    "DSH 和 Codex 在此部署中共享可读取的原生会话。",
                 terminal = TerminalBlock(
                     label = "Terminal · 创建账号",
-                    command = "hermes open-android-intelligence account create \\\n" +
-                        "    -u my_user -p '你的密码' --confirm-local",
+                    command = ".venv/bin/oai account create --config oai-core/examples/core.json --username alice",
                 ),
             ),
             TutorialStep(
-                title = "验证网关已就绪",
-                body = "确认插件已加载、账号存在、协议版本匹配。三项都正常后，就可以回手机登录了。",
+                title = "启动统一服务",
+                body = "此服务维护手机连接、账号验证和设备请求状态。切换 Agent 不需要另开手机连接。",
                 terminal = TerminalBlock(
-                    label = "Terminal · 验证状态",
-                    command = "hermes open-android-intelligence status\n" +
-                        "hermes open-android-intelligence contract status",
+                    label = "Terminal · 启动 Core",
+                    command = ".venv/bin/oai serve --config oai-core/examples/core.json",
                 ),
-                verifyHint = "输出里应能看到插件已启用、账号列表包含刚创建的账号、协议版本为 2.1。",
+            ),
+            TutorialStep(
+                title = "登录并查看已接入的 Agent",
+                body = "手机填写配置好的 Core 地址、OAI 账号与密码。登录后查看真实在线状态与原生会话；" +
+                    "设备插件在设置中独立安装和授权。",
+                verifyHint = "登录后展示此 Core 已明确接入的 Agent；未接入时显示空列表。" +
+                    "不支持的会话操作会禁用，切换 Agent 不会重置手机连接。",
             ),
         ),
     )
@@ -138,9 +124,9 @@ object GatewayTutorials {
     /** OpenClaw：Node.js 宿主，主密钥走环境变量。 */
     val OPENCLAW = GatewayTutorial(
         id = "openclaw",
-        shortName = "OpenClaw",
+        shortName = "OpenClaw 兼容",
         displayName = "OpenClaw",
-        tagline = "Node.js 宿主。插件通过固定提交安装，账号隔离与配对由插件自带的 Gateway Core 负责。",
+        tagline = "旧 Gateway 兼容入口。本阶段不参与 Core 的 Agent 适配器重构，继续按原方式连接。",
         chips = listOf("Node.js 24.x", "Protocol v2.1", "插件 v1.1.0"),
         repoUrl = "https://github.com/1rua/openclaw-gateway-plugin",
         steps = listOf(
@@ -194,60 +180,8 @@ object GatewayTutorials {
         ),
     )
 
-    /** DSH (DeepSeek Harness)：独立 Bundle 插件，复用 DSH 原生 Web 端口。 */
-    val DSH = GatewayTutorial(
-        id = "dsh",
-        shortName = "DSH",
-        displayName = "DSH (DeepSeek Harness)",
-        tagline = "独立 Bundle 插件，复用 DSH 原生 Web 端口，无需额外守护进程。",
-        chips = listOf("Node.js 24.13+", "Protocol v2.1", "插件 v0.2.0"),
-        repoUrl = "https://github.com/1rua/dsh-android-gateway",
-        steps = listOf(
-            TutorialStep(
-                title = "克隆并构建插件",
-                body = "插件以 TypeScript 源码分发，需要先本地编译出一个可安装的 Bundle。",
-                terminal = TerminalBlock(
-                    label = "Terminal · 构建插件",
-                    command = "git clone https://github.com/1rua/dsh-android-gateway.git\n" +
-                        "cd dsh-android-gateway\n" +
-                        "npm ci\n" +
-                        "npm run build",
-                ),
-            ),
-            TutorialStep(
-                title = "在 DSH 中安装 Bundle",
-                body = "在 DSH 会话里执行安装指令。target 填上一步构建产物的**绝对路径**。",
-                terminal = TerminalBlock(
-                    label = "DSH · 安装 Bundle",
-                    command = "plugin_manager action=install_bundle \\\n" +
-                        "    target=/absolute/path/to/dsh-android-gateway",
-                ),
-            ),
-            TutorialStep(
-                title = "获取首次登录凭据",
-                body = "首次启动且账号表为空时，插件会自动生成一次性凭据到 " +
-                    "\$DSH_HOME/dsh-android-gateway/setup-account.json（权限 0600）。" +
-                    "其中的用户名与密码就是手机端要填的内容。",
-                terminal = TerminalBlock(
-                    label = "Terminal · 读取凭据",
-                    command = "cat \$DSH_HOME/dsh-android-gateway/setup-account.json",
-                ),
-            ),
-            TutorialStep(
-                title = "登录并清理临时凭据",
-                body = "手机登录成功后，请及时删除这个临时文件。网关地址填 DSH Web 界面地址即可。",
-                terminal = TerminalBlock(
-                    label = "Terminal · 清理",
-                    command = "rm \$DSH_HOME/dsh-android-gateway/setup-account.json",
-                ),
-                verifyHint = "登录成功后设备公钥随注册自动生成，后续请求都用 Ed25519 签名，" +
-                    "不需要再输密码。",
-            ),
-        ),
-    )
-
     /** 全部教程，顺序即 Tab 顺序。 */
-    val ALL: List<GatewayTutorial> = listOf(HERMES, OPENCLAW, DSH)
+    val ALL: List<GatewayTutorial> = listOf(CORE, OPENCLAW)
 
     /** 按 id 取教程；找不到时回退到第一个，保证界面永远有内容可显示。 */
     fun byId(id: String?): GatewayTutorial =

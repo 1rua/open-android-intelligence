@@ -188,7 +188,7 @@ fun WelcomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
-                // ===== 参数表：三行清晰明了的说明 =====
+                // ===== 参数表：两行清晰明了的说明 =====
                 Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
                 Box(
                     modifier = Modifier

@@ -78,4 +78,26 @@ class PlatformSnapshotRecoveryTest {
         assertEquals("evt_platform_old",cursors.load("acct"))
         assertFalse(journalRecovered)
     }
+
+    @Test fun aCoreWithoutLegacyChatRoutesRestoresDeviceRequestsFromItsSnapshot()=runBlocking {
+        val requests=mutableListOf<String>()
+        val upstream=transport("platform")
+        val core=object: GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests+=request.target
+                if (request.target.contains("/conversations")) return WireResponse(405,emptyList(),ByteArray(0))
+                return upstream.execute(request)
+            }
+            override fun eventStream(request: WireRequest)=upstream.eventStream(request)
+        }
+        val cursors=Cursors("evt_platform_old")
+        val client=GatewayHttpClient(profile,core,{ByteArray(64)},cursors)
+        val restored=mutableListOf<String>()
+        client.setCursorRecovery {
+            recoverPlatformSnapshot(client,{}, {restored+=it}, {restored+="journal"})
+        }
+        assertEquals("evt_platform_next",client.events().take(1).toList().single().id)
+        assertEquals(listOf("req_missed","journal"),restored)
+        assertEquals(listOf("/open-android-intelligence/v2/sync/snapshot"),requests)
+    }
 }
