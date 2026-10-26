@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.stateIn
 
 /**
@@ -39,6 +41,7 @@ data class SettingsUiState(
     val replyNotificationsWired: Boolean = false,
     val replyNotificationsEnabled: Boolean = false,
     val replyNotificationsAllowed: Boolean = false,
+    val nativeAgentsState: NativeAgentsState? = null,
 ) {
     val isGatewayConnected: Boolean
         get() = connectionPhase is ConnectionPhase.Connected
@@ -178,11 +181,21 @@ class SettingsViewModel(
         notice to refreshing
     }
 
+    private val nativeAgentsFlow: StateFlow<NativeAgentsState?> =
+        (runtime?.nativeAgents?.flatMapLatest { controller ->
+            controller?.state ?: MutableStateFlow<NativeAgentsState?>(null)
+        } ?: MutableStateFlow(null)).stateIn(
+            scope = scope,
+            started = SharingStarted.Eagerly,
+            initialValue = runtime?.nativeAgents?.value?.state?.value,
+        )
+
     val uiState: StateFlow<SettingsUiState> = combine(
         baseSettingsFlow,
         controlSettingsFlow,
         operationSettingsFlow,
-    ) { base, control, operations ->
+        nativeAgentsFlow,
+    ) { base, control, operations, nativeAgentsState ->
         SettingsUiState(
             appearance = base.appearance,
             connectionPhase = base.phase,
@@ -200,6 +213,7 @@ class SettingsViewModel(
             replyNotificationsWired = runtime != null,
             replyNotificationsEnabled = control.replyEnabled,
             replyNotificationsAllowed = control.replyAllowed,
+            nativeAgentsState = nativeAgentsState,
         )
     }.stateIn(
         scope = scope,
@@ -221,6 +235,7 @@ class SettingsViewModel(
             replyNotificationsWired = runtime != null,
             replyNotificationsEnabled = runtime?.replyNotifications?.enabled?.value ?: false,
             replyNotificationsAllowed = runtime?.replyNotifications?.allowed?.value ?: false,
+            nativeAgentsState = runtime?.nativeAgents?.value?.state?.value,
         ),
     )
 
@@ -303,4 +318,12 @@ class SettingsViewModel(
 
     fun unpair() { runtime?.unpair() }
     fun chooseAnotherAccount() { runtime?.chooseAnotherAccount() }
+
+    fun selectAgent(agentId: String) {
+        runtime?.nativeAgents?.value?.selectAgent(agentId)
+    }
+
+    fun refreshAgents() {
+        runtime?.nativeAgents?.value?.refresh()
+    }
 }

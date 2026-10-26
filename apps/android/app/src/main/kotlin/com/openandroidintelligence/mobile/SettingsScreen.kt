@@ -300,6 +300,8 @@ fun SettingsScreen(
                 onLogout = { viewModel.logout(revokeRefresh = true) },
                 onSwitchAccount = { viewModel.chooseAnotherAccount(); onBack() },
                 onRequestUnpair = { showUnpairDialog = true },
+                onSelectAgent = viewModel::selectAgent,
+                onRefreshAgents = viewModel::refreshAgents,
             )
         }
 
@@ -647,7 +649,7 @@ private fun SettingsOverviewScreen(
                             "连接失败：" + readableFailure(phase.code, CONNECTION_FAILURE_FALLBACK)
                     }
                     SettingsNavigationItem(
-                        headline = "Gateway 连接管理",
+                        headline = "OAI Core 管理",
                         supporting = statusText,
                         icon = Icons.Default.Hub,
                         tone = if (uiState.isGatewayConnected) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
@@ -1064,7 +1066,7 @@ private fun PaletteDot(
     )
 }
 
-/** 子页面 2: Gateway 连接与账号详细配置。 */
+/** 子页面 2: OAI Core 管理与连接详细配置。 */
 @Composable
 private fun GatewaySubScreen(
     uiState: SettingsUiState,
@@ -1074,9 +1076,11 @@ private fun GatewaySubScreen(
     onLogout: () -> Unit,
     onSwitchAccount: () -> Unit,
     onRequestUnpair: () -> Unit,
+    onSelectAgent: (String) -> Unit = {},
+    onRefreshAgents: () -> Unit = {},
 ) {
     SettingsPageScaffold(
-        title = "连接与账号",
+        title = "OAI Core 管理",
         presentation = presentation,
         onBack = onBack,
     ) { padding ->
@@ -1091,7 +1095,7 @@ private fun GatewaySubScreen(
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsListItem(
-                        headline = "Gateway 地址",
+                        headline = "OAI Core 地址",
                         supporting = uiState.connectedGatewayUrl ?: "—",
                         icon = Icons.Default.Security,
                     )
@@ -1109,24 +1113,76 @@ private fun GatewaySubScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsListItem(
                         headline = "配对信息",
-                        // 摘要只来自 Gateway 登录响应；两端都未下发时如实说明，
-                        // 不得用本地合成值顶替。
-                        supporting = uiState.pairingSummary ?: "当前 Gateway 没有提供配对信息",
+                        supporting = uiState.pairingSummary ?: "当前 Core 没有提供配对信息",
                         icon = Icons.Default.Key,
                     )
                 }
             }
 
+            val nativeState = uiState.nativeAgentsState
+            if (uiState.isGatewayConnected && nativeState?.supported == true) {
+                SectionLabel("已接入的 Agent")
+                SettingsSectionCard {
+                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                        if (nativeState.agents.isEmpty()) {
+                            SettingsListItem(
+                                headline = "未发现已接入的 Agent",
+                                supporting = "此 OAI Core 尚未接入任何 Agent，请在服务端配置",
+                                icon = Icons.Default.Hub,
+                            )
+                        } else {
+                            nativeState.agents.forEachIndexed { index, agent ->
+                                if (index > 0) {
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                }
+                                val isSelected = agent.id == nativeState.selectedAgentId
+                                SettingsListItem(
+                                    headline = agent.name,
+                                    supporting = "${agent.kind} · " +
+                                        (if (agent.sessionScope == "account") "账号隔离" else "共享实例") +
+                                        if (isSelected) "（当前使用中）" else "",
+                                    icon = if (isSelected) Icons.Default.Check else Icons.Default.Hub,
+                                    tone = if (isSelected) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
+                                    onClick = { onSelectAgent(agent.id) },
+                                    trailing = {
+                                        Surface(
+                                            shape = RoundedCornerShape(AppRadius.ExtraSmall),
+                                            color = if (agent.online) MaterialTheme.colorScheme.secondaryContainer
+                                            else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                        ) {
+                                            Text(
+                                                text = if (agent.online) "在线" else "离线",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (agent.online) MaterialTheme.colorScheme.onSecondaryContainer
+                                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
+                                            )
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SettingsListItem(
+                            headline = "刷新 Agent 列表",
+                            supporting = "从 OAI Core 获取最新的 Agent 在线状态与能力",
+                            icon = Icons.Default.Refresh,
+                            onClick = onRefreshAgents,
+                        )
+                    }
+                }
+            }
+
             if (uiState.isGatewayConnected) {
-                SectionLabel("这个 Gateway 支持的功能")
+                SectionLabel("这个 Core 支持的功能")
                 NegotiatedCapabilitiesGroup(conversationUi = uiState.conversationUi)
                 SettingsSectionCard {
                     SettingsListItem(
                         headline = "设备端任务执行",
                         supporting = when {
-                            uiState.deviceRequestChannel == null -> "当前 Gateway 不会把任务下发到手机执行"
-                            uiState.pluginRuntimesWired -> "已支持：Gateway 可以把任务下发到手机执行"
-                            else -> "Gateway 支持下发，但本机插件执行尚未接通"
+                            uiState.deviceRequestChannel == null -> "当前 Core 不会把任务下发到手机执行"
+                            uiState.pluginRuntimesWired -> "已支持：Core 可以把任务下发到手机执行"
+                            else -> "Core 支持下发，但本机插件执行尚未接通"
                         },
                         icon = Icons.Default.Security,
                     )
