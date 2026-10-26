@@ -78,7 +78,7 @@ prompt_read() {
     fi
 
     local input=""
-    if [ -c /dev/tty ]; then
+    if [ -e /dev/tty ] && true >/dev/tty 2>/dev/null; then
         printf "%b" "$prompt_text" > /dev/tty
         read -r input < /dev/tty || true
     elif [ -t 0 ]; then
@@ -101,7 +101,7 @@ prompt_password() {
     local var_name="$2"
     local input=""
 
-    if [ -c /dev/tty ]; then
+    if [ -e /dev/tty ] && true >/dev/tty 2>/dev/null; then
         printf "%b: " "$prompt_text" > /dev/tty
         stty -echo < /dev/tty 2>/dev/null || true
         read -r input < /dev/tty || true
@@ -168,8 +168,10 @@ check_prerequisites() {
 # 探测本地或仓库根目录
 resolve_repo_root() {
     # 如果脚本在已有仓库内部执行
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+    local script_dir=""
+    if [ -n "${BASH_SOURCE[0]:-}" ]; then
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+    fi
     if [ -n "$script_dir" ] && [ -f "${script_dir}/../oai-core/pyproject.toml" ]; then
         TARGET_DIR="$(cd "${script_dir}/.." && pwd)"
         IS_LOCAL_REPO=1
@@ -555,7 +557,7 @@ main() {
     show_completion_summary
 }
 
-# 当作为独立脚本直接执行时调用 main
-if [ "${BASH_SOURCE[0]}" = "$0" ] || [ -z "${BASH_SOURCE[0]}" ]; then
+# 当作为独立脚本或通过管道执行时调用 main
+if [ "${BASH_SOURCE[0]:-}" = "$0" ] || [ -z "${BASH_SOURCE[0]:-}" ]; then
     main "$@"
 fi
