@@ -1,16 +1,20 @@
 package com.openandroidintelligence.mobile
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -26,8 +30,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 
 /** Native session UI shares only the authenticated Core transport with device plugins. */
 @Composable
@@ -48,6 +56,8 @@ internal fun NativeAgentSessionsScreen(
     val capabilities = agent?.capabilities
     val writable = agent?.online == true && !state.busy
 
+    val stateColors = LocalAppStateColors.current
+
     Column(modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -57,9 +67,36 @@ internal fun NativeAgentSessionsScreen(
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             state.agents.forEach { entry ->
-                FilterChip(selected = entry.id == state.selectedAgentId,
-                    onClick = { controller.selectAgent(entry.id) }, enabled = !state.busy,
-                    label = { Text("${entry.name} · ${if (entry.online) "在线" else "离线"}") })
+                val statusText = if (entry.online) "在线" else "离线"
+                val dotColor = if (entry.online) stateColors.success else MaterialTheme.colorScheme.outlineVariant
+                FilterChip(
+                    selected = entry.id == state.selectedAgentId,
+                    onClick = { controller.selectAgent(entry.id) },
+                    enabled = !state.busy,
+                    modifier = Modifier.semantics {
+                        contentDescription = "${entry.name}，$statusText"
+                    },
+                    leadingIcon = {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(dotColor, CircleShape)
+                        )
+                    },
+                    label = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(entry.name)
+                            Text(
+                                text = "· $statusText",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (entry.online) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                )
             }
             TextButton(onClick = controller::refresh, enabled = !state.busy) { Text("刷新") }
         }
