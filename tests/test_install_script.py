@@ -225,3 +225,41 @@ printf 'selected=%s\\n' "$INSTALL_HERMES_PLUGIN"
     result = run_bash(source)
     assert "selected=0" in result.stdout
     assert "host mutation attempted" not in result.stderr
+
+
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin", "MINGW64_NT-10.0"])
+def test_autostart_configuration_handles_different_os(tmp_path, os_name):
+    home_dir = tmp_path / "fakehome"
+    target_dir = tmp_path / "oai-core"
+    home_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    source = f'''
+source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
+HOME={shlex.quote(str(home_dir))}
+TARGET_DIR={shlex.quote(str(target_dir))}
+APPDATA={shlex.quote(str(home_dir / "AppData"))}
+uname() {{ printf '%s\\n' "{os_name}"; }}
+prompt_read() {{ printf -v "$2" '%s' y; }}
+systemctl() {{ return 0; }}
+launchctl() {{ return 0; }}
+mkdir -p "$APPDATA/Microsoft/Windows/Start Menu/Programs/Startup"
+configure_autostart
+'''
+    result = run_bash(source)
+    assert result.returncode == 0
+    if os_name == "Darwin":
+        plist = home_dir / "Library" / "LaunchAgents" / "com.openandroidintelligence.core.plist"
+        assert plist.exists()
+        assert str(target_dir / "start-core.sh") in plist.read_text()
+    elif "MINGW" in os_name:
+        vbs = home_dir / "AppData" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "oai-core.vbs"
+        assert vbs.exists()
+        assert str(target_dir / "start-core.sh") in vbs.read_text()
+    else:
+        service = home_dir / ".config" / "systemd" / "user" / "oai-core.service"
+        desktop = home_dir / ".config" / "autostart" / "oai-core.desktop"
+        assert service.exists()
+        assert desktop.exists()
+        assert str(target_dir / "start-core.sh") in service.read_text()
+        assert str(target_dir / "start-core.sh") in desktop.read_text()
+
