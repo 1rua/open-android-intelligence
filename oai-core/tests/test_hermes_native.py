@@ -19,7 +19,7 @@ def test_native_plugin_loader_session_store_and_lifecycle(tmp_path):
     home = tmp_path / "isolated-hermes"
     environment = dict(os.environ)
     environment.update({
-        "PYTHONPATH": os.pathsep.join((str(repository / "oai-core" / "src"), str(sdk))),
+        "PYTHONPATH": os.pathsep.join((str(repository / "oai-core" / "src"), str(repository / "integrations/hermes-session-adapter/src"), str(sdk))),
         "HERMES_HOME": str(home), "HERMES_TEST_ISOLATION": str(home),
         "OPEN_ANDROID_GATEWAY_CONTRACT_ROOT": str(repository / "gateway-contract"),
     })

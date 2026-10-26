@@ -11,7 +11,7 @@ on:
 
 jobs:
   gateway-and-protocol:
-    name: Node.js & Gateway Conformance
+    name: Protocol Conformance & Historical Gateway Compatibility
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -38,21 +38,25 @@ jobs:
           npm install --global npm@11.16.0
           npm ci
           npm ci --prefix plugin-tooling
-          python -m pip install pytest aiohttp jsonschema cryptography PyYAML==6.0.3 httpx==0.28.1 python-dotenv==1.2.4 psutil==7.2.2
+          python -m pip install pytest
 
-      # The Hermes Gateway lives in its own repository and is consumed as an
-      # installed package; this repository stays the authoritative source of the
-      # Gateway Protocol contract that both sides validate against.
-      - name: Check out the Hermes Gateway plugin
+      # Historical protocol oracle only: the fixed pre-migration Gateway below
+      # is never an OAI Core runtime dependency. Its package lives in a separate
+      # virtualenv. Current Core independence and the optional Session Adapter
+      # are validated by oai-core.yml without installing this legacy package.
+      - name: Check out the historical Hermes Gateway fixture
         uses: actions/checkout@v4
         with:
           repository: 1rua/hermes-android-gateway
-          # 固定配套的设备请求超时修复，保证联调不会随插件 main 漂移。
+          # 历史协议兼容基线；不得随当前 Session Adapter 分支漂移。
           ref: ebe527da2426dd25877dd335786e80cf85d1cdde
           path: .hermes-gateway-plugin
 
-      - name: Install the Hermes Gateway plugin
-        run: python -m pip install -e .hermes-gateway-plugin
+      - name: Install the historical fixture in its isolated virtualenv
+        run: |
+          python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"
+          "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pip install -e .hermes-gateway-plugin \
+            pytest aiohttp PyYAML==6.0.3 httpx==0.28.1 python-dotenv==1.2.4 psutil==7.2.2
 
       # 只加载当前两处宿主的原生存储/平台 API；测试不调用真实模型。
       - name: Check out the pinned Hermes native SDK
@@ -124,20 +128,20 @@ jobs:
       - name: Gateway v2 Cross-Host Conformance
         env:
           OPENCLAW_PLUGIN_ROOT: ${{ github.workspace }}/.openclaw-gateway-plugin
-        run: npm run gateway:v2:conformance
+        run: PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH" npm run gateway:v2:conformance
 
-      - name: Run Gateway Tests
+      - name: Historical Gateway compatibility regressions
         env:
           OPENCLAW_PLUGIN_ROOT: ${{ github.workspace }}/.openclaw-gateway-plugin
           HERMES_SDK_ROOT: ${{ github.workspace }}/.toolchains/hermes-native-sdk
           HERMES_HOME: ${{ runner.temp }}/oai-native-hermes-ci
           HERMES_TEST_ISOLATION: ${{ runner.temp }}/oai-native-hermes-ci
         run: |
-          npm test
+          PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH" npm test
           # Native SDK imports alter process-wide host registries. Keep fake-host
           # tests isolated; the next step runs the real SDK/HTTP fixtures.
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT="$PWD/gateway-contract" \
-            env -u HERMES_SDK_ROOT -u PYTHONPATH python -m pytest .hermes-gateway-plugin/tests \
+            env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pytest .hermes-gateway-plugin/tests \
               --ignore=.hermes-gateway-plugin/tests/test_native_history_complete.py \
               --ignore=.hermes-gateway-plugin/tests/test_native_history_projection.py \
               --ignore=.hermes-gateway-plugin/tests/test_native_streaming_delivery.py \
@@ -148,7 +152,7 @@ jobs:
               --ignore=.hermes-gateway-plugin/tests/test_host_command_catalog.py \
               --ignore=.hermes-gateway-plugin/tests/test_android_echo_fixture.py
 
-      - name: Verify the real Hermes native history and transports
+      - name: Historical Hermes SDK history and transport compatibility
         # 正常矩阵约数十秒；停滞时保留具体用例与调用栈，避免无限占用流水线。
         timeout-minutes: 5
         env:
@@ -159,7 +163,7 @@ jobs:
           OAI_REQUIRE_NATIVE_HERMES: "1"
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT: ${{ github.workspace }}/gateway-contract
         run: |
-          python -m pytest -vv -o faulthandler_timeout=30 \
+          "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pytest -vv -o faulthandler_timeout=30 \
             .hermes-gateway-plugin/tests/test_native_history_complete.py \
             .hermes-gateway-plugin/tests/test_native_history_projection.py \
             .hermes-gateway-plugin/tests/test_native_streaming_delivery.py \
@@ -190,10 +194,10 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # HermesHttpInteropTest starts the real Gateway from the plugin checkout
-      # and drives it over HTTP. Without these it fails loudly rather than
-      # silently skipping the only cross-language contract evidence we have.
-      - name: Checkout the Hermes Gateway plugin
+      # HermesHttpInteropTest preserves historical /conversations HTTP behavior.
+      # Keep this fixed old fixture isolated from the new Core package: this
+      # compatibility lane does not prove the new Core/Android deployment.
+      - name: Checkout the historical Hermes HTTP fixture
         uses: actions/checkout@v4
         with:
           repository: 1rua/hermes-android-gateway
@@ -226,10 +230,13 @@ jobs:
           # The interpreter Hermes Agent ships, matching the plugin runtime.
           python-version: "3.11"
 
-      # 插件仍按安装包验证声明依赖；echo 夹具额外运行宿主提供的 aiohttp HTTP/SSE 入口。
-      # 此任务没有安装完整 Hermes，因此显式补齐该宿主依赖。
-      - name: Install the Hermes Gateway plugin for the fixture
-        run: python -m pip install .hermes-gateway-plugin cryptography aiohttp PyYAML==6.0.3 httpx==0.28.1 python-dotenv==1.2.4 psutil==7.2.2
+      # Only the archived HTTP fixture can import this environment. The current
+      # Core wheel and optional Adapter use the independent oai-core.yml jobs.
+      - name: Install the historical HTTP fixture in an isolated virtualenv
+        run: |
+          python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"
+          "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pip install .hermes-gateway-plugin \
+            aiohttp PyYAML==6.0.3 httpx==0.28.1 python-dotenv==1.2.4 psutil==7.2.2
 
       - name: Build real Rust WASM plugins for Android runtime regression
         run: |
@@ -268,6 +275,7 @@ jobs:
           OPEN_ANDROID_GATEWAY_CONTRACT_ROOT: ${{ github.workspace }}/gateway-contract
         run: |
           chmod +x gradlew
+          export PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH"
           ./gradlew check :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace --no-build-cache --max-workers=1
 
       # 三个插件资产必须逐一与签出的包逐字节一致；缺一个就说明内置链路断了。

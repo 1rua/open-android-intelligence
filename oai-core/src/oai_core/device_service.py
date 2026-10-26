@@ -8,8 +8,8 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from open_android_intelligence_gateway.capability_policy import capability_catalog
-from open_android_intelligence_gateway.core import GatewayError, _jcs, _now
+from .gateway.capability_policy import capability_catalog
+from .gateway.core import GatewayError, _jcs, _now
 
 from .auth import Authentication, Principal
 

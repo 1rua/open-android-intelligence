@@ -13,8 +13,8 @@ from typing import Any, Protocol
 from pathlib import Path
 
 from aiohttp import web
-from open_android_intelligence_gateway.core import GatewayError
-from open_android_intelligence_gateway.http import _status
+from .gateway.core import GatewayError
+from .gateway.http import _status
 
 from .auth import Principal
 from .operations import NativeOperations, OperationConflict

@@ -79,8 +79,8 @@ def _wait(client: CoreClient, request: dict, seconds: float) -> dict:
 
 def _local_admin(args: argparse.Namespace) -> dict:
     """Local operator commands never enter the remote invocation surface."""
-    from open_android_intelligence_gateway.capability_policy import DeviceCapabilityPolicy
-    from open_android_intelligence_gateway.core import GatewayError
+    from .gateway.capability_policy import DeviceCapabilityPolicy
+    from .gateway.core import GatewayError
     from .server import create_core, load_config
 
     try:

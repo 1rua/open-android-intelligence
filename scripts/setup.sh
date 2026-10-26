@@ -3,13 +3,18 @@
 # Open Android Intelligence (OAI) Core 独立配置脚本 (setup.sh / configure.sh)
 #
 # 用于在已安装 OAI Core 后独立运行配置向导：
-# 1. 管理员账号与密码重设/新建；
+# 1. 保留既有账号凭据，仅为新账号设置密码；
 # 2. 重新配置监听端口与主机地址；
 # 3. 重新探测或调整 Agent 插件接入（Hermes、DSH、Codex）；
 # 4. 重新生成 core.json 与 start-core.sh 快捷启动脚本。
 #
 
 set -euo pipefail
+
+OAI_SETUP_SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    OAI_SETUP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -73,7 +78,7 @@ prompt_read() {
     if [ -z "$input" ] && [ -n "$default_value" ]; then
         input="$default_value"
     fi
-    eval "$var_name=\"\$input\""
+    printf -v "$var_name" '%s' "$input"
 }
 
 prompt_password() {
@@ -96,7 +101,7 @@ prompt_password() {
     else
         input=""
     fi
-    eval "$var_name=\"\$input\""
+    printf -v "$var_name" '%s' "$input"
 }
 
 resolve_paths() {
@@ -158,9 +163,9 @@ configure_network_and_account() {
     local default_port="8045"
     if [ -f "${CONFIG_FILE}" ]; then
         local existing_host
-        existing_host=$("${VENV_PYTHON}" -c "import json; cfg=json.load(open('${CONFIG_FILE}')); print(cfg.get('listen', {}).get('host', '127.0.0.1'))" 2>/dev/null || echo "127.0.0.1")
+        existing_host=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(cfg.get("listen", {}).get("host", "127.0.0.1"))' 2>/dev/null || echo "127.0.0.1")
         local existing_port
-        existing_port=$("${VENV_PYTHON}" -c "import json; cfg=json.load(open('${CONFIG_FILE}')); print(cfg.get('listen', {}).get('port', 8045))" 2>/dev/null || echo "8045")
+        existing_port=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(cfg.get("listen", {}).get("port", 8045))' 2>/dev/null || echo "8045")
         [ -n "$existing_host" ] && default_host="$existing_host"
         [ -n "$existing_port" ] && default_port="$existing_port"
     fi
@@ -192,7 +197,7 @@ configure_agent_integrations() {
     INSTALL_CODEX=0
 
     if [ "$DETECTED_HERMES" -eq 1 ]; then
-        prompt_read "是否启用 Hermes Agent 会话适配器接入？(y/n)" answer "y"
+        prompt_read "是否配置可选 Hermes 会话桥接入？(y/n)" answer "n"
         [ "$answer" = "y" ] || [ "$answer" = "Y" ] && INSTALL_HERMES=1
     fi
 
@@ -206,135 +211,31 @@ configure_agent_integrations() {
         [ "$answer" = "y" ] || [ "$answer" = "Y" ] && INSTALL_CODEX=1
     fi
 
-    # 执行 Hermes 插件安装/启用
-    if [ "$INSTALL_HERMES" -eq 1 ] && command -v hermes >/dev/null 2>&1; then
-        info "正在检查并为 Hermes 启用原生会话适配器..."
-        hermes plugins disable open-android-intelligence-gateway 2>/dev/null || true
-        local hermes_path="${TARGET_DIR}/integrations/hermes-session-adapter"
-        if [ -d "$hermes_path" ]; then
-            hermes plugins install "$hermes_path" --enable || true
-        fi
+    if [ "$INSTALL_HERMES" -eq 1 ]; then
+        info "本向导仅配置 Core 会话桥，不停用或重启既有 Hermes Gateway。"
+        info "宿主侧请在其 Python 环境安装 ./integrations/hermes-session-adapter，并按部署文档切换。"
     fi
+    return 0
 }
 
 save_configuration_and_account() {
-    local runtime_dir="${TARGET_DIR}/runtime"
-    local accounts_dir="${runtime_dir}/accounts"
-    local secrets_dir="${runtime_dir}/secrets"
-    local master_key_file="${secrets_dir}/core-master-key"
-
-    mkdir -p "${accounts_dir}" "${secrets_dir}"
-    chmod 0700 "${secrets_dir}" "${accounts_dir}" 2>/dev/null || true
-
-    if [ ! -f "${master_key_file}" ]; then
-        info "正在生成 32 字节本地主加密密钥 (${master_key_file})..."
-        if command -v openssl >/dev/null 2>&1; then
-            openssl rand 32 > "${master_key_file}"
-        else
-            dd if=/dev/urandom of="${master_key_file}" bs=32 count=1 2>/dev/null
-        fi
-    fi
-    chmod 0600 "${master_key_file}"
-
-    local agents_array=()
-
-    if [ "$INSTALL_DSH" -eq 1 ]; then
-        local dsh_token
-        dsh_token=$(openssl rand -hex 16 2>/dev/null || date +%s%N | sha256sum | head -c 32)
-        export OAI_DSH_ADAPTER_TOKEN="${dsh_token}"
-        agents_array+=("{\"id\":\"dsh\",\"name\":\"DSH\",\"type\":\"dsh\",\"url\":\"http://127.0.0.1:8791\",\"tokenEnv\":\"OAI_DSH_ADAPTER_TOKEN\"}")
-    fi
-
+    local selected_agents=()
+    [ "$INSTALL_DSH" -eq 0 ] || selected_agents+=(dsh)
+    [ "$INSTALL_HERMES" -eq 0 ] || selected_agents+=(hermes)
+    [ "$INSTALL_CODEX" -eq 0 ] || selected_agents+=(codex)
+    local hermes_account=""
     if [ "$INSTALL_HERMES" -eq 1 ]; then
-        local hermes_token
-        hermes_token=$(openssl rand -hex 16 2>/dev/null || date +%s%N | sha256sum | head -c 32)
-        export OAI_HERMES_SESSION_TOKEN="${hermes_token}"
-        agents_array+=("{\"id\":\"hermes\",\"name\":\"Hermes\",\"type\":\"hermes\",\"url\":\"http://127.0.0.1:8792\",\"tokenEnv\":\"OAI_HERMES_SESSION_TOKEN\",\"accounts\":{\"${CFG_USERNAME}\":\"${CFG_USERNAME}\"}}")
+        prompt_read "请输入与 Core 账号一对一绑定的既有 Hermes 账号" hermes_account "${CFG_USERNAME}"
     fi
-
-    if [ "$INSTALL_CODEX" -eq 1 ]; then
-        agents_array+=("{\"id\":\"codex\",\"name\":\"Codex\",\"type\":\"codex\",\"command\":[\"codex\",\"app-server\"],\"codexHome\":\"runtime/codex\"}")
-    fi
-
-    local agents_json="[]"
-    if [ ${#agents_array[@]} -gt 0 ]; then
-        local joined
-        joined=$(IFS=,; echo "${agents_array[*]}")
-        agents_json="[${joined}]"
-    fi
-
-    info "正在保存配置文件至: ${CONFIG_FILE}..."
-    cat > "${CONFIG_FILE}" << EOF
-{
-  "storageRoot": "runtime/accounts",
-  "masterKeyFile": "runtime/secrets/core-master-key",
-  "contractRoot": "gateway-contract",
-  "listen": {
-    "host": "${CFG_HOST}",
-    "port": ${CFG_PORT}
-  },
-  "agents": ${agents_json}
-}
-EOF
-    chmod 0600 "${CONFIG_FILE}" 2>/dev/null || true
-    success "配置文件保存成功: ${CONFIG_FILE}"
-
-    info "正在配置用户账号: ${CFG_USERNAME}..."
-    OAI_INIT_CONFIG="${CONFIG_FILE}" \
-    OAI_INIT_ADMIN_USERNAME="${CFG_USERNAME}" \
-    OAI_INIT_ADMIN_PASSWORD="${CFG_PASSWORD}" \
-    "${VENV_PYTHON}" -c '
-import os
-import sys
-from pathlib import Path
-from oai_core.server import load_config, create_core
-
-cfg_path = Path(os.environ["OAI_INIT_CONFIG"])
-username = os.environ["OAI_INIT_ADMIN_USERNAME"]
-password = os.environ["OAI_INIT_ADMIN_PASSWORD"]
-
-cfg = load_config(cfg_path)
-core = create_core(cfg)
-
-account = core.open_gateway_account(username)
-try:
-    account.credentials.create_password(password)
-    print(f"[SUCCESS] 用户 {username} 凭据更新/创建成功！")
-finally:
-    account.close()
-'
-
-    # 重新生成 start-core.sh
-    local start_script="${TARGET_DIR}/start-core.sh"
-    local env_exports=""
-    if [ -n "${OAI_DSH_ADAPTER_TOKEN:-}" ]; then
-        env_exports="${env_exports}export OAI_DSH_ADAPTER_TOKEN=\"\${OAI_DSH_ADAPTER_TOKEN:-${OAI_DSH_ADAPTER_TOKEN}}\"\n"
-    fi
-    if [ -n "${OAI_HERMES_SESSION_TOKEN:-}" ]; then
-        env_exports="${env_exports}export OAI_HERMES_SESSION_TOKEN=\"\${OAI_HERMES_SESSION_TOKEN:-${OAI_HERMES_SESSION_TOKEN}}\"\n"
-    fi
-
-    cat > "${start_script}" << EOF
-#!/usr/bin/env bash
-set -euo pipefail
-DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-cd "\${DIR}"
-
-if [ -f "\${DIR}/.venv/bin/activate" ]; then
-    # shellcheck disable=SC1091
-    source "\${DIR}/.venv/bin/activate"
-fi
-
-$(printf "%b" "${env_exports}")
-echo "=========================================="
-echo "正在启动 Open Android Intelligence Core..."
-echo "配置文件: \${DIR}/core.json"
-echo "=========================================="
-
-exec oai serve --config "\${DIR}/core.json"
-EOF
-    chmod +x "${start_script}"
-    success "快捷启动脚本已同步更新: ${start_script}"
+    local agents_csv
+    agents_csv=$(IFS=,; printf '%s' "${selected_agents[*]}")
+    local helper="${TARGET_DIR}/scripts/core_setup.py"
+    [ -f "$helper" ] || helper="${OAI_SETUP_SCRIPT_DIR}/core_setup.py"
+    OAI_INIT_ADMIN_PASSWORD="${CFG_PASSWORD}" "${VENV_PYTHON}" "$helper" \
+        --root "${TARGET_DIR}" --host "${CFG_HOST}" --port "${CFG_PORT}" \
+        --username "${CFG_USERNAME}" --agents "$agents_csv" --hermes-account "$hermes_account"
+    success "配置与启动脚本已保存；既有账号密码、密钥和存储路径已保留。"
+    info "桥接凭据存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
 }
 
 main() {

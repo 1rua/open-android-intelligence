@@ -1,8 +1,9 @@
 # OAI Core
 
 一个服务监听地址承载 Android 登录、配对、设备事件与原生 Agent 会话。
-`oai serve`、CLI 与 MCP 属于同一个 Python 项目；设备请求复用固定提交的
-Hermes GatewayCore，不在 Adapter 内另写排队、超时、取消或结果状态机。
+`oai serve`、CLI 与 MCP 属于同一个 Python 项目；设备协议、安全认证与请求状态机
+由 `oai_core.gateway` 提供唯一实现。Core 安装不拉取 Hermes Gateway，启动不需要
+Hermes SDK 或 Hermes 插件。可选 Hermes Session Adapter 依赖 Core 的公共库。
 Android Platform Kernel、`.alp` 签名、WASM 沙箱与本地确认机制保持原样。
 
 同一个进程对外提供三套接口：Android 设备协议 `/open-android-intelligence/v2`、
@@ -14,7 +15,7 @@ Android Platform Kernel、`.alp` 签名、WASM 沙箱与本地确认机制保持
 
 ### 一键安装脚本（推荐）
 
-使用 curl 命令一键完成依赖检查、环境安装、已存在 Agent 适配器探测与初始化配置向导：
+使用 curl 命令完成 Core 依赖检查、环境安装、可选 Agent 探测与初始化配置向导：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
@@ -25,9 +26,18 @@ curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/
 ./scripts/install.sh
 ```
 
+向导只安装 Core；发现 Hermes 不会自动安装插件、停用旧网关或启用会话桥。
+选择接入后，Core 生成显式的一对一账号映射；Hermes 宿主包须在宿主自己的 Python
+环境另行安装。DSH 和 Codex 的安装、使用均不要求存在 Hermes。
+
+桥接 Token 生成或复用到 `runtime/secrets/adapter-tokens.env`，文件权限为 `0600`，
+父目录为 `0700`；`start-core.sh` 只读取该私密文件，不嵌入凭据值。
+重新运行 `setup.sh` 会备份旧配置并保留已有存储路径、主密钥、账号密码、配对和
+Agent 实例，不自动重置账号密码或旋转桥接 Token。移除既有 Agent 时显式编辑 `agents`。
+
 ### 手动安装与启动
 
-Python 3.11+。在仓库根目录安装，契约来自本仓库的 `gateway-contract`：
+Python 3.11+。在仓库根目录安装，或直接安装构建出的 Core wheel；协议契约随包发布：
 
 ```sh
 python -m venv .venv
@@ -38,7 +48,9 @@ source .venv/bin/activate
 ```
 
 账号密码通过交互输入，不出现在命令行参数中。示例默认只监听本机，未注册 Agent 时列表为空。
-配置中的路径相对于配置文件。运行数据与主密钥分别位于 `runtime/accounts` 和
+配置中的路径相对于配置文件；`contractRoot` 可省略，默认使用包内真实协议契约。
+从源码构建时，这些资产只取自本仓库的 `gateway-contract`，不维护第二份协议源文件。
+运行数据与主密钥分别位于 `runtime/accounts` 和
 `runtime/secrets`，均不提交；主密钥不能位于账号备份目录内。
 手机远程连接时配置 `listen.host`、`tls.certFile` 和 `tls.keyFile`，使用同一个 HTTPS
 地址及端口登录。TLS 终止在反向代理时还须配置与手机看到的证书一致的 `tlsSpkiSha256`；
@@ -149,7 +161,18 @@ DSH 接入宿主的轻量 Session Adapter：
 删除与归档因尚未核实可完整读取的原生生命周期接口而不宣告，App 侧对应操作禁用。
 环境变量引用的适配器令牌用于 Core 到宿主的内部认证，不能作为 Core 账号或设备凭据。
 
-Hermes 通过宿主中的 Session Adapter 保留账号映射：
+Hermes 通过独立可选包 `oai-hermes-session-adapter` 保留账号映射。
+在 Hermes 自身的 Python 环境安装当前配套版本，再通过其原生插件加载器安装入口：
+
+```sh
+python -m pip install ./oai-core ./integrations/hermes-session-adapter
+hermes plugins install ./integrations/hermes-session-adapter --enable
+```
+
+宿主环境须先配置好明确的原账号目录、账号清单、原主密钥与会话桥 Token。
+新 Adapter 只提供原生会话，不运行设备监听器或设备请求调度器。
+
+Core 配置条目为：
 
 ```json
 {
@@ -161,7 +184,10 @@ Hermes 通过宿主中的 Session Adapter 保留账号映射：
 
 映射由管理员配置，必须一对一；不会依据 App 传入的账号选择身份。
 宿主部署与原账号目录复用见 [Hermes Session Adapter](../integrations/hermes-session-adapter/README.md)。
-停止原 Gateway 后再切换，禁止两个进程同时写原有账号目录。
+先验证独立 Core 并备份，再停止原 Gateway、启动新 Adapter；保留旧安装用于回滚。
+新 Adapter 对原账号库持有独占锁，禁止新旧进程同时写入。
+Core 设备数据库另设目录，不会与 Hermes 的原账号库合并；主密钥也不自动复制或替换。
+完整步骤见[独立部署与安全切换](../docs/deployment/2026-10-26-core-independent.zh-CN.md)。
 OpenClaw 不注册到本次新 Core 装配，继续沿用旧接入方式。
 
 ## 协议、迁移与验证
@@ -172,8 +198,9 @@ OpenClaw 不注册到本次新 Core 装配，继续沿用旧接入方式。
 流中断或进程重启后未知的写操作不会自动重发，先读取原生历史确认结果。
 
 ```sh
-python -m pip install pytest pytest-asyncio
-python -m pytest oai-core/tests -q
+python -m pip install ./oai-core pytest pytest-asyncio
+python -m pytest oai-core/tests tests/test_install_script.py -q \
+  --ignore=oai-core/tests/test_hermes.py --ignore=oai-core/tests/test_hermes_native.py
 npm ci
 npx vitest run integrations/dsh-session-adapter/adapter.test.js
 ```
@@ -182,13 +209,14 @@ npx vitest run integrations/dsh-session-adapter/adapter.test.js
 
 ```sh
 export HERMES_SDK_ROOT=/按固定 checkout 75b083e9 检出的 Hermes 源码目录
-python -m pip install PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
-PYTHONPATH=oai-core/src python -m pytest oai-core/tests/test_hermes_native.py -q
+python -m pip install ./oai-core ./integrations/hermes-session-adapter PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
+python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py -q
 ```
 
 未设置 `HERMES_SDK_ROOT` 时该项明确跳过，不能把跳过当作宿主兼容性已通过。
-本仓库最近一次全量结果为 63 项 Python 通过、16 项 DSH 桥通过，均无跳过（见
-[验证记录](../docs/reviews/2026-10-25-unified-core-validation.zh-CN.md)）。
+此前版本的 2026-10-25 结果见[历史验证记录](../docs/reviews/2026-10-25-unified-core-validation.zh-CN.md)，
+不代表本次迁移提交的验证结果。本次 CI 把干净 Core wheel 安装、协议与安全回归、
+固定 Hermes SDK 集成、DSH 桥和 Android 检查分别运行。
 
 测试中的模型/宿主为原生协议替身；实际部署还需对应 Hermes/DSH/Codex 宿主与 Android
 设备进行联调。真机本地确认、真实模型输出和服务端网络可达性不能由单元测试替代。
@@ -198,6 +226,7 @@ PYTHONPATH=oai-core/src python -m pytest oai-core/tests/test_hermes_native.py -q
 | 文档 | 内容 |
 | --- | --- |
 | [架构事实基线](../docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) | 每条行为对应的代码位置，文档更新的事实来源 |
+| [独立部署与安全切换](../docs/deployment/2026-10-26-core-independent.zh-CN.md) | 干净安装、私密配置、Hermes 备份切换与回滚 |
 | [统一 Core 迁移方案](../docs/plans/2026-10-25-unified-core-migration.zh-CN.md) | 协议增量、分阶段交付、数据兼容与回滚 |
 | [原生会话适配器部署](../docs/plans/2026-10-25-native-session-adapters.zh-CN.md) | Hermes/DSH 宿主接入、环境变量、验证与回滚 |
 | [Codex 设备隔离边界](docs/codex-device-isolation.zh-CN.md) | 共享会话与设备授权的边界与拒绝条件 |
