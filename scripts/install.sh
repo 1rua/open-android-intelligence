@@ -397,8 +397,8 @@ guide_initial_configuration() {
         else
             dd if=/dev/urandom of="${master_key_file}" bs=32 count=1 2>/dev/null
         fi
-        chmod 0600 "${master_key_file}"
     fi
+    chmod 0600 "${master_key_file}"
 
     # 4. 生成 Agents 配置项
     local agents_json="[]"

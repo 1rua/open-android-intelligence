@@ -190,7 +190,9 @@ Hermes 保持账号隔离；显式配置的 DSH/Codex 原生会话在部署内�
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
 ```
 
-> **提示**：若已克隆本仓库，也可在根目录直接运行 `./scripts/install.sh` 进行就地安装与交互式配置。
+> **提示**：
+> - 若已克隆本仓库，可在根目录直接运行 `./scripts/install.sh` 进行就地安装与交互式配置。
+> - 若需要**重新配置**端口、管理员账号密码或调整 Agent 插件接入，可随时运行独立配置脚本：`./scripts/setup.sh`（或通过 curl 运行 `curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash`）。
 
 <details open>
 <summary><b>手动安装 OAI Core 服务端（点击收起）</b></summary>
