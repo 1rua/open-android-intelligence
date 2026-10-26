@@ -7,6 +7,7 @@ Both deployment-shared and account-isolated remote agents can build on this.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncIterator, Mapping
 from urllib.parse import quote, urlsplit
 
@@ -14,6 +15,8 @@ import aiohttp
 
 from ..auth import Principal
 from ..sessions import CAPABILITIES, AdapterError, session_request_json
+
+logger = logging.getLogger(__name__)
 
 REMOTE_PREFIX = "/oai/session-adapter/v1"
 
@@ -127,6 +130,14 @@ class RemoteSessionAdapter:
         except AdapterError:
             self.capabilities = dict.fromkeys(CAPABILITIES, False)
             return False
+
+    async def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
+        try:
+            result = await self._request("GET", f"/commands?languageCode={quote(language_code, safe='')}")
+            cmds = result.get("commands", [])
+            return cmds if isinstance(cmds, list) else []
+        except AdapterError:
+            return []
 
     async def list_sessions(self, principal: Principal) -> list[dict[str, Any]]:
         headers = self._headers(principal)

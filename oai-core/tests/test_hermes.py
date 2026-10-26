@@ -334,3 +334,42 @@ def test_unrecoverable_session_connection_fails_closed_and_shutdown_still_releas
         account.close()
         backend.close()
     assert backend._stores == {}
+
+
+@pytest.mark.asyncio
+async def test_hermes_bridge_and_adapter_propagate_commands_to_core(core, monkeypatch):
+    import oai_hermes_adapter.host_commands as hc
+    fake_commands = [
+        {"id": "help", "invocation": "/help", "title": "Help", "description": "Help info", "acceptsArguments": False, "availability": "available"},
+        {"id": "model", "invocation": "/model", "title": "Model switch", "description": "Switch model", "acceptsArguments": True, "availability": "available"}
+    ]
+    monkeypatch.setattr(hc, "command_catalog", lambda: fake_commands)
+
+    adapter = HermesSessionAdapter(core)
+    token = "test-only-hermes-bridge-token-1234567890"
+    app = create_hermes_bridge_app(adapter, token, ["alice"])
+    async with TestClient(TestServer(app)) as client:
+        # 1. Verify GET /commands on HTTP bridge
+        resp = await client.get("/oai/session-adapter/v1/commands", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["commands"] == fake_commands
+
+        # 2. Verify HermesRemoteSessionAdapter commands()
+        url = str(client.make_url("/")).rstrip("/")
+        remote = HermesRemoteSessionAdapter(url, token, {"core-alice": "alice"})
+        cmds = await remote.commands("zh-CN")
+        assert cmds == fake_commands
+
+        # 3. Verify AgentRegistry and Core command_catalog response
+        registry = AgentRegistry([remote])
+        all_cmds = await registry.commands("zh-CN")
+        assert "/help" in [c["invocation"] for c in all_cmds]
+        assert "/model" in [c["invocation"] for c in all_cmds]
+        
+        # Test Core command_catalog wiring
+        core.command_catalog = lambda: fake_commands
+        core_resp = core.command_catalog_response("zh-CN")
+        assert core_resp["format"] == "agent-command-catalog-1.0"
+        assert len(core_resp["commands"]) == 2
+

@@ -6,8 +6,10 @@ does not import another host implementation or a legacy runtime.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -4380,7 +4382,26 @@ class GatewayCore:
 
     def command_catalog_response(self, language_code: str) -> dict[str, Any]:
         """Return the current host catalog in the negotiated Android shape."""
-        catalog = tuple(self.command_catalog() if callable(self.command_catalog) else self.command_catalog)
+        raw_catalog = self.command_catalog() if callable(self.command_catalog) else self.command_catalog
+        if inspect.isawaitable(raw_catalog):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop and loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    def runner():
+                        new_loop = asyncio.new_event_loop()
+                        try:
+                            return new_loop.run_until_complete(raw_catalog)
+                        finally:
+                            new_loop.close()
+                    catalog = tuple(pool.submit(runner).result())
+            else:
+                catalog = tuple(asyncio.run(raw_catalog))
+        else:
+            catalog = tuple(raw_catalog)
         fingerprint = hashlib.sha256(
             _json({"format": COMMAND_CATALOG_FORMAT, "commands": catalog}).encode("utf-8"),
         ).hexdigest()[:16]

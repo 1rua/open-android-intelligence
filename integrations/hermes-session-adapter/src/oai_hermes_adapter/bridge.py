@@ -58,9 +58,9 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         if not secrets.compare_digest(supplied, "Bearer " + token):
             return web.json_response({"code": "AUTHENTICATION_REQUIRED"}, status=401)
         try:
-            if request.query_string:
+            if request.query_string and not request.path.startswith(PREFIX + "/commands"):
                 raise AdapterError("SCHEMA_INVALID", 400)
-            if request.path != PREFIX + "/status":
+            if request.path not in {PREFIX + "/status", PREFIX + "/commands"}:
                 account = request.headers.get("X-OAI-Account")
                 if account not in allowed:
                     raise AdapterError("AGENT_ACCOUNT_NOT_CONNECTED", 403)
@@ -90,6 +90,12 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
 
     async def status(request):
         return web.json_response({"online": await adapter.status(), "capabilities": adapter.descriptor()["capabilities"]})
+
+    async def commands(request):
+        language_code = request.query.get("languageCode", "en")
+        cmd_fn = getattr(adapter, "commands", None)
+        cmds = cmd_fn(language_code) if callable(cmd_fn) else []
+        return web.json_response({"commands": cmds})
 
     async def body_for(request):
         if len(await request.read()) >= SESSION_REQUEST_MAX_BYTES:
@@ -142,6 +148,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             await stream.aclose()
 
     app.router.add_get(PREFIX + "/status", status)
+    app.router.add_get(PREFIX + "/commands", commands)
     app.router.add_get(PREFIX + "/sessions", sessions)
     app.router.add_post(PREFIX + "/sessions", sessions)
     app.router.add_route("*", PREFIX + "/sessions/{session_id}/{action}", session_operation)

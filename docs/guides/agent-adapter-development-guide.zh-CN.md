@@ -107,11 +107,15 @@ class SessionAdapter(Protocol):
     async def manage(self, principal: Principal, session_id: str, action: str, value: Any = None) -> dict[str, Any]:
         """会话管理: action 可为 rename, archive, delete, cancel"""
         ...
+
+    def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
+        """获取 Agent 支持的斜杠快捷命令目录，返回符合 Gateway Protocol 的命令条目列表"""
+        ...
 ```
 
 ### 3.2 能力声明与裁剪机制
 
-Core 规定了 9 项标准会话能力（布尔值）：
+Core 规定了标准会话能力（布尔值）：
 - `list`：支持查询会话列表
 - `history`：支持查询历史记录
 - `create`：支持创建新会话
@@ -121,6 +125,7 @@ Core 规定了 9 项标准会话能力（布尔值）：
 - `archive`：支持归档/取消归档会话
 - `delete`：支持永久删除会话
 - `cancel`：支持中断当前正在生成的回答
+- `commands`：支持提供 Agent 自身所支持的斜杠快捷命令目录
 
 > **注意**：如果适配器未实现或禁用了某项能力（声明为 `false`），Core 统一在服务端拦截对应路由请求并返回 `405 UNSUPPORTED_CAPABILITY`，手机端 UI 也会自动置灰对应操作按钮。不要为了应付协议返回伪造的空实现。
 
@@ -131,6 +136,7 @@ Core 规定了 9 项标准会话能力（布尔值）：
 | 方法 | 路径 | 说明 | 请求体规范 |
 | --- | --- | --- | --- |
 | `GET` | `/status` | 报告在线状态与动态能力 | 无 |
+| `GET` | `/commands` | 获取 Agent 支持的斜杠指令列表（支持 `?languageCode=zh-CN`） | 无 |
 | `GET` | `/sessions` | 会话列表 | 无 |
 | `POST` | `/sessions` | 创建会话 | `{"title": "可选标题"}` |
 | `GET` | `/sessions/{id}/history` | 获取历史 | 无 |

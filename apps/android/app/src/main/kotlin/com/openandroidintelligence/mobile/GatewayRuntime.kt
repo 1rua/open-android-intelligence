@@ -1389,13 +1389,7 @@ class GatewayRuntime(
         val activeRepo: ConversationRepository = coreAgentRepo ?: mirroredRepository
         val activeCatalogRepo: com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository =
             if (nativeAgentSessions) {
-                object : com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository {
-                    override suspend fun get(gatewayId: String, languageCode: String): com.openandroidintelligence.conversation.ports.AgentCommandCatalog =
-                        com.openandroidintelligence.conversation.ports.AgentCommandCatalog(
-                            version = com.openandroidintelligence.conversation.model.CatalogVersion("core-native"),
-                            commands = emptyList(),
-                        )
-                }
+                catalogRepository
             } else catalogRepository
 
         fun buildWorkbenchController(currentAgentName: String? = null): WorkbenchController {

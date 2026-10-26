@@ -141,6 +141,9 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
     if registry is None:
         from .sessions import build_registry
         registry = build_registry(config, core)
+    # If Core was initialized without command_catalog, wire registry.commands to provide host agent commands
+    if core.command_catalog == ():
+        core.command_catalog = lambda: registry.commands("en")
     app = web.Application(middlewares=[errors], client_max_size=1024 * 1024)
     app[CORE_KEY], app[AUTH_KEY], app[DEVICE_KEY], app[REGISTRY_KEY] = core, auth, devices, registry
     routes = web.RouteTableDef()

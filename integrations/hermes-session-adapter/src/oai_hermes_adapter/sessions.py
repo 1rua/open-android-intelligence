@@ -30,7 +30,12 @@ class HermesSessionAdapter:
                 "capabilities": {"list": True, "history": native, "create": writable,
                                  "send": send, "stream": send, "rename": native_titles,
                                  "archive": manager, "delete": manager,
-                                 "cancel": send and callable(getattr(self.core, "generation_canceller", None))}}
+                                 "cancel": send and callable(getattr(self.core, "generation_canceller", None)),
+                                 "commands": True}}
+
+    def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
+        from .host_commands import command_catalog
+        return command_catalog()
 
     async def status(self) -> bool:
         return self._runtime_ready() and callable(getattr(self.core, "history_reader", None))

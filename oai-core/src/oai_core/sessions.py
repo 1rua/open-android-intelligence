@@ -22,7 +22,7 @@ from .operations import NativeOperations, OperationConflict
 
 logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
-CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream")
+CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream", "commands")
 PROTOCOL_VERSIONS = ("1.0", "v1")
 # Keep one explicit boundary across aiohttp versions and both session bridges.
 SESSION_REQUEST_MAX_BYTES = 1024 * 1024
@@ -136,6 +136,23 @@ class AgentRegistry:
         if adapter.descriptor().get("capabilities", {}).get(capability) is not True:
             raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
         return adapter
+
+    async def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
+        """Collect and deduplicate commands from all registered agents that provide them."""
+        entries: dict[str, dict[str, Any]] = {}
+        for adapter in self._adapters.values():
+            cmd_fn = getattr(adapter, "commands", None)
+            if not callable(cmd_fn):
+                continue
+            try:
+                res = cmd_fn(language_code)
+                items = await res if inspect.isawaitable(res) else res
+                for item in items or []:
+                    if isinstance(item, dict) and "invocation" in item and item["invocation"] not in entries:
+                        entries[item["invocation"]] = item
+            except Exception as err:
+                logger.warning("Failed to collect commands from adapter '%s': %s", getattr(adapter, "agent_id", "unknown"), err)
+        return list(entries.values())
 
     async def discover(self) -> list[dict[str, Any]]:
         async def describe(adapter: SessionAdapter) -> dict[str, Any]:
@@ -434,6 +451,22 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     async def agents(request: web.Request) -> web.Response:
         await principal_for(request)
         return web.json_response({"agents": await registry.discover()})
+
+    @routes.get(PREFIX + "/{agent_id}/commands")
+    @endpoint
+    async def agent_commands(request: web.Request) -> web.Response:
+        await principal_for(request)
+        agent_id = request.match_info["agent_id"]
+        adapter = registry._adapters.get(agent_id)
+        if adapter is None:
+            raise AdapterError("AGENT_NOT_FOUND", 404)
+        cmd_fn = getattr(adapter, "commands", None)
+        if not callable(cmd_fn):
+            return web.json_response({"commands": []})
+        language_code = request.query.get("languageCode", "en")
+        res = cmd_fn(language_code)
+        cmds = await res if inspect.isawaitable(res) else res
+        return web.json_response({"commands": cmds if isinstance(cmds, list) else []})
 
     @routes.get(PREFIX + "/{agent_id}/sessions")
     @endpoint
