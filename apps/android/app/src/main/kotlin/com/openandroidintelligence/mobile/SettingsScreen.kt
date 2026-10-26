@@ -115,6 +115,11 @@ import com.openandroidintelligence.mobile.plugins.PluginManagementScreen
 import com.openandroidintelligence.mobile.updates.AppUpdateRoute
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material.icons.filled.Visibility
+import com.openandroidintelligence.mobile.screen.ScreenCapabilityController
+import com.openandroidintelligence.mobile.screen.ScreenCapabilitySection
+import com.openandroidintelligence.mobile.screen.openAccessibilitySettings
 
 /** 设置页面路由契约。 */
 object SettingsRoutes {
@@ -127,6 +132,9 @@ object SettingsRoutes {
     const val PLUGINS = "settings/plugins"
     const val NOTIFICATIONS = "settings/notifications"
     const val APP_UPDATES = "settings/app-updates"
+
+    /** 屏幕读取与控制：本地会话、三类权限与系统授权入口。 */
+    const val SCREEN_CAPABILITY = "settings/screen-capability"
 }
 
 /**
@@ -177,6 +185,7 @@ fun SettingsScreen(
     runtime: GatewayRuntime? = null,
     modifier: Modifier = Modifier,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
+    onRequestScreenCaptureAuthorization: () -> Unit = {},
 ) {
     val viewModel = remember(environment, runtime) {
         SettingsViewModel(environment = environment, runtime = runtime)
@@ -186,6 +195,7 @@ fun SettingsScreen(
         onBack = onBack,
         modifier = modifier,
         presentation = presentation,
+        onRequestScreenCaptureAuthorization = onRequestScreenCaptureAuthorization,
     )
 }
 
@@ -195,6 +205,9 @@ fun SettingsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
+    // 远程截图专用的系统投屏授权必须由前台 Activity 发起：设置页只能请求宿主执行，
+    // 不能自己 startActivityForResult（它可能跑在 bottom sheet 里，没有稳定的宿主）。
+    onRequestScreenCaptureAuthorization: () -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val navController = rememberNavController()
@@ -312,6 +325,14 @@ fun SettingsScreen(
                 presentation = presentation,
                 onNavigate = { route -> navController.navigate(route) { launchSingleTop = true } },
                 onSetScreenSelectionGrant = viewModel::setScreenSelectionGrant,
+            )
+        }
+
+        composable(SettingsRoutes.SCREEN_CAPABILITY) {
+            ScreenCapabilitySubScreen(
+                onBack = { navController.popBackStack() },
+                presentation = presentation,
+                onRequestCaptureAuthorization = onRequestScreenCaptureAuthorization,
             )
         }
 
@@ -721,6 +742,15 @@ private fun SettingsOverviewScreen(
                         supporting = "安装插件包、启用插件并为当前 Gateway 授权",
                         icon = Icons.Default.Extension,
                         onClick = { onNavigate(SettingsRoutes.PLUGINS) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    // 屏幕能力单独一条：它按「本地会话 + 三类权限」逐项授予，
+                    // 与「安装插件」是两件不同的事，混在一起会让用户以为装完就能用。
+                    SettingsNavigationItem(
+                        headline = "屏幕读取与控制",
+                        supporting = "按需授予读取界面、截取画面、操作其他应用；随时可以结束",
+                        icon = Icons.Default.Visibility,
+                        onClick = { onNavigate(SettingsRoutes.SCREEN_CAPABILITY) },
                     )
                 }
             }
@@ -1288,6 +1318,15 @@ private fun PairingSubScreen(
                         icon = Icons.Default.Fullscreen,
                         onCheckedChange = onSetScreenSelectionGrant,
                     )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    // 屏幕读取与控制是另一回事：它按「本地会话 + 三类权限」逐项授予，
+                    // 与上面的圈选（把圈选结果回传 Gateway）不是同一个授权。
+                    SettingsNavigationItem(
+                        headline = "屏幕读取与控制",
+                        supporting = "按需授予读取界面、截取画面、操作其他应用；随时可以结束",
+                        icon = Icons.Default.Visibility,
+                        onClick = { onNavigate(SettingsRoutes.SCREEN_CAPABILITY) },
+                    )
                 }
             }
 
@@ -1306,6 +1345,83 @@ private fun PairingSubScreen(
                     )
                     Text(
                         text = "以下两种情况会清空本机授权，之后需要重新授权：主动解除设备配对；或 Gateway 报告该账号的授权已变更。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 子页面：屏幕读取与控制。
+ *
+ * 三层授权分开呈现：系统权限（无障碍 / 投屏）、插件授权（安装+启用+配对授权）、
+ * 本进程内的本地屏幕会话。任何一层缺失都指名缺的是哪一件，绝不用一个布尔值代替。
+ *
+ * 状态来自 `ScreenHostRegistry.current?.status()` —— 只读诊断，不会创建许可。
+ */
+@Composable
+private fun ScreenCapabilitySubScreen(
+    onBack: () -> Unit,
+    presentation: SettingsPresentation,
+    onRequestCaptureAuthorization: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val controller = remember { ScreenCapabilityController(scope) }
+    val state by controller.state.collectAsState()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // 状态不是永久承诺：回到前台、从系统设置返回、授权结果返回都要重新查询。
+    DisposableEffect(controller, lifecycleOwner) {
+        controller.refresh()
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) controller.refresh()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    // 会话进行中需要展示倒计时；无会话时不必空转。
+    LaunchedEffect(state.hasSession) {
+        if (!state.hasSession) return@LaunchedEffect
+        controller.startPolling()
+    }
+
+    SettingsPageScaffold(
+        title = "屏幕读取与控制",
+        presentation = presentation,
+        onBack = onBack,
+    ) { padding ->
+        SettingsPageColumn(contentPadding = padding) {
+            SectionLabel("屏幕能力")
+
+            ScreenCapabilitySection(
+                state = state,
+                onStartSession = controller::startSession,
+                onRevoke = controller::revokeSession,
+                onRequestCaptureAuthorization = onRequestCaptureAuthorization,
+                onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
+            )
+
+            SectionLabel("这三项分别意味着什么")
+            SettingsSectionCard {
+                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                    Text(
+                        text = "三项权限互相独立：允许读取不会带出截图，允许截图也不会带出操作。" +
+                            "操作始终需要在手机上逐次确认，系统从不允许静默执行。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "许可只保存在这台手机的内存里，进程重启后需要重新确认；" +
+                            "锁屏、断开连接、切换账号或系统撤销投屏时，相关许可会立即失效。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "密码框内容不会被读取，也不会被输入。系统级的限制不会被绕过。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

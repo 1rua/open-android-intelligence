@@ -26,6 +26,8 @@ fun PlatformSettingsBottomSheet(
     environment: PlatformSettingsEnvironment,
     runtime: GatewayRuntime,
     onDismissRequest: () -> Unit,
+    /** 远程屏幕截图需要前台 Activity 发起系统投屏授权：弹层本身没有稳定的宿主。 */
+    onRequestScreenCaptureAuthorization: () -> Unit = {},
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -39,6 +41,7 @@ fun PlatformSettingsBottomSheet(
             runtime = runtime,
             onBack = onDismissRequest,
             presentation = SettingsPresentation.BOTTOM_SHEET,
+            onRequestScreenCaptureAuthorization = onRequestScreenCaptureAuthorization,
         )
     }
 }

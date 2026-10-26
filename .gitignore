@@ -29,6 +29,9 @@ apps/android/**/*.aab
 # Gradle
 .gradle/
 **/.gradle/
+# 隔离的 Gradle 用户目录（worktree 并行构建时用，含依赖缓存，禁止提交）
+.gradle-home/
+**/.gradle-home/
 
 # IDE
 .idea/

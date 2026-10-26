@@ -73,6 +73,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.openandroidintelligence.mobile.screen.ScreenControlConfirmationDialog
 
 /**
  * 宿主主入口 Activity。
@@ -164,12 +165,15 @@ class MainActivity : ComponentActivity() {
 
                 val deviceConfirmation by runtime.deviceConfirmation.collectAsState()
                 deviceConfirmation?.let { request ->
-                    AlertDialog(
-                        onDismissRequest = { runtime.decideDeviceRequest(request.requestId,false) },
-                        title = { Text("确认设备操作") },
-                        text = { Text("${request.pluginId}\n${request.capability}\n${request.parameters}") },
-                        confirmButton = { TextButton(onClick = { runtime.decideDeviceRequest(request.requestId,true) }) { Text("允许这次操作") } },
-                        dismissButton = { TextButton(onClick = { runtime.decideDeviceRequest(request.requestId,false) }) { Text("拒绝") } },
+                    // 改造前这里直接把 pluginId / capability / 原始 JSON 打给用户看：
+                    // 既无法据此判断该不该允许，又暴露内部标识。现在默认只讲
+                    // 「要做什么、对谁做」，原始参数折叠进「技术详情」供排障。
+                    ScreenControlConfirmationDialog(
+                        pluginId = request.pluginId,
+                        capability = request.capability,
+                        parameters = request.parameters,
+                        onApprove = { runtime.decideDeviceRequest(request.requestId, true) },
+                        onDeny = { runtime.decideDeviceRequest(request.requestId, false) },
                     )
                 }
                 val phase by runtime.phase.collectAsState()
@@ -391,6 +395,88 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // ===== 远程屏幕截图：独立的系统投屏授权 =====
+                // 与上面的圈选来源是**两个不同实例**：附件圈选持有一份系统票据和像素，
+                // 远程截图不得借用，否则一处授权会悄悄扩大另一处的权限范围。
+                //
+                // 顺序不可调换（见交接文档「MediaProjection 系统授权」）：
+                // 1. 必须已有含 CAPTURE 的本地会话；
+                // 2. 前台 Activity 发起系统授权；
+                // 3. 拒绝/数据缺失 → 释放 source + 停 FGS；
+                // 4. RESULT_OK → 先等 FGS 就绪回调，再把结果转交 source；
+                // 5. 回调内重新核对 binding 与原会话，失效则不转交并释放资源。
+                val remoteScreenCaptureLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    val host = com.openandroidintelligence.control.ScreenHostRegistry.current
+                    val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
+                    if (source == null) {
+                        notify("本机未装配屏幕截图能力")
+                        return@rememberLauncherForActivityResult
+                    }
+                    val accepted = result.resultCode == android.app.Activity.RESULT_OK
+                    if (!accepted) {
+                        // 用户拒绝或结果数据缺失：能力保持不可用，绝不伪造结果。
+                        source.release()
+                        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                            .stopForeground(this@MainActivity)
+                        notify("未获得屏幕截图授权，截图暂时不可用")
+                        return@rememberLauncherForActivityResult
+                    }
+                    // 系统弹窗可能跨越断连或会话到期：回调内必须重新核对。
+                    val binding = host?.binding()
+                    val stillGranted = binding != null && runCatching {
+                        host.authorization.requirePermission(
+                            binding,
+                            com.openandroidintelligence.control.ScreenPermission.CAPTURE,
+                        )
+                    }.isSuccess
+                    if (!stillGranted) {
+                        source.release()
+                        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                            .stopForeground(this@MainActivity)
+                        notify("屏幕会话已失效，请重新开始会话后再授权截图")
+                        return@rememberLauncherForActivityResult
+                    }
+                    // 先等前台服务完成 startForeground，再转交授权结果：
+                    // Android 14+ 下顺序反了会确定性抛出 SecurityException。
+                    com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                        .startForeground(this@MainActivity) {
+                            val granted = source.onAuthorizationResult(result.resultCode, result.data)
+                            if (!granted) {
+                                com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                                    .stopForeground(this@MainActivity)
+                            }
+                            notify(
+                                if (granted) "已获得屏幕截图授权"
+                                else "屏幕截图会话建立失败，截图暂不可用"
+                            )
+                        }
+                }
+                val requestRemoteScreenCaptureAuth: () -> Unit = {
+                    val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
+                    val host = com.openandroidintelligence.control.ScreenHostRegistry.current
+                    val binding = host?.binding()
+                    val permitted = binding != null && runCatching {
+                        host.authorization.requirePermission(
+                            binding,
+                            com.openandroidintelligence.control.ScreenPermission.CAPTURE,
+                        )
+                    }.isSuccess
+                    when {
+                        source == null -> notify("本机未装配屏幕截图能力")
+                        !permitted -> notify("请先开始一个包含「截取屏幕画面」的屏幕会话")
+                        else -> {
+                            val intent = source.createAuthorizationIntent()
+                            if (intent == null) {
+                                notify("系统未提供屏幕录制服务，截图暂不可用")
+                            } else {
+                                remoteScreenCaptureLauncher.launch(intent)
+                            }
+                        }
+                    }
+                }
+
                 // ===== 首次启动引导（前置分支）=====
                 // 引导是登录之前的一道独立流程，不参与「登录 ↔ 工作台」的状态判定，
                 // 也不新建 Activity：这样既不改动既有登录/配对/会话逻辑（需求五.5、六.9），
@@ -590,6 +676,7 @@ class MainActivity : ComponentActivity() {
                                 environment = app.platformSettingsEnvironment(),
                                 runtime = runtime,
                                 onDismissRequest = { showSettingsSheet = false },
+                                onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
                             )
                         }
 
