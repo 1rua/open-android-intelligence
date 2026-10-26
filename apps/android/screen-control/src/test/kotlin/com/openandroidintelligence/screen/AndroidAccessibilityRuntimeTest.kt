@@ -1,6 +1,12 @@
 package com.openandroidintelligence.screen
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ContextWrapper
+import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.content.pm.ResolveInfo
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -19,10 +25,13 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowAccessibilityNodeInfo
 import org.robolectric.shadows.ShadowAccessibilityService
 import org.robolectric.shadows.ShadowAccessibilityWindowInfo
+import org.robolectric.shadows.ShadowPackageManager
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [31])
@@ -91,6 +100,92 @@ class AndroidAccessibilityRuntimeTest {
         assertTrue(runtime.global("back", runtime.generation()))
         assertTrue(runtime.global("home", runtime.generation()))
         assertEquals(listOf(AccessibilityService.GLOBAL_ACTION_BACK, AccessibilityService.GLOBAL_ACTION_HOME), shadowService.globalActionsPerformed)
+    }
+
+    @Suppress("DEPRECATION")
+    @Config(shadows = [RefreshRevokingNodeShadow::class])
+    @Test fun authorizationRevokedDuringFreshNodeResolutionPreventsPerformAction() {
+        val authorization = ScreenLocalAuthorization()
+        val binding = ScreenAuthorizationBinding("account", "pairing", ControlRevision(1uL, 1uL, 1uL, 1uL))
+        authorization.start(binding, setOf(ScreenPermission.CONTROL), ScreenTargetIdentity("org.example", "9", 1uL), 10_000)
+        val root = AccessibilityNodeInfo.obtain().apply {
+            text = "Button"; isVisibleToUser = true; isEnabled = true; isClickable = true
+            setBoundsInScreen(Rect(0, 0, 100, 100))
+        }
+        val actions = mutableListOf<Int>()
+        Shadow.extract<ShadowAccessibilityNodeInfo>(root).apply {
+            setRefreshReturnValue(true)
+            setOnPerformActionListener { action, _ -> actions += action; true }
+        }
+        val expected = ScreenTreeReader().describe(AndroidTreeNode(root), "w9:0", 9, null, 0)
+        val window = AccessibilityWindowInfo.obtain()
+        Shadow.extract<ShadowAccessibilityWindowInfo>(window).apply {
+            setId(9); setType(1); setActive(true); setRoot(root)
+            setBoundsInScreen(Rect(0, 0, 1080, 1920))
+        }
+        shadowService.setWindows(listOf(window))
+        var resolved = false
+        RefreshRevokingNodeShadow.afterRefresh = { resolved = true; authorization.revoke() }
+        try {
+            val failure = runCatching {
+                runtime.nodeAction(expected, NativeNodeAction.CLICK, null, runtime.generation()) {
+                    assertTrue(resolved)
+                    authorization.requirePermission(binding, ScreenPermission.CONTROL)
+                }
+            }.exceptionOrNull()
+            assertTrue(resolved)
+            assertTrue(failure is ScreenAuthorizationException)
+            assertEquals("SCREEN_SESSION_REQUIRED", (failure as ScreenAuthorizationException).code)
+            assertTrue(actions.isEmpty())
+        } finally { RefreshRevokingNodeShadow.afterRefresh = null; authorization.close(); root.recycle() }
+    }
+
+    @Test fun launchLookupRevocationPreventsStartActivity() {
+        val app = RuntimeEnvironment.getApplication()
+        val packageName = "org.example.launch"
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(packageName)
+        val resolve = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                this.packageName = packageName; name = "$packageName.MainActivity"; enabled = true; exported = true
+                applicationInfo = ApplicationInfo().apply { this.packageName = packageName; enabled = true }
+            }
+        }
+        val packageManager = app.packageManager
+        Shadow.extract<ShadowPackageManager>(packageManager).addResolveInfoForIntent(intent, resolve)
+        assertNotNull(packageManager.getLaunchIntentForPackage(packageName))
+        val authorization = ScreenLocalAuthorization()
+        val binding = ScreenAuthorizationBinding("account", "pairing", ControlRevision(1uL, 1uL, 1uL, 1uL))
+        authorization.start(binding, setOf(ScreenPermission.CONTROL), ScreenTargetIdentity("org.example", "9", 1uL), 10_000)
+        var lookupStarted = false
+        val revokingContext = object : ContextWrapper(app) {
+            override fun getPackageManager(): PackageManager {
+                lookupStarted = true
+                authorization.revoke()
+                return packageManager
+            }
+        }
+        try {
+            val launching = AndroidAccessibilityRuntime(revokingContext)
+            val failure = runCatching {
+                launching.launch(packageName, launching.generation()) {
+                    assertTrue(lookupStarted)
+                    authorization.requirePermission(binding, ScreenPermission.CONTROL)
+                }
+            }.exceptionOrNull()
+            assertTrue(lookupStarted)
+            assertTrue(failure is ScreenAuthorizationException)
+            assertEquals("SCREEN_SESSION_REQUIRED", (failure as ScreenAuthorizationException).code)
+            assertNull(shadowService.nextStartedActivity)
+        } finally { authorization.close() }
+    }
+
+    @Test fun globalActionRechecksWindowGenerationAfterAuthorizationCallback() {
+        val failure = runCatching {
+            runtime.global("back", runtime.generation()) { ScreenAccessibilityConnection.changed() }
+        }.exceptionOrNull()
+        assertTrue(failure is ScreenOperationException)
+        assertEquals("SCREEN_STALE_REFERENCE", (failure as ScreenOperationException).code)
+        assertTrue(shadowService.globalActionsPerformed.isEmpty())
     }
 
     @Test fun swipeWaitsForSystemCallbackAndDragUsesTheSameContinuedPointer() = runTest {
@@ -175,4 +270,12 @@ class AndroidAccessibilityRuntimeTest {
             assertNull(runtime.availability())
         } finally { subscription.close(); authorization.close() }
     }
+}
+
+/** Real runtime regression: revoke between the fresh node's refresh and native action. */
+@Implements(AccessibilityNodeInfo::class)
+class RefreshRevokingNodeShadow : ShadowAccessibilityNodeInfo() {
+    companion object { var afterRefresh: (() -> Unit)? = null }
+    @Implementation
+    protected override fun refresh(): Boolean = super.refresh().also { afterRefresh?.invoke() }
 }

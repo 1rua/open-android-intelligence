@@ -110,9 +110,8 @@ class ScreenBackendTest {
             backend.execute(revision, ScreenAction.Click("w1:0")) { throw ScreenOperationException("SCREEN_SESSION_EXPIRED") }
         }
         assertTrue(runtime.effects.isEmpty())
-        var checks = 0
         val result = backend.execute(revision, ScreenAction.Click("w1:0")) {
-            if (++checks > 1) throw ScreenAuthorizationException("SCREEN_SESSION_EXPIRED")
+            if (runtime.effects.isNotEmpty()) throw ScreenAuthorizationException("SCREEN_SESSION_EXPIRED")
         }
         assertTrue(result.performed)
         assertNull(result.screen)
@@ -204,7 +203,8 @@ private class FakeRuntime : ScreenRuntime {
             override fun close() { closed++ }
         }
     }
-    override fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long): Boolean {
+    override fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long, beforeDispatch: () -> Unit): Boolean {
+        beforeDispatch()
         effects += "node:$action" + (text?.let { ":$it" } ?: "")
         return true
     }
@@ -214,6 +214,6 @@ private class FakeRuntime : ScreenRuntime {
         effects += "gesture:$drag:$durationMs"
         return gestureCompletion?.await() ?: true
     }
-    override fun global(action: String, generation: Long): Boolean { effects += "global:$action"; return true }
-    override fun launch(packageName: String, generation: Long): Boolean { effects += "launch:$packageName"; return true }
+    override fun global(action: String, generation: Long, beforeDispatch: () -> Unit): Boolean { beforeDispatch(); effects += "global:$action"; return true }
+    override fun launch(packageName: String, generation: Long, beforeDispatch: () -> Unit): Boolean { beforeDispatch(); effects += "launch:$packageName"; return true }
 }

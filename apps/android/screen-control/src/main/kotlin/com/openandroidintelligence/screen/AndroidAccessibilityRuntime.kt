@@ -88,7 +88,8 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
         try { root.windowId } finally { recycle(root) }
     }
 
-    override fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long): Boolean {
+    override fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long,
+        beforeDispatch: () -> Unit): Boolean {
         val windows = windows()
         val parts = expected.nodeId.substringAfter(':', "").split('.')
         if (parts.firstOrNull() != "0" || parts.size > ScreenTreeReader.MAX_DEPTH + 1) {
@@ -123,8 +124,12 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
             val arguments = if (action == NativeNodeAction.SET_TEXT) Bundle().apply {
                 putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
             } else null
+            // Resolving and refreshing can cross a local permission expiry/revocation.
+            beforeDispatch()
+            checkGeneration(generation)
             return node.raw.performAction(nativeAction, arguments)
         } catch (failure: ScreenOperationException) { throw failure }
+        catch (failure: ScreenAuthorizationException) { throw failure }
         catch (_: SecurityException) { throw ScreenOperationException("ACCESSIBILITY_SERVICE_UNAVAILABLE") }
         catch (_: IllegalStateException) { throw ScreenOperationException("SCREEN_STALE_REFERENCE") }
         finally {
@@ -188,7 +193,7 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
         }
     }
 
-    override fun global(action: String, generation: Long): Boolean {
+    override fun global(action: String, generation: Long, beforeDispatch: () -> Unit): Boolean {
         checkGeneration(generation)
         val nativeAction = when (action) {
             "back" -> AccessibilityService.GLOBAL_ACTION_BACK
@@ -198,16 +203,23 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
             "quickSettings" -> AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS
             else -> throw ScreenOperationException("SCHEMA_INVALID")
         }
-        return try { service().performGlobalAction(nativeAction) }
+        val accessibility = service()
+        beforeDispatch()
+        checkGeneration(generation)
+        return try { accessibility.performGlobalAction(nativeAction) }
         catch (_: SecurityException) { throw ScreenOperationException("ACCESSIBILITY_SERVICE_UNAVAILABLE") }
     }
 
-    override fun launch(packageName: String, generation: Long): Boolean {
+    override fun launch(packageName: String, generation: Long, beforeDispatch: () -> Unit): Boolean {
         checkGeneration(generation)
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
             ?: throw ScreenOperationException("SCREEN_APP_NOT_FOUND")
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val accessibility = service()
+        beforeDispatch()
+        checkGeneration(generation)
         return try {
-            service().startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            accessibility.startActivity(intent)
             true
         } catch (_: SecurityException) { throw ScreenOperationException("SCREEN_APP_LAUNCH_DENIED") }
         catch (_: android.content.ActivityNotFoundException) { throw ScreenOperationException("SCREEN_APP_NOT_FOUND") }

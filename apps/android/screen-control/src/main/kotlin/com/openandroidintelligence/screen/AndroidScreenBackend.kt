@@ -21,10 +21,10 @@ internal interface ScreenRuntime {
     fun windows(): List<ScreenTreeWindow>
     fun foregroundPackage(): String?
     fun activeWindowId(): Int?
-    fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long): Boolean
+    fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
     suspend fun gesture(points: List<Pair<Int, Int>>, durationMs: Long, generation: Long, beforeDispatch: () -> Unit, drag: Boolean = false): Boolean
-    fun global(action: String, generation: Long): Boolean
-    fun launch(packageName: String, generation: Long): Boolean
+    fun global(action: String, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
+    fun launch(packageName: String, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
 }
 
 /**
@@ -89,7 +89,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                         else -> if (!target.scrollable) throw ScreenOperationException("SCREEN_TARGET_NOT_SCROLLABLE")
                     }
                     guard()
-                    return runtime.nodeAction(target, kind, text, generation)
+                    return runtime.nodeAction(target, kind, text, generation, ::guard)
                 }
                 val performed = when (action) {
                     is ScreenAction.Click -> {
@@ -141,13 +141,13 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                     }
                     is ScreenAction.Global -> {
                         if (action.globalAction !in setOf("back", "home", "recents", "notifications", "quickSettings")) throw ScreenOperationException("SCHEMA_INVALID")
-                        guard(); runtime.global(action.globalAction, generation)
+                        guard(); runtime.global(action.globalAction, generation, ::guard)
                     }
                     is ScreenAction.LaunchApp -> {
                         if (!Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+").matches(action.packageName) || action.packageName.length > 256) {
                             throw ScreenOperationException("SCHEMA_INVALID")
                         }
-                        guard(); runtime.launch(action.packageName, generation)
+                        guard(); runtime.launch(action.packageName, generation, ::guard)
                     }
                 }
                 if (!performed) throw ScreenOperationException("SCREEN_ACTION_REJECTED")

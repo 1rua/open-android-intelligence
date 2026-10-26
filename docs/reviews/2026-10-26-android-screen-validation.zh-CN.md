@@ -61,7 +61,7 @@ Full/Play 的最低系统版本仍为 API 31，target SDK 仍为 35。
 | --- | --- |
 | `control-ports` | 14 项通过，0 失败，0 跳过 |
 | `capability-ports` | 51 项通过，0 失败，0 跳过 |
-| `screen-control` | 18 项通过，0 失败，0 跳过 |
+| `screen-control` | 21 项通过，0 失败，0 跳过；含节点刷新/应用查询后的撤权和实际派发前代次变化 |
 | `device-primitives` | 22 项通过，0 失败，0 跳过 |
 | Full App 最新 `dev` 整合回归 | 42 项通过，0 失败，0 跳过；含 API 31–36、组合根、请求恢复、能力发布、屏幕错误和上游新会话仓储 |
 | Play App 最新 `dev` 同组回归 | 41 项通过，1 项既有运行时插件前提不成立而跳过，0 失败；屏幕及 API 31–36 用例执行通过 |
@@ -75,6 +75,10 @@ App 回归使用 `ScreenExecutionErrorsTest`、`PluginCapabilityRiskTest`、
 `CoreAgentConversationRepositoryTest`，Full/Play 分别重新运行并重建 APK；Core 的 238 项也在该
 集成基线上重新运行通过。未把跳过项计为通过；跳过项为 Play 禁止运行时插件时的
 `unreadableInstallationOmitsInventoryAndLostAckRecoveryDoesNotClaimAbsence`。
+
+最终原生复核另补齐了定位/刷新节点、查询启动 Intent 之后到实际系统操作之前的授权检查；
+回调后再次检查屏幕代次，避免查找期间到期或撤权后仍执行操作。三个 API 31 回归分别证明
+该时序下点击、应用启动和全局动作均未派发，授权异常保留明确错误码。
 
 框架与设备原语复现命令：
 
