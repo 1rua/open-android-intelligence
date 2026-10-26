@@ -215,8 +215,10 @@ configure_agent_integrations() {
     fi
 
     if [ "$INSTALL_HERMES" -eq 1 ]; then
-        info "本向导仅配置 Core 会话桥，不停用或重启既有 Hermes Gateway。"
-        info "宿主侧请在其 Python 环境安装 ./integrations/hermes-session-adapter，并按部署文档切换。"
+        info "本向导已配置 Core 会话桥，并自动将适配器环境同步至 Hermes 环境（若检测到 ~/.hermes）。"
+        info "请确保在 Hermes 宿主侧启用插件并重启服务："
+        info "  hermes plugins enable open-android-intelligence-gateway"
+        info "  hermes gateway restart"
     fi
     return 0
 }

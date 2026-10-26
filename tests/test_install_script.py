@@ -270,3 +270,23 @@ configure_autostart
         assert str(target_dir / "start-core.sh") in service.read_text()
         assert str(target_dir / "start-core.sh") in desktop.read_text()
 
+
+def test_sync_hermes_adapter_env_updates_hermes_env(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    env_file = hermes_home / ".env"
+    env_file.write_text("EXISTING_KEY=existing_val\nOAI_HERMES_SESSION_PORT=9999\n", encoding="utf-8")
+    env_file.chmod(0o600)
+
+    HELPER["sync_hermes_adapter_env"]("synthetic-token-32-chars-long-123456", "bob")
+
+    lines = env_file.read_text(encoding="utf-8").splitlines()
+    env_map = dict(line.split("=", 1) for line in lines if "=" in line)
+    assert env_map["EXISTING_KEY"] == "existing_val"
+    assert env_map["OAI_HERMES_SESSION_TOKEN"] == "synthetic-token-32-chars-long-123456"
+    assert env_map["OAI_HERMES_ACCOUNTS"] == '["bob"]'
+    assert env_map["OAI_HERMES_SESSION_PORT"] == "8792"
+    assert env_map["OAI_HERMES_GATEWAY_ROOT"] == str(hermes_home / "open-android-intelligence-gateway" / "accounts")
+
+
