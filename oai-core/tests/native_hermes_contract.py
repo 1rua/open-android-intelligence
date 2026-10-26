@@ -6,18 +6,20 @@ from pathlib import Path
 import socket
 import sys
 
+sys.path.insert(0, str(Path(os.environ["HERMES_SDK_ROOT"]).resolve()))
+
 from aiohttp import ClientSession
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.base import ExecApprovalPrompt
 from gateway.platform_registry import platform_registry
 from gateway.session import SessionStore
 from hermes_cli.plugins import PluginContext, PluginManager, parse_manifest_file
-from open_android_intelligence_gateway.adapter import NATIVE_HERMES_AVAILABLE
-from open_android_intelligence_gateway.platform_identity import GATEWAY_PLATFORM_IDS
+from oai_hermes_adapter.runtime import NATIVE_HERMES_AVAILABLE
+from oai_hermes_adapter.platform_identity import GATEWAY_PLATFORM_IDS
 
-from oai_core.adapters.hermes import HermesSessionAdapter
+from oai_hermes_adapter.sessions import HermesSessionAdapter
 from oai_core.auth import Principal
-from oai_core.hermes_host import register
+from oai_hermes_adapter.bridge import register
 from oai_core.server import create_app, create_core
 from oai_core.sessions import AdapterError
 
@@ -63,12 +65,24 @@ assert all(entry.adapter_factory(PlatformConfig(enabled=True, extra={})) is runt
 store = SessionStore(Path(os.environ["HERMES_HOME"]) / "sessions", GatewayConfig())
 runtime.set_session_store(store)
 
+# Persist a legacy platform binding before the new adapter acquires the old
+# account directory. No account database or native session ID is replaced.
+with closing(core.open_gateway_account("alice")) as account:
+    legacy = account.conversations.create("legacy-before-migration", "legacy title", "legacy-before-migration")
+    legacy_id = legacy["conversationId"]
+    entry = store.get_or_create_session(runtime._agent_source(legacy_id, "alice", "open_android"), False)
+    account.agent_sessions.record(legacy_id, "conversation-create")
+    account.agent_sessions.attach(legacy_id, entry.session_id, entry.session_key)
+legacy_database = store._db_for_key(entry.session_key)
+legacy_database.append_message(entry.session_id, "assistant", "persisted before optional adapter", timestamp=1)
+legacy_session_id = entry.session_id
+
 
 async def scenario():
     block = asyncio.Event()
     entered = asyncio.Event()
     approvals = []
-    import open_android_intelligence_gateway.core as gateway_core_module
+    import oai_hermes_adapter.approvals as gateway_core_module
     original_resolver = gateway_core_module.resolve_host_approval
     gateway_core_module.resolve_host_approval = lambda session, choice, request_id=None: approvals.append((session, choice, request_id)) or 1
 
@@ -95,6 +109,27 @@ async def scenario():
     alice = Principal("alice", device_id="core-phone", pairing_generation=7, grant_revision=9)
     bob = Principal("bob", device_id="other-phone", pairing_generation=3, grant_revision=2)
     assert await adapter.status()
+    assert not hasattr(runtime.services.core, "device_requests")
+    with closing(runtime.services.core.open_gateway_account("alice")) as session_account:
+        assert not hasattr(session_account, "device_requests")
+        assert not hasattr(session_account, "sessions")
+    before = await adapter.list_sessions(alice)
+    assert before[0]["id"] == legacy_id
+    assert any(row["text"] == "persisted before optional adapter" for row in await adapter.history(alice, legacy_id))
+    with closing(runtime.services.core.open_gateway_account("alice")) as account:
+        assert account.agent_sessions.lookup(legacy_id)["agentSessionId"] == legacy_session_id
+    try:
+        await adapter.history(bob, legacy_id)
+    except AdapterError as error:
+        assert error.status == 404
+    else:
+        raise AssertionError("another account read legacy native history")
+    # Finish the migrated legacy thread without changing its original identity.
+    legacy_events = [event async for event in adapter.send(alice, legacy_id, "native legacy prompt")]
+    assert legacy_events[-1]["type"] == "done", legacy_events
+    await asyncio.gather(*tuple(runtime._background_tasks))
+    await adapter.manage(alice, legacy_id, "delete")
+    assert legacy_database.get_session(legacy_session_id) is None
     try:
         async with ClientSession() as client:
             url = "http://127.0.0.1:" + os.environ["OAI_HERMES_SESSION_PORT"]

@@ -174,7 +174,7 @@ def test_official_mcp_client_negotiates_and_calls_stdio_process(tmp_path):
 
 
 def test_local_account_and_policy_commands_use_real_isolated_core_stores(tmp_path, monkeypatch, capsys):
-    from open_android_intelligence_gateway.capability_policy import DeviceCapabilityPolicy
+    from oai_core.gateway.capability_policy import DeviceCapabilityPolicy
     from oai_core.server import create_core, load_config
     settings = tmp_path / "core.json"
     settings.write_text(json.dumps({

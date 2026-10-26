@@ -13,8 +13,8 @@ from typing import Any, Protocol
 from pathlib import Path
 
 from aiohttp import web
-from open_android_intelligence_gateway.core import GatewayError
-from open_android_intelligence_gateway.http import _status
+from .gateway.core import GatewayError
+from .gateway.http import _status
 
 from .auth import Principal
 from .operations import NativeOperations, OperationConflict
@@ -68,10 +68,26 @@ class AgentRegistry:
             raise ValueError("Agent sessionScope must be explicit")
         if descriptor.get("kind") == "hermes" and descriptor["sessionScope"] != "account":
             raise ValueError("Hermes sessions must be account isolated")
+        if descriptor.get("kind") == "hermes":
+            self._validate_hermes_account_mapping(adapter)
         capabilities = descriptor.get("capabilities", {})
         if not isinstance(capabilities, Mapping) or any(type(v) is not bool for v in capabilities.values()):
             raise ValueError("Capabilities must be boolean")
         self._adapters[agent_id] = adapter
+
+    def _validate_hermes_account_mapping(self, adapter: SessionAdapter) -> None:
+        from .adapters.hermes import HermesRemoteSessionAdapter
+
+        if not isinstance(adapter, HermesRemoteSessionAdapter):
+            return
+        for existing in self._adapters.values():
+            if not isinstance(existing, HermesRemoteSessionAdapter) or existing.account_scope != adapter.account_scope:
+                continue
+            native_owners = {native: owner for owner, native in existing.accounts.items()}
+            for owner, native in adapter.accounts.items():
+                if ((native in native_owners and native_owners[native] != owner)
+                        or (owner in existing.accounts and existing.accounts[owner] != native)):
+                    raise ValueError("Hermes account mappings must be one-to-one across Agent aliases")
 
     def get(self, agent_id: str, capability: str) -> SessionAdapter:
         adapter = self._adapters.get(agent_id)

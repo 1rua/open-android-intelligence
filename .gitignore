@@ -109,3 +109,7 @@ oai-release.keystore
 # OAI Core runtime state, credentials and local virtual environments
 /oai-core/runtime/
 /.venv/
+/runtime/
+/core.json
+/start-core.sh
+/oai-core/dist/

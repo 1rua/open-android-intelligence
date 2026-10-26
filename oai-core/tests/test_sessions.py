@@ -6,7 +6,7 @@ import tempfile
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from open_android_intelligence_gateway.core import GatewayError
+from oai_core.gateway.core import GatewayError
 
 from oai_core.sessions import (AgentRegistry, Principal, SESSION_REQUEST_MAX_BYTES,
                                create_agent_routes, session_request_json)

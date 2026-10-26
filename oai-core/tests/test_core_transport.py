@@ -11,10 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from open_android_intelligence_gateway.capability_policy import DeviceCapabilityPolicy
-from open_android_intelligence_gateway.core import CredentialStore, _jcs
+from oai_core.gateway.capability_policy import DeviceCapabilityPolicy
+from oai_core.gateway.core import CredentialStore, _jcs
 
 from oai_core.server import AUTH_KEY, CORE_KEY, DEVICE_API, create_app, create_core
 from oai_core.sessions import AgentRegistry
@@ -388,3 +389,108 @@ async def test_restart_preserves_queue_token_idempotency_and_nonce_replay_fence(
         account.close()
         response = await client.get(DEVICE_API + f"/device-requests/{request_id}", headers=cli)
         assert (await response.json())["state"] == "outcome_unknown"
+
+
+@pytest.mark.asyncio
+async def test_signature_checks_exact_http_bytes_before_json_parsing_and_nonce_consumption(gateway):
+    client, core, _ = gateway
+    bundle, key = await phone_login(client, core)
+    binding, revision = await publish(client, core, bundle, key)
+    path = PREFIX + "/pairings/current/capabilities"
+    body = {"bindings": [binding], "expectedGrantRevision": revision, "localGrantRevision": revision}
+    raw, headers = signed(bundle, key, "POST", path, body)
+    # This JSON parses to the same object; only its raw byte digest differs.
+    altered = await client.post(path, data=raw + b" ", headers=headers)
+    assert altered.status == 401, await altered.text()
+    # A failed signature must not burn a valid request's nonce or idempotency key.
+    original = await client.post(path, data=raw, headers=headers)
+    assert original.status == 200, await original.text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header", ["Authorization", "X-Open-Android-Intelligence-Account", "X-Open-Android-Intelligence-Nonce", "X-Open-Android-Intelligence-Signature"])
+async def test_duplicate_security_headers_fail_closed_even_when_values_are_identical(gateway, header):
+    client, core, _ = gateway
+    bundle, key = await phone_login(client, core)
+    path = PREFIX + "/agents"
+    raw, headers = signed(bundle, key, "GET", path)
+    duplicated = [*headers.items(), (header, headers[header])]
+    response = await client.get(path, headers=duplicated)
+    assert response.status == 401, await response.text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["sse", "websocket"])
+async def test_event_reconnect_replays_after_cursor_and_revocation_closes_live_stream(gateway, channel):
+    client, core, _ = gateway
+    bundle, key = await phone_login(client, core)
+
+    async def open_stream(cursor=None):
+        path = PREFIX + "/events" + ("?cursor=" + cursor if cursor else "")
+        _, headers = signed(bundle, key, "GET", path)
+        if cursor:
+            headers["Last-Event-ID"] = cursor
+        if channel == "sse":
+            headers["Accept"] = "text/event-stream"
+            response = await client.get(path, headers=headers)
+            assert response.status == 200, await response.text()
+            return response
+        return await client.ws_connect(path, headers=headers)
+
+    def append_notice(marker):
+        account = core.open_gateway_account("alice")
+        try:
+            return account.events.append("gateway.notice", "cor_" + marker, {"noticeCode": marker})
+        finally:
+            account.close()
+
+    async def read_until(stream, expected_id):
+        seen = []
+        async with asyncio.timeout(3):
+            while True:
+                if channel == "sse":
+                    frame = (await stream.content.readuntil(b"\n\n")).decode()
+                    if "data: " not in frame:
+                        continue
+                    event = {"eventId": next(line[4:] for line in frame.splitlines() if line.startswith("id: ")), **json.loads(frame.split("data: ", 1)[1])}
+                else:
+                    frame = await stream.receive_json()
+                    event = {"eventId": frame["id"], **json.loads(frame["data"])}
+                seen.append(event)
+                if event["eventId"] == expected_id:
+                    return seen
+
+    stream = await open_stream()
+    try:
+        first = append_notice("before_disconnect")
+        await read_until(stream, first["eventId"])
+    finally:
+        if channel == "sse":
+            stream.close()
+        else:
+            await stream.close()
+    second = append_notice("while_disconnected")
+    resumed = await open_stream(first["eventId"])
+    try:
+        replayed = await read_until(resumed, second["eventId"])
+        assert first["eventId"] not in {event["eventId"] for event in replayed}
+        assert replayed[-1]["payload"]["noticeCode"] == "while_disconnected"
+        account = core.open_gateway_account("alice")
+        try:
+            account.sessions.revoke_session(bundle["sessionId"], "cor_revoke_stream")
+            account.events.append("gateway.notice", "cor_after_revoke", {"noticeCode": "private_after_revoke"})
+        finally:
+            account.close()
+        async with asyncio.timeout(3):
+            if channel == "sse":
+                assert b"private_after_revoke" not in await resumed.content.read()
+                assert resumed.content.at_eof()
+            else:
+                closed = await resumed.receive()
+                assert closed.type in {WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED}
+        assert not core.is_device_online("alice", bundle["deviceId"], bundle["pairingGeneration"])
+    finally:
+        if channel == "sse":
+            resumed.close()
+        else:
+            await resumed.close()

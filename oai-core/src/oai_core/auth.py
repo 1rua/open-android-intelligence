@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import web
-from open_android_intelligence_gateway.adapter import GatewayRequestVerifier
-from open_android_intelligence_gateway.core import GatewayError, VerifiedRequestContext, _now, _request_context
+from .gateway.verifier import GatewayRequestVerifier
+from .gateway.core import GatewayError, VerifiedRequestContext, _now, _request_context
 
 
 @dataclass(frozen=True)

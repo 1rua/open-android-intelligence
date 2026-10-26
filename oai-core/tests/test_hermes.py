@@ -9,9 +9,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from oai_core.adapters.hermes import HermesRemoteSessionAdapter, HermesSessionAdapter
+from oai_core.adapters.hermes import HermesRemoteSessionAdapter
+from oai_hermes_adapter.sessions import HermesSessionAdapter
 from oai_core.auth import Principal
-from oai_core.hermes_host import UnsupportedApprovalMixin, create_hermes_bridge_app
+from oai_hermes_adapter.bridge import UnsupportedApprovalMixin, create_hermes_bridge_app
 from oai_core.server import create_core
 from oai_core.sessions import (AdapterError, AgentRegistry, SESSION_REQUEST_MAX_BYTES,
                                create_agent_routes, session_request_json)
@@ -204,13 +205,132 @@ def test_hermes_runtime_must_share_its_gateway_core(core):
 @pytest.mark.asyncio
 async def test_unsupported_exec_approval_is_denied_instead_of_waiting_for_an_unrenderable_card(core, monkeypatch):
     calls, events = [], []
-    monkeypatch.setattr("open_android_intelligence_gateway.core.resolve_host_approval",
+    monkeypatch.setattr("oai_hermes_adapter.approvals.resolve_host_approval",
                         lambda session, choice, request_id=None: calls.append((session, choice, request_id)) or 1)
     core.register_event_sink(lambda account, event: events.append((account, event)))
     class Runtime(UnsupportedApprovalMixin):
+        _unsupported_approval_result = staticmethod(lambda: SimpleNamespace(success=True))
         services = SimpleNamespace(core=core)
         _conv_to_account = {"chat": "alice"}
     result = await Runtime()._send_exec_approval_prompt(SimpleNamespace(chat_id="chat", session_key="native-key", metadata={"request_id": "native-request"}))
     assert calls == [("native-key", "deny", "native-request")]
     assert result.success
     assert events == [("alice", {"eventType": "core.approval.unsupported", "payload": {"conversationId": "chat", "code": "UNSUPPORTED_APPROVAL"}})]
+
+
+def test_session_backend_has_no_device_services_and_exclusively_owns_legacy_db(core):
+    import sqlite3
+    from oai_hermes_adapter.backend import SessionBackend
+    from oai_core.gateway.account_paths import account_paths
+    from oai_core.gateway.core import GatewayError
+    backend = SessionBackend(core.storage_root, ["alice", "bob"], secret_store=core.secret_store)
+    backend.acquire_accounts()
+    try:
+        account = backend.open_gateway_account("alice")
+        assert not hasattr(account, "device_requests")
+        assert not hasattr(account, "sessions")
+        assert not hasattr(account, "credentials")
+        assert not hasattr(backend, "dispatch_gateway_request")
+        assert account.agent_sessions.list()[0]["agentSessionId"] == "session_alice"
+        account.close()
+        competitor = sqlite3.connect(str(account_paths(core.storage_root, "alice").database), timeout=.01)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                competitor.execute("INSERT INTO account_metadata(key,value) VALUES ('old-gateway-writer','denied')")
+        finally:
+            competitor.close()
+        with pytest.raises(GatewayError, match="AUTHENTICATION_REQUIRED"):
+            backend.open_gateway_account("unmapped")
+    finally:
+        backend.close()
+    # Releasing the new process' exclusive ownership allows an offline rollback.
+    account = core.open_gateway_account("alice")
+    try:
+        assert account.agent_sessions.list()[0]["agentSessionId"] == "session_alice"
+        assert account.credentials.verify_password("test-password")
+    finally:
+        account.close()
+
+
+def test_session_backend_refuses_activation_while_legacy_writer_is_active(core):
+    import sqlite3
+    from oai_hermes_adapter.backend import SessionBackend
+    from oai_core.gateway.account_paths import account_paths
+    old_gateway = sqlite3.connect(str(account_paths(core.storage_root, "bob").database), isolation_level=None)
+    old_gateway.execute("BEGIN IMMEDIATE")
+    backend = SessionBackend(core.storage_root, ["alice", "bob"], secret_store=core.secret_store)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            backend.acquire_accounts()
+        assert backend._stores == {}
+        # Alice was acquired first. A later failure on Bob must release Alice
+        # as well, so rollback is not stranded behind a leaked exclusive lock.
+        released = sqlite3.connect(str(account_paths(core.storage_root, "alice").database), isolation_level=None, timeout=.01)
+        try:
+            released.execute("BEGIN IMMEDIATE")
+            released.execute("ROLLBACK")
+        finally:
+            released.close()
+    finally:
+        old_gateway.execute("ROLLBACK")
+        old_gateway.close()
+        backend.close()
+
+
+def test_uncertain_session_commit_retains_same_exclusive_connection(core):
+    import sqlite3
+    from oai_hermes_adapter.backend import LockedDatabase, SessionBackend
+    from oai_core.gateway.account_paths import account_paths
+    from oai_core.gateway.core import TransactionOutcomeUnknown
+    backend = SessionBackend(core.storage_root, ["alice"], secret_store=core.secret_store)
+    backend.acquire_accounts()
+    account = backend.open_gateway_account("alice")
+    database = account.store.database
+    competitor = sqlite3.connect(str(account_paths(core.storage_root, "alice").database), timeout=.01)
+    try:
+        account.store.fail_next_commit = True
+        with pytest.raises(TransactionOutcomeUnknown):
+            with account.store.transaction():
+                database.execute("INSERT INTO account_metadata(key,value) VALUES ('synthetic-uncertain','not-committed')")
+        assert account.store.database is database
+        assert isinstance(database, LockedDatabase)
+        assert database.execute("SELECT value FROM account_metadata WHERE key='synthetic-uncertain'").fetchone() is None
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            competitor.execute("INSERT INTO account_metadata(key,value) VALUES ('legacy-writer-after-fault','denied')")
+        with account.store.transaction():
+            database.execute("INSERT INTO account_metadata(key,value) VALUES ('session-after-fault','exclusive')")
+    finally:
+        competitor.close()
+        account.close()
+        backend.close()
+    # Shutdown releases the original connection without depending on a
+    # replacement connection's implementation or losing the old account data.
+    with sqlite3.connect(str(account_paths(core.storage_root, "alice").database), timeout=.01) as restored:
+        assert restored.execute("SELECT value FROM account_metadata WHERE key='session-after-fault'").fetchone()[0] == "exclusive"
+
+
+def test_unrecoverable_session_connection_fails_closed_and_shutdown_still_releases(core):
+    import sqlite3
+    from oai_hermes_adapter.backend import SessionBackend
+    from oai_core.gateway.account_paths import account_paths
+    from oai_core.gateway.core import GatewayError
+    backend = SessionBackend(core.storage_root, ["alice"], secret_store=core.secret_store)
+    backend.acquire_accounts()
+    account = backend.open_gateway_account("alice")
+    account.store.commit_hook = account.store.database.connection.close
+    try:
+        with pytest.raises(GatewayError, match="HOST_INCOMPATIBLE"):
+            with account.store.transaction():
+                account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES ('synthetic-fatal','not-committed')")
+        with pytest.raises(GatewayError, match="HOST_INCOMPATIBLE"):
+            backend.open_gateway_account("alice")
+        with pytest.raises(GatewayError, match="HOST_INCOMPATIBLE"):
+            account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES ('unsafe-session-writer','denied')")
+        # Once an unusable connection releases the lock, the new adapter can no
+        # longer write; an offline rollback can safely become the sole writer.
+        with sqlite3.connect(str(account_paths(core.storage_root, "alice").database), timeout=.01) as restored:
+            restored.execute("INSERT INTO account_metadata(key,value) VALUES ('legacy-after-fatal','sole-writer')")
+    finally:
+        account.close()
+        backend.close()
+    assert backend._stores == {}

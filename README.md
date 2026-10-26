@@ -118,7 +118,7 @@
    - **安全插件沙箱**：通过 WebAssembly 运行时隔离执行设备扩展插件，严格限制 CPU、内存、本地存储与网络并发资源。
 2. **OAI Core 服务端与协议契约层**（连接桥梁与调度中心）
    - **单一服务监听**：`oai serve` 同时暴露 `/v2` 设备协议、`core/v1` 设备调用面及 `/v2/agents` 原生会话面。
-   - **设备安全运行时**：复用被固定的 Hermes GatewayCore 状态机，负责排队、超时、防重放、取消与结果确认。
+   - **设备安全运行时**：由 `oai_core.gateway` 唯一实现排队、超时、防重放、取消与结果确认；独立安装和启动不需要 Hermes。
    - **严格契约守卫**：全字段封闭校验，关键请求搭载 Ed25519 签名、时间戳与 Nonce 防重放，写操作绑定幂等键。
 3. **Agent 宿主与原生会话端**（后端大脑）
    - **轻量会话桥（Session Adapter）**：Hermes 与 DSH 通过 loopback 会话桥接入；Codex 走原生 `app-server` 进程。
@@ -175,7 +175,7 @@
 
 #### 🚀 极速一键安装 / 更新（推荐）
 
-通过 `curl` 运行自动化安装向导，脚本将自动检测系统依赖、安装或更新 OAI Core、探测本机 Agent（如 Hermes、DSH、Codex）并询问一键安装其适配器插件，最后引导完成账号密码与端口配置：
+通过 `curl` 运行自动化安装向导，脚本将自动检测系统依赖、安装或更新 OAI Core、探测本机 Agent（如 Hermes、DSH、Codex）并记录接入配置，最后引导完成账号与端口配置。Hermes 会话适配器作为可选组件单独安装，已有账号不会被向导重置：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
@@ -183,7 +183,7 @@ curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/
 
 > **提示**：
 > - 若已克隆本仓库，可在根目录直接运行 `./scripts/install.sh` 进行就地安装与交互式配置。
-> - 若需要**重新配置**端口、管理员账号密码或调整 Agent 插件接入，可随时运行独立配置脚本：`./scripts/setup.sh`（或通过 curl 运行 `curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash`）。
+> - 若需要**重新配置**端口、初始化新账号或调整 Agent 接入，可随时运行独立配置脚本：`./scripts/setup.sh`（或通过 curl 运行 `curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash`）。
 
 <details open>
 <summary><b>手动安装 OAI Core 服务端（点击收起）</b></summary>

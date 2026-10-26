@@ -1,4 +1,3 @@
-"""Hermes' plugin loader invokes this standard registration entrypoint."""
-from oai_core.hermes_host import register
-
+"""Hermes standard plugin-loader entrypoint."""
+from oai_hermes_adapter import register
 __all__ = ["register"]

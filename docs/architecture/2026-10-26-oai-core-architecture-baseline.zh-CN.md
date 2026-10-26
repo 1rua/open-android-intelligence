@@ -4,21 +4,24 @@
 每条结论都标注了可核对的代码位置。文档更新只允许引用本文件已经写明的内容；
 本文件未覆盖的行为，必须先读代码补进本文件，再写进其他文档。
 
-代码基线：分支 `feature/unified-oai-core`，提交 `316a0f55`。
+迁移前基线：OAI `dev` 提交 `f2c4a4eab081aa48fc0307c51f0f3c8754a5891d`；设备实现迁移来源为 Hermes `b64dda00a0de9ff1a95a375dcf92f62b5a1027b3`。以下描述以本文件所在提交的实现为准，迁移分类与数据切换见[依赖迁移清单](2026-10-26-core-independence-migration.zh-CN.md)。
 
 ## 1. 交付物与安装形态
 
 - 新增独立可安装 Python 项目 `oai-core/`，发布名 `open-android-intelligence-core`，
-  版本 `0.1.0`，`requires-python >= 3.11`
+  版本 `0.2.0`，`requires-python >= 3.11`
   （[pyproject.toml](../../oai-core/pyproject.toml)）。
 - 控制台入口 `oai = oai_core.cli:main`，同一个包里同时提供守护进程命令、CLI 客户端与
   MCP stdio 服务（[cli.py](../../oai-core/src/oai_core/cli.py)、
   [mcp.py](../../oai-core/src/oai_core/mcp.py)）。
-- 运行依赖只有 `aiohttp>=3.11,<4`、`mcp>=1.20,<2`，以及固定提交的
-  `open-android-intelligence-hermes-gateway @ git+...@b64dda00a0de9ff1a95a375dcf92f62b5a1027b3`。
-  设备安全运行时来自这个被固定的上游 GatewayCore，`oai-core` 不重写排队、超时、
-  取消、结果状态机（[server.py](../../oai-core/src/oai_core/server.py) 的 `GATEWAY_REVISION`、
-  [device_service.py](../../oai-core/src/oai_core/device_service.py)）。
+- 运行直接依赖为 `aiohttp>=3.11,<4`、`mcp>=1.20,<2`、`jsonschema>=4.23,<5` 和
+  `cryptography>=42` 和 `yarl>=1.17,<2`，不包含 Hermes 插件、SDK 或 Git 仓库依赖。
+- 设备安全运行时由 [oai_core.gateway](../../oai-core/src/oai_core/gateway) 唯一实现。
+  [verifier.py](../../oai-core/src/oai_core/gateway/verifier.py) 处理原始 HTTP 字节签名，
+  [transport.py](../../oai-core/src/oai_core/gateway/transport.py) 处理附件、SSE 与 WebSocket，
+  [core.py](../../oai-core/src/oai_core/gateway/core.py) 持有账号和设备请求状态机。
+- [构建脚本](../../oai-core/setup.py) 从仓库的 `gateway-contract/` 单一来源生成 wheel/sdist
+  内的协议资产；Core 启动时仅从本地读取，离开仓库也不需要下载旧插件或协议源码。
 
 ## 2. 单一监听地址承载的三套接口
 
@@ -126,9 +129,9 @@
 
 ## 9. 配置与部署约束
 
-必需字段：`storageRoot`、`masterKeyFile`、`contractRoot`；配置内路径相对配置文件目录解析。
+必需字段：`storageRoot`、`masterKeyFile`；`contractRoot` 可选，默认使用包内协议资产。配置内路径相对配置文件目录解析；显式指定但无效的契约路径会阻止启动。
 
-- `masterKeyFile` 必须位于 `storageRoot` 之外，否则启动即失败，以保证账号备份不含主密钥。
+- `masterKeyFile` 必须位于 `storageRoot` 之外，否则启动即失败，以保证账号备份不含主密钥。已有账号库而主密钥缺失时拒绝启动，不生成替代密钥。
 - 非 loopback 监听必须提供 TLS 证书与私钥，或显式 `allowInsecureHttp: true`。
 - 存在 `tls.certFile` 时自动从证书计算 `tlsSpkiSha256`；TLS 终结在反代之后时须手工配置
   与手机实际所见证书一致的指纹。
@@ -140,7 +143,9 @@
 
 ## 10. Hermes 宿主侧"仅会话"平台插件
 
-`oai_core/hermes_host.py` 由 Hermes 标准 plugin loader 安装，注册相同 canonical/legacy
+可选包 [oai-hermes-session-adapter](../../integrations/hermes-session-adapter/pyproject.toml)
+依赖 `open-android-intelligence-core>=0.2,<0.3`，由 Hermes 标准 plugin loader 安装。
+原生 SDK 只在此包内加载；Core 仅通过远程会话桥访问它。插件注册相同 canonical/legacy
 platform ID 以保留原生会话来源键：
 
 - 只绑定 `127.0.0.1`，前缀 `/oai/session-adapter/v1`，事件流为 `application/x-ndjson`。
@@ -148,7 +153,7 @@ platform ID 以保留原生会话来源键：
   （原 Gateway accounts 目录本身）、`OAI_HERMES_ACCOUNTS`（显式 JSON allowlist）、
   `OAI_HERMES_SESSION_PORT`（默认 8792）；沿用原
   `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE`。
-- 不注册旧设备工具，不启动旧 Gateway v2 设备端口；禁止旧 Gateway 与插件同时写同一目录。
+- 不注册旧设备工具，不启动旧 Gateway v2 设备端口，不构造 `GatewayCore` 或设备请求调度器。会话后端只复用 Core 公共存储库；连接旧账号库时持有 SQLite 独占锁，竞争写入会失败。切换前仍须先停止旧 Gateway，并单独备份原数据库和主密钥。
 - 原生审批立即 `deny` 并发出 `core.approval.unsupported`，流侧报告 `UNSUPPORTED_APPROVAL`。
 - 会话标题通过账号绑定后的 SessionDB `get/set_session_title` 读写，按压缩链当前 tip 定位，
   终端修改同样可见；缺少真实标题接口时不宣称支持重命名。
@@ -161,24 +166,18 @@ platform ID 以保留原生会话来源键：
 （`GatewayTutorials.CORE`，chip 为 `Python 3.11+` / `Protocol v2.1` / `Core v0.1.0`），
 OpenClaw 保留旧 Gateway 兼容教程。切换 Agent 只改变聊天状态，不重连手机平台通道。
 
-## 12. 本版已验证与未验证
+## 12. 验证与证据范围
 
-已运行并通过（本机，2026-10-26）：
+验证入口：
 
-```sh
-python -m pytest oai-core/tests -q                                # 63 passed, 0 skipped
-npx vitest run integrations/dsh-session-adapter/adapter.test.js   # 16 passed, 0 skipped
-```
+- `oai-core/tests/gateway_runtime/`：迁移前的协议向量和安全/状态回归，包括 70 条共享向量。
+- `oai-core/tests/test_core_transport.py`：真实 HTTP 签名、重放与重复安全头、SSE/WS 游标恢复和撤销关闭。
+- `oai-core/tests/independent_core_contract.py`：只安装 Core 和直接依赖，阻断全部 Hermes/旧插件导入后，完成协议协商、登录、能力发布及 Claim/Result/ACK。
+- `oai-core/tools/verify_distribution.py`：干净 wheel 环境从仓库外实际启动 `oai serve`，校验包内资产及严格 Schema Hash。
+- `oai-core/tests/test_hermes_native.py`：可选包加固定真实 Hermes SDK
+  `75b083e9399115b12513385252811f09c3503c90`，在隔离 Home 验证原生历史、旧绑定、多账号、压缩链及会话生命周期；消息回调使用合成文本，不调用真实模型。
+- `.github/workflows/oai-core.yml`：分别验证无 Hermes 的 Core wheel、原生 Hermes Adapter、DSH 会话桥与 Android 回归。
+- 主 CI 中旧固定 Gateway 只作为隔离的历史协议对比夹具，不是 Core 的运行依赖，也不代表当前 Core 的跨端部署验收。
 
-其中 1 项 `test_hermes_native.py` 依赖 `HERMES_SDK_ROOT` 指向固定 checkout
-`75b083e9399115b12513385252811f09c3503c90`，并需 `PyYAML==6.0.3`、`python-dotenv==1.2.4`、
-`psutil==7.2.2`、`httpx==0.28.1`；未设置时该项明确跳过，**不得把跳过写成已通过**。
-本机已用 `.toolchains/hermes-native-clean-75b083e` 实测通过。
-
-CI 见 `.github/workflows/oai-core.yml`（Python 3.12 + Node 24.18.0 + JDK 21 + Gradle 8.12，
-Android 侧选中 `NativeAgentsControllerTest`、`NativeAgentBackgroundWorkTest`、
-`GatewayTutorialsTest`、`GatewaySessionRefreshTest`、`GatewayWorkbenchLogoutTest`、
-`DeviceExecutionRecoveryTest`、`PlatformSnapshotRecoveryTest`）。
-
-未验证，文档不得声称通过：真实 Hermes/DSH/Codex 宿主部署联调、真机本地确认、
-真实模型输出、服务端网络可达性。测试中的模型与宿主是原生协议替身。
+本次实测结果和部署顺序见[独立部署说明](../deployment/2026-10-26-core-independent.zh-CN.md)。
+Android 真机、本地敏感确认、真实模型调用及用户现有服务的部署联调，需要分别验收。

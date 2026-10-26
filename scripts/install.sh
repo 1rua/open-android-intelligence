@@ -16,6 +16,11 @@
 
 set -euo pipefail
 
+OAI_SETUP_SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    OAI_SETUP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
 # 颜色与显示定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -92,7 +97,7 @@ prompt_read() {
     if [ -z "$input" ] && [ -n "$default_value" ]; then
         input="$default_value"
     fi
-    eval "$var_name=\"\$input\""
+    printf -v "$var_name" '%s' "$input"
 }
 
 # 提示输入密码（不回显）
@@ -116,7 +121,7 @@ prompt_password() {
     else
         input=""
     fi
-    eval "$var_name=\"\$input\""
+    printf -v "$var_name" '%s' "$input"
 }
 
 # 检查基础依赖
@@ -225,11 +230,12 @@ install_python_env() {
         "${pip_bin}" install --timeout 15 --upgrade pip setuptools wheel || true
     }
 
-    info "正在安装 OAI Core 及网关契约包..."
+    info "正在安装独立 OAI Core 与随包协议契约（不安装 Hermes）..."
     "${pip_bin}" install --timeout 15 -i "${PIP_INDEX_URL}" -e ./oai-core || {
         warn "通过镜像源安装 oai-core 失败，尝试默认官方源安装..."
         "${pip_bin}" install --timeout 15 -e ./oai-core
     }
+    "${venv_dir}/bin/python" -m pip check
 
     if [ -f "${venv_dir}/bin/oai" ]; then
         success "OAI Core CLI (oai) 安装成功: ${venv_dir}/bin/oai"
@@ -281,7 +287,7 @@ configure_agent_plugins() {
 
     # 1. Hermes 适配器引导
     if [ "$DETECTED_HERMES" -eq 1 ]; then
-        prompt_read "检测到 Hermes Agent，是否安装/配置 OAI Hermes Session Adapter 插件？(y/n)" answer "y"
+        prompt_read "检测到 Hermes，是否配置可选会话桥接入？(y/n)" answer "n"
         case "$answer" in
             [Yy]* )
                 INSTALL_HERMES_PLUGIN=1
@@ -318,22 +324,11 @@ configure_agent_plugins() {
         esac
     fi
 
-    # 执行 Hermes 插件安装操作（若选中）
+    # 宿主安装与停用旧 Gateway 是部署切换步骤，不在 Core 安装时执行。
     if [ "$INSTALL_HERMES_PLUGIN" -eq 1 ]; then
-        info "正在为 Hermes 配置会话插件..."
-        if command -v hermes >/dev/null 2>&1; then
-            info "检查并停用旧版 Hermes Gateway 插件（若已安装）..."
-            hermes plugins disable open-android-intelligence-gateway 2>/dev/null || true
-            local hermes_adapter_path="integrations/hermes-session-adapter"
-            if [ -d "${TARGET_DIR}/${hermes_adapter_path}" ]; then
-                info "通过 hermes CLI 安装本地原生会话适配器: ${hermes_adapter_path}..."
-                hermes plugins install "${TARGET_DIR}/${hermes_adapter_path}" --enable || {
-                    warn "自动安装插件失败，您可以稍后在终端手动运行: hermes plugins install ${TARGET_DIR}/${hermes_adapter_path} --enable"
-                }
-            fi
-        else
-            warn "未在 PATH 中找到 hermes 可执行命令，请在 Hermes 运行环境中手动安装: ${TARGET_DIR}/integrations/hermes-session-adapter"
-        fi
+        info "仅配置 Core 的 Hermes 会话桥；Hermes 是可选组件。"
+        info "在 Hermes 自身 Python 环境单独安装: python -m pip install ./oai-core ./integrations/hermes-session-adapter"
+        info "先验证独立 Core 并备份，再停止旧 Gateway、启动新 Adapter；不会自动操作现有服务。"
     fi
 
     # DSH 插件说明
@@ -379,144 +374,23 @@ guide_initial_configuration() {
         fi
     done
 
-    # 3. 配置文件生成路径
-    local runtime_dir="${TARGET_DIR}/runtime"
-    local accounts_dir="${runtime_dir}/accounts"
-    local secrets_dir="${runtime_dir}/secrets"
-    local master_key_file="${secrets_dir}/core-master-key"
-    local config_file="${TARGET_DIR}/core.json"
-
-    mkdir -p "${accounts_dir}" "${secrets_dir}"
-    chmod 0700 "${secrets_dir}" "${accounts_dir}" 2>/dev/null || true
-
-    # 生成安全随机主密钥（若不存在）
-    if [ ! -f "${master_key_file}" ]; then
-        info "正在生成 32 字节本地主加密密钥 (${master_key_file})..."
-        if command -v openssl >/dev/null 2>&1; then
-            openssl rand 32 > "${master_key_file}"
-        else
-            dd if=/dev/urandom of="${master_key_file}" bs=32 count=1 2>/dev/null
-        fi
+    local selected_agents=()
+    [ "${INSTALL_DSH_PLUGIN:-0}" -eq 0 ] || selected_agents+=(dsh)
+    [ "${INSTALL_HERMES_PLUGIN:-0}" -eq 0 ] || selected_agents+=(hermes)
+    [ "${INSTALL_CODEX_CONFIG:-0}" -eq 0 ] || selected_agents+=(codex)
+    local hermes_account=""
+    if [ "${INSTALL_HERMES_PLUGIN:-0}" -eq 1 ]; then
+        prompt_read "请输入与 Core 账号一对一绑定的既有 Hermes 账号" hermes_account "${cfg_username}"
     fi
-    chmod 0600 "${master_key_file}"
-
-    # 4. 生成 Agents 配置项
-    local agents_json="[]"
-    local agents_array=()
-
-    # DSH 配置项
-    if [ "${INSTALL_DSH_PLUGIN:-0}" -eq 1 ] || [ "${DETECTED_DSH:-0}" -eq 1 ]; then
-        local dsh_token
-        dsh_token=$(openssl rand -hex 16 2>/dev/null || date +%s%N | sha256sum | head -c 32)
-        export OAI_DSH_ADAPTER_TOKEN="${dsh_token}"
-        agents_array+=("{\"id\":\"dsh\",\"name\":\"DSH\",\"type\":\"dsh\",\"url\":\"http://127.0.0.1:8791\",\"tokenEnv\":\"OAI_DSH_ADAPTER_TOKEN\"}")
-        info "已为 DSH Session Adapter 配置鉴权环境变量 OAI_DSH_ADAPTER_TOKEN"
-    fi
-
-    # Hermes 配置项
-    if [ "${INSTALL_HERMES_PLUGIN:-0}" -eq 1 ] || [ "${DETECTED_HERMES:-0}" -eq 1 ]; then
-        local hermes_token
-        hermes_token=$(openssl rand -hex 16 2>/dev/null || date +%s%N | sha256sum | head -c 32)
-        export OAI_HERMES_SESSION_TOKEN="${hermes_token}"
-        agents_array+=("{\"id\":\"hermes\",\"name\":\"Hermes\",\"type\":\"hermes\",\"url\":\"http://127.0.0.1:8792\",\"tokenEnv\":\"OAI_HERMES_SESSION_TOKEN\",\"accounts\":{\"${cfg_username}\":\"${cfg_username}\"}}")
-        info "已为 Hermes Session Adapter 配置一对一账号映射与鉴权环境变量 OAI_HERMES_SESSION_TOKEN"
-    fi
-
-    # Codex 配置项
-    if [ "${INSTALL_CODEX_CONFIG:-0}" -eq 1 ]; then
-        agents_array+=("{\"id\":\"codex\",\"name\":\"Codex\",\"type\":\"codex\",\"command\":[\"codex\",\"app-server\"],\"codexHome\":\"runtime/codex\"}")
-    fi
-
-    # 拼装 agents json 列表
-    if [ ${#agents_array[@]} -gt 0 ]; then
-        local joined
-        joined=$(IFS=,; echo "${agents_array[*]}")
-        agents_json="[${joined}]"
-    fi
-
-    # 相对路径规范：相对于 config_file 所在目录
-    info "正在生成服务端配置文件: ${config_file}..."
-    cat > "${config_file}" << EOF
-{
-  "storageRoot": "runtime/accounts",
-  "masterKeyFile": "runtime/secrets/core-master-key",
-  "contractRoot": "gateway-contract",
-  "listen": {
-    "host": "${cfg_host}",
-    "port": ${cfg_port}
-  },
-  "agents": ${agents_json}
-}
-EOF
-    chmod 0600 "${config_file}" 2>/dev/null || true
-    success "配置文件生成完毕: ${config_file}"
-
-    # 5. 调用 oai account create 自动创建管理员账号
-    info "正在创建服务端本地用户: ${cfg_username}..."
-
-    OAI_INIT_CONFIG="${config_file}" \
-    OAI_INIT_ADMIN_USERNAME="${cfg_username}" \
-    OAI_INIT_ADMIN_PASSWORD="${cfg_password}" \
-    "${TARGET_DIR}/.venv/bin/python" -c '
-import os
-import sys
-from pathlib import Path
-from oai_core.server import load_config, create_core
-
-cfg_path = Path(os.environ["OAI_INIT_CONFIG"])
-username = os.environ["OAI_INIT_ADMIN_USERNAME"]
-password = os.environ["OAI_INIT_ADMIN_PASSWORD"]
-
-cfg = load_config(cfg_path)
-core = create_core(cfg)
-
-if core.account_exists(username):
-    print(f"[INFO] 用户 {username} 已存在，跳过新建。")
-else:
-    account = core.open_gateway_account(username)
-    try:
-        account.credentials.create_password(password)
-        print(f"[SUCCESS] 用户 {username} 创建成功！")
-    finally:
-        account.close()
-'
-}
-
-# 快捷启动包装与环境变量脚本
-generate_convenience_scripts() {
-    local start_script="${TARGET_DIR}/start-core.sh"
-    info "正在生成快捷启动脚本: ${start_script}..."
-
-    # 导出各 Agent 会话适配器可能使用的随机 Token，若环境变量未设置则提供默认回退
-    local env_exports=""
-    if [ -n "${OAI_DSH_ADAPTER_TOKEN:-}" ]; then
-        env_exports="${env_exports}export OAI_DSH_ADAPTER_TOKEN=\"\${OAI_DSH_ADAPTER_TOKEN:-${OAI_DSH_ADAPTER_TOKEN}}\"\n"
-    fi
-    if [ -n "${OAI_HERMES_SESSION_TOKEN:-}" ]; then
-        env_exports="${env_exports}export OAI_HERMES_SESSION_TOKEN=\"\${OAI_HERMES_SESSION_TOKEN:-${OAI_HERMES_SESSION_TOKEN}}\"\n"
-    fi
-
-    cat > "${start_script}" << EOF
-#!/usr/bin/env bash
-set -euo pipefail
-DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-cd "\${DIR}"
-
-if [ -f "\${DIR}/.venv/bin/activate" ]; then
-    # shellcheck disable=SC1091
-    source "\${DIR}/.venv/bin/activate"
-fi
-
-$(printf "%b" "${env_exports}")
-echo "=========================================="
-echo "正在启动 Open Android Intelligence Core..."
-echo "配置文件: \${DIR}/core.json"
-echo "=========================================="
-
-exec oai serve --config "\${DIR}/core.json"
-EOF
-    chmod +x "${start_script}"
-    success "快捷启动脚本已生成: ${start_script}"
+    local agents_csv
+    agents_csv=$(IFS=,; printf '%s' "${selected_agents[*]}")
+    local helper="${TARGET_DIR}/scripts/core_setup.py"
+    [ -f "$helper" ] || helper="${OAI_SETUP_SCRIPT_DIR}/core_setup.py"
+    OAI_INIT_ADMIN_PASSWORD="${cfg_password}" "${TARGET_DIR}/.venv/bin/python" "$helper" \
+        --root "${TARGET_DIR}" --host "${cfg_host}" --port "${cfg_port}" \
+        --username "${cfg_username}" --agents "$agents_csv" --hermes-account "$hermes_account"
+    success "配置与启动脚本已保存；既有账号、主密钥和路径保持可用。"
+    info "桥接凭据仅存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
 }
 
 # 打印最终完成信息
@@ -553,7 +427,6 @@ main() {
     detect_agents
     configure_agent_plugins
     guide_initial_configuration
-    generate_convenience_scripts
     show_completion_summary
 }
 

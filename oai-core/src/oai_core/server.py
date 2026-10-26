@@ -1,4 +1,4 @@
-"""Standalone Core listener using the pinned, shared Gateway security runtime."""
+"""Standalone Core listener and authoritative Gateway security runtime."""
 from __future__ import annotations
 
 import asyncio
@@ -14,11 +14,12 @@ from types import SimpleNamespace
 from typing import Any
 
 from aiohttp import web
-from open_android_intelligence_gateway.adapter import AccountPasswordVerifier, OpenAndroidPlatformAdapter, _sse_frame
-from open_android_intelligence_gateway.admin import HostApiCompatibility
-from open_android_intelligence_gateway.core import GatewayCore, GatewayError, _now
-from open_android_intelligence_gateway.http import _status, create_gateway_exposure
-from open_android_intelligence_gateway.local_keys import LocalMasterKeyStore, ensure_master_key_file
+from .gateway.verifier import AccountPasswordVerifier
+from .gateway.transport import GatewayTransport
+from .gateway.admin import HostApiCompatibility
+from .gateway.core import GatewayCore, GatewayError, _now
+from .gateway.http import _status, create_gateway_exposure
+from .gateway.local_keys import LocalMasterKeyStore, ensure_master_key_file
 
 from .auth import Authentication, Principal, raw_request
 from .device_service import DeviceService
@@ -50,10 +51,14 @@ def load_config(path: str | Path) -> dict[str, Any]:
     config = json.loads(source.read_text())
     if not isinstance(config, dict):
         raise ValueError("Core settings must be an object")
-    for name in ("storageRoot", "masterKeyFile", "contractRoot"):
+    for name in ("storageRoot", "masterKeyFile"):
         if not isinstance(config.get(name), str) or not config[name]:
             raise ValueError(f"Core settings require {name}")
         config[name] = str((source.parent / config[name]).resolve())
+    if config.get("contractRoot") is not None:
+        if not isinstance(config["contractRoot"], str) or not config["contractRoot"]:
+            raise ValueError("contractRoot must be a nonempty path when provided")
+        config["contractRoot"] = str((source.parent / config["contractRoot"]).resolve())
     for name in ("certFile", "keyFile"):
         if config.get("tls", {}).get(name):
             config["tls"][name] = str((source.parent / config["tls"][name]).resolve())
@@ -69,6 +74,8 @@ def create_core(config: dict[str, Any]) -> GatewayCore:
     key = Path(config["masterKeyFile"])
     if key.resolve().is_relative_to(storage.resolve()):
         raise ValueError("masterKeyFile must be outside storageRoot so backups exclude keys")
+    if not key.exists() and any(storage.glob("*/gateway.sqlite")):
+        raise ValueError("Existing Core accounts require their original master key; restore it before starting")
     key_store = LocalMasterKeyStore(ensure_master_key_file(key))
     key_store.validate()
     spki = config.get("tlsSpkiSha256")
@@ -77,7 +84,7 @@ def create_core(config: dict[str, Any]) -> GatewayCore:
         from cryptography.hazmat.primitives import serialization
         cert = x509.load_pem_x509_certificate(Path(config["tls"]["certFile"]).read_bytes())
         spki = "sha256:" + hashlib.sha256(cert.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).hexdigest()
-    core = OAICore(storage_root=storage, secret_store=key_store, contract_root=config["contractRoot"], command_catalog=(), tls_spki_sha256=spki)
+    core = OAICore(storage_root=storage, secret_store=key_store, contract_root=config.get("contractRoot"), command_catalog=(), tls_spki_sha256=spki)
     core.credential_verifier = AccountPasswordVerifier(core)
     # Fail at startup, rather than exposing a listener with unavailable contracts.
     core.contracts.core_schema_hash
@@ -98,33 +105,8 @@ async def errors(request: web.Request, handler: Any) -> web.StreamResponse:
         return web.json_response({"error": {"code": "SCHEMA_INVALID"}}, status=400)
 
 
-class CoreTransport(OpenAndroidPlatformAdapter):
-    """Reuse verified streaming/attachment transport without starting a host Gateway.
-
-    The host-specific message dispatcher is deliberately absent: native session
-    adapters are the only chat entrance. Device state remains the same Core store.
-    """
-
-    def __init__(self, services: Any):
-        # Reuse the verified wire handlers without constructing a Hermes host
-        # platform. A standalone Core must also start when the native SDK is
-        # installed but no Hermes plugin/platform has been registered.
-        self.services = services
-        self._running = False
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._event_subscribers: dict[str, set[asyncio.Queue]] = {}
-        self._maintenance_task: asyncio.Task | None = None
-        self._event_sink = self._publish_event
-
-    def _publish_event(self, account_id: str, event: Any) -> None:
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            return
-        try:
-            loop.call_soon_threadsafe(self._enqueue_frame, account_id, _sse_frame(event))
-        except RuntimeError:
-            # Committed events remain recoverable through the account cursor.
-            return
+class CoreTransport(GatewayTransport):
+    """Public device routes over the host-independent transport."""
 
     async def dispatch(self, request: web.Request) -> web.StreamResponse:
         path = request.path

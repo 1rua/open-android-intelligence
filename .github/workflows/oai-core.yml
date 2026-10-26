@@ -5,6 +5,10 @@ on:
     branches: [dev, main]
     paths:
       - 'oai-core/**'
+      - 'scripts/install.sh'
+      - 'scripts/setup.sh'
+      - 'scripts/core_setup.py'
+      - 'tests/test_install_script.py'
       - 'integrations/dsh-session-adapter/**'
       - 'integrations/hermes-session-adapter/**'
       - 'gateway-contract/**'
@@ -14,8 +18,13 @@ on:
     branches: [dev, main]
     paths:
       - 'oai-core/**'
+      - 'scripts/install.sh'
+      - 'scripts/setup.sh'
+      - 'scripts/core_setup.py'
+      - 'tests/test_install_script.py'
       - 'integrations/dsh-session-adapter/**'
       - 'integrations/hermes-session-adapter/**'
+      - 'gateway-contract/**'
       - 'apps/android/**'
       - '.github/workflows/oai-core.yml'
   workflow_dispatch:
@@ -23,26 +32,68 @@ on:
 jobs:
   core:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build standalone wheel and source distribution
+        run: |
+          python -m pip install build
+          python -m build oai-core --outdir "$RUNNER_TEMP/core-dist"
+      - name: Install only Core and its declared runtime dependencies
+        run: |
+          python -m venv "$RUNNER_TEMP/core-clean"
+          "$RUNNER_TEMP/core-clean/bin/python" -m pip install "$RUNNER_TEMP"/core-dist/*.whl
+          "$RUNNER_TEMP/core-clean/bin/python" -m pip check
+      - name: Verify installed CLI and signed device flow without Hermes
+        run: |
+          env -u PYTHONPATH -u HERMES_SDK_ROOT "$RUNNER_TEMP/core-clean/bin/python" oai-core/tools/verify_distribution.py
+          state=$(mktemp -d "$RUNNER_TEMP/core-independent.XXXXXX")
+          env -u PYTHONPATH -u HERMES_SDK_ROOT "$RUNNER_TEMP/core-clean/bin/python" \
+            oai-core/tests/independent_core_contract.py "$state"
+      - name: Core protocol, security, CLI, MCP and installer regressions
+        run: |
+          "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio
+          env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
+            oai-core/tests tests/test_install_script.py -q \
+            --ignore=oai-core/tests/test_hermes.py \
+            --ignore=oai-core/tests/test_hermes_native.py
+          bash -n scripts/install.sh
+          bash -n scripts/setup.sh
+
+  hermes-native:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.18.0'
-      - name: Install pinned Core and test dependencies
-        run: python -m pip install -e ./oai-core pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
+      - name: Install optional Session Adapter and native test dependencies
+        run: >-
+          python -m pip install -e ./oai-core -e ./integrations/hermes-session-adapter
+          pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
       - name: Check out the pinned native Hermes SDK
         uses: actions/checkout@v4
         with:
           repository: NousResearch/hermes-agent
           ref: 75b083e9399115b12513385252811f09c3503c90
           path: .toolchains/hermes-native-sdk
-      - name: Core, CLI, MCP, isolation and native adapter regressions
+      - name: Native SessionStore, account isolation and lifecycle contracts
         env:
           HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
-        run: python -m pytest oai-core/tests -q
+        run: python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py -q
+
+  dsh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
       - name: DSH native session bridge syntax
         run: node --check integrations/dsh-session-adapter/index.js
       - name: DSH native session bridge regressions
