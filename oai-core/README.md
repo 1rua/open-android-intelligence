@@ -12,6 +12,21 @@ Android Platform Kernel、`.alp` 签名、WASM 沙箱与本地确认机制保持
 
 ## 安装与启动
 
+### 一键安装脚本（推荐）
+
+使用 curl 命令一键完成依赖检查、环境安装、已存在 Agent 适配器探测与初始化配置向导：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+```
+
+或在仓库根目录直接运行：
+```sh
+./scripts/install.sh
+```
+
+### 手动安装与启动
+
 Python 3.11+。在仓库根目录安装，契约来自本仓库的 `gateway-contract`：
 
 ```sh

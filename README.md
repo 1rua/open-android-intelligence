@@ -182,8 +182,18 @@ Hermes 保持账号隔离；显式配置的 DSH/Codex 原生会话在部署内�
 
 **推荐方案（全新部署）**：部署 [OAI Core](oai-core/README.md)，一个服务地址搞定手机连接与多 Agent 会话直通。
 
+#### 🚀 极速一键安装 / 更新（推荐）
+
+通过 `curl` 运行自动化安装向导，脚本将自动检测系统依赖、安装或更新 OAI Core、探测本机 Agent（如 Hermes、DSH、Codex）并询问一键安装其适配器插件，最后引导完成账号密码与端口配置：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+```
+
+> **提示**：若已克隆本仓库，也可在根目录直接运行 `./scripts/install.sh` 进行就地安装与交互式配置。
+
 <details open>
-<summary><b>启动 OAI Core 服务端（推荐，点击收起）</b></summary>
+<summary><b>手动安装 OAI Core 服务端（点击收起）</b></summary>
 
 需 Python 3.11+。在仓库根目录安装与启动：
 

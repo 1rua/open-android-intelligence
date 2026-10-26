@@ -180,8 +180,18 @@ Go to the project [Releases Page](https://github.com/1rua/open-android-intellige
 
 **Recommended (New Deployments)**: Deploy [OAI Core](oai-core/README.md) to serve both phone device management and multi-Agent native session streaming from a single address.
 
+#### 🚀 Fast One-Click Install / Update (Recommended)
+
+Run the automated setup wizard via `curl`. It checks prerequisites, installs or updates OAI Core, detects local Agents (Hermes, DSH, Codex) to prompt one-click adapter installation, and guides you through initial credential and port configuration:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+```
+
+> **Tip**: If you have already cloned this repository, you can run `./scripts/install.sh` directly in the root directory.
+
 <details open>
-<summary><b>Start OAI Core Service (Recommended, click to collapse)</b></summary>
+<summary><b>Manual OAI Core Installation (Click to collapse)</b></summary>
 
 Requires Python 3.11+. Install and launch from the repository root:
 
