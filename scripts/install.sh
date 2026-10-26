@@ -346,12 +346,12 @@ guide_initial_configuration() {
     printf "\n"
 
     # 1. 监听端口与地址
-    local default_host="127.0.0.1"
-    local default_port="8045"
+    local default_host="${CFG_HOST:-0.0.0.0}"
+    local default_port="${CFG_PORT:-11451}"
     local cfg_host=""
     local cfg_port=""
 
-    prompt_read "请输入 OAI Core 监听主机地址 (内网/本机使用 127.0.0.1，局域网共享使用 0.0.0.0)" cfg_host "${default_host}"
+    prompt_read "请输入 OAI Core 监听主机地址 (局域网共享使用 0.0.0.0，仅本机使用 127.0.0.1)" cfg_host "${default_host}"
     prompt_read "请输入 OAI Core 监听端口" cfg_port "${default_port}"
 
     # 2. 账号与密码设置
@@ -393,6 +393,55 @@ guide_initial_configuration() {
     info "桥接凭据仅存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
 }
 
+configure_autostart() {
+    local answer=""
+    prompt_read "是否配置开机自启 systemd user 服务？(y/n)" answer "y"
+    if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+        # 写入 systemd user service
+        local user_service_dir="${HOME}/.config/systemd/user"
+        mkdir -p "${user_service_dir}"
+        local service_file="${user_service_dir}/oai-core.service"
+        cat <<EOF > "${service_file}"
+[Unit]
+Description=Open Android Intelligence Core Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${TARGET_DIR}
+ExecStart=${TARGET_DIR}/start-core.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+
+        # 写入 XDG 桌面会话自启项，兼顾所有桌面环境登录自启
+        local autostart_dir="${HOME}/.config/autostart"
+        mkdir -p "${autostart_dir}"
+        cat <<EOF > "${autostart_dir}/oai-core.desktop"
+[Desktop Entry]
+Type=Application
+Name=OAI Core
+Exec=${TARGET_DIR}/start-core.sh
+Terminal=false
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Comment=Open Android Intelligence Core Service
+EOF
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --user daemon-reload 2>/dev/null || true
+            systemctl --user enable oai-core.service 2>/dev/null || true
+            systemctl --user restart oai-core.service 2>/dev/null || true
+            success "已配置并启用 systemd user 自启服务: oai-core.service"
+        else
+            info "已生成服务单元 ${service_file}（未检测到可用 systemctl 命令）"
+        fi
+    fi
+}
+
 # 打印最终完成信息
 show_completion_summary() {
     printf "\n"
@@ -409,7 +458,7 @@ show_completion_summary() {
     printf "     ${CYAN}oai serve --config core.json${NC}\n\n"
 
     printf "${BOLD}手机连接说明：${NC}\n"
-    printf "  - 在 Android App 登录页中填入服务端地址，如：${CYAN}http://<本机IP>:8045${NC}\n"
+    printf "  - 在 Android App 登录页中填入服务端地址，如：${CYAN}http://<本机IP>:11451${NC}\n"
     printf "  - 使用向导中配置的账号与密码登录并完成配对。\n\n"
 
     printf "${BOLD}日常管理命令：${NC}\n"
@@ -427,6 +476,7 @@ main() {
     detect_agents
     configure_agent_plugins
     guide_initial_configuration
+    configure_autostart
     show_completion_summary
 }
 

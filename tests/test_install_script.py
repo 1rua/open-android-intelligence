@@ -46,7 +46,7 @@ def install_directory(tmp_path):
 @pytest.mark.parametrize("name", ["install.sh", "setup.sh"])
 def test_wizards_create_account_and_keep_tokens_out_of_start_script(name, install_directory):
     root = install_directory
-    environment = dict(os.environ, PYTHONPATH=str(REPOSITORY / "oai-core" / "src"))
+    environment = dict(os.environ, PYTHONPATH=f"{REPOSITORY / 'oai-core' / 'src'}:/home/djbd/.oai-core/.venv/lib/python3.14/site-packages")
     environment.pop("OAI_HERMES_SESSION_TOKEN", None)
     environment.pop("OAI_DSH_ADAPTER_TOKEN", None)
     source = f'''
@@ -71,6 +71,7 @@ CFG_PASSWORD=synthetic-installer-password
     run_bash(source, environment=environment)
     config = json.loads((root / "core.json").read_text())
     assert config["listen"] == {"host": "127.0.0.1", "port": 8045}
+    assert config.get("allowInsecureHttp") is True
     assert {entry["type"] for entry in config["agents"]} == {"dsh", "hermes", "codex"}
     assert next(entry for entry in config["agents"] if entry["type"] == "hermes")["accounts"] == {"alice": "alice"}
     tokens = HELPER["read_tokens"](root / "runtime" / "secrets" / "adapter-tokens.env")

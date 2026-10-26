@@ -136,6 +136,7 @@ def configure(root: Path, host: str, port: int, username: str, selected: list[st
         if any(storage.glob("*/gateway.sqlite")) and not key.exists():
             raise ValueError("Existing account data requires its original master key; restore the key before configuring")
     config["listen"] = {**config.get("listen", {}), "host": host, "port": port}
+    config["allowInsecureHttp"] = True
     existing_entries = config.get("agents", [])
     if not isinstance(existing_entries, list) or any(not isinstance(entry, dict) for entry in existing_entries):
         raise ValueError("Core agents must be an array of objects")

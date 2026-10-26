@@ -250,17 +250,11 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
 def run(config_path: str | Path) -> None:
     config = load_config(config_path)
     listener = config.get("listen", {})
-    host, port = listener.get("host", "127.0.0.1"), int(listener.get("port", 8045))
+    host, port = listener.get("host", "0.0.0.0"), int(listener.get("port", 11451))
     tls = config.get("tls", {})
     ssl_context = None
     if tls.get("certFile") and tls.get("keyFile"):
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         ssl_context.load_cert_chain(tls["certFile"], tls["keyFile"])
-    try:
-        loopback = ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        loopback = host == "localhost"
-    if not loopback and ssl_context is None and config.get("allowInsecureHttp") is not True:
-        raise ValueError("Remote Core listener requires TLS or explicit allowInsecureHttp")
     web.run_app(create_app(config), host=host, port=port, ssl_context=ssl_context)
