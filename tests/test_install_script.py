@@ -112,4 +112,64 @@ def test_install_script_offline_and_update(tmp_path):
     assert "mock git fetch origin dev" in result.stdout
     assert "mock git pull origin dev" in result.stdout
 
+def test_setup_script_standalone(tmp_path):
+    setup_script = Path(__file__).resolve().parent.parent / "scripts" / "setup.sh"
+    repo_root = Path(__file__).resolve().parent.parent
+
+    assert setup_script.exists()
+    syntax_res = subprocess.run(["bash", "-n", str(setup_script)], capture_output=True, text=True)
+    assert syntax_res.returncode == 0
+
+    test_bash_code = f"""
+    set -euo pipefail
+    source "{setup_script}"
+    TARGET_DIR="{tmp_path}"
+    mkdir -p "$TARGET_DIR/gateway-contract"
+    cp -r "{repo_root}/gateway-contract"/* "$TARGET_DIR/gateway-contract/"
+    
+    prompt_read() {{
+        local var_name="$2"
+        local default_val="${{3:-}}"
+        eval "$var_name=\\"$default_val\\""
+    }}
+    prompt_password() {{
+        local var_name="$2"
+        eval "$var_name=\\"mypassword456\\""
+    }}
+
+    mkdir -p "$TARGET_DIR/.venv/bin"
+    cat > "$TARGET_DIR/.venv/bin/python" << 'EOF'
+#!/usr/bin/env bash
+PYTHONPATH="{repo_root}/oai-core/src:/home/djbd/.hermes/plugins/open-android-intelligence-gateway:{repo_root}/gateway-contract" /home/djbd/.hermes/hermes-agent/venv/bin/python "$@"
+EOF
+    chmod +x "$TARGET_DIR/.venv/bin/python"
+
+    resolve_paths
+    TARGET_DIR="{tmp_path}"
+    CONFIG_FILE="$TARGET_DIR/core.json"
+    VENV_PYTHON="$TARGET_DIR/.venv/bin/python"
+
+    INSTALL_HERMES=1
+    INSTALL_DSH=1
+    INSTALL_CODEX=1
+    CFG_HOST="0.0.0.0"
+    CFG_PORT="9000"
+    CFG_USERNAME="bob"
+    CFG_PASSWORD="mypassword456"
+
+    save_configuration_and_account
+    """
+    result = subprocess.run(["bash", "-c", test_bash_code], capture_output=True, text=True)
+    assert result.returncode == 0, f"setup failed: {result.stderr}\nstdout: {result.stdout}"
+
+    config_file = tmp_path / "core.json"
+    assert config_file.exists()
+    import json
+    cfg = json.loads(config_file.read_text())
+    assert cfg["listen"]["host"] == "0.0.0.0"
+    assert cfg["listen"]["port"] == 9000
+    assert any(a["type"] == "hermes" and a["accounts"]["bob"] == "bob" for a in cfg["agents"])
+    assert any(a["type"] == "dsh" for a in cfg["agents"])
+
+
 
