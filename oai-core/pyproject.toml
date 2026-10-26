@@ -12,6 +12,7 @@ dependencies = [
   "mcp>=1.20,<2",
   "jsonschema>=4.23,<5",
   "cryptography>=42",
+  "yarl>=1.17,<2",
 ]
 
 [project.scripts]

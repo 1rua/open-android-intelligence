@@ -5,8 +5,11 @@ Gateway's account binding and native HistoryPort remain the authority.
 """
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
 from urllib.parse import quote
+
+from yarl import URL
 
 from ..sessions import AdapterError
 from .dsh import DshSessionAdapter
@@ -24,6 +27,21 @@ class HermesRemoteSessionAdapter(DshSessionAdapter):
 
     def descriptor(self) -> dict[str, Any]:
         return {**super().descriptor(), "kind": "hermes", "sessionScope": "account"}
+
+    @property
+    def account_scope(self) -> tuple[str, str, int]:
+        """One configured native host, shared by all its Core Agent aliases."""
+        # Use the same IDNA and URL rules as aiohttp's actual request target.
+        origin = URL(self.base_url)
+        host = origin.raw_host.rstrip(".")
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            if host == "localhost":
+                host = "loopback"
+        else:
+            host = "loopback" if address.is_loopback else address.compressed
+        return origin.scheme, host, origin.port or (443 if origin.scheme == "https" else 80)
 
     def _headers(self, principal: Any) -> dict[str, str]:
         account_id = self.accounts.get(getattr(principal, "account_id", None))

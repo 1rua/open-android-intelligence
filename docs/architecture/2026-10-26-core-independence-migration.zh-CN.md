@@ -42,7 +42,7 @@
 | `device_tools.py` 中 Hermes 工具注册、trusted turn 和 host hooks | 宿主适配 | 不作为 Core 设备运行前提。Agent 设备操作使用 Core CLI/MCP/API，桥 Token 仅认证内部会话。 |
 | `contract_assets.py` 的源码 pin、缓存与下载逻辑 | 历史安装兼容 | Core 构建从仓库唯一 `gateway-contract` 来源打包所需资产；运行时优先显式路径或随包资产，不能通过下载旧包恢复依赖。 |
 
-Core 直接声明 `aiohttp`、`mcp`、`jsonschema` 和 `cryptography`。标准库的 SQLite、哈希、文件路径与异步原语不需要额外 Python 包。公开 Gateway Protocol 的 Schema、共享向量、签名 domain、Core Schema Hash 算法不因包命名空间变更而改变。共享向量里的历史 `implementation: hermes-python` 标签是兼容元数据，不代表 Core 运行了 Hermes 宿主。
+Core 直接声明 `aiohttp`、`mcp`、`jsonschema`、`cryptography` 和 `yarl`。标准库的 SQLite、哈希、文件路径与异步原语不需要额外 Python 包。公开 Gateway Protocol 的 Schema、共享向量、签名 domain、Core Schema Hash 算法不因包命名空间变更而改变。共享向量里的历史 `implementation: hermes-python` 标签是兼容元数据，不代表 Core 运行了 Hermes 宿主。
 
 ## 数据保留与切换约束
 

@@ -9,9 +9,10 @@
 
 | 环境及入口 | 实际结果 |
 | --- | --- |
-| Python 3.14，当前 Core、可选 Adapter、固定真实 Hermes SDK，`pytest oai-core/tests tests/test_install_script.py -q` | 227 passed，32.78 秒 |
-| Python 3.11，安装 Core wheel 后，`pytest oai-core/tests tests/test_install_script.py`，排除两个 Hermes 文件 | 218 passed，34.04 秒 |
-| 固定 Hermes SDK `75b083e9399115b12513385252811f09c3503c90`，两个 Hermes 测试文件 | 9 passed；含真实插件加载器、SessionStore/SessionDB 和旧绑定兼容 |
+| Python 3.14，当前 Core、可选 Adapter、固定真实 Hermes SDK，`pytest oai-core/tests tests/test_install_script.py -q` | 238 passed，29.59 秒 |
+| Python 3.11，安装 Core wheel 后，`pytest oai-core/tests tests/test_install_script.py`，排除两个 Hermes 文件 | 227 passed，29.91 秒 |
+| 固定 Hermes SDK `75b083e9399115b12513385252811f09c3503c90`，两个 Hermes 测试文件 | 11 passed；含真实插件加载器、SessionStore/SessionDB 和旧绑定兼容 |
+| Python 3.11，Core、可选 Adapter、Hermes 入口三个 wheel，固定 SDK 原生测试 | 11 passed，4.02 秒；子进程沿用实际安装路径 |
 | Hermes 轻量入口仓 `pytest tests -q` 及 manifest 检查 | 5 passed；manifest passed |
 | Node 24.18.0，DSH `adapter.test.js` | 16 passed |
 | Shell 语法、两份 workflow YAML 解析、变更文档本地链接及 diff 空白检查 | 通过 |
@@ -30,7 +31,7 @@ pytest、Hermes SDK、Hermes 旧包或可选 Adapter 时，依次完成：
 3. [independent_core_contract.py](../../oai-core/tests/independent_core_contract.py) 在导入前阻断旧插件及 Hermes SDK，完成真实 HTTP 协商、密码登录、Ed25519 签名、能力发布、Core Token、请求提交、Claim、Result、ACK。导入拦截器没有记录任何禁止导入尝试。
 
 本地所测 Core wheel SHA-256 为
-`41f85e7d86202246a31ef5770d9245877fc71f1fc68cc93454d684b6caac68d5`。
+`884f02a3da0e97e35e6a1e20693c0224d28fc1d8a316b6056b39a14f99ae29e9`。
 Core Schema Hash 为
 `sha256:032f580246eb4a214624bded717819b4d5a76191208207edc9e5a4607f5c4d23`。
 构建过程未修改仓库 `gateway-contract/`，没有引入新的公共设备协议版本。
@@ -53,3 +54,10 @@ Hermes 测试保留旧平台来源、会话 ID、历史与压缩链；验证终�
 本记录不表示已经切换用户现有服务。固定 SDK 测试使用真实原生存储和生命周期实现，但消息处理器返回合成文本，
 没有调用真实模型；DSH/Codex 的自动化也不能替代生产宿主联调。尚需按部署文档验证现有 Hermes 服务、模型回复、
 Android 真机连接、本地插件授权、敏感操作确认和断线恢复。远程 CI 与独立审查应以 PR 中对应提交的实际结果为准。
+
+## 推送后独立审查与修复
+
+对首轮提交 `eb6798dabbe4acbe5a45bbfe1dce83131b3513cd` 分别进行了[规范审查](2026-10-26-core-independence-standards-review.zh-CN.md)、[规格审查](2026-10-26-core-independence-spec-review.zh-CN.md)和[Core 安全审查](2026-10-26-core-independence-security-review.zh-CN.md)。
+发现并修复两项 P1：同一 Hermes 宿主的多个 Agent 入口可能形成跨账号共享映射；会话存储未知提交后的重连可能丢失数据库独占。
+两项均由原发现者独立复验关闭，新增 9 项等价 URL/账号映射和 2 项故障恢复回归；上表为修复后的完整结果。
+原报告保留首轮发现，修复验证绑定报告中源码指纹及后续修复提交，不把首轮提交视为可合并状态。

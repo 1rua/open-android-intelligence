@@ -27,7 +27,7 @@ python -m venv .venv-clean
 
 wheel 与源码分发包中的协议资产均由构建过程从仓根 `gateway-contract` 生成。
 不依赖网络下载旧 Gateway 包，也不维护另一份可独立修改的协议源码。
-`jsonschema`、`cryptography`、`aiohttp` 与 `mcp` 是 Core 直接声明的运行依赖。
+`jsonschema`、`cryptography`、`aiohttp`、`mcp` 与 `yarl` 是 Core 直接声明的运行依赖。同一 Hermes 会话桥的多入口配置必须保持全局一对一账号映射；服务启动会按与实际 HTTP 客户端相同的 URL/IDNA 规则核验，冲突配置拒绝注册。
 `open-android-intelligence-hermes-gateway` 和 Hermes SDK 均不在 Core 的依赖图中。
 
 在部署目录创建 `core.json`：

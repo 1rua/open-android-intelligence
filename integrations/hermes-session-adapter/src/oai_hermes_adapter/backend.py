@@ -24,17 +24,35 @@ class LockedDatabase:
     """Serialize SQL on the persistent account connection across host threads."""
     def __init__(self, connection, lock):
         self.connection, self.lock = connection, lock
+        self.failed = False
+
+    def _assert_usable(self):
+        if self.failed:
+            raise GatewayError("HOST_INCOMPATIBLE", {"reason": "SESSION_STORAGE_RECOVERY_REQUIRED"})
+
+    def close(self):
+        with self.lock:
+            self.failed = True
+            try:
+                self.connection.close()
+            except sqlite3.Error:
+                # A failed recovery may already have closed the connection.
+                # The guard remains active even if SQLite cannot close again.
+                pass
 
     def execute(self, *args, **kwargs):
         with self.lock:
+            self._assert_usable()
             return self.connection.execute(*args, **kwargs)
 
     def executemany(self, *args, **kwargs):
         with self.lock:
+            self._assert_usable()
             return self.connection.executemany(*args, **kwargs)
 
     def executescript(self, *args, **kwargs):
         with self.lock:
+            self._assert_usable()
             return self.connection.executescript(*args, **kwargs)
 
     def __getattr__(self, name):
@@ -52,6 +70,32 @@ class SessionStore(AccountStore):
         with self.lock:
             with super().transaction(*args, **kwargs) as database:
                 yield database
+
+    def _reopen_after_unknown(self):
+        # Core's device Store may reconnect after uncertain commits. A session
+        # Store must retain its exact exclusive connection: closing it would
+        # permit a legacy writer to enter before a replacement acquired a lock.
+        with self.lock:
+            connection = getattr(self.database, "connection", self.database)
+            try:
+                connection.rollback()
+                mode = connection.execute("PRAGMA locking_mode").fetchone()[0]
+                if mode.lower() != "exclusive":
+                    raise sqlite3.OperationalError("exclusive session ownership lost")
+                connection.execute("BEGIN EXCLUSIVE")
+                connection.execute("COMMIT")
+                self._transaction_depth = 0
+            except Exception as exc:
+                # No ordinary connection is substituted. The existing account
+                # lease and every future lease fail closed until reactivation.
+                if isinstance(self.database, LockedDatabase):
+                    self.database.close()
+                else:
+                    try:
+                        connection.close()
+                    except sqlite3.Error:
+                        pass
+                raise GatewayError("HOST_INCOMPATIBLE", {"reason": "SESSION_STORAGE_RECOVERY_REQUIRED"}) from exc
 
 
 class SessionAccount:
@@ -130,6 +174,7 @@ class SessionBackend:
             if account_id not in self._stores:
                 raise GatewayError("HOST_INCOMPATIBLE", {"reason": "SESSION_BACKEND_NOT_CONNECTED"})
             shared = self._stores[account_id]
+            shared.store.database._assert_usable()
             shared.conversations.history_reader = self.history_reader
             return SessionAccount(shared)
 
@@ -156,4 +201,4 @@ class SessionBackend:
         # the backend lock before waiting for that account, avoiding lock inversion.
         for shared in stores:
             with shared.store.lock:
-                shared.store.database.connection.close()
+                shared.store.database.close()
