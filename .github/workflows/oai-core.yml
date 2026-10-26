@@ -1,0 +1,83 @@
+name: OAI Core and Session Adapters
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'oai-core/**'
+      - 'integrations/dsh-session-adapter/**'
+      - 'integrations/hermes-session-adapter/**'
+      - 'gateway-contract/**'
+      - 'apps/android/**'
+      - '.github/workflows/oai-core.yml'
+  push:
+    branches: [dev, main]
+    paths:
+      - 'oai-core/**'
+      - 'integrations/dsh-session-adapter/**'
+      - 'integrations/hermes-session-adapter/**'
+      - 'apps/android/**'
+      - '.github/workflows/oai-core.yml'
+  workflow_dispatch:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      - name: Install pinned Core and test dependencies
+        run: python -m pip install -e ./oai-core pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
+      - name: Check out the pinned native Hermes SDK
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 75b083e9399115b12513385252811f09c3503c90
+          path: .toolchains/hermes-native-sdk
+      - name: Core, CLI, MCP, isolation and native adapter regressions
+        env:
+          HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
+        run: python -m pytest oai-core/tests -q
+      - name: DSH native session bridge syntax
+        run: node --check integrations/dsh-session-adapter/index.js
+      - name: DSH native session bridge regressions
+        run: |
+          npm ci
+          npx vitest run integrations/dsh-session-adapter/adapter.test.js
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install Android platforms
+        run: sdkmanager 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.12'
+      - name: Core connection, Agent sessions, platform recovery and transport regressions
+        working-directory: apps/android
+        run: >-
+          gradle --no-daemon --max-workers=2
+          :gateway-client:testDebugUnitTest
+          :app:compileFullDebugKotlin
+          :app:testFullDebugUnitTest
+          --tests '*NativeAgentsControllerTest'
+          --tests '*NativeAgentBackgroundWorkTest'
+          --tests '*GatewayTutorialsTest'
+          --tests '*GatewaySessionRefreshTest'
+          --tests '*GatewayWorkbenchLogoutTest'
+          --tests '*DeviceExecutionRecoveryTest'
+          --tests '*PlatformSnapshotRecoveryTest'

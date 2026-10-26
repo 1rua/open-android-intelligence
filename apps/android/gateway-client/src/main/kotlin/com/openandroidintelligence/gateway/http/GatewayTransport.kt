@@ -50,11 +50,14 @@ class GatewayTransport(
             connection.disconnect()
         }
         try {
-            require(request.body.isEmpty() && request.streamBody == null && request.method == "GET") {
-                "RESPONSE_STREAM_REQUIRES_READ_REQUEST"
+            require(request.streamBody == null) { "RESPONSE_STREAM_REQUIRES_BUFFERED_REQUEST" }
+            if (request.body.isNotEmpty()) {
+                connection.setFixedLengthStreamingMode(request.body.size)
+                connection.doOutput = true
             }
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
+            if (request.body.isNotEmpty()) connection.outputStream.use { it.write(request.body) }
             val status = connection.responseCode
             val headers = RawHeaders.validate(readHeaders(connection))
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream

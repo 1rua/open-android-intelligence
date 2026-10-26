@@ -170,7 +170,7 @@ fun GatewayLoginScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
             Text(
-                text = "连接你的 Agent Gateway",
+                text = "连接 OAI Core，发现已接入的 Agent",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -199,7 +199,7 @@ fun GatewayLoginScreen(
                         },placeholder="粘贴 oai://pair?… 邀请内容")
                     }
                     FormInputField(
-                        label = "网关地址",
+                        label = "OAI Core 服务端地址",
                         value = url,
                         onValueChange = { input ->
                             var cleaned = input
@@ -287,7 +287,7 @@ fun GatewayLoginScreen(
                             Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
                             Text("正在连接…", style = MaterialTheme.typography.labelLarge)
                         } else {
-                            Text("连接至网关", style = MaterialTheme.typography.labelLarge)
+                            Text("登录 OAI Core", style = MaterialTheme.typography.labelLarge)
                         }
                     }
                 }

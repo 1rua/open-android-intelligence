@@ -45,6 +45,14 @@
 
 ## 30-Second Overview
 
+`dev` adds **OAI Core + CLI/MCP + Agent Adapters + Android App + Device Plugins**.
+The phone connects to one Core address; Core owns device authentication, authorization,
+and request scheduling. See [OAI Core](oai-core/README.md) for deployment and commands,
+and the [migration and rollback plan](docs/plans/2026-10-25-unified-core-migration.zh-CN.md).
+Hermes preserves account isolation. Explicitly connected DSH/Codex native sessions are
+shared within the deployment; device permissions remain account scoped. The standalone
+Gateway instructions below remain for existing deployments. OpenClaw is unchanged.
+
 > [!TIP]
 > ### Open Android Intelligence (OAI) is **a unified Android client for connecting multiple mainstream Agents** (such as Hermes, OpenClaw, DSH, etc.).
 >

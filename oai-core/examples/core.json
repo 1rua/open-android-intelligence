@@ -1,0 +1,7 @@
+{
+  "storageRoot": "../runtime/accounts",
+  "masterKeyFile": "../runtime/secrets/core-master-key",
+  "contractRoot": "../../gateway-contract",
+  "listen": { "host": "127.0.0.1", "port": 8045 },
+  "agents": []
+}

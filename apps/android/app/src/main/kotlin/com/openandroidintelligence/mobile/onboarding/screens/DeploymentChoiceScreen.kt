@@ -99,7 +99,7 @@ fun DeploymentChoiceScreen(
                 )
             }
             Text(
-                text = "GATEWAY SETUP",
+                text = "CORE SETUP",
                 style = MaterialTheme.typography.labelSmall,
                 letterSpacing = 2.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -134,7 +134,7 @@ fun DeploymentChoiceScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
             Text(
-                text = "Gateway\n部署好了吗？",
+                text = "OAI Core\n部署好了吗？",
                 fontSize = 30.sp,
                 lineHeight = 34.sp,
                 fontWeight = FontWeight.ExtraBold,
@@ -143,7 +143,7 @@ fun DeploymentChoiceScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
             Text(
-                text = "OAI 需要一个运行在你设备上的 Agent 宿主。若已完成部署，直接进入登录。",
+                text = "手机只连接一个 OAI Core，由 Core 接入不同 Agent。若已完成部署，直接进入登录。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -152,7 +152,7 @@ fun DeploymentChoiceScreen(
             ChoiceCard(
                 index = "A",
                 title = "我已部署",
-                description = "已经装好 Gateway 插件并创建账号。直接连接你的 Gateway。",
+                description = "已启动 OAI Core 并创建 OAI 账号。使用同一个服务端地址登录。",
                 trailing = "进入登录",
                 accent = true,
                 onReveal = onAlreadyDeployed,
@@ -162,7 +162,7 @@ fun DeploymentChoiceScreen(
             ChoiceCard(
                 index = "B",
                 title = "我还未部署",
-                description = "查看 Hermes、OpenClaw 与 DSH 的分步部署教程，含可复制的安装命令。",
+                description = "查看 OAI Core 安装、账号创建与 oai serve 启动步骤，也保留旧 OpenClaw 兼容指南。",
                 trailing = "查看教程",
                 accent = false,
                 onClick = onNotDeployed,
@@ -194,7 +194,7 @@ fun DeploymentChoiceScreen(
                     )
                     Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
                     Text(
-                        text = "完成引导不代表 Gateway 已连接。登录成功只说明凭据有效，" +
+                        text = "完成引导不代表 OAI Core 已连接。登录成功只说明凭据有效，" +
                             "真实连接状态始终以「未连接 / 已连接」指示为准。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

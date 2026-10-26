@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-android-intelligence-core"
+version = "0.1.0"
+description = "One OAI Core service, Android device scheduler, CLI and MCP entrypoint"
+requires-python = ">=3.11"
+dependencies = [
+  "aiohttp>=3.11,<4",
+  "mcp>=1.20,<2",
+  "open-android-intelligence-hermes-gateway @ git+https://github.com/1rua/hermes-gateway-plugin.git@b64dda00a0de9ff1a95a375dcf92f62b5a1027b3",
+]
+
+[project.scripts]
+oai = "oai_core.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -13,6 +13,8 @@ const val GENERATION_CANCEL_FEATURE = "generation-cancel-v1"
 const val CONVERSATION_MANAGEMENT_FEATURE = "conversation-management-v1"
 /** Optional display metadata; does not change the closed v2 negotiation schema or identity checks. */
 const val AGENT_NAME_HEADER = "X-Open-Android-Intelligence-Agent-Name"
+/** Explicit Core extension marker; legacy Gateways never receive discovery probes. */
+const val NATIVE_AGENT_SESSIONS_HEADER = "X-OAI-Agent-Sessions"
 
 /**
  * 本客户端声明实现、并随协商请求发出的对话面能力位。
@@ -45,6 +47,7 @@ data class NegotiationResult(
     /** Optional pre-auth refresh result replay, negotiated outside the closed JSON schema. */
     val refreshReplaySupported: Boolean = false,
     val agentName: String? = null,
+    val nativeAgentSessions: Boolean = false,
 ) {
     /**
      * 双方都同意可用的对话面能力：客户端声明过的 ∩ 网关确实同意的。
@@ -201,6 +204,9 @@ class NegotiationClient(
                 com.openandroidintelligence.gateway.http.RawHeaders.validate(response.headers), REFRESH_REPLAY_HEADER,
             ) == "v1",
             agentName = advertisedAgentName(response.headers),
+            nativeAgentSessions = com.openandroidintelligence.gateway.http.RawHeaders.single(
+                response.headers, NATIVE_AGENT_SESSIONS_HEADER,
+            ) == "1",
         )
     }
 

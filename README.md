@@ -45,6 +45,13 @@
 
 ## 30 秒看懂
 
+`dev` 新增统一部署入口：**OAI Core + CLI/MCP + Agent Adapters + Android App + Device Plugins**。
+手机只连接 Core 的一个地址，设备认证、授权和请求调度由 Core 统一处理。
+部署与命令见 [OAI Core](oai-core/README.md)，协议兼容、分阶段迁移与回滚见
+[迁移方案](docs/plans/2026-10-25-unified-core-migration.zh-CN.md)。
+Hermes 保持账号隔离；明确接入的 DSH/Codex 原生会话为部署内共享空间，设备授权仍按账号隔离。
+下文独立 Gateway 的安装说明保留供旧部署使用，OpenClaw 本次不迁移。
+
 > [!TIP]
 > ### Open Android Intelligence（OAI）是**一个统一的安卓客户端，用于连接多种主流 Agent**（如 Hermes、OpenClaw、DSH 等）。
 >

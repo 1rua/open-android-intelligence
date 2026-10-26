@@ -154,7 +154,7 @@ fun WelcomeScreen(
                 // ===== 主标题 =====
                 Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
                 Text(
-                    text = "连接你的\nAgent Gateway",
+                    text = "连接一个\nOAI Core",
                     fontSize = 34.sp,
                     lineHeight = 38.sp,
                     fontWeight = FontWeight.ExtraBold,
@@ -165,8 +165,8 @@ fun WelcomeScreen(
                 // ===== 定位说明 =====
                 Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
                 Text(
-                    text = "一个 Android 客户端，连接多个自托管 Agent 宿主。" +
-                        "对话、会话管理，以及经你授权的设备能力调用，都在同一处完成。",
+                    text = "一个手机连接入口，由 OAI Core 接入多个自托管 Agent。" +
+                        "原生会话与设备插件独立管理，设备能力始终需要你的账号授权。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -180,11 +180,11 @@ fun WelcomeScreen(
                         .background(MaterialTheme.colorScheme.outlineVariant),
                 )
                 TelemetryRow(
-                    key = "Hosts",
+                    key = "Setup",
                     value = GatewayTutorials.ALL.joinToString(" · ") { it.shortName },
                 )
                 TelemetryRow(key = "Protocol", value = "Gateway Protocol v2.1 · 数据直连")
-                TelemetryRow(key = "Storage", value = "凭据存于 Android Keystore · 无中转服务器")
+                TelemetryRow(key = "Storage", value = "凭据存于 Android Keystore · 自托管 Core")
                 TelemetryRow(key = "Device", value = "设备能力默认拒绝 · 逐项授权")
 
                 Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
