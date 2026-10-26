@@ -51,6 +51,7 @@ Android 最终结果：`gateway-client` 279 项通过，选中的 App 回归 77 
 - 成功协商用 `X-OAI-Agent-Sessions: 1` 明确选择原生会话界面，旧宿主不接收未知接口探测。
 - Core 仅复用验证后的 HTTP/SSE/WS 处理器，不构造 Hermes 平台；真实 SDK 已安装但平台未注册时也能独立启动。
 - Hermes 原生标题、配对代次取消、宿主审批拒绝，以及 DSH 原生事件形状均以实际接口补测修复。
+- 提交后独立审查确认 Hermes 压缩后绑定可能仍指向祖先；标题读写现沿账号既有原生压缩链定位当前 tip，真实 SDK 回归覆盖终端与 App 相互改名。
 - Codex 解除归档调用真实 `thread/unarchive`；隔离说明明确共享 Agent 不能持有个人设备凭据。
 - Codex 活跃 turn 关闭时只向存活进程发送取消，不重启 app-server；回归验证无遗留子进程。
 - CLI `--wait` 只结束本地等待，取消通过明确命令进行；安装环境、客户端凭据路径和能力 ID 示例已统一。

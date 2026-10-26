@@ -114,7 +114,13 @@ class HermesSessionAdapter:
         resolve = getattr(port, "_bound_database", None)
         if not binding or not binding.get("agentSessionId") or not callable(resolve):
             return None
-        return resolve(binding), binding["agentSessionId"]
+        database = resolve(binding)
+        # A binding may retain a compression ancestor. Match native history and
+        # lifecycle operations by addressing the current tip of its own chain.
+        chain = port._session_chain(database, binding["agentSessionId"])
+        if not chain:
+            raise AdapterError("SESSION_NOT_FOUND", 404)
+        return database, chain[-1]
 
     @staticmethod
     def _summary(account: Any, conversation_id: str) -> dict[str, Any]:

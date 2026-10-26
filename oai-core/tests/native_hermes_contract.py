@@ -139,8 +139,25 @@ async def scenario():
         assert cancelled["outcome"] == "CANCELLED", cancelled
         assert (await asyncio.wait_for(first, 5))["code"] == "CANCELLED"
         await pending.aclose()
+        # Native compression publishes a continuation without rewriting the
+        # independent Gateway account binding. Titles belong to its live tip.
+        compressed_tip = "native-compression-tip"
+        database.publish_compression_child(
+            parent_session_id=binding["agentSessionId"], child_session_id=compressed_tip,
+            source=database.get_session(binding["agentSessionId"])["source"],
+            messages=[{"role": "user", "content": "synthetic compressed context"}],
+            require_compression_lease=False)
+        with closing(runtime.services.core.open_gateway_account("alice")) as account:
+            assert account.agent_sessions.lookup(a["id"])["agentSessionId"] == binding["agentSessionId"]
+        assert database.get_compression_chain(binding["agentSessionId"])[-1] == compressed_tip
+        database.set_session_title(compressed_tip, "renamed on compressed native tip")
+        assert (await adapter.list_sessions(alice))[0]["title"] == "renamed on compressed native tip"
+        await adapter.manage(alice, a["id"], "rename", "renamed compressed tip from App")
+        assert database.get_session_title(compressed_tip) == "renamed compressed tip from App"
+        assert (await adapter.list_sessions(alice))[0]["title"] == "renamed compressed tip from App"
         await adapter.manage(alice, a["id"], "delete")
         assert database.get_session(binding["agentSessionId"]) is None
+        assert database.get_session(compressed_tip) is None
         assert await adapter.list_sessions(alice) == []
         assert (await adapter.list_sessions(bob))[0]["id"] == b["id"]
     finally:
