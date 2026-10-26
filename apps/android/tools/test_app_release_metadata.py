@@ -241,15 +241,28 @@ class AppReleaseMetadataTest(unittest.TestCase):
         release_contract = (release.REPOSITORY_ROOT / "docs/contracts/app-update-release-v1.md").read_text(encoding="utf-8")
         self.assertIn("最多保留 100 个等待运行", release_contract)
         self.assertIn("contents: write", dev_workflow)
+        # 发布说明需要读取关联 PR 正文，因此保留 PR 读取权限。
         self.assertIn("pull-requests: read", dev_workflow)
-        self.assertIn("allow-unsafe-pr-checkout: true", dev_workflow)
-        self.assertIn("commits/$GITHUB_SHA/pulls", dev_workflow)
-        self.assertIn("should-release=false", dev_workflow)
-        self.assertIn("sign-notification-package:", dev_workflow)
+        # dev 预览版只由 push 触发。
+        #
+        # 不再使用 pull_request_target：它执行的是默认分支 main 上的工作流定义，
+        # 却 checkout dev 的合并提交。main 与 dev 的脚本命名一旦不同步，
+        # 这条 run 必然失败，且失败与被合并的代码无关。
+        #
+        # 断言只检查「on:」块内的实际触发器，不扫全文：
+        # 说明性注释里出现触发器名是合法且必要的。
+        dev_triggers = dev_workflow.split("on:", 1)[1].split("permissions:", 1)[0]
+        self.assertNotIn("pull_request_target", dev_triggers)
+        self.assertIn("push:", dev_triggers)
+        self.assertIn("workflow_dispatch", dev_triggers)
+        # 同理，PR 检出豁免与「跳过已合并 PR 的 push」逻辑都已随该触发器移除。
+        self.assertNotIn("allow-unsafe-pr-checkout:", dev_workflow)
+        self.assertNotIn("should-release", dev_workflow)
+        self.assertIn("sign-plugin-packages:", dev_workflow)
         self.assertIn("actions/download-artifact@v8", dev_workflow)
-        self.assertIn("signed-notifications-$GITHUB_RUN_ATTEMPT", dev_workflow)
+        self.assertIn("signed-plugins-$GITHUB_RUN_ATTEMPT", dev_workflow)
         self.assertIn("preview-release-assets-$GITHUB_RUN_ATTEMPT", dev_workflow)
-        self.assertIn("needs.sign-notification-package.outputs.signed-artifact-name", dev_workflow)
+        self.assertIn("needs.sign-plugin-packages.outputs.signed-artifact-name", dev_workflow)
         build_job = dev_workflow.split("  build-preview:", 1)[1].split("  publish-preview:", 1)[0]
         self.assertIn("permissions:\n      contents: read", build_job)
         self.assertNotIn("pull-requests: read", build_job)
@@ -264,16 +277,18 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertNotIn("--tag", dev_workflow)
 
         release_workflow = (release.REPOSITORY_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        self.assertIn("branches: [main]", release_workflow)
+        self.assertIn("workflow_dispatch", release_workflow)
+        self.assertNotIn("pull_request_target", release_workflow)
+        self.assertNotIn("allow-unsafe-pr-checkout: true", release_workflow)
+        self.assertIn("refs/heads/main", release_workflow)
         self.assertIn("group: dev-release", release_workflow)
         self.assertIn("extract_package_version.py --platform android", release_workflow)
         self.assertIn("cancel-in-progress: false", release_workflow)
         self.assertIn("queue: max", release_workflow)
         self.assertIn("contents: write", release_workflow)
         self.assertIn("pull-requests: read", release_workflow)
-        self.assertIn("allow-unsafe-pr-checkout: true", release_workflow)
-        self.assertIn("sign-notification-package:", release_workflow)
-        self.assertIn("signed-notifications-$GITHUB_RUN_ATTEMPT", release_workflow)
+        self.assertIn("sign-plugin-packages:", release_workflow)
+        self.assertIn("signed-plugins-$GITHUB_RUN_ATTEMPT", release_workflow)
         self.assertIn("stable-apk-inputs-$GITHUB_RUN_ATTEMPT", release_workflow)
         self.assertIn("stable-release-assets-$GITHUB_RUN_ATTEMPT", release_workflow)
         stable_build_job = release_workflow.split("  build-stable-apk:", 1)[1].split("  verify-stable-apk:", 1)[0]
@@ -304,6 +319,65 @@ class AppReleaseMetadataTest(unittest.TestCase):
         )
         self.assertIn("CURRENT_MAIN_SHA", release_workflow.split("Move stable tag to published commit", 1)[1])
         self.assertNotIn("--tag", release_workflow)
+
+
+class ReleaseNotesForPushEventTest(unittest.TestCase):
+    """dev 预览版由 push 触发，发布说明要优先取关联 PR 正文。
+
+    背景：合并 PR 会产生 push 事件，该 push 是唯一发布入口。
+    原先另挂 pull_request_target 来读 PR 正文，但它执行默认分支 main 上的
+    工作流定义、却检出 dev 的合并提交，两边脚本命名不同步时必然失败。
+    现在改由 push 路径直接查询关联 PR，查不到再回退提交说明。
+    """
+
+    def _write_event(self, payload, directory):
+        path = Path(directory) / "event.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_push_event_prefers_the_merged_pull_request_body(self):
+        import prepare_release_notes as notes
+
+        with tempfile.TemporaryDirectory() as directory:
+            event_path = self._write_event({"pull_request": None}, directory)
+            with patch.object(notes, "_dispatch_pull_request_body", return_value="## PR 正文") as lookup:
+                body = notes.prepare_release_notes(
+                    "dev", "push", event_path, "owner/repo", COMMIT,
+                )
+            lookup.assert_called_once_with("owner/repo", COMMIT, "dev")
+            self.assertEqual(body, "## PR 正文")
+
+    def test_push_event_falls_back_to_commit_message_without_a_pull_request(self):
+        import prepare_release_notes as notes
+
+        with tempfile.TemporaryDirectory() as directory:
+            event_path = self._write_event({"pull_request": None}, directory)
+            with patch.object(notes, "_dispatch_pull_request_body", return_value=""):
+                with patch.object(notes.subprocess, "run") as run:
+                    run.return_value = subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout="直接推送的提交说明",
+                    )
+                    body = notes.prepare_release_notes(
+                        "dev", "push", event_path, "owner/repo", COMMIT,
+                    )
+            self.assertEqual(body, "直接推送的提交说明")
+
+    def test_push_event_survives_a_failed_pull_request_lookup(self):
+        """查不到 PR（例如维护者直接 push）不能让发布失败。"""
+        import prepare_release_notes as notes
+
+        with tempfile.TemporaryDirectory() as directory:
+            event_path = self._write_event({"pull_request": None}, directory)
+            failure = subprocess.CalledProcessError(1, ["gh", "api"])
+            with patch.object(notes, "_dispatch_pull_request_body", side_effect=failure):
+                with patch.object(notes.subprocess, "run") as run:
+                    run.return_value = subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout="回退的提交说明",
+                    )
+                    body = notes.prepare_release_notes(
+                        "dev", "push", event_path, "owner/repo", COMMIT,
+                    )
+            self.assertEqual(body, "回退的提交说明")
 
 
 if __name__ == "__main__":

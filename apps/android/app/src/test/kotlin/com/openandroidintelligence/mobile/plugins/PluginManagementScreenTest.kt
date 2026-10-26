@@ -45,7 +45,7 @@ import org.robolectric.annotation.Config
  * 设置内插件管理区域（条目 1-1）的界面语义：
  * 1. 无插件时如实空态，宿主未装配运行时必须明说；
  * 2. 已安装列表来自真实存储，声明式 UI 用 PluginDeclarativeUi 渲染并标注
- *    「内核未装配，设置项不可交互」；
+ *    「当前版本暂不支持插件运行，这里的设置无法操作」；
  * 3. 渠道策略真实控制安装入口（full 允许 / play 禁止）。
  */
 @RunWith(RobolectricTestRunner::class)
@@ -89,7 +89,7 @@ class PluginManagementScreenTest {
         }
 
         compose.onNodeWithText("未安装任何插件").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("宿主未装配插件运行时", substring = true).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("当前版本暂不支持运行插件", substring = true).performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -138,11 +138,11 @@ class PluginManagementScreenTest {
         // 声明被渲染（位于长列表下方，用存在性断言避免滚动差异）
         compose.onNodeWithText("合并同类通知").assertExists()
         // 内核未装配必须明说
-        compose.onNodeWithText("内核未装配，设置项不可交互", substring = true).assertExists()
+        compose.onNodeWithText("当前版本暂不支持插件运行，这里的设置无法操作", substring = true).assertExists()
 
         // 点击不静默：如实回显无处授权
         compose.onNodeWithText("合并同类通知").performClick()
-        compose.onNodeWithText("内核未装配，设置项不可交互", substring = true).assertExists()
+        compose.onNodeWithText("当前版本暂不支持插件运行，这里的设置无法操作", substring = true).assertExists()
     }
 
     @Test
@@ -167,7 +167,7 @@ class PluginManagementScreenTest {
             }
         }
 
-        compose.onNodeWithText("声明式设置被拒绝", substring = true).assertExists()
+        compose.onNodeWithText("插件设置无法显示", substring = true).assertExists()
         compose.onNodeWithText("合并同类通知").assertDoesNotExist()
     }
 
@@ -209,36 +209,62 @@ class PluginManagementScreenTest {
             }
         }
 
-        compose.onNodeWithText("当前分发渠道禁止安装插件", substring = true).assertExists()
+        compose.onNodeWithText("当前版本不允许安装插件", substring = true).assertExists()
         val node = compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).fetchSemanticsNode()
         assertFalse("渠道禁止时安装入口不得可点", node.config.getOrNull(SemanticsActions.OnClick) != null)
     }
 
-    @Test fun theBundledNotificationButtonInstallsThroughTheVerifiedStore() {
+    @Test fun theBundledPluginButtonsInstallThroughTheVerifiedStore() {
         val packageBytes = TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID, name = "通知读取插件")
         compose.setContent {
             MaterialTheme {
-                PluginManagementScreen(true, false, {}, store = store, bundledNotificationPackage = { packageBytes })
+                PluginManagementScreen(true, false, {}, store = store,
+                    bundledPluginPackages = mapOf(BundledPlugin.NOTIFICATIONS to { packageBytes }))
             }
         }
-        compose.onNodeWithTag(BUNDLED_NOTIFICATION_INSTALL_TAG).performScrollTo().performClick()
+        compose.onNodeWithTag(BundledPlugin.NOTIFICATIONS.installTag).performScrollTo().performClick()
         compose.waitUntil(10_000) {
             compose.onAllNodesWithText("通知读取插件已安装").fetchSemanticsNodes().isNotEmpty()
         }
         assertEquals(NOTIFICATION_PLUGIN_ID, store.listInstalled().single().pluginId)
-        val node = compose.onNodeWithTag(BUNDLED_NOTIFICATION_INSTALL_TAG).fetchSemanticsNode()
+        val node = compose.onNodeWithTag(BundledPlugin.NOTIFICATIONS.installTag).fetchSemanticsNode()
         assertFalse(node.config.getOrNull(SemanticsActions.OnClick) != null)
         compose.onNodeWithText("已安装，未启用", substring = true).assertExists()
     }
 
-    @Test fun theBundledNotificationButtonExplainsMissingAssetsAndKeepsFileImportAvailable() {
+    /** 短信与通话记录入口各自独立：装上 SMS 不影响通话记录入口按自己的来源如实降级。 */
+    @Test fun theBundledSmsButtonInstallsIndependentlyFromTheCallLogEntry() {
+        val smsBytes = TestAlpPackages.signedPackage(id = SMS_PLUGIN_ID, name = "短信读取插件")
         compose.setContent {
             MaterialTheme {
                 PluginManagementScreen(true, false, {}, store = store,
-                    bundledNotificationPackage = { throw BundledNotificationUnavailable() })
+                    bundledPluginPackages = mapOf(
+                        BundledPlugin.SMS to { smsBytes },
+                        BundledPlugin.CALL_LOG to { throw BundledPluginUnavailable(BundledPlugin.CALL_LOG) },
+                    ))
             }
         }
-        compose.onNodeWithTag(BUNDLED_NOTIFICATION_INSTALL_TAG).performScrollTo().performClick()
+        compose.onNodeWithTag(BundledPlugin.SMS.installTag).performScrollTo().performClick()
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithText("短信读取插件已安装").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertEquals(SMS_PLUGIN_ID, store.listInstalled().single().pluginId)
+        // 通话记录入口没有被 SMS 的注入影响：它按自己的来源如实报告缺包。
+        compose.onNodeWithTag(BundledPlugin.CALL_LOG.installTag).performScrollTo().performClick()
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithText("当前安装包未附带通话记录读取插件，请从文件导入已签名的 .alp 插件包。").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertEquals(1, store.listInstalled().size)
+    }
+
+    @Test fun theBundledPluginButtonsExplainMissingAssetsAndKeepFileImportAvailable() {
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(true, false, {}, store = store,
+                    bundledPluginPackages = mapOf(BundledPlugin.NOTIFICATIONS to { throw BundledPluginUnavailable(BundledPlugin.NOTIFICATIONS) }))
+            }
+        }
+        compose.onNodeWithTag(BundledPlugin.NOTIFICATIONS.installTag).performScrollTo().performClick()
         compose.waitUntil(5_000) {
             compose.onAllNodesWithText("当前安装包未附带通知读取插件，请从文件导入已签名的 .alp 插件包。").fetchSemanticsNodes().isNotEmpty()
         }
@@ -246,16 +272,20 @@ class PluginManagementScreenTest {
         assertTrue(compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).fetchSemanticsNode().config.getOrNull(SemanticsActions.OnClick) != null)
     }
 
-    @Test fun theBundledNotificationButtonIsBlockedByTheDistributionPolicy() {
+    @Test fun theBundledPluginButtonsAreBlockedByTheDistributionPolicy() {
         var reads = 0
         compose.setContent {
             MaterialTheme {
                 PluginManagementScreen(false, false, {}, store = store,
-                    bundledNotificationPackage = { reads++; TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID) })
+                    bundledPluginPackages = BundledPlugin.entries.associateWith { plugin ->
+                        { reads++; TestAlpPackages.signedPackage(id = plugin.pluginId) }
+                    })
             }
         }
-        val node = compose.onNodeWithTag(BUNDLED_NOTIFICATION_INSTALL_TAG).fetchSemanticsNode()
-        assertFalse(node.config.getOrNull(SemanticsActions.OnClick) != null)
+        for (plugin in BundledPlugin.entries) {
+            val node = compose.onNodeWithTag(plugin.installTag).fetchSemanticsNode()
+            assertFalse("渠道禁止时 ${plugin.displayName} 入口不得可点", node.config.getOrNull(SemanticsActions.OnClick) != null)
+        }
         assertEquals(0, reads)
         assertTrue(store.listInstalled().isEmpty())
     }

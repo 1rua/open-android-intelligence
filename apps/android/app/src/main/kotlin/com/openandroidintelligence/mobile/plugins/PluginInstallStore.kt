@@ -73,9 +73,14 @@ class PluginInstallStore(private val context: Context) {
 
     fun install(stream: java.io.InputStream): InstalledPluginView = installVerified(false) { it.verify(stream) }
 
-    /** Explicit first install only: an APK update must never replace a user's installed provider. */
-    internal fun installBundledNotifications(packageBytes: ByteArray): InstalledPluginView =
-        installVerified(false, expectedPluginId = NOTIFICATION_PLUGIN_ID, requireNew = true) { it.verify(packageBytes) }
+    /**
+     * 内置插件包的显式首次安装。
+     *
+     * 只允许装上 [plugin] 自己声明的 ID（资产写错不能冒充别的插件），并且
+     * 绝不覆盖用户已安装的同 ID 提供者——升级仍走普通签名包导入路径。
+     */
+    internal fun installBundledPlugin(plugin: BundledPlugin, packageBytes: ByteArray): InstalledPluginView =
+        installVerified(false, expectedPluginId = plugin.pluginId, requireNew = true) { it.verify(packageBytes) }
 
     /** Verify the signed manifest, checksum table and every payload again after restart. */
     fun openVerified(pluginId: String): com.openandroidintelligence.plugin.pkg.VerifiedPluginPackage = verifyDirectory(File(installRoot, pluginId))

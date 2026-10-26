@@ -7,7 +7,7 @@ import {
   assertDurableBridgeStore,
   isDurableBridgeStore,
   type BridgeStoreNamespace,
-} from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/durable-store.js";
 import {
   FILE_BACKED_BRIDGE_STORE_FORMAT,
   FILE_BACKED_BRIDGE_STORE_VERSION,

@@ -35,6 +35,14 @@ class PrepareReleaseNotesTest(unittest.TestCase):
         ):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 notes.prepare_release_notes("dev", "pull_request_target", event_file(payload), "owner/repo", "abc")
+        with self.assertRaises(ValueError):
+            notes.prepare_release_notes(
+                "main",
+                "pull_request_target",
+                event_file({"pull_request": {"merged": True, "base": {"ref": "main"}, "body": "text"}}),
+                "owner/repo",
+                "abc",
+            )
 
     @patch.object(notes.subprocess, "run")
     def test_dev_push_uses_the_latest_commit_message(self, run):

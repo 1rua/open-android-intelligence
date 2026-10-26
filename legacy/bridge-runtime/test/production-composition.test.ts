@@ -2,14 +2,14 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DurableBridgeTransaction } from "../../../bridge-contract/src/durable-store.js";
-import type { PairingTicket } from "../../../bridge-contract/src/pairing-service.js";
+import type { DurableBridgeTransaction } from "../../bridge-contract/src/durable-store.js";
+import type { PairingTicket } from "../../bridge-contract/src/pairing-service.js";
 import {
   NODE_SQLITE_BRIDGE_DRIVER,
   SQLITE_BRIDGE_ADAPTER_PORT,
   type SqliteBridgeAdapterPort,
-} from "../../../bridge-contract/src/persistence.js";
-import { BridgeServiceError, type BridgeSessionIdentity } from "../../../bridge-contract/src/service-types.js";
+} from "../../bridge-contract/src/persistence.js";
+import { BridgeServiceError, type BridgeSessionIdentity } from "../../bridge-contract/src/service-types.js";
 import { createFencedDurableBridgeComposition } from "../src/composition.js";
 import { FileBackedBridgeStore } from "../src/file-backed-store.js";
 import {

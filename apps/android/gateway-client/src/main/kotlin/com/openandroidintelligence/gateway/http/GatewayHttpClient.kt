@@ -413,6 +413,12 @@ class GatewayHttpClient(
                             deliverEvent(event, attemptedProfile)
                         }
                     }
+                    // 持续订阅遇到正常 EOF 也代表连接中断；空流不能绕过失败上限，
+                    // 已收过事件的流也不能在等待重连时继续显示 LIVE。
+                    if (autoReconnect && currentCoroutineContext().isActive) {
+                        streamFailed = true
+                        lastFailure = java.io.IOException("EVENT_STREAM_CLOSED")
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -438,7 +444,12 @@ class GatewayHttpClient(
                 }
             }
 
-            if (receivedWsEventInAttempt) {
+            // A round that delivered data proves a channel works. The socket
+            // ending afterwards is a reconnect, not a downgrade worth keeping,
+            // so ask for the preferred channel again: a WebSocket that was only
+            // briefly unreachable must not be abandoned in favour of SSE for
+            // the rest of the session.
+            if (receivedAnyEventInAttempt) {
                 preferWebSocket = (webSocketTransport != null)
             }
 

@@ -77,7 +77,10 @@
 AGP 为打包消费者关联生产任务；Lint 按设计排除生成资产，不再把通知包目录误当作静态源读取。
 
 Android 复现时先按 Android README 构建真实签名包，配置 `HERMES_PLUGIN_ROOT`、
-`OPEN_ANDROID_GATEWAY_CONTRACT_ROOT` 与可运行插件夹具的 Python，再运行：
+`OPEN_ANDROID_GATEWAY_CONTRACT_ROOT` 与可运行插件夹具的 Python，再运行
+（注：以下为当日的原始命令；后续多插件内置改造后，环境变量已改为
+`OAI_BUNDLED_PLUGINS_DIR`，开关改为 `-Poai.requireBundledPlugins=true`，
+以 Android README 的当前说明为准）：
 
 ```sh
 cd apps/android

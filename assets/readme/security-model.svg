@@ -1,132 +1,127 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="100%" height="auto" role="img" aria-label="安全模型：Agent 只能提请求，放行还是拒绝由平台内核和你在屏幕上决定">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" width="100%" height="auto" role="img" aria-label="安全模型：Agent 只能提请求，放行还是拒绝由平台内核和你在屏幕上决定">
   <title>决定权始终在手机上</title>
-  <desc>四级审批门：Agent 提请求、内核先查权限、你在屏幕上确认、放行或拒绝；右侧列出永远不做的四件事。</desc>
+  <desc>四级审批轨迹：Agent 提请求、内核先查权限、你在屏幕上确认、放行或拒绝；右侧黑色反白面板列出系统永远不会执行的四件事。</desc>
+
   <defs>
-    <linearGradient id="secBg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#08110E"/>
-      <stop offset="100%" stop-color="#0D1A15"/>
-    </linearGradient>
-    <radialGradient id="secGlowMint" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#34D399" stop-opacity="0.07"/>
-      <stop offset="100%" stop-color="#34D399" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="secGlowRed" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#F87171" stop-opacity="0.05"/>
-      <stop offset="100%" stop-color="#F87171" stop-opacity="0"/>
-    </radialGradient>
+    <pattern id="secGrain" width="7" height="7" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.5" fill="#111111" opacity="0.09"/>
+      <circle cx="5" cy="4" r="0.38" fill="#111111" opacity="0.055"/>
+    </pattern>
+    <pattern id="secHalftone" width="8" height="8" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" fill="#111111" opacity="0.34"/>
+    </pattern>
     <clipPath id="secClip">
-      <rect width="1200" height="420" rx="20"/>
+      <rect x="20" y="20" width="1160" height="440"/>
     </clipPath>
   </defs>
 
-  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
-    <!-- 背景与氛围光晕（裁剪到圆角画布内，避免光晕溢出四角） -->
-    <g clip-path="url(#secClip)">
-      <rect width="1200" height="420" rx="20" fill="url(#secBg)"/>
-      <ellipse cx="150" cy="52" rx="430" ry="250" fill="url(#secGlowMint)"/>
-      <ellipse cx="1070" cy="352" rx="320" ry="220" fill="url(#secGlowRed)"/>
-    </g>
-    <rect width="1200" height="420" rx="20" fill="none" stroke="#22382F" stroke-width="1.5"/>
+  <style>
+    .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #4E4E4E; }
+    .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #111111; }
+    .mono-m { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #6F6F6A; }
+    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 1.2px; fill: #B8501F; }
+    .disp { font-family: "Arial Black", "Inter", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-weight: 900; font-size: 44px; letter-spacing: -0.8px; fill: #111111; }
+    .stage { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #111111; }
+    .body { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 400; fill: #4E4E4E; }
+    .neg-t { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #F7F7F5; }
+    .neg-b { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 400; fill: #E4E4DE; }
+    .dim { fill: #A0A09A; }
+  </style>
 
-    <!-- 标题区 -->
-    <text x="64" y="54" font-size="26" font-weight="700" fill="#F3F7F5">决定权始终在手机上</text>
-    <text x="64" y="88" font-size="20" font-weight="400" fill="#9DB0AA">Agent 只能提请求；放行还是拒绝，由平台内核和你在屏幕上决定</text>
+  <rect width="1200" height="480" fill="#F7F7F5"/>
+  <rect width="1200" height="480" fill="url(#secGrain)"/>
+  <rect x="20" y="20" width="1160" height="440" fill="none" stroke="#111111" stroke-width="1.2"/>
 
-    <!-- 审批门总标签 -->
-    <text x="64" y="142" font-size="18" font-weight="400" fill="#7E918C">每一步都要过手机</text>
-
-    <!-- 第一级：Agent 提请求 -->
-    <g transform="translate(64,164)">
-      <rect width="176" height="148" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(16,16)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="4.5" width="18" height="13" rx="2.5"/>
-        <path d="M2.4 6.2 L11 12.2 L19.6 6.2"/>
-      </g>
-      <text x="16" y="64" font-size="20" font-weight="600" fill="#F3F7F5">Agent 提请求</text>
-      <text x="16" y="94" font-size="18" font-weight="400" fill="#9DB0AA">说要什么</text>
-      <text x="16" y="124" font-size="18" font-weight="400" fill="#9DB0AA">用哪个账号</text>
-    </g>
-
-    <!-- 流向箭头 1 -->
-    <path d="M245 228 L255 238 L245 248" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.75"/>
-
-    <!-- 第二级：内核先查权限 -->
-    <g transform="translate(260,164)">
-      <rect width="176" height="148" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(16,16)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M11 2.6 L19 5.6 V11.2 C19 15.8 15.6 18.5 11 19.4 C6.4 18.5 3 15.8 3 11.2 V5.6 Z"/>
-      </g>
-      <text x="16" y="64" font-size="20" font-weight="600" fill="#F3F7F5">内核先查权限</text>
-      <text x="16" y="94" font-size="18" font-weight="400" fill="#9DB0AA">查插件能力</text>
-      <text x="16" y="124" font-size="18" font-weight="400" fill="#9DB0AA">查授权范围</text>
-    </g>
-
-    <!-- 流向箭头 2 -->
-    <path d="M441 228 L451 238 L441 248" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.75"/>
-
-    <!-- 第三级：你在屏幕上确认 -->
-    <g transform="translate(456,164)">
-      <rect width="176" height="148" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(16,16)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="5.5" y="2" width="11" height="18" rx="2.5"/>
-        <path d="M8.4 11 L10.6 13.2 L14 9.2"/>
-      </g>
-      <text x="16" y="64" font-size="20" font-weight="600" fill="#F3F7F5">你在屏幕上确认</text>
-      <text x="16" y="94" font-size="18" font-weight="400" fill="#9DB0AA">一次授权</text>
-      <text x="16" y="124" font-size="18" font-weight="400" fill="#9DB0AA">只这一次生效</text>
-    </g>
-
-    <!-- 流向箭头 3 -->
-    <path d="M637 228 L647 238 L637 248" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.75"/>
-
-    <!-- 第四级：放行或拒绝 -->
-    <g transform="translate(652,164)">
-      <rect width="176" height="148" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(16,16)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M11 3 V9"/>
-        <path d="M11 9 L5.6 15.4"/>
-        <path d="M11 9 L16.4 15.4"/>
-      </g>
-      <text x="16" y="64" font-size="20" font-weight="600" fill="#F3F7F5">放行或拒绝</text>
-      <text x="16" y="94" font-size="18" font-weight="400" fill="#9DB0AA">拒绝也写进</text>
-      <text x="16" y="124" font-size="18" font-weight="400" fill="#9DB0AA">审计记录</text>
-    </g>
-
-    <!-- 右侧：我们永远不做 -->
-    <g transform="translate(860,112)">
-      <rect width="276" height="232" rx="20" fill="#12211B" stroke="#2A3C34" stroke-width="1.5"/>
-      <g transform="translate(24,26)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 4 L16 16"/>
-        <path d="M16 4 L4 16"/>
-      </g>
-      <text x="54" y="42" font-size="21" font-weight="700" fill="#F87171">我们永远不做</text>
-
-      <g transform="translate(24,71)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 4 L12 12"/>
-        <path d="M12 4 L4 12"/>
-      </g>
-      <text x="50" y="84" font-size="18" font-weight="400" fill="#C7D4CF">远程 root shell</text>
-
-      <g transform="translate(24,111)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 4 L12 12"/>
-        <path d="M12 4 L4 12"/>
-      </g>
-      <text x="50" y="124" font-size="18" font-weight="400" fill="#C7D4CF">后台翻你的文件</text>
-
-      <g transform="translate(24,151)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 4 L12 12"/>
-        <path d="M12 4 L4 12"/>
-      </g>
-      <text x="50" y="164" font-size="18" font-weight="400" fill="#C7D4CF">录音、代接挂断电话</text>
-
-      <g transform="translate(24,191)" fill="none" stroke="#F87171" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 4 L12 12"/>
-        <path d="M12 4 L4 12"/>
-      </g>
-      <text x="50" y="204" font-size="18" font-weight="400" fill="#C7D4CF">翻你密码与验证码</text>
-    </g>
-
-    <!-- 底部：配额与熔断 -->
-    <text x="600" y="384" text-anchor="middle" font-size="18" font-weight="400" fill="#7E918C">存储配额超限直接拒绝，不静默覆写 · 不占系统 VPN 槽位 · 可一键熔断</text>
+  <g stroke="#111111" stroke-width="1">
+    <path d="M10 20H30M20 10V30"/>
+    <path d="M1170 20H1190M1180 10V30"/>
+    <path d="M10 460H30M20 450V470"/>
+    <path d="M1170 460H1190M1180 450V470"/>
   </g>
+
+  <text x="44" y="47" class="mono-d" style="letter-spacing:1.4px">OPEN ANDROID INTELLIGENCE / SECURITY ARCHIVE</text>
+  <text x="616" y="47" class="mono">TECHNICAL DOSSIER / SHEET 03</text>
+  <text x="1156" y="47" class="mono" text-anchor="end">REV 2.1.1 / 2026</text>
+  <path d="M44 64H1156" stroke="#111111" stroke-width="1"/>
+
+  <g clip-path="url(#secClip)">
+    <g opacity="0.5">
+      <circle cx="764" cy="120" r="30" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
+      <circle cx="764" cy="120" r="52" fill="none" stroke="#D6D6CE" stroke-width="0.8" stroke-dasharray="2 6"/>
+      <circle cx="764" cy="120" r="74" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
+      <path d="M764 40V200M684 120H844" stroke="#D6D6CE" stroke-width="0.8"/>
+      <circle cx="764" cy="120" r="38" fill="url(#secHalftone)"/>
+      <circle cx="764" cy="120" r="6" fill="#F7F7F5" stroke="#111111" stroke-width="1.2"/>
+    </g>
+  </g>
+
+  <text x="44" y="96" class="num">FIG. 03 / PERMISSION CONTROL</text>
+  <text x="42" y="146" class="disp">决定权始终在手机上</text>
+  <text x="44" y="174" class="mono">AGENT 提请求 · 内核查授权 · 你在屏幕上逐次确认</text>
+
+  <text x="1156" y="96" class="mono" text-anchor="end">DEFAULT / DENY</text>
+  <text x="1156" y="118" class="mono" text-anchor="end">FAIL / CLOSED</text>
+  <text x="1156" y="140" class="mono" text-anchor="end">TRACE / ON</text>
+  <text x="1156" y="162" class="mono" text-anchor="end">ROOT / OFF</text>
+
+  <path d="M44 196H1156" stroke="#111111" stroke-width="1"/>
+
+  <g>
+    <rect x="44" y="214" width="744" height="196" fill="none" stroke="#111111" stroke-width="1.2"/>
+    <text x="60" y="240" class="mono-d">AUTHORIZATION SEQUENCE / 04 STAGES</text>
+    <text x="772" y="240" class="mono-m" text-anchor="end">FAIL-CLOSED</text>
+    <path d="M44 254H788" stroke="#111111" stroke-width="1"/>
+    <path d="M230 254V410M416 254V410M602 254V410" stroke="#D6D6CE" stroke-width="0.9"/>
+  </g>
+
+  <g>
+    <text x="60" y="282" class="num">01 / REQUEST</text>
+    <text x="60" y="312" class="stage">Agent 提请求</text>
+    <text x="60" y="344" class="body">说明所需能力</text>
+    <text x="60" y="370" class="body">指定账号</text>
+
+    <text x="246" y="282" class="num">02 / VERIFY</text>
+    <text x="246" y="312" class="stage">内核先查权限</text>
+    <text x="246" y="344" class="body">查插件能力</text>
+    <text x="246" y="370" class="body">查授权范围</text>
+
+    <text x="432" y="282" class="num">03 / CONFIRM</text>
+    <text x="432" y="312" class="stage">你在屏幕上确认</text>
+    <text x="432" y="344" class="body">一次授权</text>
+    <text x="432" y="370" class="body">只这一次生效</text>
+
+    <text x="618" y="282" class="num">04 / VERDICT</text>
+    <text x="618" y="312" class="stage">放行或拒绝</text>
+    <text x="618" y="344" class="body">拒绝同样写入</text>
+    <text x="618" y="370" class="body">审计记录</text>
+  </g>
+
+  <g>
+    <path d="M226 260V272L232 266Z" fill="#111111"/>
+    <path d="M412 260V272L418 266Z" fill="#111111"/>
+    <path d="M598 260V272L604 266Z" fill="#111111"/>
+  </g>
+
+  <g>
+    <rect x="820" y="214" width="336" height="196" fill="#111111"/>
+    <text x="840" y="240" class="neg-t">永不执行</text>
+    <text x="1136" y="240" class="mono dim" text-anchor="end">DENY BY DESIGN</text>
+    <path d="M840 254H1136" stroke="#4A4A46" stroke-width="0.9"/>
+
+    <g stroke="#C4693F" stroke-width="1.6" stroke-linecap="round">
+      <path d="M840 278L852 290M852 278L840 290"/>
+      <path d="M840 312L852 324M852 312L840 324"/>
+      <path d="M840 346L852 358M852 346L840 358"/>
+      <path d="M840 380L852 392M852 380L840 392"/>
+    </g>
+    <text x="868" y="290" class="neg-b">远程 root shell</text>
+    <text x="868" y="324" class="neg-b">后台翻你的文件</text>
+    <text x="868" y="358" class="neg-b">录音、代接挂断电话</text>
+    <text x="868" y="392" class="neg-b">翻你密码与验证码</text>
+  </g>
+
+  <path d="M44 430H1156" stroke="#111111" stroke-width="1"/>
+  <text x="44" y="454" class="mono">存储配额超限直接拒绝，不静默覆写</text>
+  <text x="640" y="454" class="mono">不占系统 VPN 槽位 · 可一键熔断</text>
+  <text x="1156" y="454" class="mono" text-anchor="end">OAI / 2026</text>
 </svg>

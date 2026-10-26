@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
@@ -52,6 +53,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -279,6 +281,7 @@ fun SettingsScreen(
                 presentation = presentation,
                 onSetTheme = viewModel::setTheme,
                 onSetDynamicColor = viewModel::setDynamicColor,
+                onSetDynamicIconColor = viewModel::setDynamicIconColor,
                 onSetPalette = viewModel::setPalette,
                 onSetReduceMotion = viewModel::setReduceMotion,
             )
@@ -307,7 +310,6 @@ fun SettingsScreen(
                 presentation = presentation,
                 onNavigate = { route -> navController.navigate(route) { launchSingleTop = true } },
                 onSetScreenSelectionGrant = viewModel::setScreenSelectionGrant,
-                onSetNotificationsGrant = setReplyNotifications,
             )
         }
 
@@ -533,6 +535,20 @@ private fun SettingsOverviewScreen(
                     icon = Icons.Default.SystemUpdate,
                     onClick = { onNavigate(SettingsRoutes.APP_UPDATES) },
                 )
+                // 引导入口：已完成引导的用户仍需要一个能重新查看部署步骤与权限说明的地方。
+                // 重看只进入引导流程，不改写「已完成」状态 —— 关掉后仍回主界面。
+                (androidx.compose.ui.platform.LocalContext.current.applicationContext
+                    as? OpenAndroidIntelligenceApplication)?.let { app ->
+                    SettingsNavigationItem(
+                        headline = "新手引导与部署教程",
+                        supporting = "重新查看 Gateway 部署步骤与权限说明",
+                        icon = Icons.Default.MenuBook,
+                        onClick = {
+                            app.onboardingPreferences.startReplay()
+                            onBack()
+                        },
+                    )
+                }
             }
             (androidx.compose.ui.platform.LocalContext.current.applicationContext as? OpenAndroidIntelligenceApplication)?.let { app ->
                 val preferences=remember { com.openandroidintelligence.mobile.conversations.DebouncePreferences(app) }
@@ -640,13 +656,13 @@ private fun SettingsOverviewScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     val transportSecurity = uiState.connectedTransportSecurity
                     val transportSupporting = when {
-                        !uiState.isGatewayConnected -> "未建立连接通道"
-                        transportSecurity == TransportSecurity.PLAINTEXT -> "未加密（HTTP），无证书校验"
-                        transportSecurity == TransportSecurity.TLS_PINNED -> "TLS 证书指纹固定 (SPKI Pinned)"
-                        else -> "系统 CA 信任加密"
+                        !uiState.isGatewayConnected -> "还没有建立连接"
+                        transportSecurity == TransportSecurity.PLAINTEXT -> "未加密（HTTP），内容可能被同网络的人看到"
+                        transportSecurity == TransportSecurity.TLS_PINNED -> "已加密，且证书与首次连接时记录的指纹一致"
+                        else -> "已加密（系统信任的证书）"
                     }
                     SettingsListItem(
-                        headline = "传输安全拓扑",
+                        headline = "连接加密状态",
                         supporting = transportSupporting,
                         icon = Icons.Default.Security,
                         tone = if (transportSecurity == TransportSecurity.PLAINTEXT && uiState.isGatewayConnected) {
@@ -679,41 +695,42 @@ private fun SettingsOverviewScreen(
                 }
             }
 
-            // 模块 3: 设备与配对授权
-            SectionLabel("设备能力与配对授权")
+            // 模块 3: 设备权限授权
+            // 所有「把手机能力交给 Gateway」的条目统一收进子页，主览只留一个入口：
+            // 权限散落在主览里时，用户既看不出共有哪些授权，也容易把插件跳转误认成开关。
+            // 这里不再展示本机自增序号 r{N}——它对用户没有可执行意义，还容易被读成
+            // Gateway 下发的权威版本（裁决 D5），因此改为陈述可执行的事实。
+            SectionLabel("设备权限授权")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
-                    // 裁决 D5：授权版本是本机自增的变更序号，Gateway 不下发
-                    // 权威版本——措辞不得让本地序号冒充网关权威值。
-                    val grantSummary = if (uiState.isGatewayConnected) {
-                        "授权状态本机保管（本机序号 r${uiState.grantRevision}，Gateway 未提供权威版本） · 手机随时可撤销"
-                    } else {
-                        "未连接 Gateway，授权暂不可用"
-                    }
                     SettingsNavigationItem(
-                        headline = "配对能力授权管理",
-                        supporting = grantSummary,
+                        headline = "授权管理",
+                        supporting = if (uiState.isGatewayConnected) {
+                            "选择哪些手机能力可以交给当前 Gateway 使用，随时可撤销"
+                        } else {
+                            "未连接 Gateway，授权暂不可用"
+                        },
                         icon = Icons.Default.Key,
                         onClick = { onNavigate(SettingsRoutes.PAIRING) },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
-                        headline = "短信读取",
-                        supporting = "在插件管理中安装、启用短信插件，并为当前 Gateway 配对授权",
-                        icon = Icons.Default.Sms,
+                        headline = "插件管理",
+                        supporting = "安装插件包、启用插件并为当前 Gateway 授权",
+                        icon = Icons.Default.Extension,
                         onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    ScreenSelectionCapabilityItem(
-                        checked = uiState.isScreenSelectionGranted,
-                        presentation = screenSelectionCapabilityPresentation(
-                            grantsBound = uiState.pairingGrants != null,
-                            attachmentStatusAgreed = uiState.conversationUi["attachment-status-v1"],
-                        ),
-                        icon = Icons.Default.Fullscreen,
-                        onCheckedChange = onSetScreenSelectionGrant,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+
+            // 模块 4: 通知管理
+            // 通知类设置单独成区：这些是「通知怎么提醒、怎么展示」的行为配置，
+            // 与「把手机能力授权给 Gateway」是两件事，不应混在同一张授权卡里。
+            // 「通知读取范围」也归在这里：它配置的是读哪些应用的通知内容，
+            // 属于通知的采集范围，而不是对 Gateway 的能力开关。
+            SectionLabel("通知管理")
+            SettingsSectionCard {
+                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
                     NotificationPushCapabilityItem(
                         checked = uiState.isNotificationsGranted,
                         presentation = replyNotificationPresentation(
@@ -731,27 +748,30 @@ private fun SettingsOverviewScreen(
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
-                        headline = "通知采集设置",
+                        headline = "通知读取范围",
                         onClick = { onNavigate(SettingsRoutes.NOTIFICATIONS) },
+                        icon = Icons.Default.MarkEmailRead,
                         supporting = if (NotificationControlRegistry.policyPort().snapshot().installed) {
-                            "选择本机应用、元数据与内容访问、投递模式与系统授权"
+                            "选择要读取哪些应用的通知、读取哪些内容，以及是否自动发送"
                         } else {
-                            "通知采集未装配"
+                            "本机未装配通知读取能力，暂不可配置"
                         },
                     )
                 }
             }
 
-            // 模块 4: 运行安全模式
-            SectionLabel("运行安全模式")
+            // 模块 5: 运行安全
+            // 「插件管理」已上移到设备权限授权区，这里不再重复同一入口：
+            // 同一设置出现两处入口，改文案时必然漏掉一处。
+            SectionLabel("运行安全")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
                     SettingsSwitchItem(
                         headline = "开发者信任模式",
                         supporting = when {
-                            !uiState.allowDeveloperTrustMode -> "当前分发渠道禁用开发者信任模式"
-                            uiState.isTrustModeEnabled -> "已开启：原生插件可接管界面（宿主放宽沙箱）"
-                            else -> "未开启：处于 WASM 沙箱隔离保护状态"
+                            !uiState.allowDeveloperTrustMode -> "当前版本不支持开启（应用商店版本已禁用）"
+                            uiState.isTrustModeEnabled -> "已开启：插件可以直接控制系统界面，隔离保护已放宽"
+                            else -> "未开启：插件在隔离环境中运行，无法控制系统界面"
                         },
                         checked = uiState.isTrustModeEnabled,
                         enabled = uiState.allowDeveloperTrustMode && !uiState.isEmergencyStopped,
@@ -761,53 +781,41 @@ private fun SettingsOverviewScreen(
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
-                        headline = "内核安全策略与原语硬上限",
-                        supporting = "强制 WASM 沙箱隔离与资源限额，不可越权接管原生 UI",
+                        headline = "安全策略说明",
+                        supporting = "了解插件能做什么、不能做什么，以及每次授权如何被记录",
                         icon = Icons.Default.Shield,
                         onClick = { onNavigate(SettingsRoutes.SECURITY) },
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsNavigationItem(
-                        headline = "插件管理",
-                        supporting = "已安装插件、声明式设置项与 .alp 安装入口",
-                        icon = Icons.Default.Extension,
-                        onClick = { onNavigate(SettingsRoutes.PLUGINS) },
-                    )
                 }
             }
 
-            // 模块 5: 安全审计记录
-            SectionLabel("安全审计记录")
+            // 模块 6: 操作记录
+            SectionLabel("操作记录")
             SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
-                    SettingsNavigationItem(
-                        headline = "内核安全审计流水",
-                        supporting = "已记录 ${uiState.auditEvents.size} 条本地不可篡改操作流水",
-                        icon = Icons.AutoMirrored.Filled.ReceiptLong,
-                        onClick = { onNavigate(SettingsRoutes.AUDIT_LOG) },
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsListItem(
-                        headline = "不可篡改审计规范",
-                        supporting = "由底座内核在插件原语调用、授权裁决与用户确认时如实记录",
-                        icon = Icons.Default.Shield,
-                        tone = SettingsTone.NEUTRAL,
-                    )
-                }
+                SettingsNavigationItem(
+                    headline = "授权与调用记录",
+                    supporting = if (uiState.auditEvents.isEmpty()) {
+                        "还没有记录。授权变更和插件调用会记录在这里"
+                    } else {
+                        "已记录 ${uiState.auditEvents.size} 条，可逐条核对发生过的授权与调用"
+                    },
+                    icon = Icons.AutoMirrored.Filled.ReceiptLong,
+                    onClick = { onNavigate(SettingsRoutes.AUDIT_LOG) },
+                )
             }
 
-            // 模块 6: 危险操作与紧急控制
+            // 模块 7: 危险操作与紧急控制
             // 危险分组不整卡涂 errorContainer：那样同色的 DANGER 徽标会与卡面融为一体、
             // 反而看不出危险。卡面保持中性面，危险只由徽标与文字承担。
-            SectionLabel("危险操作与系统熔断")
+            SectionLabel("紧急与危险操作")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
                     SettingsListItem(
-                        headline = "一键系统级安全熔断 (Kill Switch)",
+                        headline = "紧急停止所有插件",
                         supporting = if (uiState.isEmergencyStopped) {
-                            "已触发紧急停用，共隔离 ${uiState.emergencyStoppedCount} 个插件。请重启应用。"
+                            "已紧急停止，共停用 ${uiState.emergencyStoppedCount} 个插件。需要重启应用才能恢复。"
                         } else {
-                            "隔离已启用插件并关闭信任模式，切断内核调用（须重启恢复）。"
+                            "立即停用所有插件并关闭信任模式，需要重启应用才能恢复。"
                         },
                         icon = Icons.Default.Warning,
                         tone = SettingsTone.DANGER,
@@ -857,6 +865,7 @@ private fun AppearanceSubScreen(
     presentation: SettingsPresentation,
     onSetTheme: (ThemePreference) -> Unit,
     onSetDynamicColor: (Boolean) -> Unit,
+    onSetDynamicIconColor: (Boolean) -> Unit,
     onSetPalette: (ThemePalette) -> Unit,
     onSetReduceMotion: (Boolean) -> Unit,
 ) {
@@ -912,6 +921,15 @@ private fun AppearanceSubScreen(
                         icon = Icons.Default.ColorLens,
                         tone = SettingsTone.PRIMARY,
                         onCheckedChange = onSetDynamicColor,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    SettingsSwitchItem(
+                        headline = "图标动态取色",
+                        supporting = "桌面图标支持 Material You 动态取色（需系统 Android 13+ 且开启「主题图标」）；关闭后保持经典黑白与橙色行星点原貌。",
+                        checked = uiState.appearance.dynamicIconColor,
+                        icon = Icons.Default.Palette,
+                        tone = SettingsTone.PRIMARY,
+                        onCheckedChange = onSetDynamicIconColor,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     ThemePalette.entries.forEachIndexed { index, palette ->
@@ -1058,75 +1076,73 @@ private fun GatewaySubScreen(
     onRequestUnpair: () -> Unit,
 ) {
     SettingsPageScaffold(
-        title = "Gateway 连接详情",
+        title = "连接与账号",
         presentation = presentation,
         onBack = onBack,
     ) { padding ->
         SettingsPageColumn(contentPadding = padding) {
-            SectionLabel("节点与连接状态")
+            SectionLabel("当前连接")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     SettingsListItem(
-                        headline = "账号主体",
+                        headline = "登录账号",
                         supporting = uiState.connectedUsername ?: "未登录",
                         icon = Icons.Default.Hub,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsListItem(
-                        headline = "Gateway 节点地址",
+                        headline = "Gateway 地址",
                         supporting = uiState.connectedGatewayUrl ?: "—",
                         icon = Icons.Default.Security,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsListItem(
-                        headline = "传输安全模式",
+                        headline = "连接加密",
                         supporting = when (uiState.connectedTransportSecurity) {
-                            TransportSecurity.PLAINTEXT -> "明文 HTTP（未加密）"
-                            TransportSecurity.TLS_PINNED -> "TLS SPKI 指纹已绑定"
-                            TransportSecurity.TLS_SYSTEM_TRUST -> "系统 CA 证书信任"
+                            TransportSecurity.PLAINTEXT -> "未加密（HTTP），传输内容可能被同网络的人看到"
+                            TransportSecurity.TLS_PINNED -> "已加密，且证书指纹与首次连接时一致"
+                            TransportSecurity.TLS_SYSTEM_TRUST -> "已加密（系统信任的证书）"
                             null -> "未连接"
                         },
                         icon = Icons.Default.Shield,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsListItem(
-                        headline = "配对摘要",
-                        // 裁决 D5：摘要只来自 Gateway 登录响应；两端都未下发时
-                        // 如实说明，不得用本地合成值顶替。
-                        supporting = uiState.pairingSummary ?: "Gateway 未提供配对摘要",
+                        headline = "配对信息",
+                        // 摘要只来自 Gateway 登录响应；两端都未下发时如实说明，
+                        // 不得用本地合成值顶替。
+                        supporting = uiState.pairingSummary ?: "当前 Gateway 没有提供配对信息",
                         icon = Icons.Default.Key,
                     )
                 }
             }
 
             if (uiState.isGatewayConnected) {
-                SectionLabel("协商能力")
+                SectionLabel("这个 Gateway 支持的功能")
                 NegotiatedCapabilitiesGroup(conversationUi = uiState.conversationUi)
                 SettingsSectionCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                        SettingsListItem(
-                            headline = "设备请求执行通路",
-                            supporting = if (uiState.deviceRequestChannel != null) {
-                                if (uiState.pluginRuntimesWired) "Gateway 支持 ${uiState.deviceRequestChannel}" else "Gateway 支持设备请求协议；本机插件执行链尚未接通"
-                            } else {
-                                "Gateway 未提供设备请求"
-                            },
-                            icon = Icons.Default.Security,
-                        )
-                    }
+                    SettingsListItem(
+                        headline = "设备端任务执行",
+                        supporting = when {
+                            uiState.deviceRequestChannel == null -> "当前 Gateway 不会把任务下发到手机执行"
+                            uiState.pluginRuntimesWired -> "已支持：Gateway 可以把任务下发到手机执行"
+                            else -> "Gateway 支持下发，但本机插件执行尚未接通"
+                        },
+                        icon = Icons.Default.Security,
+                    )
                 }
             }
 
             if (uiState.isGatewayConnected) {
-                SectionLabel("凭据与会话管理")
+                SectionLabel("账号与会话")
                 SettingsSectionCard {
                     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                         SettingsListItem(
-                            headline = "刷新网关凭据",
+                            headline = "刷新登录凭据",
                             supporting = if (uiState.isRefreshingSession) {
-                                "正在向 Gateway 请求新凭据…"
+                                "正在向 Gateway 申请新的凭据…"
                             } else {
-                                "向 Gateway 请求刷新短期访问令牌"
+                                "登录即将过期时，可在这里提前换取新的凭据"
                             },
                             icon = Icons.Default.Refresh,
                             enabled = !uiState.isRefreshingSession,
@@ -1134,22 +1150,22 @@ private fun GatewaySubScreen(
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsListItem(
-                            headline = "退出当前登录",
-                            supporting = "清除本地活动会话（保留配对密钥）",
+                            headline = "退出登录",
+                            supporting = "只退出当前账号，保留设备配对，下次登录无需重新配对",
                             icon = Icons.Default.Lock,
                             onClick = onLogout,
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsListItem(
                             headline = "切换账号",
-                            supporting = "保留当前账号资料和配对，从已保存账号重新选择",
+                            supporting = "从已保存的账号中重新选择一个登录",
                             icon = Icons.Default.Person,
                             onClick = onSwitchAccount,
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsListItem(
                             headline = "解除设备配对",
-                            supporting = "彻底撤销此设备配对与授权并重置会话",
+                            supporting = "彻底断开这台手机与该 Gateway 的关系，并清除全部授权",
                             icon = Icons.Default.DeleteForever,
                             tone = SettingsTone.DANGER,
                             onClick = onRequestUnpair,
@@ -1161,7 +1177,17 @@ private fun GatewaySubScreen(
     }
 }
 
-/** 子页面 3: 设备能力与配对授权。 */
+/**
+ * 子页面 3: 授权管理。
+ *
+ * 只呈现「哪些手机能力可以交给当前 Gateway」这一件事：
+ * 1. 通知类设置（推送、气泡、实时活动、读取范围）属于通知行为配置，已归入
+ *    主览的「通知管理」区，不在这里重复出现；
+ * 2. 不再展示本机自增序号、本机合成的配对标识——它们是实现细节，对用户没有
+ *    可执行意义，还容易被误读成 Gateway 下发的权威版本（裁决 D5）；
+ * 3. 短信读取必须经过「安装插件 → 授权」两步，因此这一行如实说明当前步骤并
+ *    跳转插件管理，绝不提供一个点了也不生效的独立开关。
+ */
 @Composable
 private fun PairingSubScreen(
     uiState: SettingsUiState,
@@ -1169,19 +1195,18 @@ private fun PairingSubScreen(
     presentation: SettingsPresentation,
     onNavigate: (String) -> Unit,
     onSetScreenSelectionGrant: (Boolean) -> Unit,
-    onSetNotificationsGrant: (Boolean) -> Unit,
 ) {
     SettingsPageScaffold(
-        title = "设备能力授权清单",
+        title = "授权管理",
         presentation = presentation,
         onBack = onBack,
     ) { padding ->
         SettingsPageColumn(contentPadding = padding) {
-            SectionLabel("可授权设备原语")
+            SectionLabel("手机能力授权")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     Text(
-                        text = "手机作为最终安全边界，随时可撤销分配给当前 Gateway 的设备能力。所有变更将即时持久化并记录至安全审计日志。",
+                        text = "这些授权只保存在你的手机上，随时可以撤销；每次变更都会记入操作记录。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
@@ -1189,7 +1214,11 @@ private fun PairingSubScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
                         headline = "短信读取",
-                        supporting = "在插件管理中安装、启用短信插件，并为当前 Gateway 配对授权",
+                        supporting = if (uiState.isSmsGranted) {
+                            "已授权：当前 Gateway 可以读取短信。撤销请到插件管理中关闭该插件的授权"
+                        } else {
+                            "需要先在插件管理中安装短信插件，安装后即可为当前 Gateway 授权"
+                        },
                         icon = Icons.Default.Sms,
                         onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
@@ -1203,49 +1232,26 @@ private fun PairingSubScreen(
                         icon = Icons.Default.Fullscreen,
                         onCheckedChange = onSetScreenSelectionGrant,
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    NotificationPushCapabilityItem(
-                        checked = uiState.isNotificationsGranted,
-                        presentation = replyNotificationPresentation(
-                            wired = uiState.replyNotificationsWired,
-                            systemAllowed = uiState.replyNotificationsAllowed,
-                        ),
-                        icon = Icons.Default.Notifications,
-                        onCheckedChange = onSetNotificationsGrant,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    ConversationBubbleSettingsItem()
-                    if (android.os.Build.VERSION.SDK_INT >= 36) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        LiveUpdatesSettingsItem()
-                    }
                 }
             }
 
-            SettingsSectionCard {
-                SettingsNavigationItem(
-                    headline = "通知采集设置",
-                    supporting = "配置允许读取的应用与内容范围；在插件管理中授权当前 Gateway",
-                    onClick = { onNavigate(SettingsRoutes.NOTIFICATIONS) },
-                )
-            }
-
-            SectionLabel("配对元数据")
+            SectionLabel("授权如何生效")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    SettingsListItem(
-                        headline = "授权变更序号（本机）",
-                        // 裁决 D5：r{N} 是本机授权状态的自增序号，不是 Gateway
-                        // 的权威版本；Gateway 未提供版本信息，措辞如实区分。
-                        supporting = "本机序号 r${uiState.grantRevision} · Gateway 未提供权威版本",
-                        icon = Icons.Default.Key,
+                    Text(
+                        text = "授权分两步：先安装提供能力的插件，再允许这个插件为当前 Gateway 服务。两步都完成后，Gateway 才能真正读取到手机上的内容。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsListItem(
-                        headline = "配对身份标识（本机合成）",
-                        supporting = uiState.pairingGrants?.pairingId?.let { "$it · 由本机对配对范围合成，非 Gateway 下发" }
-                            ?: "未绑定活动配对",
-                        icon = Icons.Default.Security,
+                    Text(
+                        text = "授权按账号分开保存：切换到别的账号不会带走这些授权；切回来时，这个账号原来的授权仍然有效，不需要重新授权。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "以下两种情况会清空本机授权，之后需要重新授权：主动解除设备配对；或 Gateway 报告该账号的授权已变更。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -1253,7 +1259,7 @@ private fun PairingSubScreen(
     }
 }
 
-/** 子页面 4: 运行安全与信任模式。 */
+/** 子页面 4: 安全策略说明与紧急停止。 */
 @Composable
 private fun SecuritySubScreen(
     uiState: SettingsUiState,
@@ -1263,20 +1269,20 @@ private fun SecuritySubScreen(
     onRequestEmergencyStop: () -> Unit,
 ) {
     SettingsPageScaffold(
-        title = "运行安全模式",
+        title = "安全策略",
         presentation = presentation,
         onBack = onBack,
     ) { padding ->
         SettingsPageColumn(contentPadding = padding) {
-            SectionLabel("宿主隔离策略")
+            SectionLabel("插件运行方式")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     SettingsSwitchItem(
-                        headline = "开发者信任模式 (Trust Mode)",
+                        headline = "开发者信任模式",
                         supporting = if (uiState.isTrustModeEnabled) {
-                            "已开启：同进程原生插件可接管原生界面（沙箱隔离已放宽）"
+                            "已开启：插件可以直接控制系统界面，隔离保护已放宽，请只在信任插件来源时使用"
                         } else {
-                            "未开启：受保护模式，强制 WASM 沙箱强隔离保护"
+                            "已关闭：插件在隔离环境中运行，无法控制系统界面（推荐）"
                         },
                         checked = uiState.isTrustModeEnabled,
                         enabled = uiState.allowDeveloperTrustMode && !uiState.isEmergencyStopped,
@@ -1286,7 +1292,7 @@ private fun SecuritySubScreen(
                     )
                     if (!uiState.allowDeveloperTrustMode) {
                         Text(
-                            text = "当前分发渠道（如 Google Play 构建）策略严禁启用开发者信任模式。",
+                            text = "当前这个版本（应用商店版本）不允许开启开发者信任模式。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall),
@@ -1295,44 +1301,44 @@ private fun SecuritySubScreen(
                 }
             }
 
-            // 裁决（条目 2-10）：这两项是设计说明，不是运行时数据——不用
-            // ListItem 的「条目」造型伪装成可监控的指标，只以说明文本呈现。
-            SectionLabel("内核隔离说明")
+            // 这两项是设计说明，不是运行时数据——不用 ListItem 的「条目」造型
+            // 伪装成可监控的指标，只以说明文本呈现。
+            SectionLabel("插件能做什么")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     Text(
-                        text = "隔离机制说明",
+                        text = "隔离运行",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "受保护模式下，平台内核对插件强制执行资源配额与内存墙隔离：插件运行在独立运行时中，无法越权接管界面或越过宿主调用系统能力。",
+                        text = "插件运行在独立的受限环境中，有明确的资源上限，不能偷偷弹出界面，也不能绕过应用直接调用系统能力。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "权限边界说明",
+                        text = "权限由手机掌握",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "插件可用的原语集合与上限由底座 PluginKernel 固化定义并在调用时裁决，插件无法单方面篡改自身权限；每一次授权与调用都会写入审计日志。",
+                        text = "插件能做什么由应用本身固定定义，插件无法自行扩权。你授予的每一项权限、每一次插件调用都会写进操作记录，事后可以逐条核对。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
 
-            SectionLabel("系统安全熔断")
+            SectionLabel("紧急停止")
             // 卡面保持中性：DANGER 只在徽标与文案上表达，否则同色的徽标会"消失"在卡面里。
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     SettingsListItem(
-                        headline = "一键紧急停用 (Kill Switch)",
+                        headline = "紧急停止所有插件",
                         supporting = if (uiState.isEmergencyStopped) {
-                            "已触发紧急停用，共隔离 ${uiState.emergencyStoppedCount} 个插件。必须重启应用才能恢复。"
+                            "已停止，共停用 ${uiState.emergencyStoppedCount} 个插件。必须重启应用才能恢复。"
                         } else {
-                            "立即隔离所有已启用插件并关闭信任模式，切断平台内核的后续调用。"
+                            "立即停用全部插件并关闭信任模式，需要重启应用才能恢复。"
                         },
                         icon = Icons.Default.Warning,
                         tone = SettingsTone.DANGER,
@@ -1345,7 +1351,7 @@ private fun SecuritySubScreen(
     }
 }
 
-/** 子页面 5: 内核安全审计记录。 */
+/** 子页面 5: 授权与调用记录。 */
 @Composable
 private fun AuditLogSubScreen(
     uiState: SettingsUiState,
@@ -1353,7 +1359,7 @@ private fun AuditLogSubScreen(
     presentation: SettingsPresentation,
 ) {
     SettingsPageScaffold(
-        title = "安全审计日志",
+        title = "操作记录",
         presentation = presentation,
         onBack = onBack,
     ) { padding ->
@@ -1378,13 +1384,13 @@ private fun AuditLogSubScreen(
                 verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
                 item {
-                    SectionLabel("不可篡改审计流水 (${uiState.auditEvents.size} 条)")
+                    SectionLabel("全部记录（${uiState.auditEvents.size} 条）")
                 }
                 if (uiState.auditLines.isEmpty()) {
                     item {
                         SettingsSectionCard {
                             Text(
-                                text = "本会话暂无安全审计记录。\n平台内核在敏感授权和原语调用时会在此记入不可篡改记录，包含主体、时间、动作与结果事实。",
+                                text = "还没有任何记录。\n每次授权变更和插件调用都会在这里留下一条记录，包含谁、什么时候、做了什么、结果如何。",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(Dimensions.SpaceSmall),

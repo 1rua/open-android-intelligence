@@ -232,6 +232,10 @@ class SettingsViewModel(
         environment.appearance.setDynamicColor(enabled)
     }
 
+    fun setDynamicIconColor(enabled: Boolean) {
+        environment.appearance.setDynamicIconColor(enabled)
+    }
+
     fun setPalette(palette: com.openandroidintelligence.conversation.theme.ThemePalette) {
         environment.appearance.selectPalette(palette)
     }

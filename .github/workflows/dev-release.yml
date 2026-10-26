@@ -1,15 +1,30 @@
 name: Development Preview Release
 
-# 合并后只检出已进入目标分支的提交，并跳过同一合并产生的 push 事件。
+# 合并进 dev 的提交本身就是一次 push，因此只由 push 触发即可。
+#
+# 为什么不再用 pull_request_target：
+# pull_request_target 执行的是**默认分支（main）**上的工作流定义，但 checkout 的
+# 却是 dev 的合并提交。只要 main 与 dev 的脚本命名不同步（例如 main 仍引用
+# build:android-notifications，而 dev 已改为 build:android-plugins），这条 run
+# 就必然失败，且失败原因与被合并的代码毫无关系。
+#
+# 原先的结构还带一个 release-event 门禁：push 提交若关联到已合并 PR 就跳过发布，
+# 交给 pull_request_target 去发。两个条件叠加的结果是 push 被跳过、
+# pull_request_target 又因脚本名不匹配而失败 —— 两条 run 都不发布，
+# dev 预览版实际从未产出。
+#
+# 现在由 push 单独负责发布；发布说明改为优先读取关联 PR 正文（见
+# apps/android/tools/prepare_release_notes.py），查不到再回退提交说明，
+# 信息量与原来保持一致。
 on:
-  pull_request_target:
-    types: [closed]
-    branches: [dev]
   push:
     branches: [dev]
+  # 支持手动重跑：发布失败后不必为了重发而制造一次空提交。
+  workflow_dispatch:
 
 permissions:
   contents: write
+  # 发布说明需要读取关联 PR 正文。
   pull-requests: read
 
 concurrency:
@@ -18,31 +33,7 @@ concurrency:
   queue: max
 
 jobs:
-  release-event:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      should-release: ${{ steps.event.outputs.should-release }}
-    steps:
-      - name: Skip the push event for a merged pull request
-        id: event
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            MERGED_PULL_REQUESTS=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | select(.base.ref == "dev" and .merged_at != null)] | length')
-            if [ "$MERGED_PULL_REQUESTS" -gt 0 ]; then
-              echo "should-release=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          echo "should-release=true" >> "$GITHUB_OUTPUT"
-
-  sign-notification-package:
-    needs: release-event
-    if: needs.release-event.outputs.should-release == 'true' && (github.event_name == 'push' || github.event.pull_request.merged == true)
+  sign-plugin-packages:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,11 +43,9 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-          # 仅在合并门禁通过后检出已进入目标分支的提交。
-          allow-unsafe-pr-checkout: true
 
       - name: Setup Node.js for signed device packages
         uses: actions/setup-node@v7
@@ -65,13 +54,14 @@ jobs:
           cache: npm
           cache-dependency-path: plugin-tooling/package-lock.json
 
-      - name: Build the notification plugin WASM
+      # 三个内置插件各自是一个 crate,统一用锁定工具链编译 WASM。
+      - name: Build the bundled plugin WASM
         run: |
           rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications
+          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications -p open-android-intelligence-sms -p open-android-intelligence-call-log
           npm ci --prefix plugin-tooling
 
-      - name: Sign the bundled notification package
+      - name: Sign the bundled plugin packages
         env:
           OAI_PLUGIN_SIGNING_KEY_BASE64: ${{ secrets.OAI_PLUGIN_SIGNING_KEY_BASE64 }}
         run: |
@@ -83,24 +73,25 @@ jobs:
           OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-plugin-seed.bin"
           trap 'if [ -f "$OAI_PLUGIN_KEY_FILE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_PLUGIN_KEY_FILE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-plugin-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.bin"; fi' EXIT
           printf '%s' "$OAI_PLUGIN_SIGNING_KEY_BASE64" | base64 --decode > "$OAI_PLUGIN_KEY_FILE"
+          mkdir -p "$RUNNER_TEMP/signed-plugins"
           OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE="$OAI_PLUGIN_KEY_FILE" \
-            npm run build:android-notifications --prefix plugin-tooling -- "$RUNNER_TEMP/notifications.alp"
+            npm run build:android-plugins --prefix plugin-tooling -- "$RUNNER_TEMP/signed-plugins"
 
       - name: Set signed artifact name
         id: artifact-name
-        run: echo "name=signed-notifications-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+        run: echo "name=signed-plugins-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the signed notification package
+      # 整目录上传,artifact 内含 notifications/sms/call-log 三个 .alp。
+      - name: Upload the signed plugin packages
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.artifact-name.outputs.name }}
-          path: ${{ runner.temp }}/notifications.alp
+          path: ${{ runner.temp }}/signed-plugins
           if-no-files-found: error
           retention-days: 1
 
   build-preview:
-    needs: [release-event, sign-notification-package]
-    if: needs.release-event.outputs.should-release == 'true' && (github.event_name == 'push' || github.event.pull_request.merged == true)
+    needs: [sign-plugin-packages]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -111,11 +102,9 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-          # 仅在合并门禁通过后检出已进入目标分支的提交。
-          allow-unsafe-pr-checkout: true
 
       - name: Require dev to include current main history
         run: |
@@ -188,14 +177,14 @@ jobs:
         with:
           cache-provider: basic
 
-      - name: Download the signed notification package
+      - name: Download the signed plugin packages
         uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.sign-notification-package.outputs.signed-artifact-name }}
-          path: ${{ runner.temp }}/signed-notifications
+          name: ${{ needs.sign-plugin-packages.outputs.signed-artifact-name }}
+          path: ${{ runner.temp }}/signed-plugins
 
-      - name: Set the notification package path
-        run: echo "OAI_BUNDLED_NOTIFICATIONS_ALP=$RUNNER_TEMP/signed-notifications/notifications.alp" >> "$GITHUB_ENV"
+      - name: Set the bundled plugins directory
+        run: echo "OAI_BUNDLED_PLUGINS_DIR=$RUNNER_TEMP/signed-plugins" >> "$GITHUB_ENV"
 
       - name: Build Full Debug APK
         working-directory: apps/android
@@ -203,13 +192,16 @@ jobs:
           LC_ALL: C.UTF-8
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleFullDebug -Poai.requireBundledNotifications=true --stacktrace
+          ./gradlew :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace
 
-      - name: Verify the bundled notification package
+      # 三个插件资产必须逐一与签出的包逐字节一致;缺一个就说明内置链路断了。
+      - name: Verify the bundled plugin packages
         run: |
-          python3 apps/android/tools/verify_bundled_notifications.py \
-            --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
-            --package "$OAI_BUNDLED_NOTIFICATIONS_ALP"
+          for package in notifications sms call-log; do
+            python3 apps/android/tools/verify_bundled_plugins.py \
+              --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
+              --package "$package=$OAI_BUNDLED_PLUGINS_DIR/$package.alp"
+          done
 
       - name: Verify Debug Signing Identity
         env:
@@ -243,8 +235,7 @@ jobs:
           retention-days: 1
 
   publish-preview:
-    needs: [release-event, build-preview]
-    if: needs.release-event.outputs.should-release == 'true' && (github.event_name == 'push' || github.event.pull_request.merged == true)
+    needs: [build-preview]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -252,10 +243,8 @@ jobs:
       - name: Checkout release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
-          # 仅在合并门禁通过后检出已进入目标分支的提交。
-          allow-unsafe-pr-checkout: true
 
       - name: Download verified release assets
         uses: actions/download-artifact@v8
@@ -270,7 +259,7 @@ jobs:
           name: Development Preview v${{ needs.build-preview.outputs.package-version }}-dev
           prerelease: true
           make_latest: "false"
-          target_commitish: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          target_commitish: ${{ github.sha }}
           token: ${{ github.token }}
           body_path: ${{ runner.temp }}/release-assets/release-notes.md
           fail_on_unmatched_files: true
@@ -285,7 +274,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_VERSION: ${{ needs.build-preview.outputs.package-version }}
-          TARGET_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+          TARGET_SHA: ${{ github.sha }}
         run: |
           RELEASE_TAG="v${PACKAGE_VERSION}-dev"
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then

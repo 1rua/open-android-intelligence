@@ -29,7 +29,6 @@ val appAndroid12RuntimeLibraries = setOf(
     ":capability-ports",
     ":capability-sync-runtime",
     ":call-log-collector",
-    ":companion-bridge",
     ":conversation-data",
     ":conversation-domain",
     ":conversation-ui",

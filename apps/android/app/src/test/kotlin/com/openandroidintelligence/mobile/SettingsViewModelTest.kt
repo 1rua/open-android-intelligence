@@ -125,8 +125,44 @@ class SettingsViewModelTest {
         viewModel.setDynamicColor(false)
         assertFalse(viewModel.uiState.value.appearance.dynamicColor)
 
+        viewModel.setDynamicIconColor(false)
+        assertFalse(viewModel.uiState.value.appearance.dynamicIconColor)
+
+        viewModel.setDynamicIconColor(true)
+        assertTrue(viewModel.uiState.value.appearance.dynamicIconColor)
+
         viewModel.setReduceMotion(true)
         assertTrue(viewModel.uiState.value.appearance.reduceMotion)
+    }
+
+    @Test
+    fun dynamicIconColorPreferencePersistsAcrossInstances() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val pm = context.packageManager
+        val themedComponent = android.content.ComponentName(context, LauncherIconManager.ALIAS_THEMED)
+        val classicComponent = android.content.ComponentName(context, LauncherIconManager.ALIAS_CLASSIC)
+
+        val viewModel = SettingsViewModel(
+            environment = environment,
+            runtime = null,
+            externalScope = testScope,
+        )
+
+        viewModel.setDynamicIconColor(false)
+        assertFalse(viewModel.uiState.value.appearance.dynamicIconColor)
+        assertEquals(android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED, pm.getComponentEnabledSetting(themedComponent))
+        assertEquals(android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED, pm.getComponentEnabledSetting(classicComponent))
+
+        val newAppearance = AppearancePreferences(context)
+        assertFalse(newAppearance.settings.value.dynamicIconColor)
+
+        viewModel.setDynamicIconColor(true)
+        assertTrue(viewModel.uiState.value.appearance.dynamicIconColor)
+        assertEquals(android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED, pm.getComponentEnabledSetting(themedComponent))
+        assertEquals(android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED, pm.getComponentEnabledSetting(classicComponent))
+
+        val updatedAppearance = AppearancePreferences(context)
+        assertTrue(updatedAppearance.settings.value.dynamicIconColor)
     }
 
     @Test

@@ -1,127 +1,110 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="100%" height="auto" role="img" aria-label="Open Android Intelligence 首屏横幅：统一的安卓客户端，连接多种主流 Agent；无需手机部署、接入手机能力、远程 Agent 同步" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="100%" height="auto" role="img" aria-label="Open Android Intelligence 首屏横幅：一个统一的安卓客户端，用于连接多种主流 Agent；无需手机部署、接入手机能力、远程 Agent 同步">
   <title>Open Android Intelligence · 连接多种主流 Agent 的统一安卓客户端</title>
+  <desc>复古未来主义航天工程档案：黑白灰制图纸、超粗几何标题、倾斜轨道椭圆串起设备、协议与 Agent 三个节点，橙色天体标记终点，外围同心圆、刻度与遥测参数构成工程制图结构。</desc>
 
   <defs>
-    <linearGradient id="bgGrad" x1="0" y1="0" x2="1200" y2="400" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#08110E"/>
-      <stop offset="1" stop-color="#0D1A15"/>
-    </linearGradient>
-    <radialGradient id="glowMint" gradientUnits="userSpaceOnUse" cx="170" cy="120" r="260">
-      <stop offset="0" stop-color="#34D399"/>
-      <stop offset="1" stop-color="#34D399" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="glowSky" gradientUnits="userSpaceOnUse" cx="1010" cy="330" r="300">
-      <stop offset="0" stop-color="#38BDF8"/>
-      <stop offset="1" stop-color="#38BDF8" stop-opacity="0"/>
-    </radialGradient>
-    <pattern id="dotGrid" width="24" height="24" patternUnits="userSpaceOnUse">
-      <circle cx="2" cy="2" r="1" fill="#34D399"/>
+    <pattern id="heroGrain" width="7" height="7" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.5" fill="#111111" opacity="0.1"/>
+      <circle cx="5" cy="4" r="0.38" fill="#111111" opacity="0.06"/>
     </pattern>
-    <clipPath id="canvasClip">
-      <rect width="1200" height="400" rx="20"/>
+    <pattern id="heroHalftone" width="8" height="8" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.5" fill="#111111" opacity="0.4"/>
+    </pattern>
+    <clipPath id="heroClip">
+      <rect x="20" y="20" width="1160" height="336"/>
     </clipPath>
   </defs>
 
   <style>
-    .pill-label { font-size: 20px; font-weight: 600; fill: #34D399; }
-    .hero-title { font-size: 46px; font-weight: 800; fill: #F3F7F5; letter-spacing: -1px; }
-    .hero-sub   { font-size: 20px; font-weight: 400; fill: #9DB0AA; }
-    .chip-label { font-size: 19px; font-weight: 500; fill: #F3F7F5; }
-    .seg-title  { font-size: 21px; font-weight: 600; fill: #F3F7F5; }
-    .seg-desc   { font-size: 19px; font-weight: 400; fill: #9DB0AA; }
-    .flow-note  { font-size: 18px; font-weight: 400; fill: #7E918C; }
+    .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #4E4E4E; }
+    .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #111111; }
+    .mono-m { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #6F6F6A; }
+    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 1.2px; fill: #B8501F; }
+    .disp { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, "Noto Sans CJK SC", sans-serif; font-weight: 900; font-size: 64px; letter-spacing: -1.8px; fill: #111111; }
+    .lede { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; letter-spacing: 0.2px; fill: #111111; }
+    .body { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 400; letter-spacing: 0.2px; fill: #4E4E4E; }
+    .tag { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 600; fill: #111111; }
   </style>
 
-  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
-    <!-- 画布底 -->
-    <rect width="1200" height="400" rx="20" fill="url(#bgGrad)"/>
-    <g clip-path="url(#canvasClip)">
-      <rect width="1200" height="400" fill="url(#dotGrid)" opacity="0.035"/>
-      <circle cx="170" cy="120" r="260" fill="url(#glowMint)" opacity="0.06"/>
-      <circle cx="1010" cy="330" r="300" fill="url(#glowSky)" opacity="0.05"/>
-    </g>
+  <rect width="1200" height="400" fill="#F7F7F5"/>
+  <rect width="1200" height="400" fill="url(#heroGrain)"/>
+  <rect x="20" y="20" width="1160" height="360" fill="none" stroke="#111111" stroke-width="1.2"/>
 
-    <!-- 左栏：胶囊标签 -->
-    <rect x="64" y="56" width="360" height="36" rx="18" fill="#12211B" stroke="#2E4A3E" stroke-width="1.5"/>
-    <circle cx="86" cy="74" r="6" fill="#34D399"/>
-    <text x="102" y="81" class="pill-label">主流 Agent × Android 客户端</text>
-
-    <!-- 左栏：标题与白话价值主张 -->
-    <text x="64" y="150" class="hero-title">Open Android Intelligence</text>
-    <text x="64" y="208" class="hero-sub">一个统一的安卓客户端，用于连接多种主流 Agent</text>
-    <text x="64" y="240" class="hero-sub">客户端仅提供设备能力，决策全由 Agent 负责</text>
-
-    <!-- 左栏：三个承诺胶囊（项目解决的核心痛点） -->
-    <g>
-      <rect x="64" y="292" width="176" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(78 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-        <rect x="5" y="2" width="14" height="20" rx="3"/>
-        <path d="M12 18h.01"/>
-        <path d="M9 5h6"/>
-      </g>
-      <text x="110" y="321" class="chip-label">无需手机部署</text>
-    </g>
-    <g>
-      <rect x="254" y="292" width="176" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(268 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-        <path d="M9 2.5v4M15 2.5v4"/>
-        <path d="M6 6.5h12v4.5a6 6 0 0 1-12 0V6.5Z"/>
-        <path d="M12 17v4.5"/>
-      </g>
-      <text x="300" y="321" class="chip-label">接入手机能力</text>
-    </g>
-    <g>
-      <rect x="444" y="292" width="200" height="44" rx="22" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-      <g transform="translate(458 302)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-        <path d="M20 11A8.1 8.1 0 0 0 4.5 9M4 5v4h4"/>
-        <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/>
-      </g>
-      <text x="490" y="321" class="chip-label">远程 Agent 同步</text>
-    </g>
-
-    <!-- 右栏：链路面板 -->
-    <rect x="700" y="40" width="436" height="320" rx="20" fill="#101C17" stroke="#22382F" stroke-width="1.5"/>
-
-    <!-- 第 1 段：你的手机 -->
-    <rect x="716" y="52" width="404" height="72" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-    <rect x="730" y="66" width="44" height="44" rx="12" fill="#16281F"/>
-    <g transform="translate(740 76)" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-      <path d="M8 2.5h8A1.5 1.5 0 0 1 17.5 4v16a1.5 1.5 0 0 1-1.5 1.5H8A1.5 1.5 0 0 1 6.5 20V4A1.5 1.5 0 0 1 8 2.5Z"/>
-      <path d="M10.5 18.5h3"/>
-    </g>
-    <text x="792" y="82" class="seg-title">你的手机</text>
-    <text x="792" y="106" class="seg-desc">Android 宿主 + 平台内核</text>
-
-    <!-- 手机到协议：加密隧道 -->
-    <path d="M752 127v27" stroke="#2E4A3E" stroke-width="2" stroke-linecap="round"/>
-    <polygon points="747,154 757,154 752,161" fill="#2E4A3E"/>
-    <text x="792" y="150" class="flow-note">HTTP(S) · WebSocket / SSE</text>
-
-    <!-- 第 2 段：Gateway 协议 v2 -->
-    <rect x="716" y="164" width="404" height="72" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-    <rect x="730" y="178" width="44" height="44" rx="12" fill="#16281F"/>
-    <g transform="translate(740 188)" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-      <path d="M12 2.5 19 5v5.6c0 4.6-3 8-7 9.4-4-1.4-7-4.8-7-9.4V5l7-2.5Z"/>
-      <circle cx="12" cy="10" r="1.4"/>
-      <path d="M12 11.4v2.8"/>
-    </g>
-    <text x="792" y="194" class="seg-title">Gateway 协议 v2</text>
-    <text x="792" y="218" class="seg-desc">签名 · 校验 · 防重放</text>
-
-    <!-- 协议到宿主：按协商结果开放能力 -->
-    <path d="M752 239v27" stroke="#2E4A3E" stroke-width="2" stroke-linecap="round"/>
-    <polygon points="747,266 757,266 752,273" fill="#2E4A3E"/>
-    <text x="792" y="262" class="flow-note">各宿主按协商结果开放能力</text>
-
-    <!-- 第 3 段：Agent 宿主 -->
-    <rect x="716" y="276" width="404" height="72" rx="14" fill="#12211B" stroke="#22382F" stroke-width="1.5"/>
-    <rect x="730" y="290" width="44" height="44" rx="12" fill="#16281F"/>
-    <g transform="translate(740 300)" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-      <rect x="3.5" y="3.5" width="17" height="7.5" rx="2"/>
-      <rect x="3.5" y="13" width="17" height="7.5" rx="2"/>
-      <path d="M7 7.25h2M7 16.75h2"/>
-    </g>
-    <text x="792" y="306" class="seg-title">Agent 宿主</text>
-    <text x="792" y="330" class="seg-desc">Hermes / OpenClaw / DSH 插件</text>
+  <g stroke="#111111" stroke-width="1">
+    <path d="M10 20H30M20 10V30"/>
+    <path d="M1170 20H1190M1180 10V30"/>
+    <path d="M10 380H30M20 370V390"/>
+    <path d="M1170 380H1190M1180 370V390"/>
   </g>
+
+  <text x="44" y="47" class="mono-d" style="letter-spacing:1.4px">OPEN ANDROID INTELLIGENCE</text>
+  <text x="600" y="47" class="mono">TECHNICAL DOSSIER / SHEET 01</text>
+  <text x="1156" y="47" class="mono" text-anchor="end">REV 2.1.1 / 2026</text>
+  <path d="M44 64H1156" stroke="#111111" stroke-width="1"/>
+  <path d="M700 64V356" stroke="#111111" stroke-width="1"/>
+  <path d="M44 356H1156" stroke="#111111" stroke-width="1"/>
+
+  <text x="44" y="96" class="num">UNIFIED ANDROID CLIENT / MULTI-AGENT LINK</text>
+  <text x="42" y="164" class="disp">OPEN ANDROID</text>
+  <text x="42" y="228" class="disp">INTELLIGENCE</text>
+  <rect x="44" y="242" width="56" height="4" fill="#B8501F"/>
+  <text x="44" y="270" class="lede">一个统一的安卓客户端，用于连接多种主流 Agent</text>
+  <text x="44" y="296" class="body">客户端仅提供设备能力，决策全由 Agent 负责</text>
+  <path d="M44 314H674" stroke="#C9C9C2" stroke-width="1"/>
+
+  <g>
+    <text x="44" y="340" class="num">01</text>
+    <text x="72" y="340" class="tag">无需手机部署</text>
+    <text x="220" y="340" class="num">02</text>
+    <text x="248" y="340" class="tag">接入手机能力</text>
+    <text x="396" y="340" class="num">03</text>
+    <text x="424" y="340" class="tag">远程 Agent 同步</text>
+  </g>
+
+  <g clip-path="url(#heroClip)">
+    <path d="M724 210H1116" stroke="#E2E2DA" stroke-width="0.8"/>
+    <path d="M928 92V318" stroke="#E2E2DA" stroke-width="0.8"/>
+    <circle cx="928" cy="210" r="112" fill="none" stroke="#E2E2DA" stroke-width="0.8"/>
+    <circle cx="928" cy="210" r="86" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
+    <g stroke="#C9C9C2" stroke-width="0.8">
+      <path d="M928 98V112M928 308V322M724 204V216M1132 204V216"/>
+      <path d="M1025 266L1018.1 262M984 307L980 300.1M872 307L876 300.1M831 266L837.9 262M831 154L837.9 158M872 113L876 119.9M984 113L980 119.9M1025 154L1018.1 158"/>
+    </g>
+
+    <ellipse cx="928" cy="210" rx="172" ry="52" fill="none" stroke="#111111" stroke-width="1.4" transform="rotate(-17 928 210)"/>
+    <ellipse cx="928" cy="210" rx="124" ry="37" fill="none" stroke="#6F6F6A" stroke-width="0.8" stroke-dasharray="3 8" transform="rotate(-17 928 210)"/>
+
+    <circle cx="737" cy="302" r="20" fill="url(#heroHalftone)" opacity="0.55"/>
+    <circle cx="737" cy="302" r="20" fill="none" stroke="#111111" stroke-width="0.8" stroke-opacity="0.4"/>
+    <g stroke="#6F6F6A" stroke-width="0.8">
+      <path d="M737 276V282M737 322V328M711 302H717M757 302H763"/>
+    </g>
+  </g>
+
+  <text x="724" y="88" class="mono-d">MISSION SCHEMATIC / FIG. 01</text>
+  <text x="1156" y="88" class="mono" text-anchor="end">N.T.S.</text>
+  <text x="724" y="110" class="mono-m">DEVICE → GATEWAY → AGENT</text>
+  <text x="1156" y="110" class="mono-m" text-anchor="end">AZ 0.0°</text>
+
+  <g>
+    <circle cx="768" cy="241" r="6" fill="#F7F7F5" stroke="#111111" stroke-width="1.6"/>
+    <circle cx="768" cy="241" r="2.4" fill="#6F6F6A"/>
+    <circle cx="994" cy="142" r="6" fill="#F7F7F5" stroke="#111111" stroke-width="1.6"/>
+    <circle cx="994" cy="142" r="2.4" fill="#111111"/>
+    <circle cx="1093" cy="168" r="8.5" fill="#B8501F"/>
+  </g>
+
+  <g class="mono-d">
+    <text x="746" y="266" text-anchor="middle" style="fill:#6F6F6A">01</text>
+    <text x="994" y="126" text-anchor="middle">02</text>
+    <text x="1112" y="160" text-anchor="start" style="fill:#B8501F">03</text>
+  </g>
+
+  <path d="M724 330H1156" stroke="#C9C9C2" stroke-width="0.9"/>
+  <text x="724" y="350" class="mono"><tspan fill="#6F6F6A">01</tspan> DEVICE</text>
+  <text x="858" y="350" class="mono"><tspan fill="#111111">02</tspan> GATEWAY</text>
+  <text x="1014" y="350" class="mono"><tspan fill="#B8501F">03</tspan> AGENT</text>
+
+  <text x="44" y="372" class="mono">FIG. 01 / UNIFIED DEVICE LINK</text>
+  <text x="1156" y="372" class="mono" text-anchor="end">NO RELAY · NO ROOT · DIRECT LINK</text>
 </svg>

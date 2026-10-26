@@ -55,9 +55,24 @@ def prepare_release_notes(
     commit: str,
 ) -> str:
     event = json.loads(event_path.read_text(encoding="utf-8"))
-    if event_name in {"pull_request", "pull_request_target"}:
+    if expected_branch == "dev" and event_name in {"pull_request", "pull_request_target"}:
         return _merged_pull_request_body(event, expected_branch)
     if expected_branch == "dev" and event_name == "push":
+        # push 是 dev 预览版的唯一发布入口。
+        #
+        # 合并 PR 产生的 push 提交本身关联着 PR，因此优先用 PR 正文当发布说明
+        # （正文比 squash 后的单行提交说明信息量大得多）。查不到关联 PR 的
+        # 直接 push（例如维护者手推）则回退到提交说明。
+        #
+        # 这样就不再需要 pull_request_target 触发：它取的是默认分支 main 上的
+        # 工作流定义，而 checkout 的是 dev 的合并提交。一旦 main 与 dev 的脚本
+        # 命名不同步，这条 run 必然失败，且失败原因与被合并的代码无关。
+        try:
+            body = _dispatch_pull_request_body(repository, commit, expected_branch)
+        except (subprocess.CalledProcessError, ValueError, json.JSONDecodeError):
+            body = ""
+        if body.strip():
+            return body
         result = subprocess.run(
             ["git", "log", "-1", "--format=%B"],
             check=True,

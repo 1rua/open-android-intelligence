@@ -85,7 +85,7 @@ export { MigrationRunner, runBridgeMigrations } from "./migration-runner.js";
 export type { MigrationRunReport, MigrationStep } from "./migration-runner.js";
 export {
   NODE_SQLITE_BRIDGE_DRIVER,
-} from "../../../bridge-contract/src/persistence.js";
+} from "../../bridge-contract/src/persistence.js";
 export {
   NodeSqliteBridgeAdapter,
   isNodeSqliteLeaseCoordinator,

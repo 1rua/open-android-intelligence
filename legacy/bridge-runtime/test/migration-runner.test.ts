@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { MigrationRunner, type MigrationStep } from "../src/migration-runner.js";
-import type { DurableBridgeTransaction } from "../../../bridge-contract/src/durable-store.js";
+import type { DurableBridgeTransaction } from "../../bridge-contract/src/durable-store.js";
 import {
   NODE_SQLITE_BRIDGE_DRIVER,
   SQLITE_BRIDGE_ADAPTER_PORT,
   type SqliteBridgeAdapterPort,
-} from "../../../bridge-contract/src/persistence.js";
+} from "../../bridge-contract/src/persistence.js";
 
 const tx = (): DurableBridgeTransaction => ({
   transactionId: "migration:1",

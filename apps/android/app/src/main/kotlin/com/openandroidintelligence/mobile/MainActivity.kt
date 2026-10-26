@@ -40,6 +40,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -65,6 +66,7 @@ import com.openandroidintelligence.core.model.AssistantHandoffDenialReason
 import com.openandroidintelligence.core.model.AssistantHandoffGate
 import com.openandroidintelligence.core.model.AssistantHandoffRequest
 import com.openandroidintelligence.core.model.DefaultAssistantHandoffGate
+import com.openandroidintelligence.mobile.onboarding.OnboardingFlow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -389,6 +391,68 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // ===== 首次启动引导（前置分支）=====
+                // 引导是登录之前的一道独立流程，不参与「登录 ↔ 工作台」的状态判定，
+                // 也不新建 Activity：这样既不改动既有登录/配对/会话逻辑（需求五.5、六.9），
+                // 又能让系统返回键在引导内部逐级回退。
+                val onboardingPreferences = remember { app.onboardingPreferences }
+                val onboardingState by onboardingPreferences.state.collectAsState()
+                val onboardingVisible = onboardingState.shouldShow
+                // 已启用插件声明的 kernel primitive：决定「设备能力」权限卡片是否出现。
+                // 不存在的能力不展示，满足需求「不请求不存在或尚不需要的权限」。
+                //
+                // 两点性能约束：
+                // 1. listInstalled() 会遍历目录、读清单并解析 JSON —— 不能在组合（主线程）里做；
+                // 2. 只有引导真正可见时才需要这份数据，引导隐藏时不必扫描。
+                // 因此用 produceState 放进 IO 调度器，并受 onboardingVisible 门控。
+                val onboardingPluginRevision by app.pluginHost.revision.collectAsState()
+                val enabledPrimitives by produceState(
+                    initialValue = emptySet<String>(),
+                    onboardingVisible,
+                    onboardingPluginRevision,
+                ) {
+                    value = if (!onboardingVisible) {
+                        emptySet()
+                    } else {
+                        withContext(Dispatchers.IO) {
+                            // 只统计「已安装且已启用」的插件：未启用的插件即使声明了能力，
+                            // 也不会对 Agent 生效，把它算进来会误导用户授权一个用不上的权限。
+                            app.pluginHost.installStore.listInstalled()
+                                .mapNotNull { it.pluginId }
+                                .filter { app.pluginHost.isEnabled(it) }
+                                .flatMap { id -> app.pluginHost.entries(id).flatMap { it.primitives } }
+                                .toSet()
+                        }
+                    }
+                }
+
+                if (onboardingVisible) {
+                    OnboardingFlow(
+                        state = onboardingState,
+                        onStageChange = onboardingPreferences::setStage,
+                        onGatewaySelected = onboardingPreferences::setLastGateway,
+                        onFinished = {
+                            // 完成引导只记录「用户走完了引导」，与 Gateway 是否连接无关：
+                            // 登录成功与否仍由 ConnectionPhase 决定，绝不伪造连接状态。
+                            onboardingPreferences.markCompleted()
+                        },
+                        onExit = {
+                            // 在欢迎页再按返回：
+                            // - 重看模式：退出重看，回到原来的主界面；
+                            // - 首次启动：本次会话不再展示引导（不写 finished），
+                            //   同时结束 Activity —— 用户明确表达了「现在不想用引导」，
+                            //   停留在登录页反而会让他再面对一次同样的选择。
+                            if (onboardingState.replay) {
+                                onboardingPreferences.endReplay()
+                            } else {
+                                onboardingPreferences.dismissForCurrentSession()
+                                finish()
+                            }
+                        },
+                        pluginPrimitives = enabledPrimitives,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     // 根表面必须与各页面同色：登录 ↔ 工作台切换时不再出现色带。
@@ -545,6 +609,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+                }   // 结束 else（引导未展示时走原有登录/工作台分支）
             }
         }
     }

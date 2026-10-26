@@ -242,7 +242,7 @@ class ProductionPluginHostTest {
             var gatewayRevoked = false
             val transport = object : GatewayByteTransport {
                 override suspend fun execute(request: WireRequest): WireResponse {
-                    val activeId = if ("req_disabled" in request.target) "req_disabled" else "req_host"
+                    val activeId = request.target.substringAfter("/device-requests/").substringBefore('/')
                     if (request.target.endsWith("/req_disabled") && gatewayRevoked) {
                         return WireResponse(403,emptyList(),"""{"protocol":"2.1","error":{"code":"CAPABILITY_DENIED"}}""".toByteArray())
                     }
@@ -270,8 +270,9 @@ class ProductionPluginHostTest {
                 transport, { ByteArray(64) }, InMemoryEventCursorStore())
             val executionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             try {
+                var foreground = true
                 val driver = DeviceExecutionDriver(context, executionScope, http, host, "acct_host", "dev_host", 1,
-                    "test_host_execution", { 7 }, { true }, TestDocumentKeys)
+                    "test_host_execution", { 7 }, { foreground }, TestDocumentKeys)
                 driver.accept("req_host")
                 driver.accept("req_host") // Snapshot/event replay must not create another invocation.
                 withTimeout(5000) { driver.confirmation.filterNotNull().first() }
@@ -285,6 +286,12 @@ class ProductionPluginHostTest {
                 assertTrue(results[0].body.decodeToString().contains("sms_actual"))
                 driver.accept("req_host")
                 assertEquals(2, calls)
+                foreground = false
+                driver.accept("req_background")
+                withTimeout(5000) { executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+                assertEquals(2, calls)
+                assertTrue(results.last().body.decodeToString().contains("LOCAL_CONFIRMATION_REQUIRED"))
+                foreground = true
                 // Revoke at the Gateway while the Android confirmation is open;
                 // a missed cancellation event must not permit another invocation.
                 driver.accept("req_disabled")

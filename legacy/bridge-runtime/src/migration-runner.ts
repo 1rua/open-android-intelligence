@@ -1,9 +1,9 @@
 import {
   assertSqliteBridgeAdapterPort,
   type SqliteBridgeAdapterPort,
-} from "../../../bridge-contract/src/persistence.js";
-import { BridgeServiceError } from "../../../bridge-contract/src/service-types.js";
-import type { DurableBridgeTransaction } from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/persistence.js";
+import { BridgeServiceError } from "../../bridge-contract/src/service-types.js";
+import type { DurableBridgeTransaction } from "../../bridge-contract/src/durable-store.js";
 
 export type MigrationStep = Readonly<{
   id: string;

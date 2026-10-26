@@ -1,147 +1,157 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="100%" height="auto" role="img" aria-label="架构：Android 客户端通过 Gateway Protocol 连接 Agent 宿主">
-  <title>Android 客户端与 Agent 宿主的连接结构</title>
-  <desc>手机侧由 Android 宿主、平台内核和设备插件组成；Gateway Protocol v2 负责通信与校验；Hermes、OpenClaw 和 DSH 通过各自插件提供 Gateway 服务。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="100%" height="auto" role="img" aria-label="架构：Android 客户端通过 Gateway Protocol v2 连接 Agent 宿主">
+  <title>设备、协议与宿主的连接结构</title>
+  <desc>航天工程制图风格的三层架构：设备侧由 Android 宿主、平台内核与设备插件组成；Gateway Protocol v2 负责传输与校验；Hermes、OpenClaw 与 DSH 通过各自插件提供网关服务。</desc>
 
   <defs>
-    <linearGradient id="archBg" x1="0" y1="0" x2="1200" y2="560" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#08110E"/>
-      <stop offset="1" stop-color="#0D1A15"/>
-    </linearGradient>
-    <radialGradient id="archGlowMint" gradientUnits="userSpaceOnUse" cx="240" cy="120" r="320">
-      <stop offset="0" stop-color="#34D399"/>
-      <stop offset="1" stop-color="#34D399" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="archGlowSky" gradientUnits="userSpaceOnUse" cx="960" cy="440" r="340">
-      <stop offset="0" stop-color="#38BDF8"/>
-      <stop offset="1" stop-color="#38BDF8" stop-opacity="0"/>
-    </radialGradient>
-    <pattern id="archDots" width="24" height="24" patternUnits="userSpaceOnUse">
-      <circle cx="2" cy="2" r="1" fill="#34D399"/>
+    <pattern id="archGrain" width="7" height="7" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.5" fill="#111111" opacity="0.09"/>
+      <circle cx="5" cy="4" r="0.38" fill="#111111" opacity="0.055"/>
+    </pattern>
+    <pattern id="archHalftone" width="8" height="8" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" fill="#111111" opacity="0.36"/>
     </pattern>
     <clipPath id="archClip">
-      <rect width="1200" height="560" rx="20"/>
+      <rect x="20" y="20" width="1160" height="560"/>
     </clipPath>
   </defs>
 
   <style>
-    .h-title { font-size: 26px; font-weight: 700; fill: #F3F7F5; }
-    .h-sub   { font-size: 20px; font-weight: 400; fill: #9DB0AA; }
-    .col-title { font-size: 22px; font-weight: 700; fill: #F3F7F5; }
-    .col-sub   { font-size: 19px; font-weight: 400; fill: #7E918C; }
-    .item-title { font-size: 20px; font-weight: 600; fill: #F3F7F5; }
-    .item-desc  { font-size: 19px; font-weight: 400; fill: #9DB0AA; }
-    .proto-item { font-size: 19px; font-weight: 500; fill: #C7D4CF; }
-    .foot       { font-size: 18px; font-weight: 400; fill: #7E918C; }
+    .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #4E4E4E; }
+    .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #111111; }
+    .mono-m { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #6F6F6A; }
+    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 1.2px; fill: #B8501F; }
+    .disp { font-family: "Arial Black", "Inter", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-weight: 900; font-size: 44px; letter-spacing: -0.8px; fill: #111111; }
+    .item { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #111111; }
+    .body { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 400; fill: #4E4E4E; }
+    .host { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", sans-serif; font-size: 20px; font-weight: 900; letter-spacing: 0.6px; fill: #111111; }
   </style>
 
-  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
-    <!-- 画布 -->
-    <rect width="1200" height="560" rx="20" fill="url(#archBg)"/>
-    <g clip-path="url(#archClip)">
-      <rect width="1200" height="560" fill="url(#archDots)" opacity="0.03"/>
-      <circle cx="240" cy="120" r="320" fill="url(#archGlowMint)" opacity="0.05"/>
-      <circle cx="960" cy="440" r="340" fill="url(#archGlowSky)" opacity="0.05"/>
-    </g>
+  <rect width="1200" height="600" fill="#F7F7F5"/>
+  <rect width="1200" height="600" fill="url(#archGrain)"/>
+  <rect x="20" y="20" width="1160" height="560" fill="none" stroke="#111111" stroke-width="1.2"/>
 
-    <!-- 标题 -->
-    <text x="64" y="58" class="h-title">Android 客户端与 Agent 宿主的连接结构</text>
-    <text x="64" y="90" class="h-sub">手机端授权 · 协议校验 · 宿主提供服务</text>
-
-    <!-- 第一列：手机上 -->
-    <g transform="translate(64,120)">
-      <rect width="330" height="360" rx="20" fill="#101C17" stroke="#22382F" stroke-width="1.5"/>
-      <rect x="16" y="16" width="298" height="44" rx="22" fill="#16281F" stroke="#2E4A3E" stroke-width="1"/>
-      <text x="36" y="46" class="col-title">手机上</text>
-      <text x="24" y="88" class="col-sub">Android 宿主</text>
-
-      <!-- 条目 1：客户端操作 -->
-      <g transform="translate(24,114)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="5" y="2" width="14" height="20" rx="2.5"/>
-        <path d="M9 18.5h6"/>
-      </g>
-      <text x="60" y="132" class="item-title">账号与会话</text>
-      <text x="60" y="158" class="item-desc">连接 Gateway、选取附件</text>
-
-      <!-- 条目 2：平台内核 -->
-      <g transform="translate(24,194)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2 21 5.4v5.2c0 4.6-3.6 8.2-9 9.4-5.4-1.2-9-4.8-9-9.4V5.4L12 2Z"/>
-        <path d="M8.4 11.6l2.6 2.6 4.6-4.8"/>
-      </g>
-      <text x="60" y="212" class="item-title">平台内核</text>
-      <text x="60" y="238" class="item-desc">管理身份、授权和插件状态</text>
-
-      <!-- 条目 3：设备插件 -->
-      <g transform="translate(24,274)" fill="none" stroke="#34D399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 4h16v7.2h-2.2a2.6 2.6 0 0 0 0 5.2H20V20H4v-3.6h2.2a2.6 2.6 0 0 0 0-5.2H4V4Z"/>
-      </g>
-      <text x="60" y="292" class="item-title">设备插件</text>
-      <text x="60" y="318" class="item-desc">短信、通知、通话记录按需装</text>
-    </g>
-
-    <!-- 列间箭头 1 -->
-    <path d="M398 300h20" stroke="#3C6657" stroke-width="2" stroke-linecap="round"/>
-    <polygon points="418,294 418,306 427,300" fill="#34D399"/>
-
-    <!-- 第二列：中间 -->
-    <g transform="translate(430,120)">
-      <rect width="270" height="360" rx="20" fill="#101C17" stroke="#22382F" stroke-width="1.5"/>
-      <rect x="16" y="16" width="238" height="44" rx="22" fill="#16281F" stroke="#2E4A3E" stroke-width="1"/>
-      <text x="36" y="46" class="col-title">中间</text>
-      <text x="24" y="88" class="col-sub">Gateway Protocol v2</text>
-
-      <g stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" fill="none">
-        <circle cx="32" cy="122" r="3.4" fill="#38BDF8" stroke="none"/>
-        <circle cx="32" cy="178" r="3.4" fill="#38BDF8" stroke="none"/>
-        <circle cx="32" cy="234" r="3.4" fill="#38BDF8" stroke="none"/>
-        <circle cx="32" cy="290" r="3.4" fill="#38BDF8" stroke="none"/>
-        <path d="M32 132v34M32 188v34M32 244v34" stroke-opacity="0.35"/>
-      </g>
-      <text x="52" y="130" class="proto-item">HTTP(S) 请求 + 事件流</text>
-      <text x="52" y="186" class="proto-item">JSON Schema 全封闭</text>
-      <text x="52" y="242" class="proto-item">Ed25519 签名防重放</text>
-      <text x="52" y="298" class="proto-item">幂等重试不重复执行</text>
-
-      <text x="24" y="342" class="col-sub">按协商结果声明能力</text>
-    </g>
-
-    <!-- 列间箭头 2 -->
-    <path d="M704 300h20" stroke="#3C6657" stroke-width="2" stroke-linecap="round"/>
-    <polygon points="724,294 724,306 733,300" fill="#38BDF8"/>
-
-    <!-- 第三列：Agent 宿主 -->
-    <g transform="translate(736,120)">
-      <rect width="400" height="360" rx="20" fill="#101C17" stroke="#22382F" stroke-width="1.5"/>
-      <rect x="16" y="16" width="368" height="44" rx="22" fill="#16281F" stroke="#2E4A3E" stroke-width="1"/>
-      <text x="36" y="46" class="col-title">Agent 宿主</text>
-      <text x="24" y="88" class="col-sub">Agent 宿主</text>
-
-      <!-- 条目 1：宿主插件 -->
-      <g transform="translate(24,114)" fill="none" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="3" y="3" width="18" height="8" rx="2"/>
-        <rect x="3" y="13" width="18" height="8" rx="2"/>
-        <path d="M7 7h2M7 17h2"/>
-      </g>
-      <text x="60" y="132" class="item-title">宿主插件</text>
-      <text x="60" y="158" class="item-desc">Hermes / OpenClaw / DSH 适配器</text>
-
-      <!-- 条目 2：多账号隔离 -->
-      <g transform="translate(24,194)" fill="none" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="7.5" r="4"/>
-        <path d="M4 20c0-3.8 3.6-6.5 8-6.5s8 2.7 8 6.5"/>
-      </g>
-      <text x="60" y="212" class="item-title">多账号隔离</text>
-      <text x="60" y="238" class="item-desc">配对、会话和数据按账号隔离</text>
-
-      <!-- 条目 3：模型与工具 -->
-      <g transform="translate(24,274)" fill="none" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="6" y="6" width="12" height="12" rx="2.5"/>
-        <path d="M10 2v4M14 2v4M10 18v4M14 18v4M2 10h4M2 14h4M18 10h4M18 14h4"/>
-      </g>
-      <text x="60" y="292" class="item-title">模型与工具</text>
-      <text x="60" y="318" class="item-desc">由 Agent 宿主提供</text>
-    </g>
-
-    <!-- 底部说明 -->
-    <text x="600" y="524" text-anchor="middle" class="foot">三种宿主接入同一协议 · Hermes / OpenClaw 共用 70 组契约用例 · 设备能力链路仍在装配</text>
+  <g stroke="#111111" stroke-width="1">
+    <path d="M10 20H30M20 10V30"/>
+    <path d="M1170 20H1190M1180 10V30"/>
+    <path d="M10 580H30M20 570V590"/>
+    <path d="M1170 580H1190M1180 570V590"/>
   </g>
+
+  <text x="44" y="47" class="mono-d" style="letter-spacing:1.4px">OPEN ANDROID INTELLIGENCE / SYSTEM ARCHIVE</text>
+  <text x="600" y="47" class="mono">TECHNICAL DOSSIER / SHEET 02</text>
+  <text x="1156" y="47" class="mono" text-anchor="end">REV 2.1.1 / 2026</text>
+  <path d="M44 64H1156" stroke="#111111" stroke-width="1"/>
+
+  <g clip-path="url(#archClip)">
+    <g opacity="0.5">
+      <circle cx="1128" cy="536" r="26" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
+      <circle cx="1128" cy="536" r="52" fill="none" stroke="#D6D6CE" stroke-width="0.8" stroke-dasharray="2 6"/>
+      <path d="M1128 470V602M1062 536H1194" stroke="#D6D6CE" stroke-width="0.8"/>
+    </g>
+  </g>
+
+  <text x="44" y="96" class="num">FIG. 02 / SYSTEM TOPOLOGY</text>
+  <text x="42" y="146" class="disp">设备、协议与宿主的连接结构</text>
+  <text x="44" y="174" class="mono">ANDROID HOST → GATEWAY PROTOCOL V2 → AGENT HOST</text>
+
+  <text x="1156" y="96" class="mono" text-anchor="end">RELAY / 0.00</text>
+  <text x="1156" y="118" class="mono" text-anchor="end">AUTH / ED25519</text>
+  <text x="1156" y="140" class="mono" text-anchor="end">VECTORS / 70</text>
+  <text x="1156" y="162" class="mono" text-anchor="end">STATUS / ACTIVE</text>
+
+  <path d="M44 196H1156" stroke="#111111" stroke-width="1"/>
+
+  <g>
+    <rect x="44" y="214" width="282" height="316" fill="none" stroke="#111111" stroke-width="1.2"/>
+    <rect x="350" y="214" width="242" height="316" fill="none" stroke="#111111" stroke-width="1.2"/>
+    <rect x="616" y="214" width="540" height="316" fill="none" stroke="#111111" stroke-width="1.2"/>
+    <path d="M44 280H326M350 280H592M616 280H1156" stroke="#111111" stroke-width="1"/>
+  </g>
+
+  <text x="60" y="240" class="num">01 / DEVICE</text>
+  <text x="310" y="240" class="mono-m" text-anchor="end">LOCAL</text>
+  <text x="60" y="266" class="mono-d">Android 宿主</text>
+
+  <text x="366" y="240" class="num">02 / PROTOCOL</text>
+  <text x="366" y="266" class="mono-d">Gateway v2</text>
+
+  <text x="632" y="240" class="num">03 / HOST</text>
+  <text x="1140" y="240" class="mono-m" text-anchor="end">HERMES · OPENCLAW · DSH</text>
+  <text x="632" y="266" class="mono-d">Agent 宿主</text>
+
+  <g>
+    <path d="M60 306H74" stroke="#B8501F" stroke-width="2.4"/>
+    <text x="60" y="332" class="item">账号与会话</text>
+    <text x="60" y="358" class="body">连接 Gateway、选取附件</text>
+    <path d="M60 378H310" stroke="#D6D6CE" stroke-width="0.8"/>
+
+    <path d="M60 400H74" stroke="#B8501F" stroke-width="2.4"/>
+    <text x="60" y="426" class="item">平台内核</text>
+    <text x="60" y="452" class="body">管理身份、授权与插件</text>
+    <path d="M60 472H310" stroke="#D6D6CE" stroke-width="0.8"/>
+
+    <path d="M60 494H74" stroke="#B8501F" stroke-width="2.4"/>
+    <text x="60" y="520" class="item">设备插件</text>
+  </g>
+
+  <g>
+    <path d="M366 296V520" stroke="#C9C9C2" stroke-width="0.9"/>
+    <circle cx="366" cy="296" r="5" fill="#111111"/>
+    <circle cx="366" cy="352" r="5" fill="#F7F7F5" stroke="#111111" stroke-width="1.4"/>
+    <circle cx="366" cy="408" r="5" fill="#F7F7F5" stroke="#111111" stroke-width="1.4"/>
+    <circle cx="366" cy="464" r="5" fill="#F7F7F5" stroke="#111111" stroke-width="1.4"/>
+
+    <text x="384" y="302" class="mono-d">HTTP(S) / SSE</text>
+    <text x="384" y="326" class="body">双向事件流</text>
+
+    <text x="384" y="358" class="mono-d">JSON SCHEMA</text>
+    <text x="384" y="382" class="body">2020-12 封闭校验</text>
+
+    <text x="384" y="414" class="mono-d">ED25519</text>
+    <text x="384" y="438" class="body">签名与防重放</text>
+
+    <text x="384" y="470" class="mono-d">IDEMPOTENT</text>
+    <text x="384" y="494" class="body">幂等执行</text>
+  </g>
+
+  <path d="M326 362H346" stroke="#111111" stroke-width="1.2"/>
+  <path d="M346 356V368L350 362Z" fill="#111111"/>
+  <path d="M592 362H612" stroke="#111111" stroke-width="1.2"/>
+  <path d="M612 356V368L616 362Z" fill="#111111"/>
+
+  <g>
+    <text x="632" y="314" class="num">01</text>
+    <text x="664" y="314" class="host">HERMES</text>
+    <text x="775" y="314" class="body">独立插件 / 主密钥</text>
+    <text x="1140" y="314" class="mono-m" text-anchor="end">ADAPTER / 2.2.0</text>
+    <path d="M632 330H1140" stroke="#D6D6CE" stroke-width="0.8"/>
+
+    <text x="632" y="368" class="num">02</text>
+    <text x="664" y="368" class="host">OPENCLAW</text>
+    <text x="790" y="368" class="body">独立插件 / 主密钥</text>
+    <text x="1140" y="368" class="mono-m" text-anchor="end">ADAPTER / 1.1.0</text>
+    <path d="M632 384H1140" stroke="#D6D6CE" stroke-width="0.8"/>
+
+    <text x="632" y="422" class="num">03</text>
+    <text x="664" y="422" class="host">DSH</text>
+    <text x="722" y="422" class="body">复用原生端口</text>
+    <text x="1140" y="422" class="mono-m" text-anchor="end">BUNDLE / 0.2.0</text>
+    <path d="M632 438H1140" stroke="#D6D6CE" stroke-width="0.8"/>
+
+    <text x="632" y="472" class="body">多账号隔离</text>
+    <text x="764" y="472" class="body">配对、会话与数据按账号隔离</text>
+    <path d="M632 488H1140" stroke="#D6D6CE" stroke-width="0.8"/>
+    <text x="632" y="516" class="body">能力声明</text>
+    <text x="764" y="516" class="body">由 Agent 宿主按会话协商</text>
+  </g>
+
+  <g opacity="0.65">
+    <circle cx="52" cy="547" r="9" fill="url(#archHalftone)"/>
+    <circle cx="52" cy="547" r="9" fill="none" stroke="#111111" stroke-width="0.8"/>
+    
+  </g>
+
+  <path d="M44 550H1156" stroke="#111111" stroke-width="1"/>
+  <text x="44" y="574" class="mono">SHEET 02 / THREE-LAYER TOPOLOGY · 设备能力链路仍在装配</text>
+  <text x="1156" y="574" class="mono" text-anchor="end">NO RELAY · ED25519 · 70 VECTORS</text>
 </svg>

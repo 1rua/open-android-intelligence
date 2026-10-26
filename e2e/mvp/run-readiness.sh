@@ -24,7 +24,7 @@ SMOKE_STATUS=0
 
 READINESS_STATUS=0
 "$ROOT_DIR/tools/run-node24" node --experimental-strip-types \
-  "$ROOT_DIR/mvp-contract/tools/mvp-readiness.ts" "$MODE" || READINESS_STATUS=$?
+  "$ROOT_DIR/legacy/mvp-contract/tools/mvp-readiness.ts" "$MODE" || READINESS_STATUS=$?
 
 if [[ "$SMOKE_STATUS" -ne 0 || "$READINESS_STATUS" -ne 0 ]]; then
   if [[ "$MODE" == "--release" ]]; then

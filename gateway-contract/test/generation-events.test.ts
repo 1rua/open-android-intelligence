@@ -17,7 +17,7 @@ ajv.addSchema(catalogDocument);
 describe("generation-scoped conversation events", () => {
   const validator = createGatewayDispatchedValidator(
     registry.catalogEntries as GatewaySubschemaCatalogEntry[],
-    { core: registry.bindings as VerifiedSchemaBindingSet["core"], device: [] },
+    { core: registry.bindings as unknown as VerifiedSchemaBindingSet["core"], device: [] },
   );
   const message = {
     conversationId: "conv_a", messageId: "msg_a", sender: "assistant",

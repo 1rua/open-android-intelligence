@@ -6,11 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   BRIDGE_STORE_NAMESPACES,
   type BridgeStoreNamespace,
-} from "../../../bridge-contract/src/durable-store.js";
+} from "../../bridge-contract/src/durable-store.js";
 import {
   NODE_SQLITE_BRIDGE_DRIVER,
   SQLITE_BRIDGE_ADAPTER_PORT,
-} from "../../../bridge-contract/src/persistence.js";
+} from "../../bridge-contract/src/persistence.js";
 import { openNodeSqliteBridgeAdapter } from "../src/node-sqlite-adapter.js";
 
 const root = await mkdtemp(join(tmpdir(), "open-android-intelligence-node-sqlite-"));
