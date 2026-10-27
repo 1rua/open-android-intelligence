@@ -24,6 +24,8 @@ data class AccountProfile(
     val avatarBase64: String? = null,
     /** Last display identity advertised by this account's Gateway. */
     val agentName: String? = null,
+    /** 用户在原生多 Agent 列表中最后选择的原生 Agent；重连后据此恢复，而不是回落到列表第一个。 */
+    val selectedAgentId: String? = null,
 ) {
     init {
         val endpoint = GatewayEndpoint.parse(gatewayBaseUrl)

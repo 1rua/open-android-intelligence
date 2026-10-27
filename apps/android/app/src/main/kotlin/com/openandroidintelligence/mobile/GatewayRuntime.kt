@@ -1246,9 +1246,9 @@ class GatewayRuntime(
         sessionJob = ownedJob
         val sessionScope = CoroutineScope(ownedJob + Dispatchers.Main.immediate)
         _nativeAgents.value?.close()
-        _nativeAgents.value = if (nativeAgentSessions) {
-            NativeAgentsController(com.openandroidintelligence.gateway.agents.AgentSessionClient(http), sessionScope)
-        } else null
+        // 控制器在工作台装配阶段创建（见下方 nativeAgentSessions 分支），
+        // 以便同时恢复用户上次选择的原生 Agent。旧控制器在此统一释放。
+        if (!nativeAgentSessions) _nativeAgents.value = null
         sessionScope.launch {
             combine(repository.generationId, repository.generationState) { id, state ->
                 id != null && state in setOf(com.openandroidintelligence.conversation.model.GenerationState.QUEUED,
@@ -1430,21 +1430,41 @@ class GatewayRuntime(
         }
 
         if (nativeAgentSessions) {
+            val rememberedAgentId = accountProfiles.find(profileId)?.selectedAgentId
+            _nativeAgents.value?.close()
+            _nativeAgents.value = NativeAgentsController(com.openandroidintelligence.gateway.agents.AgentSessionClient(http), sessionScope,
+                lastSelectedAgentId = rememberedAgentId,
+                onSelectionLost = { lost -> _operationNotice.value = "上次使用的 Agent「$lost」已不在当前列表中，请重新选择。" })
             sessionScope.launch {
                 var previousAgentId: String? = null
                 _nativeAgents.filterNotNull().flatMapLatest { it.state }.collect { nState: NativeAgentsState ->
                     val selected = nState.selectedAgentId
                     if (selected != null && selected != previousAgentId) {
+                        val isFirstObservation = previousAgentId == null
                         previousAgentId = selected
+                        // 用户实际切换（或恢复的选择被服务端确认）才持久化与重建工作台，
+                        // 首帧观察不重建，避免每次重连都无谓地清空界面状态。
+                        if (!isFirstObservation || nState.selectionConfirmed) {
+                            synchronized(accountProfiles) {
+                                accountProfiles.find(profileId)?.let { profile ->
+                                    if (profile.selectedAgentId != selected) {
+                                        accountProfiles.saveSelectedAgent(profileId, selected)
+                                        _savedProfiles.value = accountProfiles.list()
+                                    }
+                                }
+                            }
+                        }
                         val newAgent = nState.agent
                         val newAgentName: String = newAgent?.name ?: selected
                         val currentPhase = _phase.value
                         if (currentPhase is ConnectionPhase.Connected && currentPhase.agentName != newAgentName) {
                             _phase.value = currentPhase.copy(agentName = newAgentName)
                         }
-                        // Recreate workbench controller cleanly on agent switch
-                        _controller.value?.close()
-                        _controller.value = buildWorkbenchController(newAgentName)
+                        if (!isFirstObservation) {
+                            // Recreate workbench controller cleanly on agent switch
+                            _controller.value?.close()
+                            _controller.value = buildWorkbenchController(newAgentName)
+                        }
                     }
                 }
             }
@@ -1478,9 +1498,18 @@ class GatewayRuntime(
         }
         synchronized(backgroundOwnershipLock) {
             checkOwner()
+            val effectiveAgentName = if (nativeAgentSessions) {
+                // 原生多 Agent 模式下优先保持用户已选中的 Agent 名称或配置中的名称，
+                // 不使用网关单机部署名覆盖。
+                _nativeAgents.value?.state?.value?.agent?.name
+                    ?: accountProfiles.find(profileId)?.agentName
+                    ?: agentName
+            } else {
+                agentName
+            }
             runCatching {
                 synchronized(accountProfiles) {
-                    accountProfiles.find(profileId)?.let { accountProfiles.save(it.copy(agentName = agentName)) }
+                    accountProfiles.find(profileId)?.let { accountProfiles.save(it.copy(agentName = effectiveAgentName)) }
                     _savedProfiles.value = accountProfiles.list()
                 }
             }
@@ -1495,7 +1524,7 @@ class GatewayRuntime(
                 conversationUi = CLIENT_CONVERSATION_UI_OFFER intersect conversationUi.toSet(),
                 requestedConversationUi = CLIENT_CONVERSATION_UI_OFFER,
                 deviceRequests = deviceRequests,
-                agentName = agentName,
+                agentName = effectiveAgentName,
             )
             _loginStatus.value = GatewayLoginStatus.SIGNED_IN
             _credentialStatus.value = GatewayCredentialStatus.AVAILABLE
@@ -1817,7 +1846,8 @@ class GatewayRuntime(
         synchronized(accountProfiles) {
             val previous = accountProfiles.find(profileId)
             accountProfiles.save(AccountProfile(profileId, gatewayUrl, username, trustId,
-                avatarBase64 = previous?.avatarBase64, agentName = previous?.agentName),
+                avatarBase64 = previous?.avatarBase64, agentName = previous?.agentName,
+                selectedAgentId = previous?.selectedAgentId),
                 AndroidAccountProfileStore.Binding(session.accountId, session.deviceId, session.sessionId, DEVICE_KEY_ENCODING_VERSION))
             _savedProfiles.value = accountProfiles.list()
         }

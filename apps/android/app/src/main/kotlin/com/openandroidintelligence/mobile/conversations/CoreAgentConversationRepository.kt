@@ -157,6 +157,7 @@ class CoreAgentConversationRepository(
 
         val accumulatedText = StringBuilder()
         val assistantMsgId = "asst_${UUID.randomUUID()}"
+        val assistantTimestamp = System.currentTimeMillis()
 
         activeStreamingJob?.cancel()
         activeStreamingJob = parentScope.launch(ioDispatcher) {
@@ -183,9 +184,10 @@ class CoreAgentConversationRepository(
                                 id = assistantMsgId,
                                 sender = "assistant",
                                 parts = listOf(MessagePart.Text(currentText)),
-                                timestamp = System.currentTimeMillis(),
+                                timestamp = assistantTimestamp,
                                 state = "STREAMING",
                                 conversationId = ConversationId(conversationId),
+                                generationId = genId,
                             )
                         )
                     )
@@ -201,9 +203,10 @@ class CoreAgentConversationRepository(
                             id = assistantMsgId,
                             sender = "assistant",
                             parts = listOf(MessagePart.Text(accumulatedText.toString())),
-                            timestamp = System.currentTimeMillis(),
+                            timestamp = assistantTimestamp,
                             state = "CONFIRMED",
                             conversationId = ConversationId(conversationId),
+                            generationId = genId,
                         )
                     )
                 )
@@ -213,7 +216,7 @@ class CoreAgentConversationRepository(
                         eventId = "evt_${UUID.randomUUID()}",
                         occurredAt = System.currentTimeMillis(),
                         conversationId = ConversationId(conversationId),
-                        messageId = assistantMsgId,
+                        messageId = messageId,
                         clientMessageId = message.clientMessageId,
                         status = AgentMessageStatus.COMPLETED,
                         revision = 1L,
@@ -237,7 +240,7 @@ class CoreAgentConversationRepository(
                         eventId = "evt_${UUID.randomUUID()}",
                         occurredAt = System.currentTimeMillis(),
                         conversationId = ConversationId(conversationId),
-                        messageId = assistantMsgId,
+                        messageId = messageId,
                         clientMessageId = message.clientMessageId,
                         status = AgentMessageStatus.FAILED,
                         revision = 1L,

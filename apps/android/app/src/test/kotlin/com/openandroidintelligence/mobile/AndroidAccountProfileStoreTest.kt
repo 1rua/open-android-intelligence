@@ -80,9 +80,19 @@ class AndroidAccountProfileStoreTest {
     @Test fun updatingPublicMetadataDoesNotCreateAnotherAccount() {
         val store = AndroidAccountProfileStore(context)
         store.save(profile("alice"))
-        val changed = profile("alice").copy(gatewayBaseUrl = "http://new.example")
+        val changed = profile("alice").copy(gatewayBaseUrl = "http://new.example", selectedAgentId = "hermes")
         store.save(changed)
         assertEquals(listOf(changed), store.list())
+        assertEquals("hermes", store.find("alice")?.selectedAgentId)
+    }
+
+    @Test fun saveSelectedAgentPersistsAgentId() {
+        val store = AndroidAccountProfileStore(context)
+        store.save(profile("alice"))
+        store.saveSelectedAgent("alice", "dsh")
+        assertEquals("dsh", store.find("alice")?.selectedAgentId)
+        store.saveSelectedAgent("alice", null)
+        assertNull(store.find("alice")?.selectedAgentId)
     }
 
     @Test fun frameworkRemovalCannotBypassInAppCredentialCleanup() {

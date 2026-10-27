@@ -24,6 +24,8 @@ data class NativeAgentsState(
     /** Null while probing; false means this is an older Gateway deployment. */
     val supported: Boolean? = null,
     val agents: List<CoreAgent> = emptyList(), val selectedAgentId: String? = null,
+    /** 当前 selectedAgentId 是否已在一次成功的列表刷新中被服务端确认。 */
+    val selectionConfirmed: Boolean = false,
     val sessions: List<NativeAgentSession> = emptyList(), val selectedSessionId: String? = null,
     val messages: List<NativeAgentMessage> = emptyList(), val draft: String = "",
     val streamingText: String = "", val streamCompleted: Boolean = false,
@@ -39,10 +41,14 @@ data class NativeAgentsState(
 class NativeAgentsController(
     private val client: AgentSessionClient, parentScope: CoroutineScope,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** 用户上次选择的原生 Agent；重连/重建后据此恢复，避免总是回落到列表第一项。 */
+    private val lastSelectedAgentId: String? = null,
+    /** 上次选择在列表中已不存在时的回调，宿主可用于提示。 */
+    private val onSelectionLost: ((String) -> Unit)? = null,
 ) {
     private val owned = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + owned)
-    private val _state = MutableStateFlow(NativeAgentsState())
+    private val _state = MutableStateFlow(NativeAgentsState(selectedAgentId = lastSelectedAgentId))
     private val revision = AtomicLong()
     val state = _state.asStateFlow()
 
@@ -75,14 +81,30 @@ class NativeAgentsController(
         }
         try {
             if (_state.value.busy || revision.get() != expectedRevision) return
-            val selected = _state.value.selectedAgentId?.takeIf { id -> agents.any { it.id == id } }
-                ?: agents.firstOrNull()?.id
-            val changed = selected != _state.value.selectedAgentId
-            _state.update { it.copy(supported = true, agents = agents, selectedAgentId = selected,
-                sessions = if (changed) emptyList() else it.sessions,
-                selectedSessionId = if (changed) null else it.selectedSessionId,
-                messages = if (changed) emptyList() else it.messages,
-                draft = if (changed) "" else it.draft, error = null) }
+            // 选择判定放进 update 内部并以 revision 复核：任何并发 selectAgent
+            // 都会先推进 revision，本次旧结果就不能再覆盖用户刚做的选择。
+            var lostSelection: String? = null
+            _state.update { current ->
+                if (current.busy || revision.get() != expectedRevision) return@update current
+                // 列表不含当前选择时保持选择不动（Agent 可能只是暂时离线/列表波动），
+                // 绝不静默回落到列表第一项；仅当当前选择是"恢复的旧值且从未被本会话
+                // 确认过"时，才清除并通知宿主。
+                val requested = current.selectedAgentId
+                val known = requested != null && agents.any { it.id == requested }
+                if (requested != null && !known && !current.selectionConfirmed) {
+                    lostSelection = requested
+                    return@update current.copy(supported = true, agents = agents, selectedAgentId = null, error = null)
+                }
+                if (requested == null) {
+                    // 首次发现列表且用户尚无任何选择：以列表第一项作为默认值。
+                    // 一旦选定即视为已确认，后续列表波动不再改写它。
+                    return@update current.copy(supported = true, agents = agents,
+                        selectedAgentId = agents.firstOrNull()?.id, selectionConfirmed = true, error = null)
+                }
+                current.copy(supported = true, agents = agents,
+                    selectionConfirmed = current.selectionConfirmed || known, error = null)
+            }
+            lostSelection?.let { onSelectionLost?.invoke(it) }
             refreshSessions()
             refreshHistory()
         } catch (cancelled: CancellationException) { throw cancelled }
@@ -95,7 +117,7 @@ class NativeAgentsController(
         val current = _state.value
         if (current.busy || current.selectedAgentId == id || current.agents.none { it.id == id }) return
         revision.incrementAndGet()
-        _state.update { it.copy(selectedAgentId = id, sessions = emptyList(), selectedSessionId = null,
+        _state.update { it.copy(selectedAgentId = id, selectionConfirmed = true, sessions = emptyList(), selectedSessionId = null,
             messages = emptyList(), draft = "", streamingText = "", loadingSessions = false, loadingHistory = false, error = null) }
         scope.launch { safely { refreshSessions() } }
     }

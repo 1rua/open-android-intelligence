@@ -195,6 +195,49 @@ class CoreAgentConversationRepositoryTest {
         assertEquals(GenerationState.IDLE, repo.generationState.value)
     }
 
+    @Test
+    fun submitMessageEmitsConsistentTimestampGenerationIdAndCorrectStatusMessageId() = runTest {
+        val ssePayload = "event: delta\ndata: {\"delta\":\"Hello \"}\n\nevent: delta\ndata: {\"delta\":\"World!\"}\n\nevent: done\ndata: {}\n\n"
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                return WireResponse(200, listOf(RawHeader("Content-Type", "application/json")), ByteArray(0))
+            }
+            override fun eventStream(request: WireRequest) = kotlinx.coroutines.flow.flowOf(ssePayload.toByteArray())
+        }
+        val client = client(transport)
+        val repo = CoreAgentConversationRepository(
+            client = client,
+            currentAgent = { sampleAgent },
+            activeConversationId = { "s_1" },
+            parentScope = backgroundScope,
+        )
+
+        val emitted = mutableListOf<VerifiedConversationEvent>()
+        val job = launch { repo.observeEvents(ConversationScope("p1", "http://core", "a1", "i1")).toList(emitted) }
+
+        val clientMsgId = ClientMessageId("client_msg_123")
+        val acceptance = repo.submitMessage("s_1", OutgoingMessage(clientMsgId, "Hi"))
+
+        runCurrent()
+        job.cancel()
+
+        val upserts = emitted.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+        assertTrue("Should emit timeline upserts", upserts.isNotEmpty())
+
+        val timestamps = upserts.map { it.message.timestamp }
+        val firstTimestamp = timestamps.first()
+        assertTrue("All TimelineMessage upserts must share the exact same timestamp", timestamps.all { it == firstTimestamp })
+
+        assertTrue("All TimelineMessage upserts must include generationId", upserts.all { it.message.generationId == acceptance.generationId })
+
+        val statusEvents = emitted.filterIsInstance<VerifiedConversationEvent.MessageStatus>()
+        assertEquals(1, statusEvents.size)
+        val statusEvent = statusEvents.first()
+        assertEquals(acceptance.messageId, statusEvent.messageId)
+        assertEquals(clientMsgId, statusEvent.clientMessageId)
+        assertEquals(acceptance.generationId, statusEvent.generationId)
+    }
+
     private fun client(transport: GatewayByteTransport): AgentSessionClient {
         return AgentSessionClient(
             GatewayHttpClient(
