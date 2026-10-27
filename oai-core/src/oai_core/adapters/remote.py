@@ -14,7 +14,8 @@ from urllib.parse import quote, urlsplit
 import aiohttp
 
 from ..auth import Principal
-from ..sessions import CAPABILITIES, AdapterError, session_request_json
+from ..gateway.core import _public_approval
+from ..sessions import CAPABILITIES, STREAM_EVENT_TYPES, AdapterError, session_request_json
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +115,13 @@ class RemoteSessionAdapter:
                     allow_redirects=False,
                 ) as response:
                     value = await response.json()
+                    if not isinstance(value, dict):
+                        raise AdapterError("HOST_INCOMPATIBLE", 502)
                     if response.status != 200:
-                        raise AdapterError(str(value.get("code", "AGENT_UNAVAILABLE")), response.status)
+                        details = value.get("details")
+                        public = (_public_approval(details) if isinstance(details, Mapping)
+                                  and "/approvals/" in path and path.endswith("/decisions") else {})
+                        raise AdapterError(str(value.get("code", "AGENT_UNAVAILABLE")), response.status, details=public)
                     return value
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             raise AdapterError("AGENT_UNAVAILABLE", 503) from exc
@@ -131,13 +137,19 @@ class RemoteSessionAdapter:
             self.capabilities = dict.fromkeys(CAPABILITIES, False)
             return False
 
-    async def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
-        try:
-            result = await self._request("GET", f"/commands?languageCode={quote(language_code, safe='')}")
-            cmds = result.get("commands", [])
-            return cmds if isinstance(cmds, list) else []
-        except AdapterError:
-            return []
+    async def commands(self, language_code: str = "en", *, principal: Principal | None = None) -> list[dict[str, Any]]:
+        result = await self._request("GET", f"/commands?languageCode={quote(language_code, safe='')}",
+                                     headers=self._headers(principal))
+        cmds = result.get("commands", [])
+        if not isinstance(cmds, list):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        return cmds
+
+    async def resolve_approval(self, principal: Principal, session_id: str,
+                               approval_id: str, decision: str) -> dict[str, Any]:
+        return await self._request("POST",
+            f"/sessions/{quote(session_id, safe='')}/approvals/{quote(approval_id, safe='')}/decisions",
+            {"decision": decision}, headers=self._headers(principal))
 
     async def list_sessions(self, principal: Principal) -> list[dict[str, Any]]:
         headers = self._headers(principal)
@@ -182,7 +194,7 @@ class RemoteSessionAdapter:
                         if not line or not line.strip():
                             continue
                         value = json.loads(line)
-                        if value.get("type") not in {"delta", "done", "error"}:
+                        if not isinstance(value, dict) or value.get("type") not in STREAM_EVENT_TYPES:
                             raise AdapterError("HOST_INCOMPATIBLE", 502)
                         yield value
                         if value["type"] in {"done", "error"}:

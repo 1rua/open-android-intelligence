@@ -535,6 +535,7 @@ class ContractRegistry:
         "response.success": ("envelope.schema.json", "success"),
         "response.failure": ("envelope.schema.json", "failure"),
         "conversation.commandCatalog": ("conversation.schema.json", "commandCatalog"),
+        "agent.commandCatalog": ("command-catalog.schema.json", "catalog"),
         "conversation.cancel": ("conversation.schema.json", "generationCancel"),
         "conversation.generationCancel": ("conversation.schema.json", "generationCancel"),
         "conversation.mirror": ("conversation.schema.json", "mirrorSync"),
@@ -1155,6 +1156,8 @@ class AccountStore:
               decision TEXT, decided_at TEXT, decided_by_device_id TEXT,
               created_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS approvals_pending_conversation
+              ON approvals(conversation_id) WHERE decision IS NULL;
             """
         )
         existing_cols = {row[1] for row in self.database.execute("PRAGMA table_info(messages)").fetchall()}

@@ -81,23 +81,42 @@ legacy_session_id = entry.session_id
 async def scenario():
     block = asyncio.Event()
     entered = asyncio.Event()
+    approval_answered = asyncio.Event()
     approvals = []
+    approval_continuations = []
     import oai_hermes_adapter.approvals as gateway_core_module
     original_resolver = gateway_core_module.resolve_host_approval
-    gateway_core_module.resolve_host_approval = lambda session, choice, request_id=None: approvals.append((session, choice, request_id)) or 1
+    loop = asyncio.get_running_loop()
+    def resolve_approval(session, choice, request_id=None):
+        approvals.append((session, choice, request_id))
+        loop.call_soon_threadsafe(approval_answered.set)
+        return 1
+    gateway_core_module.resolve_host_approval = resolve_approval
+    original_hook = runtime._run_processing_hook
+    async def isolated_hook(name, *args, **kwargs):
+        # Lifecycle hooks can be supervised in a child Task by the host. The
+        # adapter must still capture the native processing Task, not this hook.
+        if name == "on_processing_start":
+            return await asyncio.create_task(original_hook(name, *args, **kwargs))
+        return await original_hook(name, *args, **kwargs)
+    runtime._run_processing_hook = isolated_hook
 
     class Handler:
         async def receive(self, event):
             if event.text == "block until cancelled":
                 entered.set()
                 await block.wait()
-            if event.text == "unsupported approval":
+            if event.text in {"interactive approval", "approval until cancelled"}:
+                approval_answered.clear()
+                request_id = "synthetic-approval" if event.text == "interactive approval" else "synthetic-cancel-approval"
                 result = await runtime._send_exec_approval_prompt(ExecApprovalPrompt(
                     chat_id=event.source.chat_id, session_key=runtime._event_session_key(event),
-                    text="Synthetic approval", actions=[("Deny", "deny", "danger")],
+                    text="Synthetic approval", actions=[("Once", "once", "primary"), ("Deny", "deny", "danger")],
                     command="synthetic-sensitive-action", description="test", smart_denied=False,
-                    metadata={"account_id": event.source.user_id, "request_id": "synthetic-approval"}))
+                    metadata={"account_id": event.source.user_id, "request_id": request_id}))
                 assert result.success
+                await approval_answered.wait()
+                approval_continuations.append(event.text)
             return "native synthetic reply"
 
         async def _interrupt_and_clear_session(self, session_key, source, **kwargs):
@@ -106,6 +125,14 @@ async def scenario():
     runtime.set_message_handler(Handler().receive)
     assert await runtime.connect()
     adapter = HermesSessionAdapter(runtime.services.core, runtime)
+    from hermes_cli import plugins as host_plugins
+    host_plugins._ensure_plugins_discovered = lambda: manager
+    PluginContext(manifest, manager).register_command(
+        "mobile-test-command", lambda text: text, "Native plugin command", args_hint="<value>")
+    native_catalog = {item["invocation"]: item for item in adapter.commands("zh-CN")}
+    assert {"/help", "/model", "/mobile-test-command"} <= set(native_catalog)
+    assert native_catalog["/mobile-test-command"]["argumentHint"] == "<value>"
+    assert native_catalog["/mobile-test-command"]["acceptsArguments"] is True
     alice = Principal("alice", device_id="core-phone", pairing_generation=7, grant_revision=9)
     bob = Principal("bob", device_id="other-phone", pairing_generation=3, grant_revision=2)
     assert await adapter.status()
@@ -158,9 +185,18 @@ async def scenario():
         events = [event async for event in adapter.send(alice, a["id"], "synthetic prompt")]
         assert events[-1]["type"] == "done", events
         assert "native synthetic reply" == "".join(event.get("text", "") for event in events if event["type"] == "delta"), events
-        rejected = [event async for event in adapter.send(alice, a["id"], "unsupported approval")]
-        assert rejected[-1] == {"type": "error", "code": "UNSUPPORTED_APPROVAL"}
-        assert approvals[-1][1:] == ("deny", "synthetic-approval")
+        interactive = adapter.send(alice, a["id"], "interactive approval")
+        assert (await anext(interactive))["type"] == "generation"
+        while True:
+            approval_event = await asyncio.wait_for(anext(interactive), 5)
+            if approval_event["type"] == "approval_requested":
+                break
+        assert approvals == [], "the native wait must remain pending until a phone decision"
+        await adapter.decide_approval(alice, a["id"], approval_event["approval"]["approvalId"], "once")
+        completed = [event async for event in interactive]
+        assert completed[-1]["type"] == "done", completed
+        assert any(event["type"] == "approval_resolved" for event in completed), completed
+        assert approvals[-1][1:] == ("once", "synthetic-approval")
         await asyncio.gather(*tuple(runtime._background_tasks))
         await adapter.manage(alice, a["id"], "archive", True)
         assert database.get_session(binding["agentSessionId"])["archived"]
@@ -168,12 +204,29 @@ async def scenario():
         assert not database.get_session(binding["agentSessionId"])["archived"]
         # Re-pairing in Core need not modify the independent legacy account DB.
         pending = adapter.send(alice, a["id"], "block until cancelled")
+        generation = await anext(pending)
+        assert generation["type"] == "generation"
         first = asyncio.create_task(anext(pending))
         await asyncio.wait_for(entered.wait(), 5)
-        cancelled = await adapter.manage(alice, a["id"], "cancel")
-        assert cancelled["outcome"] == "CANCELLED", cancelled
-        assert (await asyncio.wait_for(first, 5))["code"] == "CANCELLED"
+        cancelled = await adapter.manage(alice, a["id"], "cancel", {"generationId": generation["generationId"]})
+        assert cancelled["outcome"] == "cancelled", cancelled
+        assert (await asyncio.wait_for(first, 5))["outcome"] == "cancelled"
         await pending.aclose()
+        # Cancelling a waiting approval must invalidate the native task before
+        # denying the wait, so it cannot resume another model/tool step.
+        pending_approval = adapter.send(alice, a["id"], "approval until cancelled")
+        approval_generation = await anext(pending_approval)
+        while True:
+            card_event = await asyncio.wait_for(anext(pending_approval), 5)
+            if card_event["type"] == "approval_requested":
+                break
+        cancelled = await adapter.manage(alice, a["id"], "cancel", {"generationId": approval_generation["generationId"]})
+        assert cancelled["outcome"] == "cancelled", cancelled
+        assert "approval until cancelled" not in approval_continuations
+        approval_tail = [event async for event in pending_approval]
+        assert any(event["type"] == "approval_resolved" and event["approval"]["decision"] == "withdrawn"
+                   for event in approval_tail), approval_tail
+        assert approval_tail[-1]["outcome"] == "cancelled", approval_tail
         # Native compression publishes a continuation without rewriting the
         # independent Gateway account binding. Titles belong to its live tip.
         compressed_tip = "native-compression-tip"

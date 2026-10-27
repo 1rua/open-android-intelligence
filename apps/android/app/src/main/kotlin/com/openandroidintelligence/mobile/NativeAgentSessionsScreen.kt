@@ -165,7 +165,7 @@ internal fun NativeAgentSessionsScreen(
                 }
                 if (state.streamingText.isNotEmpty()) item(key = "native-live-response") {
                     Column {
-                        Text("${agent?.name.orEmpty()} · ${if (state.sending) "回复中" else if (state.streamCompleted) "回复已完成" else "未完成回复"}",
+                        Text("${agent?.name.orEmpty()} · ${if (state.cancelled) "已取消" else if (state.sending) "回复中" else if (state.streamCompleted) "回复已完成" else "未完成回复"}",
                             style = MaterialTheme.typography.labelMedium)
                         Text(state.streamingText, style = MaterialTheme.typography.bodyLarge)
                     }
@@ -178,7 +178,7 @@ internal fun NativeAgentSessionsScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 if (state.busy) CircularProgressIndicator(Modifier.padding(12.dp))
                 if (capabilities?.cancel == true) TextButton(onClick = controller::cancelGeneration,
-                    enabled = agent?.online == true && state.sending) { Text("请求停止") }
+                    enabled = agent?.online == true && state.sending && state.generationId != null && !state.cancelRequested && !state.cancelled) { Text("停止生成") }
                 Button(onClick = controller::send,
                     enabled = writable && capabilities?.send == true && capabilities.stream && state.draft.isNotBlank()) {
                     Text("发送")

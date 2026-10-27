@@ -1195,14 +1195,14 @@ class GatewayRuntime(
         // Contract §7.2: approval cards are only wired when the Gateway said it
         // serves them. Without the endpoint there is nothing to press, so the
         // workbench says so instead of drawing a card that cannot be answered.
+        val decisionAudit = auditStore?.let { store ->
+            ApprovalAuditBridge(
+                audit = store,
+                accountId = { session.accountId },
+                pairingId = { pairingGrants.state.value?.pairingId.orEmpty() },
+            )
+        }
         val approvalClient = if ("agent-approval-cards-v1" in conversationUi) {
-            val decisionAudit = auditStore?.let { store ->
-                ApprovalAuditBridge(
-                    audit = store,
-                    accountId = { session.accountId },
-                    pairingId = { pairingGrants.state.value?.pairingId.orEmpty() },
-                )
-            }
             com.openandroidintelligence.gateway.approvals.ApprovalClient(http, audit = decisionAudit)
         } else {
             null
@@ -1389,12 +1389,19 @@ class GatewayRuntime(
                 currentAgent = { _nativeAgents.value?.state?.value?.agent },
                 activeConversationId = { activeThread.get() },
                 parentScope = sessionScope,
+                supportsApprovalCards = "agent-approval-cards-v1" in conversationUi,
+                supportsGenerationCancel = generationCancelCapability.agreed,
+                approvalAudit = decisionAudit,
             )
         } else null
         val activeRepo: ConversationRepository = coreAgentRepo ?: mirroredRepository
         val activeCatalogRepo: com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository =
             if (nativeAgentSessions) {
-                catalogRepository
+                com.openandroidintelligence.mobile.conversations.CoreAgentCommandCatalogRepository(
+                    com.openandroidintelligence.gateway.agents.AgentSessionClient(http),
+                    currentAgent = { _nativeAgents.value?.state?.value?.agent },
+                    negotiated = "agent-command-catalog-v1" in conversationUi,
+                )
             } else catalogRepository
 
         fun buildWorkbenchController(currentAgentName: String? = null): WorkbenchController {
@@ -1408,13 +1415,14 @@ class GatewayRuntime(
                 supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
                 debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
                 supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
-                supportsApprovalCards = approvalClient != null,
+                supportsApprovalCards = approvalClient != null && (!nativeAgentSessions ||
+                    _nativeAgents.value?.state?.value?.agent?.capabilities?.approvals == true),
                 supportsConversationManagement = "conversation-management-v1" in conversationUi || nativeAgentSessions,
                 externalBusyThreadIds = {
                     bubbleBusyConversationIds() + nativeConversationNotifications.sessions.value
                         .filter { it.isRunning }.map { it.target.conversationId }
                 },
-                onActiveThreadChanged = { threadId -> activeThread.set(threadId); repository.activeConversationChanged() },
+                onActiveThreadChanged = { threadId -> activeThread.set(threadId); repository.activeConversationChanged(); coreAgentRepo?.activeConversationChanged() },
                 streamHealthSource = (activeRepo as? com.openandroidintelligence.conversation.model.StreamHealthSource) ?: workbenchRepository,
                 persistence = if (nativeAgentSessions) null else mirror,
                 media = mediaCache,
@@ -1431,11 +1439,12 @@ class GatewayRuntime(
 
         if (nativeAgentSessions) {
             sessionScope.launch {
-                var previousAgentId: String? = null
+                var previousAgent: Pair<String, com.openandroidintelligence.gateway.agents.AgentCapabilities>? = null
                 _nativeAgents.filterNotNull().flatMapLatest { it.state }.collect { nState: NativeAgentsState ->
                     val selected = nState.selectedAgentId
-                    if (selected != null && selected != previousAgentId) {
-                        previousAgentId = selected
+                    val descriptor = nState.agent?.let { it.id to it.capabilities }
+                    if (selected != null && descriptor != previousAgent) {
+                        previousAgent = descriptor
                         val newAgent = nState.agent
                         val newAgentName: String = newAgent?.name ?: selected
                         val currentPhase = _phase.value

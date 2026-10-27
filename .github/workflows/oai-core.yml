@@ -63,7 +63,9 @@ jobs:
           env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
             oai-core/tests tests/test_install_script.py -q \
             --ignore=oai-core/tests/test_hermes.py \
-            --ignore=oai-core/tests/test_hermes_native.py
+            --ignore=oai-core/tests/test_hermes_native.py \
+            --ignore=oai-core/tests/test_hermes_interactions.py \
+            --ignore=oai-core/tests/test_interaction_pipeline.py
           bash -n scripts/install.sh
           bash -n scripts/setup.sh
 
@@ -87,7 +89,9 @@ jobs:
       - name: Native SessionStore, account isolation and lifecycle contracts
         env:
           HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
-        run: python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py -q
+        run: >-
+          python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py
+          oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py -q
 
   dsh:
     runs-on: ubuntu-latest

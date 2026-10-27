@@ -36,12 +36,18 @@ logger = logging.getLogger(__name__)
 class OAICore(GatewayCore):
     """Device protocol compatibility with native sessions exposed separately."""
 
+    native_conversation_ui: frozenset[str] = frozenset()
+
     def _build_negotiation_response(self, body: Any, account: Any = None) -> Any:
         response = dict(super()._build_negotiation_response(body, account))
         features = dict(response["features"])
-        # These optional features promise legacy conversation endpoints.
-        # Native adapter capabilities are negotiated by /agents instead.
+        # The native-session marker routes these interactions through /agents.
+        # Do not promise legacy chat endpoints or unimplemented batch features.
         features.pop("conversationUi", None)
+        agreed = [feature for feature in body["features"].get("conversationUi", [])
+                  if feature in self.native_conversation_ui]
+        if agreed:
+            features["conversationUi"] = agreed
         response["features"] = features
         return response
 
@@ -110,6 +116,9 @@ class CoreTransport(GatewayTransport):
 
     async def dispatch(self, request: web.Request) -> web.StreamResponse:
         path = request.path
+        if request.method == "POST" and path == "/open-android-intelligence/v2/negotiate":
+            registry = request.app[REGISTRY_KEY]
+            self.services.core.native_conversation_ui = registry.conversation_ui(await registry.discover())
         if request.method == "PUT" and re.fullmatch(r"/open-android-intelligence/v2/attachments/[^/]+/content", path):
             return await self._handle_attachment_content_stream(request)
         raw = raw_request(request, await request.read())
@@ -141,9 +150,6 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
     if registry is None:
         from .sessions import build_registry
         registry = build_registry(config, core)
-    # If Core was initialized without command_catalog, wire registry.commands to provide host agent commands
-    if core.command_catalog == ():
-        core.command_catalog = lambda: registry.commands("en")
     app = web.Application(middlewares=[errors], client_max_size=1024 * 1024)
     app[CORE_KEY], app[AUTH_KEY], app[DEVICE_KEY], app[REGISTRY_KEY] = core, auth, devices, registry
     routes = web.RouteTableDef()
@@ -197,7 +203,7 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
             return False
 
     app.add_routes(routes)
-    app.add_routes(create_agent_routes(registry, auth.authenticate, is_active))
+    app.add_routes(create_agent_routes(registry, auth.authenticate, is_active, core.contracts))
     # This compatibility range describes the pinned Core Python interface. It
     # makes no claim that a Hermes host process is installed or online.
     exposure = create_gateway_exposure("host-route", core=core, host_version="2.1.0",

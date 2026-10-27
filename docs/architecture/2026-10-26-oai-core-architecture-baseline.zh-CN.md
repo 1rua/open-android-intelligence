@@ -43,7 +43,8 @@
 - Core **不提供** `/conversations` 聊天路由：命中
   `/open-android-intelligence/v2/conversations*` 或
   `/conversation-organization*` 抛 `CAPABILITY_UNSUPPORTED`。
-- 协商响应剔除可选能力 `conversationUi`（`OAICore._build_negotiation_response`）。
+- 协商响应按在线宿主实际能力与客户端声明的交集返回命令目录、审批卡片和生成取消三项
+  `conversationUi`，并由 `/agents` 描述符进一步约束当前选定 Agent。其他旧聊天增强能力不启用。
 - 协商成功（HTTP 200）时响应头新增 `X-OAI-Agent-Sessions: 1`；新版 App 仅在此标记
   存在时装配原生 `/agents` 界面，旧宿主无需处理未知探测路由。
 - v2 的 `messages: chat-v1` 等字段仅作为既有认证/设备协议基线保留，不代表 Core
@@ -56,16 +57,18 @@
 | 方法与路径 | 行为 |
 | --- | --- |
 | `GET /agents` | `{agents:[{id,name,kind,online,sessionScope,deviceTools,capabilities}]}` |
+| `GET /agents/{agent}/commands?languageCode=<bcp47>` | 该宿主真实命令目录及内容版本 |
 | `GET /agents/{agent}/sessions` | `{sessions:[{id,title,updatedAt,archived}]}` |
 | `POST /agents/{agent}/sessions` | `{title?}` → 回执含 `session` |
 | `GET /agents/{agent}/sessions/{session}/history` | `{messages:[{id,role,text,createdAt}]}` |
-| `POST /agents/{agent}/sessions/{session}/messages` | `{text}` → SSE `event: message`，`type: delta/done/error` |
+| `POST /agents/{agent}/sessions/{session}/messages` | `{text}` → SSE `event: message`，正文、真实轮次及结构化审批事件 |
 | `PATCH /agents/{agent}/sessions/{session}` | `{action:"rename"\|"archive", value?}` |
 | `DELETE /agents/{agent}/sessions/{session}` | 原生删除，需能力声明 |
-| `POST /agents/{agent}/sessions/{session}/cancel` | 原生取消，需能力声明 |
+| `POST /agents/{agent}/sessions/{session}/cancel` | `{generationId}`，按真实轮次取消并返回明确结果 |
+| `POST /agents/{agent}/sessions/{session}/approvals/{approval}/decisions` | 独立审批决策，沿用 §7.2 公开载荷 |
 
-- 能力枚举固定 9 项：`list`、`history`、`create`、`send`、`rename`、`archive`、
-  `delete`、`cancel`、`stream`；值必须是布尔，缺失按 `false`。
+- 能力枚举为 `list`、`history`、`create`、`send`、`rename`、`archive`、
+  `delete`、`cancel`、`stream`、`commands`、`approvals`；值必须是布尔，缺失按 `false`。
 - `sessionScope` 只有 `account` 与 `deployment` 两种；`kind == "hermes"` 必须是
   `account`（`AgentRegistry.register`）。
 - 配置即发现边界：只有 `agents` 数组显式声明的实例会被发现，不遍历其他用户 HOME、
@@ -154,7 +157,9 @@ platform ID 以保留原生会话来源键：
   `OAI_HERMES_SESSION_PORT`（默认 8792）；沿用原
   `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE`。
 - 不注册旧设备工具，不启动旧 Gateway v2 设备端口，不构造 `GatewayCore` 或设备请求调度器。会话后端只复用 Core 公共存储库；连接旧账号库时持有 SQLite 独占锁，竞争写入会失败。切换前仍须先停止旧 Gateway，并单独备份原数据库和主密钥。
-- 原生审批立即 `deny` 并发出 `core.approval.unsupported`，流侧报告 `UNSUPPORTED_APPROVAL`。
+- 原生审批在宿主提供真实审批解析器时声明 `approvals`，以 `approval_requested/resolved`
+  流帧传递卡片及公开终态；专门决策接口按账号和会话验证 opaque 映射后解挂宿主等待。
+  原生会话仍由适配器管理；设备授权和请求调度始终归 Core。
 - 会话标题通过账号绑定后的 SessionDB `get/set_session_title` 读写，按压缩链当前 tip 定位，
   终端修改同样可见；缺少真实标题接口时不宣称支持重命名。
 - 会话列表排除尚未绑定宿主的 Gateway 占位行。
