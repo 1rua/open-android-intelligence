@@ -11,10 +11,10 @@ version: 2.1.0
 
 本契约定义 Android 宿主与一个账号所属逻辑 Gateway 之间的应用层协议。它不定义 Hermes/OpenClaw 内部 API、插件 WASM ABI 或 Companion IPC。
 
-**实现差异说明（2026-10-26）**：统一 OAI Core（`oai serve`）实现本契约中的账号、认证、
+**实现差异说明（2026-10-27）**：统一 OAI Core（`oai serve`）实现本契约中的账号、认证、
 签名、配对、设备事件与设备请求部分，并以其自有扩展承载原生 Agent 会话（第 17 节）与
-设备调用面（第 18 节）。Core **不实现第 7 节的 `/conversations` 聊天路由与
-`conversationUi` 可选能力**——命中这些路由返回 `CAPABILITY_UNSUPPORTED`，聊天由第 17 节
+设备调用面（第 18 节）。Core **不实现第 7 节的 `/conversations` 聊天路由**，命中这些路由
+返回 `CAPABILITY_UNSUPPORTED`。命令目录、审批卡片与生成取消按实际宿主能力协商，聊天由第 17 节
 的原生会话面唯一承载。行为依据见
 [架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。
 
@@ -139,7 +139,7 @@ V2 是新协议，不兼容 Bridge Protocol v1。端点的线上语义与 scheme
 
 协议主版本不同、核心 Schema 不兼容、未知安全字段或未知高风险能力时返回 `PROTOCOL_INCOMPATIBLE`。2.1 的 core Schema hash 与 2.0 不兼容，Android、Hermes 和 OpenClaw 必须同版本发布。次版本差异只启用双方声明的交集。协商结果由 `negotiationId` 绑定后续认证会话，客户端不能在单次请求中自行扩大功能。
 
-**原生会话协商标记（2026-10-26）**：协商成功（HTTP 200）时，实现第 17 节扩展的服务端在响应头返回 `X-OAI-Agent-Sessions: 1`；新版 App 仅在该标记存在时装配原生 `/agents` 会话界面，旧宿主无需处理未知探测路由。OAI Core 的协商响应同时剔除 `conversationUi` 字段，因为它不提供第 7 节的聊天端点。该标记不改变本节任何 schema 语义，core Schema hash 不变。
+**原生会话协商标记（2026-10-27）**：协商成功（HTTP 200）时，实现第 17 节扩展的服务端在响应头返回 `X-OAI-Agent-Sessions: 1`；新版 App 仅在该标记存在时装配原生 `/agents` 会话界面，旧宿主无需处理未知探测路由。OAI Core 先查询已配置宿主的在线状态和能力，再从客户端声明的 `conversationUi` 中返回实际可用的 `agent-command-catalog-v1`、`agent-approval-cards-v1`、`generation-cancel-v1` 交集。客户端进一步检查当前选定 Agent 的能力；具有该标记时，这三项交互使用第 17 节原生路由，不启用第 7 节旧聊天端点。未实现的批次、`/new` 创建等增强能力仍不协商。该扩展不修改 core Schema hash。
 
 `messages`、`attachments`、`events` 和 `deviceRequests` 只承载基础会话能力，取值分别为 `chat-v1`、`staged-sha256-v1`、`sse-cursor-v1`、`risk-queue-v1`；会话界面的增强能力放在 `conversationUi` 数组里，客户端只能拿到自己声明且 Gateway 确实实现了的能力。取值闭集为 `agent-command-catalog-v1`、`agent-command-new-v1`、`agent-approval-cards-v1`、`message-batches-v1`、`newline-v1`、`generation-cancel-v1`、`conversation-mirror-v1`、`attachment-status-v1`、`conversation-management-v1`。Gateway 必须按客户端送来的原文校验请求：不得补齐缺失字段、不得删改超纲取值、不得把请求改造成自己能接受的形状；不能支持就返回错误或在该字段上给出交集结果。
 
@@ -1223,18 +1223,20 @@ type NormalizedActualResult =
 | 方法与路径 | 请求 | 响应/行为 |
 | --- | --- | --- |
 | GET `/agents` | — | `{agents:[{id,name,kind,online,sessionScope,deviceTools,capabilities}]}` |
+| GET `/agents/{agent}/commands?languageCode=<bcp47>` | — | `command-catalog.schema.json#/$defs/catalog`，仅来自该 Agent 的真实目录 |
 | GET `/agents/{agent}/sessions` | — | `{sessions:[{id,title,updatedAt,archived}]}` |
 | POST `/agents/{agent}/sessions` | `{title?}` | `{session:{...}}` |
 | GET `/agents/{agent}/sessions/{id}/history` | — | `{messages:[{id,role,text,createdAt}]}` |
-| POST `/agents/{agent}/sessions/{id}/messages` | `{text}` | SSE `event: message`，`type: delta/done/error` |
+| POST `/agents/{agent}/sessions/{id}/messages` | `{text}` | SSE `event: message`，事件形状见第 17.3 节 |
 | PATCH `/agents/{agent}/sessions/{id}` | `{action:"rename"\|"archive", value?}` | `{session:{...}}` |
 | DELETE `/agents/{agent}/sessions/{id}` | — | 原生删除，需能力声明 |
-| POST `/agents/{agent}/sessions/{id}/cancel` | — | 原生取消，需能力声明 |
+| POST `/agents/{agent}/sessions/{id}/cancel` | `{generationId}` | `{session:{generationId,outcome}}`，精确取消该轮次 |
+| POST `/agents/{agent}/sessions/{id}/approvals/{approvalId}/decisions` | `{decision}` | `{approval:{approvalId,conversationId,decision,decidedAt}}` |
 
 ### 17.2 Agent 描述符与能力
 
-- 能力枚举固定 9 项：`list`、`history`、`create`、`send`、`rename`、`archive`、
-  `delete`、`cancel`、`stream`；值为布尔，缺失按 `false` 处理。
+- 能力枚举为 `list`、`history`、`create`、`send`、`rename`、`archive`、
+  `delete`、`cancel`、`stream`、`commands`、`approvals`；值为布尔，缺失按 `false` 处理。
 - `sessionScope` 只有 `account` 与 `deployment`；以账号密码建立会话身份的宿主
   （Hermes）必须是 `account`。
 - `online` 来自对宿主的真实握手或查询（超时视为离线），不得由配置存在与否推断。
@@ -1243,7 +1245,15 @@ type NormalizedActualResult =
 
 ### 17.3 流式回复
 
-- 事件名为 `message`，数据 JSON 的 `type` 闭集为 `delta`、`done`、`error`。
+- 事件名为 `message`，数据 JSON 的 `type` 闭集为 `delta`、`done`、`error`、`generation`、
+  `approval_requested`、`approval_resolved`。Hermes 在正文或审批之前发送
+  `{type:"generation",generationId}`，该标识来自宿主会话后端。
+- 审批帧的 `approval` 对象分别复用第 7.2 节 requested/resolved 的封闭公开载荷；
+  `conversationId` 必须等于路径中的会话 ID。宿主内部会话键和请求标识不进入手机端。
+- Hermes 的 `done` 携带 `generationId` 与 `outcome: completed|cancelled`；审批帧不会结束生成。
+  取消回执的 `outcome` 为 `cancelled`、`already_completed` 或 `outcome_unknown`。
+  客户端收到真实轮次标识后才能停止，不得先关闭本地流冒充宿主已停止；
+  取消旧轮次不得作用于后继轮次，未知结果保留未知状态。
 - 流空闲期间每 5 秒写入 `: heartbeat` 注释帧，用于观察客户端断连与凭据撤销。
 - 未收到终态事件时服务端明确发出 `type: error, code: AGENT_STREAM_INTERRUPTED`；
   禁止把流中断表述为成功回复。
@@ -1266,6 +1276,10 @@ type NormalizedActualResult =
   Core 不回放聊天内容。
 - 写操作已受理但终态未知时返回 `409 OUTCOME_UNKNOWN`。
 - 回执只保存请求摘要与管理结果，不保存聊天正文。
+- 审批使用独立决策接口，沿用第 7.2 节档位、过期、撤回和单次决策语义。
+  opaque `approvalId` 到宿主标识的映射保存在会话适配器原账号库；Core 仅路由已认证身份和公开回执。
+  已落定审批的冲突/过期错误通过 `error.details` 回传同一公开终态，使手机能够显示实际选择；
+  同一请求键重试返回相同错误回执，不重新解挂宿主。
 
 ### 17.6 认证与身份
 

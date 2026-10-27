@@ -23,7 +23,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from oai_core.gateway.core import AgentSessionBindings, GatewayError, NEW_CONVERSATION_COMMAND, iso_millis, _epoch_millis
 from .platform_identity import GATEWAY_PLATFORM_ID, GATEWAY_PLATFORM_IDS
 from .context import trusted_turn
-from .bridge import UnsupportedApprovalMixin, create_hermes_bridge_app
+from .bridge import NativeApprovalMixin, create_hermes_bridge_app
 from .sessions import HermesSessionAdapter
 from .backend import SessionBackend
 from .host_history import HermesHistoryPort
@@ -42,7 +42,7 @@ def _conversation_id_of(path):
     return parts[index] if index < len(parts) else None
 
 
-class SessionOnlyAdapter(UnsupportedApprovalMixin, BasePlatformAdapter):
+class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
     supports_code_blocks = True
     supports_status_text = False
     supports_async_delivery = True
@@ -217,6 +217,9 @@ class SessionOnlyAdapter(UnsupportedApprovalMixin, BasePlatformAdapter):
                 # handed this session to a successor; never cancel that task.
                 if not task.done() and self._session_tasks.get(session_key) is task:
                     await self.cancel_session_processing(session_key)
+                # Stop the native task before releasing an approval wait; a
+                # denied wait alone can resume another model or tool step.
+                await self.withdraw_generation_approvals(account_id, conversation_id, generation_id)
                 outcome = settled_outcome()
                 if outcome != "CANCELLED":
                     return outcome
@@ -1037,8 +1040,7 @@ class SessionOnlyAdapter(UnsupportedApprovalMixin, BasePlatformAdapter):
         source = getattr(event, "source", None)
         account_id = str(getattr(source, "user_id", "") or "")
         client_id = str(getattr(event, "message_id", "") or "")
-        task = asyncio.current_task()
-        if not account_id or not client_id or task is None:
+        if not account_id or not client_id:
             return
         account = self.services.core.open_gateway_account(account_id)
         try:
@@ -1047,8 +1049,12 @@ class SessionOnlyAdapter(UnsupportedApprovalMixin, BasePlatformAdapter):
             if not generation:
                 return
             key = (account_id, record["conversationId"], generation["generationId"])
-            session_key = next((key for key, owner in self._session_tasks.items() if owner is task), None)
-            if session_key is None:
+            # Some host versions run lifecycle hooks in a separate Task. The
+            # native session map, rather than the hook's current Task, owns the
+            # actual generation and remains authoritative across such wrappers.
+            session_key = self._event_session_key(event)
+            task = self._session_tasks.get(session_key)
+            if task is None or task.done():
                 return
             self._native_turns[key] = (session_key, task, source)
             def release(done: asyncio.Task) -> None:
@@ -1079,6 +1085,7 @@ class SessionOnlyAdapter(UnsupportedApprovalMixin, BasePlatformAdapter):
             if record is not None:
                 generation=account.conversations.workflow.for_message(record["messageId"])
                 if generation:
+                    await self.withdraw_generation_approvals(account_id, record["conversationId"], generation["generationId"])
                     await self._finish_streaming_replies(account_id, record["conversationId"], generation["generationId"])
                 if generation and generation["state"]=="cancelled":
                     status, error_code = "failed", "AGENT_UNAVAILABLE"

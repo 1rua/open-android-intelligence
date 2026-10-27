@@ -17,32 +17,16 @@ from typing import Any
 from aiohttp import web
 
 from .sessions import HermesSessionAdapter
+from .approvals import NativeApprovalMixin
+from oai_core.gateway.core import APPROVAL_CHOICES
 from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES
 
 PREFIX = "/oai/session-adapter/v1"
 IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
 
 
-class UnsupportedApprovalMixin:
-    @staticmethod
-    def _unsupported_approval_result():
-        from gateway.platforms.base import SendResult
-        return SendResult(success=True, message_id="unsupported_approval", retryable=False)
-
-    async def _send_exec_approval_prompt(self, prompt):
-        """Deny immediately until the Core UI can render native approvals."""
-        from .approvals import resolve_host_approval
-        metadata = getattr(prompt, "metadata", None) or {}
-        chat_id = str(getattr(prompt, "chat_id", "") or "")
-        account_id = metadata.get("account_id") or self._conv_to_account.get(chat_id)
-        await asyncio.to_thread(resolve_host_approval, str(getattr(prompt, "session_key", "") or ""),
-                                "deny", request_id=metadata.get("request_id"))
-        if account_id:
-            self.services.core.deliver_event(account_id, {"eventType": "core.approval.unsupported",
-                "payload": {"conversationId": chat_id, "code": "UNSUPPORTED_APPROVAL"}})
-        # Handled means the host must not replace the denied request with a
-        # plain-text approval prompt that the session-only client cannot answer.
-        return self._unsupported_approval_result()
+# Compatibility import for plugins built against adapter 0.2.0.
+UnsupportedApprovalMixin = NativeApprovalMixin
 
 
 def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts: list[str]) -> web.Application:
@@ -80,7 +64,8 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             response.headers["Cache-Control"] = "no-store"
             return response
         except AdapterError as exc:
-            return web.json_response({"code": exc.code}, status=exc.status)
+            return web.json_response({"code": exc.code,
+                **({"details": exc.details} if exc.details else {})}, status=exc.status)
         except web.HTTPRequestEntityTooLarge:
             return web.json_response({"code": "MESSAGE_TOO_LARGE"}, status=413)
         except (ValueError, json.JSONDecodeError, TypeError):
@@ -147,10 +132,18 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         finally:
             await stream.aclose()
 
+    async def approval_decision(request):
+        body = await body_for(request)
+        if not isinstance(body, dict) or set(body) != {"decision"} or not isinstance(body["decision"], str) or body["decision"] not in APPROVAL_CHOICES:
+            raise AdapterError("SCHEMA_INVALID", 400)
+        return web.json_response(await adapter.decide_approval(request["principal"], request.match_info["session_id"],
+            request.match_info["approval_id"], body["decision"]))
+
     app.router.add_get(PREFIX + "/status", status)
     app.router.add_get(PREFIX + "/commands", commands)
     app.router.add_get(PREFIX + "/sessions", sessions)
     app.router.add_post(PREFIX + "/sessions", sessions)
+    app.router.add_post(PREFIX + "/sessions/{session_id}/approvals/{approval_id}/decisions", approval_decision)
     app.router.add_route("*", PREFIX + "/sessions/{session_id}/{action}", session_operation)
     return app
 

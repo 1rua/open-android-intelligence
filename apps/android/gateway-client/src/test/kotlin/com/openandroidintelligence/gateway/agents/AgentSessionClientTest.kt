@@ -185,6 +185,87 @@ class AgentSessionClientTest {
         assertEquals("account closed", failure?.message)
     }
 
+    @Test fun nativeApprovalFramesDoNotBreakTheDeltaStream() = runBlocking {
+        val transport = RecordingTransport("""event: message
+ data: {"type":"approval_requested","approval":{"approvalId":"apr_1","conversationId":"native","command":"echo hello","options":[{"choice":"once"},{"choice":"deny"}],"timeoutSeconds":60,"requestedAt":1}}
+
+ event: message
+ data: {"type":"delta","text":"approved"}
+
+ event: message
+ data: {"type":"done","outcome":"completed"}
+
+""".replace("\n ", "\n"), "text/event-stream")
+        val partial = StringBuilder()
+        client(transport).send(agent, "native", "hello") { partial.append(it) }
+        assertEquals("approved", partial.toString())
+    }
+
+    @Test fun discoveryIncludesCommandsAndApprovalsWithoutEnablingMissingFlags() = runBlocking {
+        val transport = RecordingTransport("""{"agents":[{"id":"hermes","name":"Hermes","kind":"hermes","online":true,"sessionScope":"account","capabilities":{"commands":true,"approvals":true,"cancel":true}}]}""")
+        val capabilities = client(transport).agents().single().capabilities
+        assertTrue(capabilities.commands)
+        assertTrue(capabilities.approvals)
+        assertTrue(capabilities.cancel)
+        assertFalse(capabilities.send)
+    }
+
+    @Test fun selectedAgentCommandsRetainDescriptionsAndArgumentHints() = runBlocking {
+        val transport = RecordingTransport("""{"format":"agent-command-catalog-1.0","catalogVersion":"remote-12","languageCode":"zh-CN","commands":[{"id":"model","invocation":"/model","title":"模型","description":"选择宿主模型","acceptsArguments":true,"argumentHint":"<model>","availability":"available"}]}""")
+        val hermes = agent.copy(id = "hermes", capabilities = agent.capabilities.copy(commands = true))
+        val catalog = client(transport).commands(hermes, "zh-CN")
+        assertEquals("/model", catalog.commands.single().invocation)
+        assertEquals("选择宿主模型", catalog.commands.single().description)
+        assertEquals("<model>", catalog.commands.single().argumentHint)
+        assertEquals("${AgentSessionClient.ROOT}/hermes/commands?languageCode=zh-CN", transport.requests.single().target)
+    }
+
+    @Test fun cancellationNamesTheExactHostGenerationAndChecksItsReceipt() = runBlocking {
+        val cancellable = agent.copy(id = "hermes", kind = "hermes", capabilities = agent.capabilities.copy(cancel = true))
+        val transport = RecordingTransport("""{"session":{"outcome":"cancelled","generationId":"native-round"}}""")
+        val result = client(transport).cancel(cancellable, "native", "native-round")
+        assertEquals("cancelled", result.outcome)
+        assertEquals("""{"generationId":"native-round"}""", transport.requests.single().body.decodeToString())
+        val wrongRound = RecordingTransport("""{"session":{"outcome":"cancelled","generationId":"later-round"}}""")
+        assertEquals("OUTCOME_UNKNOWN", runCatching { client(wrongRound).cancel(cancellable, "native", "native-round") }.exceptionOrNull()?.message)
+    }
+
+    @Test fun nativeApprovalDecisionsUseTheOriginalSessionAndKeepRecordedTerminalFacts() = runBlocking {
+        val transport = RecordingTransport("""{"error":{"code":"APPROVAL_EXPIRED","details":{"decision":"timeout"}}}""", status = 409)
+        val hermes = agent.copy(id = "hermes", capabilities = agent.capabilities.copy(approvals = true))
+        val result = client(transport).submitApprovalDecision(hermes, "native", "apr_1",
+            com.openandroidintelligence.gateway.approvals.ApprovalDecision.ONCE)
+        assertEquals(com.openandroidintelligence.gateway.approvals.ApprovalDecisionOutcome.EXPIRED, result.outcome)
+        assertEquals("timeout", result.rawDecision)
+        assertEquals("${AgentSessionClient.ROOT}/hermes/sessions/native/approvals/apr_1/decisions", transport.requests.single().target)
+        assertEquals("""{"decision":"once"}""", transport.requests.single().body.decodeToString())
+    }
+
+    @Test fun hostGenerationAndCancelledCompletionAreObservedBeforeTheStreamReturns() = runBlocking {
+        val frames = listOf("""{"type":"generation","generationId":"native-round"}""",
+            """{"type":"delta","text":"partial"}""",
+            """{"type":"done","outcome":"cancelled","generationId":"native-round"}""")
+        val transport = RecordingTransport(frames.joinToString("") { "event: message\ndata: $it\n\n" }, "text/event-stream")
+        val events = mutableListOf<NativeAgentStreamEvent>()
+        val text = StringBuilder()
+        val result = client(transport).send(agent, "native", "hello", onEvent = { events += it }) { text.append(it) }
+        assertEquals(NativeAgentStreamEvent.Generation("native-round"), events.first())
+        assertEquals("cancelled", result.outcome)
+        assertEquals("native-round", result.generationId)
+        assertEquals("partial", text.toString())
+    }
+
+    @Test fun nonHermesCancellationKeepsTheSessionRequestAndDoesNotInventAStoppedOutcome() = runBlocking {
+        for (kind in listOf("codex", "dsh")) {
+            val legacy = agent.copy(id = kind, kind = kind, capabilities = agent.capabilities.copy(cancel = true))
+            val transport = RecordingTransport("""{"session":{"id":"native","action":"cancel"}}""")
+            val result = client(transport).cancel(legacy, "native", "local-correlation")
+            assertEquals("{}", transport.requests.single().body.decodeToString())
+            assertEquals("${AgentSessionClient.ROOT}/$kind/sessions/native/cancel", transport.requests.single().target)
+            assertEquals("outcome_unknown", result.outcome)
+        }
+    }
+
     private fun client(transport: GatewayByteTransport) = AgentSessionClient(GatewayHttpClient(
         GatewayProfile("account", "device", "session", "https://core.example", accessToken = "access"),
         transport, { ByteArray(64) }, InMemoryEventCursorStore()))

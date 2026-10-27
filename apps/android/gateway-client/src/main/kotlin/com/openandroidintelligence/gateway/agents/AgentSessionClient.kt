@@ -1,5 +1,11 @@
 package com.openandroidintelligence.gateway.agents
 
+import com.openandroidintelligence.gateway.approvals.ApprovalClient
+import com.openandroidintelligence.gateway.approvals.ApprovalDecision
+import com.openandroidintelligence.gateway.approvals.ApprovalDecisionAudit
+import com.openandroidintelligence.gateway.approvals.ApprovalDecisionResult
+import com.openandroidintelligence.gateway.commands.CommandCatalog
+import com.openandroidintelligence.gateway.commands.CommandCatalogClient
 import com.openandroidintelligence.gateway.events.SseParser
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.RawHeader
@@ -18,11 +24,18 @@ data class AgentCapabilities(
     val create: Boolean = false, val send: Boolean = false,
     val rename: Boolean = false, val archive: Boolean = false,
     val delete: Boolean = false, val cancel: Boolean = false, val stream: Boolean = false,
+    val commands: Boolean = false, val approvals: Boolean = false,
 )
 data class CoreAgent(val id: String, val name: String, val kind: String, val online: Boolean,
     val sessionScope: String, val capabilities: AgentCapabilities)
 data class NativeAgentSession(val id: String, val title: String?, val updatedAt: String?, val archived: Boolean)
 data class NativeAgentMessage(val id: String, val role: String, val text: String, val createdAt: String?)
+data class NativeGenerationResult(val outcome: String, val generationId: String?)
+sealed interface NativeAgentStreamEvent {
+    data class Generation(val generationId: String) : NativeAgentStreamEvent
+    data class ApprovalRequested(val approval: JsonValue.JObject) : NativeAgentStreamEvent
+    data class ApprovalResolved(val approval: JsonValue.JObject) : NativeAgentStreamEvent
+}
 class AgentSessionException(val code: String, val status: Int = 0) : IllegalStateException(code)
 
 /** All native session operations use the already authenticated Core connection. */
@@ -34,7 +47,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             JsonFields.bool(value, "online") ?: false,
             required(value, "sessionScope").also { check(it in setOf("account", "deployment")) { "AGENTS_INVALID" } },
             AgentCapabilities(cap("list"), cap("history"), cap("create"), cap("send"), cap("rename"),
-                cap("archive"), cap("delete"), cap("cancel"), cap("stream")))
+                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals")))
     }
 
     suspend fun sessions(agent: CoreAgent): List<NativeAgentSession> {
@@ -72,18 +85,40 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         request("DELETE", sessionTarget(agent, sessionId))
     }
 
-    suspend fun cancel(agent: CoreAgent, sessionId: String) {
+    suspend fun commands(agent: CoreAgent, languageCode: String): CommandCatalog {
+        requireCapability(agent.capabilities.commands && agent.online)
+        return CommandCatalogClient.decode(request("GET", "$ROOT/${segment(agent.id)}/commands?languageCode=${segment(languageCode)}"), languageCode)
+    }
+
+    suspend fun submitApprovalDecision(agent: CoreAgent, sessionId: String, approvalId: String,
+        decision: ApprovalDecision, audit: ApprovalDecisionAudit? = null): ApprovalDecisionResult {
+        requireCapability(agent.capabilities.approvals && agent.online)
+        return ApprovalClient(http, audit) { id -> "${sessionTarget(agent, sessionId)}/approvals/${segment(id)}/decisions" }
+            .submitDecision(approvalId, decision)
+    }
+
+    suspend fun cancel(agent: CoreAgent, sessionId: String, generationId: String? = null, requestId: String? = null): NativeGenerationResult {
         requireCapability(agent.capabilities.cancel && agent.online)
-        request("POST", sessionTarget(agent, sessionId) + "/cancel", emptyMap())
+        val exactGeneration = agent.kind == "hermes"
+        if (exactGeneration && generationId.isNullOrBlank()) throw AgentSessionException("GENERATION_ID_REQUIRED")
+        val payload = if (exactGeneration) mapOf("generationId" to generationId) else emptyMap()
+        val value = request("POST", sessionTarget(agent, sessionId) + "/cancel", payload, requestId)
+        val receipt = JsonFields.obj(JsonFields.field(value, "session")) ?: throw AgentSessionException("OUTCOME_UNKNOWN")
+        val returnedId = JsonFields.string(receipt, "generationId")
+        if (exactGeneration && returnedId != generationId) throw AgentSessionException("OUTCOME_UNKNOWN")
+        val outcome = JsonFields.string(receipt, "outcome")
+        return NativeGenerationResult(outcome?.takeIf { it in setOf("cancelled", "already_completed") } ?: "outcome_unknown", returnedId ?: generationId)
     }
 
     /** An interrupted stream is an unknown outcome, never an automatic resend. */
-    suspend fun send(agent: CoreAgent, sessionId: String, text: String, onDelta: suspend (String) -> Unit) {
+    suspend fun send(agent: CoreAgent, sessionId: String, text: String,
+        onEvent: suspend (NativeAgentStreamEvent) -> Unit = {},
+        onDelta: suspend (String) -> Unit): NativeGenerationResult {
         requireCapability(agent.capabilities.send && agent.capabilities.stream && agent.online)
         require(text.isNotBlank())
         val request = jsonRequest("POST", sessionTarget(agent, sessionId) + "/messages", mapOf("text" to text))
             .copy(headers = listOf(RawHeader("Content-Type", "application/json"), RawHeader("Accept", "text/event-stream")))
-        try {
+        return try {
             http.consumeResponse(request) { status, headers, stream ->
                 if (status !in 200..299) {
                     val failure = try { readErrorBody(stream)?.let(::responseRoot) }
@@ -96,6 +131,8 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                 val parser = SseParser()
                 val buffer = ByteArray(8 * 1024)
                 var done = false
+                var generationId: String? = null
+                var outcome = "completed"
                 while (!done) {
                     currentCoroutineContext().ensureActive()
                     val read = stream.read(buffer)
@@ -105,13 +142,34 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                         val value = JsonFields.obj(Json.parse(event.data)) ?: error("AGENT_STREAM_INVALID")
                         when (JsonFields.string(value, "type")) {
                             "delta" -> onDelta(JsonFields.string(value, "text") ?: error("AGENT_STREAM_INVALID"))
-                            "done" -> { done = true; break }
+                            "generation" -> {
+                                val id = required(value, "generationId")
+                                if (generationId != null && generationId != id) throw AgentSessionException("AGENT_STREAM_INVALID")
+                                generationId = id
+                                onEvent(NativeAgentStreamEvent.Generation(id))
+                            }
+                            "approval_requested", "approval_resolved" -> {
+                                val approval = JsonFields.obj(JsonFields.field(value, "approval")) ?: error("AGENT_STREAM_INVALID")
+                                onEvent(if (JsonFields.string(value, "type") == "approval_requested")
+                                    NativeAgentStreamEvent.ApprovalRequested(approval) else NativeAgentStreamEvent.ApprovalResolved(approval))
+                            }
+                            "done" -> {
+                                val returnedId = JsonFields.string(value, "generationId")
+                                if (returnedId != null && generationId != null && returnedId != generationId)
+                                    throw AgentSessionException("AGENT_STREAM_INVALID")
+                                generationId = returnedId ?: generationId
+                                outcome = JsonFields.string(value, "outcome") ?: "completed"
+                                if (outcome !in setOf("completed", "cancelled")) throw AgentSessionException("OUTCOME_UNKNOWN")
+                                done = true
+                                break
+                            }
                             "error" -> throw AgentSessionException(JsonFields.string(value, "code") ?: "AGENT_SEND_FAILED")
                             else -> error("AGENT_STREAM_INVALID")
                         }
                     }
                 }
                 if (!done) throw AgentSessionException("OUTCOME_UNKNOWN")
+                NativeGenerationResult(outcome, generationId)
             }
         } catch (_: IOException) {
             // A transport failure cannot establish whether the native turn ran.
@@ -120,8 +178,8 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         }
     }
 
-    private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null): JsonValue.JObject {
-        val response = http.execute(jsonRequest(method, target, body))
+    private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null, requestId: String? = null): JsonValue.JObject {
+        val response = http.execute(jsonRequest(method, target, body).copy(requestId = requestId))
         val root = responseRoot(response.body)
         if (response.status !in 200..299) {
             throw AgentSessionException(errorCode(root, "AGENT_REQUEST_FAILED"), response.status)

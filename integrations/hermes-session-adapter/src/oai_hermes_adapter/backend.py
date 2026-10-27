@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from oai_core.gateway.account_paths import account_paths
 from oai_core.gateway.audit import AuditStore
-from oai_core.gateway.core import (AccountStore, AgentSessionBindings, AttachmentStore,
+from oai_core.gateway.core import (AccountStore, AgentSessionBindings, ApprovalRequests, AttachmentStore,
     ContractRegistry, ConversationPort, DEFAULT_ATTACHMENT_POLICY, EventStore, GatewayError)
 from oai_core.gateway.local_keys import (LocalMasterKeyStore, default_master_key_path,
                                         master_key_file)
@@ -162,7 +162,7 @@ class SessionBackend:
                     self._stores[account_id] = SimpleNamespace(account_id=account_id, accountId=account_id,
                         paths=paths, store=store, audit=audit, events=events, attachments=attachments,
                         attachment_policy=self.attachment_policy, conversations=conversations,
-                        agent_sessions=AgentSessionBindings(store))
+                        agent_sessions=AgentSessionBindings(store), approvals=ApprovalRequests(store))
             except BaseException:
                 self.close()
                 raise

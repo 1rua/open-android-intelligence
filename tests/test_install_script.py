@@ -53,7 +53,7 @@ def install_directory(tmp_path):
 @pytest.mark.parametrize("name", ["install.sh", "setup.sh"])
 def test_wizards_create_account_and_keep_tokens_out_of_start_script(name, install_directory):
     root = install_directory
-    environment = dict(os.environ, PYTHONPATH=f"{REPOSITORY / 'oai-core' / 'src'}:/home/djbd/.oai-core/.venv/lib/python3.14/site-packages")
+    environment = dict(os.environ, PYTHONPATH=str(REPOSITORY / "oai-core" / "src"))
     environment.pop("OAI_HERMES_SESSION_TOKEN", None)
     environment.pop("OAI_DSH_ADAPTER_TOKEN", None)
     source = f'''

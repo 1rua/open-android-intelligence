@@ -97,6 +97,7 @@ interface ApprovalDecisionAudit {
 class ApprovalClient(
     private val http: GatewayHttpClient,
     private val audit: ApprovalDecisionAudit? = null,
+    private val target: (String) -> String = { "/open-android-intelligence/v2/approvals/$it/decisions" },
 ) {
 
     suspend fun submitDecision(
@@ -189,7 +190,7 @@ class ApprovalClient(
     private suspend fun execute(approvalId: String, body: ByteArray): GatewayResponse = http.execute(
         SignedGatewayRequest(
             method = "POST",
-            target = "/open-android-intelligence/v2/approvals/$approvalId/decisions",
+            target = target(approvalId),
             body = body,
             headers = listOf(
                 RawHeader("Content-Type", "application/json"),
@@ -221,7 +222,7 @@ class ApprovalClient(
             ?.let { JsonFields.obj(it) }
 
     private fun dataOf(body: JsonValue.JObject?): JsonValue.JObject? =
-        JsonFields.obj(JsonFields.field(body, "data"))
+        JsonFields.obj(JsonFields.field(body, "data")) ?: body
 
     private fun errorCodeOf(body: JsonValue.JObject?): String? =
         JsonFields.string(
