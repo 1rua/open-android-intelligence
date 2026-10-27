@@ -1578,6 +1578,23 @@ class GatewayRuntime(
                 if (activeHttpClient !== http || sessionJob !== ownedJob) true
                 else {
                     nativeConversationNotifications.accept(profileId, session.accountId, event)
+                    if (event.event == "conversation.message.status") {
+                        // 原生会话下工作台不订阅平台事件流；把投递状态转发过去，
+                        // "等待 Agent 接收"才能在网关确认接收时立刻变成"已接收"。
+                        runCatching {
+                            com.openandroidintelligence.conversation.data.GatewayEventDecoder.decode(event)
+                        }.getOrNull()
+                            ?.let { decoded ->
+                                (decoded as? com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageStatus)
+                                    ?.let { status ->
+                                        android.util.Log.d(
+                                            "OaiLatency",
+                                            "gateway.status status=${status.status.wireValue} messageId=${status.messageId} occurredAt=${status.occurredAt} receivedAt=${System.currentTimeMillis()}",
+                                        )
+                                        _controller.value?.onGatewayDeliveryStatus(status)
+                                    }
+                            }
+                    }
                     handlePlatformEvent(event, renewal.current.sessionId, session.deviceId, binding)
                 }
             },

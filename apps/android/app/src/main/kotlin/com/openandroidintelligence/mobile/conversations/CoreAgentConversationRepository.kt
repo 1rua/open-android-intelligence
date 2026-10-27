@@ -241,10 +241,14 @@ class CoreAgentConversationRepository(
         val key = agent.id to conversationId
         val turn = NativeTurn(agent, conversationId)
         if (turns.putIfAbsent(key, turn) != null) throw AgentSessionException("SESSION_BUSY")
+        // 发送到首帧的耗时是"等待接收"体感的主要来源：记录阶段时间点便于定位回归。
+        val startedAt = System.currentTimeMillis()
+        android.util.Log.d("OaiLatency", "send.start client=${message.clientMessageId.value} conversation=$conversationId")
         turn.generationId?.let { rememberGeneration(turn, it) }
         var messageId = message.clientMessageId.value
         var assistantMsgId = "stream_${message.clientMessageId.value}"
         var assistantHasNativeId = false
+        var firstDeltaLogged = false
         var assistantTimestamp = System.currentTimeMillis()
         if (isSelected(turn)) {
             _generationId.value = turn.generationId
@@ -327,6 +331,8 @@ class CoreAgentConversationRepository(
                                     enqueue("accepted", VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
                                         System.currentTimeMillis(), remoteId, message.clientMessageId.value, ConversationId(conversationId)))
                                 }
+                                android.util.Log.d("OaiLatency",
+                                    "accept.identity elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
                             }
                         }
                         is NativeAgentStreamEvent.Generation -> {
@@ -341,6 +347,11 @@ class CoreAgentConversationRepository(
                     }
                 }) { delta ->
                     if (!turn.cancelled) {
+                        if (!firstDeltaLogged && delta.isNotEmpty()) {
+                            firstDeltaLogged = true
+                            android.util.Log.d("OaiLatency",
+                                "first.delta elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
+                        }
                         text.append(delta)
                         val now = System.nanoTime()
                         if (lastSnapshotNanos == 0L || now - lastSnapshotNanos >= 33_000_000L) {
@@ -351,6 +362,8 @@ class CoreAgentConversationRepository(
                 }
                 result.generationId?.let { rememberGeneration(turn, it) }
                 result.text?.let { text.clear(); text.append(it) }
+                android.util.Log.d("OaiLatency",
+                    "stream.done outcome=${result.outcome} elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
                 if (result.outcome == "cancelled" || turn.cancelled) {
                     publish("CANCELLED")
                     flush()
