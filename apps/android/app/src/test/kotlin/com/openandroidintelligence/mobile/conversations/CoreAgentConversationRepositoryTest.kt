@@ -20,6 +20,7 @@ import com.openandroidintelligence.gateway.http.WireRequest
 import com.openandroidintelligence.gateway.http.WireResponse
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -48,6 +49,164 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoreAgentConversationRepositoryTest {
+
+    @Test fun historyKeepsMillisecondsOffsetsAndNativeNumericTimestamps() = runTest {
+        val dates = listOf("1780000000.123", "1780000000124", "\"2026-05-28T20:26:40.125Z\"",
+            "\"2026-05-28T22:26:40.126+02:00\"", "\"invalid\"", "null")
+        val body = "{\"messages\":[" + dates.mapIndexed { index, date ->
+            """{"id":"m_$index","role":"assistant","text":"$index","createdAt":$date}"""
+        }.joinToString(",") + "]}"
+        val repo = CoreAgentConversationRepository(client(responseTransport(body)), { sampleAgent }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler))
+        val messages = repo.timeline("s_1", PageRequest(null, 50)).messages
+        assertEquals(listOf(1780000000123L, 1780000000124L, 1780000000125L, 1780000000126L),
+            messages.take(4).map { it.timestamp })
+        assertEquals("Missing dates must have a deterministic fallback", messages[4].timestamp, messages[5].timestamp)
+    }
+
+    @Test fun slowUiCannotBlockSseReadingAndStillReceivesTheCompleteFinalReply() = runTest {
+        val deltaText = "字".repeat(256)
+        val frames = (1..4096).map { """{"type":"delta","text":"$deltaText"}""" } +
+            """{"type":"done","outcome":"completed"}"""
+        val readFinished = CompletableDeferred<Unit>()
+        val body = frames.joinToString("") { "event: message\ndata: $it\n\n" }.toByteArray()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("stream only")
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            override suspend fun <T> consumeResponse(request: WireRequest,
+                consume: suspend (Int, List<RawHeader>, InputStream) -> T): T {
+                val result = consume(200, listOf(RawHeader("Content-Type", "text/event-stream")), ByteArrayInputStream(body))
+                readFinished.complete(Unit)
+                return result
+            }
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler))
+        val releaseUi = CompletableDeferred<Unit>()
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).collect {
+                events += it
+                releaseUi.await()
+            }
+        }
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("c_long"), "长回答"))
+        runCurrent()
+        assertTrue("Network reader must finish while UI is blocked", readFinished.isCompleted)
+        releaseUi.complete(Unit)
+        runCurrent()
+        val final = events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().last().message
+        assertEquals("CONFIRMED", final.state)
+        assertEquals(deltaText.repeat(4096), (final.parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+        assertEquals(1, events.filterIsInstance<VerifiedConversationEvent.MessageStatus>().size)
+    }
+
+    private fun responseTransport(body: String) = object : GatewayByteTransport {
+        override suspend fun execute(request: WireRequest) = WireResponse(200,
+            listOf(RawHeader("Content-Type", "application/json")), body.toByteArray())
+        override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+    }
+
+    @Test fun nativeIdentityAndSeparateAssistantMessagesSurviveRefresh() = runTest {
+        val scope = ConversationScope("p1", "https://core", "a1", "i1")
+        val frames = listOf(
+            """{"type":"generation","generationId":"native_round","userMessageId":"native_user","clientMessageId":"cm_turn"}""",
+            """{"type":"delta","text":"过程说明","messageId":"native_step"}""",
+            """{"type":"delta","text":"最终回答草稿","messageId":"native_answer"}""",
+            """{"type":"done","outcome":"completed","messageId":"native_answer","text":"最终回答"}""")
+        val stream = frames.joinToString("") { "event: message\ndata: $it\n\n" }
+        val history = """{"messages":[{"id":"native_user","role":"user","text":"问题","createdAt":1780000000.123,"clientMessageId":"cm_turn"},{"id":"native_step","role":"assistant","text":"过程说明","createdAt":1780000000.124},{"id":"native_answer","role":"assistant","text":"最终回答","createdAt":1780000000.125,"clientMessageId":"cm_turn"}]}"""
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest) = WireResponse(200,
+                listOf(RawHeader("Content-Type", if (request.method == "POST") "text/event-stream" else "application/json")),
+                (if (request.method == "POST") stream else history).toByteArray())
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler))
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { repo.observeEvents(scope).toList(events) }
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_turn"), "问题"))
+        runCurrent()
+        val confirmed = events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+            .map { it.message }.filter { it.state == "CONFIRMED" }.associateBy { it.id }
+        assertEquals(setOf("native_step", "native_answer"), confirmed.keys)
+        assertEquals("最终回答", (confirmed.getValue("native_answer").parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+        assertEquals("过程说明", (confirmed.getValue("native_step").parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+        assertEquals(ClientMessageId("assistant_cm_turn"), confirmed.getValue("native_answer").clientMessageId)
+        assertEquals("native_user", events.filterIsInstance<VerifiedConversationEvent.MessageStatus>().single().messageId)
+        assertEquals(confirmed.keys, repo.timeline("s_1", PageRequest(null, 50)).messages.filter { it.sender == "assistant" }.map { it.id }.toSet())
+    }
+
+    @Test fun missingDeleteCapabilityFailsExplicitlyWithoutPretendingToDelete() = runTest {
+        val repo = CoreAgentConversationRepository(client(responseTransport("{}")),
+            { sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(delete = false)) }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler))
+        assertEquals("UNSUPPORTED_CAPABILITY", runCatching { repo.deleteConversation("s_1") }.exceptionOrNull()?.message)
+    }
+
+    @Test fun singleMemberBatchPreservesAttachmentsAndClientIdentityAndRejectsSilentTruncation() = runTest {
+        val requests = mutableListOf<WireRequest>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request
+                return WireResponse(200, listOf(RawHeader("Content-Type", "text/event-stream")),
+                    "event: message\ndata: {\"type\":\"done\"}\n\n".toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repo = CoreAgentConversationRepository(client(transport),
+            { sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(attachments = true)) }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler))
+        val message = OutgoingMessage(ClientMessageId("cm_files"), "", listOf("att_image", "att_docx"))
+        val accepted = repo.submitBatch(com.openandroidintelligence.conversation.ports.MessageBatch("batch_files", listOf(message), "s_1"))
+        runCurrent()
+        assertEquals(setOf("cm_files"), accepted.memberIds.keys)
+        val payload = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(requests.single().body.decodeToString()))!!
+        assertEquals(listOf("att_image", "att_docx"), com.openandroidintelligence.gateway.schema.JsonFields.strings(payload, "attachmentIds"))
+        assertEquals("cm_files", com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "clientMessageId"))
+        assertEquals("UNSUPPORTED_CAPABILITY", runCatching { repo.submitBatch(
+            com.openandroidintelligence.conversation.ports.MessageBatch("batch_two", listOf(message, message.copy(clientMessageId = ClientMessageId("cm_second"))), "s_1")) }.exceptionOrNull()?.message)
+        assertEquals(1, requests.size)
+    }
+
+    @Test fun validationCapabilityAndProtocolFailuresAreNotReportedAsAgentOffline() = runTest {
+        val cases = mapOf("INVALID_MESSAGE" to "INVALID_MESSAGE", "UNSUPPORTED_CAPABILITY" to "UNSUPPORTED_CAPABILITY",
+            "ATTACHMENT_NOT_FOUND" to "ATTACHMENT_READ_FAILED", "HOST_INCOMPATIBLE" to "PROTOCOL_ERROR")
+        for ((remote, expected) in cases) {
+            val transport = object : GatewayByteTransport {
+                override suspend fun execute(request: WireRequest) = WireResponse(400,
+                    listOf(RawHeader("Content-Type", "application/json")), """{"error":{"code":"$remote"}}""".toByteArray())
+                override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            }
+            val failing = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" }, backgroundScope,
+                StandardTestDispatcher(testScheduler))
+            val events = mutableListOf<VerifiedConversationEvent>()
+            val job = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+                failing.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+            }
+            failing.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_error"), "内容"))
+            runCurrent()
+            assertEquals(expected, events.filterIsInstance<VerifiedConversationEvent.MessageStatus>().single().errorCode?.wireValue)
+            job.cancel()
+        }
+    }
+
+    @Test fun confirmedRemoteDeletionStillSucceedsIfLocalPreferenceCleanupFails() = runTest {
+        val store = object : NativeConversationOrganizationStore {
+            override fun read(agentId: String) = com.openandroidintelligence.conversation.ports.ConversationOrganization()
+            override fun update(agentId: String, expectedRevision: Long, organization: com.openandroidintelligence.conversation.ports.ConversationOrganization) = error("storage full")
+            override fun removeConversation(agentId: String, conversationId: String): Unit = error("storage full")
+        }
+        val repo = CoreAgentConversationRepository(client(responseTransport("{}")), { sampleAgent }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler), organizationStore = store)
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+        }
+        repo.deleteConversation("s_1")
+        assertTrue(events.filterIsInstance<VerifiedConversationEvent.ConversationsChanged>().single().deleted)
+    }
 
     private val sampleAgent = CoreAgent(
         id = "hermes",
@@ -354,10 +513,10 @@ class CoreAgentConversationRepositoryTest {
 
     @Test
     fun submitMessageEmitsConsistentTimestampGenerationIdAndCorrectStatusMessageId() = runTest {
-        val ssePayload = "event: delta\ndata: {\"delta\":\"Hello \"}\n\nevent: delta\ndata: {\"delta\":\"World!\"}\n\nevent: done\ndata: {}\n\n"
+        val ssePayload = "event: message\ndata: {\"type\":\"delta\",\"text\":\"Hello World!\"}\n\nevent: message\ndata: {\"type\":\"done\"}\n\n"
         val transport = object : GatewayByteTransport {
             override suspend fun execute(request: WireRequest): WireResponse {
-                return WireResponse(200, listOf(RawHeader("Content-Type", "application/json")), ByteArray(0))
+                return WireResponse(200, listOf(RawHeader("Content-Type", "text/event-stream")), ssePayload.toByteArray())
             }
             override fun eventStream(request: WireRequest) = kotlinx.coroutines.flow.flowOf(ssePayload.toByteArray())
         }
@@ -367,10 +526,11 @@ class CoreAgentConversationRepositoryTest {
             currentAgent = { sampleAgent },
             activeConversationId = { "s_1" },
             parentScope = backgroundScope,
+            ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
         val emitted = mutableListOf<VerifiedConversationEvent>()
-        val job = launch { repo.observeEvents(ConversationScope("p1", "http://core", "a1", "i1")).toList(emitted) }
+        val job = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { repo.observeEvents(ConversationScope("p1", "http://core", "a1", "i1")).toList(emitted) }
 
         val clientMsgId = ClientMessageId("client_msg_123")
         val acceptance = repo.submitMessage("s_1", OutgoingMessage(clientMsgId, "Hi"))

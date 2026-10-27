@@ -104,6 +104,58 @@ class ExecutionDisplayTest {
     }
 
     @Test
+    fun completedOrdinaryAnswerIsNeverMovedIntoLaterExecutionSteps() {
+        val items = TimelineDisplayModel().build(
+            listOf(
+                assistantEntry("previous", "上一轮已完成的正常长回答"),
+                assistantEntry("tool", "<tool_call name=\"read_file\"><command>Reading config.yaml...</command>"),
+                assistantEntry("latest", "本轮最终回答"),
+            ),
+        )
+
+        assertEquals(2, items.size)
+        assertEquals("previous", (items.first() as TimelineDisplayItem.Single).entry.key)
+        val run = (items.last() as TimelineDisplayItem.Execution).run
+        assertEquals("latest", run.finalEntry.key)
+        assertFalse(run.steps.any { it.entryKey == "previous" })
+    }
+
+    @Test
+    fun completedGenerationProtectsEarlierAnswerWithStaleStreamingFlags() {
+        val items = TimelineDisplayModel().build(
+            listOf(
+                assistantEntry("previous", "上一轮完整回答", streaming = true),
+                assistantEntry("tool", "<tool_call name=\"read_file\"><command>读取配置</command>", streaming = true),
+                assistantEntry("latest", "本轮最终回答", streaming = true),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+
+        assertEquals(2, items.size)
+        val previous = (items.first() as TimelineDisplayItem.Single).entry
+        assertEquals("previous", previous.key)
+        assertFalse(previous.isStreaming)
+        val run = (items.last() as TimelineDisplayItem.Execution).run
+        assertEquals("latest", run.finalEntry.key)
+        assertFalse(run.steps.any { it.entryKey == "previous" })
+        assertFalse(run.isStreaming)
+    }
+
+    @Test
+    fun completedGenerationStopsUnclosedToolIndicatorsDespiteStaleStreamingFlags() {
+        val run = executionRun(
+            TimelineDisplayModel().build(
+                listOf(assistantEntry("tool", "<tool_call name=\"read_file\"><command>Reading config.yaml...</command>", streaming = true)),
+                generation = GenerationState.COMPLETED,
+            ),
+        )
+
+        assertFalse(run.isStreaming)
+        assertFalse(run.finalEntryIsStreaming)
+        assertTrue(run.steps.filterIsInstance<ExecutionStep.ToolCall>().none { it.entryIsStreaming })
+    }
+
+    @Test
     fun streamingExecutionStaysSingleUntilFinalAnswerAppears() {
         val entry = assistantEntry("a1", "<think>正在分析设备状态", streaming = true)
 
@@ -192,8 +244,8 @@ class ExecutionDisplayTest {
     }
 
     @Test
-    fun crossMessageAggregationKeepsEarlierContentInSteps() {
-        val first = assistantEntry("a1", "先说明一下\n<think>展开分析</think>\n初步结论")
+    fun streamingPreambleCanBecomeProcessNarrativeAsTheSameTurnContinues() {
+        val first = assistantEntry("a1", "先说明一下\n<think>展开分析</think>\n初步结论", streaming = true)
         val second = assistantEntry("a2", "最终回答：完成")
 
         val run = executionRun(TimelineDisplayModel().build(listOf(first, second)))
@@ -284,17 +336,21 @@ class ExecutionDisplayTest {
     // ==========================================
 
     @Test
-    fun finalEntryPrefersLastMessageWithVisibleFinalText() {
+    fun completedFinalAnswerClosesItsExecutionSegmentBeforeLaterProcessMessages() {
         val first = assistantEntry("a1", "<think>思考一</think>答案一")
         val second = assistantEntry("a2", "<think>思考二</think>")
 
-        val run = executionRun(TimelineDisplayModel().build(listOf(first, second)))
+        val items = TimelineDisplayModel().build(listOf(first, second))
 
-        assertEquals("execution_segment:a1", run.segmentKey)
-        assertEquals("a1", run.finalEntry.key)
-        assertEquals(2, run.stepCount)
-        assertTrue(run.hasFinalAnswer)
-        assertEquals("答案一", (run.finalBlocks.single() as TimelineBlock.Paragraph).text)
+        assertEquals(2, items.size)
+        val completed = (items.first() as TimelineDisplayItem.Execution).run
+        assertEquals("a1", completed.finalEntry.key)
+        assertEquals(1, completed.stepCount)
+        assertTrue(completed.hasFinalAnswer)
+        assertEquals("答案一", (completed.finalBlocks.single() as TimelineBlock.Paragraph).text)
+        val later = (items.last() as TimelineDisplayItem.Execution).run
+        assertFalse(later.hasFinalAnswer)
+        assertEquals(listOf("a2"), later.steps.map { it.entryKey })
     }
 
     @Test
@@ -504,10 +560,12 @@ class ExecutionDisplayTest {
         )
         val model = TimelineDisplayModel()
 
-        val run = (model.build(entries).last() as TimelineDisplayItem.Execution).run
+        val items = model.build(entries)
+        val completed = (items[1] as TimelineDisplayItem.Single).entry
+        val ongoing = (items[2] as TimelineDisplayItem.Single).entry
 
-        assertTrue(run.isStreaming, "整段仍有消息在流式")
-        assertFalse(run.finalEntryIsStreaming, "最终回答本身已经完成，不能继续画光标")
+        assertFalse(completed.isStreaming, "已完成的回答独立保留，不能继续画光标")
+        assertTrue(ongoing.isStreaming, "后续思考保留自己的实时状态")
     }
 
     // ==========================================

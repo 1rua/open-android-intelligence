@@ -46,7 +46,7 @@ def _deleted(row: Mapping[str, Any]) -> bool:
 
 def _wire(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     names = {"messageId", "clientMessageId", "conversationId", "sender", "text", "parts",
-             "timestamp", "state", "batchId"}
+             "timestamp", "state", "batchId", "anchorClientMessageId"}
     result = {key: value for key, value in snapshot.items() if key in names}
     if isinstance(snapshot.get("revision"), int):
         result["contentRevision"] = snapshot["revision"]

@@ -18,7 +18,7 @@ from aiohttp import web
 
 from .sessions import HermesSessionAdapter
 from .approvals import NativeApprovalMixin
-from oai_core.gateway.core import APPROVAL_CHOICES
+from oai_core.gateway.core import APPROVAL_CHOICES, GatewayError
 from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES
 
 PREFIX = "/oai/session-adapter/v1"
@@ -63,6 +63,8 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             response = await handler(request)
             response.headers["Cache-Control"] = "no-store"
             return response
+        except GatewayError as exc:
+            return web.json_response({"code": exc.code}, status=400)
         except AdapterError as exc:
             return web.json_response({"code": exc.code,
                 **({"details": exc.details} if exc.details else {})}, status=exc.status)
@@ -112,9 +114,17 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             if set(body) - {"value"}:
                 raise AdapterError("SCHEMA_INVALID", 400)
             return web.json_response(await adapter.manage(principal, session_id, action, body.get("value")))
-        if set(body) != {"text"} or not isinstance(body["text"], str) or not body["text"].strip():
+        attachment_ids = body.get("attachmentIds", [])
+        client_message_id = body.get("clientMessageId")
+        if (set(body) - {"text", "attachmentIds", "clientMessageId"} or not isinstance(body.get("text", ""), str)
+                or not isinstance(attachment_ids, list) or len(attachment_ids) > 256
+                or any(not isinstance(item, str) or not IDENTITY.fullmatch(item) for item in attachment_ids)
+                or len(set(attachment_ids)) != len(attachment_ids)
+                or not body.get("text", "").strip() and not attachment_ids
+                or client_message_id is not None and (not isinstance(client_message_id, str) or not IDENTITY.fullmatch(client_message_id))):
             raise AdapterError("SCHEMA_INVALID", 400)
-        stream = adapter.send(principal, session_id, body["text"])
+        stream = adapter.send(principal, session_id, body.get("text", ""), attachment_ids=attachment_ids,
+                              client_message_id=client_message_id)
         # Authorization and binding checks run before committing response headers.
         first = await anext(stream, None)
         response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"})
@@ -132,6 +142,46 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         finally:
             await stream.aclose()
 
+    async def attachment_create(request):
+        if not adapter.descriptor()["capabilities"].get("attachments"):
+            raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
+        body = await body_for(request)
+        fields = {"clientAttachmentId", "filename", "mediaType", "sizeBytes", "sha256"}
+        if (not isinstance(body, dict) or set(body) != fields
+                or any(not isinstance(body[key], str) or not body[key] for key in ("clientAttachmentId", "filename", "mediaType", "sha256"))
+                or not IDENTITY.fullmatch(body["clientAttachmentId"]) or not re.fullmatch(r"[a-f0-9]{64}", body["sha256"])
+                or type(body["sizeBytes"]) is not int or not 0 <= body["sizeBytes"] <= 2**63 - 1):
+            raise AdapterError("SCHEMA_INVALID", 400)
+        principal = request["principal"]
+        if not principal.device_id:
+            raise AdapterError("DEVICE_CONTEXT_REQUIRED", 403)
+        with adapter._account(principal) as account:
+            result = account.attachments.create(**body, deviceId=principal.device_id,
+                pairingGeneration=principal.pairing_generation or 0, correlationId="core-attachment-upload")
+            result["state"] = account.attachments.get_record(result["attachmentId"])["state"]
+        return web.json_response(result)
+
+    async def attachment_content(request):
+        principal, attachment_id = request["principal"], request.match_info["attachment_id"]
+        with adapter._account(principal) as account:
+            row = account.store.database.execute(
+                "SELECT owner_device_id, owner_pairing_generation FROM attachments WHERE attachment_id=?", (attachment_id,)).fetchone()
+            if (row is None or not principal.device_id or row["owner_device_id"] != principal.device_id
+                    or row["owner_pairing_generation"] != (principal.pairing_generation or 0)):
+                raise AdapterError("ATTACHMENT_ACCESS_DENIED", 403)
+            record = account.attachments.get_record(attachment_id)
+            upload = account.attachments.begin_content_upload_stream(attachment_id, record["sizeBytes"], record["sha256"])
+            try:
+                async for chunk in request.content.iter_chunked(64 * 1024):
+                    await asyncio.to_thread(upload.write, chunk)
+                staged = await asyncio.to_thread(upload.finish)
+                await asyncio.to_thread(account.attachments.accept_streamed_upload, staged)
+                result = await asyncio.to_thread(account.attachments.commit, attachment_id)
+            except BaseException:
+                upload.abort()
+                raise
+        return web.json_response(result)
+
     async def approval_decision(request):
         body = await body_for(request)
         if not isinstance(body, dict) or set(body) != {"decision"} or not isinstance(body["decision"], str) or body["decision"] not in APPROVAL_CHOICES:
@@ -139,6 +189,8 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         return web.json_response(await adapter.decide_approval(request["principal"], request.match_info["session_id"],
             request.match_info["approval_id"], body["decision"]))
 
+    app.router.add_post(PREFIX + "/attachments", attachment_create)
+    app.router.add_put(PREFIX + "/attachments/{attachment_id}/content", attachment_content)
     app.router.add_get(PREFIX + "/status", status)
     app.router.add_get(PREFIX + "/commands", commands)
     app.router.add_get(PREFIX + "/sessions", sessions)

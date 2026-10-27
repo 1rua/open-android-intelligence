@@ -138,7 +138,7 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_handles_early_notifications_and_filters_foreign_turn(self):
         events = [event async for event in self.adapter.send(self.alice, 'terminal', 'hello from OAI')]
-        self.assertEqual(events, [{'type': 'delta', 'text': 'hello'}, {'type': 'done'}])
+        self.assertEqual(events, [{'type': 'delta', 'text': 'hello', 'messageId': 'a2'}, {'type': 'done', 'messageId': 'a2'}])
         turn = next(r for r in self.requests() if r.get('method') == 'turn/start')
         self.assertEqual(turn['params']['input'][0]['text'], 'hello from OAI')
         self.assertNotIn('approvalPolicy', turn['params'])

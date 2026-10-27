@@ -13,8 +13,8 @@ const textOf = (message) => (message?.content ?? []).filter((part) => part.type 
 // assistant/message keeps its turn/step wrapper. Older hosts wrapped both.
 const messageOf = (event) => event.type === "user/message" ? (event.data?.message ?? event.data) : event.data?.message;
 const iso = (time) => new Date(time).toISOString();
-const turnResult = (reason, text) => {
-  if (reason === "completed") return { type: "done", text };
+const turnResult = (reason, text, identity = {}) => {
+  if (reason === "completed") return { type: "done", text, ...identity };
   const codes = { error: "AGENT_FAILED", aborted: "CANCELLED", blocked: "AGENT_BLOCKED", "max-tokens": "AGENT_MAX_TOKENS", interrupted: "OUTCOME_UNKNOWN" };
   return { type: "error", code: codes[reason] ?? "HOST_INCOMPATIBLE" };
 };
@@ -106,6 +106,7 @@ export function createSessionHandler(ctx, config, token) {
     const disposers = [];
     let currentTurn, ownTurn, finalText = "", finished = false;
     const ownAttempts = new Set();
+    const identity = {};
     let release;
     const finishedPromise = new Promise((resolve) => { release = resolve; });
     const write = (value) => {
@@ -122,12 +123,23 @@ export function createSessionHandler(ctx, config, token) {
     disposers.push(ctx.on("session/event", (session, event) => {
       if (session?.id !== id || finished) return;
       if (event.type === "turn/start") currentTurn = event.data.turn;
-      if (event.type === "user/message" && messageOf(event)?.source?.rpcId === requestId) ownTurn = currentTurn;
+      if (event.type === "user/message" && messageOf(event)?.source?.rpcId === requestId) {
+        ownTurn = currentTurn;
+        const message = messageOf(event);
+        if (typeof message.id === "string" && message.id) identity.userMessageId = message.id;
+      }
       if (ownTurn === undefined || (event.data.turn !== undefined && event.data.turn !== ownTurn)) return;
-      if (event.type === "assistant/message") finalText = textOf(event.data.message);
+      if (event.type === "assistant/message") {
+        const message = messageOf(event);
+        finalText = textOf(message);
+        // Only the persisted native message identifies this answer. Stream
+        // attempts/chunks are transient and cannot stand in for history IDs.
+        if (typeof message?.id === "string" && message.id) identity.messageId = message.id;
+        else delete identity.messageId;
+      }
       if (event.type === "turn/end") {
         const reason = event.data.reason?.kind;
-        finish(turnResult(reason, finalText));
+        finish(turnResult(reason, finalText, identity));
       }
     }));
     disposers.push(ctx.on("agent/assistant-stream", (payload) => {

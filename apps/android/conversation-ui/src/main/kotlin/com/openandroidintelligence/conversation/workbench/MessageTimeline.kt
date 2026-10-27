@@ -249,6 +249,10 @@ fun messageStatusLabel(status: AgentMessageStatus, errorCode: AgentMessageErrorC
     AgentMessageStatus.COMPLETED -> "Agent 处理完成"
     AgentMessageStatus.FAILED -> "Agent 处理失败：" + when (errorCode) {
         AgentMessageErrorCode.AGENT_UNAVAILABLE -> "Agent 暂不可用"
+        AgentMessageErrorCode.INVALID_MESSAGE -> "消息内容或附件参数无效"
+        AgentMessageErrorCode.UNSUPPORTED_CAPABILITY -> "当前 Agent 不支持此消息或附件功能"
+        AgentMessageErrorCode.PROTOCOL_ERROR -> "会话协议响应无效，请更新 Core 与适配器"
+        AgentMessageErrorCode.AGENT_REQUEST_FAILED -> "请求未能完成，请检查会话连接或服务日志"
         AgentMessageErrorCode.ATTACHMENT_READ_FAILED -> "Agent 读取附件失败"
         AgentMessageErrorCode.AGENT_MEDIA_REJECTED -> "Agent 无法处理此媒体"
         AgentMessageErrorCode.MODEL_REQUEST_REJECTED -> "模型请求格式不接受"

@@ -54,6 +54,33 @@ class ExecutionProcessComposeTest {
     // ==========================================
 
     @Test
+    fun completedGenerationDoesNotShowLiveCursorWhenToolMarkupIsUnclosed() {
+        val entry = assistantEntry("tool", "<tool_call name=\"read_file\"><command>Reading config.yaml...</command>", streaming = true)
+        val run = (TimelineDisplayModel().build(
+            listOf(entry),
+            generation = com.openandroidintelligence.conversation.model.GenerationState.COMPLETED,
+        ).single() as TimelineDisplayItem.Execution).run
+
+        compose.setContent { MaterialTheme { AssistantExecutionTurnBody(run) } }
+        compose.onNodeWithText("点击展开", substring = true).performClick()
+        compose.onNodeWithText("正在输出", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("执行中", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun completedPlainActivityLogDoesNotKeepAStreamingCursor() {
+        val entry = assistantEntry("log", "Reading config.yaml...", streaming = true)
+        val item = TimelineDisplayModel().build(
+            listOf(entry),
+            generation = com.openandroidintelligence.conversation.model.GenerationState.COMPLETED,
+        ).single() as TimelineDisplayItem.Single
+
+        compose.setContent { MaterialTheme { AssistantMessageContent(item.entry) } }
+        compose.onNodeWithText("Reading config.yaml...", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("正在输出", substring = true).assertDoesNotExist()
+    }
+
+    @Test
     fun realtimeExecutionEntryRendersLiveThoughtCardInsteadOfPanel() {
         val entry = assistantEntry("a1", "<think>正在分析设备状态", streaming = true)
         val items = TimelineDisplayModel().build(listOf(entry))

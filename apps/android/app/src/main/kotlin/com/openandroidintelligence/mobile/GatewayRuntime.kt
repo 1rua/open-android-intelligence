@@ -740,6 +740,7 @@ class GatewayRuntime(
                         attachmentStagingStore(profile.gatewayBaseUrl, accountId, installationId()).cleanup()
                         com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),localDocumentKeyProvider).wipe()
                         com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),localDocumentKeyProvider).wipe()
+                        com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(context,localScope,localDocumentKeyProvider).wipe()
                         com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId()),keyProvider=localDocumentKeyProvider).clearMedia()
                         pluginHost?.eraseAccount(accountId,PairingGrantBinding(profile.gatewayBaseUrl,accountId,installationId()).pairingId)
                         replyPublisher.eraseAccount(profileId, accountId)
@@ -817,6 +818,7 @@ class GatewayRuntime(
                     { staging?.cleanup(); Unit },
                     { com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
                     { com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
+                    { com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(context,localScope,localDocumentKeyProvider).wipe() },
                     { com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),keyProvider=localDocumentKeyProvider).clearMedia() },
                     { pluginHost?.eraseAccount(accountId,binding.pairingId); Unit },
                     { replyPublisher.eraseAccount(profileId, accountId) },
@@ -1392,6 +1394,8 @@ class GatewayRuntime(
                 supportsApprovalCards = "agent-approval-cards-v1" in conversationUi,
                 supportsGenerationCancel = generationCancelCapability.agreed,
                 approvalAudit = decisionAudit,
+                organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
+                    context, conversationScope, localDocumentKeyProvider),
             )
         } else null
         val activeRepo: ConversationRepository = coreAgentRepo ?: mirroredRepository
@@ -1412,12 +1416,21 @@ class GatewayRuntime(
                 languageCode = java.util.Locale.getDefault().toLanguageTag(),
                 scopeFactory = { conversationScope },
                 attachmentCoordinator = attachmentCoordinator,
-                supportsMessageBatches = setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
+                supportsMessageBatches = !nativeAgentSessions && setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
                 debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
                 supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
                 supportsApprovalCards = approvalClient != null && (!nativeAgentSessions ||
                     _nativeAgents.value?.state?.value?.agent?.capabilities?.approvals == true),
                 supportsConversationManagement = "conversation-management-v1" in conversationUi || nativeAgentSessions,
+                supportsConversationDelete = if (nativeAgentSessions) _nativeAgents.value?.state?.value?.agent?.capabilities?.delete == true
+                    else "conversation-management-v1" in conversationUi,
+                supportsConversationArchive = if (nativeAgentSessions) _nativeAgents.value?.state?.value?.agent?.capabilities?.archive == true
+                    else "conversation-management-v1" in conversationUi,
+                supportsConversationUnarchive = !nativeAgentSessions && "conversation-management-v1" in conversationUi,
+                supportsConversationRename = if (nativeAgentSessions) _nativeAgents.value?.state?.value?.agent?.capabilities?.rename == true
+                    else "conversation-management-v1" in conversationUi,
+                organizationStoredLocally = nativeAgentSessions,
+                authoritativeMessageIds = nativeAgentSessions,
                 externalBusyThreadIds = {
                     bubbleBusyConversationIds() + nativeConversationNotifications.sessions.value
                         .filter { it.isRunning }.map { it.target.conversationId }
@@ -1469,12 +1482,22 @@ class GatewayRuntime(
                         if (currentPhase is ConnectionPhase.Connected && currentPhase.agentName != newAgentName) {
                             _phase.value = currentPhase.copy(agentName = newAgentName)
                         }
-                        if (!isFirstObservation) {
+                        val capabilityState = _controller.value?.state?.value
+                        val capabilitiesChanged = capabilityState?.conversationDeleteSupported != (newAgent?.capabilities?.delete == true) ||
+                            capabilityState?.conversationArchiveSupported != (newAgent?.capabilities?.archive == true) ||
+                            capabilityState?.conversationRenameSupported != (newAgent?.capabilities?.rename == true)
+                        if (!isFirstObservation || capabilitiesChanged) {
                             // Recreate workbench controller cleanly on agent switch
                             _controller.value?.close()
                             _controller.value = buildWorkbenchController(newAgentName)
+                        } else {
+                            // Initial requests may have run before Agent discovery completed.
+                            // Refresh the existing controller without discarding its draft.
+                            _controller.value?.refreshThreads()
+                            _controller.value?.loadCatalog()
                         }
                     }
+                    _controller.value?.setRemoteConversationOnline(nState.agent?.online == true)
                 }
             }
         }

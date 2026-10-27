@@ -192,7 +192,8 @@ async def test_real_event_store_frames_stream_accumulated_native_text_and_do_not
     assert [event["text"] for event in events if event["type"] == "delta"] == ["原生", "回复"]
     assert events[0]["type"] == "generation"
     assert events[-1] == {"type": "done", "text": "原生回复", "outcome": "completed",
-                          "generationId": events[0]["generationId"]}
+                          "generationId": events[0]["generationId"], "messageId": "reply",
+                          "clientMessageId": events[0]["clientMessageId"], "userMessageId": events[0]["userMessageId"]}
     assert core._event_sinks == []
     with pytest.raises(AdapterError) as error:
         await anext(adapter.send(Principal("bob", device_id="phone"), conversation, "hello"))
@@ -375,3 +376,199 @@ async def test_hermes_bridge_and_adapter_propagate_commands_to_core(core, monkey
         assert core_resp["format"] == "agent-command-catalog-1.0"
         assert len(core_resp["commands"]) == 2
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,filename,media_type,content", [
+    ("", "image.png", "image/png", b"png-content" * 10000),
+    ("请阅读文档", "report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", b"document-content" * 10000),
+], ids=["pure-image", "text-and-docx"])
+async def test_native_attachment_flows_between_distinct_account_stores(core, tmp_path, text, filename, media_type, content):
+    import hashlib
+    upstream = create_core({"storageRoot": str(tmp_path / "upstream"), "masterKeyFile": str(tmp_path / "upstream-key"), "contractRoot": str(CONTRACT)})
+    account = upstream.open_gateway_account("core-alice")
+    account.credentials.create_password("test-password")
+    attachment = account.attachments.create(clientAttachmentId="chosen-file", filename=filename,
+        mediaType=media_type, sizeBytes=len(content), sha256=hashlib.sha256(content).hexdigest(),
+        deviceId="phone", pairingGeneration=3, correlationId="upload")
+    aid = attachment["attachmentId"]
+    account.attachments.upload_content_stream(aid, (content[i:i+4096] for i in range(0, len(content), 4096)))
+    account.attachments.commit(aid)
+    account.close()
+    received = []
+
+    class Runtime:
+        _loop = asyncio.get_running_loop()
+        _session_store = object()
+        _message_handler = staticmethod(lambda: None)
+        services = SimpleNamespace(core=core)
+        def _track_background_task(self, task, label):
+            self.task = task
+        async def _notify_agent_inbound(self, path, body, response, owner):
+            body = json.loads(body)
+            with_adapter_account = core.open_gateway_account(owner)
+            try:
+                record = with_adapter_account.conversations.dispatch_message(body["clientMessageId"])
+                metadata = record["attachments"][0]
+                data = b"".join(with_adapter_account.attachments.open_verified_stream(metadata["attachmentId"]))
+                received.append((record["text"], metadata["filename"], metadata["mediaType"], data))
+                core.history_reader = lambda owner, session: [{"messageId": response["data"]["messageId"],
+                    "sender": "user", "clientMessageId": body["clientMessageId"], "text": text, "timestamp": 1234,
+                    "parts": [{"type": "attachment", **{key: metadata[key] for key in
+                        ("attachmentId", "filename", "mediaType", "sizeBytes", "sha256")}}]}]
+                with_adapter_account.events.append("conversation.message.completed", "native-reply", {
+                    "conversationId": response["data"]["conversationId"], "messageId": "native-reply-19", "sender": "assistant",
+                    "text": "已读", "parts": [{"type": "text", "text": "已读"}], "timestamp": 1234, "revision": 1,
+                    "generationId": response["data"]["generationId"]})
+                with_adapter_account.conversations.workflow.settle(response["data"]["messageId"], "completed")
+            finally:
+                with_adapter_account.close()
+
+    native = HermesSessionAdapter(core, Runtime())
+    conversation = (await native.list_sessions(Principal("alice")))[0]["id"]
+    token = "test-only-hermes-bridge-token-1234567890"
+    async with TestClient(TestServer(create_hermes_bridge_app(native, token, ["alice"]))) as bridge:
+        remote = HermesRemoteSessionAdapter(str(bridge.make_url("/")).rstrip("/"), token, {"core-alice": "alice"})
+        registry = AgentRegistry([remote])
+        assert (await registry.discover())[0]["capabilities"]["attachments"]
+        async def authenticate(request):
+            return Principal("core-alice", device_id="phone", pairing_generation=3)
+        app = web.Application()
+        app.add_routes(create_agent_routes(registry, authenticate, lambda p: True, core=upstream))
+        try:
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post(f"/open-android-intelligence/v2/agents/hermes/sessions/{conversation}/messages",
+                    json={"text": text, "attachmentIds": [aid], "clientMessageId": "android-19"},
+                    headers={"Idempotency-Key": uuid.uuid4().hex})
+                assert response.status == 200, await response.text()
+                events = [json.loads(line[6:]) for line in (await response.text()).splitlines() if line.startswith("data: ")]
+                assert events[0].get("clientMessageId") == "android-19", events
+                assert events[-1]["type"] == "done"
+                assert events[-1]["messageId"] == "native-reply-19"
+                assert received == [(text, filename, media_type, content)]
+                # A fresh adapter reads the durable source-ID mapping and wire
+                # digest format, rather than depending on in-memory send state.
+                reloaded = HermesRemoteSessionAdapter(str(bridge.make_url("/")).rstrip("/"), token,
+                    {"core-alice": "alice"}, attachment_core=upstream)
+                history = await reloaded.history(Principal("core-alice"), conversation)
+                part = history[0]["attachments"][0]
+                assert part["attachmentId"] == aid
+                assert part["sha256"] == "sha256:" + hashlib.sha256(content).hexdigest()
+                assert part["filename"] == filename
+        finally:
+            await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_attachment_reference_requires_its_original_device_pairing(core):
+    import hashlib
+    from oai_core.sessions import native_attachments
+    account = core.open_gateway_account("alice")
+    created = account.attachments.create(clientAttachmentId="private", filename="private.png", mediaType="image/png",
+        sizeBytes=3, sha256=hashlib.sha256(b"png").hexdigest(), deviceId="phone", pairingGeneration=3, correlationId="private")
+    aid = created["attachmentId"]
+    account.attachments.upload_content(aid, b"png")
+    account.attachments.commit(aid)
+    account.close()
+    assert native_attachments(core, Principal("alice", device_id="phone", pairing_generation=3), [aid])[0].metadata["filename"] == "private.png"
+    for principal in (Principal("alice", device_id="other", pairing_generation=3),
+                      Principal("alice", device_id="phone", pairing_generation=4), Principal("alice")):
+        with pytest.raises(AdapterError, match="ATTACHMENT_ACCESS_DENIED"):
+            native_attachments(core, principal, [aid])
+
+
+@pytest.mark.asyncio
+async def test_history_correlates_only_the_last_assistant_and_preserves_attachment_parts(core):
+    rows = [
+        {"messageId": "user", "sender": "user", "clientMessageId": "android", "text": "", "timestamp": 1234,
+         "parts": [{"type": "attachment", "attachmentId": "image", "filename": "image.png", "mediaType": "image/png", "sizeBytes": 8}]},
+        {"messageId": "process", "sender": "assistant", "anchorClientMessageId": "android", "text": "Reading config", "timestamp": 1235},
+        {"messageId": "answer", "sender": "assistant", "anchorClientMessageId": "android", "text": "Answer", "timestamp": 1236},
+    ]
+    core.history_reader = lambda owner, conversation: rows
+    adapter = HermesSessionAdapter(core)
+    conversation = (await adapter.list_sessions(Principal("alice")))[0]["id"]
+    history = await adapter.history(Principal("alice"), conversation)
+    assert [row["clientMessageId"] for row in history] == ["android", None, "android"]
+    assert [row["createdAt"] for row in history] == [1234, 1235, 1236]
+    assert history[0]["attachments"] == rows[0]["parts"]
+
+
+@pytest.mark.asyncio
+async def test_hermes_private_attachment_upload_checks_pairing_and_actual_digest(core):
+    import hashlib
+    token = "test-only-hermes-bridge-token-1234567890"
+    runtime = SimpleNamespace(_loop=asyncio.get_running_loop(), _session_store=object(), _message_handler=lambda: None,
+                              services=SimpleNamespace(core=core))
+    bridge = create_hermes_bridge_app(HermesSessionAdapter(core, runtime), token, ["alice"])
+    headers = {"Authorization": "Bearer " + token, "X-OAI-Account": "alice", "X-OAI-Device": "phone", "X-OAI-Pairing-Generation": "3"}
+    async with TestClient(TestServer(bridge)) as client:
+        response = await client.post("/oai/session-adapter/v1/attachments", headers=headers, json={
+            "clientAttachmentId": "source", "filename": "image.png", "mediaType": "image/png", "sizeBytes": 4,
+            "sha256": hashlib.sha256(b"good").hexdigest()})
+        attachment_id = (await response.json())["attachmentId"]
+        path = f"/oai/session-adapter/v1/attachments/{attachment_id}/content"
+        response = await client.put(path, headers=headers | {"X-OAI-Pairing-Generation": "4"}, data=b"good")
+        assert response.status == 403
+        assert (await response.json())["code"] == "ATTACHMENT_ACCESS_DENIED"
+        response = await client.put(path, headers=headers, data=b"bad!")
+        assert response.status == 409
+        assert (await response.json())["code"] == "ATTACHMENT_DIGEST_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_upload_completion_rechecks_authentication_before_native_send(core):
+    from oai_core.sessions import NativeAttachment
+    active = True
+    sent = []
+    async def is_active():
+        return active
+    class RevokingRemote(HermesRemoteSessionAdapter):
+        async def _upload_attachment(self, attachment, headers, client_message_id):
+            nonlocal active
+            active = False
+            return "uploaded"
+        async def _send(self, *args, **kwargs):
+            sent.append(True)
+            yield {"type": "done"}
+    adapter = RevokingRemote("http://localhost:8792", "test-only-hermes-bridge-token-1234567890", {"alice": "alice"})
+    adapter.capabilities["attachments"] = True
+    with pytest.raises(AdapterError, match="SESSION_REVOKED"):
+        _ = [event async for event in adapter.send(Principal("alice"), "session", "", attachments=[
+            NativeAttachment(core, Principal("alice"), {"attachmentId": "source"}, is_active)])]
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_client_message_identity_cannot_rebind_or_redispatch_an_accepted_turn(core):
+    notifications = []
+    class Runtime:
+        _loop = asyncio.get_running_loop()
+        _session_store = object()
+        _message_handler = staticmethod(lambda: None)
+        services = SimpleNamespace(core=core)
+        def _track_background_task(self, task, label):
+            self.task = task
+        async def _notify_agent_inbound(self, path, body, response, owner):
+            notifications.append(json.loads(body))
+            account = core.open_gateway_account(owner)
+            try:
+                account.conversations.workflow.settle(response["data"]["messageId"], "completed")
+            finally:
+                account.close()
+    adapter = HermesSessionAdapter(core, Runtime())
+    conversation = (await adapter.list_sessions(Principal("alice")))[0]["id"]
+    principal = Principal("alice", device_id="phone", pairing_generation=3)
+    events = [event async for event in adapter.send(principal, conversation, "once", client_message_id="android-once")]
+    assert events[-1]["type"] == "done"
+    with pytest.raises(AdapterError, match="REQUEST_ALREADY_EXECUTED"):
+        _ = [event async for event in adapter.send(Principal("alice", device_id="other", pairing_generation=4),
+            conversation, "once", client_message_id="android-once")]
+    assert len(notifications) == 1
+    account = core.open_gateway_account("alice")
+    try:
+        origin = json.loads(account.store.database.execute("SELECT value FROM account_metadata WHERE key=?", ("message-device:android-once",)).fetchone()[0])
+        assert origin["deviceId"] == "phone"
+        assert origin["pairingGeneration"] == 3
+    finally:
+        account.close()

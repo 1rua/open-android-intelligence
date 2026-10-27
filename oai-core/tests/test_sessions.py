@@ -199,6 +199,25 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], self.host.calls)
         self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
 
+    async def test_native_attachments_are_explicit_and_validation_does_not_begin_a_turn(self):
+        path = BASE + "/codex/sessions/terminal-1/messages"
+        for body, code, status in [
+            ({"text": "", "attachmentIds": []}, "INVALID_MESSAGE", 400),
+            ({"text": "", "attachmentIds": ["att_image"]}, "UNSUPPORTED_CAPABILITY", 405),
+            ({"text": "hello", "attachmentIds": ["att_image", "att_image"]}, "INVALID_ATTACHMENT", 400),
+            ({"text": "hello", "attachmentIds": ["../private"]}, "INVALID_ATTACHMENT", 400),
+            ({"text": "hello", "clientMessageId": ""}, "INVALID_MESSAGE", 400),
+        ]:
+            response = await self.client.post(path, json=body, headers=self.user())
+            self.assertEqual(status, response.status)
+            self.assertEqual(code, (await response.json())["error"]["code"])
+        self.assertEqual([], self.host.calls)
+        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+        # Correlation metadata must not break an existing text-only backend.
+        response = await self.client.post(path, json={"text": "hello", "clientMessageId": "android-turn"}, headers=self.user())
+        self.assertEqual(200, response.status)
+        self.assertIn('"type": "done"', await response.text())
+
     async def test_raw_budget_during_authentication_returns_the_same_stable_error(self):
         async def authenticate(request):
             await request.read()  # Signed authentication reads before body_for.

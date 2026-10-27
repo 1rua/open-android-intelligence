@@ -6,8 +6,11 @@ Both deployment-shared and account-isolated remote agents can build on this.
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
+import uuid
 from typing import Any, AsyncIterator, Mapping
 from urllib.parse import quote, urlsplit
 
@@ -15,7 +18,7 @@ import aiohttp
 
 from ..auth import Principal
 from ..gateway.core import _public_approval
-from ..sessions import CAPABILITIES, STREAM_EVENT_TYPES, AdapterError, session_request_json
+from ..sessions import CAPABILITIES, STREAM_EVENT_TYPES, AdapterError, NativeAttachment, session_request_json
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,8 @@ class RemoteSessionAdapter:
         stream_timeout_seconds: float = 1800.0,
         headers_builder: Any = None,
         capabilities: Mapping[str, bool] | None = None,
+        attachment_core: Any = None,
+        forward_client_message_ids: bool = False,
     ):
         parsed = urlsplit(base_url)
         if (
@@ -70,6 +75,8 @@ class RemoteSessionAdapter:
         self.timeout_seconds = timeout_seconds
         self.stream_timeout_seconds = stream_timeout_seconds
         self.headers_builder = headers_builder
+        self.attachment_core = attachment_core
+        self.forward_client_message_ids = forward_client_message_ids
         self.capabilities = (
             dict(capabilities) if capabilities is not None else dict.fromkeys(CAPABILITIES, False)
         )
@@ -159,17 +166,98 @@ class RemoteSessionAdapter:
     async def history(self, principal: Principal, session_id: str) -> list[dict[str, Any]]:
         headers = self._headers(principal)
         result = await self._request("GET", f"/sessions/{quote(session_id, safe='')}/history", headers=headers)
-        return result.get("messages", [])
+        messages = result.get("messages", [])
+        if self.attachment_core is not None:
+            account = self.attachment_core.open_gateway_account(principal.account_id)
+            try:
+                for message in messages:
+                    for attachment in message.get("attachments", []):
+                        key = self._attachment_key(str(attachment.get("attachmentId", "")))
+                        row = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?", (key,)).fetchone()
+                        if row:
+                            attachment.update(account.store.open_json(row[0], key))
+            finally:
+                account.close()
+        return messages
+
+    def _attachment_key(self, attachment_id: str) -> str:
+        return "native-attachment:" + hashlib.sha256((self.agent_id + ":" + attachment_id).encode()).hexdigest()
+
+    def _remember_attachment(self, attachment: NativeAttachment, remote_id: str) -> None:
+        self.attachment_core = attachment.core
+        key = self._attachment_key(remote_id)
+        metadata = {name: attachment.metadata[name] for name in ("attachmentId", "filename", "mediaType", "sizeBytes", "sha256")}
+        metadata["sha256"] = "sha256:" + str(metadata["sha256"]).removeprefix("sha256:")
+        account = attachment.core.open_gateway_account(attachment.principal.account_id)
+        try:
+            with account.store.transaction():
+                account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, account.store.seal_json(metadata, key)))
+        finally:
+            account.close()
 
     async def create(self, principal: Principal, title: str | None) -> dict[str, Any]:
         headers = self._headers(principal)
         result = await self._request("POST", "/sessions", {"title": title}, headers=headers)
         return result.get("session", {})
 
-    async def send(self, principal: Principal, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
+    async def send(self, principal: Principal, session_id: str, text: str, *,
+                   attachments: list[NativeAttachment] | None = None,
+                   client_message_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
         headers = self._headers(principal)
-        async for event in self._send(session_id, text, headers=headers):
+        body: dict[str, Any] = {"text": text}
+        if client_message_id is not None and self.forward_client_message_ids:
+            body["clientMessageId"] = client_message_id
+        if attachments:
+            if not self.capabilities.get("attachments"):
+                raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
+            for attachment in attachments:
+                await attachment.assert_active()
+            body["attachmentIds"] = [await self._upload_attachment(item, headers, client_message_id) for item in attachments]
+            # Upload can outlive its authenticated session. Recheck immediately
+            # before the native message mutation, after the last file arrives.
+            for attachment in attachments:
+                await attachment.assert_active()
+        async for event in self._send(session_id, text, headers=headers, body=body):
             yield event
+
+    async def _upload_attachment(self, attachment: NativeAttachment, headers: dict[str, str], client_message_id: str | None) -> str:
+        metadata = attachment.metadata
+        result = await self._request("POST", "/attachments", {
+            "clientAttachmentId": hashlib.sha256((metadata["attachmentId"] + ":" + (client_message_id or uuid.uuid4().hex)).encode()).hexdigest(),
+            **{key: metadata[key] for key in ("filename", "mediaType", "sizeBytes", "sha256")}}, headers=headers)
+        attachment_id = result.get("attachmentId")
+        if not isinstance(attachment_id, str):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        if result.get("state") == "verified":
+            self._remember_attachment(attachment, attachment_id)
+            return attachment_id
+        async def chunks():
+            # Each source chunk is bounded by Core's encrypted attachment format.
+            iterator = iter(attachment.chunks())
+            def next_chunk():
+                try:
+                    return next(iterator), False
+                except StopIteration:
+                    return b"", True
+            while True:
+                chunk, done = await asyncio.to_thread(next_chunk)
+                if done:
+                    break
+                yield chunk
+        try:
+            async with self._session(headers) as session:
+                async with session.put(self.base_url + self.prefix + f"/attachments/{quote(attachment_id, safe='')}/content",
+                        data=chunks(), timeout=aiohttp.ClientTimeout(total=self.stream_timeout_seconds), allow_redirects=False) as response:
+                    value = await response.json()
+                    if response.status != 200:
+                        raise AdapterError(str(value.get("code", "ATTACHMENT_READ_FAILED")), response.status)
+                    if value.get("status") != "uploaded":
+                        raise AdapterError("ATTACHMENT_READ_FAILED", 502)
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+            raise AdapterError("ATTACHMENT_UPLOAD_FAILED", 502) from exc
+        self._remember_attachment(attachment, attachment_id)
+        return attachment_id
 
     async def _send(
         self,
@@ -177,12 +265,13 @@ class RemoteSessionAdapter:
         text: str,
         *,
         headers: dict[str, str] | None = None,
+        body: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         try:
             async with self._session(headers) as session:
                 async with session.post(
                     self.base_url + self.prefix + f"/sessions/{quote(session_id, safe='')}/messages",
-                    json={"text": text},
+                    json=body if body is not None else {"text": text},
                     timeout=aiohttp.ClientTimeout(total=self.stream_timeout_seconds),
                     allow_redirects=False,
                 ) as response:

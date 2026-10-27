@@ -155,6 +155,14 @@ class NotificationCollectionScreenTest {
             .performScrollToNode(hasTestTag("notification-app-$packageId"))
     }
 
+    /** Lazy rows outside the viewport have no semantics node, so scroll them into view first. */
+    private fun assertAppToggle(packageId: String, enabled: Boolean) {
+        waitForApp(packageId)
+        compose.onNodeWithTag("notification-app-$packageId").let { row ->
+            if (enabled) row.assertIsOn() else row.assertIsOff()
+        }
+    }
+
     @Test
     fun uninstalled_policy_renders_honest_unavailable_state_without_any_switch() {
         NotificationControlRegistry.reset()
@@ -415,7 +423,8 @@ class NotificationCollectionScreenTest {
         compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
         compose.onNodeWithText("重新载入已保存选择").performClick()
         compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
-        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOn()
+        assertAppToggle("com.example.othermail", enabled = true)
+        waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").performClick()
         compose.onNodeWithTag("notification-app-save").performClick()
         compose.waitForIdle()
@@ -442,32 +451,33 @@ class NotificationCollectionScreenTest {
         waitForApp("com.example.chat")
 
         // 初始已选 mail，未选 chat 与 othermail
-        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
-        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
-        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOff()
+        assertAppToggle("com.example.mail", enabled = true)
+        assertAppToggle("com.example.chat", enabled = false)
+        assertAppToggle("com.example.othermail", enabled = false)
 
         // 点击全选
         compose.onNodeWithTag("notification-app-select-all").performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
-        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
-        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOn()
+        assertAppToggle("com.example.mail", enabled = true)
+        assertAppToggle("com.example.chat", enabled = true)
+        assertAppToggle("com.example.othermail", enabled = true)
 
         // 点击反选（全选状态反选后应全部取消勾选）
         compose.onNodeWithTag("notification-app-invert-selection").performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOff()
-        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
-        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOff()
+        assertAppToggle("com.example.mail", enabled = false)
+        assertAppToggle("com.example.chat", enabled = false)
+        assertAppToggle("com.example.othermail", enabled = false)
 
         // 勾选 chat，再点击反选，chat 变 off，mail 和 othermail 变 on
+        waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").performClick()
         compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
         compose.onNodeWithTag("notification-app-invert-selection").performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
-        compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
-        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOn()
+        assertAppToggle("com.example.chat", enabled = false)
+        assertAppToggle("com.example.mail", enabled = true)
+        assertAppToggle("com.example.othermail", enabled = true)
 
         // 保存并验证策略
         compose.onNodeWithTag("notification-app-save").performClick()

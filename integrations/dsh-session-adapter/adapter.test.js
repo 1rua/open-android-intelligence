@@ -12,16 +12,17 @@ afterEach(async () => {
   }
 });
 
-async function host({ legacyUserWrapper = false, terminalReason = "completed" } = {}) {
+async function host({ legacyUserWrapper = false, terminalReason = "completed", omitMessageIdentity = false } = {}) {
   const listeners = new Map();
   const calls = [];
+  const persisted = [];
   const records = [{ header: { id: "terminal", createdAt: 1000 }, live: false, persisted: true }];
   const query = {
     listSessions: async () => { calls.push("listSessions"); return records; },
     readTitle: async (id) => ({ title: "Native " + id, updatedAt: 2000 }),
     readSurface: async (id) => {
       const message = { id: "message", role: "user", content: [{ type: "text", text: "native history" }], source: { kind: "user" } };
-      return { session: { id }, events: [{ type: "user/message", time: 3000, data: legacyUserWrapper ? { message } : message }] };
+      return { session: { id }, events: [{ type: "user/message", time: 3000, data: legacyUserWrapper ? { message } : message }, ...persisted] };
     },
   };
   const emit = (event, ...args) => { for (const listener of listeners.get(event) ?? []) listener(...args); };
@@ -37,11 +38,16 @@ async function host({ legacyUserWrapper = false, terminalReason = "completed" } 
       emit("session/event", session, { type: "turn/end", data: { turn: 3, reason: { kind: "completed" } } });
       emit("session/event", session, { type: "turn/start", data: { turn: 4 } });
       const message = { id: "submitted", role: "user", content: value.content, source: { kind: "user", rpcId: value.requestId } };
-      emit("session/event", session, { type: "user/message", data: legacyUserWrapper ? { message } : message });
+      const userEvent = { type: "user/message", time: 4000, data: legacyUserWrapper ? { message } : message };
+      persisted.push(userEvent);
+      emit("session/event", session, userEvent);
       emit("agent/assistant-stream", { agent: { session }, frame: { type: "start", attemptId: "attempt", turn: 4, step: 0, revision: 0 } });
       // Native chunks carry attemptId, not turn; the start binds its turn.
       emit("agent/assistant-stream", { agent: { session }, frame: { type: "chunk", attemptId: "attempt", index: 0, revision: 0, chunk: { type: "text-delta", index: 0, text: "native reply" } } });
-      emit("session/event", session, { type: "assistant/message", data: { turn: 4, message: { content: [{ type: "text", text: "native reply" }] } } });
+      const reply = { ...(omitMessageIdentity ? {} : { id: "native-reply", role: "assistant" }), content: [{ type: "text", text: "native reply" }] };
+      const replyEvent = { type: "assistant/message", time: 5000, data: { turn: 4, message: reply } };
+      persisted.push(replyEvent);
+      emit("session/event", session, replyEvent);
       emit("session/event", session, { type: "turn/end", data: { turn: 4, reason: { kind: terminalReason } } });
       return { accepted: true };
     },
@@ -83,18 +89,34 @@ describe("DSH native Session Adapter", () => {
     const history = await (await h.request("/sessions/terminal/history")).json();
     expect(history.messages).toMatchObject([{ id: "message", role: "user", text: "native history" }]);
     const events = (await (await h.request("/sessions/terminal/messages", "POST", { text: "hello" })).text()).trim().split("\n").map(JSON.parse);
-    expect(events.at(-1)).toEqual({ type: "done", text: "native reply" });
+    expect(events.at(-1)).toEqual({ type: "done", text: "native reply", messageId: "native-reply", userMessageId: "submitted" });
   });
   it("creates and sends through the actual controller signatures and streams only the correlated native turn", async () => {
     const h = await host();
     const created = await (await h.request("/sessions", "POST", { title: "new" })).json();
     expect(h.calls.some((item) => item[0] === "create" && item[1] === created.session.id)).toBe(true);
     const result = (await (await h.request("/sessions/terminal/messages", "POST", { text: "hello" })).text()).trim().split("\n").map(JSON.parse);
-    expect(result).toEqual([{ type: "delta", text: "native reply" }, { type: "done", text: "native reply" }]);
+    expect(result).toEqual([{ type: "delta", text: "native reply" }, { type: "done", text: "native reply", messageId: "native-reply", userMessageId: "submitted" }]);
     const prompt = h.calls.find((item) => item[0] === "prompt")[1];
     expect(prompt).toMatchObject({ sessionId: "terminal", mode: "queue", content: [{ type: "text", text: "hello" }] });
     expect(Object.keys(prompt).sort()).toEqual(["content", "mode", "requestId", "sessionId"]);
     expect([...h.listeners.values()].every((value) => value.size === 0)).toBe(true);
+  });
+  it("aligns completed native identities with a fresh history projection", async () => {
+    const h = await host();
+    const events = (await (await h.request("/sessions/terminal/messages", "POST", { text: "hello" })).text()).trim().split("\n").map(JSON.parse);
+    const done = events.at(-1);
+    const history = (await (await h.request("/sessions/terminal/history")).json()).messages;
+    expect(done.messageId).toBe("native-reply");
+    expect(done.userMessageId).toBe("submitted");
+    expect(history.find((message) => message.id === done.messageId)).toMatchObject({ role: "assistant", text: done.text });
+    expect(history.find((message) => message.id === done.userMessageId)).toMatchObject({ role: "user", text: "hello" });
+  });
+  it("preserves an older stream that has no assistant identity without inventing one", async () => {
+    const h = await host({ omitMessageIdentity: true });
+    const events = (await (await h.request("/sessions/terminal/messages", "POST", { text: "hello" })).text()).trim().split("\n").map(JSON.parse);
+    expect(events.at(-1)).toEqual({ type: "done", text: "native reply", userMessageId: "submitted" });
+    expect(events.at(-1)).not.toHaveProperty("messageId");
   });
   it.each([
     ["70k ASCII", "a".repeat(70000)],
@@ -108,7 +130,7 @@ describe("DSH native Session Adapter", () => {
     const response = await h.request("/sessions/terminal/messages", "POST", { text });
     expect(response.status).toBe(200);
     const events = (await response.text()).trim().split("\n").map(JSON.parse);
-    expect(events.at(-1)).toEqual({ type: "done", text: "native reply" });
+    expect(events.at(-1)).toEqual({ type: "done", text: "native reply", messageId: "native-reply", userMessageId: "submitted" });
     expect(h.calls.filter((item) => item[0] === "prompt")).toHaveLength(1);
     expect(h.calls.find((item) => item[0] === "prompt")[1].content).toEqual([{ type: "text", text }]);
     expect(h.records.map((record) => record.header.id)).toEqual(["terminal"]);

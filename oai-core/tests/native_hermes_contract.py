@@ -1,5 +1,8 @@
 """Executed in an isolated process by test_hermes_native.py."""
 import asyncio
+import hashlib
+import io
+import zipfile
 from contextlib import closing
 import os
 from pathlib import Path
@@ -84,6 +87,7 @@ async def scenario():
     approval_answered = asyncio.Event()
     approvals = []
     approval_continuations = []
+    received_media = []
     import oai_hermes_adapter.approvals as gateway_core_module
     original_resolver = gateway_core_module.resolve_host_approval
     loop = asyncio.get_running_loop()
@@ -103,6 +107,9 @@ async def scenario():
 
     class Handler:
         async def receive(self, event):
+            if event.media_urls:
+                received_media.append((event.message_type.value, list(event.media_types),
+                    [Path(path).read_bytes() for path in event.media_urls]))
             if event.text == "block until cancelled":
                 entered.set()
                 await block.wait()
@@ -185,6 +192,35 @@ async def scenario():
         events = [event async for event in adapter.send(alice, a["id"], "synthetic prompt")]
         assert events[-1]["type"] == "done", events
         assert "native synthetic reply" == "".join(event.get("text", "") for event in events if event["type"] == "delta"), events
+        # The real Hermes dispatch receives private verified files with their
+        # original MIME type, including a pure image and a text/document turn.
+        document = io.BytesIO()
+        with zipfile.ZipFile(document, "w") as archive:
+            archive.writestr("word/document.xml", "<document><p>native document</p></document>")
+        fixtures = [("", "photo.png", "image/png", b"\x89PNG\r\n\x1a\nsynthetic-native-image", "photo"),
+                    ("阅读这份文档", "report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                     document.getvalue(), "document")]
+        for index, (text, filename, media_type, content, message_type) in enumerate(fixtures):
+            client_id = "android-attachment-" + str(index)
+            with closing(runtime.services.core.open_gateway_account("alice")) as account:
+                created = account.attachments.create(clientAttachmentId=client_id, filename=filename, mediaType=media_type,
+                    sizeBytes=len(content), sha256=hashlib.sha256(content).hexdigest(), deviceId=alice.device_id,
+                    pairingGeneration=alice.pairing_generation, correlationId=client_id)
+                account.attachments.upload_content_stream(created["attachmentId"], (content,))
+                account.attachments.commit(created["attachmentId"])
+            media_events = [event async for event in adapter.send(alice, a["id"], text,
+                attachment_ids=[created["attachmentId"]], client_message_id=client_id)]
+            assert media_events[-1]["type"] == "done", media_events
+            assert media_events[0]["clientMessageId"] == client_id
+            assert received_media[-1] == (message_type, [media_type], [content])
+            history = await adapter.history(alice, a["id"])
+            user = next(row for row in history if row.get("clientMessageId") == client_id and row["role"] == "user")
+            reply = next(row for row in history if row["id"] == media_events[-1]["messageId"])
+            assert user["id"] == media_events[0]["userMessageId"]
+            assert user["text"] == text
+            assert user["attachments"][0]["filename"] == filename
+            assert reply["clientMessageId"] == client_id
+            assert reply["text"] == "native synthetic reply"
         interactive = adapter.send(alice, a["id"], "interactive approval")
         assert (await anext(interactive))["type"] == "generation"
         while True:
@@ -246,6 +282,12 @@ async def scenario():
         await adapter.manage(alice, a["id"], "delete")
         assert database.get_session(binding["agentSessionId"]) is None
         assert database.get_session(compressed_tip) is None
+        try:
+            await adapter.history(alice, a["id"])
+        except AdapterError as error:
+            assert error.status == 404
+        else:
+            raise AssertionError("deleted native session remained readable")
         assert await adapter.list_sessions(alice) == []
         assert (await adapter.list_sessions(bob))[0]["id"] == b["id"]
     finally:

@@ -133,6 +133,12 @@ jobs:
           :screen-control:testDebugUnitTest
           :device-primitives:testDebugUnitTest
           noVpnSurfaceCheck
+      - name: Conversation ordering, rendering, identity and persistence regressions
+        working-directory: apps/android
+        run: >-
+          gradle --no-daemon --max-workers=2
+          :conversation-domain:testDebugUnitTest
+          :conversation-ui:testDebugUnitTest
       - name: Core connection, Agent sessions, platform recovery and transport regressions
         working-directory: apps/android
         run: >-
@@ -153,6 +159,7 @@ jobs:
           --tests '*ApplicationCompositionTest'
           --tests '*AndroidApiCompatibilityTest'
           --tests '*CoreAgentConversationRepositoryTest'
+          --tests '*NativeConversationOrganizationStoreTest'
       - name: Play screen integration and Android API compatibility
         working-directory: apps/android
         run: >-
@@ -166,3 +173,4 @@ jobs:
           --tests '*ApplicationCompositionTest'
           --tests '*AndroidApiCompatibilityTest'
           --tests '*CoreAgentConversationRepositoryTest'
+          --tests '*NativeConversationOrganizationStoreTest'
