@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from aiohttp import web
-from .gateway.core import GatewayError
+from .gateway.core import APPROVAL_CHOICES, ContractRegistry, GatewayError, iso_millis
 from .gateway.http import _status
 
 from .auth import Principal
@@ -22,7 +23,8 @@ from .operations import NativeOperations, OperationConflict
 
 logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
-CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream", "commands")
+CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream", "commands", "approvals")
+STREAM_EVENT_TYPES = frozenset({"delta", "done", "error", "generation", "approval_requested", "approval_resolved"})
 PROTOCOL_VERSIONS = ("1.0", "v1")
 # Keep one explicit boundary across aiohttp versions and both session bridges.
 SESSION_REQUEST_MAX_BYTES = 1024 * 1024
@@ -34,10 +36,11 @@ def session_request_json(body: Any) -> str:
 
 
 class AdapterError(Exception):
-    def __init__(self, code: str, status: int = 400):
+    def __init__(self, code: str, status: int = 400, *, details: Mapping[str, Any] | None = None):
         super().__init__(code)
         self.code = code
         self.status = status
+        self.details = dict(details or {})
 
 
 class SessionAdapter(Protocol):
@@ -153,6 +156,23 @@ class AgentRegistry:
             except Exception as err:
                 logger.warning("Failed to collect commands from adapter '%s': %s", getattr(adapter, "agent_id", "unknown"), err)
         return list(entries.values())
+
+    @staticmethod
+    def conversation_ui(agents: list[dict[str, Any]]) -> frozenset[str]:
+        supported: set[str] = set()
+        for agent in agents:
+            if not agent.get("online"):
+                continue
+            capabilities = agent.get("capabilities", {})
+            if capabilities.get("commands") is True:
+                supported.add("agent-command-catalog-v1")
+            if capabilities.get("send") is not True or capabilities.get("stream") is not True:
+                continue
+            if capabilities.get("cancel") is True:
+                supported.add("generation-cancel-v1")
+            if capabilities.get("approvals") is True:
+                supported.add("agent-approval-cards-v1")
+        return frozenset(supported)
 
     async def discover(self) -> list[dict[str, Any]]:
         async def describe(adapter: SessionAdapter) -> dict[str, Any]:
@@ -376,8 +396,17 @@ Authenticate = Callable[[web.Request], Awaitable[Principal]]
 IsActive = Callable[[Principal], bool | Awaitable[bool]]
 
 
-def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_active: IsActive) -> web.RouteTableDef:
+def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_active: IsActive,
+                        contracts: ContractRegistry | None = None) -> web.RouteTableDef:
     routes = web.RouteTableDef()
+    contracts = contracts if contracts is not None else ContractRegistry()
+
+    def validate_approval(approval: Any, *, resolved: bool) -> None:
+        event_type = "conversation.approval.resolved" if resolved else "conversation.approval.requested"
+        if not contracts.validate_dispatched(contracts.dispatched_registry_id,
+                {"kind": "event", "eventType": event_type},
+                {"correlationId": "native-approval", "occurredAt": iso_millis(), "payload": approval}):
+            raise AdapterError("INVALID_AGENT_EVENT", 502)
 
     async def active(principal: Principal) -> bool:
         result = is_active(principal)
@@ -432,7 +461,8 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
             try:
                 return await handler(request)
             except AdapterError as exc:
-                return web.json_response({"error": {"code": exc.code}}, status=exc.status)
+                return web.json_response({"error": {"code": exc.code,
+                    **({"details": exc.details} if exc.details else {})}}, status=exc.status)
             except GatewayError as exc:
                 body = {"error": {"code": exc.code}}
                 return web.json_response(body, status=_status(body))
@@ -455,18 +485,27 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @routes.get(PREFIX + "/{agent_id}/commands")
     @endpoint
     async def agent_commands(request: web.Request) -> web.Response:
-        await principal_for(request)
+        principal = await principal_for(request)
         agent_id = request.match_info["agent_id"]
-        adapter = registry._adapters.get(agent_id)
-        if adapter is None:
-            raise AdapterError("AGENT_NOT_FOUND", 404)
+        adapter = registry.get(agent_id, "commands")
         cmd_fn = getattr(adapter, "commands", None)
         if not callable(cmd_fn):
-            return web.json_response({"commands": []})
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
         language_code = request.query.get("languageCode", "en")
-        res = cmd_fn(language_code)
+        if not language_code or len(language_code) > 80 or set(request.query) - {"languageCode"}:
+            raise AdapterError("INVALID_REQUEST")
+        kwargs = {"principal": principal} if "principal" in inspect.signature(cmd_fn).parameters else {}
+        res = cmd_fn(language_code, **kwargs)
         cmds = await res if inspect.isawaitable(res) else res
-        return web.json_response({"commands": cmds if isinstance(cmds, list) else []})
+        if not isinstance(cmds, list):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        catalog = {"format": "agent-command-catalog-1.0", "languageCode": language_code,
+                   "catalogVersion": "cmdcat_" + hashlib.sha256(
+                       json.dumps(cmds, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16],
+                   "commands": cmds}
+        if not contracts.validate("agent.commandCatalog", catalog):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        return web.json_response(catalog, headers={"Cache-Control": "no-store"})
 
     @routes.get(PREFIX + "/{agent_id}/sessions")
     @endpoint
@@ -545,8 +584,16 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                     await emit({"type": "error", "code": "SESSION_REVOKED"})
                     completed = True
                     break
-                if not isinstance(event, dict) or event.get("type") not in {"delta", "done", "error"}:
+                if not isinstance(event, dict) or event.get("type") not in STREAM_EVENT_TYPES:
                     raise AdapterError("INVALID_AGENT_EVENT", 502)
+                if event["type"] == "generation" and (
+                        not isinstance(event.get("generationId"), str) or not event["generationId"]):
+                    raise AdapterError("INVALID_AGENT_EVENT", 502)
+                if event["type"] in {"approval_requested", "approval_resolved"}:
+                    registry.get(request.match_info["agent_id"], "approvals")
+                    validate_approval(event.get("approval"), resolved=event["type"] == "approval_resolved")
+                    if event["approval"]["conversationId"] != session_id or set(event) - {"type", "approval", "generationId"}:
+                        raise AdapterError("INVALID_AGENT_EVENT", 502)
                 await emit(event)
                 if event["type"] in {"done", "error"}:
                     registry.operations.complete(principal.account_id, request_id, {"state": event["type"]})
@@ -606,6 +653,55 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @routes.post(PREFIX + "/{agent_id}/sessions/{session_id}/cancel")
     @endpoint
     async def cancel(request: web.Request) -> web.Response:
-        return await manage(request, await principal_for(request), "cancel")
+        principal = await principal_for(request)
+        body = await body_for(request, {"generationId"}) if await request.read() else {}
+        generation_id = body.get("generationId")
+        if "generationId" in body and (not isinstance(generation_id, str) or not generation_id or len(generation_id) > 1024):
+            raise AdapterError("INVALID_REQUEST")
+        return await manage(request, principal, "cancel", body if body else None)
+
+    @routes.post(PREFIX + "/{agent_id}/sessions/{session_id}/approvals/{approval_id}/decisions")
+    @endpoint
+    async def approval_decision(request: web.Request) -> web.Response:
+        principal = await principal_for(request)
+        adapter = registry.get(request.match_info["agent_id"], "approvals")
+        session_id = safe_session_id(request)
+        approval_id = request.match_info["approval_id"]
+        if not approval_id or len(approval_id) > 1024 or any(c in approval_id for c in ("/", "\\", "\x00")) or approval_id in {".", ".."}:
+            raise AdapterError("INVALID_REQUEST")
+        body = await body_for(request, {"decision"})
+        decision = body.get("decision")
+        if decision not in APPROVAL_CHOICES:
+            raise AdapterError("APPROVAL_DECISION_INVALID")
+        resolver = getattr(adapter, "resolve_approval", None)
+        if not callable(resolver):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        request_id, receipt = operation(request, principal, body)
+        terminal_errors = {"APPROVAL_ALREADY_RESOLVED": 409, "APPROVAL_EXPIRED": 409,
+                           "APPROVAL_NOT_FOUND": 404, "APPROVAL_DECISION_INVALID": 400}
+        if receipt is None:
+            try:
+                receipt = await resolver(principal, session_id, approval_id, decision)
+            except AdapterError as exc:
+                if exc.details:
+                    validate_approval(exc.details, resolved=True)
+                    if (exc.details["approvalId"] != approval_id
+                            or exc.details["conversationId"] != session_id):
+                        raise AdapterError("HOST_INCOMPATIBLE", 502) from None
+                if exc.code not in terminal_errors:
+                    raise
+                receipt = {"error": {"code": exc.code, **({"details": exc.details} if exc.details else {})}}
+                registry.operations.complete(principal.account_id, request_id, receipt)
+                return web.json_response(receipt, status=terminal_errors[exc.code], headers={"Cache-Control": "no-store"})
+            if not isinstance(receipt, dict) or set(receipt) != {"approval"}:
+                raise AdapterError("HOST_INCOMPATIBLE", 502)
+            validate_approval(receipt["approval"], resolved=True)
+            if (receipt["approval"]["approvalId"] != approval_id
+                    or receipt["approval"]["conversationId"] != session_id
+                    or receipt["approval"]["decision"] != decision):
+                raise AdapterError("HOST_INCOMPATIBLE", 502)
+            registry.operations.complete(principal.account_id, request_id, receipt)
+        status = terminal_errors.get(receipt.get("error", {}).get("code"), 200)
+        return web.json_response(receipt, status=status, headers={"Cache-Control": "no-store"})
 
     return routes

@@ -190,7 +190,9 @@ async def test_real_event_store_frames_stream_accumulated_native_text_and_do_not
     adapter = HermesSessionAdapter(core, Runtime())
     events = [event async for event in adapter.send(Principal("alice", device_id="phone"), conversation, "hello")]
     assert [event["text"] for event in events if event["type"] == "delta"] == ["原生", "回复"]
-    assert events[-1] == {"type": "done", "text": "原生回复"}
+    assert events[0]["type"] == "generation"
+    assert events[-1] == {"type": "done", "text": "原生回复", "outcome": "completed",
+                          "generationId": events[0]["generationId"]}
     assert core._event_sinks == []
     with pytest.raises(AdapterError) as error:
         await anext(adapter.send(Principal("bob", device_id="phone"), conversation, "hello"))

@@ -19,10 +19,23 @@ import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.WireRequest
 import com.openandroidintelligence.gateway.http.WireResponse
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.filterNotNull
+import java.io.ByteArrayInputStream
+import java.io.InputStream
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -70,6 +83,7 @@ class CoreAgentConversationRepositoryTest {
             currentAgent = { sampleAgent },
             activeConversationId = { "s_1" },
             parentScope = backgroundScope,
+            ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
         val page = repo.listConversations(ConversationScope("p1", "http://core", "a1", "i1"), PageRequest(null, 20))
@@ -98,10 +112,11 @@ class CoreAgentConversationRepositoryTest {
             currentAgent = { sampleAgent },
             activeConversationId = { null },
             parentScope = backgroundScope,
+            ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
         val emitted = mutableListOf<VerifiedConversationEvent>()
-        val job = launch { repo.observeEvents(ConversationScope("p1", "http://core", "a1", "i1")).toList(emitted) }
+        val job = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { repo.observeEvents(ConversationScope("p1", "http://core", "a1", "i1")).toList(emitted) }
 
         val conv = repo.createConversation(ConversationScope("p1", "http://core", "a1", "i1"), "client_1")
         assertEquals(ConversationId("s_created"), conv.id)
@@ -127,6 +142,7 @@ class CoreAgentConversationRepositoryTest {
             currentAgent = { sampleAgent },
             activeConversationId = { "s_1" },
             parentScope = backgroundScope,
+            ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
         val page = repo.timeline("s_1", PageRequest(null, 50))
@@ -154,10 +170,11 @@ class CoreAgentConversationRepositoryTest {
             currentAgent = { sampleAgent },
             activeConversationId = { "s_1" },
             parentScope = backgroundScope,
+            ioDispatcher = StandardTestDispatcher(testScheduler),
         )
 
         val emitted = mutableListOf<VerifiedConversationEvent>()
-        val job = launch { repo.observeEvents(ConversationScope("p1", "http://core", "a1", "i1")).toList(emitted) }
+        val job = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { repo.observeEvents(ConversationScope("p1", "http://core", "a1", "i1")).toList(emitted) }
 
         val success = repo.updateTitle("s_1", "新的量子计算对话")
         assertTrue(success)
@@ -169,30 +186,170 @@ class CoreAgentConversationRepositoryTest {
         assertTrue(emitted.any { it is VerifiedConversationEvent.TitleUpdated && it.newTitle == "新的量子计算对话" })
     }
 
+    @Test fun cancelGenerationRequiresTheHostReceiptBeforeSettlingItsExactRound(): Unit = runBlocking {
+        exerciseLiveCancellation("cancelled", CancelGenerationOutcome.CANCELLED)
+    }
+
+    @Test fun lateCancelAfterAgentSelectionStillTargetsTheOriginalHost(): Unit = runBlocking {
+        exerciseLiveCancellation("cancelled", CancelGenerationOutcome.CANCELLED, switchAgent = true)
+    }
+
     @Test
-    fun cancelGenerationCallsCancelAndSettlesGenerationState() = runTest {
-        var requestedCancel = false
+    fun unknownHostCancellationDoesNotBecomeSuccessfulLocalCancellation() = runTest {
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest) = WireResponse(200,
+                listOf(RawHeader("Content-Type", "application/json")),
+                """{"session":{"outcome":"outcome_unknown","generationId":"gen_1"}}""".toByteArray())
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler))
+        assertEquals(CancelGenerationOutcome.OUTCOME_UNKNOWN, repo.cancelGeneration("s_1", "gen_1", "req_1").outcome)
+    }
+
+    @Test fun nativeApprovalsReachExistingCardsAndDecisionKeepsItsOriginalAgentRoute() = runTest {
+        val frames = listOf(
+            """{"type":"generation","generationId":"native-round"}""",
+            """{"type":"approval_requested","approval":{"approvalId":"apr_1","conversationId":"s_1","command":"echo hello","reason":"确认命令","severity":"elevated","options":[{"choice":"once","label":"允许一次"},{"choice":"deny","label":"拒绝"}],"timeoutSeconds":300,"requestedAt":1000,"expiresAt":301000}}""",
+            """{"type":"approval_resolved","approval":{"approvalId":"apr_1","conversationId":"s_1","decision":"once","decidedAt":2000}}""",
+            """{"type":"done","outcome":"completed","generationId":"native-round"}""")
+        val requests = mutableListOf<WireRequest>()
         val transport = object : GatewayByteTransport {
             override suspend fun execute(request: WireRequest): WireResponse {
-                if (request.method == "POST" && request.target.endsWith("/cancel")) {
-                    requestedCancel = true
-                }
-                return WireResponse(200, listOf(RawHeader("Content-Type", "application/json")), """{"data":{"status":"ok"}}""".toByteArray())
+                requests += request
+                val stream = request.target.endsWith("/messages")
+                return WireResponse(200, listOf(RawHeader("Content-Type", if (stream) "text/event-stream" else "application/json")),
+                    (if (stream) frames.joinToString("") { "event: message\ndata: $it\n\n" }
+                    else """{"approval":{"approvalId":"apr_1","conversationId":"s_1","decision":"once"}}""").toByteArray())
             }
             override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
         }
-        val client = client(transport)
-        val repo = CoreAgentConversationRepository(
-            client = client,
-            currentAgent = { sampleAgent },
-            activeConversationId = { "s_1" },
-            parentScope = backgroundScope,
-        )
+        var selected = sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(approvals = true))
+        val repo = CoreAgentConversationRepository(client(transport), { selected }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler), supportsApprovalCards = true)
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+        }
+        val acceptance = repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("client_1"), "hello"))
+        assertEquals(null, acceptance.generationId)
+        runCurrent()
+        val card = events.filterIsInstance<VerifiedConversationEvent.ApprovalRequested>().single().request
+        assertEquals("echo hello", card.command)
+        assertEquals(listOf("once", "deny"), card.options.map { it.choice.wireValue })
+        assertEquals(ConversationId("s_1"), card.conversationId)
+        assertEquals(com.openandroidintelligence.conversation.model.ApprovalOutcome.ALLOWED_ONCE,
+            events.filterIsInstance<VerifiedConversationEvent.ApprovalResolved>().single().outcome)
+        selected = selected.copy(id = "other-agent")
+        val result = repo.submitApprovalDecision(card.approvalId, com.openandroidintelligence.conversation.model.ApprovalChoice.ONCE)
+        assertEquals(com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.SUBMITTED, result.outcome)
+        assertEquals("/open-android-intelligence/v2/agents/hermes/sessions/s_1/approvals/apr_1/decisions", requests.last().target)
+        assertEquals(com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED,
+            repo.submitApprovalDecision(card.approvalId, com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS).outcome)
+    }
 
-        val result = repo.cancelGeneration("s_1", "gen_1", "req_1")
-        assertEquals(CancelGenerationOutcome.CANCELLED, result.outcome)
-        assertTrue(requestedCancel)
-        assertEquals(GenerationState.IDLE, repo.generationState.value)
+    @Test fun cancelledNativeDoneKeepsPartialReplyAndNeverEmitsCompleted() = runTest {
+        val frames = listOf("""{"type":"generation","generationId":"native-round"}""",
+            """{"type":"delta","text":"partial"}""", """{"type":"done","outcome":"cancelled","generationId":"native-round"}""")
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest) = WireResponse(200,
+                listOf(RawHeader("Content-Type", "text/event-stream")),
+                frames.joinToString("") { "event: message\ndata: $it\n\n" }.toByteArray())
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler))
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+        }
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("client_1"), "hello"))
+        runCurrent()
+        assertEquals(GenerationState.CANCELLED, repo.generationState.value)
+        assertEquals("native-round", events.filterIsInstance<VerifiedConversationEvent.GenerationCancelled>().single().generationId)
+        assertFalse(events.filterIsInstance<VerifiedConversationEvent.MessageStatus>().any { it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED })
+        assertEquals("CANCELLED", events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().last().message.state)
+    }
+
+    @Test fun uncertainHostCancellationKeepsTheLiveReaderAndWaitsForItsRealTerminalFrame(): Unit = runBlocking {
+        exerciseLiveCancellation("outcome_unknown", CancelGenerationOutcome.OUTCOME_UNKNOWN)
+    }
+
+    private suspend fun exerciseLiveCancellation(outcome: String, expected: CancelGenerationOutcome, switchAgent: Boolean = false) {
+        val finish = CompletableFuture<Unit>()
+        val readerClosed = AtomicBoolean(false)
+        var selected = sampleAgent
+        val parent = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                assertEquals("/open-android-intelligence/v2/agents/hermes/sessions/s_1/cancel", request.target)
+                assertEquals("""{"generationId":"native-round"}""", request.body.decodeToString())
+                return WireResponse(200, listOf(RawHeader("Content-Type", "application/json")),
+                    """{"session":{"outcome":"$outcome","generationId":"native-round"}}""".toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            override suspend fun <T> consumeResponse(request: WireRequest, consume: suspend (Int, List<RawHeader>, InputStream) -> T): T {
+                val prefix = ByteArrayInputStream(listOf("""{"type":"generation","generationId":"native-round"}""",
+                    """{"type":"delta","text":"partial"}""").joinToString("") { "event: message\ndata: $it\n\n" }.toByteArray())
+                val suffix = ByteArrayInputStream("event: message\ndata: {\"type\":\"done\",\"outcome\":\"completed\",\"generationId\":\"native-round\"}\n\n".toByteArray())
+                val input = object : InputStream() {
+                    override fun read(): Int = error("Buffered read required")
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                        if (prefix.available() > 0) return prefix.read(buffer, offset, length)
+                        finish.get(5, TimeUnit.SECONDS)
+                        return suffix.read(buffer, offset, length)
+                    }
+                    override fun close() { readerClosed.set(true) }
+                }
+                return input.use { consume(200, listOf(RawHeader("Content-Type", "text/event-stream")), it) }
+            }
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { selected }, { "s_1" }, parent)
+        try {
+            repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("client_1"), "hello"))
+            val generation = withTimeout(3_000) { repo.generationId.filterNotNull().first() }
+            assertEquals("native-round", generation)
+            if (switchAgent) {
+                selected = sampleAgent.copy(id = "other", kind = "codex")
+                repo.activeConversationChanged()
+            }
+            val result = repo.cancelGeneration("s_1", generation, "req_precise")
+            assertEquals(expected, result.outcome)
+            assertEquals(when {
+                switchAgent -> GenerationState.IDLE
+                expected == CancelGenerationOutcome.CANCELLED -> GenerationState.CANCELLED
+                else -> GenerationState.RUNNING
+            }, repo.generationState.value)
+            assertFalse("A cancellation result must not prematurely close the host reader", readerClosed.get())
+            finish.complete(Unit)
+            if (!switchAgent) withTimeout(3_000) { repo.generationState.first {
+                it == if (expected == CancelGenerationOutcome.CANCELLED) GenerationState.CANCELLED else GenerationState.COMPLETED
+            } }
+        } finally {
+            finish.complete(Unit)
+            parent.cancel()
+        }
+    }
+
+    @Test fun nativeEventsFromAnotherAgentCannotEnterASameNamedSession() = runTest {
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest) = WireResponse(200,
+                listOf(RawHeader("Content-Type", "application/json")), "{}".toByteArray())
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        var selected = sampleAgent
+        val repo = CoreAgentConversationRepository(client(transport), { selected }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler))
+        val first = mutableListOf<VerifiedConversationEvent>()
+        val second = mutableListOf<VerifiedConversationEvent>()
+        val scope = ConversationScope("p1", "https://core", "a1", "i1")
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { repo.observeEvents(scope).toList(first) }
+        selected = sampleAgent.copy(id = "other")
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { repo.observeEvents(scope).toList(second) }
+        assertTrue(repo.updateTitle("s_1", "Only the other Agent"))
+        runCurrent()
+        assertTrue(first.isEmpty())
+        assertEquals("Only the other Agent", second.filterIsInstance<VerifiedConversationEvent.TitleUpdated>().single().newTitle)
     }
 
     private fun client(transport: GatewayByteTransport): AgentSessionClient {
@@ -202,6 +359,7 @@ class CoreAgentConversationRepositoryTest {
                 transport,
                 { ByteArray(64) },
                 InMemoryEventCursorStore(),
+                ioDispatcher = Dispatchers.Unconfined,
             )
         )
     }

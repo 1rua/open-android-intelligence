@@ -5,6 +5,7 @@ import json
 import uuid
 from contextlib import contextmanager
 from typing import Any, AsyncIterator
+from oai_core.gateway.core import APPROVAL_CHOICES
 from oai_core.sessions import AdapterError
 
 
@@ -31,6 +32,7 @@ class HermesSessionAdapter:
                                  "send": send, "stream": send, "rename": native_titles,
                                  "archive": manager, "delete": manager,
                                  "cancel": send and callable(getattr(self.core, "generation_canceller", None)),
+                                 "approvals": send and bool(getattr(self.runtime, "native_approvals_available", False)),
                                  "commands": True}}
 
     def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
@@ -180,6 +182,7 @@ class HermesSessionAdapter:
         self.runtime._track_background_task(task, "core-session-message")
         previous = ""
         try:
+            yield {"type": "generation", "generationId": generation_id}
             async with asyncio.timeout(1800):
                 while True:
                     try:
@@ -187,19 +190,46 @@ class HermesSessionAdapter:
                     except TimeoutError:
                         if task.done():
                             await task
+                            withdraw = getattr(self.runtime, "withdraw_generation_approvals", None)
+                            if callable(withdraw):
+                                await withdraw(principal.account_id, session_id, generation_id)
                             def state():
                                 with self._account(principal) as account:
                                     return account.conversations.workflow.for_message(accepted["messageId"])
                             generation = await asyncio.to_thread(state)
+                            # A final native delta or approval decision may have
+                            # committed while the workflow read was in flight.
+                            # Drain those events before the terminal frame.
+                            await asyncio.sleep(0)
+                            if not queue.empty():
+                                continue
                             status = (generation or {}).get("state")
-                            if status == "completed":
-                                yield {"type": "done", "text": previous}
+                            if status in {"completed", "cancelled"}:
+                                yield {"type": "done", "text": previous, "generationId": generation_id,
+                                       "outcome": "cancelled" if status == "cancelled" else "completed"}
                             else:
-                                yield {"type": "error", "code": "CANCELLED" if status == "cancelled" else "AGENT_FAILED"}
+                                yield {"type": "error", "code": "AGENT_FAILED"}
                             return
                         continue
                     if event.get("eventType") == "core.approval.unsupported":
                         yield {"type": "error", "code": "UNSUPPORTED_APPROVAL"}
+                        return
+                    if event.get("eventType") in {"conversation.approval.requested", "conversation.approval.resolved"}:
+                        yield {"type": "approval_requested" if event["eventType"].endswith("requested") else "approval_resolved",
+                               "approval": event["payload"], "generationId": generation_id}
+                        continue
+                    if event.get("eventType") == "conversation.generation.cancelled":
+                        withdraw = getattr(self.runtime, "withdraw_generation_approvals", None)
+                        if callable(withdraw):
+                            await withdraw(principal.account_id, session_id, generation_id)
+                        # Earlier events retain their order, but an approval
+                        # withdrawn during cancellation was just enqueued.
+                        await asyncio.sleep(0)
+                        while not queue.empty():
+                            tail = queue.get_nowait()
+                            if tail.get("eventType") == "conversation.approval.resolved":
+                                yield {"type": "approval_resolved", "approval": tail["payload"], "generationId": generation_id}
+                        yield {"type": "done", "text": previous, "generationId": generation_id, "outcome": "cancelled"}
                         return
                     if event.get("eventType") in {"conversation.message.delta", "conversation.message.completed"}:
                         payload = event["payload"]
@@ -214,6 +244,16 @@ class HermesSessionAdapter:
             yield {"type": "error", "code": "AGENT_TIMEOUT"}
         finally:
             self.core.unregister_event_sink(sink)
+
+    async def decide_approval(self, principal: Any, session_id: str, approval_id: str, decision: str) -> dict[str, Any]:
+        if not isinstance(decision, str) or decision not in APPROVAL_CHOICES:
+            raise AdapterError("SCHEMA_INVALID", 400)
+        if not self.descriptor()["capabilities"].get("approvals"):
+            raise AdapterError("UNSUPPORTED_CAPABILITY", 409)
+        with self._account(principal) as account:
+            self._summary(account, session_id)
+        return await self.runtime.decide_native_approval(principal.account_id, session_id, approval_id,
+            decision, getattr(principal, "device_id", None))
 
     @staticmethod
     def _rename_native(account: Any, session_id: str, title: str) -> None:
@@ -243,15 +283,22 @@ class HermesSessionAdapter:
                     account.conversations.update_title(session_id, value, operation_id)
                     return self._summary(account, session_id)
                 if action == "cancel":
-                    current = account.conversations.workflow.current(session_id)
-                    if current is None:
-                        return {"id": session_id, "outcome": "ALREADY_COMPLETED"}
+                    if value is None:
+                        return {"id": session_id, "outcome": "outcome_unknown"}
+                    if not isinstance(value, dict) or set(value) != {"generationId"} or not isinstance(value["generationId"], str) or not value["generationId"]:
+                        raise AdapterError("SCHEMA_INVALID", 400)
+                    generation_id = value["generationId"]
+                    generation = account.conversations.workflow._get("generation:" + generation_id)
+                    if generation is None or generation["conversationId"] != session_id:
+                        raise AdapterError("GENERATION_NOT_FOUND", 404)
                     context = {"deviceId": getattr(principal, "device_id", None),
                                "pairingGeneration": getattr(principal, "pairing_generation", None),
                                "correlationId": operation_id}
                     cancel = lambda cid, gid: self.core.generation_canceller(principal.account_id, cid, gid)
-                    outcome = account.conversations.workflow.prepare_cancel(session_id, current["generationId"], context, cancel)
-                    return account.conversations.workflow.finish_cancel(session_id, current["generationId"], outcome, context, None)
+                    outcome = account.conversations.workflow.prepare_cancel(session_id, generation_id, context, cancel)
+                    with account.store.transaction():
+                        result = account.conversations.workflow.finish_cancel(session_id, generation_id, outcome, context, None)
+                    return {**result, "outcome": result["outcome"].lower()}
                 if action == "archive" and not isinstance(value, bool):
                     raise AdapterError("SCHEMA_INVALID", 400)
                 archive = value if action == "archive" else None

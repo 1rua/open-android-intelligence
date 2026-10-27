@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile
 import com.openandroidintelligence.gateway.agents.AgentSessionClient
 import com.openandroidintelligence.gateway.agents.AgentSessionException
 import com.openandroidintelligence.gateway.agents.CoreAgent
+import com.openandroidintelligence.gateway.agents.NativeAgentStreamEvent
 import com.openandroidintelligence.gateway.agents.NativeAgentMessage
 import com.openandroidintelligence.gateway.agents.NativeAgentSession
 import kotlinx.coroutines.CancellationException
@@ -28,6 +29,7 @@ data class NativeAgentsState(
     val messages: List<NativeAgentMessage> = emptyList(), val draft: String = "",
     val streamingText: String = "", val streamCompleted: Boolean = false,
     val busy: Boolean = false, val sending: Boolean = false,
+    val generationId: String? = null, val cancelRequested: Boolean = false, val cancelled: Boolean = false,
     val loadingSessions: Boolean = false, val loadingHistory: Boolean = false,
     val error: String? = null,
 ) {
@@ -177,7 +179,17 @@ class NativeAgentsController(
         val current = _state.value
         val agent = current.agent ?: return
         val id = current.selectedSessionId ?: return
-        scope.launch { safely { withContext(ioDispatcher) { client.cancel(agent, id) } } }
+        val generationId = current.generationId ?: return
+        if (current.cancelRequested) return
+        _state.update { it.copy(cancelRequested = true) }
+        scope.launch {
+            try { safely {
+                val receipt = withContext(ioDispatcher) { client.cancel(agent, id, generationId) }
+                _state.update { if (it.generationId == generationId) it.copy(
+                    cancelled = receipt.outcome == "cancelled",
+                    error = if (receipt.outcome == "outcome_unknown") "OUTCOME_UNKNOWN" else it.error) else it }
+            } } finally { _state.update { it.copy(cancelRequested = false) } }
+        }
     }
 
     fun send() {
@@ -185,12 +197,16 @@ class NativeAgentsController(
         if (current.draft.isBlank() || current.busy || current.selectedSessionId == null) return
         val text = current.draft
         operate(requireSession = true, sending = true) { agent, id ->
+            if (agent.kind != "hermes") _state.update { it.copy(generationId = "local_${java.util.UUID.randomUUID()}") }
             withContext(ioDispatcher) {
-                client.send(agent, requireNotNull(id), text) { delta ->
-                    _state.update { it.copy(streamingText = it.streamingText + delta) }
+                val result = client.send(agent, requireNotNull(id), text, onEvent = { event ->
+                    if (event is NativeAgentStreamEvent.Generation) _state.update { it.copy(generationId = event.generationId) }
+                }) { delta ->
+                    _state.update { if (it.cancelled) it else it.copy(streamingText = it.streamingText + delta) }
                 }
+                _state.update { it.copy(cancelled = it.cancelled || result.outcome == "cancelled") }
             }
-            _state.update { it.copy(draft = "", sending = false, streamCompleted = true) }
+            _state.update { it.copy(draft = "", sending = false, streamCompleted = !it.cancelled) }
             refreshHistory()
             refreshSessions()
         }
@@ -203,6 +219,7 @@ class NativeAgentsController(
         if (current.busy || (requireSession && current.selectedSessionId == null)) return
         revision.incrementAndGet()
         _state.update { it.copy(busy = true, sending = sending, streamingText = "", streamCompleted = false,
+            generationId = null, cancelRequested = false, cancelled = false,
             loadingSessions = false, loadingHistory = false, error = null) }
         scope.launch {
             try { safely { action(agent, current.selectedSessionId) } }
