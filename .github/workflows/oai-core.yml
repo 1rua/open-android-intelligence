@@ -31,6 +31,10 @@ on:
       - '.github/workflows/oai-core.yml'
   workflow_dispatch:
 
+concurrency:
+  group: oai-core-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/main' }}
+
 jobs:
   core:
     runs-on: ubuntu-latest
@@ -128,7 +132,7 @@ jobs:
       - name: Screen primitives, local authorization and projection lifecycle
         working-directory: apps/android
         run: >-
-          gradle --no-daemon --max-workers=2 --no-build-cache
+          gradle --max-workers=2
           :control-ports:testDebugUnitTest
           :capability-ports:testDebugUnitTest
           :screen-control:testDebugUnitTest
@@ -137,13 +141,13 @@ jobs:
       - name: Conversation ordering, rendering, identity and persistence regressions
         working-directory: apps/android
         run: >-
-          gradle --no-daemon --max-workers=2
+          gradle --max-workers=2
           :conversation-domain:testDebugUnitTest
           :conversation-ui:testDebugUnitTest
       - name: Core connection, Agent sessions, platform recovery and transport regressions
         working-directory: apps/android
         run: >-
-          gradle --no-daemon --max-workers=2
+          gradle --max-workers=2
           :gateway-client:testDebugUnitTest
           :app:compileFullDebugKotlin
           :app:testFullDebugUnitTest
@@ -164,7 +168,7 @@ jobs:
       - name: Play screen integration and Android API compatibility
         working-directory: apps/android
         run: >-
-          gradle --no-daemon --max-workers=2 --no-build-cache
+          gradle --max-workers=2
           :app:compilePlayDebugKotlin
           :app:testPlayDebugUnitTest
           --tests '*ScreenExecutionErrorsTest'

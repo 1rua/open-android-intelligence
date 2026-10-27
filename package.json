@@ -8,6 +8,9 @@
   },
   "scripts": {
     "test": "vitest run tools/check-dependency-lock.test.ts && npm test --prefix gateway-contract && npm test --prefix plugin-tooling",
+    "test:fast": "python3 tools/smart-test.py --level fast",
+    "test:pr": "python3 tools/smart-test.py --level pr",
+    "test:full": "python3 tools/smart-test.py --level full",
     "typecheck": "tsc --noEmit && npm run typecheck --prefix gateway-contract && npm run typecheck:tools --prefix gateway-contract && npm run typecheck --prefix plugin-tooling",
     "gateway:v2:conformance": "tsx gateway-contract/tools/run-openclaw-conformance.ts && python3 gateway-contract/tools/run-hermes-conformance.py && npm test --prefix gateway-contract -- test/cross-host-conformance.test.ts",
     "lock:check": "node --experimental-strip-types tools/check-dependency-lock.ts",
