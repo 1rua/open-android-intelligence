@@ -21,7 +21,7 @@ import java.io.InputStream
 
 data class AgentCapabilities(
     val list: Boolean = false, val history: Boolean = false,
-    val create: Boolean = false, val send: Boolean = false,
+    val create: Boolean = false, val send: Boolean = false, val steer: Boolean = false,
     val rename: Boolean = false, val archive: Boolean = false,
     val delete: Boolean = false, val cancel: Boolean = false, val stream: Boolean = false,
     val commands: Boolean = false, val approvals: Boolean = false, val attachments: Boolean = false,
@@ -35,6 +35,8 @@ data class NativeAgentMessage(val id: String, val role: String, val text: String
     val clientMessageId: String? = null, val attachments: List<NativeAgentAttachment> = emptyList())
 data class NativeGenerationResult(val outcome: String, val generationId: String?, val messageId: String? = null,
     val userMessageId: String? = null, val clientMessageId: String? = null, val text: String? = null)
+data class NativeSteeringResult(val generationId: String, val outcome: String)
+data class NativeCurrentGeneration(val generationId: String, val conversationId: String, val state: String)
 sealed interface NativeAgentStreamEvent {
     data class Generation(val generationId: String) : NativeAgentStreamEvent
     data class ApprovalRequested(val approval: JsonValue.JObject) : NativeAgentStreamEvent
@@ -51,7 +53,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         CoreAgent(required(value, "id"), required(value, "name"), required(value, "kind"),
             JsonFields.bool(value, "online") ?: false,
             required(value, "sessionScope").also { check(it in setOf("account", "deployment")) { "AGENTS_INVALID" } },
-            AgentCapabilities(cap("list"), cap("history"), cap("create"), cap("send"), cap("rename"),
+            AgentCapabilities(cap("list"), cap("history"), cap("create"), cap("send"), cap("steer"), cap("rename"),
                 cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments")))
     }
 
@@ -117,6 +119,51 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         if (exactGeneration && returnedId != generationId) throw AgentSessionException("OUTCOME_UNKNOWN")
         val outcome = JsonFields.string(receipt, "outcome")
         return NativeGenerationResult(outcome?.takeIf { it in setOf("cancelled", "already_completed") } ?: "outcome_unknown", returnedId ?: generationId)
+    }
+
+    suspend fun currentGeneration(agent: CoreAgent, sessionId: String): NativeCurrentGeneration? {
+        requireCapability(agent.capabilities.send && agent.online)
+        val value = request("GET", sessionTarget(agent, sessionId) + "/generation")
+        val generation = when (val field = JsonFields.field(value, "generation")) {
+            null, is JsonValue.JNull -> null
+            else -> JsonFields.obj(field) ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        } ?: return null
+        val generationId = JsonFields.string(generation, "generationId")
+            ?.takeIf(String::isNotBlank) ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        val conversationId = JsonFields.string(generation, "conversationId")
+            ?.takeIf { it == sessionId } ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        val state = JsonFields.string(generation, "state")
+            ?.takeIf { it in setOf("queued", "running", "unknown") }
+            ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        return NativeCurrentGeneration(generationId, conversationId, state)
+    }
+
+    suspend fun steer(
+        agent: CoreAgent,
+        sessionId: String,
+        generationId: String,
+        text: String,
+        clientMessageId: String,
+    ): NativeSteeringResult {
+        requireCapability(agent.capabilities.steer && agent.online)
+        if (generationId.isBlank() || text.isBlank() || clientMessageId.isBlank())
+            throw AgentSessionException("INVALID_REQUEST")
+        val value = request(
+            "POST",
+            sessionTarget(agent, sessionId) + "/steer",
+            mapOf(
+                "text" to text,
+                "generationId" to generationId,
+                "clientMessageId" to clientMessageId,
+            ),
+        )
+        val steering = JsonFields.obj(JsonFields.field(value, "steering"))
+            ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        val returnedGeneration = JsonFields.string(steering, "generationId")
+        val outcome = JsonFields.string(steering, "outcome")
+        if (returnedGeneration != generationId || outcome != "accepted")
+            throw AgentSessionException("OUTCOME_UNKNOWN")
+        return NativeSteeringResult(returnedGeneration, outcome)
     }
 
     /** An interrupted stream is an unknown outcome, never an automatic resend. */

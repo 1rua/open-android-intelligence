@@ -28,7 +28,7 @@ class InteractiveHost(NativeHost):
 
     def descriptor(self):
         result = super().descriptor()
-        result["capabilities"].update(commands=True, approvals=True)
+        result["capabilities"].update(commands=True, approvals=True, steer=True)
         return result
 
     async def commands(self, language_code="en", *, principal=None):
@@ -48,6 +48,14 @@ class InteractiveHost(NativeHost):
         self.calls.append(("approval", principal.account_id, session_id, approval_id, decision))
         return {"approval": {"approvalId": approval_id, "conversationId": session_id,
                              "decision": decision, "decidedAt": 2}}
+
+    async def steer(self, principal, session_id, text, generation_id, client_message_id=None):
+        self.calls.append(("steer", principal.account_id, session_id, generation_id, text, client_message_id))
+        return {"generationId": generation_id, "outcome": "accepted"}
+
+    async def current_generation(self, principal, session_id):
+        self.calls.append(("generation", principal.account_id, session_id))
+        return {"generationId": "gen_native", "conversationId": session_id, "state": "running"}
 
 
 @pytest.fixture
@@ -146,6 +154,67 @@ async def test_cancel_forwards_exact_generation_and_rejects_identity_override(na
     for invalid in ({"generationId": ""}, {"generationId": 7}, {"generationId": "gen", "accountId": "bob"}):
         assert (await client.post(path, json=invalid, headers=write_headers())).status == 400
     assert len(host.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_steering_targets_the_exact_generation_without_creating_another_turn(native_api):
+    client, host = native_api
+    path = PREFIX + "/agents/interactive/sessions/chat/steer"
+    headers = write_headers("steer-once")
+    response = await client.post(
+        path,
+        json={"text": "Focus on the parser tests", "generationId": "gen_native", "clientMessageId": "cm_steer"},
+        headers=headers,
+    )
+    assert response.status == 200, await response.text()
+    body = await response.json()
+    assert body == {"steering": {"generationId": "gen_native", "outcome": "accepted"}}
+    replay = await client.post(
+        path,
+        json={"text": "Focus on the parser tests", "generationId": "gen_native", "clientMessageId": "cm_steer"},
+        headers=headers,
+    )
+    assert replay.status == 200, await replay.text()
+    assert await replay.json() == body
+    assert host.calls == [
+        ("steer", "alice", "chat", "gen_native", "Focus on the parser tests", "cm_steer"),
+    ]
+    for invalid in (
+        {"text": "", "generationId": "gen_native"},
+        {"text": "x", "generationId": ""},
+        {"text": "x", "generationId": "gen_native", "accountId": "bob"},
+    ):
+        rejected = await client.post(path, json=invalid, headers=write_headers())
+        assert rejected.status == 400
+
+    host.descriptor = lambda: {
+        **InteractiveHost().descriptor(),
+        "capabilities": {
+            **InteractiveHost().descriptor()["capabilities"],
+            "steer": False,
+        },
+    }
+    unsupported = await client.post(
+        PREFIX + "/agents/interactive/sessions/chat/steer",
+        json={"text": "x", "generationId": "gen_native"},
+        headers=write_headers(),
+    )
+    assert unsupported.status == 405
+
+
+@pytest.mark.asyncio
+async def test_current_generation_is_exposed_for_safe_queue_reconnect(native_api):
+    client, host = native_api
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation")
+    assert response.status == 200, await response.text()
+    assert await response.json() == {
+        "generation": {
+            "generationId": "gen_native",
+            "conversationId": "chat",
+            "state": "running",
+        },
+    }
+    assert host.calls == [("generation", "alice", "chat")]
 
 
 @pytest.mark.asyncio

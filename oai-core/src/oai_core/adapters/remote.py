@@ -180,6 +180,17 @@ class RemoteSessionAdapter:
                 account.close()
         return messages
 
+    async def current_generation(self, principal: Principal, session_id: str) -> dict[str, Any] | None:
+        result = await self._request(
+            "GET",
+            f"/sessions/{quote(session_id, safe='')}/generation",
+            headers=self._headers(principal),
+        )
+        generation = result.get("generation")
+        if generation is not None and not isinstance(generation, dict):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        return generation
+
     def _attachment_key(self, attachment_id: str) -> str:
         return "native-attachment:" + hashlib.sha256((self.agent_id + ":" + attachment_id).encode()).hexdigest()
 
@@ -220,6 +231,24 @@ class RemoteSessionAdapter:
                 await attachment.assert_active()
         async for event in self._send(session_id, text, headers=headers, body=body):
             yield event
+
+    async def steer(self, principal: Principal, session_id: str, text: str, generation_id: str,
+                    client_message_id: str | None = None) -> dict[str, Any]:
+        if not self.capabilities.get("steer"):
+            raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
+        body: dict[str, Any] = {"text": text, "generationId": generation_id}
+        if client_message_id is not None:
+            body["clientMessageId"] = client_message_id
+        result = await self._request(
+            "POST",
+            f"/sessions/{quote(session_id, safe='')}/steer",
+            body,
+            headers=self._headers(principal),
+        )
+        steering = result.get("steering")
+        if not isinstance(steering, dict):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        return steering
 
     async def _upload_attachment(self, attachment: NativeAttachment, headers: dict[str, str], client_message_id: str | None) -> str:
         metadata = attachment.metadata

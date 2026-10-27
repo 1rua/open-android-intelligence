@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -55,6 +56,8 @@ import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentState
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.ports.PendingDelivery
+import com.openandroidintelligence.conversation.ports.PendingDeliveryState
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
@@ -102,18 +105,27 @@ fun ComposerBar(
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
     /** Controller and conversation identity; a change discards selection, IME composition and undo. */
     editorKey: Any? = null,
+    onQueue: () -> Unit = onSend,
+    onSteer: () -> Unit = {},
+    steeringEnabled: Boolean = false,
+    pendingDeliveries: List<PendingDelivery> = emptyList(),
+    onRetryPendingDelivery: () -> Unit = {},
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
     val waitingCancel = generation == GenerationState.CANCEL_REQUESTED
     val unknown = generation == GenerationState.OUTCOME_UNKNOWN
     val hasPendingInput = draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }
+    val isApprovalCommand = Regex("^/(?:approve|deny)(?:\\s|$)", RegexOption.IGNORE_CASE)
+        .containsMatchIn(draft.trim())
+    val requiresBusyChoice = running && !waitingCancel && !unknown && hasPendingInput && !isApprovalCommand
     // While a turn is active, a populated composer belongs to the next turn.
     // Keep cancellation visible only when there is nothing queued by the user.
     val showStop = waitingCancel || (running && !hasPendingInput)
     val actionEnabled = when {
         waitingCancel || unknown -> false
         showStop -> running && !hasPendingInput
+        requiresBusyChoice -> false
         else -> hasPendingInput && canSend && !hasUnknownSubmissionOutcome
     }
 
@@ -126,6 +138,10 @@ fun ComposerBar(
         .then(if (applyImePadding) Modifier.imePadding() else Modifier)
 
     Column(modifier = modifier.fillMaxWidth().then(insetModifier)) {
+        PendingDeliveryStrip(
+            deliveries = pendingDeliveries,
+            onRetry = onRetryPendingDelivery,
+        )
         // ===== 1. 附件草稿横条：显隐用同一个临界阻尼形变（M14）=====
         AnimatedVisibility(
             visible = attachments.isNotEmpty(),
@@ -140,6 +156,14 @@ fun ComposerBar(
                 onRemove = onRemoveAttachment,
                 onRetry = onRetryAttachment,
                 modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
+            )
+        }
+
+        if (requiresBusyChoice) {
+            BusyDeliveryChoice(
+                steeringEnabled = steeringEnabled && attachments.isEmpty() && generation == GenerationState.RUNNING,
+                onQueue = onQueue,
+                onSteer = onSteer,
             )
         }
 
@@ -778,6 +802,109 @@ fun formatAttachmentSize(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     else -> java.lang.String.format(java.util.Locale.getDefault(), "%.1f MB", bytes.toDouble() / (1024 * 1024))
+}
+
+@Composable
+private fun BusyDeliveryChoice(
+    steeringEnabled: Boolean,
+    onQueue: () -> Unit,
+    onSteer: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceTiny),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilledTonalButton(
+                onClick = onQueue,
+                modifier = Modifier.weight(1f).semantics { contentDescription = "排队等待当前任务完成" },
+            ) {
+                Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(Dimensions.SmallIcon))
+                Spacer(Modifier.width(Dimensions.SpaceTiny))
+                Text("排队")
+            }
+            OutlinedButton(
+                onClick = onSteer,
+                enabled = steeringEnabled,
+                modifier = Modifier.weight(1f).semantics { contentDescription = "引导当前任务" },
+            ) {
+                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(Dimensions.SmallIcon))
+                Spacer(Modifier.width(Dimensions.SpaceTiny))
+                Text("引导")
+            }
+        }
+        Text(
+            text = if (steeringEnabled) {
+                "排队会等本轮结束；引导会立即进入当前任务。"
+            } else {
+                "当前 Agent 或消息内容不能实时引导，可选择排队。"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+fun PendingDeliveryStrip(
+    deliveries: List<PendingDelivery>,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (deliveries.isEmpty()) return
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceTiny),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+    ) {
+        deliveries.forEach { delivery ->
+            Surface(
+                shape = RoundedCornerShape(AppRadius.Small),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = delivery.text.ifBlank { "${delivery.attachmentCount} 个附件" },
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = when (delivery.state) {
+                                PendingDeliveryState.QUEUED -> "排队中，当前任务结束后发送"
+                                PendingDeliveryState.SENDING -> "正在发送"
+                                PendingDeliveryState.FAILED -> "发送失败，等待重连后重试"
+                                PendingDeliveryState.OUTCOME_UNKNOWN -> "发送结果未知，不会自动重发"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    if (delivery.state == PendingDeliveryState.FAILED) {
+                        TextButton(onClick = onRetry) { Text("重试") }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**

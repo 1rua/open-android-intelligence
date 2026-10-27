@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 
 from oai_core.gateway.core import AgentSessionBindings, GatewayError, NEW_CONVERSATION_COMMAND, iso_millis, _epoch_millis
+from oai_core.sessions import AdapterError
 from .platform_identity import GATEWAY_PLATFORM_ID, GATEWAY_PLATFORM_IDS
 from .context import trusted_turn
 from .bridge import NativeApprovalMixin, create_hermes_bridge_app
@@ -150,6 +152,76 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
     def _refresh_generation_canceller(self) -> None:
         self._generation_canceller = self._native_generation_canceller()
         self.services.core.generation_canceller = self._generation_canceller
+
+    def native_steering_available(self) -> bool:
+        runner = self._host_runner()
+        return callable(getattr(runner, "_peek_session_state", None)) and callable(
+            getattr(runner, "_steer_running_agent", None)
+        )
+
+    async def steer_native_turn(
+        self,
+        account_id: str,
+        conversation_id: str,
+        generation_id: str,
+        text: str,
+        *,
+        client_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Inject one correction into the host's current native turn.
+
+        This intentionally calls the host's own steer path instead of submitting
+        another message. A rejected steer is returned as unavailable, never
+        silently converted into a queued follow-up turn.
+        """
+        if not text.strip() or not self.native_steering_available():
+            raise AdapterError("STEER_UNAVAILABLE", 409)
+        turn = self._native_turns.get((account_id, conversation_id, generation_id))
+        if turn is None:
+            raise AdapterError("STEER_UNAVAILABLE", 409)
+        session_key, task, _source = turn
+        if task.done() or self._session_tasks.get(session_key) is not task:
+            raise AdapterError("STEER_UNAVAILABLE", 409)
+        runner = self._host_runner()
+
+        def apply_on_host_loop() -> bool:
+            state = runner._peek_session_state(session_key)
+            agent = getattr(getattr(state, "turn", None), "agent", None)
+            steer = getattr(runner, "_steer_running_agent", None)
+            if agent is None or not callable(steer):
+                return False
+            return bool(steer(agent, text))
+
+        loop = self._loop
+        if loop is None or loop.is_closed() or not loop.is_running():
+            raise AdapterError("STEER_UNAVAILABLE", 409)
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            accepted = apply_on_host_loop()
+        else:
+            result: Future[bool] = Future()
+
+            def call() -> None:
+                try:
+                    result.set_result(apply_on_host_loop())
+                except BaseException as exc:  # propagate host failures to the bridge
+                    result.set_exception(exc)
+
+            loop.call_soon_threadsafe(call)
+            accepted = await asyncio.wrap_future(result)
+        if not accepted:
+            raise AdapterError("STEER_UNAVAILABLE", 409)
+        logger.info(
+            "[open_android] Steering accepted account=%s conversation=%s generation=%s client=%s",
+            bool(account_id),
+            bool(conversation_id),
+            bool(generation_id),
+            bool(client_message_id),
+        )
+        return {"generationId": generation_id, "outcome": "accepted"}
 
 
     def _host_runner(self) -> Any:
@@ -776,6 +848,57 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 finally: account.close()
                 if not waiting: break
                 await asyncio.sleep(0.2)
+
+    async def dispatch_approval_control(
+        self,
+        account_id: str,
+        conversation_id: str,
+        text: str,
+        client_message_id: str,
+    ) -> None:
+        """Forward only ``/approve`` or ``/deny`` through the active-session control path.
+
+        The normal inbound path holds a per-conversation generation lock until
+        the running turn settles. An approval command exists precisely to settle
+        that turn, so taking the same lock would deadlock it. The host's own
+        active-session dispatcher already routes these commands inline before
+        queueing ordinary text.
+        """
+        account = self.services.core.open_gateway_account(account_id)
+        try:
+            binding = account.agent_sessions.lookup(conversation_id)
+            if not binding or not binding.get("agentSessionId") or not binding.get("sessionKey"):
+                raise AdapterError("SESSION_NOT_FOUND", 404)
+            session_key = str(binding["sessionKey"])
+        finally:
+            account.close()
+        self._conv_to_account[conversation_id] = account_id
+        event = MessageEvent(
+            text=text,
+            source=self._agent_source(conversation_id, account_id),
+            message_type=MessageType.TEXT,
+            message_id=client_message_id,
+            metadata={"gateway_session_key": session_key},
+            allow_gateway_control=True,
+        )
+        token = trusted_turn.set({
+            "core": self.services.core,
+            "accountId": account_id,
+            "sessionId": binding.get("agentSessionId"),
+        })
+        try:
+            await self.handle_message(event)
+        finally:
+            trusted_turn.reset(token)
+        # Active-session command dispatch is inline and historical host
+        # versions do not always stamp `_gateway_accepted`; reaching this point
+        # means the handler observed the command without raising.
+        logger.info(
+            "[open_android] Approval control dispatched account=%s conversation=%s client=%s",
+            bool(account_id),
+            bool(conversation_id),
+            bool(client_message_id),
+        )
 
 
     async def _dispatch_agent_inbound(

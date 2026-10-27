@@ -38,6 +38,9 @@ import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.model.ApprovalSubmissionResult
 import com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome
+import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
+import com.openandroidintelligence.conversation.ports.PendingDelivery
+import com.openandroidintelligence.conversation.ports.PendingDeliveryState
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.schema.Json
@@ -65,6 +68,12 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.math.BigDecimal
 import java.util.UUID
+
+private const val MAX_APPROVAL_FALLBACKS = 32
+private val APPROVAL_CONTROL_COMMAND = Regex(
+    "^/(?:approve|deny)(?:\\s+.*)?$",
+    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+)
 
 /**
  * Bridges the unified OAI Core /agents interface with the Material Design 3 ConversationRepository port.
@@ -107,6 +116,8 @@ class CoreAgentConversationRepository(
     private data class ApprovalRoute(val agent: CoreAgent, val conversationId: String, val choices: Set<String>)
     private val turns = ConcurrentHashMap<Pair<String, String>, NativeTurn>()
     private val approvals = ConcurrentHashMap<String, ApprovalRoute>()
+    private val approvalFallbacks =
+        ConcurrentHashMap<String, MutableList<VerifiedConversationEvent.ApprovalTextFallback>>()
     private val generationRoutes = Collections.synchronizedMap(linkedMapOf<String, NativeTurn>())
 
     private fun rememberGeneration(turn: NativeTurn, generationId: String) {
@@ -139,19 +150,99 @@ class CoreAgentConversationRepository(
         }
     }
 
-    private suspend fun emitApproval(turn: NativeTurn, payload: JsonValue.JObject, requested: Boolean,
-        deliver: suspend (VerifiedConversationEvent) -> Unit = { emitEvent(turn.agent.id, it) }) {
-        if (!supportsApprovalCards || !turn.agent.capabilities.approvals) return
-        if (JsonFields.string(payload, "conversationId") != turn.conversationId)
+    private suspend fun emitApproval(
+        turn: NativeTurn,
+        payload: JsonValue.JObject,
+        requested: Boolean,
+        deliver: suspend (VerifiedConversationEvent) -> Unit = { emitEvent(turn.agent.id, it) },
+    ) {
+        val payloadConversation = JsonFields.string(payload, "conversationId")
+        if (payloadConversation != null && payloadConversation != turn.conversationId) {
+            // A mismatched frame could move another native session's command
+            // into this thread, so keep that boundary fail-closed.
             throw AgentSessionException("AGENT_STREAM_INVALID")
-        val type = if (requested) "conversation.approval.requested" else "conversation.approval.resolved"
-        val decoded = GatewayEventDecoder.decode(GatewayEvent("evt_${UUID.randomUUID()}", type,
-            Json.canonical(Json.of(mapOf("payload" to payload))))) ?: throw AgentSessionException("AGENT_STREAM_INVALID")
-        if (decoded is VerifiedConversationEvent.ApprovalRequested) {
-            approvals[decoded.request.approvalId.value] = ApprovalRoute(turn.agent, turn.conversationId,
-                decoded.request.options.map { it.choice.wireValue }.toSet())
         }
-        deliver(decoded)
+        if (!requested) {
+            val rawApprovalId = JsonFields.string(payload, "approvalId")
+            val hasFallback = rawApprovalId != null && approvalFallbacks[turn.conversationId]
+                ?.any { it.approvalId?.value == rawApprovalId } == true
+            if ((!supportsApprovalCards || !turn.agent.capabilities.approvals) && !hasFallback) return
+            runCatching {
+                GatewayEventDecoder.decode(GatewayEvent("evt_${UUID.randomUUID()}", "conversation.approval.resolved",
+                    Json.canonical(Json.of(mapOf("payload" to payload)))))
+            }.getOrNull()?.let { resolved ->
+                if (resolved is VerifiedConversationEvent.ApprovalResolved) {
+                    approvalFallbacks[resolved.conversationId?.value ?: turn.conversationId]?.removeAll {
+                        it.approvalId == resolved.approvalId
+                    }
+                }
+                deliver(resolved)
+            }
+            return
+        }
+        if (supportsApprovalCards && turn.agent.capabilities.approvals) {
+            val decoded = runCatching {
+                GatewayEventDecoder.decode(GatewayEvent("evt_${UUID.randomUUID()}", "conversation.approval.requested",
+                    Json.canonical(Json.of(mapOf("payload" to payload)))))
+            }.getOrNull()
+            if (decoded is VerifiedConversationEvent.ApprovalRequested) {
+                approvals[decoded.request.approvalId.value] = ApprovalRoute(
+                    turn.agent,
+                    turn.conversationId,
+                    decoded.request.options.map { it.choice.wireValue }.toSet(),
+                )
+                deliver(decoded)
+                return
+            }
+        }
+        val fallback = approvalTextFallback(
+            turn.conversationId,
+            payload,
+            cardNegotiated = supportsApprovalCards && turn.agent.capabilities.approvals,
+        )
+        approvalFallbacks.getOrPut(turn.conversationId) {
+            Collections.synchronizedList(mutableListOf())
+        }.apply {
+            removeAll { existing -> fallback.approvalId != null && existing.approvalId == fallback.approvalId }
+            add(fallback)
+            while (size > MAX_APPROVAL_FALLBACKS) removeAt(0)
+        }
+        deliver(fallback)
+    }
+
+    private fun approvalTextFallback(
+        conversationId: String,
+        payload: JsonValue.JObject,
+        cardNegotiated: Boolean,
+    ): VerifiedConversationEvent.ApprovalTextFallback {
+        val rawId = JsonFields.string(payload, "approvalId")
+        val approvalId = rawId?.let { runCatching { ApprovalId(it) }.getOrNull() }
+        val choices = JsonFields.array(JsonFields.field(payload, "options"))?.items.orEmpty().mapNotNull { option ->
+            JsonFields.obj(option)?.let { JsonFields.string(it, "choice") }
+        }.toSet()
+        val recognizedChoices = choices.intersect(setOf("once", "session", "always", "deny"))
+        val commands = buildList {
+            if ("once" in choices || recognizedChoices.isEmpty()) add("/approve")
+            if ("session" in choices) add("/approve session")
+            if ("always" in choices) add("/approve always")
+            if ("deny" in choices || recognizedChoices.isEmpty()) add("/deny")
+        }.distinct()
+        return VerifiedConversationEvent.ApprovalTextFallback(
+            eventId = "evt_${UUID.randomUUID()}",
+            occurredAt = System.currentTimeMillis(),
+            conversationId = ConversationId(conversationId),
+            approvalId = approvalId,
+            command = JsonFields.string(payload, "command").orEmpty(),
+            reason = JsonFields.string(payload, "reason").orEmpty(),
+            commands = commands,
+            diagnosticCode = if (cardNegotiated) "APPROVAL_PAYLOAD_INVALID" else "APPROVAL_CARD_UNSUPPORTED",
+        )
+    }
+
+    override suspend fun pendingApprovalFallbacks(
+        conversationId: String,
+    ): List<VerifiedConversationEvent.ApprovalTextFallback> = synchronized(approvalFallbacks) {
+        approvalFallbacks[conversationId].orEmpty().toList()
     }
 
     private fun requireAgent(): CoreAgent {
@@ -242,18 +333,24 @@ class CoreAgentConversationRepository(
         val key = agent.id to conversationId
         val turn = NativeTurn(agent, conversationId)
         if (turns.putIfAbsent(key, turn) != null) {
+            if (message.delivery == MessageDeliveryMode.STEER) {
+                return steerMessage(conversationId, message)
+            }
             if (isHostCommand(message.text)) {
                 // /approve、/deny 这类命令解开的是"正卡在审批上的这一轮"：排队会自锁，
                 // 所以允许它们在生成中插队直发。
                 sendHostCommandWhileBusy(agent, conversationId, message)
                 return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, null)
             }
-            // 会话这一轮还在生成：宿主本身支持把追问排到本轮之后，客户端没理由
-            // 直接回一个 SESSION_BUSY 让用户重试。先排队，本轮结束时自动发出去。
-            enqueueSend(key, message)
+            enqueueSend(agent, key, message)
             GatewayLog.d("OaiLatency",
                 "send.queued client=${message.clientMessageId.value} conversation=$conversationId")
-            return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, null)
+            return MessageAcceptance(
+                message.clientMessageId.value,
+                message.clientMessageId.value,
+                null,
+                MessageDeliveryMode.QUEUE,
+            )
         }
         // 发送到首帧的耗时是"等待接收"体感的主要来源：记录阶段时间点便于定位回归。
         val startedAt = System.currentTimeMillis()
@@ -269,6 +366,7 @@ class CoreAgentConversationRepository(
             _generationState.value = if (turn.generationId == null) GenerationState.QUEUED else GenerationState.RUNNING
         }
         parentScope.launch(ioDispatcher) {
+            var drainAfterTurn = false
             val text = StringBuilder()
             // Coalesce complete message snapshots, never raw deltas. UI backpressure
             // can delay this publisher but cannot suspend the HTTP/SSE reader.
@@ -382,6 +480,12 @@ class CoreAgentConversationRepository(
                     publish("CANCELLED")
                     flush()
                     cancelled()
+                    drainAfterTurn = true
+                } else if (result.outcome != "completed") {
+                    publish("OUTCOME_UNKNOWN")
+                    flush()
+                    queueUnknownBarriers.add(key)
+                    if (isSelected(turn)) _generationState.value = GenerationState.OUTCOME_UNKNOWN
                 } else {
                     publish("CONFIRMED")
                     flush()
@@ -389,6 +493,7 @@ class CoreAgentConversationRepository(
                         System.currentTimeMillis(), ConversationId(conversationId), messageId,
                         message.clientMessageId, AgentMessageStatus.COMPLETED, 1L, null, turn.generationId))
                     if (isSelected(turn)) _generationState.value = GenerationState.COMPLETED
+                    drainAfterTurn = true
                 }
             } catch (cancelled: CancellationException) {
                 // Closing a reader says nothing about whether Hermes stopped.
@@ -398,10 +503,12 @@ class CoreAgentConversationRepository(
                     "type=${failure.javaClass.simpleName} code=${(failure as? AgentSessionException)?.code} msg=${failure.message}")
                 if (turn.cancelled) { publish("CANCELLED"); flush(); cancelled() }
                 else if (failure is AgentSessionException && failure.code == "OUTCOME_UNKNOWN") {
+                    queueUnknownBarriers.add(key)
                     if (text.isNotEmpty()) publish("OUTCOME_UNKNOWN")
                     flush()
                     if (isSelected(turn)) _generationState.value = GenerationState.OUTCOME_UNKNOWN
                 } else {
+                    queueUnknownBarriers.add(key)
                     if (text.isNotEmpty()) publish("FAILED")
                     flush()
                     emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
@@ -414,16 +521,20 @@ class CoreAgentConversationRepository(
                 snapshots.close()
                 turns.remove(key, turn)
                 if (isSelected(turn) && _generationId.value == turn.generationId) _generationId.value = null
-                // 本轮结束：把排队中的追问发出去。串行发送，避免两条 SSE 流互相污染。
-                parentScope.launch(ioDispatcher) { drainQueuedSends(agent, conversationId) }
+                if (drainAfterTurn) {
+                    queueUnknownBarriers.remove(key)
+                    // A confirmed terminal state is the only local proof that
+                    // draining the next queued turn cannot overlap this one.
+                    parentScope.launch(ioDispatcher) { drainQueuedSends(agent, conversationId) }
+                }
             }
         }
         // Only the host's first generation frame can issue a cancellable turn ID.
         return MessageAcceptance(messageId, message.clientMessageId.value, turn.generationId.takeIf { agent.kind != "hermes" })
     }
 
-    /** 只有斜杠命令允许在生成中插队：它们解开的是正在等待的审批，排队会造成自锁。 */
-    private fun isHostCommand(text: String): Boolean = text.trimStart().startsWith("/")
+    /** Only host-native approval verbs may bypass the client queue. */
+    private fun isHostCommand(text: String): Boolean = APPROVAL_CONTROL_COMMAND.matches(text.trim())
 
     private fun sendHostCommandWhileBusy(agent: CoreAgent, conversationId: String, message: OutgoingMessage) {
         parentScope.launch(ioDispatcher) {
@@ -443,43 +554,187 @@ class CoreAgentConversationRepository(
         }
     }
 
-    /** 按 (agent, conversation) 排队的追问；只在上一轮结束后逐条发出。 */
-    private val queuedSends = ConcurrentHashMap<Pair<String, String>, ArrayDeque<OutgoingMessage>>()
+    private data class QueuedSend(
+        val message: OutgoingMessage,
+        var state: PendingDeliveryState = PendingDeliveryState.QUEUED,
+        var errorCode: String? = null,
+    )
 
-    private fun enqueueSend(key: Pair<String, String>, message: OutgoingMessage) {
+    /** 按 (agent, conversation) 排队的追问；只在上一轮结束后逐条发出。 */
+    private val queuedSends = ConcurrentHashMap<Pair<String, String>, ArrayDeque<QueuedSend>>()
+    private val queuedAgents = ConcurrentHashMap<String, CoreAgent>()
+    private val queueUnknownBarriers = Collections.synchronizedSet(mutableSetOf<Pair<String, String>>())
+
+    private fun enqueueSend(agent: CoreAgent, key: Pair<String, String>, message: OutgoingMessage) {
         synchronized(queuedSends) {
-            queuedSends.getOrPut(key) { ArrayDeque() }.addLast(message)
+            queuedAgents[key.first] = agent
+            queuedSends.getOrPut(key) { ArrayDeque() }.addLast(QueuedSend(message))
         }
     }
 
-    private fun takeQueuedSend(key: Pair<String, String>): OutgoingMessage? = synchronized(queuedSends) {
+    private fun takeQueuedSend(key: Pair<String, String>): QueuedSend? = synchronized(queuedSends) {
         val queue = queuedSends[key] ?: return null
         val next = queue.removeFirstOrNull()
         if (queue.isEmpty()) queuedSends.remove(key)
         next
     }
 
-    private fun requeueSend(key: Pair<String, String>, message: OutgoingMessage) {
+    private fun requeueSend(key: Pair<String, String>, item: QueuedSend) {
         synchronized(queuedSends) {
-            queuedSends.getOrPut(key) { ArrayDeque() }.addFirst(message)
+            queuedSends.getOrPut(key) { ArrayDeque() }.addFirst(item)
         }
     }
 
     private suspend fun drainQueuedSends(agent: CoreAgent, conversationId: String) {
         val key = agent.id to conversationId
+        if (turns.containsKey(key)) return
+        if (key in queueUnknownBarriers) return
+        val head = synchronized(queuedSends) { queuedSends[key]?.firstOrNull() }
+        if (head?.state == PendingDeliveryState.OUTCOME_UNKNOWN) return
         val next = takeQueuedSend(key) ?: return
+        next.state = PendingDeliveryState.SENDING
         try {
-            submitMessage(conversationId, next)
+            submitMessage(conversationId, next.message.copy(delivery = MessageDeliveryMode.QUEUE))
         } catch (busy: AgentSessionException) {
             if (busy.code != "SESSION_BUSY") {
-                GatewayLog.w("OaiLatency", "queued send failed client=${next.clientMessageId.value} code=${busy.code}")
+                GatewayLog.w("OaiLatency", "queued send failed client=${next.message.clientMessageId.value} code=${busy.code}")
+                next.state = if (busy.code == "AGENT_OFFLINE") PendingDeliveryState.FAILED else PendingDeliveryState.OUTCOME_UNKNOWN
+                next.errorCode = busy.code
+                requeueSend(key, next)
+                emitPendingDelivery(agent.id, conversationId, next)
                 return
             }
             // 另一个发送抢先占用了这一轮：放回队首，等下一次 finally 再试。
+            next.state = PendingDeliveryState.QUEUED
+            next.errorCode = null
             requeueSend(key, next)
         } catch (failure: Exception) {
-            GatewayLog.w("OaiLatency", "queued send failed client=${next.clientMessageId.value} error=${failure.javaClass.simpleName}")
+            GatewayLog.w("OaiLatency", "queued send failed client=${next.message.clientMessageId.value} error=${failure.javaClass.simpleName}")
+            next.state = PendingDeliveryState.OUTCOME_UNKNOWN
+            next.errorCode = (failure as? AgentSessionException)?.code ?: "QUEUE_SEND_OUTCOME_UNKNOWN"
+            requeueSend(key, next)
+            emitPendingDelivery(agent.id, conversationId, next)
         }
+    }
+
+    private suspend fun emitPendingDelivery(
+        agentId: String,
+        conversationId: String,
+        item: QueuedSend,
+    ) {
+        emitEvent(
+            agentId,
+            VerifiedConversationEvent.PendingDeliveryUpdated(
+                eventId = "evt_${UUID.randomUUID()}",
+                occurredAt = System.currentTimeMillis(),
+                delivery = PendingDelivery(
+                    clientMessageId = item.message.clientMessageId,
+                    conversationId = ConversationId(conversationId),
+                    text = item.message.text,
+                    attachmentCount = item.message.attachmentIds.size,
+                    state = item.state,
+                    errorCode = item.errorCode,
+                ),
+            ),
+        )
+    }
+
+    override suspend fun pendingDeliveries(conversationId: String): List<PendingDelivery> {
+        val agent = requireAgent()
+        return synchronized(queuedSends) {
+            queuedSends[agent.id to conversationId].orEmpty().map { item ->
+                PendingDelivery(
+                    clientMessageId = item.message.clientMessageId,
+                    conversationId = ConversationId(conversationId),
+                    text = item.message.text,
+                    attachmentCount = item.message.attachmentIds.size,
+                    state = item.state,
+                    errorCode = item.errorCode,
+                )
+            }
+        }
+    }
+
+    override suspend fun retryPendingDeliveries(conversationId: String) {
+        retryPendingDeliveriesFor(requireAgent(), conversationId)
+    }
+
+    private suspend fun retryPendingDeliveriesFor(agent: CoreAgent, conversationId: String) {
+        val key = agent.id to conversationId
+        val queued = synchronized(queuedSends) { queuedSends[key]?.toList().orEmpty() }
+        if (queued.isEmpty() || turns.containsKey(key)) return
+        if (queued.first().state == PendingDeliveryState.OUTCOME_UNKNOWN) return
+        val current = try {
+            withContext(ioDispatcher) { client.currentGeneration(agent, conversationId) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            queueUnknownBarriers.add(key)
+            GatewayLog.w(
+                "OaiLatency",
+                "queue.probe_failed conversation=$conversationId code=${(failure as? AgentSessionException)?.code}",
+            )
+            return
+        }
+        if (current != null) {
+            queueUnknownBarriers.add(key)
+            return
+        }
+        queueUnknownBarriers.remove(key)
+        synchronized(queuedSends) {
+            queuedSends[key].orEmpty().forEach { item ->
+                if (item.state == PendingDeliveryState.FAILED) {
+                    item.state = PendingDeliveryState.QUEUED
+                    item.errorCode = null
+                }
+            }
+        }
+        drainQueuedSends(agent, conversationId)
+    }
+
+    override suspend fun retryAllPendingDeliveries() {
+        val pending = synchronized(queuedSends) {
+            queuedSends.keys.mapNotNull { key -> queuedAgents[key.first]?.let { agent -> key to agent } }
+        }
+        pending.forEach { (key, agent) ->
+            retryPendingDeliveriesFor(agent, key.second)
+        }
+    }
+
+    override suspend fun steerMessage(
+        conversationId: String,
+        message: OutgoingMessage,
+    ): MessageAcceptance {
+        val agent = requireAgent()
+        val turn = turns[agent.id to conversationId]
+            ?: throw AgentSessionException("STEER_UNAVAILABLE")
+        val generationId = turn.generationId
+            ?: throw AgentSessionException("GENERATION_ID_REQUIRED")
+        if (!agent.online || !agent.capabilities.steer)
+            throw AgentSessionException("UNSUPPORTED_CAPABILITY")
+        if (message.attachmentIds.isNotEmpty())
+            throw AgentSessionException("STEER_ATTACHMENTS_UNSUPPORTED")
+        val result = withContext(ioDispatcher) {
+            client.steer(
+                agent,
+                conversationId,
+                generationId,
+                message.text,
+                message.clientMessageId.value,
+            )
+        }
+        if (result.generationId != generationId || result.outcome != "accepted")
+            throw AgentSessionException("OUTCOME_UNKNOWN")
+        GatewayLog.d(
+            "OaiLatency",
+            "send.steered client=${message.clientMessageId.value} conversation=$conversationId generation=$generationId",
+        )
+        return MessageAcceptance(
+            messageId = "steer_${message.clientMessageId.value}",
+            correlationId = message.clientMessageId.value,
+            generationId = generationId,
+            delivery = MessageDeliveryMode.STEER,
+        )
     }
 
     override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> {

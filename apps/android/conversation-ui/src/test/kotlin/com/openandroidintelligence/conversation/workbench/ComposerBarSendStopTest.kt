@@ -59,7 +59,7 @@ class ComposerBarSendStopTest {
         assertEquals(1, stops)
     }
 
-    @Test fun runningWithTextShowsSendAndDoesNotCancelCurrentGeneration() {
+    @Test fun runningWithTextRequiresQueueChoiceAndDoesNotCancelCurrentGeneration() {
         var sends = 0
         var stops = 0
         render(
@@ -70,13 +70,14 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
     }
 
-    @Test fun queuedGenerationWithTextShowsSendAction() {
+    @Test fun queuedGenerationWithTextRequiresQueueChoice() {
         var sends = 0
         var stops = 0
         render(
@@ -87,13 +88,14 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
     }
 
-    @Test fun queuedGenerationWithAttachmentShowsSendAction() {
+    @Test fun queuedGenerationWithAttachmentStillUsesQueueChoice() {
         var sends = 0
         var stops = 0
         render(
@@ -104,7 +106,8 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
@@ -191,6 +194,58 @@ class ComposerBarSendStopTest {
         }
         compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
         assertEquals(1, sends)
+    }
+
+    @Test fun aBusyComposerRequiresAnExplicitQueueOrSteerChoice() {
+        var queued = 0
+        var steered = 0
+        var sends = 0
+        var steeringEnabled by mutableStateOf(true)
+        compose.setContent {
+            MaterialTheme {
+                ComposerBar(
+                    draft = "补充约束",
+                    onDraftChange = {},
+                    generation = GenerationState.RUNNING,
+                    canSend = true,
+                    onSend = { sends++ },
+                    onQueue = { queued++ },
+                    onSteer = { steered++ },
+                    onStop = {},
+                    onPickCamera = {},
+                    onPickGallery = {},
+                    onPickDocument = {},
+                    onVoiceInput = {},
+                    steeringEnabled = steeringEnabled,
+                    voiceInputEnabled = false,
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled().performClick()
+        assertEquals(1, queued)
+        assertEquals(1, steered)
+        assertEquals(0, sends)
+
+        compose.runOnIdle { steeringEnabled = false }
+        compose.onNodeWithContentDescription("引导当前任务").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled()
+    }
+
+    @Test fun approvalTextCommandsRemainDirectlySendableWhileTheTurnIsBlocked() {
+        var sends = 0
+        render(
+            draft = "/approve once",
+            generation = GenerationState.RUNNING,
+            canSend = true,
+            onSend = { sends++ },
+        )
+
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        assertEquals(1, sends)
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertDoesNotExist()
     }
 
     private fun render(

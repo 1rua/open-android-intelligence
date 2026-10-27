@@ -105,11 +105,31 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         principal, session_id, action = request["principal"], request.match_info["session_id"], request.match_info["action"]
         if request.method == "GET" and action == "history":
             return web.json_response({"messages": await adapter.history(principal, session_id)})
-        if request.method != "POST" or action not in {"messages", "rename", "archive", "delete", "cancel"}:
+        if request.method == "GET" and action == "generation":
+            return web.json_response({
+                "generation": await adapter.current_generation(principal, session_id),
+            })
+        if request.method != "POST" or action not in {"messages", "steer", "rename", "archive", "delete", "cancel"}:
             raise AdapterError("NOT_FOUND", 404)
         body = await body_for(request)
         if not isinstance(body, dict):
             raise AdapterError("SCHEMA_INVALID", 400)
+        if action == "steer":
+            if set(body) - {"text", "generationId", "clientMessageId"}:
+                raise AdapterError("SCHEMA_INVALID", 400)
+            text, generation_id = body.get("text"), body.get("generationId")
+            client_message_id = body.get("clientMessageId")
+            if (not isinstance(text, str) or not text.strip()
+                    or not isinstance(generation_id, str) or not generation_id
+                    or client_message_id is not None and (
+                        not isinstance(client_message_id, str) or not IDENTITY.fullmatch(client_message_id)
+                    )):
+                raise AdapterError("SCHEMA_INVALID", 400)
+            return web.json_response({
+                "steering": await adapter.steer(
+                    principal, session_id, text, generation_id, client_message_id,
+                ),
+            })
         if action != "messages":
             if set(body) - {"value"}:
                 raise AdapterError("SCHEMA_INVALID", 400)

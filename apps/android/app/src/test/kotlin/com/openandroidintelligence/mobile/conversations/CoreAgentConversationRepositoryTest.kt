@@ -5,6 +5,7 @@ import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.ports.CancelGenerationOutcome
 import com.openandroidintelligence.conversation.ports.ConversationScope
+import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
@@ -28,6 +29,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.filterNotNull
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -223,6 +225,7 @@ class CoreAgentConversationRepositoryTest {
             archive = true,
             delete = true,
             cancel = true,
+            steer = true,
             stream = true,
         ),
     )
@@ -405,6 +408,46 @@ class CoreAgentConversationRepositoryTest {
         assertEquals("/open-android-intelligence/v2/agents/hermes/sessions/s_1/approvals/apr_1/decisions", requests.last().target)
         assertEquals(com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome.UNSUPPORTED,
             repo.submitApprovalDecision(card.approvalId, com.openandroidintelligence.conversation.model.ApprovalChoice.ALWAYS).outcome)
+    }
+
+    @Test fun malformedApprovalFallsBackToTextWithoutFailingTheRunningTurn() = runTest {
+        val frames = listOf(
+            """{"type":"generation","generationId":"native-round"}""",
+            """{"type":"approval_requested","approval":{"approvalId":"apr_broken","conversationId":"s_1","command":"rm -rf /tmp/dangerous_test_backup","reason":"清理测试备份","options":[{"choice":"allow-once"}],"timeoutSeconds":300,"requestedAt":1000}}""",
+            """{"type":"done","outcome":"completed","generationId":"native-round","text":"已停止等待审批"}""",
+        )
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest) = WireResponse(
+                200,
+                listOf(RawHeader("Content-Type", "text/event-stream")),
+                frames.joinToString("") { "event: message\ndata: $it\n\n" }.toByteArray(),
+            )
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repo = CoreAgentConversationRepository(
+            client(transport),
+            { sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(approvals = true)) },
+            { "s_1" },
+            backgroundScope,
+            StandardTestDispatcher(testScheduler),
+            supportsApprovalCards = true,
+        )
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+        }
+
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("client_fallback"), "run command"))
+        runCurrent()
+
+        val fallback = events.filterIsInstance<VerifiedConversationEvent.ApprovalTextFallback>().single()
+        assertEquals("rm -rf /tmp/dangerous_test_backup", fallback.command)
+        assertTrue("/approve" in fallback.commands)
+        assertTrue("/deny" in fallback.commands)
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+        assertTrue(events.filterIsInstance<VerifiedConversationEvent.MessageStatus>().none {
+            it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED
+        })
     }
 
     @Test fun cancelledNativeDoneKeepsPartialReplyAndNeverEmitsCompleted() = runTest {
@@ -681,6 +724,161 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         releaseFirst.complete(Unit)
         runCurrent()
         assertEquals(2, bodies.size)
+    }
+
+    @Test fun queueAndSteeringUseDifferentHostPathsAndKeepTheirOrder() = runTest {
+        val messageBodies = mutableListOf<String>()
+        val steerBodies = mutableListOf<String>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                if (request.target.endsWith("/steer")) {
+                    val body = request.body.toString(Charsets.UTF_8)
+                    steerBodies += body
+                    val generationId = Regex(""""generationId":"([^"]+)"""")
+                        .find(body)?.groupValues?.get(1) ?: error("generation id missing")
+                    return WireResponse(
+                        200,
+                        listOf(RawHeader("Content-Type", "application/json")),
+                        """{"steering":{"generationId":"$generationId","outcome":"accepted"}}""".toByteArray(),
+                    )
+                }
+                error("stream only")
+            }
+
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            override suspend fun <T> consumeResponse(
+                request: WireRequest,
+                consume: suspend (Int, List<RawHeader>, InputStream) -> T,
+            ): T {
+                messageBodies += request.body.toString(Charsets.UTF_8)
+                val index = messageBodies.size
+                if (index == 1) {
+                    releaseFirst.await()
+                }
+                val frames = "event: message\ndata: {\"type\":\"done\",\"outcome\":\"completed\"}\n\n"
+                return consume(
+                    200,
+                    listOf(RawHeader("Content-Type", "text/event-stream")),
+                    ByteArrayInputStream(frames.toByteArray()),
+                )
+            }
+        }
+        val repo = CoreAgentConversationRepository(
+            client(transport),
+            { sampleAgent.copy(kind = "codex") },
+            { "s_1" },
+            backgroundScope,
+            StandardTestDispatcher(testScheduler),
+        )
+
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_first"), "first"))
+        runCurrent()
+        assertEquals(1, messageBodies.size)
+
+        val queued = repo.submitMessage(
+            "s_1",
+            OutgoingMessage(ClientMessageId("cm_queue"), "queued follow-up", delivery = MessageDeliveryMode.QUEUE),
+        )
+        assertEquals(MessageDeliveryMode.QUEUE, queued.delivery)
+        repo.submitMessage(
+            "s_1",
+            OutgoingMessage(ClientMessageId("cm_queue_two"), "second queued follow-up", delivery = MessageDeliveryMode.QUEUE),
+        )
+        assertEquals(
+            listOf("cm_queue", "cm_queue_two"),
+            repo.pendingDeliveries("s_1").map { it.clientMessageId.value },
+        )
+        assertEquals("queue must not post a second turn", 1, messageBodies.size)
+
+        val steered = repo.steerMessage(
+            "s_1",
+            OutgoingMessage(ClientMessageId("cm_steer"), "check the failing test first", delivery = MessageDeliveryMode.STEER),
+        )
+        assertEquals(MessageDeliveryMode.STEER, steered.delivery)
+        assertTrue(steered.generationId?.startsWith("local_") == true)
+        assertEquals("steering must not create a message turn", 1, messageBodies.size)
+        assertEquals(1, steerBodies.size)
+        assertTrue(steerBodies.single().contains("check the failing test first"))
+        assertTrue(steerBodies.single().contains(steered.generationId.orEmpty()))
+
+        releaseFirst.complete(Unit)
+        runCurrent()
+        assertEquals("queued text sends only after the first turn finishes", 3, messageBodies.size)
+        assertTrue(messageBodies[1].contains("queued follow-up"))
+        assertTrue(messageBodies[2].contains("second queued follow-up"))
+        assertTrue(repo.pendingDeliveries("s_1").isEmpty())
+        assertEquals("steering must never be replayed as a queued message", 1, steerBodies.size)
+    }
+
+    @Test fun reconnectDoesNotDrainQueueUntilTheHostGenerationSnapshotIsIdle() = runTest {
+        val messageBodies = mutableListOf<String>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        var generationState: String? = "running"
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                if (request.target.endsWith("/generation")) {
+                    val generation = generationState?.let {
+                        """{"generationId":"gen_live","conversationId":"s_1","state":"$it"}"""
+                    } ?: "null"
+                    return WireResponse(
+                        200,
+                        listOf(RawHeader("Content-Type", "application/json")),
+                        """{"generation":$generation}""".toByteArray(),
+                    )
+                }
+                error("stream only")
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            override suspend fun <T> consumeResponse(
+                request: WireRequest,
+                consume: suspend (Int, List<RawHeader>, InputStream) -> T,
+            ): T {
+                messageBodies += request.body.toString(Charsets.UTF_8)
+                if (messageBodies.size == 1) {
+                    releaseFirst.await()
+                    throw IOException("stream interrupted")
+                }
+                return consume(
+                    200,
+                    listOf(RawHeader("Content-Type", "text/event-stream")),
+                    ByteArrayInputStream(
+                        "event: message\ndata: {\"type\":\"done\",\"outcome\":\"completed\"}\n\n".toByteArray(),
+                    ),
+                )
+            }
+        }
+        val repo = CoreAgentConversationRepository(
+            client(transport),
+            { sampleAgent },
+            { "s_1" },
+            backgroundScope,
+            StandardTestDispatcher(testScheduler),
+        )
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_active"), "active"))
+        runCurrent()
+        repo.submitMessage(
+            "s_1",
+            OutgoingMessage(ClientMessageId("cm_waiting"), "wait for a safe turn", delivery = MessageDeliveryMode.QUEUE),
+        )
+        assertEquals(1, messageBodies.size)
+
+        releaseFirst.complete(Unit)
+        runCurrent()
+        assertEquals(GenerationState.OUTCOME_UNKNOWN, repo.generationState.value)
+        assertEquals(1, repo.pendingDeliveries("s_1").size)
+        assertEquals(1, messageBodies.size)
+
+        repo.retryPendingDeliveries("s_1")
+        runCurrent()
+        assertEquals("running generation keeps the queue parked", 1, messageBodies.size)
+
+        generationState = null
+        repo.retryPendingDeliveries("s_1")
+        runCurrent()
+        assertEquals(2, messageBodies.size)
+        assertTrue(messageBodies[1].contains("wait for a safe turn"))
+        assertTrue(repo.pendingDeliveries("s_1").isEmpty())
     }
 
     private fun client(transport: GatewayByteTransport): AgentSessionClient {

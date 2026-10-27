@@ -942,7 +942,7 @@ REQUEST_ALREADY_EXECUTED          409  相同幂等键的发送已执行过，�
 OUTCOME_UNKNOWN                   409  写操作已受理但终态未知，不得猜测重试
 SESSION_REVOKED                   401  凭据在请求期间被撤销
 DEVICE_CONTEXT_REQUIRED           403  发送需要已配对设备上下文，CLI 服务令牌不满足
-NATIVE_APPROVAL_UNSUPPORTED       502  宿主要求交互审批而当前无审批界面，已明确拒绝
+NATIVE_APPROVAL_UNSUPPORTED       502  宿主无法生成结构化审批；应保留待审批状态并改用文本审批，不得视为用户拒绝
 AGENT_UNSAFE_DEVICE_CREDENTIALS   503  检测到共享宿主继承 OAI 设备凭据，拒绝启动
 AGENT_TIMEOUT                     504  宿主操作超时；超时的原生变更不自动重试
 INVALID_AGENT_RESPONSE            502  宿主返回无法解析的响应
@@ -1227,7 +1227,9 @@ type NormalizedActualResult =
 | GET `/agents/{agent}/sessions` | — | `{sessions:[{id,title,updatedAt,archived}]}` |
 | POST `/agents/{agent}/sessions` | `{title?}` | `{session:{...}}` |
 | GET `/agents/{agent}/sessions/{id}/history` | — | `{messages:[{id,role,text,createdAt}]}` |
+| GET `/agents/{agent}/sessions/{id}/generation` | — | `{generation:null}` 或 `{generation:{generationId,conversationId,state}}` |
 | POST `/agents/{agent}/sessions/{id}/messages` | `{text}` | SSE `event: message`，事件形状见第 17.3 节 |
+| POST `/agents/{agent}/sessions/{id}/steer` | `{text,generationId,clientMessageId?}` | `{steering:{generationId,outcome:"accepted"}}`；只修改指定的运行中轮次 |
 | PATCH `/agents/{agent}/sessions/{id}` | `{action:"rename"\|"archive", value?}` | `{session:{...}}` |
 | DELETE `/agents/{agent}/sessions/{id}` | — | 原生删除，需能力声明 |
 | POST `/agents/{agent}/sessions/{id}/cancel` | `{generationId}` | `{session:{generationId,outcome}}`，精确取消该轮次 |
@@ -1235,8 +1237,8 @@ type NormalizedActualResult =
 
 ### 17.2 Agent 描述符与能力
 
-- 能力枚举为 `list`、`history`、`create`、`send`、`rename`、`archive`、
-  `delete`、`cancel`、`stream`、`commands`、`approvals`；值为布尔，缺失按 `false` 处理。
+- 能力枚举为 `list`、`history`、`create`、`send`、`steer`、`rename`、`archive`、
+  `delete`、`cancel`、`stream`、`commands`、`approvals`、`attachments`；值为布尔，缺失按 `false` 处理。
 - `sessionScope` 只有 `account` 与 `deployment`；以账号密码建立会话身份的宿主
   （Hermes）必须是 `account`。
 - `online` 来自对宿主的真实握手或查询（超时视为离线），不得由配置存在与否推断。
@@ -1258,6 +1260,34 @@ type NormalizedActualResult =
 - 未收到终态事件时服务端明确发出 `type: error, code: AGENT_STREAM_INTERRUPTED`；
   禁止把流中断表述为成功回复。
 - 凭据在流期间被撤销时发出 `type: error, code: SESSION_REVOKED` 并结束流。
+
+### 17.3.1 Queue 与 Steering
+
+Queue 是本机尚未提交给 Agent 的待发送状态，不新增 Gateway 路由，也不创建
+`generationId`。客户端必须把 Queue 项按 `(account, agent, conversationId)` 分桶，
+保持 FIFO，并在输入框上方显示独立卡片。只有当前轮次收到权威
+`completed`、`cancelled` 或 `failed` 后才能发送队首；断线、会话切换和发送失败时
+不得提前发送、重复发送或把队列改投到当前打开的其他会话。
+
+重连后若客户端没有本地活动轮次，必须先读取上述当前快照并在得到
+`generation:null` 后才恢复队首；快照仍为 `queued`、`running` 或 `unknown`
+时保持暂停。查询本身失败也不能被当作空闲。发送结果未知的队首必须保留
+`OUTCOME_UNKNOWN`，禁止仅凭重连事件自动重发。
+
+Steering 是独立写操作，只有 Agent 明确声明 `steer=true` 时才可调用：
+
+- 请求必须携带当前真实 `generationId`；Core、插件和宿主都必须核对账号、
+  会话、活动任务和 generation 完全一致。
+- 成功仅返回同一 `generationId` 和 `outcome: accepted`，不得创建新的用户消息、
+  dispatch 或 generation，也不得进入 Queue 后伪装成实时引导。
+- 宿主不能接收该时刻的引导、任务已完成或能力未声明时，必须返回明确错误；
+  客户端把文本保留为可重试/可改选 Queue 的状态，不得自动降级发送。
+- 文本附件不通过 Steering 通道传输；带附件的消息只能选择 Queue 或普通发送。
+- 同一 `Idempotency-Key` 重放返回同一 steering 回执，不得调用宿主两次。
+
+审批文本命令 `/approve`、`/deny` 属于当前阻塞轮次的控制面。它们不以普通忙时
+Queue/Steering 处理，也不得等待普通 generation 锁；Hermes 适配器只把这两个
+受控命令送入宿主的活动会话命令入口。其他斜杠命令仍按宿主既有语义处理。
 
 ### 17.4 请求预算
 

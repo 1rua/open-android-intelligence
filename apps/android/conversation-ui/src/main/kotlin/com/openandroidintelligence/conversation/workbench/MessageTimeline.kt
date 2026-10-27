@@ -66,8 +66,9 @@ import java.time.format.DateTimeFormatter
  *    等待用 warning、失败才用 error —— 颜色永远不是唯一信号；
  * 4. Markdown 代码块：深色圆角容器、语言标签、独立复制代码按钮、横向自由滚动与等宽字体。
  *
- * @param onDecide 提交一次审批决策，走它自己的端点；卡片永不用「在会话里打字」的方式作答
- *   （§7.2）。决策与被按下卡片的标识一起传递，因此一组行可以共用同一个回调而不丢失回答的是哪张审批。
+ * @param onDecide 提交一次结构化审批决策，走它自己的端点（§7.2）。决策与被按下卡片的
+ *   标识一起传递，因此一组行可以共用同一个回调而不丢失回答的是哪张审批。无法渲染的
+ *   卡片不调用此回调，而是在文本降级行中明确要求用户手动回复宿主命令。
  */
 @Composable
 fun MessageTimeline(
@@ -256,7 +257,8 @@ fun messageStatusLabel(status: AgentMessageStatus, errorCode: AgentMessageErrorC
         AgentMessageErrorCode.ATTACHMENT_READ_FAILED -> "Agent 读取附件失败"
         AgentMessageErrorCode.AGENT_MEDIA_REJECTED -> "Agent 无法处理此媒体"
         AgentMessageErrorCode.MODEL_REQUEST_REJECTED -> "模型请求格式不接受"
-        AgentMessageErrorCode.APPROVAL_UNSUPPORTED -> "当前网关无法显示审批卡，命令已被拒绝"
+        AgentMessageErrorCode.APPROVAL_UNSUPPORTED ->
+            "审批卡不可用，命令尚未执行；请回复 /approve 或 /deny"
         null -> "请重试或重新选择附件"
     }
 }

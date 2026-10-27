@@ -559,6 +559,16 @@ fun WorkbenchScreen(
                                     generation = state.generation,
                                     canSend = state.canSend,
                                     onSend = controller::sendDraft,
+                                    onQueue = {
+                                        controller.sendDraft(
+                                            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE,
+                                        )
+                                    },
+                                    onSteer = {
+                                        controller.sendDraft(
+                                            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER,
+                                        )
+                                    },
                                     onStop = controller::stopGeneration,
                                     onPickCamera = onPickCamera,
                                     onPickGallery = onPickGallery,
@@ -568,6 +578,9 @@ fun WorkbenchScreen(
                                     attachments = state.attachments,
                                     inFlightAttachmentIds = state.inFlightAttachmentIds,
                                     hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
+                                    steeringEnabled = state.steeringSupported,
+                                    pendingDeliveries = state.pendingDeliveries,
+                                    onRetryPendingDelivery = controller::retryPendingDeliveries,
                                     onRemoveAttachment = controller::removeAttachment,
                                     onRetryAttachment = controller::retryAttachment,
                                     modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),

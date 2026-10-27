@@ -266,14 +266,18 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "clientMessageId" to a.clientMessageId.value,"parts" to parts(a.parts),"timestamp" to a.timestamp,"messageId" to a.messageId,
         "batchId" to a.batchId,"submissionState" to a.submissionState.name,"status" to a.status?.wireValue,
         "statusRevision" to a.statusRevision,"errorCode" to a.errorCode?.wireValue,"submissionErrorCode" to a.submissionErrorCode,
-        "contentRevision" to a.contentRevision,"tombstoneRevision" to a.tombstoneRevision,"snapshotDeleted" to a.snapshotDeleted)
+        "contentRevision" to a.contentRevision,"tombstoneRevision" to a.tombstoneRevision,"snapshotDeleted" to a.snapshotDeleted,
+        "delivery" to a.delivery.wireValue)
 
     private fun decodeSendAtom(o: JsonValue.JObject) = LocalSendAtom(ConversationId(str(o,"conversationId")),
         ClientMessageId(str(o,"clientMessageId")),decodeParts(o),JsonFields.long(o,"timestamp") ?: 0L,
         JsonFields.string(o,"messageId"),JsonFields.string(o,"batchId"),LocalSubmissionState.valueOf(str(o,"submissionState")),
         decodeStatus(JsonFields.string(o,"status")),JsonFields.long(o,"statusRevision") ?: -1L,
         decodeAgentError(JsonFields.string(o,"errorCode")),JsonFields.string(o,"submissionErrorCode"),
-        JsonFields.long(o,"contentRevision") ?: -1L,JsonFields.long(o,"tombstoneRevision"),JsonFields.bool(o,"snapshotDeleted") == true)
+        JsonFields.long(o,"contentRevision") ?: -1L,JsonFields.long(o,"tombstoneRevision"),JsonFields.bool(o,"snapshotDeleted") == true,
+        JsonFields.string(o,"delivery")?.let { wire ->
+            MessageDeliveryMode.entries.firstOrNull { it.wireValue == wire } ?: error("MIRROR_CORRUPTED")
+        } ?: MessageDeliveryMode.NORMAL)
 
     private fun decodeStatus(value: String?) = value?.let { text -> AgentMessageStatus.entries.firstOrNull { it.wireValue == text }
         ?: error("MIRROR_CORRUPTED") }
@@ -393,6 +397,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
         is VerifiedConversationEvent.GenerationCancelled -> event.conversationId?.value
         is VerifiedConversationEvent.ConversationsChanged -> event.conversationId?.value
+        is VerifiedConversationEvent.ApprovalTextFallback -> event.conversationId.value
+        is VerifiedConversationEvent.PendingDeliveryUpdated -> event.delivery.conversationId.value
         else -> null
     }
     @Synchronized fun projectEvent(event: VerifiedConversationEvent): VerifiedConversationEvent? {

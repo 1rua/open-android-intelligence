@@ -2,10 +2,11 @@ package com.openandroidintelligence.conversation.model
 
 import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
+import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 
 /** 本地提交状态与 Agent 投递状态各自保存，HTTP 接受不代表 Agent 已完成。 */
-enum class LocalSubmissionState { PREPARED, ACCEPTED, FAILED, OUTCOME_UNKNOWN }
+enum class LocalSubmissionState { PREPARED, QUEUED, ACCEPTED, FAILED, OUTCOME_UNKNOWN }
 
 /** 每次明确提交的持久记录；会话和客户端身份在重试、切换和重启后保持稳定。 */
 data class LocalSendAtom(
@@ -24,6 +25,8 @@ data class LocalSendAtom(
     val tombstoneRevision: Long? = null,
     /** 快照明确删除属于身份事实；分页摘要不能用作单条内容修订。 */
     val snapshotDeleted: Boolean = false,
+    /** Keep steering and queued corrections distinguishable after recovery. */
+    val delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL,
 ) {
     val isDeleted: Boolean get() = snapshotDeleted || tombstoneRevision != null
 
@@ -79,12 +82,23 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
             return@forEach
         }
         val id = matching?.id ?: atom.messageId ?: "local_${atom.clientMessageId.value}"
+        val steered = atom.delivery == MessageDeliveryMode.STEER
+        val atomParts = if (steered) {
+            listOf(MessagePart.Text("↳ 已引导：" + atom.parts.joinToString("") { part ->
+                when (part) {
+                    is MessagePart.Text -> part.value
+                    is MessagePart.Command -> part.rawText
+                    is MessagePart.Attachment -> ""
+                }
+            }))
+        } else atom.parts
         rows[id] = TimelineMessage(
-            id = id, sender = "user",
-            parts = if (atom.contentRevision >= 0L) atom.parts
+            id = id, sender = if (steered) "system" else "user",
+            parts = if (steered) atomParts
+                else if (atom.contentRevision >= 0L) atom.parts
                 else matching?.parts?.takeIf { it.isNotEmpty() } ?: atom.parts,
             timestamp = atom.timestamp.takeIf { it > 0L } ?: matching?.timestamp ?: 0L,
-            state = atom.status?.wireValue ?: when (atom.submissionState) {
+            state = if (steered) "STEERED" else atom.status?.wireValue ?: when (atom.submissionState) {
                 LocalSubmissionState.ACCEPTED -> "queued"
                 LocalSubmissionState.FAILED -> "FAILED"
                 else -> "PENDING"

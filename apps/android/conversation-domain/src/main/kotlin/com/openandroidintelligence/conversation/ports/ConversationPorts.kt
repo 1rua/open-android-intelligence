@@ -62,6 +62,36 @@ data class OutgoingMessage(
     val text: String,
     val attachmentIds: List<String> = emptyList(),
     val command: MessagePart.Command? = null,
+    val delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL,
+)
+
+/** How a follow-up relates to an already-running Agent turn. */
+enum class MessageDeliveryMode(val wireValue: String) {
+    /** The host's ordinary message path. */
+    NORMAL("normal"),
+
+    /** Hold on this phone until the current turn reaches a terminal state. */
+    QUEUE("queue"),
+
+    /** Inject into the exact running generation; never create a second turn. */
+    STEER("steer"),
+}
+
+enum class PendingDeliveryState(val wireValue: String) {
+    QUEUED("queued"),
+    SENDING("sending"),
+    FAILED("failed"),
+    OUTCOME_UNKNOWN("outcome_unknown"),
+}
+
+data class PendingDelivery(
+    val clientMessageId: ClientMessageId,
+    val conversationId: ConversationId,
+    val text: String,
+    val attachmentCount: Int,
+    val state: PendingDeliveryState,
+    val errorCode: String? = null,
+    val generationId: String? = null,
 )
 
 /**
@@ -85,7 +115,12 @@ data class BatchAcceptance(
      */
     val acceptedMessageIds: List<String> get() = memberIds.values.toList()
 }
-data class MessageAcceptance(val messageId: String, val correlationId: String, val generationId: String? = null)
+data class MessageAcceptance(
+    val messageId: String,
+    val correlationId: String,
+    val generationId: String? = null,
+    val delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL,
+)
 
 enum class CancelGenerationOutcome {
     CANCELLED,
@@ -367,6 +402,31 @@ sealed interface VerifiedConversationEvent {
         val decidedAt: Long? = null,
         val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
+
+    /**
+     * Readable fallback for an approval that cannot be drawn as a card.
+     *
+     * The command is preserved so the user can inspect exactly what is waiting
+     * and answer through the host's typed command path. This is a pending
+     * question, never an automatic denial.
+     */
+    data class ApprovalTextFallback(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val conversationId: ConversationId,
+        val approvalId: ApprovalId? = null,
+        val command: String,
+        val reason: String = "",
+        val commands: List<String> = emptyList(),
+        val diagnosticCode: String? = null,
+    ) : VerifiedConversationEvent
+
+    /** A phone-held queue item changed state without becoming a new Agent turn yet. */
+    data class PendingDeliveryUpdated(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val delivery: PendingDelivery,
+    ) : VerifiedConversationEvent
 }
 
 data class MirrorScope(
@@ -392,6 +452,12 @@ interface ConversationRepository {
     /** Scoped overload used by in-flight sends; legacy implementations may delegate. */
     suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance =
         submitMessage(message)
+    /** Inject a text correction into one exact running generation. */
+    suspend fun steerMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance =
+        error("STEERING_UNSUPPORTED")
+    suspend fun pendingDeliveries(conversationId: String): List<PendingDelivery> = emptyList()
+    suspend fun retryPendingDeliveries(conversationId: String): Unit = Unit
+    suspend fun retryAllPendingDeliveries(): Unit = Unit
     fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent>
     suspend fun cancelGeneration(generationId: String, requestId: String): CancelGenerationResult
     /** Scoped cancellation overload; the default keeps old test adapters source-compatible. */
@@ -432,6 +498,10 @@ interface ConversationRepository {
         ApprovalSubmissionResult(
             outcome = ApprovalSubmissionOutcome.UNSUPPORTED,
         )
+
+    /** Text approval prompts that remain pending on this host. */
+    suspend fun pendingApprovalFallbacks(conversationId: String): List<VerifiedConversationEvent.ApprovalTextFallback> =
+        emptyList()
 }
 
 /**

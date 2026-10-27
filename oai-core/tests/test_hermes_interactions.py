@@ -47,10 +47,22 @@ class PromptRuntime(UnsupportedApprovalMixin):
         self.release = asyncio.Event()
         self.tasks = set()
         self.timeout_seconds = 30
+        self.steered = []
+        self.approval_controls = []
 
     def _track_background_task(self, task, label):
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+
+    def native_steering_available(self):
+        return True
+
+    async def steer_native_turn(self, account_id, conversation_id, generation_id, text, *, client_message_id=None):
+        self.steered.append((account_id, conversation_id, generation_id, text, client_message_id))
+        return {"generationId": generation_id, "outcome": "accepted"}
+
+    async def dispatch_approval_control(self, account_id, conversation_id, text, client_message_id):
+        self.approval_controls.append((account_id, conversation_id, text, client_message_id))
 
     async def _notify_agent_inbound(self, path, body, response, owner):
         accepted = response["data"]
@@ -89,7 +101,11 @@ async def test_native_prompt_waits_for_opaque_approval_decision_and_streams_both
 
     pending = asyncio.create_task(consume())
     try:
-        await asyncio.wait_for(runtime.prompted.wait(), 3)
+        prompted = asyncio.create_task(runtime.prompted.wait())
+        done, _ = await asyncio.wait({prompted, pending}, timeout=3, return_when=asyncio.FIRST_COMPLETED)
+        if pending in done:
+            await pending
+        assert prompted in done, "the native approval prompt was not reached"
         await asyncio.sleep(.01)
         assert calls == [], "rendering an approval must not preemptively deny the native wait"
         assert received[0]["type"] == "generation"
@@ -133,8 +149,39 @@ def test_pending_host_request_id_uses_the_host_queue(monkeypatch):
     ]
     monkeypatch.setitem(sys.modules, "tools.approval", fake)
     assert approval_module.pending_host_request_id("key_alice", "sensitive-test-command") == "req-match"
-    assert approval_module.pending_host_request_id("key_alice", "unknown") == "req-old"
+    # Two different pending commands cannot be disambiguated from a missing
+    # request_id. Guessing the oldest one would approve the wrong command.
+    assert approval_module.pending_host_request_id("key_alice", "unknown") is None
     assert approval_module.pending_host_request_id("") is None
+
+
+def test_pending_host_request_id_rejects_duplicate_command_matches(monkeypatch):
+    import sys
+    import types
+    from oai_hermes_adapter import approvals as approval_module
+
+    fake = types.ModuleType("tools.approval")
+    fake.list_gateway_approvals = lambda session: [
+        {"request_id": "req-first", "command": "same command"},
+        {"request_id": "req-second", "command": "same command"},
+    ]
+    monkeypatch.setitem(sys.modules, "tools.approval", fake)
+
+    assert approval_module.pending_host_request_id("key_alice", "same command") is None
+
+
+def test_pending_host_request_id_accepts_a_single_unmatched_entry(monkeypatch):
+    import sys
+    import types
+    from oai_hermes_adapter import approvals as approval_module
+
+    fake = types.ModuleType("tools.approval")
+    fake.list_gateway_approvals = lambda session: [
+        {"request_id": "req-only", "command": "redacted command"},
+    ]
+    monkeypatch.setitem(sys.modules, "tools.approval", fake)
+
+    assert approval_module.pending_host_request_id("key_alice", "different display text") == "req-only"
 
 
 @pytest.mark.asyncio
@@ -165,6 +212,105 @@ async def test_exec_approval_card_works_when_host_metadata_lacks_request_id(inte
         decision = await adapter.decide_approval(principal, conversation, card["approvalId"], "once")
         assert decision["approval"]["decision"] == "once"
         assert calls == [("key_alice", "once", "queue-host-request")]
+    finally:
+        runtime.release.set()
+        pending.cancel()
+        for task in tuple(runtime.tasks):
+            task.cancel()
+        await asyncio.gather(pending, *tuple(runtime.tasks), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_steering_uses_the_exact_running_generation_and_does_not_dispatch_a_second_turn(
+    interaction_core,
+    monkeypatch,
+):
+    monkeypatch.setattr("oai_hermes_adapter.approvals.host_approval_available", lambda: True, raising=False)
+    runtime = PromptRuntime(interaction_core)
+    adapter = HermesSessionAdapter(interaction_core, runtime)
+    principal = Principal("alice", device_id="phone", pairing_generation=7, grant_revision=9)
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    received = []
+
+    async def consume():
+        async for event in adapter.send(principal, conversation, "run sensitive command"):
+            received.append(event)
+
+    pending = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(runtime.prompted.wait(), 3)
+        generation_id = received[0]["generationId"]
+        assert await adapter.current_generation(principal, conversation) == {
+            "generationId": generation_id,
+            "conversationId": conversation,
+            "state": "running",
+        }
+        result = await adapter.steer(
+            principal,
+            conversation,
+            "check the failure path before continuing",
+            generation_id,
+            "cm_steer",
+        )
+        assert result == {"generationId": generation_id, "outcome": "accepted"}
+        assert runtime.steered == [
+            ("alice", conversation, generation_id, "check the failure path before continuing", "cm_steer"),
+        ]
+        with pytest.raises(AdapterError) as error:
+            await adapter.steer(principal, conversation, "wrong turn", "gen_other", "cm_wrong")
+        assert error.value.code == "STEER_UNAVAILABLE"
+    finally:
+        runtime.release.set()
+        pending.cancel()
+        for task in tuple(runtime.tasks):
+            task.cancel()
+        await asyncio.gather(pending, *tuple(runtime.tasks), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_approval_text_reply_bypasses_the_running_generation_lock(interaction_core, monkeypatch):
+    monkeypatch.setattr("oai_hermes_adapter.approvals.host_approval_available", lambda: True, raising=False)
+    runtime = PromptRuntime(interaction_core)
+    adapter = HermesSessionAdapter(interaction_core, runtime)
+    principal = Principal("alice", device_id="phone", pairing_generation=7, grant_revision=9)
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    first_events = []
+
+    async def consume_first():
+        async for event in adapter.send(principal, conversation, "run sensitive command"):
+            first_events.append(event)
+
+    pending = asyncio.create_task(consume_first())
+    try:
+        await asyncio.wait_for(runtime.prompted.wait(), 3)
+        with closing(interaction_core.open_gateway_account("alice")) as account:
+            before = account.store.database.execute(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id=?", (conversation,),
+            ).fetchone()[0]
+
+        control_events = [
+            event async for event in adapter.send(
+                principal,
+                conversation,
+                "/approve once",
+                client_message_id="cm_approve_text",
+            )
+        ]
+
+        assert control_events == [{
+            "type": "done",
+            "outcome": "completed",
+            "text": "",
+            "clientMessageId": "cm_approve_text",
+        }]
+        assert runtime.approval_controls == [
+            ("alice", conversation, "/approve once", "cm_approve_text"),
+        ]
+        with closing(interaction_core.open_gateway_account("alice")) as account:
+            after = account.store.database.execute(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id=?", (conversation,),
+            ).fetchone()[0]
+        assert after == before, "an approval reply must not create another user turn"
     finally:
         runtime.release.set()
         pending.cancel()

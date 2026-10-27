@@ -2,11 +2,17 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 import uuid
 from contextlib import contextmanager
 from typing import Any, AsyncIterator
 from oai_core.gateway.core import APPROVAL_CHOICES
 from oai_core.sessions import AdapterError
+
+
+def is_approval_control_command(text: str) -> bool:
+    """Only the host's two approval verbs bypass the generation lock."""
+    return re.fullmatch(r"/(?:approve|deny)(?:\s+.*)?", str(text or "").strip(), re.IGNORECASE | re.DOTALL) is not None
 
 
 class HermesSessionAdapter:
@@ -26,10 +32,12 @@ class HermesSessionAdapter:
         native_titles = callable(getattr(history_port, "_bound_database", None))
         writable = self._runtime_ready()
         send = writable and callable(getattr(self.runtime, "_message_handler", None))
+        steer = send and callable(getattr(self.runtime, "native_steering_available", None)) \
+            and bool(self.runtime.native_steering_available())
         manager = callable(getattr(self.core, "conversation_manager", None)) and native
         return {"id": self.agent_id, "name": self.name, "kind": "hermes", "sessionScope": "account",
                 "capabilities": {"list": True, "history": native, "create": writable,
-                                 "send": send, "stream": send, "rename": native_titles,
+                                 "send": send, "steer": steer, "stream": send, "rename": native_titles,
                                  "archive": manager, "delete": manager,
                                  "cancel": send and callable(getattr(self.core, "generation_canceller", None)),
                                  "approvals": send and bool(getattr(self.runtime, "native_approvals_available", False)),
@@ -127,6 +135,22 @@ class HermesSessionAdapter:
                 return result
         return await asyncio.to_thread(read)
 
+    async def current_generation(self, principal: Any, session_id: str) -> dict[str, Any] | None:
+        if not self.descriptor()["capabilities"]["send"]:
+            raise AdapterError("UNSUPPORTED_CAPABILITY", 409)
+
+        def read() -> dict[str, Any] | None:
+            with self._account(principal) as account:
+                self._summary(account, session_id)
+                generation = account.conversations.workflow.current(session_id)
+                return None if generation is None else {
+                    "generationId": generation["generationId"],
+                    "conversationId": generation["conversationId"],
+                    "state": generation["state"],
+                }
+
+        return await asyncio.to_thread(read)
+
     async def create(self, principal: Any, title: str | None) -> dict[str, Any]:
         if not self.descriptor()["capabilities"]["create"]:
             raise AdapterError("UNSUPPORTED_CAPABILITY", 409)
@@ -157,6 +181,26 @@ class HermesSessionAdapter:
             raise AdapterError("DEVICE_CONTEXT_REQUIRED", 403)
         client_id, loop, queue = client_message_id or "core_" + uuid.uuid4().hex, asyncio.get_running_loop(), asyncio.Queue(maxsize=1024)
         attachment_ids = list(attachment_ids or [])
+        if is_approval_control_command(text):
+            if attachment_ids:
+                raise AdapterError("INVALID_MESSAGE", 400)
+            def validate_control() -> None:
+                with self._account(principal) as account:
+                    self._summary(account, session_id)
+            await asyncio.to_thread(validate_control)
+            await self.runtime.dispatch_approval_control(
+                principal.account_id,
+                session_id,
+                text,
+                client_id,
+            )
+            yield {
+                "type": "done",
+                "outcome": "completed",
+                "text": "",
+                "clientMessageId": client_id,
+            }
+            return
         def accept():
             with self._account(principal) as account, account.store.transaction():
                 self._summary(account, session_id)
@@ -278,6 +322,38 @@ class HermesSessionAdapter:
             yield {"type": "error", "code": "AGENT_TIMEOUT"}
         finally:
             self.core.unregister_event_sink(sink)
+
+    async def steer(
+        self,
+        principal: Any,
+        session_id: str,
+        text: str,
+        generation_id: str,
+        client_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.descriptor()["capabilities"]["steer"]:
+            raise AdapterError("UNSUPPORTED_CAPABILITY", 409)
+        if not isinstance(generation_id, str) or not generation_id:
+            raise AdapterError("INVALID_REQUEST", 400)
+
+        def running_generation() -> None:
+            with self._account(principal) as account:
+                self._summary(account, session_id)
+                binding = account.agent_sessions.lookup(session_id)
+                generation = account.conversations.workflow.current(session_id)
+                if (not binding or not binding.get("agentSessionId") or generation is None
+                        or generation.get("generationId") != generation_id
+                        or generation.get("state") != "running"):
+                    raise AdapterError("STEER_UNAVAILABLE", 409)
+
+        await asyncio.to_thread(running_generation)
+        return await self.runtime.steer_native_turn(
+            principal.account_id,
+            session_id,
+            generation_id,
+            text,
+            client_message_id=client_message_id,
+        )
 
     async def decide_approval(self, principal: Any, session_id: str, approval_id: str, decision: str) -> dict[str, Any]:
         if not isinstance(decision, str) or decision not in APPROVAL_CHOICES:

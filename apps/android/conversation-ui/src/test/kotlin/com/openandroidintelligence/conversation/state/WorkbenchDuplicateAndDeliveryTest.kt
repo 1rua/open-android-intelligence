@@ -20,7 +20,7 @@ class WorkbenchDuplicateAndDeliveryTest {
     @Test
     fun aPlatformUserRowWithAnotherIdCollapsesIntoTheAcceptedRow() = runTest {
         val repository = Repository()
-        val controller = controller(repository)
+        val controller = controller(repository, resetGenerationOnOpen = false)
         runCurrent()
         controller.editDraft("在吗在吗")
         controller.sendDraft()
@@ -57,7 +57,7 @@ class WorkbenchDuplicateAndDeliveryTest {
     @Test
     fun duplicateUserRowsAreCollapsedEvenWhenNotAdjacent() = runTest {
         val repository = Repository()
-        val controller = controller(repository)
+        val controller = controller(repository, resetGenerationOnOpen = false)
         runCurrent()
         repository.generationId.value = "gen_a"
         repository.events.emit(stream("reply", "gen_a", "回答"))
@@ -159,6 +159,100 @@ class WorkbenchDuplicateAndDeliveryTest {
         controller.close()
     }
 
+    @Test
+    fun queueChoiceCreatesASeparateCardUntilTheHostAcceptsTheMessage() = runTest {
+        val repository = Repository()
+        repository.queueNextSend = true
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        controller.editDraft("等当前任务结束后再发")
+        controller.sendDraft(MessageDeliveryMode.QUEUE)
+        runCurrent()
+
+        val queued = controller.state.value.pendingDeliveries.single()
+        assertEquals("等当前任务结束后再发", queued.text)
+        assertEquals(PendingDeliveryState.QUEUED, queued.state)
+        assertEquals("", controller.state.value.draft)
+        assertFalse("排队项不能提前变成普通用户气泡", rows(controller).any { it.isUser })
+
+        repository.events.emit(
+            VerifiedConversationEvent.MessageAccepted(
+                eventId = "accepted_queue",
+                occurredAt = 100,
+                messageId = "server_queue",
+                correlationId = queued.clientMessageId.value,
+                conversationId = ConversationId("conv_a"),
+            ),
+        )
+        runCurrent()
+
+        assertTrue(controller.state.value.pendingDeliveries.isEmpty())
+        assertEquals(1, rows(controller).count { it.isUser })
+        controller.close()
+    }
+
+    @Test
+    fun steeringChoiceUsesTheLiveTurnAndNeverBecomesAQueuedNewTurn() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val controller = controller(repository, supportsSteering = true, resetGenerationOnOpen = false)
+        runCurrent()
+        controller.editDraft("先检查失败用例")
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+
+        assertEquals(listOf("先检查失败用例"), repository.steered)
+        assertTrue(repository.submitted.isEmpty())
+        assertTrue(controller.state.value.pendingDeliveries.isEmpty())
+        assertEquals("STEERED:CURRENT_TURN", controller.state.value.notice)
+        assertTrue("引导不是独立用户回合", rows(controller).none { it.isUser })
+        assertTrue(rows(controller).any { it.text.contains("已引导") })
+        controller.close()
+    }
+
+    @Test
+    fun queuedMessagesSurviveSessionChangeAndFailedStateIsRetriable() = runTest {
+        val repository = Repository()
+        repository.queueNextSend = true
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val first = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        first.editDraft("重连后仍需保留")
+        first.sendDraft(MessageDeliveryMode.QUEUE)
+        runCurrent()
+        val queued = first.state.value.pendingDeliveries.single()
+        first.close()
+
+        val reopened = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        assertEquals(
+            listOf("重连后仍需保留"),
+            reopened.state.value.pendingDeliveries.map { it.text },
+        )
+
+        repository.events.emit(
+            VerifiedConversationEvent.PendingDeliveryUpdated(
+                eventId = "queue_failed",
+                occurredAt = 200,
+                delivery = queued.copy(
+                    state = PendingDeliveryState.FAILED,
+                    errorCode = "AGENT_OFFLINE",
+                ),
+            ),
+        )
+        runCurrent()
+        assertEquals(PendingDeliveryState.FAILED, reopened.state.value.pendingDeliveries.single().state)
+
+        reopened.retryPendingDeliveries()
+        runCurrent()
+        assertEquals(1, repository.retryCalls)
+        reopened.close()
+    }
+
     private fun userUpsert(id: String, clientId: ClientMessageId, text: String, timestamp: Long) =
         VerifiedConversationEvent.TimelineUpsert(
             "evt_$id", timestamp, 1,
@@ -184,14 +278,24 @@ class WorkbenchDuplicateAndDeliveryTest {
             ConversationId("conv_a"), generationId = generation),
     )
 
-    private fun TestScope.controller(repository: Repository) = WorkbenchController(
+    private fun TestScope.controller(
+        repository: Repository,
+        supportsSteering: Boolean = false,
+        resetGenerationOnOpen: Boolean = true,
+    ) = WorkbenchController(
         workbenchTestScope(), repository, object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) =
                 AgentCommandCatalog(CatalogVersion("v1"), emptyList())
         }, { ConversationScope("p", "g", "a", "i") },
         persistenceDispatcher = StandardTestDispatcher(testScheduler),
-        onActiveThreadChanged = { repository.generationId.value = null; repository.generationState.value = GenerationState.IDLE },
+        onActiveThreadChanged = {
+            if (resetGenerationOnOpen) {
+                repository.generationId.value = null
+                repository.generationState.value = GenerationState.IDLE
+            }
+        },
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
+        supportsSteering = supportsSteering,
     )
 
     private class Repository : ConversationRepository, GenerationTracker, MessageOutcomeQuery {
@@ -205,6 +309,11 @@ class WorkbenchDuplicateAndDeliveryTest {
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
             Conversation(ConversationId("conv_new"), "新对话", 1)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+        val submitted = mutableListOf<String>()
+        val steered = mutableListOf<String>()
+        private val pendingByConversation = mutableMapOf<String, MutableList<PendingDelivery>>()
+        var queueNextSend = false
+        var retryCalls = 0
         /** 首次发送模拟"会话忙"，用于覆盖失败后重试的重复 key 场景。 */
         var failNextSend = false
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
@@ -212,7 +321,35 @@ class WorkbenchDuplicateAndDeliveryTest {
                 failNextSend = false
                 throw IllegalStateException("SESSION_BUSY")
             }
-            return MessageAcceptance("server_side_id", message.clientMessageId.value)
+            submitted += message.text
+            if (queueNextSend) {
+                pendingByConversation.getOrPut("conv_a") { mutableListOf() } += PendingDelivery(
+                    message.clientMessageId,
+                    ConversationId("conv_a"),
+                    message.text,
+                    message.attachmentIds.size,
+                    PendingDeliveryState.QUEUED,
+                )
+            }
+            return MessageAcceptance(
+                "server_side_id",
+                message.clientMessageId.value,
+                delivery = if (queueNextSend) MessageDeliveryMode.QUEUE else MessageDeliveryMode.NORMAL,
+            )
+        }
+        override suspend fun steerMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
+            steered += message.text
+            return MessageAcceptance(
+                "steer_${message.clientMessageId.value}",
+                message.clientMessageId.value,
+                "gen_live",
+                MessageDeliveryMode.STEER,
+            )
+        }
+        override suspend fun pendingDeliveries(conversationId: String): List<PendingDelivery> =
+            pendingByConversation[conversationId].orEmpty().toList()
+        override suspend fun retryPendingDeliveries(conversationId: String) {
+            retryCalls++
         }
         override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(
             batch.batchId, batch.messages.associate { it.clientMessageId.value to "server_side_id" },

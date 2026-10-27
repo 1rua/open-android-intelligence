@@ -24,7 +24,10 @@ from .operations import NativeOperations, OperationConflict
 
 logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
-CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream", "commands", "approvals", "attachments")
+CAPABILITIES = (
+    "list", "history", "create", "send", "steer", "rename", "archive", "delete",
+    "cancel", "stream", "commands", "approvals", "attachments",
+)
 STREAM_EVENT_TYPES = frozenset({"delta", "done", "error", "generation", "approval_requested", "approval_resolved"})
 PROTOCOL_VERSIONS = ("1.0", "v1")
 # Keep one explicit boundary across aiohttp versions and both session bridges.
@@ -99,6 +102,9 @@ class SessionAdapter(Protocol):
     async def history(self, principal: Principal, session_id: str) -> list[dict[str, Any]]: ...
     async def create(self, principal: Principal, title: str | None) -> dict[str, Any]: ...
     def send(self, principal: Principal, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]: ...
+    async def current_generation(self, principal: Principal, session_id: str) -> dict[str, Any] | None: ...
+    async def steer(self, principal: Principal, session_id: str, text: str, generation_id: str,
+                    client_message_id: str | None = None) -> dict[str, Any]: ...
     async def manage(self, principal: Principal, session_id: str, action: str, value: Any = None) -> dict[str, Any]: ...
 
 
@@ -585,6 +591,24 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         adapter = registry.get(request.match_info["agent_id"], "history")
         return web.json_response({"messages": await adapter.history(principal, safe_session_id(request))})
 
+    @routes.get(PREFIX + "/{agent_id}/sessions/{session_id}/generation")
+    @endpoint
+    async def current_generation(request: web.Request) -> web.Response:
+        principal = await principal_for(request)
+        adapter = registry.get(request.match_info["agent_id"], "send")
+        current = getattr(adapter, "current_generation", None)
+        if not callable(current):
+            raise AdapterError("UNSUPPORTED_CAPABILITY", 501)
+        generation = await current(principal, safe_session_id(request))
+        if generation is not None and (
+            not isinstance(generation, dict)
+            or not isinstance(generation.get("generationId"), str)
+            or generation.get("conversationId") != request.match_info["session_id"]
+            or generation.get("state") not in {"queued", "running", "unknown"}
+        ):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        return web.json_response({"generation": generation}, headers={"Cache-Control": "no-store"})
+
     @routes.post(PREFIX + "/{agent_id}/sessions/{session_id}/messages")
     @endpoint
     async def send(request: web.Request) -> web.StreamResponse:
@@ -682,6 +706,38 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                 await close()
         await response.write_eof()
         return response
+
+    @routes.post(PREFIX + "/{agent_id}/sessions/{session_id}/steer")
+    @endpoint
+    async def steer(request: web.Request) -> web.Response:
+        principal = await principal_for(request)
+        adapter = registry.get(request.match_info["agent_id"], "steer")
+        session_id = safe_session_id(request)
+        body = await body_for(request, {"text", "generationId", "clientMessageId"})
+        text = body.get("text")
+        generation_id = body.get("generationId")
+        client_message_id = body.get("clientMessageId")
+        if (not isinstance(text, str) or not text.strip() or len(text) > 262144
+                or not isinstance(generation_id, str) or not generation_id or len(generation_id) > 1024
+                or client_message_id is not None and (
+                    not isinstance(client_message_id, str)
+                    or re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", client_message_id) is None
+                )):
+            raise AdapterError("INVALID_REQUEST")
+        steer_fn = getattr(adapter, "steer", None)
+        if not callable(steer_fn):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        request_id, receipt = operation(request, principal, body)
+        if receipt is None:
+            steering = await steer_fn(principal, session_id, text, generation_id, client_message_id)
+            if (not isinstance(steering, dict)
+                    or set(steering) != {"generationId", "outcome"}
+                    or steering.get("generationId") != generation_id
+                    or steering.get("outcome") not in {"accepted"}):
+                raise AdapterError("HOST_INCOMPATIBLE", 502)
+            receipt = {"steering": steering}
+            registry.operations.complete(principal.account_id, request_id, receipt)
+        return web.json_response(receipt, headers={"Cache-Control": "no-store"})
 
     async def manage(request: web.Request, principal: Principal, action: str, value: Any = None) -> web.Response:
         adapter = registry.get(request.match_info["agent_id"], action)

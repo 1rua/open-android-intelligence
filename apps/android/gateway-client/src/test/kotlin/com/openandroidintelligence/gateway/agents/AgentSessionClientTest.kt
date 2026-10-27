@@ -235,11 +235,12 @@ class AgentSessionClientTest {
     }
 
     @Test fun discoveryIncludesCommandsAndApprovalsWithoutEnablingMissingFlags() = runBlocking {
-        val transport = RecordingTransport("""{"agents":[{"id":"hermes","name":"Hermes","kind":"hermes","online":true,"sessionScope":"account","capabilities":{"commands":true,"approvals":true,"cancel":true}}]}""")
+        val transport = RecordingTransport("""{"agents":[{"id":"hermes","name":"Hermes","kind":"hermes","online":true,"sessionScope":"account","capabilities":{"commands":true,"approvals":true,"cancel":true,"steer":true}}]}""")
         val capabilities = client(transport).agents().single().capabilities
         assertTrue(capabilities.commands)
         assertTrue(capabilities.approvals)
         assertTrue(capabilities.cancel)
+        assertTrue(capabilities.steer)
         assertFalse(capabilities.send)
     }
 
@@ -251,6 +252,60 @@ class AgentSessionClientTest {
         assertEquals("选择宿主模型", catalog.commands.single().description)
         assertEquals("<model>", catalog.commands.single().argumentHint)
         assertEquals("${AgentSessionClient.ROOT}/hermes/commands?languageCode=zh-CN", transport.requests.single().target)
+    }
+
+    @Test fun steeringUsesItsOwnEndpointAndRequiresTheAdvertisedCapability() = runBlocking {
+        val transport = RecordingTransport(
+            """{"steering":{"generationId":"native-round","outcome":"accepted"}}""",
+        )
+        val steerable = agent.copy(
+            id = "hermes",
+            kind = "hermes",
+            capabilities = agent.capabilities.copy(steer = true),
+        )
+        val result = client(transport).steer(
+            steerable,
+            "native",
+            "native-round",
+            "focus on the failing test",
+            "cm_steer",
+        )
+        assertEquals("native-round", result.generationId)
+        assertEquals(
+            AgentSessionClient.ROOT + "/hermes/sessions/native/steer",
+            transport.requests.single().target,
+        )
+        val body = transport.requests.single().body.decodeToString()
+        assertTrue(body.contains("\"generationId\":\"native-round\""))
+        assertTrue(body.contains("\"clientMessageId\":\"cm_steer\""))
+        assertTrue(
+            runCatching {
+                client(RecordingTransport("{}")).steer(
+                    agent,
+                    "native",
+                    "native-round",
+                    "unsupported",
+                    "cm_unsupported",
+                )
+            }.exceptionOrNull() is AgentSessionException,
+        )
+    }
+
+    @Test fun currentGenerationDistinguishesIdleFromARunningTurn() = runBlocking {
+        val idle = RecordingTransport("""{"generation":null}""")
+        assertNull(client(idle).currentGeneration(agent, "native"))
+        assertEquals(
+            AgentSessionClient.ROOT + "/codex/sessions/native/generation",
+            idle.requests.single().target,
+        )
+
+        val running = RecordingTransport(
+            """{"generation":{"generationId":"gen_live","conversationId":"native","state":"running"}}""",
+        )
+        val current = client(running).currentGeneration(agent, "native")
+        assertEquals("gen_live", current?.generationId)
+        assertEquals("native", current?.conversationId)
+        assertEquals("running", current?.state)
     }
 
     @Test fun cancellationNamesTheExactHostGenerationAndChecksItsReceipt() = runBlocking {

@@ -129,6 +129,16 @@ fun FloatingConversationPanel(
                     generation = state.generation,
                     canSend = state.activeThreadId != null && state.canSend,
                     onSend = controller::sendDraft,
+                    onQueue = {
+                        controller.sendDraft(
+                            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE,
+                        )
+                    },
+                    onSteer = {
+                        controller.sendDraft(
+                            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER,
+                        )
+                    },
                     onStop = controller::stopGeneration,
                     onPickCamera = onPickCamera,
                     onPickGallery = onPickGallery,
@@ -137,6 +147,9 @@ fun FloatingConversationPanel(
                     attachments = state.attachments,
                     inFlightAttachmentIds = state.inFlightAttachmentIds,
                     hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
+                    steeringEnabled = state.steeringSupported,
+                    pendingDeliveries = state.pendingDeliveries,
+                    onRetryPendingDelivery = controller::retryPendingDeliveries,
                     voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
                     onRemoveAttachment = controller::removeAttachment,
                     onRetryAttachment = controller::retryAttachment,

@@ -114,6 +114,9 @@ class WorkbenchLayoutRegressionTest {
     @Test fun failedSendExplainsItselfInsteadOfShowingABareErrorCode() {
         val readable = noticeText("SEND_FAILED:MASTER_KEY_UNAVAILABLE")
         assertTrue("失败提示必须给出可操作说明：$readable", readable.contains("主密钥") && !readable.contains("MASTER_KEY_UNAVAILABLE"))
+        assertTrue(noticeText("STEERING_UNAVAILABLE:CAPABILITY").contains("不支持实时引导"))
+        assertTrue(noticeText("STEERING_UNAVAILABLE:ATTACHMENTS").contains("只接受文本"))
+        assertTrue(noticeText("STEERED:CURRENT_TURN").contains("没有创建新的排队消息"))
         assertEquals("已创建新对话", noticeText("已创建新对话"))
     }
 

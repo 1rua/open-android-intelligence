@@ -220,6 +220,24 @@ class ApprovalCardTest {
     }
 
     @Test
+    fun anUnrenderableApprovalKeepsTheCommandAndShowsManualCommands() {
+        setCard(
+            ApprovalCardState.TextOnly(
+                request = request(options = emptyList()),
+                commands = listOf("/approve", "/approve session", "/deny"),
+                diagnosticCode = "APPROVAL_PAYLOAD_INVALID",
+            ),
+        )
+
+        compose.onNodeWithText("python3 -c \"print(1)\"").assertIsDisplayed()
+        compose.onNodeWithText("/approve").assertIsDisplayed()
+        compose.onNodeWithText("/approve session").assertIsDisplayed()
+        compose.onNodeWithText("/deny").assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ONCE)).assertDoesNotExist()
+        compose.onNodeWithTag(ApprovalCardTags.COUNTDOWN).assertDoesNotExist()
+    }
+
+    @Test
     fun aGatewayWithoutTheCapabilityGetsAHintInsteadOfACard() {
         var dismissed = false
         compose.setContent {

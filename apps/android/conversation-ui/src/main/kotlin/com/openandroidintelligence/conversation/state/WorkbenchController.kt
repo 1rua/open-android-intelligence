@@ -127,6 +127,8 @@ data class WorkbenchUiState(
     val attachments: List<com.openandroidintelligence.conversation.model.AttachmentDraft> = emptyList(),
     /** Batch members collected by the debounce window, newest last. */
     val pendingBatch: List<TimelineEntry> = emptyList(),
+    /** Phone-held corrections waiting for the current Agent turn to finish. */
+    val pendingDeliveries: List<com.openandroidintelligence.conversation.ports.PendingDelivery> = emptyList(),
     val notice: String? = null,
     /** True while the Gateway's create-conversation request is in flight. */
     val creatingThread: Boolean = false,
@@ -149,6 +151,8 @@ data class WorkbenchUiState(
      * guess would put live buttons over a decision that has nowhere to go.
      */
     val approvalCardsSupported: Boolean = false,
+    /** The selected Agent advertises real mid-turn steering, not merely queueing. */
+    val steeringSupported: Boolean = false,
     val isOnline: Boolean = true,
     val hasRecoverableSubmissions: Boolean = false,
     /** Unknown send outcomes require an explicit reconciliation before another send. */
@@ -215,6 +219,7 @@ class WorkbenchController(
      * while the UI shows a decision the Gateway never received.
      */
     private val supportsApprovalCards: Boolean = false,
+    private val supportsSteering: Boolean = false,
     /** Wall clock, injectable so a countdown can be advanced by a test. */
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val persistence: WorkbenchPersistence? = null,
@@ -300,7 +305,8 @@ class WorkbenchController(
     // The capability is written in from the start: the data class default only
     // says "no negotiated fact yet", so a Gateway that did offer cards would
     // otherwise read as one that never offered them until the first update ran.
-    private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,isOnline=allowSending,
+    private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,
+        steeringSupported = supportsSteering,isOnline=allowSending,
         conversationManagementSupported=supportsConversationManagement,
         conversationDeleteSupported=supportsConversationDelete,
         conversationArchiveSupported=supportsConversationArchive,
@@ -469,12 +475,14 @@ class WorkbenchController(
                 rememberCancelledGeneration(it, event.generationId)
                 activeWork.terminal(it, event.generationId)
             }
+            is VerifiedConversationEvent.PendingDeliveryUpdated -> Unit
             else -> Unit
         }
         val threadId=when (event) {
             is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value
             is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value
+            is VerifiedConversationEvent.PendingDeliveryUpdated -> event.delivery.conversationId.value
             else -> null
         }
         threadId?.let { hydrateSendAtoms(it) }
@@ -517,6 +525,24 @@ class WorkbenchController(
                         else it.copy(parts = emptyList(), tombstoneRevision = event.revision)
                     }
                 } }
+            }
+            is VerifiedConversationEvent.PendingDeliveryUpdated -> {
+                val delivery = event.delivery
+                changeSendAtom(delivery.conversationId.value, delivery.clientMessageId.value) { old ->
+                    old?.copy(
+                        submissionState = when (delivery.state) {
+                            com.openandroidintelligence.conversation.ports.PendingDeliveryState.QUEUED ->
+                                LocalSubmissionState.QUEUED
+                            com.openandroidintelligence.conversation.ports.PendingDeliveryState.SENDING ->
+                                LocalSubmissionState.QUEUED
+                            com.openandroidintelligence.conversation.ports.PendingDeliveryState.FAILED ->
+                                LocalSubmissionState.FAILED
+                            com.openandroidintelligence.conversation.ports.PendingDeliveryState.OUTCOME_UNKNOWN ->
+                                LocalSubmissionState.OUTCOME_UNKNOWN
+                        },
+                        submissionErrorCode = delivery.errorCode,
+                    )
+                }
             }
             else -> Unit
         }
@@ -937,11 +963,15 @@ class WorkbenchController(
         val clientMessageId: String = "cm_" + UUID.randomUUID().toString(),
         val isolatedThreadEpoch: Long? = null,
         val voiceAttempt: VoiceAttempt? = null,
+        val delivery: com.openandroidintelligence.conversation.ports.MessageDeliveryMode =
+            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL,
     )
     private var pendingSubmission: DraftSubmission? = null
     private var failedSubmission: DraftSubmission? = null
     private val userRenamedThreads = mutableSetOf<String>()
     private val approvalCards = LinkedHashMap<String, ApprovalCardState>()
+    private val approvalFallbacks = LinkedHashMap<String, ApprovalCardState.TextOnly>()
+    private val pendingDeliveryDrainJobs = LinkedHashMap<String, Job>()
 
     val isCurrentThreadUserRenamed: Boolean
         get() = activeThreadId?.let { userRenamedThreads.contains(it) } ?: false
@@ -1208,6 +1238,7 @@ class WorkbenchController(
         pendingCreation = null
         settledCreations.clear()
         approvalCards.clear()
+        approvalFallbacks.clear()
         eventJob?.cancel()
         healthJob?.cancel()
         generationJob?.cancel()
@@ -1355,6 +1386,7 @@ class WorkbenchController(
                 }
                 if (health == com.openandroidintelligence.conversation.model.StreamHealth.LIVE && previous != health) {
                     refreshThreads()
+                    repository.retryAllPendingDeliveries()
                 }
                 if (health == com.openandroidintelligence.conversation.model.StreamHealth.FAILED) {
                     update { it.copy(notice = "EVENTS_FAILED:EVENT_STREAM_FAILED") }
@@ -1423,6 +1455,10 @@ class WorkbenchController(
 
     fun retryTimeline() {
         activeThreadId?.let(::reloadTimeline) ?: refreshThreads()
+    }
+
+    fun retryPendingDeliveries() {
+        activeThreadId?.let(::schedulePendingDeliveryDrain)
     }
 
     fun refreshThreads() {
@@ -1517,6 +1553,7 @@ class WorkbenchController(
                 historyHydrated = persistence==null,
                 timeline = Loadable.Loading,
                 pendingBatch = emptyList(),
+                pendingDeliveries = emptyList(),
                 // Generation, composer and notice describe the conversation being
                 // left: a turn it was still running, or the failure that turn
                 // produced, must not read as the state of the one being opened.
@@ -1528,6 +1565,17 @@ class WorkbenchController(
 
         timelineJob = workScope.launch {
             if (!restoreLocalTimeline(threadId)) return@launch
+            loadPendingDeliveries(threadId)
+            try {
+                repository.pendingApprovalFallbacks(threadId).forEach { fallback ->
+                    if (activeThreadId == threadId) rememberApprovalFallback(fallback)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // The live event stream may still deliver the fallback. A failed
+                // read must not replace the conversation with an error page.
+            }
             val result = Result.runCatching { repository.completeTimeline(threadId) }
             if (!isActive || activeThreadId != threadId) return@launch
             result.fold(
@@ -1679,6 +1727,33 @@ class WorkbenchController(
         reRenderApprovalRows()
     }
 
+    private fun rememberApprovalFallback(
+        event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalTextFallback,
+    ) {
+        val rawId = event.approvalId?.value ?: event.eventId
+        val safeId = rawId.replace(Regex("[^A-Za-z0-9._~-]"), "_").take(120)
+            .ifBlank { "approval_fallback" }
+        val request = com.openandroidintelligence.conversation.model.ApprovalRequest(
+            approvalId = com.openandroidintelligence.conversation.model.ApprovalId(safeId),
+            conversationId = event.conversationId,
+            command = event.command,
+            reason = event.reason,
+            options = emptyList(),
+            timeoutSeconds = 0L,
+            requestedAt = event.occurredAt,
+            expiresAt = Long.MAX_VALUE,
+        )
+        approvalFallbacks[safeId] = ApprovalCardState.TextOnly(
+            request = request,
+            commands = event.commands,
+            diagnosticCode = event.diagnosticCode,
+        )
+        while (approvalFallbacks.size > MAX_APPROVAL_CARDS) {
+            approvalFallbacks.remove(approvalFallbacks.keys.first())
+        }
+        reRenderApprovalRows()
+    }
+
     /**
      * Applies how one approval ended.
      *
@@ -1690,6 +1765,16 @@ class WorkbenchController(
         event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalResolved,
     ) {
         val key = event.approvalId.value
+        val fallback = approvalFallbacks.remove(key)
+        if (fallback != null) {
+            approvalCards[key] = ApprovalCardState.Resolved(
+                request = fallback.request,
+                outcome = event.outcome,
+                decidedAt = event.decidedAt,
+            )
+            reRenderApprovalRows()
+            return
+        }
         val card = approvalCards[key] ?: return
         if (card is ApprovalCardState.Resolved && card.outcome != ApprovalOutcome.UNKNOWN) {
             return
@@ -1825,7 +1910,7 @@ class WorkbenchController(
     /** The rows the active thread's approval cards contribute, oldest first. */
     private fun approvalRowsForActiveThread(): List<TimelineEntry> {
         val threadId = activeThreadId ?: return emptyList()
-        return approvalCards.values
+        return (approvalCards.values + approvalFallbacks.values)
             .filter { card -> card.request.conversationId?.value == threadId }
             .map { card ->
                 TimelineEntry(
@@ -2469,6 +2554,10 @@ class WorkbenchController(
      * one ordered aggregate input while every member keeps its identity.
      */
     fun sendDraft() {
+        sendDraft(com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL)
+    }
+
+    fun sendDraft(delivery: com.openandroidintelligence.conversation.ports.MessageDeliveryMode) {
         if (!allowSending) { update { it.copy(notice="OFFLINE_MIRROR:重新连接后可发送，草稿已保留") }; return }
         val current = _state.value
         if (!current.historyHydrated) {
@@ -2481,6 +2570,24 @@ class WorkbenchController(
             // exactly the mismatch this flow exists to prevent.
             update { it.copy(notice = "CONVERSATION_CREATING:SEND_BLOCKED") }
             return
+        }
+        val busy = current.generation in setOf(
+            GenerationState.QUEUED,
+            GenerationState.RUNNING,
+            GenerationState.CANCEL_REQUESTED,
+        )
+        val effectiveDelivery = when {
+            delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER && !busy ->
+                com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL
+            delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER &&
+                (!supportsSteering || current.attachments.isNotEmpty()) -> {
+                update { it.copy(notice = "STEERING_UNAVAILABLE:" +
+                    if (current.attachments.isEmpty()) "CAPABILITY" else "ATTACHMENTS") }
+                return
+            }
+            delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE && !busy ->
+                com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL
+            else -> delivery
         }
         val attachmentIds = current.attachments.map { it.id.value }.filterNot { it in current.inFlightAttachmentIds }
         val remoteAttachmentIds = attachmentIds.map { attachmentCoordinator?.remoteAttachmentId(it) }
@@ -2497,8 +2604,10 @@ class WorkbenchController(
             it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId &&
                 it.conversationId?.let { id -> atomsFor(id)[it.clientMessageId]?.isDeleted } != true
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
-            DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value)
-        } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId)
+            DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value,
+                delivery = effectiveDelivery)
+        } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId,
+            delivery = effectiveDelivery)
         pendingSubmission?.let { activeWork.begin(it.clientMessageId, it.conversationId) }
         beginLegacyTurn(activeThreadId)
         generationFactRevision++
@@ -2506,6 +2615,16 @@ class WorkbenchController(
             generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED) }
         submitWhenAttachmentsVerified()
     }
+
+    private suspend fun submitMessageToRepository(
+        threadId: String,
+        message: OutgoingMessage,
+    ): com.openandroidintelligence.conversation.ports.MessageAcceptance =
+        if (message.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER) {
+            repository.steerMessage(threadId, message)
+        } else {
+            repository.submitMessage(threadId, message)
+        }
 
     /** A click freezes the draft; upload progress can release that same submission only once. */
     private fun submitWhenAttachmentsVerified(): Job? {
@@ -2569,7 +2688,12 @@ class WorkbenchController(
                     batchGroupId = null,
                     attachments = submittedAttachments,
                 )
-                var message = OutgoingMessage(ClientMessageId(entry.key.removePrefix("local_")), submission.text, remoteIds)
+                var message = OutgoingMessage(
+                    ClientMessageId(entry.key.removePrefix("local_")),
+                    submission.text,
+                    remoteIds,
+                    delivery = submission.delivery,
+                )
                 val previousAtom = atomsFor(target)[message.clientMessageId.value]
                 localEntryKey = entry.key
                 changeSendAtom(target, message.clientMessageId.value) { previous -> previous ?: LocalSendAtom(
@@ -2577,7 +2701,7 @@ class WorkbenchController(
                     parts = buildList {
                         if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
                         submittedAttachments.zip(remoteIds).forEach { (att, id) -> add(verifiedAttachmentPart(id,att.filename,att.mediaType,drafts[att.draftId])) }
-                    }, timestamp = entry.timestamp,
+                    }, timestamp = entry.timestamp, delivery = submission.delivery,
                 ) }
                 flushPendingPersistence()
                 archiveBeforeMessageSubmit(target,submission.attachmentIds)
@@ -2624,7 +2748,10 @@ class WorkbenchController(
                         }
                     }
                 }
-                if (supportsMessageBatches && !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()) {
+                if (supportsMessageBatches && submission.delivery ==
+                    com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL &&
+                    !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()
+                ) {
                     collectingUnits[message.clientMessageId.value]=target to message
                     persistCheckpoint()
                     batcher.offer(scopeFactory(), target, message)
@@ -2675,16 +2802,73 @@ class WorkbenchController(
                             }
                             val acceptedId=known?.id ?: latest?.takeIf { it.submissionState==LocalSubmissionState.ACCEPTED }?.messageId
                             if (acceptedId != null) com.openandroidintelligence.conversation.ports.MessageAcceptance(acceptedId,message.clientMessageId.value)
-                            else repository.submitMessage(target,message)
+                            else submitMessageToRepository(target, message)
                         }
                         else -> {
                             if (submission.isolatedThreadEpoch != null &&
                                 (threadEpoch != submission.isolatedThreadEpoch || activeThreadId != target)) return@launch
                             submission.voiceAttempt?.requestStarted = true
-                            repository.submitMessage(target, message)
+                            submitMessageToRepository(target, message)
                         }
                     }
-                    acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId, generationId = acceptance.generationId)
+                    if (acceptance.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE) {
+                        changeSendAtom(target, message.clientMessageId.value) { old ->
+                            old?.copy(
+                                submissionState = LocalSubmissionState.QUEUED,
+                                submissionErrorCode = null,
+                            )
+                        }
+                        if (activeThreadId == target) {
+                            val queued = com.openandroidintelligence.conversation.ports.PendingDelivery(
+                                clientMessageId = message.clientMessageId,
+                                conversationId = ConversationId(target),
+                                text = message.text,
+                                attachmentCount = remoteIds.size,
+                                state = com.openandroidintelligence.conversation.ports.PendingDeliveryState.QUEUED,
+                            )
+                            update { state ->
+                                val remainingBatch = state.pendingBatch.filterNot { it.key == entry.key }
+                                val rendered = renderTimeline(remainingBatch).filterNot {
+                                    it.clientMessageId == message.clientMessageId
+                                }
+                                state.copy(
+                                    composer = ComposerState.EDITING,
+                                    timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty)
+                                        Loadable.Ready(rendered) else state.timeline,
+                                    pendingBatch = remainingBatch,
+                                    pendingDeliveries = state.pendingDeliveries.filterNot {
+                                        it.clientMessageId == message.clientMessageId
+                                    } + queued,
+                                    notice = null,
+                                )
+                            }
+                        }
+                    } else if (acceptance.delivery ==
+                        com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER
+                    ) {
+                        changeSendAtom(target, message.clientMessageId.value) { old ->
+                            old?.identified(acceptance.messageId)?.copy(
+                                delivery = com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER,
+                                status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
+                                statusRevision = maxOf(old.statusRevision, 0L),
+                                submissionErrorCode = null,
+                            )
+                        }
+                        activeWork.accepted(message.clientMessageId.value, target, acceptance.generationId)
+                        activeWork.settledClient(target, message.clientMessageId.value)
+                        if (activeThreadId == target) {
+                            update { state ->
+                                val remainingBatch = state.pendingBatch.filterNot { it.key == entry.key }
+                                state.copy(
+                                    composer = ComposerState.EDITING,
+                                    timeline = Loadable.Ready(renderTimeline(remainingBatch)),
+                                    pendingBatch = remainingBatch,
+                                    notice = "STEERED:CURRENT_TURN",
+                                )
+                            }
+                        }
+                    } else {
+                        acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId, generationId = acceptance.generationId)
                     if (activeThreadId == target) {
                         val statusReceipt = messageStatusesByClientId[message.clientMessageId.value]
                         if (atomsFor(target)[message.clientMessageId.value]?.isDeleted != true && !mirrored.containsKey(acceptance.messageId)) mirrored[acceptance.messageId] = TimelineMessage(
@@ -2715,6 +2899,7 @@ class WorkbenchController(
                         if (_state.value.generation !in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) {
                             armReplyWatchdog(target, listOf(message.clientMessageId.value), acceptance.generationId)
                         }
+                    }
                     }
                 }
                 // Released only now: an attachment draft that was dropped
@@ -3120,6 +3305,41 @@ class WorkbenchController(
             clientMessageId = clientMessageId,
             belongsToCurrentTurn = allowLegacy && isInCurrentTurn(occurredAt),
         )
+        if (terminal in setOf(GenerationState.COMPLETED, GenerationState.CANCELLED, GenerationState.FAILED)) {
+            schedulePendingDeliveryDrain(threadId)
+        }
+    }
+
+    private suspend fun loadPendingDeliveries(threadId: String) {
+        try {
+            val deliveries = repository.pendingDeliveries(threadId)
+            if (activeThreadId == threadId) {
+                update { state -> state.copy(pendingDeliveries = deliveries) }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // The live scheduler remains authoritative; a failed read must not
+            // make queued text disappear from the durable send atom.
+        }
+    }
+
+    private fun schedulePendingDeliveryDrain(threadId: String) {
+        if (closed || pendingDeliveryDrainJobs[threadId]?.isActive == true) return
+        pendingDeliveryDrainJobs[threadId] = workScope.launch {
+            try {
+                repository.retryPendingDeliveries(threadId)
+                loadPendingDeliveries(threadId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (activeThreadId == threadId) {
+                    update { it.copy(notice = "QUEUE_DRAIN_FAILED:${errorCodeOf(failure)}") }
+                }
+            } finally {
+                pendingDeliveryDrainJobs.remove(threadId)
+            }
+        }
     }
 
     fun stopGeneration() {
@@ -3597,6 +3817,7 @@ class WorkbenchController(
                         is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
                         is VerifiedConversationEvent.TitleUpdated -> event.conversationId.value
                         is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
+                        is VerifiedConversationEvent.PendingDeliveryUpdated -> event.delivery.conversationId.value
                         else -> null
                     }
                     if (eventThreadId in deletedThreads) return@collect
@@ -3617,6 +3838,11 @@ class WorkbenchController(
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                             val eventConvId = event.conversationId?.value
                             val correlationId = event.correlationId
+                            update { state ->
+                                state.copy(pendingDeliveries = state.pendingDeliveries.filterNot {
+                                    it.clientMessageId.value == correlationId
+                                })
+                            }
                             if (eventConvId != null && correlationId.isNotBlank() && event.messageId.isNotBlank()) {
                                 // 受理早期只能用客户端占位 id；宿主报出真实 userMessageId 后升级本地身份，
                                 // 后续终态事件就不会再与本地身份分叉。
@@ -3650,6 +3876,14 @@ class WorkbenchController(
                         }
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageStatus -> {
+                            if (event.conversationId.value != currentActiveId &&
+                                event.status in setOf(
+                                    com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
+                                    com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED,
+                                )
+                            ) {
+                                schedulePendingDeliveryDrain(event.conversationId.value)
+                            }
                             if (event.conversationId.value != currentActiveId) {
                                 refreshThreads()
                                 return@collect
@@ -3845,6 +4079,9 @@ class WorkbenchController(
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.GenerationCancelled -> {
                             val eventConvId = event.conversationId?.value
+                            if (eventConvId != null && eventConvId != currentActiveId) {
+                                schedulePendingDeliveryDrain(eventConvId)
+                            }
                             if (eventConvId == currentActiveId) {
                                 finishStreaming(currentActiveId,event.generationId,GenerationState.CANCELLED,event.occurredAt)
                                 val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
@@ -3874,6 +4111,23 @@ class WorkbenchController(
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalResolved -> {
                             applyApprovalResolution(event)
+                        }
+
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalTextFallback -> {
+                            rememberApprovalFallback(event)
+                        }
+
+                        is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.PendingDeliveryUpdated -> {
+                            val delivery = event.delivery
+                            if (delivery.conversationId.value == currentActiveId) {
+                                update { state ->
+                                    state.copy(
+                                        pendingDeliveries = state.pendingDeliveries.filterNot {
+                                            it.clientMessageId == delivery.clientMessageId
+                                        } + delivery,
+                                    )
+                                }
+                            }
                         }
 
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.CommandResult -> {
@@ -4357,7 +4611,10 @@ class WorkbenchController(
     private fun renderTimeline(pendingBatch: List<TimelineEntry> = _state.value.pendingBatch): List<TimelineEntry> {
         val activeAtoms = activeThreadId?.let { atomsFor(it).values.toList() }.orEmpty()
         val mergedMessages = mergeLocalSendAtoms(mirrored.values.toList(), activeAtoms)
-        val mirroredEntries = mergedMessages.map(::renderedTimelineEntry)
+        val queuedClientIds = _state.value.pendingDeliveries.map { it.clientMessageId.value }.toSet()
+        val mirroredEntries = mergedMessages.filterNot {
+            it.clientMessageId?.value in queuedClientIds
+        }.map(::renderedTimelineEntry)
 
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
         val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()
@@ -4704,11 +4961,12 @@ class WorkbenchController(
                 conversationRenameSupported=supportsConversationRename && remoteConversationOnline,
                 organizationStoredLocally=organizationStoredLocally,
                 busyThreadIds=managementBusyThreadIds(transformed)+externalBusyThreadIds())
-            if (next.approvalCardsSupported == supportsApprovalCards) {
-                next
-            } else {
-                next.copy(approvalCardsSupported = supportsApprovalCards)
-            }
+            if (next.approvalCardsSupported == supportsApprovalCards &&
+                next.steeringSupported == supportsSteering
+            ) next else next.copy(
+                approvalCardsSupported = supportsApprovalCards,
+                steeringSupported = supportsSteering,
+            )
         }
         persistCheckpoint()
     }

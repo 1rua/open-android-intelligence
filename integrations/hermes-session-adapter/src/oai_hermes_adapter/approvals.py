@@ -22,9 +22,11 @@ def host_approval_available() -> bool:
         return False
 
 def pending_host_request_id(session_key: str, command: str = "") -> str | None:
-    """当前 Hermes 的 ``send_exec_approval`` 不再把 ``request_id`` 放进 metadata，但
-    待决议队列里的每一条都带着它。没有它就无法把用户的决定落到正确的等待者上，
-    所以这里按"命令匹配优先、否则最早一条"从宿主队列里取回来。
+    """从宿主待审批队列恢复缺失的 ``request_id``。
+
+    新版 Hermes 的 metadata 可能不再携带 ``request_id``。只有命令唯一匹配，
+    或整个队列只有一条时才能安全恢复；出现多个候选就必须降级为文本审批，
+    绝不能按“最早一条”猜，否则用户可能批准另一条命令。
     """
     if not session_key:
         return None
@@ -40,11 +42,20 @@ def pending_host_request_id(session_key: str, command: str = "") -> str | None:
     rows = [row for row in entries if isinstance(row, dict) and row.get("request_id")]
     if not rows:
         return None
-    if command:
-        for row in rows:
-            if str(row.get("command") or "") == command:
-                return str(row["request_id"])
-    return str(rows[0]["request_id"])
+    matches = [
+        row for row in rows
+        if command and str(row.get("command") or "") == command
+    ]
+    if len(matches) == 1:
+        return str(matches[0]["request_id"])
+    if len(rows) == 1:
+        return str(rows[0]["request_id"])
+    logger.warning(
+        "[open_android] Host approval request id is ambiguous (%d pending, %d command matches)",
+        len(rows),
+        len(matches),
+    )
+    return None
 
 
 def resolve_host_approval(session_key: str, choice: str, request_id: str | None = None) -> int | None:

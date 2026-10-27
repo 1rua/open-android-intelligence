@@ -121,11 +121,17 @@ fun specificFailureText(code: String): String? {
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
         value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请让网关部署者执行插件仓的 tools/hermes-account.py init-key 生成受限密钥文件（或修复其权限后）并重启网关。"
         value.contains("APPROVAL_UNSUPPORTED") ->
-            "该 Gateway 不支持审批卡片，App 不会伪造一张无法提交的卡片。请升级 Gateway，或用 /approve 文本命令回复。"
+            "审批卡暂时无法显示，命令仍在等待且尚未执行。请按宿主提示回复 /approve 或 /deny；这不是自动拒绝。"
         value.contains("APPROVAL_EXPIRED") ->
             "审批已超时，命令没有执行。卡片恢复为不可点击，如需执行请让 Agent 重新发起。"
         value.contains("APPROVAL_FAILED") ->
             "审批决策没有送达 Gateway，卡片已恢复为可点击，请重试。"
+        value.startsWith("STEERED:") ->
+            "引导已进入当前任务，没有创建新的排队消息。"
+        value.startsWith("STEERING_UNAVAILABLE:") -> when {
+            value.endsWith(":ATTACHMENTS") -> "实时引导只接受文本；带附件的消息请选择排队。"
+            else -> "当前 Agent 不支持实时引导，请选择排队或等待本轮完成。"
+        }
         value.contains("CONVERSATION_MANAGEMENT_UNSUPPORTED") -> "当前 Gateway 不支持会话管理，请安装配套网关更新后重试。"
         value.contains("CONVERSATION_DELETE_UNSUPPORTED") -> "当前 Agent 不支持删除对话，会话记录已保留。"
         value.contains("CONVERSATION_ARCHIVE_UNSUPPORTED") -> "当前 Agent 不支持归档操作，会话记录已保留。"
@@ -220,6 +226,7 @@ fun streamHealthText(health: com.openandroidintelligence.conversation.model.Stre
  */
 fun noticeText(notice: String): String {
     if (!notice.contains(':')) return specificFailureText(notice) ?: notice
+    specificFailureText(notice)?.let { return it }
     // Both halves are candidates: "SEND_FAILED:MASTER_KEY_UNAVAILABLE" carries its
     // cause on the right, while "CONVERSATION_CREATE_TIMEOUT:NO_COMMAND_RESULT"
     // carries the actionable code on the left. Asking the halves in order is what
