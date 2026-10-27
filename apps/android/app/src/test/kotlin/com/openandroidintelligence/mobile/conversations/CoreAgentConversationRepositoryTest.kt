@@ -555,6 +555,61 @@ class CoreAgentConversationRepositoryTest {
         assertEquals(acceptance.generationId, statusEvent.generationId)
     }
 
+    @Test
+    fun streamingSnapshotsCarryFreshContentAndEndWithTheFinalText() = runTest {
+        val deltas = listOf("你", "好", "", "世界")
+        val ssePayload = deltas.joinToString("") { """event: message
+data: {"type":"delta","text":"$it"}
+
+""" } + """event: message
+data: {"type":"done","outcome":"completed","text":"你好世界"}
+
+"""
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                return WireResponse(200, listOf(RawHeader("Content-Type", "text/event-stream")), ssePayload.toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = kotlinx.coroutines.flow.flowOf(ssePayload.toByteArray())
+        }
+        val client = client(transport)
+        val repo = CoreAgentConversationRepository(
+            client = client,
+            currentAgent = { sampleAgent },
+            activeConversationId = { "s_1" },
+            parentScope = backgroundScope,
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+        )
+
+        val emitted = mutableListOf<VerifiedConversationEvent>()
+        val job = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "http://core", "a1", "i1")).toList(emitted)
+        }
+
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("c_stream_test"), "测试问答"))
+        runCurrent()
+        job.cancel()
+
+        val texts = emitted.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+            .map { it.message }
+            .filter { it.sender == "assistant" }
+            .map { (it.parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value }
+
+        // 断言：
+        // 1) texts 至少包含帧
+        assertTrue("Should receive streaming snapshots", texts.isNotEmpty())
+        // 2) 每一帧都是前一帧的超集（单调递增，当前帧以过去一帧开头）
+        for (i in 1 until texts.size) {
+            assertTrue("Snapshot frame must extend previous frame: ${texts[i-1]} -> ${texts[i]}",
+                texts[i].startsWith(texts[i - 1]))
+        }
+        // 3) 不存在相邻两帧文本完全相同（去重有效）
+        for (i in 1 until texts.size) {
+            assertTrue("No adjacent snapshots should have identical text: ${texts[i]}", texts[i] != texts[i - 1])
+        }
+        // 4) 最后一帧等于完整正文
+        assertEquals("你好世界", texts.last())
+    }
+
     private fun client(transport: GatewayByteTransport): AgentSessionClient {
         return AgentSessionClient(
             GatewayHttpClient(
