@@ -105,6 +105,38 @@ class WorkbenchDuplicateAndDeliveryTest {
         controller.close()
     }
 
+    @Test
+    fun acceptedMessagePromotesThePromptWithoutWaitingForTheFirstToken() = runTest {
+        val repository = Repository()
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("查看设备状态")
+        controller.sendDraft()
+        runCurrent()
+        val prompt = rows(controller).first { it.isUser }
+        assertEquals(AgentMessageStatus.QUEUED, prompt.messageStatus)
+
+        // 会话流确认身份（gateway 已接收），此时还没有任何正文。
+        repository.generationId.value = "gen_a"
+        repository.events.emit(
+            VerifiedConversationEvent.MessageAccepted(
+                "accepted_1", 3, "server_side_id", prompt.clientMessageId!!.value, ConversationId("conv_a"),
+            ),
+        )
+        runCurrent()
+        assertEquals(AgentMessageStatus.DELIVERED, rows(controller).first { it.isUser }.messageStatus)
+
+        repository.events.emit(
+            VerifiedConversationEvent.MessageStatus(
+                "native_completed", 6, ConversationId("conv_a"), prompt.key,
+                prompt.clientMessageId!!, AgentMessageStatus.COMPLETED, 1, null, "gen_a",
+            ),
+        )
+        runCurrent()
+        assertEquals(AgentMessageStatus.COMPLETED, rows(controller).first { it.isUser }.messageStatus)
+        controller.close()
+    }
+
     private fun userUpsert(id: String, clientId: ClientMessageId, text: String, timestamp: Long) =
         VerifiedConversationEvent.TimelineUpsert(
             "evt_$id", timestamp, 1,

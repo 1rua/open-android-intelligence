@@ -3619,15 +3619,29 @@ class WorkbenchController(
                                 // 受理早期只能用客户端占位 id；宿主报出真实 userMessageId 后升级本地身份，
                                 // 后续终态事件就不会再与本地身份分叉。
                                 changeSendAtom(eventConvId, correlationId) { old ->
-                                    old?.takeIf { it.messageId == it.clientMessageId.value }?.identified(event.messageId) ?: old
+                                    val identified = old?.takeIf { it.messageId == it.clientMessageId.value }
+                                        ?.identified(event.messageId) ?: old
+                                    // 会话流已经确认这条消息属实：先把提示从"等待接收"推进到"已接收"，
+                                    // 不必等首个 token（Hermes 一轮可能要思考数秒到数十秒）。
+                                    identified?.let { atom ->
+                                        if (atom.submissionState == LocalSubmissionState.ACCEPTED &&
+                                            atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED
+                                        ) {
+                                            atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
+                                        } else atom
+                                    }
                                 }
                             }
                             if (eventConvId == currentActiveId && correlationId.isNotBlank()) {
                                 update { state ->
+                                    val pending = state.pendingBatch.filterNot {
+                                        it.key == "local_$correlationId" || it.key == correlationId
+                                    }
                                     state.copy(
-                                        pendingBatch = state.pendingBatch.filterNot {
-                                            it.key == "local_$correlationId" || it.key == correlationId
-                                        },
+                                        pendingBatch = pending,
+                                        timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
+                                            Loadable.Ready(renderTimeline(pending))
+                                        } else state.timeline,
                                     )
                                 }
                             }
