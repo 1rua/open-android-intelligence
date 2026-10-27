@@ -42,6 +42,33 @@ def _conversation_id_of(path):
     return parts[index] if index < len(parts) else None
 
 
+async def report_dispatch_delivered(
+    account: Any, record: Mapping[str, Any] | None, claim_token: str | None,
+) -> bool:
+    """把 queued 消息推进到 delivered：Agent 已经接下这一轮，而不是等整轮跑完。
+
+    状态上报是旁路事实，任何失败都不能冒泡回事件分发栈——那会被当成 Agent
+    不可用，把一条正在处理的消息标记成 failed。
+    """
+    if record is None or str(record.get("status") or "") != "queued":
+        return False
+    message_id = str(record.get("messageId") or "")
+    if not message_id:
+        return False
+    try:
+        account.conversations.update_dispatch_status(
+            message_id, "delivered", None, f"agent-started-{message_id}",
+            claim_token=claim_token,
+        )
+        return True
+    except Exception as exc:
+        logger.warning(
+            "[open_android] Agent delivery status failed messageId=%s errorCode=%s",
+            message_id, str(getattr(exc, "code", "INTERNAL_ERROR")),
+        )
+        return False
+
+
 class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
     supports_code_blocks = True
     supports_status_text = False
@@ -868,13 +895,8 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             handed_to_host = True
             materialized_files = []
             if dispatch_record is not None and account is not None:
-                current = account.conversations.dispatch_message(client_message_id)
-                if current is not None and current['status'] == 'queued':
-                    account.conversations.update_dispatch_status(
-                        dispatch_record["messageId"], "delivered", None,
-                        f"dispatch-{dispatch_record['messageId']}",
-                        claim_token=dispatch_claim_token,
-                    )
+                # 上报失败只记日志：它不能把一条已经交给 Agent 的消息标记成失败。
+                await report_dispatch_delivered(account, dispatch_record, dispatch_claim_token)
                 for attachment_id in dispatch_record["attachmentIds"]:
                     try:
                         account.attachments.mark_delivered(attachment_id)
@@ -1046,6 +1068,8 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         try:
             record = account.conversations.dispatch_message(client_id)
             generation = account.conversations.workflow.for_message(record["messageId"]) if record else None
+            # Agent 已经接下这一轮：先上报 delivered，手机端的"等待接收"不必等到整轮结束。
+            await report_dispatch_delivered(account, record, getattr(event, "_gateway_claim_token", None))
             if not generation:
                 return
             key = (account_id, record["conversationId"], generation["generationId"])
