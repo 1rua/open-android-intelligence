@@ -12,14 +12,27 @@ import com.openandroidintelligence.conversation.state.TimelineEntry
 sealed interface TimelineDisplayItem {
     val key: String
 
+    /**
+     * LazyColumn 的复用分池标识：同一个 key 的呈现类型变化时（单条消息折叠成执行段），
+     * 必须让 Compose 重建子组合，而不是复用类型已经不匹配的旧节点。
+     */
+    val contentType: String
+
     data class Single(val entry: TimelineEntry) : TimelineDisplayItem {
         /** 单条消息沿用消息自身的 key，宿主的滚动/新鲜项跟踪语义不变。 */
         override val key: String get() = entry.key
+
+        override val contentType: String get() = "single"
     }
 
     data class Execution(val run: AssistantExecutionRun) : TimelineDisplayItem {
-        /** 用段身份而不是最终回答 key：finalEntry 变化时展示项不应被当成新条目。 */
+        /**
+         * 段身份直接取段内第一条消息的 key：折叠瞬间这个展示项沿用原单条条目的身份，
+         * key 不再突变，位置动画与测量树不会错位。
+         */
         override val key: String get() = run.segmentKey
+
+        override val contentType: String get() = "execution"
     }
 }
 
@@ -197,7 +210,15 @@ class TimelineDisplayModel(
                 TimelineDisplayItem.Single(if (terminalGeneration) entry.copy(isStreaming = false) else entry)
             }
         }
-        return listOf(TimelineDisplayItem.Execution(buildRun(analyses, streamActive)))
+        val run = buildRun(analyses, streamActive)
+        // 既没有可展示步骤、也没有最终正文时，折叠只会得到一个空面板；
+        // 这种边界（工具调用后正文为空 / 流被截断）保持逐条呈现。
+        if (run.steps.isEmpty() && !run.hasFinalAnswer) {
+            return entries.map { entry ->
+                TimelineDisplayItem.Single(if (terminalGeneration) entry.copy(isStreaming = false) else entry)
+            }
+        }
+        return listOf(TimelineDisplayItem.Execution(run))
     }
 
     private fun buildRun(
@@ -256,7 +277,7 @@ class TimelineDisplayModel(
         val interrupted = steps.any { it.isInterruptedStep() }
 
         return AssistantExecutionRun(
-            segmentKey = "execution_segment:${analyses.first().entry.key}",
+            segmentKey = analyses.first().entry.key,
             finalEntry = finalEntry,
             finalBlocks = if (hasFinalAnswer) finalAnalysis.finalBlocks else emptyList(),
             steps = steps,

@@ -89,5 +89,25 @@ class MessageTimelineStreamingTest {
         compose.onNodeWithText("kotlin").assertIsDisplayed()
         compose.onNodeWithText("val x = 42", substring = true).assertIsDisplayed()
     }
+
+    @Test
+    fun userMessageWithDeliveredStatusShowsAcceptedLabel() {
+        val entry = TimelineEntry(
+            key = "user_delivered",
+            sender = "user",
+            text = "帮我看下设备状态",
+            isUser = true,
+            timestamp = 1000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            messageStatus = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED,
+        )
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(listOf(entry))
+            }
+        }
+        compose.onNodeWithText("Agent 已接收").assertIsDisplayed()
+    }
 }
 
