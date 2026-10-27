@@ -91,9 +91,9 @@ class CoreAgentConversationRepository(
     override val streamHealth: Flow<StreamHealth> = _streamHealth.asStateFlow()
 
     private data class AgentEvent(val agentId: String, val event: VerifiedConversationEvent)
-    // The per-turn publisher retains the latest snapshots; this relay must not
-    // retain dozens of increasingly large copies of the same response.
-    private val _events = MutableSharedFlow<AgentEvent>(extraBufferCapacity = 1)
+    // 4 帧：消费者偶发慢一拍时仍能按序播放中间帧，而不是立刻退化成"只剩最后一帧"。
+    // 再大就会长期保留多份完整正文副本（内存代价由内容长度决定）。
+    private val _events = MutableSharedFlow<AgentEvent>(extraBufferCapacity = 4)
 
     private suspend fun emitEvent(agentId: String, event: VerifiedConversationEvent) {
         _events.emit(AgentEvent(agentId, event))
@@ -273,11 +273,19 @@ class CoreAgentConversationRepository(
             }
             var revision = assistantTimestamp
             var lastSnapshotNanos = 0L
+            var lastPublishedState: String? = null
+            var lastPublishedLength = -1
             fun publish(state: String) {
+                val current = text.toString()
+                // 没有任何可见变化时不占用管道：每一帧都应该携带新内容，否则
+                // 真正的打字帧会被同内容的空帧挤掉。
+                if (state == lastPublishedState && current.length == lastPublishedLength) return
+                lastPublishedState = state
+                lastPublishedLength = current.length
                 enqueue("message:$assistantMsgId", VerifiedConversationEvent.TimelineUpsert(
                     eventId = "evt_${UUID.randomUUID()}", occurredAt = System.currentTimeMillis(),
                     revision = ++revision, message = TimelineMessage(
-                        id = assistantMsgId, sender = "assistant", parts = listOf(MessagePart.Text(text.toString())),
+                        id = assistantMsgId, sender = "assistant", parts = listOf(MessagePart.Text(current)),
                         timestamp = assistantTimestamp, state = state,
                         clientMessageId = ClientMessageId("assistant_${message.clientMessageId.value}"),
                         generationId = turn.generationId, conversationId = ConversationId(conversationId))))
@@ -309,6 +317,8 @@ class CoreAgentConversationRepository(
                                     assistantMsgId = remoteId
                                     assistantHasNativeId = true
                                     lastSnapshotNanos = 0L
+                                    lastPublishedState = null
+                                    lastPublishedLength = -1
                                 }
                             }
                             event.userMessageId?.let { remoteId ->

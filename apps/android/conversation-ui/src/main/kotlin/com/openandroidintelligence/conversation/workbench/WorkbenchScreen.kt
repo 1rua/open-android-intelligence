@@ -122,6 +122,13 @@ fun WorkbenchScreen(
         (if (creatingThreadInThisThread) 1 else 0) +
         (if (isThinking) 1 else 0)
     val lastItemIndex = itemCount - 1
+    // 同一帧内折叠会让条目数变少，先前算出的索引可能越界：
+    // 目标索引以当前布局的条目数为上限，取不到合法目标时就不滚动。
+    fun latestScrollTarget(): Int? {
+        val total = listState.layoutInfo.totalItemsCount
+        if (total <= 0) return lastItemIndex.takeIf { it >= 0 }
+        return minOf(lastItemIndex, total - 1).takeIf { it >= 0 }
+    }
     val latestItemVisible by remember(listState, lastItemIndex) {
         derivedStateOf {
             listState.layoutInfo.visibleItemsInfo.any { it.index == lastItemIndex }
@@ -168,7 +175,7 @@ fun WorkbenchScreen(
     LaunchedEffect(state.activeThreadId, timelineReady) {
         if (timelineReady) {
             followLatest = true
-            if (lastItemIndex > 0) listState.scrollToItem(lastItemIndex)
+            latestScrollTarget()?.takeIf { it > 0 }?.let { target -> listState.scrollToItem(target) }
         }
     }
 
@@ -187,8 +194,8 @@ fun WorkbenchScreen(
         previousTailSignature = tailSignature
         if (previous == null) return@LaunchedEffect
         if (!followLatest) return@LaunchedEffect
-        if (lastItemIndex <= 0) return@LaunchedEffect
-        if (reduceMotion) listState.scrollToItem(lastItemIndex) else listState.animateScrollToItem(lastItemIndex)
+        val target = latestScrollTarget()?.takeIf { it > 0 } ?: return@LaunchedEffect
+        if (reduceMotion) listState.scrollToItem(target) else listState.animateScrollToItem(target)
     }
 
     // M05/M12：文字在流式增长时不做逐 token 动画，只按「最后一条长高了多少」增量贴底。
@@ -196,9 +203,10 @@ fun WorkbenchScreen(
     var lastEntryKey by remember(state.activeThreadId) { mutableStateOf<String?>(null) }
     // 键盘弹出、附件条出现会让输入坞变高（可视区变矮）；停留在底部时跟着贴底。
     LaunchedEffect(bottomDockHeightPx) {
-        if (!followLatest || lastItemIndex <= 0) return@LaunchedEffect
+        if (!followLatest) return@LaunchedEffect
+        val target = latestScrollTarget()?.takeIf { it > 0 } ?: return@LaunchedEffect
         if (listState.canScrollForward) {
-            if (reduceMotion) listState.scrollToItem(lastItemIndex) else listState.animateScrollToItem(lastItemIndex)
+            if (reduceMotion) listState.scrollToItem(target) else listState.animateScrollToItem(target)
         }
     }
 
@@ -412,7 +420,7 @@ fun WorkbenchScreen(
                                                         placementSpec = MotionSpecs.morph(reduceMotion),
                                                     )) { pluginCards() }
                                                 }
-                                                items(displayItems, key = { it.key }) { item ->
+                                                items(displayItems, key = { it.key }, contentType = { it.contentType }) { item ->
                                                     val fresh = item.key in freshEntryKeys
                                                     val isTail = item.key == displayItems.lastOrNull()?.key
                                                     val jumpTarget = (item as? TimelineDisplayItem.Single)?.entry?.systemThreadId
@@ -503,10 +511,11 @@ fun WorkbenchScreen(
                                     onClick = {
                                         followLatest = true
                                         scope.launch {
+                                            val target = latestScrollTarget() ?: return@launch
                                             if (reduceMotion) {
-                                                listState.scrollToItem(lastItemIndex)
+                                                listState.scrollToItem(target)
                                             } else {
-                                                listState.animateScrollToItem(lastItemIndex)
+                                                listState.animateScrollToItem(target)
                                             }
                                         }
                                     },

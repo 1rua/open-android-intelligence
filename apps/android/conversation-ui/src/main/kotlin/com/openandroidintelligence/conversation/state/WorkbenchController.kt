@@ -542,6 +542,18 @@ class WorkbenchController(
     private val messageStatusesByClientId = LinkedHashMap<String, MessageStatusReceipt>()
 
     /**
+     * 展示行缓存：不含附件的消息行只依赖消息本身与取消标记，可按消息实例复用；
+     * 带附件的行依赖多张外部展示状态，任何一张变化都要重建，因此不缓存。
+     */
+    private data class RenderedTimelineEntry(
+        val message: com.openandroidintelligence.conversation.ports.TimelineMessage,
+        val cancelled: Boolean,
+        val entry: TimelineEntry,
+    )
+    private val renderedEntryCache = LinkedHashMap<String, RenderedTimelineEntry>()
+    private val renderedEntryCacheLimit = 512
+
+    /**
      * Event ids already applied to the timeline.
      *
      * One frame can be offered more than once: a reconnect replays the account
@@ -1042,6 +1054,7 @@ class WorkbenchController(
         activeThreadId=null
         onActiveThreadChanged(null)
         mirrored.clear(); mirroredRevisions.clear(); messageStatusRevisions.clear()
+        renderedEntryCache.clear()
         messageStatusesById.clear(); messageStatusesByClientId.clear()
         failedSubmission=failedSubmission?.takeUnless { it.conversationId == threadId }
         update { it.copy(activeThreadId=null, activeThreadTitle="", timeline=Loadable.Empty, pendingBatch=emptyList(),
@@ -1469,6 +1482,7 @@ class WorkbenchController(
         onActiveThreadChanged(threadId)
         if (persistence==null) sendAtomsByThread.putIfAbsent(threadId,linkedMapOf())
         mirrored.clear()
+        renderedEntryCache.clear()
         mirroredRevisions.clear()
         messageStatusRevisions.clear()
         messageStatusesById.clear()
@@ -2063,6 +2077,7 @@ class WorkbenchController(
                 activeThreadId = conversation.id.value
                 onActiveThreadChanged(conversation.id.value)
                 mirrored.clear()
+                renderedEntryCache.clear()
                 mirroredRevisions.clear()
                 timelineJob?.cancel()
                 update {
@@ -3688,6 +3703,11 @@ class WorkbenchController(
                                 mirrored[message.id] = message
                                 mirroredRevisions[message.id] = event.revision
                             }
+                            if (message.sender == "assistant" &&
+                                (message.state == "STREAMING" || message.state == "CONFIRMED")
+                            ) {
+                                promotePromptsDelivered(currentActiveId, message)
+                            }
                             update { state ->
                                 if (!isActive) return@update state
                                 state.copy(
@@ -4114,79 +4134,141 @@ class WorkbenchController(
                 latest.generationId,latest.id,latest.clientMessageId?.value,confirmedOnly=true)) latest.copy(state="CANCELLED") else latest
     }
 
+    /**
+     * 助手已经开始输出，说明这一轮之前提交的 prompt 已被 Agent 接收。
+     *
+     * 只推进仍为 QUEUED 且已受理的本地原子；**不写 statusRevision**——
+     * 服务端随后到达的 COMPLETED/FAILED 仍按 revision 单调规则正常生效。
+     */
+    private suspend fun promotePromptsDelivered(threadId: String, reply: com.openandroidintelligence.conversation.ports.TimelineMessage) {
+        val queued = atomsFor(threadId).values.filter {
+            it.submissionState == LocalSubmissionState.ACCEPTED &&
+                it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED &&
+                it.messageId != null
+        }
+        if (queued.isEmpty()) return
+        val generationId = reply.generationId
+        val linked = if (generationId == null) emptyList() else queued.filter { atom ->
+            val messageId = atom.messageId ?: return@filter false
+            messageGenerations[threadId to messageId]?.id == generationId ||
+                messageGenerations[threadId to atom.clientMessageId.value]?.id == generationId
+        }
+        val targets = when {
+            // 这一轮没有任何 generation 标识时，本轮所有未结算的 prompt 都已经被 Agent 取走。
+            generationId == null -> queued
+            linked.isNotEmpty() -> linked
+            // 映射还没建立（例如只从助手消息里第一次看到 generationId）：只推进最近一条，
+            // 不替更早的、可能仍在排队的 prompt 编造送达事实。
+            else -> listOfNotNull(queued.maxByOrNull { it.timestamp })
+        }
+        targets.forEach { atom ->
+            changeSendAtom(threadId, atom.clientMessageId.value) { current ->
+                if (current != null &&
+                    current.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED
+                ) {
+                    current.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
+                } else current
+            }
+        }
+    }
+
+    /**
+     * 单条消息到展示行的映射。
+     *
+     * 流式期间只有末尾消息被替换，历史行按消息实例复用即可，不必每帧重建；
+     * 带附件的行依赖多张外部展示状态 map，宁可重建也不能读到过期的附件视图。
+     */
+    private fun renderedTimelineEntry(
+        message: com.openandroidintelligence.conversation.ports.TimelineMessage,
+    ): TimelineEntry {
+        val cancelled = isCancelledMessage(activeThreadId, message.generationId, message.id, message.clientMessageId?.value)
+        val cacheable = message.parts.none {
+            it is com.openandroidintelligence.conversation.model.MessagePart.Attachment
+        }
+        if (cacheable) {
+            renderedEntryCache[message.id]
+                ?.takeIf { it.message === message && it.cancelled == cancelled }
+                ?.let { return it.entry }
+        }
+        val messageAttachments = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
+            .map { att ->
+                val id = att.draftId.value
+                val visible = activeThreadId?.let { historicalAttachments[historicalAttachmentKey(it, id)]?.attachment }?.let { cached ->
+                    cached.copy(filename = att.filename.ifBlank { cached.filename }, mediaType = att.mediaType.ifBlank { cached.mediaType })
+                } ?: run {
+                    val d = _state.value.attachments.firstOrNull { it.id.value == id }
+                    com.openandroidintelligence.conversation.model.TimelineAttachment(
+                        draftId = id,
+                        filename = d?.filename?.takeUnless { it.isBlank() } ?: att.filename,
+                        mediaType = d?.mediaType?.takeUnless { it.isBlank() } ?: att.mediaType,
+                        previewBytes = attachmentPreviews[id],
+                    )
+                }
+                val presentation = activeThreadId?.let { mediaPresentation[historicalAttachmentKey(it,id)] }
+                // 原图字节只在缓存里存在：缓存淘汰后必须回到 IDLE，
+                // 不能让一条 READY 记录指向已经被清零的数组。
+                val originalBytes = activeThreadId?.let { originalImages[historicalAttachmentKey(it, id)] }
+                val originalState = when {
+                    originalBytes != null -> OriginalImageState.READY
+                    presentation?.originalState == OriginalImageState.LOADING ||
+                        presentation?.originalState == OriginalImageState.FAILED -> presentation.originalState
+                    else -> OriginalImageState.IDLE
+                }
+                val withOriginal = visible.copy(
+                    originalBytes = originalBytes,
+                    originalState = originalState,
+                    originalError = presentation?.originalError,
+                )
+                if (presentation == null) withOriginal else withOriginal.copy(
+                    savedOffline=presentation.localState == com.openandroidintelligence.conversation.model.AttachmentLocalState.SAVED,
+                    localState=presentation.localState,localError=presentation.localError,
+                    downloadState=presentation.downloadState,downloadError=presentation.downloadError)
+            }
+        val textParts = message.parts.joinToString("") { part ->
+            when (part) {
+                is com.openandroidintelligence.conversation.model.MessagePart.Text -> part.value
+                is com.openandroidintelligence.conversation.model.MessagePart.Command -> part.rawText
+                is com.openandroidintelligence.conversation.model.MessagePart.Attachment -> ""
+            }
+        }
+        val displayText = if (textParts.isBlank() && messageAttachments.isEmpty()) {
+            if (message.parts.any { it is com.openandroidintelligence.conversation.model.MessagePart.Attachment }) "[附件]" else ""
+        } else {
+            textParts
+        }
+        val entry = TimelineEntry(
+            key = message.id,
+            sender = message.sender,
+            text = displayText,
+            isUser = message.sender == "user",
+            timestamp = message.timestamp,
+            pendingAcceptance = message.state == "PENDING",
+            batchGroupId = message.batchId,
+            attachments = messageAttachments,
+            isStreaming = message.state == "STREAMING",
+            messageStatus = com.openandroidintelligence.conversation.ports.AgentMessageStatus.entries
+                .firstOrNull { it.wireValue == message.state }
+                ?.takeUnless { cancelled && it == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED },
+            messageStatusErrorCode = message.errorCode?.takeUnless { cancelled }?.let { code ->
+                com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.entries
+                    .firstOrNull { it.wireValue == code }
+            },
+            submissionFailureCode = message.localSubmissionFailure,
+            clientMessageId = message.clientMessageId,
+        )
+        if (cacheable) {
+            renderedEntryCache[message.id] = RenderedTimelineEntry(message, cancelled, entry)
+            while (renderedEntryCache.size > renderedEntryCacheLimit) {
+                renderedEntryCache.remove(renderedEntryCache.keys.first())
+            }
+        }
+        return entry
+    }
+
     private fun renderTimeline(pendingBatch: List<TimelineEntry> = _state.value.pendingBatch): List<TimelineEntry> {
         val activeAtoms = activeThreadId?.let { atomsFor(it).values.toList() }.orEmpty()
         val mergedMessages = mergeLocalSendAtoms(mirrored.values.toList(), activeAtoms)
-        val mirroredEntries = mergedMessages
-            .map { message ->
-                val cancelled = isCancelledMessage(activeThreadId, message.generationId, message.id, message.clientMessageId?.value)
-                val messageAttachments = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
-                    .map { att ->
-                        val id = att.draftId.value
-                        val visible = activeThreadId?.let { historicalAttachments[historicalAttachmentKey(it, id)]?.attachment }?.let { cached ->
-                            cached.copy(filename = att.filename.ifBlank { cached.filename }, mediaType = att.mediaType.ifBlank { cached.mediaType })
-                        } ?: run {
-                            val d = _state.value.attachments.firstOrNull { it.id.value == id }
-                            com.openandroidintelligence.conversation.model.TimelineAttachment(
-                                draftId = id,
-                                filename = d?.filename?.takeUnless { it.isBlank() } ?: att.filename,
-                                mediaType = d?.mediaType?.takeUnless { it.isBlank() } ?: att.mediaType,
-                                previewBytes = attachmentPreviews[id],
-                            )
-                        }
-                        val presentation = activeThreadId?.let { mediaPresentation[historicalAttachmentKey(it,id)] }
-                        // 原图字节只在缓存里存在：缓存淘汰后必须回到 IDLE，
-                        // 不能让一条 READY 记录指向已经被清零的数组。
-                        val originalBytes = activeThreadId?.let { originalImages[historicalAttachmentKey(it, id)] }
-                        val originalState = when {
-                            originalBytes != null -> OriginalImageState.READY
-                            presentation?.originalState == OriginalImageState.LOADING ||
-                                presentation?.originalState == OriginalImageState.FAILED -> presentation.originalState
-                            else -> OriginalImageState.IDLE
-                        }
-                        val withOriginal = visible.copy(
-                            originalBytes = originalBytes,
-                            originalState = originalState,
-                            originalError = presentation?.originalError,
-                        )
-                        if (presentation == null) withOriginal else withOriginal.copy(
-                            savedOffline=presentation.localState == com.openandroidintelligence.conversation.model.AttachmentLocalState.SAVED,
-                            localState=presentation.localState,localError=presentation.localError,
-                            downloadState=presentation.downloadState,downloadError=presentation.downloadError)
-                    }
-                val textParts = message.parts.joinToString("") { part ->
-                    when (part) {
-                        is com.openandroidintelligence.conversation.model.MessagePart.Text -> part.value
-                        is com.openandroidintelligence.conversation.model.MessagePart.Command -> part.rawText
-                        is com.openandroidintelligence.conversation.model.MessagePart.Attachment -> ""
-                    }
-                }
-                val displayText = if (textParts.isBlank() && messageAttachments.isEmpty()) {
-                    if (message.parts.any { it is com.openandroidintelligence.conversation.model.MessagePart.Attachment }) "[附件]" else ""
-                } else {
-                    textParts
-                }
-                TimelineEntry(
-                    key = message.id,
-                    sender = message.sender,
-                    text = displayText,
-                    isUser = message.sender == "user",
-                    timestamp = message.timestamp,
-                    pendingAcceptance = message.state == "PENDING",
-                    batchGroupId = message.batchId,
-                    attachments = messageAttachments,
-                    isStreaming = message.state == "STREAMING",
-                    messageStatus = com.openandroidintelligence.conversation.ports.AgentMessageStatus.entries
-                        .firstOrNull { it.wireValue == message.state }
-                        ?.takeUnless { cancelled && it == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED },
-                    messageStatusErrorCode = message.errorCode?.takeUnless { cancelled }?.let { code ->
-                        com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.entries
-                            .firstOrNull { it.wireValue == code }
-                    },
-                    submissionFailureCode = message.localSubmissionFailure,
-                    clientMessageId = message.clientMessageId,
-                )
-            }
+        val mirroredEntries = mergedMessages.map(::renderedTimelineEntry)
 
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
         val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()
@@ -4438,7 +4520,7 @@ class WorkbenchController(
     /** Apply a freshly rebuilt baseline while preserving an unsent local draft. */
     fun onMirrorRebuilt() {
         sendAtomsEpoch++
-        handledEventIds.clear(); mirrored.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
+        handledEventIds.clear(); mirrored.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
         update { it.copy(historyHydrated=activeThreadId==null,timeline=if(activeThreadId==null) it.timeline else Loadable.Loading) }
         refreshThreads(); activeThreadId?.let(::reloadTimeline)
     }

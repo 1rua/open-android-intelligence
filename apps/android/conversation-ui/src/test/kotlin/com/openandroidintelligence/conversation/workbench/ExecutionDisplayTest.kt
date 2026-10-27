@@ -173,7 +173,7 @@ class ExecutionDisplayTest {
 
         val run = executionRun(TimelineDisplayModel().build(listOf(first, second)))
 
-        assertEquals("execution_segment:a1", run.segmentKey)
+        assertEquals("a1", run.segmentKey)
         assertEquals("a2", run.finalEntry.key)
         assertTrue(run.hasFinalAnswer)
         assertTrue(run.isStreaming)
@@ -680,5 +680,47 @@ class ExecutionDisplayTest {
         )
         val stillFolded = model.build(nextTool).last() as TimelineDisplayItem.Execution
         assertFalse(stillFolded.run.hasFinalAnswer)
+    }
+
+    @Test
+    fun foldingKeepsTheSegmentAnchorKeyStable() {
+        val first = assistantEntry("a1", "<think>先检查设备</think>")
+        val second = assistantEntry("a2", "最终回答：已完成。", streaming = true)
+        val model = TimelineDisplayModel()
+
+        val streamingItems = model.build(listOf(first, second), GenerationState.RUNNING)
+        val terminalItems = model.build(listOf(first, second), GenerationState.COMPLETED)
+
+        val streamingAnchor = streamingItems.first { it.key == "a1" }
+        val folded = terminalItems.filterIsInstance<TimelineDisplayItem.Execution>().single()
+        // 折叠瞬间沿用段内第一条消息的身份：key 不突变。
+        assertEquals(streamingAnchor.key, folded.key)
+        assertEquals("execution", folded.contentType)
+        assertEquals(terminalItems.size, terminalItems.map { it.key }.distinct().size)
+    }
+
+    @Test
+    fun toolOnlyTurnWithEmptyFinalTextDoesNotFoldIntoEmptyPanel() {
+        val tool = assistantEntry("a1", "<tool_call name=\"shell\"><command>ls</command></tool_call>")
+
+        val items = TimelineDisplayModel().build(listOf(tool), GenerationState.COMPLETED)
+
+        items.filterIsInstance<TimelineDisplayItem.Execution>().forEach { item ->
+            assertTrue(item.run.steps.isNotEmpty() || item.run.hasFinalAnswer, "空执行面板不应被折叠出来")
+        }
+    }
+
+    @Test
+    fun displayItemKeysStayUniqueAfterTerminalFold() {
+        val entries = listOf(
+            userEntry("u1", "帮我看看设备状态"),
+            assistantEntry("a1", "<think>先检查设备</think>"),
+            assistantEntry("a2", "设备状态正常。", streaming = true),
+        )
+
+        val items = TimelineDisplayModel().build(entries, GenerationState.COMPLETED)
+
+        assertEquals(items.size, items.map { it.key }.distinct().size)
+        assertEquals(items.size, items.map { it.contentType }.size)
     }
 }

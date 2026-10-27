@@ -91,7 +91,8 @@ jobs:
           HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
         run: >-
           python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py
-          oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py -q
+          oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py
+          oai-core/tests/test_hermes_dispatch_delivery.py -q
 
   dsh:
     runs-on: ubuntu-latest
