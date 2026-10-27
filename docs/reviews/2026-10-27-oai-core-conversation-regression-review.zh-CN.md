@@ -1,9 +1,16 @@
 # Review 审查报告：OAI Core 重构后会话系统全链路回归缺陷深度分析
 
+<<<<<<< HEAD
 **文档版本**：v1.0
 **日期**：2026-10-27
 **审查范围**：Android 客户端 UI、数据仓储层（`CoreAgentConversationRepository`）、网络层（`AgentSessionClient`）、OAI Core 路由与协议（`sessions.py`）、Hermes Session Adapter（`oai_hermes_adapter`）及底座交互链路
 **关联 Bug**：Bug 01 ~ Bug 08
+=======
+**文档版本**：v1.0  
+**日期**：2026-10-27  
+**审查范围**：Android 客户端 UI、数据仓储层（`CoreAgentConversationRepository`）、网络层（`AgentSessionClient`）、OAI Core 路由与协议（`sessions.py`）、Hermes Session Adapter（`oai_hermes_adapter`）及底座交互链路  
+**关联 Bug**：Bug 01 ~ Bug 08  
+>>>>>>> 15885e9f (文档: 添加 OAI Core 重构后会话系统全链路回归缺陷深度分析审查报告)
 
 ---
 
