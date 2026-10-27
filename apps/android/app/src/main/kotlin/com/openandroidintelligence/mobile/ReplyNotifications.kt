@@ -48,7 +48,7 @@ class ReplyNotificationSettings(private val context: Context) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
 
     fun setEnabled(enabled: Boolean) {
-        check(preferences.edit().putBoolean("enabled", enabled).commit())
+        preferences.edit().putBoolean("enabled", enabled).commitOrLog(TAG)
         _enabled.value = enabled
         if (!enabled) context.getSystemService(NotificationManager::class.java).let { manager ->
             manager.activeNotifications.filter { it.notification.channelId in setOf(REPLY_CHANNEL_ID, LIVE_UPDATE_CHANNEL_ID) }.forEach { manager.cancel(it.tag, it.id) }
@@ -56,7 +56,7 @@ class ReplyNotificationSettings(private val context: Context) {
     }
 
     fun markPermissionRequested() {
-        check(preferences.edit().putBoolean("permission-requested", true).commit())
+        preferences.edit().putBoolean("permission-requested", true).commitOrLog(TAG)
     }
 
     fun refreshPermission() {
@@ -89,6 +89,7 @@ class ReplyNotificationSettings(private val context: Context) {
 
 internal const val REPLY_CHANNEL_ID = "agent-task-replies"
 private const val REPLY_ACTION = "com.openandroidintelligence.mobile.OPEN_AGENT_REPLY"
+private const val TAG = "ReplyNotifications"
 
 internal data class ReplyNotificationTarget(val profileId: String, val accountId: String, val conversationId: String) {
     fun bubbleIntent(context: Context): Intent = BubbleConversationActivity.intent(context, this)
@@ -225,7 +226,7 @@ internal class AndroidReplyNotificationPublisher(
     }
 
     fun eraseAccount(profileId: String, accountId: String) {
-        check(replyCompletionPreferences(context, profileId, accountId).edit().clear().commit())
+        replyCompletionPreferences(context, profileId, accountId).edit().clear().commitOrLog(TAG)
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.activeNotifications.filter { it.notification.extras.getString("reply-account") == replyAccountGroup(profileId, accountId) }
             .forEach { manager.cancel(it.tag, it.id) }
@@ -272,7 +273,7 @@ internal class ReplyCompletionObserver(
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val firstEnabledAt = preferences.getLong("first-enabled-at", 0L).takeIf { it > 0L }
-        ?: now().also { check(preferences.edit().putLong("first-enabled-at", it).commit()) }
+        ?: now().also { preferences.edit().putLong("first-enabled-at", it).commitOrLog(TAG) }
     private var nextPruneAt = Long.MIN_VALUE
 
     @Synchronized fun accept(event: GatewayEvent) {
@@ -298,12 +299,12 @@ internal class ReplyCompletionObserver(
         when (event.event) {
             "conversation.message.completed" -> {
                 if (!isPublicAssistantPayload(payload) || !hasAssistantReply(decoded, JsonFields.string(payload, "sender"))) return
-                check(preferences.edit().putLong("reply.$key", occurredAt).commit())
+                preferences.edit().putLong("reply.$key", occurredAt).commitOrLog(TAG)
             }
             "conversation.message.status" -> {
                 val status = decoded as? VerifiedConversationEvent.MessageStatus ?: return
                 when (status.status) {
-                    AgentMessageStatus.COMPLETED -> check(preferences.edit().putLong("success.$key", occurredAt).commit())
+                    AgentMessageStatus.COMPLETED -> preferences.edit().putLong("success.$key", occurredAt).commitOrLog(TAG)
                     AgentMessageStatus.FAILED -> { finish(key, occurredAt); return }
                     else -> return
                 }
@@ -339,7 +340,7 @@ internal class ReplyCompletionObserver(
                     AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED -> {
                         if (preferences.getString(activeKey, null) != round) {
                             clearLegacy(conversationId, occurredAt)
-                            check(preferences.edit().putString(activeKey, round).putLong("legacy.started.$conversationKey", occurredAt).commit())
+                            preferences.edit().putString(activeKey, round).putLong("legacy.started.$conversationKey", occurredAt).commitOrLog(TAG)
                         }
                     }
                     AgentMessageStatus.COMPLETED, AgentMessageStatus.FAILED -> {
@@ -356,7 +357,7 @@ internal class ReplyCompletionObserver(
             "conversation.message.completed" -> {
                 if (!isPublicAssistantPayload(payload) || !hasAssistantReply(decoded, JsonFields.string(payload, "sender"))) return
                 val round = preferences.getString(activeKey, null) ?: return
-                check(preferences.edit().putLong("reply.$round", occurredAt).commit())
+                preferences.edit().putLong("reply.$round", occurredAt).commitOrLog(TAG)
             }
             "conversation.generation.cancelled" -> clearLegacy(conversationId, occurredAt)
         }
@@ -377,12 +378,12 @@ internal class ReplyCompletionObserver(
     }
 
     private fun removeLegacy(conversationKey: String) {
-        check(preferences.edit().remove("legacy.current.$conversationKey").remove("legacy.started.$conversationKey").commit())
+        preferences.edit().remove("legacy.current.$conversationKey").remove("legacy.started.$conversationKey").commitOrLog(TAG)
     }
 
     private fun finish(key: String, occurredAt: Long) {
         val edit = preferences.edit().putLong("done.$key", occurredAt).remove("reply.$key").remove("success.$key")
-        check(edit.commit())
+        edit.commitOrLog(TAG)
     }
 
     private fun pruneExpired() {
@@ -398,7 +399,7 @@ internal class ReplyCompletionObserver(
                 edit.remove(key)
                 if (key.startsWith("legacy.started.")) edit.remove("legacy.current." + key.removePrefix("legacy.started."))
             }
-            check(edit.commit())
+            edit.commitOrLog(TAG)
         }
     }
 
@@ -408,6 +409,19 @@ internal class ReplyCompletionObserver(
         private const val PRUNE_INTERVAL_MILLIS = 30L * 60 * 1000
         private val REPLY_EVENTS = setOf("conversation.message.completed", "conversation.message.status", "conversation.generation.cancelled")
     }
+}
+
+/**
+ * 通知链路上的偏好写入不能把进程带走：commit 失败只意味着这次围栏没有落盘，
+ * 下一次事件仍然可以重新判定，因此只记录日志并返回失败。
+ */
+internal fun SharedPreferences.Editor.commitOrLog(tag: String): Boolean {
+    val committed = runCatching { commit() }.getOrElse { failure ->
+        android.util.Log.w(tag, "SharedPreferences commit threw", failure)
+        false
+    }
+    if (!committed) android.util.Log.w(tag, "SharedPreferences commit returned false")
+    return committed
 }
 
 internal fun replyDigest(value: String): String = MessageDigest.getInstance("SHA-256")

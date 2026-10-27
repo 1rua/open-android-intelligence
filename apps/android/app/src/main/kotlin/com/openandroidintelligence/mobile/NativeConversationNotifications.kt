@@ -554,7 +554,8 @@ internal class NativeConversationNotifications(
         // Publish only after the terminal commit also covers preceding buffered
         // event/revision guards; a crash in publish must not revive those deltas.
         flushMetadata("${session.target.profileId}\u0000${session.target.accountId}")
-        if (key != null) check(preferences.edit().putLong("realtime.terminal.$key", session.updatedAt).commit())
+        if (key != null) preferences.edit().putLong("realtime.terminal.$key", session.updatedAt)
+            .commitOrLog("NativeConversationNotifications")
         terminalRounds[RoundKey(session.target, session.generationId)] = session.status
         reconciliationPending += session.target
         reconciliationDeadlines[session.target] = now() + FINAL_RECONCILIATION_WINDOW
