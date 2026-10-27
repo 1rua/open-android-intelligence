@@ -41,6 +41,9 @@ class PromptRuntime(UnsupportedApprovalMixin):
         self._message_handler = lambda: None
         self._conv_to_account = {}
         self.prompted = asyncio.Event()
+        # 新版 Hermes 的 metadata 只有 thread_id/reply_to_message_id：
+        # 关掉 request_id 以覆盖"从宿主队列里取回"的兼容路径。
+        self.include_request_id = True
         self.release = asyncio.Event()
         self.tasks = set()
         self.timeout_seconds = 30
@@ -59,7 +62,8 @@ class PromptRuntime(UnsupportedApprovalMixin):
             chat_id=conversation, session_key="key_" + owner, command="sensitive-test-command",
             description="需要用户确认", smart_denied=False,
             actions=[("允许一次", "once", "primary"), ("拒绝", "deny", "danger")],
-            metadata={"account_id": owner, "request_id": "private-host-request", "timeout_seconds": self.timeout_seconds}))
+            metadata={"account_id": owner, "timeout_seconds": self.timeout_seconds,
+                      **({"request_id": "private-host-request"} if self.include_request_id else {})}))
         assert result.success
         self.prompted.set()
         await self.release.wait()
@@ -109,6 +113,58 @@ async def test_native_prompt_waits_for_opaque_approval_decision_and_streams_both
         assert received[-1]["type"] == "done"
         assert received[-1]["outcome"] == "completed"
         assert received[-1]["generationId"] == received[0]["generationId"]
+    finally:
+        runtime.release.set()
+        pending.cancel()
+        for task in tuple(runtime.tasks):
+            task.cancel()
+        await asyncio.gather(pending, *tuple(runtime.tasks), return_exceptions=True)
+
+
+def test_pending_host_request_id_uses_the_host_queue(monkeypatch):
+    import sys
+    import types
+    from oai_hermes_adapter import approvals as approval_module
+
+    fake = types.ModuleType("tools.approval")
+    fake.list_gateway_approvals = lambda session: [
+        {"request_id": "req-old", "command": "old"},
+        {"request_id": "req-match", "command": "sensitive-test-command"},
+    ]
+    monkeypatch.setitem(sys.modules, "tools.approval", fake)
+    assert approval_module.pending_host_request_id("key_alice", "sensitive-test-command") == "req-match"
+    assert approval_module.pending_host_request_id("key_alice", "unknown") == "req-old"
+    assert approval_module.pending_host_request_id("") is None
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_card_works_when_host_metadata_lacks_request_id(interaction_core, monkeypatch):
+    calls = []
+    monkeypatch.setattr("oai_hermes_adapter.approvals.resolve_host_approval",
+                        lambda session, choice, request_id=None: calls.append((session, choice, request_id)) or 1)
+    monkeypatch.setattr("oai_hermes_adapter.approvals.host_approval_available", lambda: True, raising=False)
+    monkeypatch.setattr("oai_hermes_adapter.approvals.pending_host_request_id",
+                        lambda session, command="": "queue-host-request")
+    runtime = PromptRuntime(interaction_core)
+    runtime.include_request_id = False
+    adapter = HermesSessionAdapter(interaction_core, runtime)
+    principal = Principal("alice", device_id="phone", pairing_generation=7, grant_revision=9)
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    received = []
+
+    async def consume():
+        async for event in adapter.send(principal, conversation, "run sensitive command"):
+            received.append(event)
+
+    pending = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(runtime.prompted.wait(), 3)
+        await asyncio.sleep(.01)
+        card = next(event["approval"] for event in received if event["type"] == "approval_requested")
+        assert card["command"] == "sensitive-test-command"
+        decision = await adapter.decide_approval(principal, conversation, card["approvalId"], "once")
+        assert decision["approval"]["decision"] == "once"
+        assert calls == [("key_alice", "once", "queue-host-request")]
     finally:
         runtime.release.set()
         pending.cancel()

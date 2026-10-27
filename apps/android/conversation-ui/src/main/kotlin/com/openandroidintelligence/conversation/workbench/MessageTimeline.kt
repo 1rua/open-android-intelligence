@@ -256,6 +256,7 @@ fun messageStatusLabel(status: AgentMessageStatus, errorCode: AgentMessageErrorC
         AgentMessageErrorCode.ATTACHMENT_READ_FAILED -> "Agent 读取附件失败"
         AgentMessageErrorCode.AGENT_MEDIA_REJECTED -> "Agent 无法处理此媒体"
         AgentMessageErrorCode.MODEL_REQUEST_REJECTED -> "模型请求格式不接受"
+        AgentMessageErrorCode.APPROVAL_UNSUPPORTED -> "当前网关无法显示审批卡，命令已被拒绝"
         null -> "请重试或重新选择附件"
     }
 }

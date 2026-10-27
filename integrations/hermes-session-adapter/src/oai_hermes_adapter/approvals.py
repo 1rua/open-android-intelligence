@@ -21,6 +21,32 @@ def host_approval_available() -> bool:
     except ImportError:
         return False
 
+def pending_host_request_id(session_key: str, command: str = "") -> str | None:
+    """当前 Hermes 的 ``send_exec_approval`` 不再把 ``request_id`` 放进 metadata，但
+    待决议队列里的每一条都带着它。没有它就无法把用户的决定落到正确的等待者上，
+    所以这里按"命令匹配优先、否则最早一条"从宿主队列里取回来。
+    """
+    if not session_key:
+        return None
+    try:
+        from tools.approval import list_gateway_approvals
+    except Exception:
+        return None
+    try:
+        entries = list_gateway_approvals(session_key) or []
+    except Exception as exc:  # pragma: no cover - host runtime detail
+        logger.warning("[open_android] Host approval lookup failed: %s", exc)
+        return None
+    rows = [row for row in entries if isinstance(row, dict) and row.get("request_id")]
+    if not rows:
+        return None
+    if command:
+        for row in rows:
+            if str(row.get("command") or "") == command:
+                return str(row["request_id"])
+    return str(rows[0]["request_id"])
+
+
 def resolve_host_approval(session_key: str, choice: str, request_id: str | None = None) -> int | None:
     """Unblock the Agent thread waiting on one approval.
 
@@ -68,6 +94,8 @@ class NativeApprovalMixin:
         account_id = metadata.get("account_id") or self._conv_to_account.get(conversation_id)
         session_key = str(getattr(prompt, "session_key", "") or "")
         host_request_id = metadata.get("request_id")
+        if not host_request_id:
+            host_request_id = pending_host_request_id(session_key, str(getattr(prompt, "command", "") or ""))
         options = []
         for label, choice, style in getattr(prompt, "actions", ()):
             if choice in APPROVAL_CHOICES and choice not in {row["choice"] for row in options}:
@@ -109,6 +137,8 @@ class NativeApprovalMixin:
         return self._approval_result(approval_id)
 
     async def _reject_unrenderable_approval(self, account_id, conversation_id, session_key, request_id):
+        logger.warning("[open_android] Approval has no native card (account=%s conversation=%s session=%s request=%s); denying it",
+            bool(account_id), bool(conversation_id), bool(session_key), bool(request_id))
         await asyncio.to_thread(resolve_host_approval, session_key, "deny", request_id=request_id)
         if account_id:
             self.services.core.deliver_event(account_id, {"eventType": "core.approval.unsupported",

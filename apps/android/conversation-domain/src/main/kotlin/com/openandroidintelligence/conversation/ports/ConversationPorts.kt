@@ -123,6 +123,7 @@ enum class AgentMessageErrorCode(val wireValue: String) {
     ATTACHMENT_READ_FAILED("ATTACHMENT_READ_FAILED"),
     AGENT_MEDIA_REJECTED("AGENT_MEDIA_REJECTED"),
     MODEL_REQUEST_REJECTED("MODEL_REQUEST_REJECTED"),
+    APPROVAL_UNSUPPORTED("APPROVAL_UNSUPPORTED"),
 }
 data class CancelSubmissionResult(val success: Boolean)
 data class PendingSubmissionIntent(
