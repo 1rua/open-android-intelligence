@@ -1,10 +1,18 @@
 """Session adapter delivery-status reporting without a live host."""
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
+_SDK_ROOT = os.environ.get("HERMES_SDK_ROOT")
+# 适配器 import 时会导入宿主的 gateway 包；CI 只把 SDK 检出到 HERMES_SDK_ROOT，
+# 并没有装进 site-packages，所以这里显式补上搜索路径，避免 ModuleNotFoundError。
+if _SDK_ROOT:
+    sys.path.insert(0, str(Path(_SDK_ROOT).resolve()))
+
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("HERMES_SDK_ROOT"),
+    not _SDK_ROOT,
     reason="requires an explicit pinned Hermes SDK checkout",
 )
 
