@@ -231,6 +231,7 @@ class CoreAgentConversationRepository(
         turn.generationId?.let { rememberGeneration(turn, it) }
         val messageId = "msg_${UUID.randomUUID()}"
         val assistantMsgId = "asst_${UUID.randomUUID()}"
+        val assistantTimestamp = System.currentTimeMillis()
         if (isSelected(turn)) {
             _generationId.value = turn.generationId
             _generationState.value = if (turn.generationId == null) GenerationState.QUEUED else GenerationState.RUNNING
@@ -242,7 +243,7 @@ class CoreAgentConversationRepository(
                     eventId = "evt_${UUID.randomUUID()}", occurredAt = System.currentTimeMillis(),
                     revision = System.currentTimeMillis(), message = TimelineMessage(
                         id = assistantMsgId, sender = "assistant", parts = listOf(MessagePart.Text(text.toString())),
-                        timestamp = System.currentTimeMillis(), state = state,
+                        timestamp = assistantTimestamp, state = state,
                         generationId = turn.generationId, conversationId = ConversationId(conversationId))))
             }
             suspend fun cancelled() {
@@ -279,7 +280,7 @@ class CoreAgentConversationRepository(
                 } else {
                     publish("CONFIRMED")
                     emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
-                        System.currentTimeMillis(), ConversationId(conversationId), assistantMsgId,
+                        System.currentTimeMillis(), ConversationId(conversationId), messageId,
                         message.clientMessageId, AgentMessageStatus.COMPLETED, 1L, null, turn.generationId))
                     if (isSelected(turn)) _generationState.value = GenerationState.COMPLETED
                 }
@@ -292,7 +293,7 @@ class CoreAgentConversationRepository(
                     if (isSelected(turn)) _generationState.value = GenerationState.OUTCOME_UNKNOWN
                 } else {
                     emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
-                        System.currentTimeMillis(), ConversationId(conversationId), assistantMsgId,
+                        System.currentTimeMillis(), ConversationId(conversationId), messageId,
                         message.clientMessageId, AgentMessageStatus.FAILED, 1L,
                         com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.AGENT_UNAVAILABLE, turn.generationId))
                     if (isSelected(turn)) _generationState.value = GenerationState.FAILED

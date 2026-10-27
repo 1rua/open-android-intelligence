@@ -96,6 +96,31 @@ class NativeAgentsControllerTest {
         assertTrue(controller.state.value.agents.isEmpty())
     }
 
+    @Test fun lastSelectedAgentIdIsRestoredOnInit() = runTest {
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                val body = if (request.target == AgentSessionClient.ROOT) agents else sessions("DSH")
+                return WireResponse(200, emptyList(), body.toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val controller = NativeAgentsController(
+            client(transport, dispatcher),
+            backgroundScope,
+            dispatcher,
+            lastSelectedAgentId = "dsh",
+        )
+        // Initial state retains the remembered agent before network returns
+        assertEquals("dsh", controller.state.value.selectedAgentId)
+        runCurrent()
+        // After discovery finishes, remembered selection is confirmed
+        assertEquals("dsh", controller.state.value.selectedAgentId)
+        assertTrue(controller.state.value.selectionConfirmed)
+        assertEquals("DSH", controller.state.value.sessions.single().title)
+        controller.close()
+    }
+
     private fun client(transport: GatewayByteTransport, dispatcher: CoroutineDispatcher) = AgentSessionClient(GatewayHttpClient(
         GatewayProfile("account", "device", "session", "https://core.example"), transport,
         { ByteArray(64) }, InMemoryEventCursorStore(), ioDispatcher = dispatcher))
