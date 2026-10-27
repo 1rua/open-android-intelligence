@@ -217,4 +217,20 @@ class EncryptedMirrorRecoveryTest {
         assertEquals(AgentMessageStatus.COMPLETED,mirror.loadSendAtoms("conv_a").single().status)
         mirror.wipe()
     }
+    @Test fun divergentServerIdOnAUserUpsertKeepsTheBoundIdentity() = runTest {
+        val testScope=scope.copy(profileId="divergent_upsert_identity")
+        val mirror=EncryptedConversationMirror(context,testScope,key)
+        val question=TimelineMessage("question","user",listOf(MessagePart.Text("request")),1,"queued",
+            ConversationId("conv_a"),clientMessageId=ClientMessageId("client_a"))
+        mirror.saveTimeline("conv_a",TimelinePage(listOf(question),null))
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_queued",1,ConversationId("conv_a"),
+            "question",ClientMessageId("client_a"),AgentMessageStatus.QUEUED,0,null))
+        // 同一 clientMessageId 以另一个服务端 id 到达：身份保持、正文更新，不得抛异常。
+        mirror.applyAndCommit(VerifiedConversationEvent.TimelineUpsert("evt_upsert",2,3,
+            question.copy(id="question_server_side",parts=listOf(MessagePart.Text("edited request")))))
+        val atom=mirror.loadSendAtoms("conv_a").single()
+        assertEquals("question",atom.messageId)
+        assertEquals("edited request",(atom.parts.single() as MessagePart.Text).value)
+        mirror.wipe()
+    }
 }

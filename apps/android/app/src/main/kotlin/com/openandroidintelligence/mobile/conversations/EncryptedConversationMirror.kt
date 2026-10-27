@@ -540,7 +540,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             val clientId=existing?.clientMessageId ?: row?.clientMessageId
             if ((existing != null || row?.sender == "user") && clientId != null) {
                 val deleted=(existing ?: LocalSendAtom(ConversationId(conversationId),clientId,emptyList(),row?.timestamp ?: 0L))
-                    .accepted(messageId,row?.batchId ?: existing?.batchId).copy(parts=emptyList(),snapshotDeleted=true)
+                    .identified(messageId,row?.batchId ?: existing?.batchId).copy(parts=emptyList(),snapshotDeleted=true)
                 saveSendAtoms(conversationId,atoms.filterNot { it.clientMessageId == clientId } + deleted)
             }
             if (legacy.any { it.id == messageId }) saveLegacySent(conversationId,legacy.filterNot { it.id == messageId })
@@ -581,7 +581,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             }
             if (revision > known) {
                 if (atom != null) {
-                    val changed=atom.accepted(row.id,row.batchId ?: atom.batchId).copy(parts=row.parts,
+                    val changed=atom.identified(row.id,row.batchId ?: atom.batchId).copy(parts=row.parts,
                         contentRevision=revision,tombstoneRevision=null)
                     saveSendAtoms(id,atoms.map { if (it.clientMessageId == atom.clientMessageId) changed else it })
                 }
@@ -604,7 +604,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val original=atoms.firstOrNull { it.clientMessageId == clientMessageId }
         val identified=canonical.copy(conversationId=ConversationId(conversationId),clientMessageId=clientMessageId)
         if (original == null) return@transaction identified
-        val accepted=original.accepted(row.id,row.batchId ?: original.batchId).copy(
+        val accepted=original.identified(row.id,row.batchId ?: original.batchId).copy(
             parts=if (original.contentRevision >= 0L || row.parts.isEmpty()) original.parts else row.parts,
             timestamp=original.timestamp.takeIf { it > 0L } ?: row.timestamp,
         )
@@ -759,7 +759,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 if (event.message.sender == "user" && clientId != null) {
                     val status=statusRevision(id,event.message.id)
                     val atom=(existing ?: LocalSendAtom(ConversationId(id),clientId,event.message.parts,event.message.timestamp))
-                        .accepted(event.message.id,event.message.batchId ?: existing?.batchId).copy(
+                        .identified(event.message.id,event.message.batchId ?: existing?.batchId).copy(
                             parts=event.message.parts,contentRevision=event.revision,tombstoneRevision=null,
                             status=status?.status ?: existing?.status,statusRevision=status?.revision ?: existing?.statusRevision ?: -1L,
                             errorCode=if (status != null) status.errorCode else existing?.errorCode,
@@ -817,7 +817,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 val knownRow=baseline?.messages?.firstOrNull { it.id == event.messageId && it.sender == "user" }
                 if (existing != null || knownRow != null) {
                     val atom=(existing ?: LocalSendAtom(ConversationId(id),event.clientMessageId,knownRow!!.parts,knownRow.timestamp))
-                        .accepted(event.messageId).copy(status=event.status,statusRevision=event.revision,errorCode=event.errorCode)
+                        .identified(event.messageId).copy(status=event.status,statusRevision=event.revision,errorCode=event.errorCode)
                     saveSendAtoms(id,atoms.filterNot { it.clientMessageId == atom.clientMessageId } + atom)
                 }
                 baseline?.let { page -> saveTimeline(id,page.copy(messages=page.messages.map {
