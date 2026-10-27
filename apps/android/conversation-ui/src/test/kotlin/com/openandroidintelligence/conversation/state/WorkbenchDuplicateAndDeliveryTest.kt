@@ -137,6 +137,28 @@ class WorkbenchDuplicateAndDeliveryTest {
         controller.close()
     }
 
+    @Test
+    fun retryAfterABusyFailureNeverLeavesDuplicateTimelineKeys() = runTest {
+        val repository = Repository()
+        repository.failNextSend = true
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("在吗")
+        controller.sendDraft()
+        runCurrent()
+        // 失败后原子以 local_<clientId> 呈现，这就是重试时最容易撞 key 的一行。
+        assertEquals(1, rows(controller).count { it.isUser })
+
+        controller.editDraft("在吗")
+        controller.sendDraft()
+        runCurrent()
+
+        val rendered = rows(controller)
+        assertEquals("重复 key 会让 LazyColumn 直接崩溃", rendered.size, rendered.map { it.key }.distinct().size)
+        assertEquals(1, rendered.count { it.isUser })
+        controller.close()
+    }
+
     private fun userUpsert(id: String, clientId: ClientMessageId, text: String, timestamp: Long) =
         VerifiedConversationEvent.TimelineUpsert(
             "evt_$id", timestamp, 1,
@@ -183,8 +205,15 @@ class WorkbenchDuplicateAndDeliveryTest {
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
             Conversation(ConversationId("conv_new"), "新对话", 1)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
-        override suspend fun submitMessage(message: OutgoingMessage) =
-            MessageAcceptance("server_side_id", message.clientMessageId.value)
+        /** 首次发送模拟"会话忙"，用于覆盖失败后重试的重复 key 场景。 */
+        var failNextSend = false
+        override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
+            if (failNextSend) {
+                failNextSend = false
+                throw IllegalStateException("SESSION_BUSY")
+            }
+            return MessageAcceptance("server_side_id", message.clientMessageId.value)
+        }
         override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(
             batch.batchId, batch.messages.associate { it.clientMessageId.value to "server_side_id" },
         )

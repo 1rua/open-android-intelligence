@@ -1587,7 +1587,7 @@ class GatewayRuntime(
                             ?.let { decoded ->
                                 (decoded as? com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageStatus)
                                     ?.let { status ->
-                                        android.util.Log.d(
+                                        GatewayLog.d(
                                             "OaiLatency",
                                             "gateway.status status=${status.status.wireValue} messageId=${status.messageId} occurredAt=${status.occurredAt} receivedAt=${System.currentTimeMillis()}",
                                         )

@@ -610,6 +610,44 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         assertEquals("你好世界", texts.last())
     }
 
+    @Test fun aSendDuringAnActiveTurnIsQueuedAndSentAfterwards() = runTest {
+        val releaseFirst = CompletableDeferred<Unit>()
+        val posts = mutableListOf<String>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("stream only")
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            override suspend fun <T> consumeResponse(
+                request: WireRequest,
+                consume: suspend (Int, List<RawHeader>, InputStream) -> T,
+            ): T {
+                posts += request.target
+                val index = posts.size
+                if (index == 1) releaseFirst.await()
+                val text = if (index == 1) "第一轮" else "第二轮"
+                val frames = """{"type":"delta","text":"$text"}""" + "\n" + """{"type":"done","outcome":"completed"}"""
+                val body = frames.split("\n").filter { it.isNotBlank() }
+                    .joinToString("") { "event: message\ndata: $it\n\n" }
+                return consume(200, listOf(RawHeader("Content-Type", "text/event-stream")), ByteArrayInputStream(body.toByteArray()))
+            }
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler))
+
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_one"), "第一条"))
+        runCurrent()
+        assertEquals("首轮请求应已开始", 1, posts.size)
+
+        // 第一轮还没结束时发送第二条：必须排队，而不是把 SESSION_BUSY 抛给用户。
+        val second = repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_two"), "第二条"))
+        assertEquals("cm_two", second.messageId)
+        assertEquals("首轮结束前排队的消息不能并发发送", 1, posts.size)
+
+        releaseFirst.complete(Unit)
+        // runCurrent 会级联执行本轮结束后的排队发送（与其它 SSE 测试的驱动方式一致）。
+        runCurrent()
+        assertEquals("首轮结束后应自动发出排队的第二条", 2, posts.size)
+    }
+
     private fun client(transport: GatewayByteTransport): AgentSessionClient {
         return AgentSessionClient(
             GatewayHttpClient(

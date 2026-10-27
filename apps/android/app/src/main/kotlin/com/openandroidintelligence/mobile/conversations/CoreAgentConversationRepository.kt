@@ -38,6 +38,7 @@ import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalOutcome
 import com.openandroidintelligence.conversation.model.ApprovalSubmissionResult
 import com.openandroidintelligence.conversation.model.ApprovalSubmissionOutcome
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.events.GatewayEvent
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
@@ -240,10 +241,17 @@ class CoreAgentConversationRepository(
         val agent = requireAgent()
         val key = agent.id to conversationId
         val turn = NativeTurn(agent, conversationId)
-        if (turns.putIfAbsent(key, turn) != null) throw AgentSessionException("SESSION_BUSY")
+        if (turns.putIfAbsent(key, turn) != null) {
+            // 会话这一轮还在生成：宿主本身支持把追问排到本轮之后，客户端没理由
+            // 直接回一个 SESSION_BUSY 让用户重试。先排队，本轮结束时自动发出去。
+            enqueueSend(key, message)
+            GatewayLog.d("OaiLatency",
+                "send.queued client=${message.clientMessageId.value} conversation=$conversationId")
+            return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, null)
+        }
         // 发送到首帧的耗时是"等待接收"体感的主要来源：记录阶段时间点便于定位回归。
         val startedAt = System.currentTimeMillis()
-        android.util.Log.d("OaiLatency", "send.start client=${message.clientMessageId.value} conversation=$conversationId")
+        GatewayLog.d("OaiLatency", "send.start client=${message.clientMessageId.value} conversation=$conversationId")
         turn.generationId?.let { rememberGeneration(turn, it) }
         var messageId = message.clientMessageId.value
         var assistantMsgId = "stream_${message.clientMessageId.value}"
@@ -331,7 +339,7 @@ class CoreAgentConversationRepository(
                                     enqueue("accepted", VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
                                         System.currentTimeMillis(), remoteId, message.clientMessageId.value, ConversationId(conversationId)))
                                 }
-                                android.util.Log.d("OaiLatency",
+                                GatewayLog.d("OaiLatency",
                                     "accept.identity elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
                             }
                         }
@@ -349,7 +357,7 @@ class CoreAgentConversationRepository(
                     if (!turn.cancelled) {
                         if (!firstDeltaLogged && delta.isNotEmpty()) {
                             firstDeltaLogged = true
-                            android.util.Log.d("OaiLatency",
+                            GatewayLog.d("OaiLatency",
                                 "first.delta elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
                         }
                         text.append(delta)
@@ -362,7 +370,7 @@ class CoreAgentConversationRepository(
                 }
                 result.generationId?.let { rememberGeneration(turn, it) }
                 result.text?.let { text.clear(); text.append(it) }
-                android.util.Log.d("OaiLatency",
+                GatewayLog.d("OaiLatency",
                     "stream.done outcome=${result.outcome} elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
                 if (result.outcome == "cancelled" || turn.cancelled) {
                     publish("CANCELLED")
@@ -380,6 +388,8 @@ class CoreAgentConversationRepository(
                 // Closing a reader says nothing about whether Hermes stopped.
                 throw cancelled
             } catch (failure: Exception) {
+                GatewayLog.w("OaiLatency", "turn.failed client=${message.clientMessageId.value} " +
+                    "type=${failure.javaClass.simpleName} code=${(failure as? AgentSessionException)?.code} msg=${failure.message}")
                 if (turn.cancelled) { publish("CANCELLED"); flush(); cancelled() }
                 else if (failure is AgentSessionException && failure.code == "OUTCOME_UNKNOWN") {
                     if (text.isNotEmpty()) publish("OUTCOME_UNKNOWN")
@@ -398,10 +408,51 @@ class CoreAgentConversationRepository(
                 snapshots.close()
                 turns.remove(key, turn)
                 if (isSelected(turn) && _generationId.value == turn.generationId) _generationId.value = null
+                // 本轮结束：把排队中的追问发出去。串行发送，避免两条 SSE 流互相污染。
+                parentScope.launch(ioDispatcher) { drainQueuedSends(agent, conversationId) }
             }
         }
         // Only the host's first generation frame can issue a cancellable turn ID.
         return MessageAcceptance(messageId, message.clientMessageId.value, turn.generationId.takeIf { agent.kind != "hermes" })
+    }
+
+    /** 按 (agent, conversation) 排队的追问；只在上一轮结束后逐条发出。 */
+    private val queuedSends = ConcurrentHashMap<Pair<String, String>, ArrayDeque<OutgoingMessage>>()
+
+    private fun enqueueSend(key: Pair<String, String>, message: OutgoingMessage) {
+        synchronized(queuedSends) {
+            queuedSends.getOrPut(key) { ArrayDeque() }.addLast(message)
+        }
+    }
+
+    private fun takeQueuedSend(key: Pair<String, String>): OutgoingMessage? = synchronized(queuedSends) {
+        val queue = queuedSends[key] ?: return null
+        val next = queue.removeFirstOrNull()
+        if (queue.isEmpty()) queuedSends.remove(key)
+        next
+    }
+
+    private fun requeueSend(key: Pair<String, String>, message: OutgoingMessage) {
+        synchronized(queuedSends) {
+            queuedSends.getOrPut(key) { ArrayDeque() }.addFirst(message)
+        }
+    }
+
+    private suspend fun drainQueuedSends(agent: CoreAgent, conversationId: String) {
+        val key = agent.id to conversationId
+        val next = takeQueuedSend(key) ?: return
+        try {
+            submitMessage(conversationId, next)
+        } catch (busy: AgentSessionException) {
+            if (busy.code != "SESSION_BUSY") {
+                GatewayLog.w("OaiLatency", "queued send failed client=${next.clientMessageId.value} code=${busy.code}")
+                return
+            }
+            // 另一个发送抢先占用了这一轮：放回队首，等下一次 finally 再试。
+            requeueSend(key, next)
+        } catch (failure: Exception) {
+            GatewayLog.w("OaiLatency", "queued send failed client=${next.clientMessageId.value} error=${failure.javaClass.simpleName}")
+        }
     }
 
     override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> {

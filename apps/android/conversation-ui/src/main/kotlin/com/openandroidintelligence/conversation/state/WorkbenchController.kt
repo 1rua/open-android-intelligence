@@ -21,6 +21,7 @@ import com.openandroidintelligence.conversation.workbench.OriginalImagePolicy
 import com.openandroidintelligence.conversation.workbench.compressOriginalImageForViewer
 import com.openandroidintelligence.conversation.workbench.readOriginalBytes
 import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.http.EventSessionRejectedException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -253,7 +254,7 @@ class WorkbenchController(
     // 控制器协程里的未捕获异常只应结束这一条订阅，而不是带走整个进程：
     // 事件投影出错是「这一帧没应用上」，不是「App 该退出」。
     private val workScope=CoroutineScope(scope.coroutineContext+controllerJob+CoroutineExceptionHandler { _, failure ->
-        android.util.Log.e("OaiWorkbench", "workbench coroutine failed", failure)
+        GatewayLog.e("OaiWorkbench", "workbench coroutine failed: ${failure.javaClass.simpleName}: ${failure.message}")
     })
 
     /**
@@ -486,7 +487,7 @@ class WorkbenchController(
                         // 不改写已确定的本地身份（改写会把时间线里同一行拆成两条）。
                         val provisional = atom.messageId == null || atom.messageId == atom.clientMessageId.value
                         if (!provisional && atom.messageId != event.messageId) {
-                            android.util.Log.w("OaiWorkbench",
+                            GatewayLog.w("OaiWorkbench",
                                 "status identity diverged atom=${atom.messageId} event=${event.messageId} client=${atom.clientMessageId.value}")
                         }
                         atom.identified(event.messageId).copy(
@@ -2590,7 +2591,8 @@ class WorkbenchController(
                 if (activeThreadId == target) update { state -> state.copy(
                     composer = if (remoteIds.isEmpty()) ComposerState.EDITING else ComposerState.SUBMITTING,
                     timeline = appendLocal(state.timeline, entry),
-                    pendingBatch = state.pendingBatch + entry,
+                    // 重试复用同一个 clientMessageId：先移除同 key 的旧占位行，避免重复渲染。
+                    pendingBatch = state.pendingBatch.filterNot { it.key == entry.key } + entry,
                     generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED,
                 ) }
 
@@ -4376,8 +4378,26 @@ class WorkbenchController(
         // it happened rather than trailing the whole conversation.
         val withCards = insertApprovalRows(rendered, approvalRowsForActiveThread())
         // A receipt is navigation, not content, for the same reason.
-        val receiptRow = activeThreadId?.let(::creationReceiptRow) ?: return withCards
-        return withCards + receiptRow
+        val receiptRow = activeThreadId?.let(::creationReceiptRow) ?: return ensureUniqueKeys(withCards)
+        return ensureUniqueKeys(withCards + receiptRow)
+    }
+
+    /**
+     * 展示列表的 key 必须唯一，否则 LazyColumn 会在测量阶段直接抛
+     * `IllegalArgumentException: Key ... was already used` 把进程带走。
+     * 这里只做最后一道保险：正常路径上重复行应已在合并/去重阶段消除。
+     */
+    private fun ensureUniqueKeys(entries: List<TimelineEntry>): List<TimelineEntry> {
+        if (entries.size <= 1) return entries
+        val seen = HashSet<String>(entries.size)
+        val dropped = LinkedHashSet<String>()
+        val result = entries.filter { entry ->
+            if (seen.add(entry.key)) true else { dropped += entry.key; false }
+        }
+        if (dropped.isNotEmpty()) {
+            GatewayLog.w("OaiWorkbench", "dropped duplicate timeline keys=${dropped.toList()}")
+        }
+        return result
     }
 
     /**
@@ -4567,7 +4587,9 @@ class WorkbenchController(
             is Loadable.Empty -> emptyList()
             else -> emptyList()
         }
-        return Loadable.Ready(current + entry)
+        // 同一个 key 只能出现一次：失败重试会复用 clientMessageId，而原子在受理前
+        // 也以 local_<id> 呈现，直接追加就会让 LazyColumn 撞上重复 key 崩溃。
+        return Loadable.Ready(current.filterNot { it.key == entry.key } + entry)
     }
 
     private fun threadTitleOf(threadId: String): String =
