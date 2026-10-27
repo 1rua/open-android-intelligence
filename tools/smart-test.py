@@ -138,6 +138,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "--ignore=oai-core/tests/test_hermes.py",
             "--ignore=oai-core/tests/test_hermes_native.py",
             "--ignore=oai-core/tests/test_hermes_interactions.py",
+            "--ignore=oai-core/tests/test_hermes_approval_prompts.py",
             "--ignore=oai-core/tests/test_interaction_pipeline.py",
         ])
         if ret != 0:

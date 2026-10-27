@@ -420,7 +420,7 @@ private fun OutcomeRow(outcome: ApprovalOutcome, awaitingGateway: Boolean) {
     val (icon, tint, text) = when (outcome) {
         ApprovalOutcome.ALLOWED_ONCE -> Triple(Icons.Default.Check, MaterialTheme.colorScheme.primary, "已允许这一次执行")
         ApprovalOutcome.ALLOWED_SESSION -> Triple(Icons.Default.Check, MaterialTheme.colorScheme.primary, "已在本次会话内允许")
-        ApprovalOutcome.ALLOWED_ALWAYS -> Triple(Icons.Default.Check, MaterialTheme.colorScheme.primary, "已始终允许这类命令")
+        ApprovalOutcome.ALLOWED_ALWAYS -> Triple(Icons.Default.Check, MaterialTheme.colorScheme.primary, "已添加到白名单")
         ApprovalOutcome.DENIED -> Triple(Icons.Default.Close, MaterialTheme.colorScheme.error, "已拒绝，命令不会执行")
         ApprovalOutcome.TIMED_OUT -> Triple(
             Icons.Default.Schedule,
@@ -500,7 +500,7 @@ fun ApprovalUnsupportedHint(onDismiss: (() -> Unit)? = null, modifier: Modifier 
 fun choiceLabel(choice: ApprovalChoice): String = when (choice) {
     ApprovalChoice.ONCE -> "允许一次"
     ApprovalChoice.SESSION -> "本次会话允许"
-    ApprovalChoice.ALWAYS -> "始终允许"
+    ApprovalChoice.ALWAYS -> "添加到白名单"
     ApprovalChoice.DENY -> "拒绝"
     ApprovalChoice.UNKNOWN -> "未知"
 }

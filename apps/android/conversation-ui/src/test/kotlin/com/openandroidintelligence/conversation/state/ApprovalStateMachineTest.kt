@@ -203,6 +203,27 @@ class ApprovalStateMachineTest {
     }
 
     @Test
+    fun aChoiceTheHostDidNotOfferCannotBeSubmitted() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested(options = listOf(
+            ApprovalOption(ApprovalChoice.ONCE),
+            ApprovalOption(ApprovalChoice.DENY),
+        )))
+        advanceUntilIdle()
+
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ALWAYS)
+        advanceUntilIdle()
+
+        assertTrue(repository.decisions.isEmpty(), "客户端不得提交宿主没有提供的审批操作")
+        assertTrue(cardRow(controller)?.approval is ApprovalCardState.Waiting)
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+        assertEquals(listOf(APPROVAL_ID to ApprovalChoice.ONCE), repository.decisions)
+    }
+
+    @Test
     fun aFailedPressComesBackAsALiveCardWithAStructuredNotice() = runWorkbench {
         val repository = FakeRepository().apply { submissionOutcome = ApprovalSubmissionOutcome.FAILED }
         val controller = controller(repository)

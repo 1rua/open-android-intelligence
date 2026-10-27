@@ -1806,6 +1806,7 @@ class WorkbenchController(
         }
         val card = approvalCards[approvalId]
         if (card !is ApprovalCardState.Waiting) return
+        if (choice == ApprovalChoice.UNKNOWN || card.request.options.none { it.choice == choice }) return
         if (card.request.countdownAt(clock()).expired) {
             // The window the Gateway gave is over: the buttons are already grey,
             // and sending a decision the Gateway will refuse would only look

@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -110,6 +111,69 @@ class ApprovalCardTest {
         compose.onNodeWithText("Allow Once").assertIsDisplayed()
         compose.onNodeWithText("python3 -c \"print(1)\"").assertIsDisplayed()
         compose.onNodeWithText("内联解释器执行").assertIsDisplayed()
+    }
+
+    @Test
+    fun hostLabelsAndTheOriginalCommandKeepTheirCorrespondingActions() {
+        val command = " \tprintf '%s\\n' \"待审批命令\"\n  printf '%s' '保留引号'  "
+        val options = listOf(
+            ApprovalOption(ApprovalChoice.ONCE, "允许一次", ApprovalOptionStyle.PRIMARY),
+            ApprovalOption(ApprovalChoice.DENY, "拒绝", ApprovalOptionStyle.DANGER),
+            ApprovalOption(ApprovalChoice.SESSION, "本次会话允许", ApprovalOptionStyle.SECONDARY),
+            ApprovalOption(ApprovalChoice.ALWAYS, "添加到白名单", ApprovalOptionStyle.SECONDARY),
+        )
+        val decisions = mutableListOf<ApprovalChoice>()
+        setCard(
+            ApprovalCardState.Waiting(request(options = options).copy(command = command)),
+            onDecide = { decisions += it },
+        )
+
+        compose.onNodeWithText(command, useUnmergedTree = true).assertTextEquals(command)
+        options.forEach { option ->
+            compose.onNodeWithText(option.label!!).assertIsDisplayed()
+            compose.onNodeWithTag(ApprovalCardTags.button(option.choice)).performClick()
+        }
+        kotlin.test.assertEquals(options.map { it.choice }, decisions)
+    }
+
+    @Test
+    fun missingHostOptionsAreNotAddedAndWhitelistWordingIsUsedWhenOffered() {
+        val once = ApprovalOption(ApprovalChoice.ONCE, "允许一次", ApprovalOptionStyle.PRIMARY)
+        val deny = ApprovalOption(ApprovalChoice.DENY, "拒绝", ApprovalOptionStyle.DANGER)
+        var state by mutableStateOf<ApprovalCardState>(
+            ApprovalCardState.Waiting(request(options = listOf(once, deny))),
+        )
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = true)) {
+                MaterialTheme {
+                    ApprovalCard(state = state, onDecide = {}, clock = { virtualNow })
+                }
+            }
+        }
+
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ONCE)).assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.DENY)).assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.SESSION)).assertDoesNotExist()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ALWAYS)).assertDoesNotExist()
+
+        compose.runOnIdle {
+            state = ApprovalCardState.Waiting(request(options = listOf(
+                once,
+                ApprovalOption(ApprovalChoice.SESSION, "本次会话允许", ApprovalOptionStyle.SECONDARY),
+                deny,
+            )))
+        }
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.SESSION)).assertIsDisplayed()
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.ALWAYS)).assertDoesNotExist()
+
+        compose.runOnIdle {
+            state = ApprovalCardState.Waiting(request(options = listOf(ApprovalOption(ApprovalChoice.ALWAYS))))
+        }
+        compose.onNodeWithText("添加到白名单").assertIsDisplayed()
+        compose.runOnIdle {
+            state = ApprovalCardState.Resolved(state.request, ApprovalOutcome.ALLOWED_ALWAYS, REQUESTED_AT + 1_000L)
+        }
+        compose.onNodeWithText("已添加到白名单").assertIsDisplayed()
     }
 
     @Test

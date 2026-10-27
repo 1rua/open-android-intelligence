@@ -24,9 +24,9 @@ def host_approval_available() -> bool:
 def pending_host_request_id(session_key: str, command: str = "") -> str | None:
     """从宿主待审批队列恢复缺失的 ``request_id``。
 
-    新版 Hermes 的 metadata 可能不再携带 ``request_id``。只有命令唯一匹配，
-    或整个队列只有一条时才能安全恢复；出现多个候选就必须降级为文本审批，
-    绝不能按“最早一条”猜，否则用户可能批准另一条命令。
+    新版 Hermes 的 metadata 可能不再携带 ``request_id``，且提示中的命令已经
+    过宿主脱敏。按相同脱敏规则比较队列中的原始命令；只有唯一匹配，或整个
+    队列只有一条时才能恢复。不同原始命令脱敏后相同仍属于歧义，不能猜测。
     """
     if not session_key:
         return None
@@ -42,14 +42,28 @@ def pending_host_request_id(session_key: str, command: str = "") -> str | None:
     rows = [row for row in entries if isinstance(row, dict) and row.get("request_id")]
     if not rows:
         return None
-    matches = [
-        row for row in rows
-        if command and str(row.get("command") or "") == command
-    ]
-    if len(matches) == 1:
-        return str(matches[0]["request_id"])
     if len(rows) == 1:
         return str(rows[0]["request_id"])
+    try:
+        # TurnRunner._approval_notify_sync uses this same host primitive before
+        # calling send_exec_approval; never send raw queue commands to clients.
+        from agent.redact import redact_sensitive_text
+    except ImportError:
+        redact_sensitive_text = None
+    try:
+        matches = [
+            row for row in rows
+            if command and (
+                str(row.get("command") or "") == command
+                or redact_sensitive_text is not None
+                and redact_sensitive_text(str(row.get("command") or ""), force=True) == command
+            )
+        ]
+    except Exception as exc:
+        logger.warning("[open_android] Host approval command comparison failed type=%s", type(exc).__name__)
+        return None
+    if len(matches) == 1:
+        return str(matches[0]["request_id"])
     logger.warning(
         "[open_android] Host approval request id is ambiguous (%d pending, %d command matches)",
         len(rows),

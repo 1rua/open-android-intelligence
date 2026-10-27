@@ -69,6 +69,7 @@ jobs:
             --ignore=oai-core/tests/test_hermes.py \
             --ignore=oai-core/tests/test_hermes_native.py \
             --ignore=oai-core/tests/test_hermes_interactions.py \
+            --ignore=oai-core/tests/test_hermes_approval_prompts.py \
             --ignore=oai-core/tests/test_interaction_pipeline.py
           bash -n scripts/install.sh
           bash -n scripts/setup.sh
@@ -96,6 +97,7 @@ jobs:
         run: >-
           python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py
           oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py
+          oai-core/tests/test_hermes_approval_prompts.py
           oai-core/tests/test_hermes_dispatch_delivery.py -q
 
   dsh:
