@@ -9,6 +9,10 @@ on:
   # push, which matters when a failure only reproduces in CI.
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   gateway-and-protocol:
     name: Protocol Conformance & Historical Gateway Compatibility
@@ -276,7 +280,7 @@ jobs:
         run: |
           chmod +x gradlew
           export PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH"
-          ./gradlew check :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace --no-build-cache --max-workers=1
+          ./gradlew check :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace --max-workers=2
 
       # 六个插件资产必须逐一与签出的包逐字节一致；缺一个就说明内置链路断了。
       - name: Verify the plugin packages reached the APK

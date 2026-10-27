@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-apk-artifact
-  cancel-in-progress: false
+  group: android-apk-artifact-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   sign-plugin-packages:
@@ -34,9 +34,19 @@ jobs:
           cache-dependency-path: plugin-tooling/package-lock.json
 
       # 内置插件各自是一个 crate,统一用锁定工具链编译 WASM。
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugins -> plugins/target
+
       - name: Build the bundled plugin WASM
         run: |
-          rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
           cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications -p open-android-intelligence-sms -p open-android-intelligence-call-log -p open-android-intelligence-screen-reader -p open-android-intelligence-screen-capture -p open-android-intelligence-screen-control
           npm ci --prefix plugin-tooling
 
