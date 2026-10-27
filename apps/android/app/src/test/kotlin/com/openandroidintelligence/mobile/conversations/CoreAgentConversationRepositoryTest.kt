@@ -648,6 +648,41 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         assertEquals("首轮结束后应自动发出排队的第二条", 2, posts.size)
     }
 
+    @Test fun aSlashCommandSkipsTheQueueSoAnApprovalCanBeAnswered() = runTest {
+        val bodies = mutableListOf<String>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("stream only")
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            override suspend fun <T> consumeResponse(
+                request: WireRequest,
+                consume: suspend (Int, List<RawHeader>, InputStream) -> T,
+            ): T {
+                bodies += request.body.toString(Charsets.UTF_8)
+                if (bodies.size == 1) releaseFirst.await()
+                val frames = """{"type":"done","outcome":"completed"}"""
+                val body = "event: message\ndata: $frames\n\n"
+                return consume(200, listOf(RawHeader("Content-Type", "text/event-stream")), ByteArrayInputStream(body.toByteArray()))
+            }
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler))
+
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_one"), "第一条"))
+        runCurrent()
+        assertEquals(1, bodies.size)
+
+        // 生成中回复 /approve：必须立刻发出，否则原轮次一直卡在审批上。
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_approve"), "/approve once"))
+        runCurrent()
+        assertEquals("命令应插队直发", 2, bodies.size)
+        assertTrue("插队发送的应是命令本身", bodies[1].contains("/approve"))
+
+        releaseFirst.complete(Unit)
+        runCurrent()
+        assertEquals(2, bodies.size)
+    }
+
     private fun client(transport: GatewayByteTransport): AgentSessionClient {
         return AgentSessionClient(
             GatewayHttpClient(

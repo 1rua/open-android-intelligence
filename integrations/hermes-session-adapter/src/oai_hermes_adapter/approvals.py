@@ -102,13 +102,13 @@ class NativeApprovalMixin:
                 options.append({"choice": choice, **({"label": str(label)} if label else {}),
                                 **({"style": style} if style in {"primary", "secondary", "danger", "neutral"} else {})})
         if not account_id or not session_key or not host_request_id or not options or not self.native_approvals_available:
-            return await self._reject_unrenderable_approval(account_id, conversation_id, session_key, host_request_id)
+            return await self._fallback_to_text_prompt(account_id, conversation_id, session_key, host_request_id)
         core = self.services.core
         with closing(core.open_gateway_account(account_id)) as account:
             binding = account.agent_sessions.lookup(conversation_id)
             generation = account.conversations.workflow.current(conversation_id)
             if not binding or binding.get("sessionKey") != session_key or generation is None:
-                return await self._reject_unrenderable_approval(account_id, conversation_id, session_key, host_request_id)
+                return await self._fallback_to_text_prompt(account_id, conversation_id, session_key, host_request_id)
             digest = hashlib.sha256((session_key + "\0" + str(host_request_id)).encode()).hexdigest()
             approval_id = "apr_" + digest[:40]
             prior = account.approvals.lookup(approval_id)
@@ -136,14 +136,21 @@ class NativeApprovalMixin:
         self._track_background_task(task, "native-approval-timeout")
         return self._approval_result(approval_id)
 
-    async def _reject_unrenderable_approval(self, account_id, conversation_id, session_key, request_id):
-        logger.warning("[open_android] Approval has no native card (account=%s conversation=%s session=%s request=%s); denying it",
+    async def _fallback_to_text_prompt(self, account_id, conversation_id, session_key, request_id):
+        """渲染不出原生卡片时，交回宿主的纯文本审批兜底。
+
+        重构前的行为就是这样：Hermes 发一条带命令与 `/approve` 说明的普通消息，用户
+        在会话里手动回复。绝不能在这里代替用户拒绝——那会把"没渲染出来"变成"用户拒绝"。
+        返回 success=False 正是宿主的文本兜底开关（run_turn_runner 的 send 失败分支）。
+        """
+        logger.warning("[open_android] Native approval card unavailable (account=%s conversation=%s session=%s request=%s); falling back to host text prompt",
             bool(account_id), bool(conversation_id), bool(session_key), bool(request_id))
-        await asyncio.to_thread(resolve_host_approval, session_key, "deny", request_id=request_id)
-        if account_id:
-            self.services.core.deliver_event(account_id, {"eventType": "core.approval.unsupported",
-                "payload": {"conversationId": conversation_id, "code": "UNSUPPORTED_APPROVAL"}})
-        return self._unsupported_approval_result()
+        return self._unrenderable_approval_result()
+
+    @staticmethod
+    def _unrenderable_approval_result():
+        from gateway.platforms.base import SendResult
+        return SendResult(success=False, error="NATIVE_APPROVAL_UNAVAILABLE", retryable=False)
 
     def _settle_native_approval(self, account, approval, decision, *, device_id=None, decided_at=None):
         with account.store.transaction():

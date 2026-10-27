@@ -242,6 +242,12 @@ class CoreAgentConversationRepository(
         val key = agent.id to conversationId
         val turn = NativeTurn(agent, conversationId)
         if (turns.putIfAbsent(key, turn) != null) {
+            if (isHostCommand(message.text)) {
+                // /approve、/deny 这类命令解开的是"正卡在审批上的这一轮"：排队会自锁，
+                // 所以允许它们在生成中插队直发。
+                sendHostCommandWhileBusy(agent, conversationId, message)
+                return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, null)
+            }
             // 会话这一轮还在生成：宿主本身支持把追问排到本轮之后，客户端没理由
             // 直接回一个 SESSION_BUSY 让用户重试。先排队，本轮结束时自动发出去。
             enqueueSend(key, message)
@@ -414,6 +420,27 @@ class CoreAgentConversationRepository(
         }
         // Only the host's first generation frame can issue a cancellable turn ID.
         return MessageAcceptance(messageId, message.clientMessageId.value, turn.generationId.takeIf { agent.kind != "hermes" })
+    }
+
+    /** 只有斜杠命令允许在生成中插队：它们解开的是正在等待的审批，排队会造成自锁。 */
+    private fun isHostCommand(text: String): Boolean = text.trimStart().startsWith("/")
+
+    private fun sendHostCommandWhileBusy(agent: CoreAgent, conversationId: String, message: OutgoingMessage) {
+        parentScope.launch(ioDispatcher) {
+            GatewayLog.d("OaiLatency", "command.inline client=${message.clientMessageId.value}")
+            emitEvent(agent.id, VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
+                System.currentTimeMillis(), message.clientMessageId.value, message.clientMessageId.value,
+                ConversationId(conversationId)))
+            val failure = runCatching {
+                client.send(agent, conversationId, message.text,
+                    clientMessageId = message.clientMessageId.value, onDelta = { })
+            }.exceptionOrNull()
+            emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
+                System.currentTimeMillis(), ConversationId(conversationId), message.clientMessageId.value,
+                message.clientMessageId,
+                if (failure == null) AgentMessageStatus.COMPLETED else AgentMessageStatus.FAILED, 1L,
+                (failure as? Exception)?.let(::messageError), null))
+        }
     }
 
     /** 按 (agent, conversation) 排队的追问；只在上一轮结束后逐条发出。 */

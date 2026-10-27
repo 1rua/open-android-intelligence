@@ -206,19 +206,25 @@ def test_hermes_runtime_must_share_its_gateway_core(core):
 
 
 @pytest.mark.asyncio
-async def test_unsupported_exec_approval_is_denied_instead_of_waiting_for_an_unrenderable_card(core, monkeypatch):
+async def test_unrenderable_exec_approval_falls_back_to_the_host_text_prompt(core, monkeypatch):
     calls, events = [], []
     monkeypatch.setattr("oai_hermes_adapter.approvals.resolve_host_approval",
                         lambda session, choice, request_id=None: calls.append((session, choice, request_id)) or 1)
+    monkeypatch.setattr("oai_hermes_adapter.approvals.pending_host_request_id", lambda session, command="": None)
     core.register_event_sink(lambda account, event: events.append((account, event)))
     class Runtime(UnsupportedApprovalMixin):
         _unsupported_approval_result = staticmethod(lambda: SimpleNamespace(success=True))
+        _unrenderable_approval_result = staticmethod(
+            lambda: SimpleNamespace(success=False, error="NATIVE_APPROVAL_UNAVAILABLE"))
         services = SimpleNamespace(core=core)
         _conv_to_account = {"chat": "alice"}
-    result = await Runtime()._send_exec_approval_prompt(SimpleNamespace(chat_id="chat", session_key="native-key", metadata={"request_id": "native-request"}))
-    assert calls == [("native-key", "deny", "native-request")]
-    assert result.success
-    assert events == [("alice", {"eventType": "core.approval.unsupported", "payload": {"conversationId": "chat", "code": "UNSUPPORTED_APPROVAL"}})]
+    result = await Runtime()._send_exec_approval_prompt(SimpleNamespace(chat_id="chat", session_key="native-key", metadata={}))
+    # 绝不代替用户拒绝：没有决议调用，也不向 App 报 unsupported。
+    assert calls == []
+    assert events == []
+    # success=False 是宿主的文本兜底开关（发 /approve 说明，由用户手动回复）。
+    assert result.success is False
+    assert result.error == "NATIVE_APPROVAL_UNAVAILABLE"
 
 
 def test_session_backend_has_no_device_services_and_exclusively_owns_legacy_db(core):
