@@ -190,6 +190,7 @@ curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/
 > **提示**：
 > - 若已克隆本仓库，可在根目录直接运行 `./scripts/install.sh` 进行就地安装与交互式配置。
 > - 在本地仓库中亦可随时运行 `./scripts/setup.sh` 进行独立配置。
+> - 向导安装完成后，会自动将 `~/.local/bin` 加入环境变量 PATH，并在其中部署 `oai` 命令：**直接输入 `oai` 即可一键启动 Core 服务**；带参数时（如 `oai devices`、`oai mcp`）作为 CLI 客户端管理工具。
 
 <details open>
 <summary><b>手动安装 OAI Core 服务端（点击收起）</b></summary>

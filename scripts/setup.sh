@@ -402,6 +402,62 @@ save_configuration_and_account() {
     info "桥接凭据存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
 }
 
+# 注入全局 CLI 命令至 ~/.local/bin 并确保 PATH 环境变量
+install_cli_wrapper() {
+    local bin_dir="${HOME}/.local/bin"
+    mkdir -p "${bin_dir}"
+
+    local wrapper="${bin_dir}/oai"
+    info "正在配置 oai 全局快捷命令: ${wrapper}..."
+
+    cat <<EOF > "${wrapper}"
+#!/usr/bin/env bash
+# Open Android Intelligence Core Launcher & CLI
+set -euo pipefail
+
+OAI_DIR="${TARGET_DIR}"
+VENV_OAI="\${OAI_DIR}/.venv/bin/oai"
+
+if [ \$# -eq 0 ]; then
+    exec "\${OAI_DIR}/start-core.sh"
+else
+    exec "\${VENV_OAI}" "\$@"
+fi
+EOF
+    chmod 0755 "${wrapper}"
+    success "已生成快捷启动与 CLI 命令: ${wrapper}"
+
+    # 检查并注入 PATH 环境变量到常用 shell 配置文件中
+    local path_line='export PATH="$HOME/.local/bin:$PATH"'
+    local fish_line='fish_add_path -m $HOME/.local/bin'
+    local injected=0
+
+    # 针对 Bash
+    if [ -f "${HOME}/.bashrc" ] && ! grep -q '\.local/bin' "${HOME}/.bashrc" 2>/dev/null; then
+        printf "\n# Added by OAI Core\n%s\n" "${path_line}" >> "${HOME}/.bashrc"
+        injected=1
+    fi
+
+    # 针对 Zsh
+    if [ -f "${HOME}/.zshrc" ] && ! grep -q '\.local/bin' "${HOME}/.zshrc" 2>/dev/null; then
+        printf "\n# Added by OAI Core\n%s\n" "${path_line}" >> "${HOME}/.zshrc"
+        injected=1
+    fi
+
+    # 针对 Fish Shell
+    if [ -d "${HOME}/.config/fish" ]; then
+        local fish_conf="${HOME}/.config/fish/config.fish"
+        if [ -f "${fish_conf}" ] && ! grep -q '\.local/bin' "${fish_conf}" 2>/dev/null; then
+            printf "\n# Added by OAI Core\n%s\n" "${fish_line}" >> "${fish_conf}"
+            injected=1
+        fi
+    fi
+
+    if [ "${injected}" -eq 1 ]; then
+        info "已自动将 ~/.local/bin 写入您的 shell 环境变量配置中。"
+    fi
+}
+
 main() {
     banner
     resolve_paths
@@ -410,9 +466,10 @@ main() {
     configure_agent_integrations
     save_configuration_and_account
     configure_autostart
+    install_cli_wrapper
     printf "\n"
     success "OAI Core 配置流程已全部完成！"
-    info "您可随时运行 ${TARGET_DIR}/start-core.sh 启动服务。"
+    info "您可随时在终端直接运行 oai 或执行 ${TARGET_DIR}/start-core.sh 启动服务。"
 }
 
 if [ "${BASH_SOURCE[0]:-}" = "$0" ] || [ -z "${BASH_SOURCE[0]:-}" ]; then

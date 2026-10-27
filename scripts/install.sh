@@ -521,6 +521,62 @@ EOF
     esac
 }
 
+# 注入全局 CLI 命令至 ~/.local/bin 并确保 PATH 环境变量
+install_cli_wrapper() {
+    local bin_dir="${HOME}/.local/bin"
+    mkdir -p "${bin_dir}"
+
+    local wrapper="${bin_dir}/oai"
+    info "正在配置 oai 全局快捷命令: ${wrapper}..."
+
+    cat <<EOF > "${wrapper}"
+#!/usr/bin/env bash
+# Open Android Intelligence Core Launcher & CLI
+set -euo pipefail
+
+OAI_DIR="${TARGET_DIR}"
+VENV_OAI="\${OAI_DIR}/.venv/bin/oai"
+
+if [ \$# -eq 0 ]; then
+    exec "\${OAI_DIR}/start-core.sh"
+else
+    exec "\${VENV_OAI}" "\$@"
+fi
+EOF
+    chmod 0755 "${wrapper}"
+    success "已生成快捷启动与 CLI 命令: ${wrapper}"
+
+    # 检查并注入 PATH 环境变量到常用 shell 配置文件中
+    local path_line='export PATH="$HOME/.local/bin:$PATH"'
+    local fish_line='fish_add_path -m $HOME/.local/bin'
+    local injected=0
+
+    # 针对 Bash
+    if [ -f "${HOME}/.bashrc" ] && ! grep -q '\.local/bin' "${HOME}/.bashrc" 2>/dev/null; then
+        printf "\n# Added by OAI Core\n%s\n" "${path_line}" >> "${HOME}/.bashrc"
+        injected=1
+    fi
+
+    # 针对 Zsh
+    if [ -f "${HOME}/.zshrc" ] && ! grep -q '\.local/bin' "${HOME}/.zshrc" 2>/dev/null; then
+        printf "\n# Added by OAI Core\n%s\n" "${path_line}" >> "${HOME}/.zshrc"
+        injected=1
+    fi
+
+    # 针对 Fish Shell
+    if [ -d "${HOME}/.config/fish" ]; then
+        local fish_conf="${HOME}/.config/fish/config.fish"
+        if [ -f "${fish_conf}" ] && ! grep -q '\.local/bin' "${fish_conf}" 2>/dev/null; then
+            printf "\n# Added by OAI Core\n%s\n" "${fish_line}" >> "${fish_conf}"
+            injected=1
+        fi
+    fi
+
+    if [ "${injected}" -eq 1 ]; then
+        info "已自动将 ~/.local/bin 写入您的 shell 环境变量配置中。"
+    fi
+}
+
 # 打印最终完成信息
 show_completion_summary() {
     printf "\n"
@@ -529,9 +585,11 @@ show_completion_summary() {
     printf "${GREEN}${BOLD}======================================================${NC}\n\n"
 
     printf "${BOLD}服务启动方式：${NC}\n"
-    printf "  1. 直接使用快捷脚本：\n"
+    printf "  1. 任意终端直接输入：\n"
+    printf "     ${CYAN}oai${NC}\n\n"
+    printf "  2. 使用快捷脚本：\n"
     printf "     ${CYAN}%s/start-core.sh${NC}\n\n" "${TARGET_DIR}"
-    printf "  2. 或通过命令行启动：\n"
+    printf "  3. 或通过原始命令行启动：\n"
     printf "     ${CYAN}cd %s${NC}\n" "${TARGET_DIR}"
     printf "     ${CYAN}source .venv/bin/activate${NC}\n"
     printf "     ${CYAN}oai serve --config core.json${NC}\n\n"
@@ -541,9 +599,9 @@ show_completion_summary() {
     printf "  - 使用向导中配置的账号与密码登录并完成配对。\n\n"
 
     printf "${BOLD}日常管理命令：${NC}\n"
-    printf "  - 添加新账号: ${CYAN}.venv/bin/oai account create --config core.json --username <用户名>${NC}\n"
-    printf "  - 查看设备列表: ${CYAN}.venv/bin/oai devices${NC}\n"
-    printf "  - 启动 MCP 服务: ${CYAN}.venv/bin/oai mcp${NC}\n\n"
+    printf "  - 添加新账号: ${CYAN}oai account create --config %s/core.json --username <用户名>${NC}\n" "${TARGET_DIR}"
+    printf "  - 查看设备列表: ${CYAN}oai devices${NC}\n"
+    printf "  - 启动 MCP 服务: ${CYAN}oai mcp${NC}\n\n"
 }
 
 main() {
@@ -556,6 +614,7 @@ main() {
     configure_agent_plugins
     guide_initial_configuration
     configure_autostart
+    install_cli_wrapper
     show_completion_summary
 }
 

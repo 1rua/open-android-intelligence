@@ -37,6 +37,9 @@ curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/
 选择接入后，Core 生成显式的一对一账号映射；Hermes 宿主包须在宿主自己的 Python
 环境另行安装。DSH 和 Codex 的安装、使用均不要求存在 Hermes。
 
+向导安装完成后，会自动将 `~/.local/bin` 注入 PATH 并在其中配置 `oai` 启动包装命令：
+直接在终端输入 `oai` 即可一键启动服务；带参数执行时（如 `oai devices`、`oai mcp`）作为 CLI 客户端管理工具。
+
 桥接 Token 生成或复用到 `runtime/secrets/adapter-tokens.env`，文件权限为 `0600`，
 父目录为 `0700`；`start-core.sh` 只读取该私密文件，不嵌入凭据值。
 重新运行 `setup.sh` 会备份旧配置并保留已有存储路径、主密钥、账号密码、配对和

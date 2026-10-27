@@ -197,6 +197,7 @@ curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/
 > **Tip**:
 > - If you have already cloned this repository, you can run `./scripts/install.sh` directly in the root directory.
 > - You can also run `./scripts/setup.sh` directly in the repository for standalone configuration.
+> - Once installation completes, the wizard automatically configures `~/.local/bin` in your PATH and provides the `oai` executable: **run `oai` directly in any shell to start the Core service**; run with arguments (such as `oai devices`, `oai mcp`) to invoke client CLI capabilities.
 
 <details open>
 <summary><b>Manual OAI Core Installation (Click to collapse)</b></summary>

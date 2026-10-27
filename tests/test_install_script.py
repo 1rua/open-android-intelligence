@@ -313,4 +313,45 @@ def test_sync_dsh_adapter_env_updates_env_and_credentials(tmp_path, monkeypatch)
     assert "OAI_DSH_ADAPTER_TOKEN: synthetic-dsh-token-32-chars-long-1234" in cred_text
 
 
+@pytest.mark.parametrize("name", ["install.sh", "setup.sh"])
+def test_install_cli_wrapper_creates_executable_and_injects_path(name, tmp_path):
+    home_dir = tmp_path / "fakehome"
+    target_dir = tmp_path / "oai-core"
+    home_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+
+    # 准备模拟的 shell 配置文件
+    bashrc = home_dir / ".bashrc"
+    bashrc.write_text("# existing bashrc\n", encoding="utf-8")
+    zshrc = home_dir / ".zshrc"
+    zshrc.write_text("# existing zshrc\n", encoding="utf-8")
+    fish_conf_dir = home_dir / ".config" / "fish"
+    fish_conf_dir.mkdir(parents=True)
+    fish_conf = fish_conf_dir / "config.fish"
+    fish_conf.write_text("# existing fish config\n", encoding="utf-8")
+
+    source = f'''
+source {shlex.quote(str(REPOSITORY / "scripts" / name))}
+HOME={shlex.quote(str(home_dir))}
+TARGET_DIR={shlex.quote(str(target_dir))}
+install_cli_wrapper
+'''
+    result = run_bash(source)
+    assert result.returncode == 0
+
+    wrapper = home_dir / ".local" / "bin" / "oai"
+    assert wrapper.exists()
+    assert stat.S_IMODE(wrapper.stat().st_mode) == 0o755
+    content = wrapper.read_text(encoding="utf-8")
+    assert f'OAI_DIR="{target_dir}"' in content
+    assert 'exec "${OAI_DIR}/start-core.sh"' in content
+    assert 'exec "${VENV_OAI}" "$@"' in content
+
+    # 验证环境变量注入
+    assert '.local/bin' in bashrc.read_text(encoding="utf-8")
+    assert '.local/bin' in zshrc.read_text(encoding="utf-8")
+    assert 'fish_add_path -m $HOME/.local/bin' in fish_conf.read_text(encoding="utf-8")
+
+
+
 
