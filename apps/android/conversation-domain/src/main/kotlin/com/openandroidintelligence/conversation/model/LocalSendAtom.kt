@@ -34,6 +34,26 @@ data class LocalSendAtom(
             submissionState = LocalSubmissionState.ACCEPTED, status = status ?: AgentMessageStatus.QUEUED,
             submissionErrorCode = null)
     }
+
+    /**
+     * 事件驱动的身份确认：同一 clientMessageId 可能先后带来客户端占位 id 与服务端真实 id。
+     *
+     * 客户端 id 只是受理前的占位身份，服务端一旦给出真实 id 就应当升级；而已经绑定到
+     * 另一个服务端身份的原子不再改写 id（否则同一条消息会在时间线里被拆成两行），
+     * 但状态与投递事实仍需推进。**这里绝不抛异常**：事件链路上的身份分叉不能让进程崩溃。
+     */
+    fun identified(serverId: String, serverBatchId: String? = batchId): LocalSendAtom {
+        if (serverId.isBlank()) return this
+        val provisional = messageId == null || messageId == clientMessageId.value
+        val adopt = provisional || messageId == serverId
+        return copy(
+            messageId = if (adopt) serverId else messageId,
+            batchId = serverBatchId ?: batchId,
+            submissionState = LocalSubmissionState.ACCEPTED,
+            status = status ?: AgentMessageStatus.QUEUED,
+            submissionErrorCode = null,
+        )
+    }
 }
 
 /** 只认明确删除与稳定身份，不将空页或缺正文的受理查询当作删除。 */
@@ -43,7 +63,7 @@ fun reconcileSnapshotDeletions(remote: List<TimelineMessage>, atoms: List<LocalS
             (row.conversationId == null || row.conversationId == atom.conversationId) &&
             ((atom.messageId != null && row.id == atom.messageId) || row.clientMessageId == atom.clientMessageId)
         }
-        if (deleted == null) atom else atom.accepted(deleted.id, deleted.batchId ?: atom.batchId)
+        if (deleted == null) atom else atom.identified(deleted.id, deleted.batchId ?: atom.batchId)
             .copy(parts = emptyList(), snapshotDeleted = true)
     }
 

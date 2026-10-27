@@ -23,6 +23,7 @@ import com.openandroidintelligence.conversation.workbench.readOriginalBytes
 import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
 import com.openandroidintelligence.gateway.http.EventSessionRejectedException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -249,7 +250,11 @@ class WorkbenchController(
         { bytes -> compressOriginalImageForViewer(bytes) },
 ) : AutoCloseable {
     private val controllerJob=SupervisorJob(scope.coroutineContext[Job])
-    private val workScope=CoroutineScope(scope.coroutineContext+controllerJob)
+    // 控制器协程里的未捕获异常只应结束这一条订阅，而不是带走整个进程：
+    // 事件投影出错是「这一帧没应用上」，不是「App 该退出」。
+    private val workScope=CoroutineScope(scope.coroutineContext+controllerJob+CoroutineExceptionHandler { _, failure ->
+        android.util.Log.e("OaiWorkbench", "workbench coroutine failed", failure)
+    })
 
     /**
      * How long a send may stay unanswered before the phone stops trusting
@@ -442,7 +447,7 @@ class WorkbenchController(
     private suspend fun acceptSendAtom(threadId: String, clientId: String, messageId: String, batchId: String? = null, generationId: String? = null) {
         generationId?.let { rememberMessageGeneration(threadId, messageId, clientId, it) }
         activeWork.accepted(clientId, threadId, generationId)
-        changeSendAtom(threadId, clientId) { old -> old?.accepted(messageId, batchId ?: old.batchId) }
+        changeSendAtom(threadId, clientId) { old -> old?.identified(messageId, batchId ?: old.batchId) }
         identifyHistoricalAttachments(threadId, ClientMessageId(clientId), messageId)
     }
 
@@ -476,8 +481,17 @@ class WorkbenchController(
         when (event) {
             is VerifiedConversationEvent.MessageStatus -> changeSendAtom(event.conversationId.value, event.clientMessageId.value) { old ->
                 old?.let { atom ->
-                    if (event.revision <= atom.statusRevision) atom else atom.accepted(event.messageId).copy(
-                        status = event.status, statusRevision = event.revision, errorCode = event.errorCode)
+                    if (event.revision <= atom.statusRevision) atom else {
+                        // 宿主可能用另一个 id 报告同一条 prompt 的投递状态：只推进状态，
+                        // 不改写已确定的本地身份（改写会把时间线里同一行拆成两条）。
+                        val provisional = atom.messageId == null || atom.messageId == atom.clientMessageId.value
+                        if (!provisional && atom.messageId != event.messageId) {
+                            android.util.Log.w("OaiWorkbench",
+                                "status identity diverged atom=${atom.messageId} event=${event.messageId} client=${atom.clientMessageId.value}")
+                        }
+                        atom.identified(event.messageId).copy(
+                            status = event.status, statusRevision = event.revision, errorCode = event.errorCode)
+                    }
                 }
             }
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value?.let { threadId ->
@@ -487,9 +501,9 @@ class WorkbenchController(
                 }
                 atom?.let { known -> changeSendAtom(threadId, known.clientMessageId.value) { old ->
                     old?.let {
-                        if (event.message.isDeleted) it.accepted(event.message.id).copy(parts=emptyList(),snapshotDeleted=true)
+                        if (event.message.isDeleted) it.identified(event.message.id).copy(parts=emptyList(),snapshotDeleted=true)
                         else if (it.snapshotDeleted || event.revision <= it.contentRevision || it.tombstoneRevision?.let { revision -> event.revision <= revision } == true) it
-                        else it.accepted(event.message.id).copy(parts = event.message.parts,
+                        else it.identified(event.message.id).copy(parts = event.message.parts,
                             contentRevision = event.revision, tombstoneRevision = null)
                     }
                 } }
@@ -2632,7 +2646,9 @@ class WorkbenchController(
                             }
                             hydrateSendAtoms(target,refresh=true)
                             if (known?.isDeleted == true) changeSendAtom(target,message.clientMessageId.value) { old ->
-                                old?.accepted(known.id)?.copy(parts=emptyList(),snapshotDeleted=true)
+                                // 重试路径同样只认删除事实：远端 id 与本地已绑定身份不一致时
+                                // 改写身份会把同一行拆成两条。
+                                old?.identified(known.id)?.copy(parts=emptyList(),snapshotDeleted=true)
                             }
                             if (atomsFor(target)[message.clientMessageId.value]?.isDeleted == true) {
                                 reconcileDeletedRecoveryUnits(target)
@@ -3563,6 +3579,13 @@ class WorkbenchController(
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                             val eventConvId = event.conversationId?.value
                             val correlationId = event.correlationId
+                            if (eventConvId != null && correlationId.isNotBlank() && event.messageId.isNotBlank()) {
+                                // 受理早期只能用客户端占位 id；宿主报出真实 userMessageId 后升级本地身份，
+                                // 后续终态事件就不会再与本地身份分叉。
+                                changeSendAtom(eventConvId, correlationId) { old ->
+                                    old?.takeIf { it.messageId == it.clientMessageId.value }?.identified(event.messageId) ?: old
+                                }
+                            }
                             if (eventConvId == currentActiveId && correlationId.isNotBlank()) {
                                 update { state ->
                                     state.copy(
