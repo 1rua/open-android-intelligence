@@ -3479,6 +3479,42 @@ class WorkbenchController(
     }
 
     /**
+     * 网关投递状态（平台事件流）：原生会话下工作台只订阅 Agent 会话流，收不到
+     * `conversation.message.status`，于是"等待 Agent 接收"必须等到首个 token 才消失。
+     *
+     * 这里只把非终态的 `delivered` 提前显示；**不写 statusRevision**，终态仍由会话流
+     * 负责，避免同一个终态被两路事件处理两次。
+     */
+    fun onGatewayDeliveryStatus(status: VerifiedConversationEvent.MessageStatus) {
+        if (closed || status.status != com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED) return
+        workScope.launch {
+            val threadId = status.conversationId.value
+            if (threadId != activeThreadId) return@launch
+            if (atomsFor(threadId).isEmpty()) return@launch
+            var promoted = false
+            changeSendAtom(threadId, status.clientMessageId.value) { old ->
+                if (old != null &&
+                    old.submissionState == LocalSubmissionState.ACCEPTED &&
+                    old.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED
+                ) {
+                    promoted = true
+                    old.identified(status.messageId).copy(
+                        status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED,
+                    )
+                } else old
+            }
+            if (!promoted) return@launch
+            update { state ->
+                if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
+                    state.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch)))
+                } else {
+                    state
+                }
+            }
+        }
+    }
+
+    /**
      * Re-opens the account's subscription from the stored cursor.
      *
      * Unlike a thread switch, this is not a reason to invent a second
@@ -3723,6 +3759,20 @@ class WorkbenchController(
                                 }
                             }
                             if (message.sender == "user" || message.sender == "assistant") {
+                                if (message.sender == "user") {
+                                    val clientId = message.clientMessageId?.value
+                                    if (clientId != null) {
+                                        // 同一 clientMessageId 只保留一行：受理时写入的占位行与随后到达的
+                                        // 服务端行可能是不同 id，两行同时存在就会在回复下方多出重复气泡。
+                                        mirrored.entries.filter { (key, row) ->
+                                            key != message.id && row.sender == "user" &&
+                                                row.clientMessageId?.value == clientId
+                                        }.map { it.key }.forEach { stale ->
+                                            mirrored.remove(stale)
+                                            mirroredRevisions.remove(stale)
+                                        }
+                                    }
+                                }
                                 mirrored[message.id] = message
                                 mirroredRevisions[message.id] = event.revision
                             }
@@ -4380,7 +4430,49 @@ class WorkbenchController(
                 result.addAll(deduplicatedAssistant)
             }
         }
-        return result
+        return deduplicateUserIdentities(result)
+    }
+
+    /**
+     * 同一 clientMessageId 只允许一条用户行。
+     *
+     * 实时状态里可能同时存在"受理占位行"和"服务端镜像行"：两者 id 不同、时间戳可能为 0，
+     * 而且中间隔着一条助手回复，旧的相邻去重覆盖不到，于是会在回复下方多出一条上一轮消息。
+     * 切会话会从仓库重载整条时间线，所以这个重复只在实时状态下可见。
+     */
+    private fun deduplicateUserIdentities(entries: List<TimelineEntry>): List<TimelineEntry> {
+        if (entries.size <= 1) return entries
+
+        val keep = BooleanArray(entries.size) { true }
+        val indexByIdentity = HashMap<String, Int>()
+        entries.forEachIndexed { index, entry ->
+            if (!entry.isUser) return@forEachIndexed
+            val identity = entry.clientMessageId?.value?.takeIf { it.isNotBlank() }
+                ?: normalizeEntryKey(entry.key).takeIf { it.isNotBlank() }
+                ?: return@forEachIndexed
+            val previous = indexByIdentity[identity]
+            if (previous == null) {
+                indexByIdentity[identity] = index
+            } else if (preferUserRow(entry, entries[previous])) {
+                keep[previous] = false
+                indexByIdentity[identity] = index
+            } else {
+                keep[index] = false
+            }
+        }
+        return if (keep.all { it }) entries else entries.filterIndexed { index, _ -> keep[index] }
+    }
+
+    /** 保留"已确认、有真实时间戳、内容更完整"的那一行。 */
+    private fun preferUserRow(candidate: TimelineEntry, current: TimelineEntry): Boolean {
+        if (current.pendingAcceptance != candidate.pendingAcceptance) return current.pendingAcceptance
+        val candidateTimed = candidate.timestamp > 0L
+        val currentTimed = current.timestamp > 0L
+        if (candidateTimed != currentTimed) return candidateTimed
+        if (candidateTimed && currentTimed && candidate.timestamp != current.timestamp) {
+            return candidate.timestamp < current.timestamp
+        }
+        return candidate.text.length > current.text.length
     }
 
     private fun deduplicateAssistantGroup(group: List<TimelineEntry>): List<TimelineEntry> {
