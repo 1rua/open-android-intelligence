@@ -203,7 +203,7 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
             return False
 
     app.add_routes(routes)
-    app.add_routes(create_agent_routes(registry, auth.authenticate, is_active, core.contracts))
+    app.add_routes(create_agent_routes(registry, auth.authenticate, is_active, core.contracts, core=core))
     # This compatibility range describes the pinned Core Python interface. It
     # makes no claim that a Hermes host process is installed or online.
     exposure = create_gateway_exposure("host-route", core=core, host_version="2.1.0",

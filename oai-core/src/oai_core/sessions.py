@@ -10,6 +10,7 @@ import logging
 import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Protocol
@@ -23,7 +24,7 @@ from .operations import NativeOperations, OperationConflict
 
 logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
-CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream", "commands", "approvals")
+CAPABILITIES = ("list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream", "commands", "approvals", "attachments")
 STREAM_EVENT_TYPES = frozenset({"delta", "done", "error", "generation", "approval_requested", "approval_resolved"})
 PROTOCOL_VERSIONS = ("1.0", "v1")
 # Keep one explicit boundary across aiohttp versions and both session bridges.
@@ -41,6 +42,54 @@ class AdapterError(Exception):
         self.code = code
         self.status = status
         self.details = dict(details or {})
+
+
+@dataclass(frozen=True)
+class NativeAttachment:
+    """A verified account-owned attachment, read in bounded decrypted chunks."""
+    core: Any
+    principal: Principal
+    metadata: dict[str, Any]
+    is_active: Callable[[], Awaitable[bool]] | None = None
+
+    async def assert_active(self) -> None:
+        if self.is_active is not None and not await self.is_active():
+            raise AdapterError("SESSION_REVOKED", 401)
+
+    def chunks(self):
+        account = self.core.open_gateway_account(self.principal.account_id)
+        try:
+            _validate_attachment_owner(account, self.principal, self.metadata["attachmentId"])
+            yield from account.attachments.open_verified_stream(self.metadata["attachmentId"])
+        finally:
+            account.close()
+
+
+def _validate_attachment_owner(account: Any, principal: Principal, attachment_id: str) -> None:
+    row = account.store.database.execute(
+        "SELECT owner_device_id, owner_pairing_generation FROM attachments WHERE attachment_id=?", (attachment_id,)).fetchone()
+    if (row is None or not principal.device_id or principal.pairing_generation is None
+            or row["owner_device_id"] != principal.device_id
+            or row["owner_pairing_generation"] != principal.pairing_generation):
+        raise AdapterError("ATTACHMENT_ACCESS_DENIED", 403)
+    account.attachments.require_verified_for_message(attachment_id)
+
+
+def native_attachments(core: Any, principal: Principal, attachment_ids: list[str],
+                       is_active: Callable[[], Awaitable[bool]] | None = None) -> list[NativeAttachment]:
+    if not attachment_ids:
+        return []
+    if core is None:
+        raise AdapterError("ATTACHMENTS_UNAVAILABLE", 503)
+    account = core.open_gateway_account(principal.account_id)
+    try:
+        result = []
+        for attachment_id in attachment_ids:
+            _validate_attachment_owner(account, principal, attachment_id)
+            result.append(NativeAttachment(core, principal, account.attachments.get_record(attachment_id), is_active))
+        return result
+    finally:
+        account.close()
 
 
 class SessionAdapter(Protocol):
@@ -258,7 +307,7 @@ def _create_hermes_adapter(entry: dict[str, Any], base_dir: Path, core: Any) -> 
         raise ValueError("Hermes requires explicit Core-to-Hermes account mappings")
     if len(set(accounts.values())) != len(accounts):
         raise ValueError("Hermes account mappings must be one-to-one")
-    return HermesRemoteSessionAdapter(entry["url"], token, accounts, agent_id=agent_id, name=name)
+    return HermesRemoteSessionAdapter(entry["url"], token, accounts, agent_id=agent_id, name=name, attachment_core=core)
 
 
 def _create_remote_adapter(entry: dict[str, Any], base_dir: Path, core: Any) -> SessionAdapter:
@@ -397,7 +446,7 @@ IsActive = Callable[[Principal], bool | Awaitable[bool]]
 
 
 def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_active: IsActive,
-                        contracts: ContractRegistry | None = None) -> web.RouteTableDef:
+                        contracts: ContractRegistry | None = None, *, core: Any = None) -> web.RouteTableDef:
     routes = web.RouteTableDef()
     contracts = contracts if contracts is not None else ContractRegistry()
 
@@ -543,15 +592,29 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         adapter = registry.get(request.match_info["agent_id"], "send")
         registry.get(request.match_info["agent_id"], "stream")
         session_id = safe_session_id(request)
-        body = await body_for(request, {"text"})
-        text = body.get("text")
-        if not isinstance(text, str) or not text.strip() or len(text) > 262144:
+        body = await body_for(request, {"text", "attachmentIds", "clientMessageId"})
+        text = body.get("text", "")
+        attachment_ids = body.get("attachmentIds", [])
+        client_message_id = body.get("clientMessageId")
+        if (not isinstance(attachment_ids, list) or len(attachment_ids) > 256
+                or any(not isinstance(item, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", item) for item in attachment_ids)
+                or len(set(attachment_ids)) != len(attachment_ids)):
+            raise AdapterError("INVALID_ATTACHMENT")
+        if (not isinstance(text, str) or (not text.strip() and not attachment_ids) or len(text) > 262144
+                or client_message_id is not None and (not isinstance(client_message_id, str)
+                    or re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", client_message_id) is None)):
             raise AdapterError("INVALID_MESSAGE")
+        kwargs = {}
+        if attachment_ids:
+            registry.get(request.match_info["agent_id"], "attachments")
+            kwargs["attachments"] = await asyncio.to_thread(native_attachments, core, principal, attachment_ids, lambda: active(principal))
+        if client_message_id is not None and "client_message_id" in inspect.signature(adapter.send).parameters:
+            kwargs["client_message_id"] = client_message_id
         request_id, receipt = operation(request, principal, body)
         if receipt is not None:
             # The transcript is read from its native host, never replayed from Core.
             raise AdapterError("REQUEST_ALREADY_EXECUTED", 409)
-        stream = adapter.send(principal, session_id, text)
+        stream = adapter.send(principal, session_id, text, **kwargs)
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
         await response.prepare(request)
 

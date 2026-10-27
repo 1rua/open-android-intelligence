@@ -78,5 +78,5 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
         )
     }
     return rows.values.filterNot { it.isDeleted }
-        .sortedWith(compareBy<TimelineMessage> { it.timestamp }.thenBy { if (it.sender == "user") 0 else 1 })
+        .sortedBy { it.timestamp }
 }

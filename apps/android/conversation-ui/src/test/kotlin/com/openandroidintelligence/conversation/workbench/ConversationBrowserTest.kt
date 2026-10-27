@@ -29,6 +29,29 @@ import org.junit.Test
 class ConversationBrowserTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun localFoldersAndSortRemainAvailableWithoutAgentDeleteCapability() {
+        val deleted = mutableListOf<String>()
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(360.dp, 800.dp)) {
+                    ConversationBrowser(threads = Loadable.Ready(listOf(thread("a", "Alpha", 1))),
+                        activeThreadId = null, onOpenThread = {}, onCreateThread = {}, onRefresh = {},
+                        managementSupported = true, deleteSupported = false, archiveSupported = false,
+                        renameSupported = false, organizationStoredLocally = true,
+                        actions = ConversationBrowserActions(delete = { deleted += it }))
+                }
+            }
+        }
+        compose.onNodeWithContentDescription("管理文件夹").assertIsEnabled()
+        compose.onNodeWithText("最近更新").assertIsEnabled()
+        compose.onNodeWithText("文件夹与排序保存在本机；长按会话可拖动排序").assertIsDisplayed()
+        compose.onNodeWithContentDescription("管理会话 Alpha").performClick()
+        compose.onNodeWithText("删除对话").assertIsNotEnabled()
+        compose.onNodeWithText("当前 Agent 不支持删除对话").assertIsDisplayed()
+        compose.onNodeWithText("移动到文件夹").assertIsEnabled()
+        compose.runOnIdle { assertEquals(emptyList<String>(), deleted) }
+    }
+
     @Test fun aConfirmedConversationRemainsInItsFolderWhileAssignmentIsPendingAndAfterConfirmation() {
         val state=mutableStateOf(WorkbenchUiState(
             threads=Loadable.Ready(listOf(thread("created","Created",2),thread("other","Other",1))),

@@ -158,6 +158,12 @@ data class WorkbenchUiState(
     val selectedFolderId: String? = null,
     val pendingFolderAssignments: Map<String, String> = emptyMap(),
     val conversationManagementSupported: Boolean = false,
+    val conversationDeleteSupported: Boolean = false,
+    val conversationArchiveSupported: Boolean = false,
+    val conversationUnarchiveSupported: Boolean = false,
+    val conversationRenameSupported: Boolean = false,
+    /** Native Agent folders and ordering are encrypted preferences on this phone. */
+    val organizationStoredLocally: Boolean = false,
     val managingThreads: Boolean = false,
     val busyThreadIds: Set<String> = emptySet(),
     /** Attachments held by an in-flight Gateway send, not new composer input. */
@@ -217,6 +223,13 @@ class WorkbenchController(
     private val allowSending: Boolean = true,
     private val languageCode: String = "zh-CN",
     private val supportsConversationManagement: Boolean = false,
+    private val supportsConversationDelete: Boolean = supportsConversationManagement,
+    private val supportsConversationArchive: Boolean = supportsConversationManagement,
+    private val supportsConversationUnarchive: Boolean = supportsConversationArchive,
+    private val supportsConversationRename: Boolean = true,
+    private val organizationStoredLocally: Boolean = false,
+    /** Native hosts own stable message IDs even when no client submission ID is available. */
+    private val authoritativeMessageIds: Boolean = false,
     private val externalBusyThreadIds: () -> Set<String> = { emptySet() },
     private val onClosed: () -> Unit = {},
     /**
@@ -282,8 +295,21 @@ class WorkbenchController(
     // says "no negotiated fact yet", so a Gateway that did offer cards would
     // otherwise read as one that never offered them until the first update ran.
     private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,isOnline=allowSending,
-        conversationManagementSupported=supportsConversationManagement))
+        conversationManagementSupported=supportsConversationManagement,
+        conversationDeleteSupported=supportsConversationDelete,
+        conversationArchiveSupported=supportsConversationArchive,
+        conversationUnarchiveSupported=supportsConversationUnarchive,
+        conversationRenameSupported=supportsConversationRename,
+        organizationStoredLocally=organizationStoredLocally))
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
+    private var remoteConversationOnline = true
+
+    /** Agent presence can change without replacing this controller or losing its draft. */
+    fun setRemoteConversationOnline(online: Boolean) {
+        if (closed || remoteConversationOnline == online) return
+        remoteConversationOnline = online
+        update { it }
+    }
     private val activeWork = WorkbenchActiveWork()
     /** Live sends across every conversation, including work not yet acknowledged by the Gateway. */
     val hasActiveWork: StateFlow<Boolean> = activeWork.active
@@ -906,6 +932,14 @@ class WorkbenchController(
      */
     fun renameThread(threadId: String, newTitle: String) {
         if (closed || newTitle.isBlank()) return
+        if (!remoteConversationOnline) {
+            update { it.copy(notice="AGENT_OFFLINE") }
+            return
+        }
+        if (!supportsConversationRename || !allowSending) {
+            update { it.copy(notice="CONVERSATION_RENAME_UNSUPPORTED") }
+            return
+        }
         val previousTitle = if (activeThreadId == threadId) {
             _state.value.activeThreadTitle
         } else {
@@ -968,6 +1002,8 @@ class WorkbenchController(
     }
 
     fun archiveThread(threadId: String, archived: Boolean = true) = beginManagement(threadId) {
+        check(remoteConversationOnline) { "AGENT_OFFLINE" }
+        check(supportsConversationArchive && (archived || supportsConversationUnarchive)) { "CONVERSATION_ARCHIVE_UNSUPPORTED" }
         repository.setArchived(threadId, archived)
         update { state -> state.copy(threads=(state.threads as? Loadable.Ready)?.let { list ->
             Loadable.Ready(list.value.map { if (it.id.value == threadId) it.copy(archived=archived) else it })
@@ -975,6 +1011,8 @@ class WorkbenchController(
     }
 
     fun deleteThread(threadId: String) = beginManagement(threadId) {
+        check(remoteConversationOnline) { "AGENT_OFFLINE" }
+        check(supportsConversationDelete) { "CONVERSATION_DELETE_UNSUPPORTED" }
         repository.deleteConversation(threadId)
         deletedThreads.add(threadId)
         sendAtomsEpoch++
@@ -1467,9 +1505,7 @@ class WorkbenchController(
                 onSuccess = { page ->
                     if (!isActive || activeThreadId != threadId) return@launch
                     scheduleHistoricalMedia(threadId,page.messages)
-                    page.messages.sortedWith(
-                        compareBy<TimelineMessage> { it.timestamp }.thenBy { if (it.sender == "user") 0 else 1 }
-                    ).forEach { rawMessage ->
+                    page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
                         val message = withLatestMessageStatus(rawMessage)
                         val currentRevision = mirroredRevisions[message.id] ?: 0L
                         if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
@@ -3640,6 +3676,7 @@ class WorkbenchController(
                                     observeGenerationIdentity(message.generationId)
                                     // Prune any other older streaming assistant message with different id
                                     val oldStreamingKeys = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" && it.id != message.id &&
+                                        !haveDistinctNativeAssistantIds(it, message) &&
                                         (it.generationId == null || message.generationId == null || it.generationId == message.generationId) }.keys.toList()
                                     for (k in oldStreamingKeys) {
                                         mirrored.remove(k)
@@ -3814,9 +3851,7 @@ class WorkbenchController(
                         value.clientMessageId?.value?.let { atomsFor(threadId)[it]?.isDeleted } == true)) historicalAttachments.remove(key)
                 }
                 var receivedConfirmedAssistantForCurrentTurn = false
-                page.messages.sortedWith(
-                    compareBy<TimelineMessage> { it.timestamp }.thenBy { if (it.sender == "user") 0 else 1 }
-                ).forEach { rawMessage ->
+                page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
                     if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
                     val message = withLatestMessageStatus(rawMessage)
                     if (message.sender == "user" && message.state.lowercase() in setOf("completed", "failed", "cancelled")) {
@@ -3918,10 +3953,19 @@ class WorkbenchController(
         }
     }
 
-    private fun hasUserMessageBetween(t1: Long, t2: Long): Boolean {
-        val minT = minOf(t1, t2)
-        val maxT = maxOf(t1, t2)
-        if (minT == maxT) return false
+    private fun hasUserMessageBetween(first: TimelineMessage, second: TimelineMessage): Boolean {
+        val minT = minOf(first.timestamp, second.timestamp)
+        val maxT = maxOf(first.timestamp, second.timestamp)
+        if (minT == maxT) {
+            // 宿主可能只提供秒级时间，同一时间并不等于同一轮。历史按原始顺序
+            // 插入镜像；新收到的消息尚未插入时位于末尾，仍可识别中间的用户行。
+            val ordered = mirrored.values.toList()
+            val firstIndex = ordered.indexOfFirst { it.id == first.id }
+            val secondIndex = ordered.indexOfFirst { it.id == second.id }.takeIf { it >= 0 } ?: ordered.size
+            if (firstIndex < 0 || firstIndex == secondIndex) return false
+            return ordered.subList(minOf(firstIndex, secondIndex) + 1, maxOf(firstIndex, secondIndex))
+                .any { it.sender == "user" }
+        }
         val userInMirrored = mirrored.values.any { it.sender == "user" && it.timestamp > minT && it.timestamp <= maxT }
         val userInPending = _state.value.pendingBatch.any { it.isUser && it.timestamp > minT && it.timestamp <= maxT }
         return userInMirrored || userInPending
@@ -3942,6 +3986,22 @@ class WorkbenchController(
         return latestUserTimestamp > 0L && timestamp >= latestUserTimestamp - 5_000L
     }
 
+    /** 原生模式或明确关联到提交的消息以真实行 ID 为准；同轮也可有多条相同正文。 */
+    private fun haveDistinctNativeAssistantIds(
+        firstId: String, firstClientId: ClientMessageId?,
+        secondId: String, secondClientId: ClientMessageId?,
+    ): Boolean {
+        fun isTemporary(id: String) = id.startsWith("local_") || id.startsWith("stream_") || id.startsWith("asst_")
+        return (authoritativeMessageIds || firstClientId != null || secondClientId != null) && firstId != secondId &&
+            !isTemporary(firstId) && !isTemporary(secondId)
+    }
+
+    private fun haveDistinctNativeAssistantIds(first: TimelineMessage, second: TimelineMessage): Boolean =
+        haveDistinctNativeAssistantIds(first.id, first.clientMessageId, second.id, second.clientMessageId)
+
+    private fun haveDistinctNativeAssistantIds(first: TimelineEntry, second: TimelineEntry): Boolean =
+        haveDistinctNativeAssistantIds(first.key, first.clientMessageId, second.key, second.clientMessageId)
+
     private fun messageTextOf(message: TimelineMessage): String =
         message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
             .joinToString("") { it.value }
@@ -3958,9 +4018,11 @@ class WorkbenchController(
         mirrored.values.any { existing ->
             existing.sender == "assistant" &&
                 existing.state == "CONFIRMED" &&
+                !haveDistinctNativeAssistantIds(existing, message) &&
                 ((normalizeEntryKey(existing.id).isNotBlank() && normalizeEntryKey(existing.id) == normalizeEntryKey(message.id)) ||
                     (text.isNotBlank() &&
-                        !hasUserMessageBetween(existing.timestamp, message.timestamp) &&
+                        (existing.clientMessageId == null || message.clientMessageId == null || existing.clientMessageId == message.clientMessageId) &&
+                        !hasUserMessageBetween(existing, message) &&
                         existing.timestamp >= message.timestamp - 5_000L &&
                         messageTextOf(existing).startsWith(text)))
         }
@@ -3989,8 +4051,10 @@ class WorkbenchController(
             k != message.id &&
                 v.sender == "assistant" &&
                 v.state == "CONFIRMED" &&
+                !haveDistinctNativeAssistantIds(v, message) &&
                 ((normalizeEntryKey(k).isNotBlank() && normalizeEntryKey(k) == normalizeEntryKey(message.id)) ||
-                    (!hasUserMessageBetween(v.timestamp, message.timestamp) &&
+                    ((v.clientMessageId == null || message.clientMessageId == null || v.clientMessageId == message.clientMessageId) &&
+                        !hasUserMessageBetween(v, message) &&
                         ((messageText.isNotBlank() && messageTextOf(v) == messageText) ||
                             (message.parts.isNotEmpty() && v.parts == message.parts))))
         }.map { it.key }
@@ -4011,7 +4075,10 @@ class WorkbenchController(
             val sameNormalizedKey = normalizeEntryKey(s.id).isNotBlank() &&
                 normalizeEntryKey(s.id) == normalizeEntryKey(message.id)
             val sText = messageTextOf(s)
-            val isSameTurn = !hasUserMessageBetween(s.timestamp, message.timestamp) &&
+            val sameClientIdentity = s.clientMessageId != null && s.clientMessageId == message.clientMessageId
+            val differentClientIdentities = s.clientMessageId != null && message.clientMessageId != null &&
+                s.clientMessageId != message.clientMessageId
+            val isSameTurn = !differentClientIdentities && !hasUserMessageBetween(s, message) &&
                 message.timestamp >= s.timestamp - 5_000L &&
                 (latestUserTimestamp == 0L || message.timestamp >= latestUserTimestamp - 10_000L)
             val isCoveredContent = (messageText.isNotBlank() && (messageText == sText || messageText.startsWith(sText))) ||
@@ -4020,7 +4087,8 @@ class WorkbenchController(
                 s.parts.none { it is com.openandroidintelligence.conversation.model.MessagePart.Attachment } &&
                 message.timestamp >= s.timestamp
 
-            if (sameNormalizedKey || (isSameTurn && (isCoveredContent || isStaleEmpty))) {
+            if (!haveDistinctNativeAssistantIds(s, message) &&
+                (sameNormalizedKey || sameClientIdentity || (isSameTurn && (isCoveredContent || isStaleEmpty)))) {
                 mirrored.remove(k)
                 mirroredRevisions.remove(k)
                 supersededActiveStreaming = true
@@ -4130,10 +4198,6 @@ class WorkbenchController(
         val rawList = (mirroredEntries + unconfirmedPending).sortedWith(
             compareBy<TimelineEntry> { entry ->
                 if (entry.timestamp > 0L) entry.timestamp else Long.MAX_VALUE
-            }.thenBy { entry ->
-                if (entry.pendingAcceptance) 1 else 0
-            }.thenBy { entry ->
-                if (entry.isStreaming) 0 else 1
             },
         )
         val rendered = deduplicateTimelineEntries(rawList)
@@ -4172,6 +4236,7 @@ class WorkbenchController(
     private fun normalizeEntryKey(key: String): String =
         key.removePrefix("local_")
             .removePrefix("stream_")
+            .removePrefix("asst_")
             .removePrefix("msg_")
             .removePrefix("cconv_")
 
@@ -4226,20 +4291,25 @@ class WorkbenchController(
                         normalizeEntryKey(s.key) == normalizeEntryKey(c.key)
                     // Same group means no user message between them, so this is
                     // the same turn by construction: no clock window needed.
+                    val sameClientIdentity = s.clientMessageId != null && s.clientMessageId == c.clientMessageId
+                    val differentClientIdentities = s.clientMessageId != null && c.clientMessageId != null &&
+                        s.clientMessageId != c.clientMessageId
                     val timeDiff = c.timestamp - s.timestamp
-                    val isSameTurn = timeDiff >= -5_000L
+                    val isSameTurn = !differentClientIdentities && timeDiff >= -5_000L
                     val isCoveredByConfirmed = (s.text.isNotBlank() && (c.text == s.text || c.text.startsWith(s.text))) ||
                         (s.attachments.isNotEmpty() && s.attachments == c.attachments)
                     val isStaleEmpty = s.text.isBlank() && s.attachments.isEmpty() && c.timestamp >= s.timestamp
-                    sameNormalizedKey || (isSameTurn && (isCoveredByConfirmed || isStaleEmpty))
+                    !haveDistinctNativeAssistantIds(s, c) &&
+                        (sameNormalizedKey || sameClientIdentity || (isSameTurn && (isCoveredByConfirmed || isStaleEmpty)))
                 }
             }
         } else {
             val deduplicatedStreaming = mutableListOf<TimelineEntry>()
             for (s in streaming) {
                 val duplicateIndex = deduplicatedStreaming.indexOfFirst { existing ->
-                    (normalizeEntryKey(s.key).isNotBlank() && normalizeEntryKey(s.key) == normalizeEntryKey(existing.key)) ||
-                    (existing.text.startsWith(s.text) || s.text.startsWith(existing.text))
+                    !haveDistinctNativeAssistantIds(s, existing) &&
+                        ((normalizeEntryKey(s.key).isNotBlank() && normalizeEntryKey(s.key) == normalizeEntryKey(existing.key)) ||
+                            (existing.text.startsWith(s.text) || s.text.startsWith(existing.text)))
                 }
                 if (duplicateIndex != -1) {
                     val existing = deduplicatedStreaming[duplicateIndex]
@@ -4261,22 +4331,20 @@ class WorkbenchController(
             // boundary, not a time window, decides whether two identical replies
             // are one message or two.
             val isDuplicate = keptConfirmed.any { existing ->
-                (normalizeEntryKey(c.key).isNotBlank() && normalizeEntryKey(c.key) == normalizeEntryKey(existing.key)) ||
-                ((c.text.isNotEmpty() || c.attachments.isNotEmpty()) &&
-                 c.text == existing.text && c.attachments == existing.attachments)
+                !haveDistinctNativeAssistantIds(c, existing) &&
+                    ((normalizeEntryKey(c.key).isNotBlank() && normalizeEntryKey(c.key) == normalizeEntryKey(existing.key)) ||
+                        ((c.clientMessageId == null || existing.clientMessageId == null || c.clientMessageId == existing.clientMessageId) &&
+                            (c.text.isNotEmpty() || c.attachments.isNotEmpty()) &&
+                            c.text == existing.text && c.attachments == existing.attachments))
             }
             if (!isDuplicate) {
                 keptConfirmed.add(c)
             }
         }
 
-        return (keptConfirmed + keptStreaming).sortedWith(
-            compareBy<TimelineEntry> { entry ->
-                if (entry.timestamp > 0L) entry.timestamp else Long.MAX_VALUE
-            }.thenBy { entry ->
-                if (entry.isStreaming) 0 else 1
-            },
-        )
+        // 筛掉重复项即可；同时间戳的原生顺序不能因“已确认/流式”分类而改变。
+        val kept = (keptConfirmed + keptStreaming).toSet()
+        return group.filter { it in kept }
     }
 
     private fun appendLocal(
@@ -4397,6 +4465,11 @@ class WorkbenchController(
             val next = transformed.copy(pendingFolderAssignments=pendingFolderAssignments.toMap(), hasRecoverableSubmissions = recoverable,
                 hasUnknownSubmissionOutcome = unknownSubmissionOutcome,
                 conversationManagementSupported=supportsConversationManagement,
+                conversationDeleteSupported=supportsConversationDelete && remoteConversationOnline,
+                conversationArchiveSupported=supportsConversationArchive && remoteConversationOnline,
+                conversationUnarchiveSupported=supportsConversationUnarchive && remoteConversationOnline,
+                conversationRenameSupported=supportsConversationRename && remoteConversationOnline,
+                organizationStoredLocally=organizationStoredLocally,
                 busyThreadIds=managementBusyThreadIds(transformed)+externalBusyThreadIds())
             if (next.approvalCardsSupported == supportsApprovalCards) {
                 next

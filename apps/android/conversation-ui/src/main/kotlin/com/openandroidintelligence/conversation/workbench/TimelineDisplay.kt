@@ -101,7 +101,8 @@ internal fun ExecutionStep.isInterruptedStep(): Boolean = when (this) {
  * 时间线展示模型：把连续的助手消息折叠成执行段，其余条目保持单条呈现。
  *
  * 规则严格对齐规格 §3.1：
- * 1. 用户消息、审批行、系统回执行是 [TimelineDisplayItem.Single]，并打断连续助手段；
+ * 1. 用户消息、审批行、系统回执行打断助手段；已完成的正常回答也关闭当前段，
+ *    后续消息不能再把它降级为过程叙述；
  * 2. 段内至少有一个思考/工具块，且（已出现尾部正文 或 整段不再流式）才折叠；
  * 3. 普通多条助手消息（无执行块）不聚合；
  * 4. 折叠时 `finalEntry` 取最后一条有尾部正文的助手消息，没有则取段内最后一条；
@@ -136,19 +137,23 @@ class TimelineDisplayModel(
         if (entries.isEmpty()) return emptyList()
 
         val items = mutableListOf<TimelineDisplayItem>()
-        val segment = mutableListOf<TimelineEntry>()
+        val segment = mutableListOf<EntryAnalysis>()
 
         fun flushSegment() {
             if (segment.isEmpty()) return
             // 只有最后一段会继续增量；历史段不需要「已开始最终回答」的粘滞状态。
-            val isLastSegment = segment.last().key == entries.last().key
+            val isLastSegment = segment.last().entry.key == entries.last().key
             items += buildSegment(segment.toList(), isLastSegment, generation)
             segment.clear()
         }
 
         entries.forEach { entry ->
             if (isExecutionEligible(entry)) {
-                segment += entry
+                val analysis = analyse(entry)
+                segment += analysis
+                // 已完成且有正常正文的消息就是一个回答边界。后续助手消息即使
+                // 没有用户分隔，也不能把这条回答降级为下一段工具过程的叙述。
+                if ((!entry.isStreaming || generation?.isTerminal() == true) && analysis.finalVisible) flushSegment()
             } else {
                 flushSegment()
                 items += TimelineDisplayItem.Single(entry)
@@ -159,11 +164,11 @@ class TimelineDisplayModel(
     }
 
     private fun buildSegment(
-        entries: List<TimelineEntry>,
+        analyses: List<EntryAnalysis>,
         isLastSegment: Boolean,
         generation: GenerationState?,
     ): List<TimelineDisplayItem> {
-        val analyses = entries.map(::analyse)
+        val entries = analyses.map { it.entry }
         val hasExecutionBlocks = analyses.any { it.executionCount > 0 }
         val anyFinalVisible = analyses.any { it.finalVisible }
         // 只有明确终态才强制结束流式判定；OUTCOME_UNKNOWN / UNSUPPORTED / IDLE
@@ -188,7 +193,9 @@ class TimelineDisplayModel(
                 (!anyStreaming && (!hermesProcessSegment || terminalGeneration)))
 
         if (!shouldFold) {
-            return entries.map { TimelineDisplayItem.Single(it) }
+            return entries.map { entry ->
+                TimelineDisplayItem.Single(if (terminalGeneration) entry.copy(isStreaming = false) else entry)
+            }
         }
         return listOf(TimelineDisplayItem.Execution(buildRun(analyses, streamActive)))
     }
@@ -222,14 +229,14 @@ class TimelineDisplayModel(
                         block = block,
                         entryKey = analysis.entry.key,
                         blockIndex = index,
-                        entryIsStreaming = analysis.entry.isStreaming,
+                        entryIsStreaming = analysis.entry.isStreaming && streamActive,
                     )
 
                     is TimelineBlock.ToolCallBlock -> ExecutionStep.ToolCall(
                         block = block,
                         entryKey = analysis.entry.key,
                         blockIndex = index,
-                        entryIsStreaming = analysis.entry.isStreaming,
+                        entryIsStreaming = analysis.entry.isStreaming && streamActive,
                     )
 
                     else -> ExecutionStep.Narrative(block = block, entryKey = analysis.entry.key)
@@ -256,7 +263,7 @@ class TimelineDisplayModel(
             stepCount = stepCount,
             failedStepCount = failedStepCount,
             interrupted = interrupted,
-            isStreaming = analyses.any { it.entry.isStreaming },
+            isStreaming = streamActive,
             finalEntryIsStreaming = finalEntry.isStreaming && streamActive,
             hasFinalAnswer = hasFinalAnswer,
         )

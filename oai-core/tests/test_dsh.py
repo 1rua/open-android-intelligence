@@ -39,7 +39,7 @@ class TestDshAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(await adapter.list_sessions(Principal("alice"))), 1)
             sessions.append({"id": "later-cli-session", "title": "CLI"})
             self.assertEqual(len(await adapter.list_sessions(Principal("bob"))), 2)
-            self.assertEqual([item["type"] async for item in adapter.send(Principal("alice"), "terminal-session", "hi")], ["delta", "done"])
+            self.assertEqual([item["type"] async for item in adapter.send(Principal("alice"), "terminal-session", "hi", client_message_id="android-id")], ["delta", "done"])
             self.assertEqual(requests[-1][2], {"text": "hi"})
             terminal = False
             with self.assertRaises(AdapterError) as error:

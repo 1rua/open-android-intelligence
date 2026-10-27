@@ -352,6 +352,7 @@ class CodexSessionAdapter:
                 turn_id = result["turn"]["id"]
                 self._turns[session_id] = turn_id
                 streamed_items: set[str] = set()
+                assistant_message_id: str | None = None
                 deadline = asyncio.get_running_loop().time() + self.turn_timeout
                 while True:
                     remaining = deadline - asyncio.get_running_loop().time()
@@ -366,17 +367,22 @@ class CodexSessionAdapter:
                         yield {"type": "error", "code": params["code"]}
                         return
                     if method == "item/agentMessage/delta" and params.get("turnId") == turn_id:
-                        streamed_items.add(params.get("itemId", ""))
-                        yield {"type": "delta", "text": params.get("delta", "")}
+                        assistant_message_id = params.get("itemId")
+                        streamed_items.add(assistant_message_id or "")
+                        yield {"type": "delta", "text": params.get("delta", ""),
+                               **({"messageId": assistant_message_id} if assistant_message_id else {})}
                     elif method == "item/completed" and params.get("turnId") == turn_id:
                         item = params.get("item", {})
-                        if item.get("type") == "agentMessage" and item.get("id") not in streamed_items:
-                            yield {"type": "delta", "text": item.get("text", "")}
+                        if item.get("type") == "agentMessage":
+                            assistant_message_id = item.get("id")
+                            if assistant_message_id not in streamed_items:
+                                yield {"type": "delta", "text": item.get("text", ""),
+                                       **({"messageId": assistant_message_id} if assistant_message_id else {})}
                     elif method == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
                         complete = True
                         turn = params["turn"]
                         if turn.get("status") == "completed":
-                            yield {"type": "done"}
+                            yield {"type": "done", **({"messageId": assistant_message_id} if assistant_message_id else {})}
                         else:
                             yield {"type": "error", "code": "TURN_INTERRUPTED" if turn.get("status") == "interrupted" else "NATIVE_TURN_FAILED"}
                         return

@@ -77,6 +77,11 @@ fun ConversationBrowser(
         selectedFolderId = state.selectedFolderId,
         activeThreadId = activeThreadId ?: state.activeThreadId,
         managementSupported = state.conversationManagementSupported,
+        deleteSupported = state.conversationDeleteSupported,
+        archiveSupported = state.conversationArchiveSupported,
+        unarchiveSupported = state.conversationUnarchiveSupported,
+        renameSupported = state.conversationRenameSupported,
+        organizationStoredLocally = state.organizationStoredLocally,
         managing = state.managingThreads,
         online = state.isOnline,
         busyThreadIds = state.busyThreadIds,
@@ -128,6 +133,11 @@ fun ConversationBrowser(
     modifier: Modifier = Modifier,
     organization: ConversationOrganization = ConversationOrganization(),
     managementSupported: Boolean = false,
+    deleteSupported: Boolean = managementSupported,
+    archiveSupported: Boolean = managementSupported,
+    unarchiveSupported: Boolean = archiveSupported,
+    renameSupported: Boolean = managementSupported,
+    organizationStoredLocally: Boolean = false,
     managing: Boolean = false,
     online: Boolean = true,
     busyThreadIds: Set<String> = emptySet(),
@@ -341,6 +351,7 @@ fun ConversationBrowser(
                         !managementSupported -> "此 Gateway 暂不支持会话管理，请更新 Gateway。"
                         !online -> "连接 Gateway 后可管理会话。"
                         managing -> "正在保存会话设置…"
+                        organizationStoredLocally -> "文件夹与排序保存在本机；长按会话可拖动排序"
                         else -> "长按会话并拖动可调整顺序"
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -376,6 +387,10 @@ fun ConversationBrowser(
                 folder = organization.folders.firstOrNull { it.folderId == organization.assignments[id] }?.name,
                 busy = id in busyThreadIds,
                 canManage = canManage,
+                canDelete = canManage && deleteSupported,
+                canArchive = canManage && archiveSupported && (!thread.archived || unarchiveSupported),
+                canRename = canManage && renameSupported,
+                deleteSupported = deleteSupported,
                 onOpen = { onOpenThread(id) },
                 onRename = { renameThread = thread },
                 onClassify = { classifyThread = thread },
@@ -511,6 +526,10 @@ private fun ConversationBrowserRow(
     folder: String?,
     busy: Boolean,
     canManage: Boolean,
+    canDelete: Boolean,
+    canArchive: Boolean,
+    canRename: Boolean,
+    deleteSupported: Boolean,
     onOpen: () -> Unit,
     onRename: () -> Unit,
     onClassify: () -> Unit,
@@ -592,12 +611,14 @@ private fun ConversationBrowserRow(
                         )
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("重命名对话") }, enabled = canManage, onClick = { menu = false; onRename() })
+                        DropdownMenuItem(text = { Text("重命名对话") }, enabled = canRename, onClick = { menu = false; onRename() })
                         DropdownMenuItem(text = { Text("移动到文件夹") }, enabled = canManage, onClick = { menu = false; onClassify() })
-                        DropdownMenuItem(text = { Text(if (thread.archived) "取消归档" else "归档对话") }, enabled = canManage && !busy,
+                        DropdownMenuItem(text = { Text(if (thread.archived) "取消归档" else "归档对话") }, enabled = canArchive && !busy,
                             onClick = { menu = false; onArchive() })
-                        DropdownMenuItem(text = { Text("删除对话", color = MaterialTheme.colorScheme.error) }, enabled = canManage && !busy,
+                        DropdownMenuItem(text = { Text("删除对话", color = MaterialTheme.colorScheme.error) }, enabled = canDelete && !busy,
                             onClick = { menu = false; onDelete() })
+                        if (!deleteSupported) Text("当前 Agent 不支持删除对话", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                         if (busy) Text("任务结束后可归档或删除", style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                     }

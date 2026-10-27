@@ -25,6 +25,39 @@ class AgentSessionClientTest {
     private val agent = CoreAgent("codex", "Codex", "codex", true, "deployment",
         AgentCapabilities(list = true, history = true, create = true, send = true, stream = true))
 
+    @Test fun pureAttachmentsAndMixedMessagesKeepIdsAndNativeReceipts() = runBlocking {
+        for (text in listOf("", "看看这些文件")) {
+            val transport = RecordingTransport("event: message\ndata: {\"type\":\"delta\",\"text\":\"收到\",\"messageId\":\"native-answer\",\"userMessageId\":\"native-question\",\"clientMessageId\":\"cm_files\"}\n\nevent: message\ndata: {\"type\":\"done\",\"outcome\":\"completed\"}\n\n", "text/event-stream")
+            val identities = mutableListOf<NativeAgentStreamEvent>()
+            val result = client(transport).send(agent.copy(capabilities = agent.capabilities.copy(attachments = true)),
+                "native", text, listOf("att_image", "att_docx"), "cm_files", onEvent = { identities += it }) {}
+            val payload = com.openandroidintelligence.gateway.schema.JsonFields.obj(
+                com.openandroidintelligence.gateway.schema.Json.parse(transport.requests.single().body.decodeToString()))!!
+            assertEquals(listOf("att_image", "att_docx"), com.openandroidintelligence.gateway.schema.JsonFields.strings(payload, "attachmentIds"))
+            assertEquals(text, com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "text"))
+            assertEquals("cm_files", com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "clientMessageId"))
+            assertEquals("native-answer", result.messageId)
+            assertEquals("native-question", result.userMessageId)
+            assertEquals(1, identities.filterIsInstance<NativeAgentStreamEvent.MessageIdentity>().size)
+        }
+    }
+
+    @Test fun attachmentsRequireAnExplicitCapabilityAndEmptyMessagesHaveAnAccurateError() = runBlocking {
+        val transport = RecordingTransport("{}")
+        assertEquals("UNSUPPORTED_CAPABILITY", runCatching { client(transport).send(agent, "native", "", listOf("att_image")) {} }.exceptionOrNull()?.message)
+        assertEquals("INVALID_MESSAGE", runCatching { client(transport).send(agent, "native", "") {} }.exceptionOrNull()?.message)
+        assertEquals("AGENT_OFFLINE", runCatching { client(transport).send(agent.copy(online = false), "native", "hello") {} }.exceptionOrNull()?.message)
+        assertTrue(transport.requests.isEmpty())
+    }
+
+    @Test fun numericHistoryDatesAndAttachmentMetadataSurviveDecoding() = runBlocking {
+        val transport = RecordingTransport("""{"messages":[{"id":"m1","role":"user","text":"","createdAt":1780000000.123,"clientMessageId":"cm_files","attachments":[{"attachmentId":"att_docx","filename":"说明.docx","mediaType":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","sizeBytes":123,"sha256":"sha256:${"a".repeat(64)}"}]}]}""")
+        val message = client(transport).history(agent, "native").single()
+        assertEquals("1780000000.123", message.createdAt)
+        assertEquals("cm_files", message.clientMessageId)
+        assertEquals("说明.docx", message.attachments.single().filename)
+    }
+
     @Test fun discoveryUsesTheAuthenticatedCoreAndMissingCapabilitiesStayDisabled() = runBlocking {
         val transport = RecordingTransport("""{"agents":[{"id":"codex","name":"Codex","kind":"codex","online":false,"sessionScope":"deployment","capabilities":{"list":true,"history":true}}]}""")
         val agents = client(transport).agents()

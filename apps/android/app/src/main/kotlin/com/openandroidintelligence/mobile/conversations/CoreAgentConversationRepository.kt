@@ -57,9 +57,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
+import kotlinx.coroutines.channels.Channel
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.LocalDateTime
+import java.time.ZoneOffset
+import java.math.BigDecimal
 import java.util.UUID
 
 /**
@@ -75,6 +78,7 @@ class CoreAgentConversationRepository(
     private val supportsApprovalCards: Boolean = false,
     private val supportsGenerationCancel: Boolean = true,
     private val approvalAudit: ApprovalDecisionAudit? = null,
+    private val organizationStore: NativeConversationOrganizationStore = MemoryNativeConversationOrganizationStore(),
 ) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery {
 
     private val _generationId = MutableStateFlow<String?>(null)
@@ -87,7 +91,9 @@ class CoreAgentConversationRepository(
     override val streamHealth: Flow<StreamHealth> = _streamHealth.asStateFlow()
 
     private data class AgentEvent(val agentId: String, val event: VerifiedConversationEvent)
-    private val _events = MutableSharedFlow<AgentEvent>(extraBufferCapacity = 64)
+    // The per-turn publisher retains the latest snapshots; this relay must not
+    // retain dozens of increasingly large copies of the same response.
+    private val _events = MutableSharedFlow<AgentEvent>(extraBufferCapacity = 1)
 
     private suspend fun emitEvent(agentId: String, event: VerifiedConversationEvent) {
         _events.emit(AgentEvent(agentId, event))
@@ -132,7 +138,8 @@ class CoreAgentConversationRepository(
         }
     }
 
-    private suspend fun emitApproval(turn: NativeTurn, payload: JsonValue.JObject, requested: Boolean) {
+    private suspend fun emitApproval(turn: NativeTurn, payload: JsonValue.JObject, requested: Boolean,
+        deliver: suspend (VerifiedConversationEvent) -> Unit = { emitEvent(turn.agent.id, it) }) {
         if (!supportsApprovalCards || !turn.agent.capabilities.approvals) return
         if (JsonFields.string(payload, "conversationId") != turn.conversationId)
             throw AgentSessionException("AGENT_STREAM_INVALID")
@@ -143,7 +150,7 @@ class CoreAgentConversationRepository(
             approvals[decoded.request.approvalId.value] = ApprovalRoute(turn.agent, turn.conversationId,
                 decoded.request.options.map { it.choice.wireValue }.toSet())
         }
-        emitEvent(turn.agent.id, decoded)
+        deliver(decoded)
     }
 
     private fun requireAgent(): CoreAgent {
@@ -199,9 +206,15 @@ class CoreAgentConversationRepository(
             TimelineMessage(
                 id = msg.id,
                 sender = if (isUser) "user" else "assistant",
-                parts = listOf(MessagePart.Text(msg.text)),
+                parts = buildList {
+                    if (msg.text.isNotEmpty()) add(MessagePart.Text(msg.text))
+                    msg.attachments.forEach { attachment -> add(MessagePart.Attachment(
+                        com.openandroidintelligence.conversation.model.AttachmentDraftId(attachment.id),
+                        attachment.filename, attachment.mediaType, attachment.sizeBytes, attachment.sha256)) }
+                },
                 timestamp = parseDate(msg.createdAt),
                 conversationId = ConversationId(conversationId),
+                clientMessageId = msg.clientMessageId?.let { ClientMessageId(if (isUser) it else "assistant_$it") },
             )
         }
         return TimelinePage(messages = timelineMessages, nextCursor = null)
@@ -209,8 +222,8 @@ class CoreAgentConversationRepository(
 
     override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {
         val convId = batch.clientConversationId ?: activeConversationId() ?: error("NO_CONVERSATION")
-        val text = batch.messages.firstOrNull()?.text.orEmpty()
-        val result = submitMessage(convId, OutgoingMessage(ClientMessageId(UUID.randomUUID().toString()), text))
+        if (batch.messages.size != 1) throw AgentSessionException("UNSUPPORTED_CAPABILITY")
+        val result = submitMessage(convId, batch.messages.single())
         return BatchAcceptance(
             batchId = UUID.randomUUID().toString(),
             memberIds = mapOf(batch.messages.first().clientMessageId.value to result.messageId),
@@ -229,22 +242,49 @@ class CoreAgentConversationRepository(
         val turn = NativeTurn(agent, conversationId)
         if (turns.putIfAbsent(key, turn) != null) throw AgentSessionException("SESSION_BUSY")
         turn.generationId?.let { rememberGeneration(turn, it) }
-        val messageId = "msg_${UUID.randomUUID()}"
-        val assistantMsgId = "asst_${UUID.randomUUID()}"
-        val assistantTimestamp = System.currentTimeMillis()
+        var messageId = message.clientMessageId.value
+        var assistantMsgId = "stream_${message.clientMessageId.value}"
+        var assistantHasNativeId = false
+        var assistantTimestamp = System.currentTimeMillis()
         if (isSelected(turn)) {
             _generationId.value = turn.generationId
             _generationState.value = if (turn.generationId == null) GenerationState.QUEUED else GenerationState.RUNNING
         }
         parentScope.launch(ioDispatcher) {
             val text = StringBuilder()
-            suspend fun publish(state: String) {
-                emitEvent(agent.id, VerifiedConversationEvent.TimelineUpsert(
+            // Coalesce complete message snapshots, never raw deltas. UI backpressure
+            // can delay this publisher but cannot suspend the HTTP/SSE reader.
+            // Each distinct native message and each control event survives conflation.
+            val pending = linkedMapOf<String, VerifiedConversationEvent>()
+            val snapshots = Channel<List<VerifiedConversationEvent>>(Channel.CONFLATED)
+            val publisher = launch {
+                val delivered = mutableMapOf<String, String>()
+                for (snapshot in snapshots) for (event in snapshot) {
+                    val id = if (event is VerifiedConversationEvent.TimelineUpsert) "message:${event.message.id}" else event.eventId
+                    if (delivered[id] != event.eventId) {
+                        emitEvent(agent.id, event)
+                        delivered[id] = event.eventId
+                    }
+                }
+            }
+            fun enqueue(key: String, event: VerifiedConversationEvent) {
+                pending[key] = event
+                snapshots.trySend(pending.values.toList()).getOrThrow()
+            }
+            var revision = assistantTimestamp
+            var lastSnapshotNanos = 0L
+            fun publish(state: String) {
+                enqueue("message:$assistantMsgId", VerifiedConversationEvent.TimelineUpsert(
                     eventId = "evt_${UUID.randomUUID()}", occurredAt = System.currentTimeMillis(),
-                    revision = System.currentTimeMillis(), message = TimelineMessage(
+                    revision = ++revision, message = TimelineMessage(
                         id = assistantMsgId, sender = "assistant", parts = listOf(MessagePart.Text(text.toString())),
                         timestamp = assistantTimestamp, state = state,
+                        clientMessageId = ClientMessageId("assistant_${message.clientMessageId.value}"),
                         generationId = turn.generationId, conversationId = ConversationId(conversationId))))
+            }
+            suspend fun flush() {
+                snapshots.close()
+                publisher.join()
             }
             suspend fun cancelled() {
                 val id = turn.generationId ?: return
@@ -253,10 +293,32 @@ class CoreAgentConversationRepository(
                 if (isSelected(turn)) _generationState.value = GenerationState.CANCELLED
             }
             try {
-                emitEvent(agent.id, VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
+                enqueue("accepted", VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
                     System.currentTimeMillis(), messageId, message.clientMessageId.value, ConversationId(conversationId)))
-                val result = client.send(agent, conversationId, message.text, onEvent = { event ->
+                val result = client.send(agent, conversationId, message.text,
+                    attachmentIds = message.attachmentIds, clientMessageId = message.clientMessageId.value, onEvent = { event ->
                     when (event) {
+                        is NativeAgentStreamEvent.MessageIdentity -> {
+                            event.messageId?.let { remoteId ->
+                                if (remoteId != assistantMsgId) {
+                                    if (assistantHasNativeId && text.isNotEmpty()) {
+                                        publish("CONFIRMED")
+                                        text.clear()
+                                        assistantTimestamp = System.currentTimeMillis()
+                                    }
+                                    assistantMsgId = remoteId
+                                    assistantHasNativeId = true
+                                    lastSnapshotNanos = 0L
+                                }
+                            }
+                            event.userMessageId?.let { remoteId ->
+                                if (remoteId != messageId) {
+                                    messageId = remoteId
+                                    enqueue("accepted", VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
+                                        System.currentTimeMillis(), remoteId, message.clientMessageId.value, ConversationId(conversationId)))
+                                }
+                            }
+                        }
                         is NativeAgentStreamEvent.Generation -> {
                             rememberGeneration(turn, event.generationId)
                             if (isSelected(turn)) {
@@ -264,21 +326,28 @@ class CoreAgentConversationRepository(
                                 _generationState.value = GenerationState.RUNNING
                             }
                         }
-                        is NativeAgentStreamEvent.ApprovalRequested -> emitApproval(turn, event.approval, true)
-                        is NativeAgentStreamEvent.ApprovalResolved -> emitApproval(turn, event.approval, false)
+                        is NativeAgentStreamEvent.ApprovalRequested -> emitApproval(turn, event.approval, true) { enqueue(it.eventId, it) }
+                        is NativeAgentStreamEvent.ApprovalResolved -> emitApproval(turn, event.approval, false) { enqueue(it.eventId, it) }
                     }
                 }) { delta ->
                     if (!turn.cancelled) {
                         text.append(delta)
-                        publish("STREAMING")
+                        val now = System.nanoTime()
+                        if (lastSnapshotNanos == 0L || now - lastSnapshotNanos >= 33_000_000L) {
+                            publish("STREAMING")
+                            lastSnapshotNanos = now
+                        }
                     }
                 }
                 result.generationId?.let { rememberGeneration(turn, it) }
+                result.text?.let { text.clear(); text.append(it) }
                 if (result.outcome == "cancelled" || turn.cancelled) {
                     publish("CANCELLED")
+                    flush()
                     cancelled()
                 } else {
                     publish("CONFIRMED")
+                    flush()
                     emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
                         System.currentTimeMillis(), ConversationId(conversationId), messageId,
                         message.clientMessageId, AgentMessageStatus.COMPLETED, 1L, null, turn.generationId))
@@ -288,17 +357,22 @@ class CoreAgentConversationRepository(
                 // Closing a reader says nothing about whether Hermes stopped.
                 throw cancelled
             } catch (failure: Exception) {
-                if (turn.cancelled) cancelled()
+                if (turn.cancelled) { publish("CANCELLED"); flush(); cancelled() }
                 else if (failure is AgentSessionException && failure.code == "OUTCOME_UNKNOWN") {
+                    if (text.isNotEmpty()) publish("OUTCOME_UNKNOWN")
+                    flush()
                     if (isSelected(turn)) _generationState.value = GenerationState.OUTCOME_UNKNOWN
                 } else {
+                    if (text.isNotEmpty()) publish("FAILED")
+                    flush()
                     emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
                         System.currentTimeMillis(), ConversationId(conversationId), messageId,
                         message.clientMessageId, AgentMessageStatus.FAILED, 1L,
-                        com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.AGENT_UNAVAILABLE, turn.generationId))
+                        messageError(failure), turn.generationId))
                     if (isSelected(turn)) _generationState.value = GenerationState.FAILED
                 }
             } finally {
+                snapshots.close()
                 turns.remove(key, turn)
                 if (isSelected(turn) && _generationId.value == turn.generationId) _generationId.value = null
             }
@@ -388,12 +462,19 @@ class CoreAgentConversationRepository(
     }
 
     override suspend fun readOrganization(): ConversationOrganization {
-        return ConversationOrganization()
+        val agent = requireAgent()
+        return withContext(ioDispatcher) { organizationStore.read(agent.id) }
+    }
+
+    override suspend fun updateOrganization(expectedRevision: Long, organization: ConversationOrganization): ConversationOrganization {
+        val agent = requireAgent()
+        return withContext(ioDispatcher) { organizationStore.update(agent.id, expectedRevision, organization) }
     }
 
     override suspend fun setArchived(conversationId: String, archived: Boolean) {
         val agent = requireAgent()
-        if (!agent.capabilities.archive || !agent.online) return
+        if (!agent.online) throw AgentSessionException("AGENT_OFFLINE")
+        if (!agent.capabilities.archive || !archived) throw AgentSessionException("UNSUPPORTED_CAPABILITY")
         withContext(ioDispatcher) { client.archive(agent, conversationId) }
         emitEvent(agent.id,
             VerifiedConversationEvent.ConversationsChanged(
@@ -407,8 +488,12 @@ class CoreAgentConversationRepository(
 
     override suspend fun deleteConversation(conversationId: String) {
         val agent = requireAgent()
-        if (!agent.capabilities.delete || !agent.online) return
+        if (!agent.online) throw AgentSessionException("AGENT_OFFLINE")
+        if (!agent.capabilities.delete) throw AgentSessionException("UNSUPPORTED_CAPABILITY")
         withContext(ioDispatcher) { client.delete(agent, conversationId) }
+        try { withContext(ioDispatcher) { organizationStore.removeConversation(agent.id, conversationId) } }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { /* The host already confirmed deletion; stale preference IDs cannot restore a session. */ }
         emitEvent(agent.id,
             VerifiedConversationEvent.ConversationsChanged(
                 eventId = "evt_${UUID.randomUUID()}",
@@ -420,18 +505,38 @@ class CoreAgentConversationRepository(
     }
 
     override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? {
-        return null
+        return timeline(conversationId, PageRequest(null, 100)).messages.firstOrNull {
+            it.sender == "user" && it.clientMessageId == clientMessageId
+        }
     }
 
-    private fun parseDate(iso: String?): Long {
-        if (iso.isNullOrBlank()) return System.currentTimeMillis()
-        return try {
-            val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }
-            format.parse(iso.substringBefore('.'))?.time ?: System.currentTimeMillis()
-        } catch (_: Exception) {
-            System.currentTimeMillis()
+    private fun parseDate(value: String?): Long {
+        val date = value?.trim()?.takeIf(String::isNotEmpty) ?: return 0L
+        date.toBigDecimalOrNull()?.let { number ->
+            return runCatching {
+                (if (number.abs() < BigDecimal("100000000000")) number * BigDecimal(1000) else number)
+                    .setScale(0, java.math.RoundingMode.DOWN).longValueExact()
+            }.getOrDefault(0L)
+        }
+        return runCatching { Instant.parse(date).toEpochMilli() }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(date).toInstant().toEpochMilli() }.getOrNull()
+            ?: runCatching { LocalDateTime.parse(date).toInstant(ZoneOffset.UTC).toEpochMilli() }.getOrDefault(0L)
+    }
+
+    private fun messageError(failure: Exception): com.openandroidintelligence.conversation.ports.AgentMessageErrorCode {
+        val code = (failure as? AgentSessionException)?.code ?: failure.message
+        return when {
+            code in setOf("INVALID_MESSAGE", "INVALID_ATTACHMENT", "INVALID_ATTACHMENT_IDS", "MESSAGE_TOO_LARGE") ->
+                com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.INVALID_MESSAGE
+            code in setOf("UNSUPPORTED", "UNSUPPORTED_CAPABILITY", "CAPABILITY_UNSUPPORTED") ->
+                com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.UNSUPPORTED_CAPABILITY
+            code?.startsWith("ATTACHMENT_") == true -> com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.ATTACHMENT_READ_FAILED
+            code == "AGENT_MEDIA_REJECTED" -> com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.AGENT_MEDIA_REJECTED
+            code == "MODEL_REQUEST_REJECTED" -> com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.MODEL_REQUEST_REJECTED
+            code in setOf("AGENT_STREAM_INVALID", "AGENT_RESPONSE_INVALID", "HOST_INCOMPATIBLE") ->
+                com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.PROTOCOL_ERROR
+            code in setOf("AGENT_OFFLINE", "AGENT_UNAVAILABLE") -> com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.AGENT_UNAVAILABLE
+            else -> com.openandroidintelligence.conversation.ports.AgentMessageErrorCode.AGENT_REQUEST_FAILED
         }
     }
 }

@@ -18,7 +18,7 @@ from .remote import RemoteSessionAdapter, REMOTE_PREFIX
 class HermesRemoteSessionAdapter(RemoteSessionAdapter):
     """Only configured Core accounts can select their mapped Hermes account."""
 
-    def __init__(self, base_url: str, token: str, accounts: dict[str, str], *, agent_id="hermes", name="Hermes"):
+    def __init__(self, base_url: str, token: str, accounts: dict[str, str], *, agent_id="hermes", name="Hermes", attachment_core: Any = None):
         if (
             not isinstance(accounts, dict)
             or not accounts
@@ -40,6 +40,8 @@ class HermesRemoteSessionAdapter(RemoteSessionAdapter):
             session_scope="account",
             prefix=REMOTE_PREFIX,
             headers_builder=self._hermes_headers,
+            attachment_core=attachment_core,
+            forward_client_message_ids=True,
         )
 
     def _hermes_headers(self, principal: Any) -> dict[str, str]:

@@ -33,7 +33,7 @@ class HermesSessionAdapter:
                                  "archive": manager, "delete": manager,
                                  "cancel": send and callable(getattr(self.core, "generation_canceller", None)),
                                  "approvals": send and bool(getattr(self.runtime, "native_approvals_available", False)),
-                                 "commands": True}}
+                                 "commands": True, "attachments": send}}
 
     def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
         from .host_commands import command_catalog
@@ -111,9 +111,20 @@ class HermesSessionAdapter:
         def read():
             with self._account(principal) as account:
                 self._summary(account, session_id)
-                return [{"id": row["messageId"], "role": row.get("sender", "assistant"),
-                         "text": row.get("text", ""), "createdAt": row.get("createdAt", row.get("timestamp"))}
-                        for row in self.core.history_reader(principal.account_id, session_id)]
+                rows = list(self.core.history_reader(principal.account_id, session_id))
+                final_replies = {row["anchorClientMessageId"]: row["messageId"] for row in rows
+                    if row.get("sender") == "assistant" and row.get("anchorClientMessageId")}
+                result = []
+                for row in rows:
+                    client_id = row.get("clientMessageId")
+                    anchor = row.get("anchorClientMessageId")
+                    if row.get("sender") == "assistant" and anchor:
+                        client_id = anchor if final_replies.get(anchor) == row["messageId"] else None
+                    result.append({"id": row["messageId"], "role": row.get("sender", "assistant"),
+                        "text": row.get("text", ""), "createdAt": row.get("createdAt", row.get("timestamp")),
+                        "clientMessageId": client_id,
+                        "attachments": [dict(part) for part in row.get("parts", []) if part.get("type") == "attachment"]})
+                return result
         return await asyncio.to_thread(read)
 
     async def create(self, principal: Any, title: str | None) -> dict[str, Any]:
@@ -135,7 +146,8 @@ class HermesSessionAdapter:
                 return self._summary(account, created["conversationId"])
         return await asyncio.to_thread(read)
 
-    async def send(self, principal: Any, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
+    async def send(self, principal: Any, session_id: str, text: str, *, attachment_ids: list[str] | None = None,
+                   client_message_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
         if not self.descriptor()["capabilities"]["send"]:
             raise AdapterError("UNSUPPORTED_CAPABILITY", 409)
         device_id = getattr(principal, "device_id", None) or getattr(getattr(principal, "context", None), "device_id", None)
@@ -143,11 +155,25 @@ class HermesSessionAdapter:
             # The existing Hermes dispatch establishes device origin from a
             # verified pairing. Never fabricate one for a CLI service token.
             raise AdapterError("DEVICE_CONTEXT_REQUIRED", 403)
-        client_id, loop, queue = "core_" + uuid.uuid4().hex, asyncio.get_running_loop(), asyncio.Queue(maxsize=1024)
+        client_id, loop, queue = client_message_id or "core_" + uuid.uuid4().hex, asyncio.get_running_loop(), asyncio.Queue(maxsize=1024)
+        attachment_ids = list(attachment_ids or [])
         def accept():
-            with self._account(principal) as account:
+            with self._account(principal) as account, account.store.transaction():
                 self._summary(account, session_id)
-                accepted = account.conversations.accept_message(session_id, client_id, text, [], device_id, client_id, client_id)
+                prior = account.store.database.execute(
+                    "SELECT message_id FROM messages WHERE client_message_id=? AND sender='user' LIMIT 1", (client_id,)).fetchone()
+                if prior is not None:
+                    generation = account.conversations.workflow.for_message(prior["message_id"])
+                    code = "REQUEST_ALREADY_EXECUTED" if (generation or {}).get("state") in {"completed", "cancelled", "failed"} else "OUTCOME_UNKNOWN"
+                    raise AdapterError(code, 409)
+                for attachment_id in attachment_ids:
+                    row = account.store.database.execute(
+                        "SELECT owner_device_id, owner_pairing_generation FROM attachments WHERE attachment_id=?", (attachment_id,)).fetchone()
+                    if (row is None or row["owner_device_id"] != device_id
+                            or row["owner_pairing_generation"] != (getattr(principal, "pairing_generation", None) or 0)):
+                        raise AdapterError("ATTACHMENT_ACCESS_DENIED", 403)
+                    account.attachments.require_verified_for_message(attachment_id)
+                accepted = account.conversations.accept_message(session_id, client_id, text, attachment_ids, device_id, client_id, client_id)
                 # The session host has a separate account store. Cancellation
                 # must retain Core's authenticated pairing context, rather than
                 # the legacy store's fallback generation for an unknown phone.
@@ -175,14 +201,16 @@ class HermesSessionAdapter:
                     return
                 loop.call_soon_threadsafe(enqueue, dict(event))
         self.core.register_event_sink(sink)
-        body = {"clientMessageId": client_id, "text": text, "attachmentIds": []}
+        body = {"clientMessageId": client_id, "text": text, "attachmentIds": attachment_ids}
         task = asyncio.create_task(self.runtime._notify_agent_inbound(
             f"/open-android-intelligence/v2/conversations/{session_id}/messages",
             json.dumps(body).encode(), {"data": accepted}, principal.account_id))
         self.runtime._track_background_task(task, "core-session-message")
         previous = ""
+        assistant_message_id = None
+        identity = {"clientMessageId": client_id, "userMessageId": accepted["messageId"]}
         try:
-            yield {"type": "generation", "generationId": generation_id}
+            yield {"type": "generation", "generationId": generation_id, **identity}
             async with asyncio.timeout(1800):
                 while True:
                     try:
@@ -206,7 +234,8 @@ class HermesSessionAdapter:
                             status = (generation or {}).get("state")
                             if status in {"completed", "cancelled"}:
                                 yield {"type": "done", "text": previous, "generationId": generation_id,
-                                       "outcome": "cancelled" if status == "cancelled" else "completed"}
+                                       "outcome": "cancelled" if status == "cancelled" else "completed", **identity,
+                                       **({"messageId": assistant_message_id} if assistant_message_id else {})}
                             else:
                                 yield {"type": "error", "code": "AGENT_FAILED"}
                             return
@@ -229,16 +258,21 @@ class HermesSessionAdapter:
                             tail = queue.get_nowait()
                             if tail.get("eventType") == "conversation.approval.resolved":
                                 yield {"type": "approval_resolved", "approval": tail["payload"], "generationId": generation_id}
-                        yield {"type": "done", "text": previous, "generationId": generation_id, "outcome": "cancelled"}
+                        yield {"type": "done", "text": previous, "generationId": generation_id, "outcome": "cancelled", **identity,
+                               **({"messageId": assistant_message_id} if assistant_message_id else {})}
                         return
                     if event.get("eventType") in {"conversation.message.delta", "conversation.message.completed"}:
                         payload = event["payload"]
                         if payload.get("sender") not in {None, "assistant"}:
                             continue
                         current = payload.get("text", "")
+                        message_id = payload.get("messageId")
+                        if message_id != assistant_message_id:
+                            previous = ""
+                        assistant_message_id = message_id
                         if current.startswith(previous):
                             if current[len(previous):]:
-                                yield {"type": "delta", "text": current[len(previous):]}
+                                yield {"type": "delta", "text": current[len(previous):], "messageId": message_id, **identity}
                         previous = current
         except TimeoutError:
             yield {"type": "error", "code": "AGENT_TIMEOUT"}

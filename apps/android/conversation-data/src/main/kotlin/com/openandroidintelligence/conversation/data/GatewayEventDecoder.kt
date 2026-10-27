@@ -334,6 +334,10 @@ object GatewayEventDecoder {
             JsonValue.JNull -> null
             is JsonValue.JString -> when (rawError.value) {
                 "AGENT_UNAVAILABLE" -> AgentMessageErrorCode.AGENT_UNAVAILABLE
+                "INVALID_MESSAGE" -> AgentMessageErrorCode.INVALID_MESSAGE
+                "UNSUPPORTED_CAPABILITY" -> AgentMessageErrorCode.UNSUPPORTED_CAPABILITY
+                "PROTOCOL_ERROR" -> AgentMessageErrorCode.PROTOCOL_ERROR
+                "AGENT_REQUEST_FAILED" -> AgentMessageErrorCode.AGENT_REQUEST_FAILED
                 "ATTACHMENT_READ_FAILED" -> AgentMessageErrorCode.ATTACHMENT_READ_FAILED
                 "AGENT_MEDIA_REJECTED" -> AgentMessageErrorCode.AGENT_MEDIA_REJECTED
                 "MODEL_REQUEST_REJECTED" -> AgentMessageErrorCode.MODEL_REQUEST_REJECTED
