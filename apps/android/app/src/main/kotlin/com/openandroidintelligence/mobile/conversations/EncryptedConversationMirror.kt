@@ -750,7 +750,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 val old = timeline(id) ?: TimelinePage(emptyList(),null)
                 val atoms=loadSendAtoms(id)
                 val existing=atoms.firstOrNull { it.messageId == event.message.id || it.clientMessageId == event.message.clientMessageId }
-                check(existing == null || event.message.clientMessageId == null || existing.clientMessageId == event.message.clientMessageId) { "MESSAGE_ID_CONFLICT" }
+                // 身份映射分叉时丢弃这条事件：它不属于本地这个原子，带正确 clientMessageId 的
+                // 后续事件仍会把状态推进；把可恢复的镜像做成硬崩溃没有任何收益。
+                if (existing != null && event.message.clientMessageId != null && existing.clientMessageId != event.message.clientMessageId) return@let
                 if (event.revision < (existing?.contentRevision ?: -1L) ||
                     (event.revision == existing?.tombstoneRevision)) return@let
                 val clientId=existing?.clientMessageId ?: event.message.clientMessageId
@@ -804,7 +806,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 if (event.revision < (statusRevision(id,event.messageId)?.revision ?: -1L)) return@transaction
                 val atoms=loadSendAtoms(id)
                 val existing=atoms.firstOrNull { it.clientMessageId == event.clientMessageId || it.messageId == event.messageId }
-                check(existing == null || existing.clientMessageId == event.clientMessageId) { "MESSAGE_ID_CONFLICT" }
+                // 身份映射分叉时丢弃这条事件：它不属于本地这个原子，带正确 clientMessageId 的
+                // 后续事件仍会把状态推进；把可恢复的镜像做成硬崩溃没有任何收益。
+                if (existing != null && existing.clientMessageId != event.clientMessageId) return@transaction
                 if (event.revision < (existing?.statusRevision ?: -1L)) return@transaction
                 event.generationId?.let { generation -> saveGenerationFacts(associations=listOf(event.messageId,event.clientMessageId.value).map {
                     SavedMessageGeneration(id,it,generation,event.revision)
@@ -885,7 +889,13 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
 
 class MirroredConversationRepository(private val delegate: ConversationRepository, private val mirror: EncryptedConversationMirror,private val media:HistoricalMediaPort?=null,
     /** The delegate's shared operation store already commits these receipts while holding its lock. */
-    private val managementCommittedByDelegate: Boolean = false) : ConversationRepository by delegate, GenerationTracker, com.openandroidintelligence.conversation.model.StreamHealthSource, MessageOutcomeQuery {
+    private val managementCommittedByDelegate: Boolean = false,
+    /** 中间流式快照的落盘合并间隔；终态与非流式事件不受影响。 */
+    private val streamingPersistIntervalMillis: Long = 500L,
+    /** 可注入时钟：测试用假时钟验证合并不必真的等待。 */
+    private val clock: () -> Long = { System.nanoTime() },
+) : ConversationRepository by delegate, GenerationTracker, com.openandroidintelligence.conversation.model.StreamHealthSource, MessageOutcomeQuery {
+    private var lastStreamingPersistAtNanos: Long? = null
     override val generationId get()=(delegate as GenerationTracker).generationId
     override val generationState get()=(delegate as GenerationTracker).generationState
     override val streamHealth get()=(delegate as com.openandroidintelligence.conversation.model.StreamHealthSource).streamHealth
@@ -942,8 +952,18 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
     override fun observeEvents(scope: ConversationScope) = delegate.observeEvents(scope).onStart {
         if (media != null) mirror.applyPendingMediaTransitions(media)
     }.mapNotNull { event ->
-        mirror.applyAndCommit(event)
-        if (media != null) mirror.applyPendingMediaTransitions(media)
+        val streaming = event is VerifiedConversationEvent.TimelineUpsert &&
+            event.message.sender == "assistant" && event.message.state == "STREAMING"
+        val now = clock()
+        val intervalNanos = streamingPersistIntervalMillis * 1_000_000L
+        // 中间流式快照不是最终事实：按间隔合并落盘，避免每帧一次加密事务把上游读流压成背压。
+        // 终态/用户消息/状态事件始终立即落盘，崩溃最多丢一个间隔内的中间文本。
+        val persist = !streaming || lastStreamingPersistAtNanos.let { last -> last == null || now - last >= intervalNanos }
+        if (persist) {
+            if (streaming) lastStreamingPersistAtNanos = now
+            mirror.applyAndCommit(event)
+            if (media != null) mirror.applyPendingMediaTransitions(media)
+        }
         mirror.projectEvent(event)
     }
 }

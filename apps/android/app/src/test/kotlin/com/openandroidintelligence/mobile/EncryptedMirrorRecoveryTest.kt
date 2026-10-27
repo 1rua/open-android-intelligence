@@ -196,4 +196,25 @@ class EncryptedMirrorRecoveryTest {
         assertNull(reopened.timeline("conv_obsolete"));assertEquals("new",reopened.timeline("conv_new")!!.messages.single().id);assertEquals(threads,reopened.threads())
         reopened.wipe()
     }
+    @Test fun conflictingMessageIdentityIsDroppedInsteadOfCrashing() = runTest {
+        val testScope=scope.copy(profileId="conflicting_message_identity")
+        val mirror=EncryptedConversationMirror(context,testScope,key)
+        val question=TimelineMessage("question","user",listOf(MessagePart.Text("request")),1,"queued",
+            ConversationId("conv_a"),clientMessageId=ClientMessageId("client_a"))
+        mirror.saveTimeline("conv_a",TimelinePage(listOf(question),null))
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_queued",1,ConversationId("conv_a"),
+            "question",ClientMessageId("client_a"),AgentMessageStatus.QUEUED,0,null))
+        assertEquals("client_a",mirror.loadSendAtoms("conv_a").single().clientMessageId.value)
+        // 同一 messageId 带着另一个 clientMessageId 到达：丢弃该事件，不得把进程打崩。
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_conflict",2,ConversationId("conv_a"),
+            "question",ClientMessageId("client_other"),AgentMessageStatus.FAILED,3,AgentMessageErrorCode.AGENT_UNAVAILABLE))
+        val untouched=mirror.loadSendAtoms("conv_a").single()
+        assertEquals("client_a",untouched.clientMessageId.value)
+        assertNull(untouched.errorCode)
+        // 身份正确的事件仍能推进状态。
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_completed",3,ConversationId("conv_a"),
+            "question",ClientMessageId("client_a"),AgentMessageStatus.COMPLETED,1,null))
+        assertEquals(AgentMessageStatus.COMPLETED,mirror.loadSendAtoms("conv_a").single().status)
+        mirror.wipe()
+    }
 }

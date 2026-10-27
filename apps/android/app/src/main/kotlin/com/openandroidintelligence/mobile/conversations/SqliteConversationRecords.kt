@@ -220,18 +220,23 @@ internal class SqliteConversationRecords(
             val doc = JsonFields.obj(Json.parse(value.decodeToString())) ?: error("MIRROR_CORRUPTED")
             val bodies = JsonFields.objects(doc, shape.field)
             val index = bodies.map { body -> JsonFields.string(body, shape.idField) ?: error("MIRROR_CORRUPTED") }
-            check(index.distinct().size == index.size) { "MESSAGE_ID_CONFLICT" }
+            // 服务端下发的重复 id 只保留最后一次出现：在这里抛异常会把可恢复的镜像
+            // 变成无法启动的存储；去重后写入仍能保证记录集合自洽。
+            val deduplicated = LinkedHashMap<String, JsonValue>()
+            bodies.zip(index).forEach { (body, id) -> deduplicated[id] = body }
+            val uniqueBodies = deduplicated.values.toList()
+            val uniqueIndex = deduplicated.keys.toList()
             val previous=readRecord(key)?.let { bytes ->
                 try { JsonFields.obj(Json.parse(bytes.decodeToString())) } finally { bytes.fill(0) }
             }
-            val obsolete = JsonFields.strings(previous, "recordIndex").toSet() - index.toSet()
-            bodies.zip(index).forEach { (body, id) ->
+            val obsolete = JsonFields.strings(previous, "recordIndex").toSet() - uniqueIndex.toSet()
+            uniqueBodies.zip(uniqueIndex).forEach { (body, id) ->
                 val bytes=Json.canonical(body).toByteArray()
                 try { writeRecord(shape.prefix+id,bytes) } finally { bytes.fill(0) }
             }
             obsolete.forEach { deleteRecord(shape.prefix + it) }
             val bytes=Json.canonical(doc.copy(fields=doc.fields.filterNot { it.first==shape.field }+
-                ("recordIndex" to Json.of(index)))).toByteArray()
+                ("recordIndex" to Json.of(uniqueIndex)))).toByteArray()
             try { writeRecord(key,bytes) } finally { bytes.fill(0) }
         }
     }
