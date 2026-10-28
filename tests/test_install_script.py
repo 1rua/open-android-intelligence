@@ -251,7 +251,7 @@ install_selected_agent_plugins
 '''
     result = run_bash(source)
     assert "hermes called with args: plugins disable open-android-intelligence-gateway" in result.stdout
-    assert f"hermes called with args: plugins install {adapter_dir} --enable" in result.stdout
+    assert "hermes called with args: plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable" in result.stdout
 
 
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin", "MINGW64_NT-10.0"])

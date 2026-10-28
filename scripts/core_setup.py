@@ -373,6 +373,9 @@ def sync_hermes_adapter_env(token: str, account_id: str) -> None:
         "OAI_HERMES_SESSION_PORT": "8792",
     }
 
+    # 确保 accounts 目录存在，满足 OAI_HERMES_GATEWAY_ROOT 路径检查
+    Path(keys_to_update["OAI_HERMES_GATEWAY_ROOT"]).mkdir(parents=True, exist_ok=True)
+
     updated_lines = []
     seen = set()
     for line in existing_lines:

@@ -509,35 +509,58 @@ install_selected_agent_plugins() {
     if [ "${INSTALL_HERMES:-0}" -eq 1 ]; then
         info "正在为 Hermes 环境安装 OAI 适配器插件..."
         local hermes_adapter_dir="${TARGET_DIR}/integrations/hermes-session-adapter"
+        local oai_core_dir="${TARGET_DIR}/oai-core"
         if [ ! -d "${hermes_adapter_dir}" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ]; then
             hermes_adapter_dir="$(cd "${OAI_SETUP_SCRIPT_DIR}/../integrations/hermes-session-adapter" 2>/dev/null && pwd || echo "")"
         fi
+        if [ ! -d "${oai_core_dir}" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ]; then
+            oai_core_dir="$(cd "${OAI_SETUP_SCRIPT_DIR}/../oai-core" 2>/dev/null && pwd || echo "")"
+        fi
 
         if command -v hermes >/dev/null 2>&1; then
-            hermes plugins disable open-android-intelligence-gateway 2>/dev/null || true
+            # 1.1 查找 Hermes 所在 Python 环境并预装本地依赖包
+            local hermes_py=""
+            local hermes_pip=""
+            local hermes_bin
+            hermes_bin="$(command -v hermes)"
+            if [ -f "${hermes_bin}" ]; then
+                local first_line
+                first_line="$(head -n 1 "${hermes_bin}" 2>/dev/null || echo "")"
+                if [[ "${first_line}" =~ ^#!(/.*python[0-9.]*) ]]; then
+                    hermes_py="${BASH_REMATCH[1]}"
+                    if [ -f "$(dirname "${hermes_py}")/pip" ]; then
+                        hermes_pip="$(dirname "${hermes_py}")/pip"
+                    fi
+                fi
+            fi
 
-            if [ -n "${hermes_adapter_dir}" ] && [ -d "${hermes_adapter_dir}" ]; then
-                info "执行: hermes plugins install ${hermes_adapter_dir} --enable"
-                if hermes plugins install "${hermes_adapter_dir}" --enable 2>&1; then
-                    success "Hermes 适配器插件安装成功并已自动启用！"
-                else
-                    warn "hermes plugins install 本地目录遇到问题，尝试使用 --force 重新安装..."
-                    hermes plugins install "${hermes_adapter_dir}" --force --enable 2>&1 || {
-                        warn "Hermes 插件本地安装遇到限制，正在尝试从官方仓库 1rua/hermes-android-gateway 安装..."
-                        hermes plugins install 1rua/hermes-android-gateway --force --enable 2>&1 || {
-                            warn "Hermes 插件自动安装失败，您可在 Hermes 环境手动执行: hermes plugins install 1rua/hermes-android-gateway --enable"
-                        }
+            if [ -n "${hermes_pip}" ] && [ -x "${hermes_pip}" ]; then
+                info "正在将本地 OAI 依赖安装至 Hermes Python 环境 (${hermes_pip})..."
+                if [ -d "${oai_core_dir}" ] && [ -d "${hermes_adapter_dir}" ]; then
+                    "${hermes_pip}" install --no-deps "${oai_core_dir}" "${hermes_adapter_dir}" 2>&1 || {
+                        warn "向 Hermes Python 环境安装本地依赖失败，将继续尝试常规安装流程..."
                     }
                 fi
+            fi
+
+            # 1.2 如果存在旧版 gateway 插件则先禁用
+            hermes plugins disable open-android-intelligence-gateway 2>/dev/null || true
+
+            # 1.3 优先通过官方仓库或本地以 --no-deps 安装，绕过未发布 PyPI 依赖解析阻断
+            info "正在安装 Hermes 网关插件 (1rua/hermes-gateway-plugin)..."
+            if hermes plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable 2>&1; then
+                success "Hermes 适配器插件安装成功并已自动启用！"
+            elif [ -n "${hermes_adapter_dir}" ] && [ -d "${hermes_adapter_dir}" ] && hermes plugins install "${hermes_adapter_dir}" --force --enable 2>&1; then
+                success "Hermes 适配器插件安装成功并已自动启用！"
             else
-                info "正在从官方仓库 1rua/hermes-android-gateway 安装 Hermes 网关插件..."
-                hermes plugins install 1rua/hermes-android-gateway --enable 2>&1 || {
-                    warn "从官方仓库 1rua/hermes-android-gateway 安装失败，您可在 Hermes 环境手动执行: hermes plugins install 1rua/hermes-android-gateway --enable"
+                warn "尝试使用备用源 1rua/hermes-android-gateway 安装..."
+                hermes plugins install 1rua/hermes-android-gateway --force --no-deps --enable 2>&1 || {
+                    warn "Hermes 插件自动安装失败，您可在 Hermes 环境手动执行: hermes plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable"
                 }
             fi
         else
             warn "未检测到全局 hermes 命令，已为您配置环境变量与账号绑定。请在 Hermes 终端中运行:"
-            warn "  hermes plugins install ${hermes_adapter_dir} --enable"
+            warn "  hermes plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable"
         fi
     fi
 
