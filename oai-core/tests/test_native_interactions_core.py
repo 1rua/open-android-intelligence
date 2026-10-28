@@ -306,6 +306,24 @@ async def test_specific_generation_query_never_falls_back_to_unrelated_current_t
 
 
 @pytest.mark.asyncio
+async def test_persisted_generation_query_survives_host_offline_capability_changes(native_api):
+    client, host = native_api
+    descriptor = host.descriptor()
+    descriptor["capabilities"] = dict.fromkeys(descriptor["capabilities"], False)
+    host.descriptor = lambda: descriptor
+    receipt = {"generationId": "gen_saved", "conversationId": "chat", "clientMessageId": "cm_saved",
+               "state": "completed", "revision": 0}
+
+    async def generation(*_, **kwargs):
+        return receipt
+
+    host.generation = generation
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation?clientMessageId=cm_saved")
+    assert response.status == 200, await response.text()
+    assert await response.json() == {"generation": receipt}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("override", [
     {"conversationId": "other"}, {"generationId": "other"}, {"clientMessageId": "other"},
     {"state": "success"}, {"revision": -1}, {"revision": True},

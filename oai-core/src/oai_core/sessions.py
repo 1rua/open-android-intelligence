@@ -597,7 +597,6 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @endpoint
     async def current_generation(request: web.Request) -> web.Response:
         principal = await principal_for(request)
-        adapter = registry.get(request.match_info["agent_id"], "send")
         session_id = safe_session_id(request)
         query = request.query
         if (set(query) - {"clientMessageId", "generationId"}
@@ -608,6 +607,9 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                 or generation_id is not None and (not generation_id or len(generation_id) > 1024)):
             raise AdapterError("INVALID_GENERATION_QUERY")
         specific = client_message_id is not None or generation_id is not None
+        # Durable receipts remain readable after the host stops accepting new
+        # work. Authentication and the adapter's account/session checks still apply.
+        adapter = registry.get(request.match_info["agent_id"], None if specific else "send")
         current = getattr(adapter, "generation" if specific else "current_generation", None)
         if not callable(current):
             raise AdapterError("UNSUPPORTED_CAPABILITY", 501)
