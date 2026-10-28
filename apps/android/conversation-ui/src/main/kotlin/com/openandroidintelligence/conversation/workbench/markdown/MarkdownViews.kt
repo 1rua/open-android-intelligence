@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
@@ -359,6 +360,40 @@ fun MarkdownMathBlockView(
     }
 }
 
+/**
+ * 计算表格各列的统一规范宽度。
+ * 遍历表头和所有行，基于文本长度与视觉预估，并限制在 [minWidth] 与 [maxWidth] 之间，
+ * 确保同一列在表头和所有数据行中保持严格等宽对齐。
+ */
+internal fun calculateTableColumnWidths(
+    headers: List<String>,
+    rows: List<List<String>>,
+    minWidth: Dp,
+    maxWidth: Dp,
+    density: Density,
+): List<Dp> {
+    if (headers.isEmpty()) return emptyList()
+
+    return headers.indices.map { colIdx ->
+        val headerText = headers.getOrElse(colIdx) { "" }
+        val cellTexts = rows.map { it.getOrElse(colIdx) { "" } }
+        val allTextsInCol = listOf(headerText) + cellTexts
+
+        // 估算该列单行所需字符宽度：汉字/表情约按 2 字符计算，字母数字符号约按 1 字符计算
+        val maxCharLength = allTextsInCol.maxOfOrNull { text ->
+            var length = 0.0
+            for (ch in text) {
+                length += if (ch.code > 127) 1.8 else 1.0
+            }
+            length
+        } ?: 0.0
+
+        // 基础内边距 (水平 10.dp * 2 = 20.dp) + 字符宽度估算 (13sp 字符平均约 8.5dp)
+        val estimatedWidth = 24.dp + (maxCharLength * 8.5).dp
+        estimatedWidth.coerceIn(minWidth, maxWidth)
+    }
+}
+
 @Composable
 fun MarkdownTableView(
     block: TimelineBlock.Table,
@@ -371,8 +406,21 @@ fun MarkdownTableView(
     val headerBg = MaterialTheme.colorScheme.surfaceContainerHigh
     val evenBg = MaterialTheme.colorScheme.surfaceContainerLowest
     val oddBg = MaterialTheme.colorScheme.surfaceContainerLow
-    // Leave room for short tables inside bubble padding; wide contents still scroll.
-    val columnMinimum = 72.dp
+    val density = LocalDensity.current
+
+    // 单元格最小宽度保证表头与简短内容整齐；最大宽度促成长文本在单元格内折行，防止穿透
+    val columnMinimum = 84.dp
+    val columnMaximum = 280.dp
+
+    val columnWidths = remember(block.headers, block.rows, density) {
+        calculateTableColumnWidths(
+            headers = block.headers,
+            rows = block.rows,
+            minWidth = columnMinimum,
+            maxWidth = columnMaximum,
+            density = density,
+        )
+    }
 
     Surface(
         shape = RoundedCornerShape(AppRadius.Small),
@@ -387,14 +435,18 @@ fun MarkdownTableView(
                 .fillMaxWidth()
                 .horizontalScroll(scrollState),
         ) {
-            Column {
+            Column(
+                modifier = Modifier.width(IntrinsicSize.Max),
+            ) {
                 // 表头
                 Row(
                     modifier = Modifier
+                        .fillMaxWidth()
                         .background(headerBg)
                         .height(IntrinsicSize.Min),
                 ) {
                     block.headers.forEachIndexed { colIdx, header ->
+                        val colWidth = columnWidths.getOrElse(colIdx) { columnMinimum }
                         val align = block.alignments.getOrElse(colIdx) { TableAlignment.LEFT }
                         val textAlign = when (align) {
                             TableAlignment.LEFT -> TextAlign.Start
@@ -403,7 +455,7 @@ fun MarkdownTableView(
                         }
                         Box(
                             modifier = Modifier
-                                .widthIn(min = columnMinimum)
+                                .width(colWidth)
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
                             contentAlignment = when (align) {
                                 TableAlignment.LEFT -> Alignment.CenterStart
@@ -417,6 +469,7 @@ fun MarkdownTableView(
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                 fontSize = 13.sp,
                                 textAlign = textAlign,
+                                modifier = Modifier.fillMaxWidth(),
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
@@ -438,10 +491,12 @@ fun MarkdownTableView(
                     val rowBg = if (rowIdx % 2 == 0) evenBg else oddBg
                     Row(
                         modifier = Modifier
+                            .fillMaxWidth()
                             .background(rowBg)
                             .height(IntrinsicSize.Min),
                     ) {
                         block.headers.indices.forEach { colIdx ->
+                            val colWidth = columnWidths.getOrElse(colIdx) { columnMinimum }
                             val cellText = rowCells.getOrElse(colIdx) { "" }
                             val align = block.alignments.getOrElse(colIdx) { TableAlignment.LEFT }
                             val textAlign = when (align) {
@@ -454,7 +509,7 @@ fun MarkdownTableView(
                                 colIdx == block.headers.lastIndex
                             Box(
                                 modifier = Modifier
-                                    .widthIn(min = columnMinimum)
+                                    .width(colWidth)
                                     .padding(horizontal = 10.dp, vertical = 7.dp),
                                 contentAlignment = when (align) {
                                     TableAlignment.LEFT -> Alignment.CenterStart
@@ -470,6 +525,7 @@ fun MarkdownTableView(
                                     fontSize = 12.5.sp,
                                     lineHeight = 18.sp,
                                     textAlign = textAlign,
+                                    modifier = Modifier.fillMaxWidth(),
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
                             }
