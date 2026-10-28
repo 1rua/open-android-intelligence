@@ -249,11 +249,6 @@ async def publish(client, core, bundle, key, risk="read"):
     schema = {"type": "object", "additionalProperties": False, "properties": {"limit": {"type": "integer"}}, "required": ["limit"]}
     binding = {"pluginId": "org.example.fixture", "authorKeyId": "sha256:" + "a" * 64, "capabilityId": "org.example.fixture.read", "capabilityVersion": "1.0.0",
                "schemaSha256": "sha256:" + hashlib.sha256(_jcs(schema).encode()).hexdigest(), "schema": schema, "risk": risk}
-    account = core.open_gateway_account(bundle["accountId"])
-    try:
-        DeviceCapabilityPolicy(account.store).set(binding["capabilityId"], True)
-    finally:
-        account.close()
     result = await request_signed(client, bundle, key, "POST", PREFIX + "/pairings/current/capabilities", {"bindings": [binding], "expectedGrantRevision": 1, "localGrantRevision": 1})
     return binding, result["grantRevision"]
 

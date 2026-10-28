@@ -45,13 +45,6 @@ def bindings():
 
 async def publish_screen(client, core, bundle, key, ready=True):
     capabilities = bindings()
-    account = core.open_gateway_account(bundle["accountId"])
-    try:
-        policy = DeviceCapabilityPolicy(account.store)
-        for binding in capabilities:
-            policy.set(binding["capabilityId"], True)
-    finally:
-        account.close()
     inventory = [{**{field: binding[field] for field in ("pluginId", "capabilityId", "capabilityVersion")},
                   "status": "READY" if ready else "LOCAL_GRANT_REQUIRED",
                   "reason": "" if ready else "LOCAL_SCREEN_GRANT_REQUIRED"} for binding in capabilities]
@@ -193,6 +186,28 @@ async def test_screen_pending_cancel_claimed_cancel_failure_and_revocation(gatew
     finally:
         account.close()
     assert (await client.get(DEVICE_API + f"/device-requests/{claimed}", headers=headers)).status == 403
+
+
+@pytest.mark.asyncio
+async def test_screen_capability_disabled_explicitly_blocks_new_requests(gateway):
+    client, core, _ = gateway
+    bundle, key = await phone_login(client, core)
+    capabilities, _ = await publish_screen(client, core, bundle, key)
+    headers = await token(client, bundle)
+    binding = capabilities[0]
+
+    # Explicitly disable this capability via DeviceCapabilityPolicy
+    account = core.open_gateway_account(bundle["accountId"])
+    try:
+        DeviceCapabilityPolicy(account.store).set(binding["capabilityId"], False)
+    finally:
+        account.close()
+
+    response = await client.post(DEVICE_API + "/device-requests", json={
+        "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": SCREEN[0][3],
+    }, headers={**headers, "Idempotency-Key": "test-disabled"})
+    assert response.status == 403
+    assert (await response.json())["error"]["code"] == "CAPABILITY_DENIED"
 
 
 @pytest.mark.parametrize("schema_name,parameters", [
