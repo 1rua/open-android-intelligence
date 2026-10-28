@@ -1593,7 +1593,10 @@ class EventStore:
                 payload["parameters"] = {}
                 self.store.database.execute("UPDATE events SET payload_json=? WHERE event_id=?", (self.store.seal_json(payload,purpose),row["event_id"]))
 
-    def read_after(self, cursor: str | None, now: datetime | str | None = None) -> list[dict[str, Any]]:
+    def read_after(self, cursor: str | None, now: datetime | str | None = None, *,
+                   limit: int | None = None) -> list[dict[str, Any]]:
+        if limit is not None and (type(limit) is not int or limit <= 0):
+            raise ValueError("Event replay limit must be a positive integer")
         current = _now(now)
         self.purge_expired(current)
         current_iso = iso_millis(current)
@@ -1601,19 +1604,20 @@ class EventStore:
             row = self.store.database.execute("SELECT expires_at FROM events WHERE event_id = ?", (cursor,)).fetchone()
             if row is None or _now(row["expires_at"]) <= current:
                 raise GatewayError("CURSOR_EXPIRED")
-            rows = self.store.database.execute(
-                """
+            query = """
                 SELECT * FROM events
                 WHERE expires_at > ? AND sequence >
                   (SELECT sequence FROM events WHERE event_id = ?)
                 ORDER BY sequence
-                """,
-                (current_iso, cursor),
-            ).fetchall()
+                """
+            parameters = (current_iso, cursor)
         else:
-            rows = self.store.database.execute(
-                "SELECT * FROM events WHERE expires_at > ? ORDER BY sequence", (current_iso,)
-            ).fetchall()
+            query = "SELECT * FROM events WHERE expires_at > ? ORDER BY sequence"
+            parameters = (current_iso,)
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters += (limit,)
+        rows = self.store.database.execute(query, parameters).fetchall()
         return [self._map(row) for row in rows]
 
     def purge_expired(self, now: datetime | str | None = None, limit: int = 1000) -> int:
