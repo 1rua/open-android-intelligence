@@ -254,21 +254,21 @@ detect_agents() {
     DETECTED_DSH=0
     DETECTED_CODEX=0
 
-    # 1. 探测 Hermes Agent
-    if command -v hermes >/dev/null 2>&1 || [ -d "${HOME}/.hermes" ]; then
+    # 1. 探测 Hermes Agent (CLI 命令或存在有效配置/环境文件)
+    if command -v hermes >/dev/null 2>&1 || [ -f "${HOME}/.hermes/config.yaml" ] || [ -f "${HOME}/.hermes/.env" ] || [ -d "${HOME}/.hermes/hermes-agent" ]; then
         DETECTED_HERMES=1
         info "-> 发现 Hermes Agent (CLI: $(command -v hermes 2>/dev/null || echo '未加入PATH'), 配置目录: ${HOME}/.hermes)"
     fi
 
-    # 2. 探测 DSH (DeepSeek Harness)
+    # 2. 探测 DSH (DeepSeek Harness) (CLI 命令或存在有效配置/运行时环境)
     local dsh_home="${DSH_HOME:-${HOME}/.dsh-cline}"
-    if [ -d "${dsh_home}" ] || [ -d "${HOME}/.dsh" ] || command -v dsh >/dev/null 2>&1; then
+    if command -v dsh >/dev/null 2>&1 || [ -f "${dsh_home}/settings.yaml" ] || [ -f "${dsh_home}/.env" ] || [ -d "${dsh_home}/runtime" ] || [ -f "${HOME}/.dsh/settings.yaml" ] || [ -f "${HOME}/.dsh/.env" ]; then
         DETECTED_DSH=1
         info "-> 发现 DeepSeek Harness (DSH) 环境 (配置目录: ${dsh_home})"
     fi
 
-    # 3. 探测 Codex
-    if command -v codex >/dev/null 2>&1 || [ -d "${HOME}/.codex" ]; then
+    # 3. 探测 Codex (CLI 命令且有效，或存在有效配置文件)
+    if command -v codex >/dev/null 2>&1 || [ -f "${HOME}/.codex/config.toml" ] || [ -f "${HOME}/.codex/auth.json" ]; then
         DETECTED_CODEX=1
         info "-> 发现 Codex 环境 (CLI: $(command -v codex 2>/dev/null || echo '未加入PATH'), 目录: ${HOME}/.codex)"
     fi
@@ -346,13 +346,16 @@ install_selected_agent_plugins() {
                 else
                     warn "hermes plugins install 本地目录遇到问题，尝试使用 --force 重新安装..."
                     hermes plugins install "${hermes_adapter_dir}" --force --enable 2>&1 || {
-                        warn "Hermes 插件自动安装失败，您可在 Hermes 环境手动执行: hermes plugins install ${hermes_adapter_dir} --enable"
+                        warn "Hermes 插件本地安装遇到限制，正在尝试从官方仓库 1rua/hermes-android-gateway 安装..."
+                        hermes plugins install 1rua/hermes-android-gateway --force --enable 2>&1 || {
+                            warn "Hermes 插件自动安装失败，您可在 Hermes 环境手动执行: hermes plugins install 1rua/hermes-android-gateway --enable"
+                        }
                     }
                 fi
             else
-                info "尝试从官方目录安装 oai-hermes-session-adapter..."
-                hermes plugins install oai-hermes-session-adapter --enable 2>/dev/null || {
-                    warn "无法定位本地插件目录且在线安装未成功，请后续在 Hermes 中安装 integrations/hermes-session-adapter"
+                info "正在从官方仓库 1rua/hermes-android-gateway 安装 Hermes 网关插件..."
+                hermes plugins install 1rua/hermes-android-gateway --enable 2>&1 || {
+                    warn "从官方仓库 1rua/hermes-android-gateway 安装失败，您可在 Hermes 环境手动执行: hermes plugins install 1rua/hermes-android-gateway --enable"
                 }
             fi
         else

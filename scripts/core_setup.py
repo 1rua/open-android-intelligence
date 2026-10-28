@@ -229,31 +229,18 @@ def deploy_skills_to_agents(root: Path) -> None:
             skill_src = root.parent / "integrations" / "skills" / "oai-client"
         if (skill_src / "SKILL.md").is_file():
             import shutil
-            agent_dirs = [
-                Path.home() / ".agents" / "skills",
-                Path.home() / ".claude" / "skills",
-                Path.home() / ".codex" / "skills",
-                Path.home() / ".hermes" / "skills",
-                Path.home() / ".codebuddy" / "skills",
-                Path.home() / ".trae" / "skills",
-                Path.home() / ".dsh-cline" / "skills",
-                Path.home() / ".dsh" / "skills",
-            ]
-            dsh_env = os.environ.get("DSH_HOME")
-            if dsh_env:
-                agent_dirs.append(Path(dsh_env) / "skills")
-            for dest in agent_dirs:
-                try:
-                    target = dest / "oai-client"
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if target.is_symlink() or target.is_file():
-                        target.unlink()
-                    elif target.is_dir():
-                        shutil.rmtree(target, ignore_errors=True)
-                    shutil.copytree(skill_src, target)
-                    print(f"[INFO] 已自动安装 oai-client skill 至 Agent 目录: {target}")
-                except OSError:
-                    continue
+            dest = Path.home() / ".agents" / "skills"
+            try:
+                target = dest / "oai-client"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.is_symlink() or target.is_file():
+                    target.unlink()
+                elif target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                shutil.copytree(skill_src, target)
+                print(f"[INFO] 已自动安装 oai-client skill 至 Agent 目录: {target}")
+            except OSError:
+                pass
 
 
 def sync_dsh_adapter_env(token: str) -> None:
