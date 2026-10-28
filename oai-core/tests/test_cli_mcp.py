@@ -188,8 +188,9 @@ def test_local_account_and_policy_commands_use_real_isolated_core_stores(tmp_pat
         assert json.loads(capsys.readouterr().out) == {"accountId": username, "created": True}
     assert main(["account", "create", "--config", str(settings), "--username", "alice"]) == 1
     assert "ACCOUNT_EXISTS" in capsys.readouterr().err
-    assert main(["policy", "set", "--config", str(settings), "--account", "alice",
-                 "--capability", "org.openandroidintelligence.sms.query", "--enabled"]) == 0
+    # By default, capabilities are enabled for all accounts (e.g. bob has not configured it, so it is True)
+    assert main(["policy", "set", "--config", str(settings), "--account", "bob",
+                 "--capability", "org.openandroidintelligence.sms.query", "--disabled"]) == 0
     capsys.readouterr()
     core = create_core(load_config(settings))
     for username in ("alice", "bob"):
@@ -197,6 +198,7 @@ def test_local_account_and_policy_commands_use_real_isolated_core_stores(tmp_pat
         try:
             assert account.credentials.verify_password("real-test-password")
             assert not account.credentials.verify_password("wrong-password")
+            # alice is enabled by default (and explicitly enabled); bob was explicitly disabled
             assert DeviceCapabilityPolicy(account.store).allows("org.openandroidintelligence.sms.query") is (username == "alice")
         finally:
             account.close()

@@ -40,7 +40,7 @@ class DeviceCapabilityPolicy:
         return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,256}", value) is not None
 
     def allows(self, capability_id: str) -> bool:
-        return self.snapshot()["enabled"].get(capability_id) is True
+        return self.snapshot()["enabled"].get(capability_id) is not False
 
     def set(self, capability_id: str, enabled: bool) -> dict[str, Any]:
         from .core import GatewayError, _jcs
@@ -81,7 +81,7 @@ def capability_catalog(account: Any, device_id: str | None = None) -> list[dict[
             # Inventory describes diagnostics, never a grant. READY requires a matching binding.
             if android_state == "READY" and binding is None:
                 android_state = "SYNC_REQUIRED"
-            enabled = configured.get(key[1]) is True
+            enabled = configured.get(key[1]) is not False
             status = "GATEWAY_DISABLED" if not enabled else android_state
             output.append({"deviceId": target, "pairingGeneration": generation, "grantRevision": revision,
                            "pluginId": key[0] or None, "capabilityId": key[1], "capabilityVersion": key[2] or None,
@@ -90,7 +90,7 @@ def capability_catalog(account: Any, device_id: str | None = None) -> list[dict[
                            **({"provider": {k: binding[k] for k in ("pluginId", "authorKeyId")},
                                "risk": binding["risk"], "schema": binding["schema"]} if binding else {})})
     if not devices:
-        output = [{"capabilityId": key, "capabilityVersion": None, "gatewayEnabled": configured.get(key) is True,
+        output = [{"capabilityId": key, "capabilityVersion": None, "gatewayEnabled": configured.get(key) is not False,
                    "androidStatus": "PAIRING_REQUIRED", "status": "PAIRING_REQUIRED"}
                   for key in sorted(set(CAPABILITY_HINTS) | set(configured))]
     return output

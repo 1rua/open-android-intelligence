@@ -87,11 +87,6 @@ async def scenario():
         schema = {"type": "object", "additionalProperties": False, "properties": {"limit": {"type": "integer"}}, "required": ["limit"]}
         binding = {"pluginId": "org.example.fixture", "authorKeyId": "sha256:" + "a" * 64, "capabilityId": "org.example.fixture.read", "capabilityVersion": "1.0.0",
             "schemaSha256": "sha256:" + hashlib.sha256(_jcs(schema).encode()).hexdigest(), "schema": schema, "risk": "read"}
-        account = core.open_gateway_account("alice")
-        try:
-            DeviceCapabilityPolicy(account.store).set(binding["capabilityId"], True)
-        finally:
-            account.close()
         publication = await signed_request(client, phone, key, "POST", PREFIX + "/pairings/current/capabilities", {"bindings": [binding], "expectedGrantRevision": 1, "localGrantRevision": 1})
         response = await client.post(DEVICE_API + "/tokens", json={"username": "alice", "password": "test-only-password", "deviceId": phone["deviceId"]})
         assert response.status == 200, await response.text()
