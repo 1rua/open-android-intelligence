@@ -87,6 +87,7 @@ prompt_read() {
 prompt_password() {
     local prompt_text="$1"
     local var_name="$2"
+    local allow_empty="${3:-0}"
     local input=""
 
     if [ -e /dev/tty ] && true >/dev/tty 2>/dev/null; then
@@ -160,73 +161,173 @@ detect_agents() {
     fi
 }
 
-configure_network_and_account() {
-    # 读取既有配置默认值（若存在）
-    local default_host="${CFG_HOST:-0.0.0.0}"
-    local default_port="${CFG_PORT:-11451}"
+# 全局配置缓存变量
+CFG_HOST=""
+CFG_PORT=""
+CFG_USERNAME=""
+CFG_PASSWORD=""
+CFG_PASSWORD_CONFIRM=""
+INSTALL_HERMES=""
+INSTALL_DSH=""
+INSTALL_CODEX=""
+HERMES_ACCOUNT=""
+
+load_existing_config() {
+    # 优先从 core.json 读取已有值填充默认参数
     if [ -f "${CONFIG_FILE}" ]; then
-        local existing_host
-        existing_host=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(cfg.get("listen", {}).get("host", "0.0.0.0"))' 2>/dev/null || echo "0.0.0.0")
-        local existing_port
-        existing_port=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(cfg.get("listen", {}).get("port", 11451))' 2>/dev/null || echo "11451")
-        [ -n "$existing_host" ] && default_host="$existing_host"
-        [ -n "$existing_port" ] && default_port="$existing_port"
+        if [ -z "${CFG_HOST}" ]; then
+            CFG_HOST=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(cfg.get("listen", {}).get("host", "0.0.0.0"))' 2>/dev/null || echo "0.0.0.0")
+        fi
+        if [ -z "${CFG_PORT}" ]; then
+            CFG_PORT=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(cfg.get("listen", {}).get("port", 11451))' 2>/dev/null || echo "11451")
+        fi
+        if [ -z "${INSTALL_DSH}" ]; then
+            local has_dsh
+            has_dsh=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(1 if any(a.get("type")=="dsh" for a in cfg.get("agents",[])) else 0)' 2>/dev/null || echo "0")
+            [ "$has_dsh" = "1" ] && INSTALL_DSH=1 || INSTALL_DSH=0
+        fi
+        if [ -z "${INSTALL_HERMES}" ]; then
+            local has_hermes
+            has_hermes=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(1 if any(a.get("type")=="hermes" for a in cfg.get("agents",[])) else 0)' 2>/dev/null || echo "0")
+            [ "$has_hermes" = "1" ] && INSTALL_HERMES=1 || INSTALL_HERMES=0
+        fi
+        if [ -z "${INSTALL_CODEX}" ]; then
+            local has_codex
+            has_codex=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); print(1 if any(a.get("type")=="codex" for a in cfg.get("agents",[])) else 0)' 2>/dev/null || echo "0")
+            [ "$has_codex" = "1" ] && INSTALL_CODEX=1 || INSTALL_CODEX=0
+        fi
+        if [ -z "${HERMES_ACCOUNT}" ]; then
+            HERMES_ACCOUNT=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json, os; cfg=json.load(open(os.environ["OAI_CONFIG_PATH"])); agents=[a for a in cfg.get("agents",[]) if a.get("type")=="hermes"]; print(list(agents[0].get("accounts",{}).values())[0] if agents and agents[0].get("accounts") else "")' 2>/dev/null || echo "")
+        fi
     fi
 
-    prompt_read "请输入 OAI Core 监听主机地址 (局域网共享使用 0.0.0.0，仅本机使用 127.0.0.1)" CFG_HOST "${default_host}"
-    prompt_read "请输入 OAI Core 监听端口" CFG_PORT "${default_port}"
+    # 兜底默认值
+    [ -n "${CFG_HOST}" ] || CFG_HOST="0.0.0.0"
+    [ -n "${CFG_PORT}" ] || CFG_PORT="11451"
+    [ -n "${CFG_USERNAME}" ] || CFG_USERNAME="alice"
+    [ -n "${INSTALL_DSH}" ] || INSTALL_DSH=0
+    [ -n "${INSTALL_HERMES}" ] || INSTALL_HERMES=0
+    [ -n "${INSTALL_CODEX}" ] || INSTALL_CODEX=0
+    [ -n "${HERMES_ACCOUNT}" ] || HERMES_ACCOUNT="${CFG_USERNAME}"
+}
 
-    prompt_read "请输入需要配置或新建的管理员用户名" CFG_USERNAME "alice"
+# 1. 网络与监听配置
+configure_network() {
+    load_existing_config
+    printf "\n"
+    info "${BOLD}=== 配置 OAI Core 监听主机与端口 ===${NC}"
+    prompt_read "请输入 OAI Core 监听主机地址 (局域网共享使用 0.0.0.0，仅本机使用 127.0.0.1)" CFG_HOST "${CFG_HOST}"
+    prompt_read "请输入 OAI Core 监听端口" CFG_PORT "${CFG_PORT}"
+    success "网络监听参数已更新: ${CFG_HOST}:${CFG_PORT}"
+}
+
+# 2. 账号与密码配置
+configure_account() {
+    load_existing_config
+    printf "\n"
+    info "${BOLD}=== 配置管理员账号与密码 ===${NC}"
+    prompt_read "请输入管理员用户名" CFG_USERNAME "${CFG_USERNAME}"
+
+    local is_existing_account=0
+    if [ -f "${CONFIG_FILE}" ]; then
+        local check_res
+        check_res=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c "
+import json, os, sqlite3, sys
+cfg_path = os.environ['OAI_CONFIG_PATH']
+cfg = json.load(open(cfg_path))
+root = os.path.dirname(cfg_path)
+storage = os.path.join(root, cfg.get('storageRoot', 'runtime/accounts'))
+db = os.path.join(storage, sys.argv[1], 'gateway.sqlite')
+print(1 if os.path.exists(db) else 0)
+" "${CFG_USERNAME}" 2>/dev/null || echo "0")
+        [ "$check_res" = "1" ] && is_existing_account=1
+    fi
+
+    if [ "$is_existing_account" -eq 1 ]; then
+        info "检测到账号 [${CFG_USERNAME}] 已存在。"
+        local change_pwd=""
+        prompt_read "是否修改该账号密码？(y/n)" change_pwd "n"
+        if [ "$change_pwd" != "y" ] && [ "$change_pwd" != "Y" ]; then
+            CFG_PASSWORD=""
+            info "保留账号 [${CFG_USERNAME}] 现有密码。"
+            return 0
+        fi
+    fi
 
     while true; do
-        prompt_password "请设置 ${CFG_USERNAME} 的密码" CFG_PASSWORD
+        prompt_password "请设置 ${CFG_USERNAME} 的密码（直接回车可取消改密）" CFG_PASSWORD 1
         if [ -z "$CFG_PASSWORD" ]; then
-            warn "密码不能为空，请重新输入。"
-            continue
+            if [ "$is_existing_account" -eq 1 ]; then
+                info "未输入密码，保留原有密码。"
+                break
+            else
+                warn "新建账号密码不能为空，请重新输入。"
+                continue
+            fi
         fi
-        prompt_password "请再次输入密码以确认" CFG_PASSWORD_CONFIRM
+        prompt_password "请再次输入密码以确认" CFG_PASSWORD_CONFIRM 1
         if [ "$CFG_PASSWORD" != "$CFG_PASSWORD_CONFIRM" ]; then
             error "两次输入的密码不一致，请重新输入！"
         else
             break
         fi
     done
+    success "账号凭据参数设置完成。"
 }
 
+# 3. Agent 接入配置
 configure_agent_integrations() {
+    load_existing_config
+    printf "\n"
+    info "${BOLD}=== 配置 AI Agent 适配器接入 ===${NC}"
     local answer=""
-    INSTALL_HERMES=0
-    INSTALL_DSH=0
-    INSTALL_CODEX=0
 
-    if [ "$DETECTED_HERMES" -eq 1 ]; then
-        prompt_read "是否配置可选 Hermes 会话桥接入？(y/n)" answer "n"
-        [ "$answer" = "y" ] || [ "$answer" = "Y" ] && INSTALL_HERMES=1
+    # Hermes
+    local default_hermes="n"
+    [ "${INSTALL_HERMES}" -eq 1 ] && default_hermes="y"
+    if [ "$DETECTED_HERMES" -eq 1 ] || [ "${INSTALL_HERMES}" -eq 1 ]; then
+        prompt_read "是否配置 Hermes 会话桥接入？(y/n)" answer "${default_hermes}"
+        if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+            INSTALL_HERMES=1
+            prompt_read "请输入与 Core 账号绑定的 Hermes 账号" HERMES_ACCOUNT "${HERMES_ACCOUNT:-$CFG_USERNAME}"
+        else
+            INSTALL_HERMES=0
+        fi
     fi
 
-    if [ "$DETECTED_DSH" -eq 1 ]; then
-        prompt_read "是否启用 DSH (DeepSeek Harness) 会话适配器接入？(y/n)" answer "y"
-        [ "$answer" = "y" ] || [ "$answer" = "Y" ] && INSTALL_DSH=1
+    # DSH
+    local default_dsh="y"
+    [ "${INSTALL_DSH}" -eq 0 ] && default_dsh="n"
+    if [ "$DETECTED_DSH" -eq 1 ] || [ "${INSTALL_DSH}" -eq 1 ]; then
+        prompt_read "是否启用 DSH (DeepSeek Harness) 会话适配器接入？(y/n)" answer "${default_dsh}"
+        [ "$answer" = "y" ] || [ "$answer" = "Y" ] && INSTALL_DSH=1 || INSTALL_DSH=0
     fi
 
-    if [ "$DETECTED_CODEX" -eq 1 ]; then
-        prompt_read "是否启用 Codex app-server 会话适配器接入？(y/n)" answer "y"
-        [ "$answer" = "y" ] || [ "$answer" = "Y" ] && INSTALL_CODEX=1
+    # Codex
+    local default_codex="y"
+    [ "${INSTALL_CODEX}" -eq 0 ] && default_codex="n"
+    if [ "$DETECTED_CODEX" -eq 1 ] || [ "${INSTALL_CODEX}" -eq 1 ]; then
+        prompt_read "是否启用 Codex app-server 会话适配器接入？(y/n)" answer "${default_codex}"
+        [ "$answer" = "y" ] || [ "$answer" = "Y" ] && INSTALL_CODEX=1 || INSTALL_CODEX=0
     fi
 
     if [ "$INSTALL_HERMES" -eq 1 ]; then
-        info "本向导已配置 Core 会话桥，并自动将适配器环境同步至 Hermes 环境（若检测到 ~/.hermes）。"
-        info "请确保在 Hermes 宿主侧启用插件并重启服务："
-        info "  hermes plugins enable open-android-intelligence-gateway"
-        info "  hermes gateway restart"
+        info "已启用 Hermes 会话桥适配器。"
     fi
-
     if [ "$INSTALL_DSH" -eq 1 ]; then
-        info "本向导已配置 Core 会话桥，并自动将生成的 OAI_DSH_ADAPTER_TOKEN 注入至 DSH 环境及凭据文件（~/.dsh*）。"
-        info "若已安装适配器插件，重启 DSH profile 即可上线；若尚未安装，请在 DSH 中执行:"
-        info "  plugin_manager action=install_bundle target=${TARGET_DIR}/integrations/dsh-session-adapter"
+        info "已启用 DSH 会话桥适配器。"
     fi
+    if [ "$INSTALL_CODEX" -eq 1 ]; then
+        info "已启用 Codex 会话桥适配器。"
+    fi
+    success "Agent 适配器配置完成。"
     return 0
+}
+
+# 兼容旧函数调用（线性全量流程）
+configure_network_and_account() {
+    configure_network
+    configure_account
 }
 
 configure_autostart() {
@@ -458,18 +559,92 @@ EOF
     fi
 }
 
-main() {
-    banner
-    resolve_paths
-    detect_agents
-    configure_network_and_account
+show_menu() {
+    printf "\n"
+    printf "${CYAN}${BOLD}=== OAI Core 配置分类菜单 ===${NC}\n"
+    printf "  ${GREEN}1.${NC} 配置监听主机与端口       [当前: ${CFG_HOST}:${CFG_PORT}]\n"
+    printf "  ${GREEN}2.${NC} 配置管理员账号与密码     [当前账号: ${CFG_USERNAME}]\n"
+    local hermes_status="未启用"
+    local dsh_status="未启用"
+    local codex_status="未启用"
+    [ "${INSTALL_HERMES}" -eq 1 ] && hermes_status="已启用"
+    [ "${INSTALL_DSH}" -eq 1 ] && dsh_status="已启用"
+    [ "${INSTALL_CODEX}" -eq 1 ] && codex_status="已启用"
+    printf "  ${GREEN}3.${NC} 配置 AI Agent 适配器接入  [Hermes: %s | DSH: %s | Codex: %s]\n" "$hermes_status" "$dsh_status" "$codex_status"
+    printf "  ${GREEN}4.${NC} 保存当前配置并生成启动脚本\n"
+    printf "  ${GREEN}5.${NC} 配置系统开机与桌面自启动\n"
+    printf "  ${GREEN}6.${NC} 注册全局 CLI 命令 (oai)\n"
+    printf "  ${GREEN}7.${NC} 运行完整配置向导 (依次执行上述所有流程)\n"
+    printf "  ${YELLOW}0.${NC} 退出配置向导\n"
+    printf "\n"
+}
+
+run_full_wizard() {
+    info "开始运行完整配置向导..."
+    configure_network
+    configure_account
     configure_agent_integrations
     save_configuration_and_account
     configure_autostart
     install_cli_wrapper
     printf "\n"
-    success "OAI Core 配置流程已全部完成！"
+    success "完整配置向导已全部完成！"
     info "您可随时在终端直接运行 oai 或执行 ${TARGET_DIR}/start-core.sh 启动服务。"
+}
+
+menu_loop() {
+    load_existing_config
+
+    while true; do
+        show_menu
+        local choice=""
+        prompt_read "请选择需要配置的功能项 (0-7)" choice "7"
+        case "$choice" in
+            1)
+                configure_network
+                ;;
+            2)
+                configure_account
+                ;;
+            3)
+                configure_agent_integrations
+                ;;
+            4)
+                save_configuration_and_account
+                ;;
+            5)
+                configure_autostart
+                ;;
+            6)
+                install_cli_wrapper
+                ;;
+            7)
+                run_full_wizard
+                ;;
+            0|q|Q)
+                info "已退出配置向导。"
+                break
+                ;;
+            *)
+                warn "无效输入 [${choice}]，请输入 0-7 之间的数字。"
+                ;;
+        esac
+    done
+}
+
+main() {
+    banner
+    resolve_paths
+    detect_agents
+    load_existing_config
+
+    # 如果有任何来自外部的预置环境变量或非交互环境，支持直接运行全量向导
+    if [ ! -t 0 ] && [ ! -e /dev/tty ]; then
+        run_full_wizard
+        return 0
+    fi
+
+    menu_loop
 }
 
 if [ "${BASH_SOURCE[0]:-}" = "$0" ] || [ -z "${BASH_SOURCE[0]:-}" ]; then

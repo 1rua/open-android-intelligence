@@ -191,7 +191,16 @@ def configure(root: Path, host: str, port: int, username: str, selected: list[st
 
     core = create_core(load_config(config_path))
     if core.account_exists(username):
-        print(f"[INFO] 账号 {username} 已存在，保留原密码、配对和授权。")
+        password = os.environ.get("OAI_INIT_ADMIN_PASSWORD", "")
+        if password:
+            account = core.open_gateway_account(username)
+            try:
+                account.credentials.create_password(password)
+            finally:
+                account.close()
+            print(f"[SUCCESS] 账号 {username} 密码已更新。")
+        else:
+            print(f"[INFO] 账号 {username} 已存在，保留原密码、配对和授权。")
     else:
         password = os.environ.get("OAI_INIT_ADMIN_PASSWORD", "")
         if not password:

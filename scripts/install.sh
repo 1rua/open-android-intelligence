@@ -104,6 +104,7 @@ prompt_read() {
 prompt_password() {
     local prompt_text="$1"
     local var_name="$2"
+    local allow_empty="${3:-0}"
     local input=""
 
     if [ -e /dev/tty ] && true >/dev/tty 2>/dev/null; then
