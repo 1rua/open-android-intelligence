@@ -221,6 +221,49 @@ def configure(root: Path, host: str, port: int, username: str, selected: list[st
     if "dsh" in selected_or_existing and "OAI_DSH_ADAPTER_TOKEN" in tokens:
         sync_dsh_adapter_env(tokens["OAI_DSH_ADAPTER_TOKEN"])
 
+    # 自动将 oai-client skill 安装到所有已发现的 Agent skill 目录（支持接入或未接入的 Agent）
+    deploy_skills_to_agents(root)
+
+
+def deploy_skills_to_agents(root: Path) -> None:
+    try:
+        from oai_core.skills_installer import install_skills_to_hosts
+        installed = install_skills_to_hosts()
+        for p in installed:
+            print(f"[INFO] 已自动安装 oai-client skill 至 Agent 目录: {p}")
+    except Exception as exc:
+        # Fallback: if oai_core is not yet installed in sys.path, copy from repository integrations/skills
+        skill_src = root / "integrations" / "skills" / "oai-client"
+        if not (skill_src / "SKILL.md").is_file():
+            skill_src = root.parent / "integrations" / "skills" / "oai-client"
+        if (skill_src / "SKILL.md").is_file():
+            import shutil
+            agent_dirs = [
+                Path.home() / ".agents" / "skills",
+                Path.home() / ".claude" / "skills",
+                Path.home() / ".codex" / "skills",
+                Path.home() / ".hermes" / "skills",
+                Path.home() / ".codebuddy" / "skills",
+                Path.home() / ".trae" / "skills",
+                Path.home() / ".dsh-cline" / "skills",
+                Path.home() / ".dsh" / "skills",
+            ]
+            dsh_env = os.environ.get("DSH_HOME")
+            if dsh_env:
+                agent_dirs.append(Path(dsh_env) / "skills")
+            for dest in agent_dirs:
+                try:
+                    target = dest / "oai-client"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.is_symlink() or target.is_file():
+                        target.unlink()
+                    elif target.is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    shutil.copytree(skill_src, target)
+                    print(f"[INFO] 已自动安装 oai-client skill 至 Agent 目录: {target}")
+                except OSError:
+                    continue
+
 
 def sync_dsh_adapter_env(token: str) -> None:
     dsh_homes = []

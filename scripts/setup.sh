@@ -590,6 +590,7 @@ run_full_wizard() {
     printf "\n"
     success "完整配置向导已全部完成！"
     info "您可随时在终端直接运行 oai 或执行 ${TARGET_DIR}/start-core.sh 启动服务。"
+    info "内置 oai-client skill 已同步部署，支持接入或未接入的 Agent 读取与操控连接的客户端。"
 }
 
 menu_loop() {

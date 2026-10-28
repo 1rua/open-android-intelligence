@@ -602,6 +602,8 @@ show_completion_summary() {
     printf "${BOLD}日常管理命令：${NC}\n"
     printf "  - 添加新账号: ${CYAN}oai account create --config %s/core.json --username <用户名>${NC}\n" "${TARGET_DIR}"
     printf "  - 查看设备列表: ${CYAN}oai devices${NC}\n"
+    printf "  - 查看设备能力: ${CYAN}oai capabilities${NC}\n"
+    printf "  - 部署 Agent Skill: ${CYAN}oai skill install${NC}\n"
     printf "  - 启动 MCP 服务: ${CYAN}oai mcp${NC}\n\n"
 }
 
