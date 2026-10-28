@@ -227,11 +227,31 @@ DETECTED_CODEX=0
 prompt_read() {{ printf -v "$2" '%s' n; }}
 hermes() {{ printf 'host mutation attempted\\n' >&2; return 99; }}
 configure_agent_plugins
+install_selected_agent_plugins
 printf 'selected=%s\\n' "$INSTALL_HERMES_PLUGIN"
 '''
     result = run_bash(source)
     assert "selected=0" in result.stdout
     assert "host mutation attempted" not in result.stderr
+
+
+def test_selected_hermes_installs_and_enables_plugin(tmp_path):
+    target_dir = tmp_path / "oai-core"
+    adapter_dir = target_dir / "integrations" / "hermes-session-adapter"
+    adapter_dir.mkdir(parents=True)
+    source = f'''
+source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
+TARGET_DIR={shlex.quote(str(target_dir))}
+INSTALL_HERMES_PLUGIN=1
+hermes() {{
+    printf 'hermes called with args: %s\\n' "$*"
+    return 0
+}}
+install_selected_agent_plugins
+'''
+    result = run_bash(source)
+    assert "hermes called with args: plugins disable open-android-intelligence-gateway" in result.stdout
+    assert f"hermes called with args: plugins install {adapter_dir} --enable" in result.stdout
 
 
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin", "MINGW64_NT-10.0"])

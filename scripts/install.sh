@@ -288,7 +288,7 @@ configure_agent_plugins() {
 
     # 1. Hermes 适配器引导
     if [ "$DETECTED_HERMES" -eq 1 ]; then
-        prompt_read "检测到 Hermes，是否配置可选会话桥接入？(y/n)" answer "n"
+        prompt_read "检测到 Hermes，是否一同安装并接入 Hermes 会话适配器插件？(y/n)" answer "y"
         case "$answer" in
             [Yy]* )
                 INSTALL_HERMES_PLUGIN=1
@@ -301,7 +301,7 @@ configure_agent_plugins() {
 
     # 2. DSH 适配器引导
     if [ "$DETECTED_DSH" -eq 1 ]; then
-        prompt_read "检测到 DSH 环境，是否配置接入 OAI DSH Session Adapter？(y/n)" answer "y"
+        prompt_read "检测到 DSH 环境，是否一同配置并安装 OAI DSH Session Adapter？(y/n)" answer "y"
         case "$answer" in
             [Yy]* )
                 INSTALL_DSH_PLUGIN=1
@@ -324,23 +324,63 @@ configure_agent_plugins() {
                 ;;
         esac
     fi
+}
 
-    # 宿主安装与停用旧 Gateway 是部署切换步骤，不在 Core 安装时执行。
-    if [ "$INSTALL_HERMES_PLUGIN" -eq 1 ]; then
-        info "已为您启用 Core 的 Hermes 会话桥配置。"
-        info "配置向导已自动将生成的凭据与账号配置同步至 Hermes 环境（若检测到 ~/.hermes）。"
-        info "请确保在 Hermes 环境安装适配器并启用插件："
-        info "  hermes plugins enable open-android-intelligence-gateway"
-        info "  hermes gateway restart"
+install_selected_agent_plugins() {
+    # 1. Hermes 插件自动安装
+    if [ "${INSTALL_HERMES_PLUGIN:-0}" -eq 1 ]; then
+        info "正在为 Hermes 环境安装 OAI 适配器插件..."
+        local hermes_adapter_dir="${TARGET_DIR}/integrations/hermes-session-adapter"
+        if [ ! -d "${hermes_adapter_dir}" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ]; then
+            hermes_adapter_dir="$(cd "${OAI_SETUP_SCRIPT_DIR}/../integrations/hermes-session-adapter" 2>/dev/null && pwd || echo "")"
+        fi
+
+        if command -v hermes >/dev/null 2>&1; then
+            # 如果存在旧版 gateway 插件则先禁用
+            hermes plugins disable open-android-intelligence-gateway 2>/dev/null || true
+
+            if [ -n "${hermes_adapter_dir}" ] && [ -d "${hermes_adapter_dir}" ]; then
+                info "执行: hermes plugins install ${hermes_adapter_dir} --enable"
+                if hermes plugins install "${hermes_adapter_dir}" --enable 2>&1; then
+                    success "Hermes 适配器插件安装成功并已自动启用！"
+                else
+                    warn "hermes plugins install 本地目录遇到问题，尝试使用 --force 重新安装..."
+                    hermes plugins install "${hermes_adapter_dir}" --force --enable 2>&1 || {
+                        warn "Hermes 插件自动安装失败，您可在 Hermes 环境手动执行: hermes plugins install ${hermes_adapter_dir} --enable"
+                    }
+                fi
+            else
+                info "尝试从官方目录安装 oai-hermes-session-adapter..."
+                hermes plugins install oai-hermes-session-adapter --enable 2>/dev/null || {
+                    warn "无法定位本地插件目录且在线安装未成功，请后续在 Hermes 中安装 integrations/hermes-session-adapter"
+                }
+            fi
+        else
+            warn "未检测到全局 hermes 命令，已为您配置环境变量与账号绑定。请在 Hermes 终端中运行:"
+            warn "  hermes plugins install ${hermes_adapter_dir} --enable"
+        fi
     fi
 
-    # DSH 插件说明
-    if [ "$INSTALL_DSH_PLUGIN" -eq 1 ]; then
-        info "已为您启用 DSH 会话接入配置。"
-        info "向导已自动将生成的 OAI_DSH_ADAPTER_TOKEN 注入并同步至 DSH 环境及凭据文件（~/.dsh*）。"
-        info "如需在 DSH 会话中生效，请在 DSH 会话内运行:"
-        info "  plugin_manager action=install_bundle target=${TARGET_DIR}/integrations/dsh-session-adapter"
-        info "安装后重启 DSH profile 即可自动建立连接。"
+    # 2. DSH 适配器插件提示与引导
+    if [ "${INSTALL_DSH_PLUGIN:-0}" -eq 1 ]; then
+        local dsh_adapter_dir="${TARGET_DIR}/integrations/dsh-session-adapter"
+        if [ ! -d "${dsh_adapter_dir}" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ]; then
+            dsh_adapter_dir="$(cd "${OAI_SETUP_SCRIPT_DIR}/../integrations/dsh-session-adapter" 2>/dev/null && pwd || echo "")"
+        fi
+        info "DSH 环境变量与安全凭据已自动注入并同步至 ~/.dsh-cline / ~/.dsh 环境。"
+        if command -v plugin_manager >/dev/null 2>&1; then
+            info "正在执行 DSH 插件注册: plugin_manager action=install_bundle target=${dsh_adapter_dir}"
+            plugin_manager action=install_bundle target="${dsh_adapter_dir}" 2>/dev/null || true
+        else
+            info "如需在 DSH 会话中生效，请在 DSH 会话内运行:"
+            info "  plugin_manager action=install_bundle target=${dsh_adapter_dir}"
+            info "安装后重启 DSH profile 即可自动建立连接。"
+        fi
+    fi
+
+    # 3. Codex app-server 说明
+    if [ "${INSTALL_CODEX_CONFIG:-0}" -eq 1 ]; then
+        info "Codex app-server 配置已写入 core.json，Core 启动后将自动按需拉起并管理 Codex 进程。"
     fi
 }
 
@@ -616,6 +656,7 @@ main() {
     detect_agents
     configure_agent_plugins
     guide_initial_configuration
+    install_selected_agent_plugins
     configure_autostart
     install_cli_wrapper
     show_completion_summary

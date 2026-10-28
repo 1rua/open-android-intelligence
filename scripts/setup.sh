@@ -283,10 +283,10 @@ configure_agent_integrations() {
     local answer=""
 
     # Hermes
-    local default_hermes="n"
-    [ "${INSTALL_HERMES}" -eq 1 ] && default_hermes="y"
+    local default_hermes="y"
+    [ "${INSTALL_HERMES}" -eq 0 ] && default_hermes="n"
     if [ "$DETECTED_HERMES" -eq 1 ] || [ "${INSTALL_HERMES}" -eq 1 ]; then
-        prompt_read "是否配置 Hermes 会话桥接入？(y/n)" answer "${default_hermes}"
+        prompt_read "检测到 Hermes，是否一同安装并接入 Hermes 会话适配器插件？(y/n)" answer "${default_hermes}"
         if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
             INSTALL_HERMES=1
             prompt_read "请输入与 Core 账号绑定的 Hermes 账号" HERMES_ACCOUNT "${HERMES_ACCOUNT:-$CFG_USERNAME}"
@@ -299,7 +299,7 @@ configure_agent_integrations() {
     local default_dsh="y"
     [ "${INSTALL_DSH}" -eq 0 ] && default_dsh="n"
     if [ "$DETECTED_DSH" -eq 1 ] || [ "${INSTALL_DSH}" -eq 1 ]; then
-        prompt_read "是否启用 DSH (DeepSeek Harness) 会话适配器接入？(y/n)" answer "${default_dsh}"
+        prompt_read "是否启用并接入 DSH (DeepSeek Harness) 会话适配器？(y/n)" answer "${default_dsh}"
         [ "$answer" = "y" ] || [ "$answer" = "Y" ] && INSTALL_DSH=1 || INSTALL_DSH=0
     fi
 
@@ -501,6 +501,64 @@ save_configuration_and_account() {
     fi
     success "配置与启动脚本已保存；既有账号密码、密钥和存储路径已保留。"
     info "桥接凭据存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
+    install_selected_agent_plugins
+}
+
+install_selected_agent_plugins() {
+    # 1. Hermes 插件自动安装
+    if [ "${INSTALL_HERMES:-0}" -eq 1 ]; then
+        info "正在为 Hermes 环境安装 OAI 适配器插件..."
+        local hermes_adapter_dir="${TARGET_DIR}/integrations/hermes-session-adapter"
+        if [ ! -d "${hermes_adapter_dir}" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ]; then
+            hermes_adapter_dir="$(cd "${OAI_SETUP_SCRIPT_DIR}/../integrations/hermes-session-adapter" 2>/dev/null && pwd || echo "")"
+        fi
+
+        if command -v hermes >/dev/null 2>&1; then
+            hermes plugins disable open-android-intelligence-gateway 2>/dev/null || true
+
+            if [ -n "${hermes_adapter_dir}" ] && [ -d "${hermes_adapter_dir}" ]; then
+                info "执行: hermes plugins install ${hermes_adapter_dir} --enable"
+                if hermes plugins install "${hermes_adapter_dir}" --enable 2>&1; then
+                    success "Hermes 适配器插件安装成功并已自动启用！"
+                else
+                    warn "hermes plugins install 本地目录遇到问题，尝试使用 --force 重新安装..."
+                    hermes plugins install "${hermes_adapter_dir}" --force --enable 2>&1 || {
+                        warn "Hermes 插件自动安装失败，您可在 Hermes 环境手动执行: hermes plugins install ${hermes_adapter_dir} --enable"
+                    }
+                fi
+            else
+                info "尝试从官方目录安装 oai-hermes-session-adapter..."
+                hermes plugins install oai-hermes-session-adapter --enable 2>/dev/null || {
+                    warn "无法定位本地插件目录且在线安装未成功，请后续在 Hermes 中安装 integrations/hermes-session-adapter"
+                }
+            fi
+        else
+            warn "未检测到全局 hermes 命令，已为您配置环境变量与账号绑定。请在 Hermes 终端中运行:"
+            warn "  hermes plugins install ${hermes_adapter_dir} --enable"
+        fi
+    fi
+
+    # 2. DSH 适配器插件提示与引导
+    if [ "${INSTALL_DSH:-0}" -eq 1 ]; then
+        local dsh_adapter_dir="${TARGET_DIR}/integrations/dsh-session-adapter"
+        if [ ! -d "${dsh_adapter_dir}" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ]; then
+            dsh_adapter_dir="$(cd "${OAI_SETUP_SCRIPT_DIR}/../integrations/dsh-session-adapter" 2>/dev/null && pwd || echo "")"
+        fi
+        info "DSH 环境变量与安全凭据已自动注入并同步至 ~/.dsh-cline / ~/.dsh 环境。"
+        if command -v plugin_manager >/dev/null 2>&1; then
+            info "正在执行 DSH 插件注册: plugin_manager action=install_bundle target=${dsh_adapter_dir}"
+            plugin_manager action=install_bundle target="${dsh_adapter_dir}" 2>/dev/null || true
+        else
+            info "如需在 DSH 会话中生效，请在 DSH 会话内运行:"
+            info "  plugin_manager action=install_bundle target=${dsh_adapter_dir}"
+            info "安装后重启 DSH profile 即可自动建立连接。"
+        fi
+    fi
+
+    # 3. Codex app-server 说明
+    if [ "${INSTALL_CODEX:-0}" -eq 1 ]; then
+        info "Codex app-server 配置已写入 core.json，Core 启动后将自动按需拉起并管理 Codex 进程。"
+    fi
 }
 
 # 注入全局 CLI 命令至 ~/.local/bin 并确保 PATH 环境变量
