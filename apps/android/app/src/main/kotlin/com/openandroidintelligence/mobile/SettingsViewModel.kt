@@ -46,11 +46,16 @@ data class SettingsUiState(
     val isGatewayConnected: Boolean
         get() = connectionPhase is ConnectionPhase.Connected
 
+    val hasLocalSession: Boolean
+        get() = connectionPhase is ConnectionPhase.Connected || connectionPhase is ConnectionPhase.OfflineMirror
+
     val connectedUsername: String?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.username
+            ?: (connectionPhase as? ConnectionPhase.OfflineMirror)?.username
 
     val connectedGatewayUrl: String?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.gatewayUrl
+            ?: (connectionPhase as? ConnectionPhase.OfflineMirror)?.gatewayUrl
 
     val connectedTransportSecurity: TransportSecurity?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.transportSecurity

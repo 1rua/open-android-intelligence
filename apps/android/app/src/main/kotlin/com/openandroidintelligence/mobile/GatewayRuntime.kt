@@ -186,6 +186,8 @@ class GatewayRuntime(
     private val pendingRotations = mutableMapOf<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
     val loginStatus: StateFlow<GatewayLoginStatus> = _loginStatus.asStateFlow()
+    private val _localSessionState = MutableStateFlow<LocalSessionState>(LocalSessionState.LoadingLocal)
+    val localSessionState: StateFlow<LocalSessionState> = _localSessionState.asStateFlow()
     private val _credentialStatus = MutableStateFlow(GatewayCredentialStatus.UNAVAILABLE)
     val credentialStatus: StateFlow<GatewayCredentialStatus> = _credentialStatus.asStateFlow()
     private val _connectionStatus = MutableStateFlow(EventStreamStatus.IDLE)
@@ -547,50 +549,53 @@ class GatewayRuntime(
     }
 
     fun logout(revokeRefresh: Boolean) {
-        if (_phase.value is ConnectionPhase.OfflineMirror) {
-            _operationNotice.value = "当前离线，无法向 Gateway 确认退出，请先重新连接。"
-            return
-        }
         if (deferUntilSessionEstablished { logout(revokeRefresh) }) return
-        if (connectionJob?.isActive == true) return
-        val current = _phase.value as? ConnectionPhase.Connected ?: return
-        val profileId = profileIdFor(current.gatewayUrl, current.username)
-        val accountId = lastAccountId ?: return
-        val deviceId = lastDeviceId ?: return
+        val currentConnected = _phase.value as? ConnectionPhase.Connected
+        val currentOffline = _phase.value as? ConnectionPhase.OfflineMirror
+        val gatewayUrl = currentConnected?.gatewayUrl ?: currentOffline?.gatewayUrl ?: return
+        val username = currentConnected?.username ?: currentOffline?.username ?: return
+        val profileId = profileIdFor(gatewayUrl, username)
+
+        // 1. 本地优先：立即写入持久退出屏障，防止自动恢复
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("signed_out_$profileId", true).commit()
+
+        // 2. 本地展示状态立即切为 SignedOut
+        _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = gatewayUrl, lastUsername = username)
+        _loginStatus.value = GatewayLoginStatus.SIGNED_OUT
+
+        // 3. 异步执行凭据清理、远端单次通知与 teardown，不阻塞本地退出完成
         _operationNotice.value = null
         connectionJob = scope.launch {
-            if (!flushWorkbenchBeforeLeaving()) return@launch
-            var renewed = false
-            while (true) {
-                try {
-                    sessionOperationMutex.withLock {
-                        val live = sessionRenewal?.current ?: return@launch
-                        authClientFor(current.gatewayUrl, setOfNotNull(current.tlsSpkiSha256)).logout(
-                            accessToken = accessTokenHolder ?: live.accessToken, accountId = accountId, deviceId = deviceId,
-                            sessionId = lastSessionId ?: live.sessionId, revokeRefresh = revokeRefresh,
-                        )
-                        // Fence queued rotations before releasing the operation lock.
-                        sessionRenewal?.close()
-                        sessionRenewal = null
-                    }
-                    break
-                } catch (cancelled: CancellationException) { throw cancelled }
-                  catch (cause: Exception) {
-                    if (cause is GatewayAuthException && cause.httpStatus == 401 && !renewed) {
-                        renewed = true
-                        val renewal = sessionRenewal ?: return@launch
-                        try { renewal.refresh(renewal.current) }
-                        catch (cancelled: CancellationException) { throw cancelled }
-                        catch (_: Exception) {
-                            if (sessionRenewal === renewal) _operationNotice.value = "登出未获 Gateway 确认，请检查连接后重试。"
-                            return@launch
+            try {
+                flushWorkbenchBeforeLeaving()
+                _controller.value?.closeAndAwait()
+            } catch (_: Exception) {}
+
+            // 若在线则尝试通知网关注销旧 session（非阻塞本地结果）
+            if (currentConnected != null) {
+                val accountId = lastAccountId
+                val deviceId = lastDeviceId
+                if (accountId != null && deviceId != null) {
+                    try {
+                        val live = sessionRenewal?.current
+                        val token = accessTokenHolder ?: live?.accessToken
+                        val sId = lastSessionId ?: live?.sessionId
+                        if (token != null && sId != null) {
+                            authClientFor(currentConnected.gatewayUrl, setOfNotNull(currentConnected.tlsSpkiSha256)).logout(
+                                accessToken = token, accountId = accountId, deviceId = deviceId,
+                                sessionId = sId, revokeRefresh = false,
+                            )
                         }
-                    } else {
+                    } catch (_: Exception) {
                         _operationNotice.value = "登出未获 Gateway 确认，请检查连接后重试。"
-                        return@launch
                     }
                 }
             }
+
+            sessionRenewal?.close()
+            sessionRenewal = null
+
             val cleanup = listOf<() -> Unit>(
                 { credentialStore.clearRefresh(profileId) },
                 { refreshJournal.clear(profileId); pendingRotations.remove(profileId) },
@@ -605,10 +610,9 @@ class GatewayRuntime(
                     _operationNotice.value = "Gateway 已登出，但本机凭据清理失败，请检查设备存储。"
                 }
             }
-            try { _controller.value?.closeAndAwait() }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { _operationNotice.value = "Gateway 已登出，本机保存未完成，历史资料已保留。" }
             teardown()
+            _phase.value = ConnectionPhase.Disconnected
+            _controller.value = null
         }
     }
 
@@ -980,6 +984,8 @@ class GatewayRuntime(
             },{ mirrorScope },persistence=mirror,media=media,downloads=downloads,allowSending=false) }
         _phase.value=ConnectionPhase.OfflineMirror(endpoint.baseUrl,username)
         _operationNotice.value=downloadNotice ?: "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
+        val mirrorAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, username, "")
+        _localSessionState.value = LocalSessionState.Workspace(mirrorAccount, _phase.value)
     }
 
     /** One retrying cold-start owner; network failures never erase the saved login. */
@@ -1001,7 +1007,25 @@ class GatewayRuntime(
         }
         val endpoint = GatewayEndpoint.parse(lastUrl) ?: return
         val hasCredential = runCatching { credentialStore.loadRefresh(profileId)?.let { it.isNotEmpty().also { _ -> it.fill(0) } } }.getOrDefault(false)
-        if (hasCredential != true) return
+        if (hasCredential != true) {
+            _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = lastUrl, lastUsername = lastUser)
+            return
+        }
+
+        // 检查持久退出屏障：如果已退出，严禁自动恢复
+        if (prefs.getBoolean("signed_out_$profileId", false)) {
+            _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = lastUrl, lastUsername = lastUser, reason = "EXPLICITLY_SIGNED_OUT")
+            return
+        }
+
+        // 【冷启动优化：先本地，后远端恢复】
+        // 立即进入 Workspace 本地镜像呈现，不闪现登录页
+        val savedAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, lastUser, "")
+        _localSessionState.value = LocalSessionState.Workspace(savedAccount, ConnectionPhase.Disconnected)
+        if (_controller.value == null) {
+            showOfflineMirror(endpoint, lastUser, profileId, accountId, Exception("INITIAL_LOCAL_LOADING"))
+        }
+
         val backgroundOwner = backgroundRecoveryOnly
         restoringSession = true
         _loginStatus.value = GatewayLoginStatus.RESTORING
@@ -1437,7 +1461,14 @@ class GatewayRuntime(
                 },
                 onActiveThreadChanged = { threadId -> activeThread.set(threadId); repository.activeConversationChanged(); coreAgentRepo?.activeConversationChanged() },
                 streamHealthSource = (activeRepo as? com.openandroidintelligence.conversation.model.StreamHealthSource) ?: workbenchRepository,
-                persistence = if (nativeAgentSessions) null else mirror,
+                persistence = if (nativeAgentSessions) {
+                    com.openandroidintelligence.mobile.conversations.NativeConversationMirror(
+                        context,
+                        conversationScope,
+                        currentAgentId = { _nativeAgents.value?.state?.value?.agent?.id },
+                        localDocumentKeyProvider = localDocumentKeyProvider,
+                    )
+                } else mirror,
                 media = mediaCache,
                 downloads = downloads,
             )
@@ -1559,6 +1590,8 @@ class GatewayRuntime(
                 agentName = effectiveAgentName,
             )
             _loginStatus.value = GatewayLoginStatus.SIGNED_IN
+            val activeAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, username, "")
+            _localSessionState.value = LocalSessionState.Workspace(activeAccount, _phase.value)
             _credentialStatus.value = GatewayCredentialStatus.AVAILABLE
             backgroundSessionActive = true
         }

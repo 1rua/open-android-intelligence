@@ -1219,22 +1219,24 @@ private fun GatewaySubScreen(
                 }
             }
 
-            if (uiState.isGatewayConnected) {
+            if (uiState.hasLocalSession) {
                 SectionLabel("账号与会话")
                 SettingsSectionCard {
                     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                        SettingsListItem(
-                            headline = "刷新登录凭据",
-                            supporting = if (uiState.isRefreshingSession) {
-                                "正在向 Gateway 申请新的凭据…"
-                            } else {
-                                "登录即将过期时，可在这里提前换取新的凭据"
-                            },
-                            icon = Icons.Default.Refresh,
-                            enabled = !uiState.isRefreshingSession,
-                            onClick = onRefreshSession,
-                        )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        if (uiState.isGatewayConnected) {
+                            SettingsListItem(
+                                headline = "刷新登录凭据",
+                                supporting = if (uiState.isRefreshingSession) {
+                                    "正在向 Gateway 申请新的凭据…"
+                                } else {
+                                    "登录即将过期时，可在这里提前换取新的凭据"
+                                },
+                                icon = Icons.Default.Refresh,
+                                enabled = !uiState.isRefreshingSession,
+                                onClick = onRefreshSession,
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        }
                         SettingsListItem(
                             headline = "退出登录",
                             supporting = "只退出当前账号，保留设备配对，下次登录无需重新配对",

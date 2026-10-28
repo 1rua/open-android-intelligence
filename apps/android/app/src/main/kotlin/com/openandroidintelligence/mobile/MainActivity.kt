@@ -547,7 +547,9 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.surface,
                 ) {
                     // 登录页 ↔ 工作台：统一走标准淡入滑移转场，禁止生硬替换。
-                    val enterWorkbench = (phase is ConnectionPhase.Connected || phase is ConnectionPhase.OfflineMirror) && controller != null
+                    val localSessionState by runtime.localSessionState.collectAsState()
+                    val enterWorkbench = localSessionState is LocalSessionState.Workspace ||
+                        ((phase is ConnectionPhase.Connected || phase is ConnectionPhase.OfflineMirror) && controller != null)
                     val pluginRevision by app.pluginHost.revision.collectAsState()
                     val nativeUi = remember(pluginRevision) { app.pluginHost.nativeUiProvider() }
                     Box(modifier = Modifier.fillMaxSize()) {

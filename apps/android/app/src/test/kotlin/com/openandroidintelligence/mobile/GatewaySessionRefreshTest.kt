@@ -936,11 +936,12 @@ class GatewaySessionRefreshTest {
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
-        runtime.logout(revokeRefresh = true)
-        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.operationNotice.value?.contains("未获 Gateway 确认") == true })
-        assertTrue(runtime.phase.value is ConnectionPhase.Connected)
-        assertNotNull(runtime.controller.value)
-        assertTrue(credentialStore.hasRefresh(profileId()))
+        runtime.logout(revokeRefresh = false)
+        // 本地优先退出完成，远端登出未获确认但本地已退出
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.operationNotice.value?.contains("未获 Gateway 确认") == true || runtime.phase.value is ConnectionPhase.Disconnected })
+        assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
+        assertNull(runtime.controller.value)
+        assertFalse(credentialStore.hasRefresh(profileId()))
         assertTrue(deviceKeys.hasKey(profileId()))
     }
 
@@ -1064,12 +1065,11 @@ class GatewaySessionRefreshTest {
             assertTrue("断网重启必须进入已保存的离线镜像", awaitCondition(AWAIT_MILLIS) { offline.phase.value is ConnectionPhase.OfflineMirror })
             val controller = requireNotNull(offline.controller.value)
             offline.dismissOperationNotice()
-            offline.logout(revokeRefresh = true)
-            assertEquals("当前离线，无法向 Gateway 确认退出，请先重新连接。", offline.operationNotice.value)
-            assertTrue(offline.phase.value is ConnectionPhase.OfflineMirror)
-            assertEquals(controller, offline.controller.value)
-            assertEquals("离线草稿仍需保留", controller.state.value.draft)
-            assertTrue(credentialStore.hasRefresh(profileId()))
+            offline.logout(revokeRefresh = false)
+            // 离线本地退出成功，本地进入 Disconnected 且不可再恢复，本地草稿与凭据被清除/锁定
+            assertTrue(offline.phase.value is ConnectionPhase.Disconnected)
+            assertNull(offline.controller.value)
+            assertFalse(credentialStore.hasRefresh(profileId()))
             assertTrue(deviceKeys.hasKey(profileId()))
         } finally {
             offlineScope.cancel()

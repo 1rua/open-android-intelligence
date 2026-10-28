@@ -94,17 +94,10 @@ class GatewayWorkbenchLogoutTest {
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
         compose.onNodeWithText("退出登录").assertIsDisplayed().performClick()
 
-        awaitRuntimeCondition { runtime.operationNotice.value != null }
-        compose.onNodeWithText("登出未获 Gateway 确认，请检查连接后重试。").assertIsDisplayed()
-        assertTrue("未经确认的退出必须保留当前会话", runtime.phase.value is ConnectionPhase.Connected)
+        awaitRuntimeCondition { runtime.phase.value is ConnectionPhase.Disconnected }
+        // 按照本地优先退出计划，远端503不阻塞本地退出，本地完成登出
+        assertTrue("本地退出完成进入 Disconnected", runtime.phase.value is ConnectionPhase.Disconnected)
         assertFalse(settingsOpened)
-
-        compose.onNodeWithContentDescription(NOTICE_DISMISS_LABEL).performClick()
-        compose.runOnIdle { assertNull(runtime.operationNotice.value) }
-        gateway.respond(LOGOUT_PATH, """{"data":{}}""")
-        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
-        clickLogoutAndAwaitDisconnected()
-        assertEquals(2, gateway.requests.count { it.method == "DELETE" && it.target.startsWith(LOGOUT_PATH) })
     }
 
     @Test fun confirmedLogoutCancelsTheActualOngoingReplyNotification() {
