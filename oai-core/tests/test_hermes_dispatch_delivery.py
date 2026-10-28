@@ -80,3 +80,29 @@ async def test_missing_record_is_a_no_op():
     from oai_hermes_adapter.runtime import report_dispatch_delivered
 
     assert await report_dispatch_delivered(_Account(), None, "claim_1") is False
+
+
+@pytest.mark.asyncio
+async def test_completion_retires_all_materialized_attachment_files(tmp_path):
+    """A successful host callback must finish even when inbound media exists."""
+    from types import SimpleNamespace
+    from oai_hermes_adapter.runtime import SessionOnlyAdapter
+
+    closed = []
+    account = SimpleNamespace(
+        conversations=SimpleNamespace(dispatch_message=lambda _identity: None),
+        close=lambda: closed.append(True),
+    )
+    paths = [tmp_path / "first.png", tmp_path / "second.pdf"]
+    for path in paths:
+        path.write_bytes(b"synthetic attachment")
+    runtime = SessionOnlyAdapter.__new__(SessionOnlyAdapter)
+    runtime.services = SimpleNamespace(core=SimpleNamespace(open_gateway_account=lambda _owner: account))
+    runtime._processing_media_files = {("alice", "client-attachment"): paths}
+    event = SimpleNamespace(source=SimpleNamespace(user_id="alice"), message_id="client-attachment")
+
+    await runtime.on_processing_complete(event, "completed")
+
+    assert closed == [True]
+    assert runtime._processing_media_files == {}
+    assert all(not path.exists() for path in paths)

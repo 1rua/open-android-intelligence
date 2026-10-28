@@ -1247,4 +1247,4 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 account.close()
             for media_path in self._processing_media_files.pop((account_id, client_message_id), []):
                 with suppress(OSError):
-                    media_HistoryMedia._retire_path(path)
+                    HistoryMedia._retire_path(media_path)
