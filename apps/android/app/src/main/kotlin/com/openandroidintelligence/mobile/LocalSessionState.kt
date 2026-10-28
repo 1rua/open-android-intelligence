@@ -1,5 +1,7 @@
 package com.openandroidintelligence.mobile
 
+import com.openandroidintelligence.gateway.account.AccountProfile
+
 /**
  * 本地会话权威快照，统一发布不可变的本地展示事实，避免 UI 拼接多个独立流猜测身份。
  */

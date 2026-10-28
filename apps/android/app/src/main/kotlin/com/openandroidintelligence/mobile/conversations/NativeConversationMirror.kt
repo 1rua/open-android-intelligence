@@ -1,16 +1,13 @@
 package com.openandroidintelligence.mobile.conversations
 
 import android.content.Context
-import com.openandroidintelligence.conversation.model.ConversationId
-import com.openandroidintelligence.conversation.ports.AwaitableWorkbenchPersistence
-import com.openandroidintelligence.conversation.ports.ConversationPage
+import com.openandroidintelligence.conversation.model.LocalSendAtom
 import com.openandroidintelligence.conversation.ports.ConversationScope
-import com.openandroidintelligence.conversation.ports.ConversationSummary
-import com.openandroidintelligence.conversation.ports.EncryptedLocalDocumentKeyProvider
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.TimelinePage
-import com.openandroidintelligence.conversation.ports.WorkbenchCheckpoint
-import com.openandroidintelligence.conversation.ports.WorkbenchPersistence
+import com.openandroidintelligence.conversation.state.AwaitableWorkbenchPersistence
+import com.openandroidintelligence.conversation.state.WorkbenchCheckpoint
+import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -22,37 +19,41 @@ class NativeConversationMirror(
     private val context: Context,
     private val baseScope: ConversationScope,
     private val currentAgentId: () -> String?,
-    private val localDocumentKeyProvider: EncryptedLocalDocumentKeyProvider,
+    private val keyProvider: AesGcmKeyProvider? = null,
 ) : AwaitableWorkbenchPersistence {
 
     private fun delegateMirror(): EncryptedConversationMirror {
         val agentId = currentAgentId() ?: "default"
         // 范围派生：在 accountId 维度拼接 agentId 确保 SQLite 与私有密文分区完全物理隔离
         val scoped = baseScope.copy(accountId = "${baseScope.accountId}#native#$agentId")
-        return EncryptedConversationMirror(context, scoped, localDocumentKeyProvider)
+        return EncryptedConversationMirror(context, scoped, keyProvider)
     }
 
-    override suspend fun saveTimeline(conversationId: String, page: TimelinePage) {
-        withContext(Dispatchers.IO) {
-            delegateMirror().saveTimeline(conversationId, page)
-        }
+    override fun load(): WorkbenchCheckpoint? {
+        return delegateMirror().load()
     }
 
-    override suspend fun timeline(conversationId: String): TimelinePage? {
+    override fun save(checkpoint: WorkbenchCheckpoint) {
+        delegateMirror().save(checkpoint)
+    }
+
+    override fun loadSendAtoms(conversationId: String): List<LocalSendAtom> {
+        return delegateMirror().loadSendAtoms(conversationId)
+    }
+
+    override fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>) {
+        delegateMirror().saveSendAtoms(conversationId, atoms)
+    }
+
+    override suspend fun loadTimeline(conversationId: String): TimelinePage? {
         return withContext(Dispatchers.IO) {
-            delegateMirror().timeline(conversationId)
+            delegateMirror().loadTimeline(conversationId)
         }
     }
 
-    override suspend fun saveConversations(page: ConversationPage) {
-        withContext(Dispatchers.IO) {
-            delegateMirror().saveConversations(page)
-        }
-    }
-
-    override suspend fun conversations(): ConversationPage? {
+    override suspend fun loadKnownMediaMessages(): List<TimelineMessage> {
         return withContext(Dispatchers.IO) {
-            delegateMirror().conversations()
+            delegateMirror().loadKnownMediaMessages()
         }
     }
 
@@ -62,13 +63,21 @@ class NativeConversationMirror(
         }
     }
 
-    override suspend fun load(): WorkbenchCheckpoint? {
-        return withContext(Dispatchers.IO) {
-            delegateMirror().load()
+    override suspend fun saveSendAtomsDurably(conversationId: String, atoms: List<LocalSendAtom>) {
+        withContext(Dispatchers.IO) {
+            delegateMirror().saveSendAtomsDurably(conversationId, atoms)
         }
     }
 
-    override suspend fun awaitPendingWrites() {
-        delegateMirror().awaitPendingWrites()
+    override suspend fun flush() {
+        withContext(Dispatchers.IO) {
+            delegateMirror().flush()
+        }
+    }
+
+    override suspend fun closeStore() {
+        withContext(Dispatchers.IO) {
+            delegateMirror().closeStore()
+        }
     }
 }
