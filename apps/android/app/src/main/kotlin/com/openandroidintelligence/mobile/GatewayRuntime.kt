@@ -1023,7 +1023,9 @@ class GatewayRuntime(
         val savedAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, lastUser, "")
         _localSessionState.value = LocalSessionState.Workspace(savedAccount, ConnectionPhase.Disconnected)
         if (_controller.value == null) {
-            showOfflineMirror(endpoint, lastUser, profileId, accountId, Exception("INITIAL_LOCAL_LOADING"))
+            scope.launch {
+                showOfflineMirror(endpoint, lastUser, profileId, accountId, Exception("INITIAL_LOCAL_LOADING"))
+            }
         }
 
         val backgroundOwner = backgroundRecoveryOnly
@@ -1466,7 +1468,7 @@ class GatewayRuntime(
                         context,
                         conversationScope,
                         currentAgentId = { _nativeAgents.value?.state?.value?.agent?.id },
-                        localDocumentKeyProvider = localDocumentKeyProvider,
+                        keyProvider = localDocumentKeyProvider,
                     )
                 } else mirror,
                 media = mediaCache,
