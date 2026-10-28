@@ -106,3 +106,26 @@ async def test_completion_retires_all_materialized_attachment_files(tmp_path):
     assert closed == [True]
     assert runtime._processing_media_files == {}
     assert all(not path.exists() for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_identical_replies_with_distinct_native_ids_remain_distinct():
+    """Content equality cannot replace the host's explicit message identity."""
+    from types import SimpleNamespace
+    from oai_hermes_adapter.runtime import SessionOnlyAdapter
+
+    runtime = SessionOnlyAdapter.__new__(SessionOnlyAdapter)
+    runtime._turn_replies = {}
+    runtime._conv_to_account = {"chat": "alice"}
+    runtime._account_id = None
+    writes = []
+    async def complete(chat, identity, content, **_kwargs):
+        writes.append((chat, identity, content))
+    runtime.complete_message = complete
+
+    first = await runtime.send("chat", "same synthetic reply", metadata={"messageId": "native-one"})
+    second = await runtime.send("chat", "same synthetic reply", metadata={"messageId": "native-two"})
+    finalized = await runtime.edit_message("chat", "native-two", "same synthetic reply", finalize=True)
+
+    assert [first.message_id, second.message_id, finalized.message_id] == ["native-one", "native-two", "native-two"]
+    assert [identity for _, identity, _ in writes] == ["native-one", "native-two", "native-two"]

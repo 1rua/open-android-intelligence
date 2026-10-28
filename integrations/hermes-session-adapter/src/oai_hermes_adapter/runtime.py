@@ -32,7 +32,6 @@ from .host_history import HermesHistoryPort
 from .history_media import HistoryMedia
 
 logger = logging.getLogger(__name__)
-MAX_REMEMBERED_TURNS = 256
 NATIVE_HERMES_AVAILABLE = True
 
 
@@ -93,7 +92,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         self._background_tasks = set()
         self._conv_to_account = {}
         self._processing_media_files = {}
-        self._turn_replies = {}
         self._generation_locks = {}
         self._conversation_platforms = {}
         self._streaming_replies = {}
@@ -346,7 +344,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 candidate = metadata.get("messageId") or metadata.get("message_id")
                 if isinstance(candidate, str) and candidate:
                     named = candidate
-            message_id = self._published_reply_id(chat_id, content, named)
+            message_id = named or f"msg_{uuid.uuid4().hex}"
             if isinstance(metadata, dict) and metadata.get("expect_edits"):
                 await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
             else:
@@ -376,7 +374,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             generation = self._reply_generation(account, chat_id)
             if generation and generation["state"] in {"completed", "failed", "cancelled"}:
                 return SendResult(success=False, error="GENERATION_FINISHED", retryable=False)
-            message_id=self._published_reply_id(chat_id,caption or "",None)
+            message_id=f"msg_{uuid.uuid4().hex}"
             part=HistoryMedia(account).register(chat_id,message_id,file_path)
             key=f"history-media-reply:{message_id}:{part['attachmentId']}"
             account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,account.store.seal_json(part,key)))
@@ -401,44 +399,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         finally: account.close()
 
 
-    def _published_reply_id(self, chat_id: str, text: str, proposed: Optional[str]) -> str:
-        """The message id one logical reply is published under.
-
-        A host can publish the same reply more than once in a turn — a finalize
-        plus a final send, a retried delivery. That is one message, not two:
-        minting a second id would put the reply in the account's timeline twice,
-        and nothing downstream could collapse the copies because the ids really
-        do differ. The first id of a turn's reply is therefore kept, and a new
-        user message is what starts a new turn.
-        """
-        remembered = self._turn_replies.get(chat_id)
-        if remembered is not None and remembered[0] == text:
-            if proposed is not None and proposed != remembered[1]:
-                logger.info(
-                    "[open_android] %s published the same reply again as %s; keeping %s",
-                    chat_id, proposed, remembered[1],
-                )
-            return remembered[1]
-        identity = proposed or f"msg_{uuid.uuid4().hex[:12]}"
-        self._remember_turn_reply(chat_id, text, identity)
-        return identity
-
-
-    def _remember_turn_reply(self, chat_id: str, text: str, message_id: str) -> None:
-        self._turn_replies.pop(chat_id, None)
-        self._turn_replies[chat_id] = (text, message_id)
-        while len(self._turn_replies) > MAX_REMEMBERED_TURNS:
-            eldest = next(iter(self._turn_replies), None)
-            if eldest is None:
-                break
-            self._turn_replies.pop(eldest, None)
-
-
-    def _forget_turn_reply(self, chat_id: str) -> None:
-        """A new user message starts a new turn: the same text is a new reply."""
-        self._turn_replies.pop(chat_id, None)
-
-
     async def edit_message(
         self,
         chat_id: str,
@@ -459,7 +419,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             return SendResult(success=False, error="ACCOUNT_NOT_CONFIGURED", retryable=False)
         now_iso = iso_millis()
         if finalize:
-            message_id = self._published_reply_id(chat_id, content, message_id)
             await self.complete_message(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
         else:
             await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
@@ -915,7 +874,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             self._conv_to_account[conv_id] = source_account
             # A user turn boundary: whatever the Agent answered before belongs to
             # the previous turn, so the same text from now on is a new message.
-            self._forget_turn_reply(conv_id)
 
             data = json.loads(body_bytes.decode("utf-8"))
             user_text = data.get("text") or data.get("content") or ""
