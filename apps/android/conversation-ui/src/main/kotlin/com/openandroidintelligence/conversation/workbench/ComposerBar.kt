@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
@@ -58,6 +59,7 @@ import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.ports.PendingDelivery
 import com.openandroidintelligence.conversation.ports.PendingDeliveryState
+import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
@@ -105,9 +107,9 @@ fun ComposerBar(
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
     /** Controller and conversation identity; a change discards selection, IME composition and undo. */
     editorKey: Any? = null,
+    /** Submission callbacks: selecting a mode does not invoke either one. */
     onQueue: () -> Unit = onSend,
-    onSteer: () -> Unit = {},
-    steeringEnabled: Boolean = false,
+    onSteer: () -> Unit = onSend,
     pendingDeliveries: List<PendingDelivery> = emptyList(),
     onRetryPendingDelivery: () -> Unit = {},
 ) {
@@ -116,16 +118,21 @@ fun ComposerBar(
     val waitingCancel = generation == GenerationState.CANCEL_REQUESTED
     val unknown = generation == GenerationState.OUTCOME_UNKNOWN
     val hasPendingInput = draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }
-    val isApprovalCommand = Regex("^/(?:approve|deny)(?:\\s|$)", RegexOption.IGNORE_CASE)
-        .containsMatchIn(draft.trim())
-    val requiresBusyChoice = running && !waitingCancel && !unknown && hasPendingInput && !isApprovalCommand
-    // While a turn is active, a populated composer belongs to the next turn.
-    // Keep cancellation visible only when there is nothing queued by the user.
+    val showBusyDeliveryChoice = running && hasPendingInput
+    var deliveryMode by remember(editorKey, running) { mutableStateOf(MessageDeliveryMode.STEER) }
+    val submitDraft = if (showBusyDeliveryChoice) {
+        when (deliveryMode) {
+            MessageDeliveryMode.QUEUE -> onQueue
+            MessageDeliveryMode.STEER -> onSteer
+            MessageDeliveryMode.NORMAL -> onSend
+        }
+    } else onSend
+    // A populated composer submits through the selected delivery mode.
+    // Keep cancellation visible when the user has no pending input.
     val showStop = waitingCancel || (running && !hasPendingInput)
     val actionEnabled = when {
         waitingCancel || unknown -> false
         showStop -> running && !hasPendingInput
-        requiresBusyChoice -> false
         else -> hasPendingInput && canSend && !hasUnknownSubmissionOutcome
     }
 
@@ -159,11 +166,10 @@ fun ComposerBar(
             )
         }
 
-        if (requiresBusyChoice) {
+        if (showBusyDeliveryChoice) {
             BusyDeliveryChoice(
-                steeringEnabled = steeringEnabled && attachments.isEmpty() && generation == GenerationState.RUNNING,
-                onQueue = onQueue,
-                onSteer = onSteer,
+                selectedMode = deliveryMode,
+                onSelect = { deliveryMode = it },
             )
         }
 
@@ -203,7 +209,7 @@ fun ComposerBar(
                 showStop = showStop,
                 waitingCancel = waitingCancel,
                 enabled = actionEnabled,
-                onSend = onSend,
+                onSend = submitDraft,
                 onStop = onStop,
             )
         }
@@ -806,9 +812,8 @@ fun formatAttachmentSize(bytes: Long): String = when {
 
 @Composable
 private fun BusyDeliveryChoice(
-    steeringEnabled: Boolean,
-    onQueue: () -> Unit,
-    onSteer: () -> Unit,
+    selectedMode: MessageDeliveryMode,
+    onSelect: (MessageDeliveryMode) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -817,34 +822,39 @@ private fun BusyDeliveryChoice(
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().selectableGroup(),
             horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            FilledTonalButton(
-                onClick = onQueue,
+            FilterChip(
+                selected = selectedMode == MessageDeliveryMode.QUEUE,
+                onClick = { onSelect(MessageDeliveryMode.QUEUE) },
                 modifier = Modifier.weight(1f).semantics { contentDescription = "排队等待当前任务完成" },
-            ) {
-                Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(Dimensions.SmallIcon))
-                Spacer(Modifier.width(Dimensions.SpaceTiny))
-                Text("排队")
-            }
-            OutlinedButton(
-                onClick = onSteer,
-                enabled = steeringEnabled,
+                label = { Text("排队") },
+                leadingIcon = {
+                    Icon(
+                        if (selectedMode == MessageDeliveryMode.QUEUE) Icons.Default.Check else Icons.Default.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                },
+            )
+            FilterChip(
+                selected = selectedMode == MessageDeliveryMode.STEER,
+                onClick = { onSelect(MessageDeliveryMode.STEER) },
                 modifier = Modifier.weight(1f).semantics { contentDescription = "引导当前任务" },
-            ) {
-                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(Dimensions.SmallIcon))
-                Spacer(Modifier.width(Dimensions.SpaceTiny))
-                Text("引导")
-            }
+                label = { Text("引导") },
+                leadingIcon = {
+                    Icon(
+                        if (selectedMode == MessageDeliveryMode.STEER) Icons.Default.Check else Icons.Default.Send,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                },
+            )
         }
         Text(
-            text = if (steeringEnabled) {
-                "排队会等本轮结束；引导会立即进入当前任务。"
-            } else {
-                "当前 Agent 或消息内容不能实时引导，可选择排队。"
-            },
+            text = "选择方式后点击发送。排队等待本轮结束；引导发送给当前任务。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

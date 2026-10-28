@@ -2,6 +2,9 @@
 
 日期：2026-10-28
 
+本文记录此前实现。当前引导与命令透传行为以
+[原生输入透传修复](2026-10-28-agent-native-input-passthrough.zh-CN.md) 为准。
+
 基线：`dev@9c11f10040fc5deb5ec30d52aea2f84651bc18ab`
 
 ## 范围

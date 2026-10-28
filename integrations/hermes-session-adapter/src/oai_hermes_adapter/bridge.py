@@ -120,7 +120,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             text, generation_id = body.get("text"), body.get("generationId")
             client_message_id = body.get("clientMessageId")
             if (not isinstance(text, str) or not text.strip()
-                    or not isinstance(generation_id, str) or not generation_id
+                    or generation_id is not None and (not isinstance(generation_id, str) or not generation_id)
                     or client_message_id is not None and (
                         not isinstance(client_message_id, str) or not IDENTITY.fullmatch(client_message_id)
                     )):

@@ -24,7 +24,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from oai_core.gateway.core import AgentSessionBindings, GatewayError, NEW_CONVERSATION_COMMAND, iso_millis, _epoch_millis
 from oai_core.sessions import AdapterError
 from .platform_identity import GATEWAY_PLATFORM_ID, GATEWAY_PLATFORM_IDS
-from .context import trusted_turn
+from .context import native_input_receipt, trusted_turn
 from .bridge import NativeApprovalMixin, create_hermes_bridge_app
 from .sessions import HermesSessionAdapter
 from .backend import SessionBackend
@@ -148,16 +148,30 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         # Hosts may wire callbacks after connect or replace them on reconnect.
         self._refresh_generation_canceller()
 
+    def set_busy_session_handler(self, handler: Any) -> None:
+        if handler is None:
+            super().set_busy_session_handler(None)
+            return
+
+        async def forward(event: Any, session_key: str) -> bool:
+            accepted = await handler(event, session_key)
+            if accepted:
+                event._gateway_accepted = True
+            return accepted
+
+        super().set_busy_session_handler(forward)
+
+    async def _dispatch_inline_reply(self, event: Any, **kwargs: Any) -> None:
+        await super()._dispatch_inline_reply(event, **kwargs)
+        event._gateway_accepted = True
+
 
     def _refresh_generation_canceller(self) -> None:
         self._generation_canceller = self._native_generation_canceller()
         self.services.core.generation_canceller = self._generation_canceller
 
     def native_steering_available(self) -> bool:
-        runner = self._host_runner()
-        return callable(getattr(runner, "_peek_session_state", None)) and callable(
-            getattr(runner, "_steer_running_agent", None)
-        )
+        return callable(getattr(self, "_message_handler", None))
 
     async def steer_native_turn(
         self,
@@ -168,60 +182,27 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         *,
         client_message_id: str | None = None,
     ) -> dict[str, Any]:
-        """Inject one correction into the host's current native turn.
-
-        This intentionally calls the host's own steer path instead of submitting
-        another message. A rejected steer is returned as unavailable, never
-        silently converted into a queued follow-up turn.
-        """
-        if not text.strip() or not self.native_steering_available():
-            raise AdapterError("STEER_UNAVAILABLE", 409)
-        turn = self._native_turns.get((account_id, conversation_id, generation_id))
-        if turn is None:
-            raise AdapterError("STEER_UNAVAILABLE", 409)
-        session_key, task, _source = turn
-        if task.done() or self._session_tasks.get(session_key) is not task:
-            raise AdapterError("STEER_UNAVAILABLE", 409)
-        runner = self._host_runner()
-
-        def apply_on_host_loop() -> bool:
-            state = runner._peek_session_state(session_key)
-            agent = getattr(getattr(state, "turn", None), "agent", None)
-            steer = getattr(runner, "_steer_running_agent", None)
-            if agent is None or not callable(steer):
-                return False
-            return bool(steer(agent, text))
-
+        """Delegate input to the host without choosing its interrupt/steer policy."""
+        if not text.strip():
+            raise AdapterError("INVALID_REQUEST", 400)
         loop = self._loop
         if loop is None or loop.is_closed() or not loop.is_running():
             raise AdapterError("STEER_UNAVAILABLE", 409)
-        try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
-        if running_loop is loop:
-            accepted = apply_on_host_loop()
-        else:
-            result: Future[bool] = Future()
 
-            def call() -> None:
-                try:
-                    result.set_result(apply_on_host_loop())
-                except BaseException as exc:  # propagate host failures to the bridge
-                    result.set_exception(exc)
+        async def deliver() -> dict[str, Any]:
+            turn = self._native_turns.get((account_id, conversation_id, generation_id))
+            if turn is None:
+                raise AdapterError("STEER_UNAVAILABLE", 409)
+            session_key, task, _source = turn
+            if task.done() or self._session_tasks.get(session_key) is not task:
+                raise AdapterError("STEER_UNAVAILABLE", 409)
+            await self.dispatch_native_input(account_id, conversation_id, text,
+                                             client_message_id or "native_" + uuid.uuid4().hex)
+            return {"generationId": generation_id, "outcome": "accepted"}
 
-            loop.call_soon_threadsafe(call)
-            accepted = await asyncio.wrap_future(result)
-        if not accepted:
-            raise AdapterError("STEER_UNAVAILABLE", 409)
-        logger.info(
-            "[open_android] Steering accepted account=%s conversation=%s generation=%s client=%s",
-            bool(account_id),
-            bool(conversation_id),
-            bool(generation_id),
-            bool(client_message_id),
-        )
-        return {"generationId": generation_id, "outcome": "accepted"}
+        if asyncio.get_running_loop() is loop:
+            return await deliver()
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(deliver(), loop))
 
 
     def _host_runner(self) -> Any:
@@ -370,8 +351,14 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
             else:
                 await self.complete_message(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
+            receipt = native_input_receipt.get()
+            if receipt is not None and receipt.get("open") and receipt["accountId"] == target_account and receipt["conversationId"] == chat_id:
+                receipt["messages"].append({"messageId": message_id, "text": content})
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
+            receipt = native_input_receipt.get()
+            if receipt is not None and receipt.get("open"):
+                receipt["deliveryFailed"] = True
             logger.error("[open_android] Failed to deliver message to %s: %s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=False)
 
@@ -849,21 +836,14 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 if not waiting: break
                 await asyncio.sleep(0.2)
 
-    async def dispatch_approval_control(
+    async def dispatch_native_input(
         self,
         account_id: str,
         conversation_id: str,
         text: str,
         client_message_id: str,
-    ) -> None:
-        """Forward only ``/approve`` or ``/deny`` through the active-session control path.
-
-        The normal inbound path holds a per-conversation generation lock until
-        the running turn settles. An approval command exists precisely to settle
-        that turn, so taking the same lock would deadlock it. The host's own
-        active-session dispatcher already routes these commands inline before
-        queueing ordinary text.
-        """
+    ) -> dict[str, Any]:
+        """Hand original input to the host's native command/busy dispatcher."""
         account = self.services.core.open_gateway_account(account_id)
         try:
             binding = account.agent_sessions.lookup(conversation_id)
@@ -886,19 +866,33 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             "accountId": account_id,
             "sessionId": binding.get("agentSessionId"),
         })
+        receipt = {"accountId": account_id, "conversationId": conversation_id, "messages": [], "open": True}
+        receipt_token = native_input_receipt.set(receipt)
         try:
+            previous_task = self._session_tasks.get(session_key)
+            was_busy = session_key in self._active_sessions
+            if previous_task is not None and previous_task.done():
+                was_busy = False
             await self.handle_message(event)
+            started_task = self._session_tasks.get(session_key)
+            if not was_busy and started_task is not None and started_task is not previous_task:
+                await asyncio.shield(started_task)
         finally:
+            receipt["open"] = False
+            native_input_receipt.reset(receipt_token)
             trusted_turn.reset(token)
-        # Active-session command dispatch is inline and historical host
-        # versions do not always stamp `_gateway_accepted`; reaching this point
-        # means the handler observed the command without raising.
+        if receipt.get("deliveryFailed"):
+            raise AdapterError("OUTCOME_UNKNOWN", 409)
+        if not getattr(event, "_gateway_accepted", False):
+            raise AdapterError("HOST_INPUT_REJECTED", 409)
         logger.info(
-            "[open_android] Approval control dispatched account=%s conversation=%s client=%s",
+            "[open_android] Native input dispatched account=%s conversation=%s client=%s",
             bool(account_id),
             bool(conversation_id),
             bool(client_message_id),
         )
+        return {"outcome": "accepted", "messages": receipt["messages"],
+                "text": "\n\n".join(message["text"] for message in receipt["messages"])}
 
 
     async def _dispatch_agent_inbound(
@@ -928,7 +922,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             client_message_id = data.get("clientMessageId") or data.get("clientTurnId") or (data.get("members") or [{}])[0].get("clientMessageId")
             client_message_id = str(client_message_id) if client_message_id else str(uuid.uuid4())
 
-            if user_text.strip() == NEW_CONVERSATION_COMMAND:
+            if user_text.strip() == NEW_CONVERSATION_COMMAND and path.endswith("/commands"):
                 # The Gateway's own command entry owns `/new` (contract §7.1): it
                 # has already created the conversation and answered with its id.
                 # Handing the same text to the Agent would make the host run its

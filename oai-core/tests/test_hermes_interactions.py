@@ -64,6 +64,10 @@ class PromptRuntime(UnsupportedApprovalMixin):
     async def dispatch_approval_control(self, account_id, conversation_id, text, client_message_id):
         self.approval_controls.append((account_id, conversation_id, text, client_message_id))
 
+    async def dispatch_native_input(self, account_id, conversation_id, text, client_message_id):
+        self.approval_controls.append((account_id, conversation_id, text, client_message_id))
+        return {"outcome": "accepted", "text": "宿主原始命令回复"}
+
     async def _notify_agent_inbound(self, path, body, response, owner):
         accepted = response["data"]
         conversation = accepted["conversationId"]
@@ -268,7 +272,8 @@ async def test_steering_uses_the_exact_running_generation_and_does_not_dispatch_
 
 
 @pytest.mark.asyncio
-async def test_approval_text_reply_bypasses_the_running_generation_lock(interaction_core, monkeypatch):
+@pytest.mark.parametrize("command", ["/approve once", "/deny", "/steer 先检查失败路径", "/stop", "/new", "/model native-model", "/plugin-native arg"])
+async def test_host_command_bypasses_the_running_generation_lock(interaction_core, monkeypatch, command):
     monkeypatch.setattr("oai_hermes_adapter.approvals.host_approval_available", lambda: True, raising=False)
     runtime = PromptRuntime(interaction_core)
     adapter = HermesSessionAdapter(interaction_core, runtime)
@@ -288,23 +293,20 @@ async def test_approval_text_reply_bypasses_the_running_generation_lock(interact
                 "SELECT COUNT(*) FROM messages WHERE conversation_id=?", (conversation,),
             ).fetchone()[0]
 
-        control_events = [
-            event async for event in adapter.send(
-                principal,
-                conversation,
-                "/approve once",
-                client_message_id="cm_approve_text",
-            )
-        ]
+        async def send_command():
+            return [event async for event in adapter.send(
+                principal, conversation, command, client_message_id="cm_approve_text")]
+
+        control_events = await asyncio.wait_for(send_command(), 1)
 
         assert control_events == [{
             "type": "done",
             "outcome": "completed",
-            "text": "",
+            "text": "宿主原始命令回复",
             "clientMessageId": "cm_approve_text",
         }]
         assert runtime.approval_controls == [
-            ("alice", conversation, "/approve once", "cm_approve_text"),
+            ("alice", conversation, command, "cm_approve_text"),
         ]
         with closing(interaction_core.open_gateway_account("alice")) as account:
             after = account.store.database.execute(

@@ -151,8 +151,6 @@ data class WorkbenchUiState(
      * guess would put live buttons over a decision that has nowhere to go.
      */
     val approvalCardsSupported: Boolean = false,
-    /** The selected Agent advertises real mid-turn steering, not merely queueing. */
-    val steeringSupported: Boolean = false,
     val isOnline: Boolean = true,
     val hasRecoverableSubmissions: Boolean = false,
     /** Unknown send outcomes require an explicit reconciliation before another send. */
@@ -219,7 +217,6 @@ class WorkbenchController(
      * while the UI shows a decision the Gateway never received.
      */
     private val supportsApprovalCards: Boolean = false,
-    private val supportsSteering: Boolean = false,
     /** Wall clock, injectable so a countdown can be advanced by a test. */
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val persistence: WorkbenchPersistence? = null,
@@ -306,7 +303,7 @@ class WorkbenchController(
     // says "no negotiated fact yet", so a Gateway that did offer cards would
     // otherwise read as one that never offered them until the first update ran.
     private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,
-        steeringSupported = supportsSteering,isOnline=allowSending,
+        isOnline=allowSending,
         conversationManagementSupported=supportsConversationManagement,
         conversationDeleteSupported=supportsConversationDelete,
         conversationArchiveSupported=supportsConversationArchive,
@@ -2578,21 +2575,24 @@ class WorkbenchController(
             GenerationState.CANCEL_REQUESTED,
         )
         val effectiveDelivery = when {
-            delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER && !busy ->
-                com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL
-            delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER &&
-                (!supportsSteering || current.attachments.isNotEmpty()) -> {
-                update { it.copy(notice = "STEERING_UNAVAILABLE:" +
-                    if (current.attachments.isEmpty()) "CAPABILITY" else "ATTACHMENTS") }
-                return
-            }
             delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE && !busy ->
                 com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL
             else -> delivery
         }
+        val hasUnknownModeChange = activeThreadId?.let { threadId ->
+            atomsFor(threadId).values.any { atom ->
+                !atom.isDeleted && atom.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN &&
+                    atom.delivery != effectiveDelivery
+            }
+        } == true
+        if (hasUnknownModeChange) {
+            update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:请先确认并查询未确认消息") }
+            return
+        }
         val attachmentIds = current.attachments.map { it.id.value }.filterNot { it in current.inFlightAttachmentIds }
         val remoteAttachmentIds = attachmentIds.map { attachmentCoordinator?.remoteAttachmentId(it) }
         val recoverable = activeThreadId?.let(::recoverableOrdinaryAtoms).orEmpty().filter { atom ->
+            !steeringWasNotForwarded(atom) && atom.delivery == effectiveDelivery &&
             atom.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>().joinToString("") { it.value } == current.draft &&
                 atom.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>().map { it.draftId.value } == remoteAttachmentIds
         }
@@ -2602,8 +2602,11 @@ class WorkbenchController(
         }
         attachmentTargetRevision++
         pendingSubmission = failedSubmission?.takeIf {
-            it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId &&
-                it.conversationId?.let { id -> atomsFor(id)[it.clientMessageId]?.isDeleted } != true
+            it.delivery == effectiveDelivery && it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId &&
+                it.conversationId?.let { id ->
+                    val atom = atomsFor(id)[it.clientMessageId]
+                    atom?.isDeleted == true || steeringWasNotForwarded(atom)
+                } != true
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
             DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value,
                 delivery = effectiveDelivery)
@@ -3086,6 +3089,10 @@ class WorkbenchController(
             messages.forEach { activeWork.finishSubmission(it.clientMessageId.value, atomsFor(conversationId)[it.clientMessageId.value]) }
         }
     }
+
+    private fun steeringWasNotForwarded(atom: LocalSendAtom?): Boolean =
+        atom != null && atom.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER &&
+            atom.submissionState == LocalSubmissionState.FAILED && atom.submissionErrorCode == "STEER_UNAVAILABLE"
 
     private fun recoverableOrdinaryAtoms(threadId: String): List<LocalSendAtom> {
         val batchMembers = collectingUnits.filterValues { it.first == threadId }.keys +
@@ -4962,11 +4969,9 @@ class WorkbenchController(
                 conversationRenameSupported=supportsConversationRename && remoteConversationOnline,
                 organizationStoredLocally=organizationStoredLocally,
                 busyThreadIds=managementBusyThreadIds(transformed)+externalBusyThreadIds())
-            if (next.approvalCardsSupported == supportsApprovalCards &&
-                next.steeringSupported == supportsSteering
+            if (next.approvalCardsSupported == supportsApprovalCards
             ) next else next.copy(
                 approvalCardsSupported = supportsApprovalCards,
-                steeringSupported = supportsSteering,
             )
         }
         persistCheckpoint()

@@ -70,10 +70,6 @@ import java.math.BigDecimal
 import java.util.UUID
 
 private const val MAX_APPROVAL_FALLBACKS = 32
-private val APPROVAL_CONTROL_COMMAND = Regex(
-    "^/(?:approve|deny)(?:\\s+.*)?$",
-    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-)
 
 /**
  * Bridges the unified OAI Core /agents interface with the Material Design 3 ConversationRepository port.
@@ -111,6 +107,7 @@ class CoreAgentConversationRepository(
 
     private class NativeTurn(val agent: CoreAgent, val conversationId: String) {
         @Volatile var generationId: String? = if (agent.kind == "hermes") null else "local_${UUID.randomUUID()}"
+        @Volatile var hostGenerationId: String? = null
         @Volatile var cancelled: Boolean = false
     }
     private data class ApprovalRoute(val agent: CoreAgent, val conversationId: String, val choices: Set<String>)
@@ -120,8 +117,9 @@ class CoreAgentConversationRepository(
         ConcurrentHashMap<String, MutableList<VerifiedConversationEvent.ApprovalTextFallback>>()
     private val generationRoutes = Collections.synchronizedMap(linkedMapOf<String, NativeTurn>())
 
-    private fun rememberGeneration(turn: NativeTurn, generationId: String) {
+    private fun rememberGeneration(turn: NativeTurn, generationId: String, fromHost: Boolean = true) {
         turn.generationId = generationId
+        if (fromHost) turn.hostGenerationId = generationId
         synchronized(generationRoutes) {
             generationRoutes[generationId] = turn
             if (generationRoutes.size > 1024) {
@@ -329,18 +327,13 @@ class CoreAgentConversationRepository(
     }
 
     override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
+        if (message.delivery == MessageDeliveryMode.STEER) return steerMessage(conversationId, message)
         val agent = requireAgent()
         val key = agent.id to conversationId
         val turn = NativeTurn(agent, conversationId)
         if (turns.putIfAbsent(key, turn) != null) {
-            if (message.delivery == MessageDeliveryMode.STEER) {
+            if (message.delivery != MessageDeliveryMode.QUEUE) {
                 return steerMessage(conversationId, message)
-            }
-            if (isHostCommand(message.text)) {
-                // /approve、/deny 这类命令解开的是"正卡在审批上的这一轮"：排队会自锁，
-                // 所以允许它们在生成中插队直发。
-                sendHostCommandWhileBusy(agent, conversationId, message)
-                return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, null)
             }
             enqueueSend(agent, key, message)
             GatewayLog.d("OaiLatency",
@@ -355,7 +348,7 @@ class CoreAgentConversationRepository(
         // 发送到首帧的耗时是"等待接收"体感的主要来源：记录阶段时间点便于定位回归。
         val startedAt = System.currentTimeMillis()
         GatewayLog.d("OaiLatency", "send.start client=${message.clientMessageId.value} conversation=$conversationId")
-        turn.generationId?.let { rememberGeneration(turn, it) }
+        turn.generationId?.let { rememberGeneration(turn, it, fromHost = false) }
         var messageId = message.clientMessageId.value
         var assistantMsgId = "stream_${message.clientMessageId.value}"
         var assistantHasNativeId = false
@@ -533,27 +526,6 @@ class CoreAgentConversationRepository(
         return MessageAcceptance(messageId, message.clientMessageId.value, turn.generationId.takeIf { agent.kind != "hermes" })
     }
 
-    /** Only host-native approval verbs may bypass the client queue. */
-    private fun isHostCommand(text: String): Boolean = APPROVAL_CONTROL_COMMAND.matches(text.trim())
-
-    private fun sendHostCommandWhileBusy(agent: CoreAgent, conversationId: String, message: OutgoingMessage) {
-        parentScope.launch(ioDispatcher) {
-            GatewayLog.d("OaiLatency", "command.inline client=${message.clientMessageId.value}")
-            emitEvent(agent.id, VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
-                System.currentTimeMillis(), message.clientMessageId.value, message.clientMessageId.value,
-                ConversationId(conversationId)))
-            val failure = runCatching {
-                client.send(agent, conversationId, message.text,
-                    clientMessageId = message.clientMessageId.value, onDelta = { })
-            }.exceptionOrNull()
-            emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
-                System.currentTimeMillis(), ConversationId(conversationId), message.clientMessageId.value,
-                message.clientMessageId,
-                if (failure == null) AgentMessageStatus.COMPLETED else AgentMessageStatus.FAILED, 1L,
-                (failure as? Exception)?.let(::messageError), null))
-        }
-    }
-
     private data class QueuedSend(
         val message: OutgoingMessage,
         var state: PendingDeliveryState = PendingDeliveryState.QUEUED,
@@ -707,11 +679,7 @@ class CoreAgentConversationRepository(
     ): MessageAcceptance {
         val agent = requireAgent()
         val turn = turns[agent.id to conversationId]
-            ?: throw AgentSessionException("STEER_UNAVAILABLE")
-        val generationId = turn.generationId
-            ?: throw AgentSessionException("GENERATION_ID_REQUIRED")
-        if (!agent.online || !agent.capabilities.steer)
-            throw AgentSessionException("UNSUPPORTED_CAPABILITY")
+        val generationId = turn?.hostGenerationId
         if (message.attachmentIds.isNotEmpty())
             throw AgentSessionException("STEER_ATTACHMENTS_UNSUPPORTED")
         val result = withContext(ioDispatcher) {
@@ -723,8 +691,12 @@ class CoreAgentConversationRepository(
                 message.clientMessageId.value,
             )
         }
-        if (result.generationId != generationId || result.outcome != "accepted")
+        if (generationId != null && result.generationId != generationId || result.outcome != "accepted")
             throw AgentSessionException("OUTCOME_UNKNOWN")
+        if (turn != null && generationId == null) {
+            rememberGeneration(turn, result.generationId)
+            if (turns[agent.id to conversationId] === turn && isSelected(turn)) _generationId.value = result.generationId
+        }
         GatewayLog.d(
             "OaiLatency",
             "send.steered client=${message.clientMessageId.value} conversation=$conversationId generation=$generationId",
@@ -732,7 +704,7 @@ class CoreAgentConversationRepository(
         return MessageAcceptance(
             messageId = "steer_${message.clientMessageId.value}",
             correlationId = message.clientMessageId.value,
-            generationId = generationId,
+            generationId = result.generationId,
             delivery = MessageDeliveryMode.STEER,
         )
     }

@@ -7,6 +7,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
@@ -47,6 +50,64 @@ class ComposerBarSendStopTest {
         assertEquals(1, stops)
     }
 
+    @Test fun choosingQueuePreservesTheDraftAndWaitsForTheSendAction() {
+        val original = " /host-command 'a b'\n 保留末尾空白  "
+        var draft by mutableStateOf(original)
+        var queued = 0
+        var steered = 0
+        var ordinary = 0
+        compose.setContent {
+            MaterialTheme {
+                ComposerBar(
+                    draft = draft,
+                    onDraftChange = { draft = it },
+                    generation = GenerationState.RUNNING,
+                    canSend = true,
+                    onSend = { ordinary++ },
+                    onQueue = { queued++; draft = "" },
+                    onSteer = { steered++; draft = "" },
+                    onStop = {}, onPickCamera = {}, onPickGallery = {}, onPickDocument = {}, onVoiceInput = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("排队等待当前任务完成").performClick()
+        assertEquals("选择模式不得提交消息", 0, queued + steered + ordinary)
+        assertEquals(original, draft)
+        compose.onNode(hasSetTextAction()).assertTextEquals(original)
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsSelected()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        assertEquals(1, queued)
+        assertEquals(0, steered + ordinary)
+    }
+
+    @Test fun queuedGenerationCanSelectSteeringWithoutAnAdvertisedCapability() {
+        var queued = 0
+        var steered = 0
+        compose.setContent {
+            MaterialTheme {
+                ComposerBar(
+                    draft = "继续处理当前任务",
+                    onDraftChange = {},
+                    generation = GenerationState.QUEUED,
+                    canSend = true,
+                    onSend = {},
+                    onQueue = { queued++ },
+                    onSteer = { steered++ },
+                    onStop = {}, onPickCamera = {}, onPickGallery = {}, onPickDocument = {}, onVoiceInput = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled().assertIsSelected()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").performClick()
+        compose.onNodeWithContentDescription("引导当前任务").performClick().assertIsSelected()
+        assertEquals(0, queued + steered)
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        assertEquals(1, steered)
+        assertEquals(0, queued)
+    }
+
     @Test fun queuedWithoutInputAlsoShowsStop() {
         var stops = 0
         render(
@@ -59,7 +120,7 @@ class ComposerBarSendStopTest {
         assertEquals(1, stops)
     }
 
-    @Test fun runningWithTextRequiresQueueChoiceAndDoesNotCancelCurrentGeneration() {
+    @Test fun runningWithTextCanSelectQueueAndSendWithoutCancellingCurrentGeneration() {
         var sends = 0
         var stops = 0
         render(
@@ -70,14 +131,16 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled()
         compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
+        assertEquals(0, sends)
+        compose.onNodeWithContentDescription("发送").performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
     }
 
-    @Test fun queuedGenerationWithTextRequiresQueueChoice() {
+    @Test fun queuedGenerationWithTextWaitsForSendAfterChoosingQueue() {
         var sends = 0
         var stops = 0
         render(
@@ -88,14 +151,16 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled()
         compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
+        assertEquals(0, sends)
+        compose.onNodeWithContentDescription("发送").performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
     }
 
-    @Test fun queuedGenerationWithAttachmentStillUsesQueueChoice() {
+    @Test fun queuedGenerationWithAttachmentKeepsBothModesSelectableAndWaitsForSend() {
         var sends = 0
         var stops = 0
         render(
@@ -106,8 +171,11 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled()
+        compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled()
         compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
+        assertEquals(0, sends)
+        compose.onNodeWithContentDescription("发送").performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
@@ -196,11 +264,10 @@ class ComposerBarSendStopTest {
         assertEquals(1, sends)
     }
 
-    @Test fun aBusyComposerRequiresAnExplicitQueueOrSteerChoice() {
+    @Test fun aBusyComposerSubmitsTheSelectedModeOnlyFromTheSendAction() {
         var queued = 0
         var steered = 0
         var sends = 0
-        var steeringEnabled by mutableStateOf(true)
         compose.setContent {
             MaterialTheme {
                 ComposerBar(
@@ -216,25 +283,29 @@ class ComposerBarSendStopTest {
                     onPickGallery = {},
                     onPickDocument = {},
                     onVoiceInput = {},
-                    steeringEnabled = steeringEnabled,
                     voiceInputEnabled = false,
                 )
             }
         }
 
-        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled()
         compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
         compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled().performClick()
-        assertEquals(1, queued)
+        assertEquals(0, queued + steered + sends)
+        compose.onNodeWithContentDescription("发送").performClick()
+        assertEquals(0, queued)
         assertEquals(1, steered)
         assertEquals(0, sends)
 
-        compose.runOnIdle { steeringEnabled = false }
-        compose.onNodeWithContentDescription("引导当前任务").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").performClick().assertIsSelected()
+        assertEquals(0, queued)
+        compose.onNodeWithContentDescription("发送").performClick()
+        assertEquals(1, queued)
+        assertEquals(1, steered)
+        assertEquals(0, sends)
     }
 
-    @Test fun approvalTextCommandsRemainDirectlySendableWhileTheTurnIsBlocked() {
+    @Test fun slashCommandsUseTheSameUserSelectedDeliveryControls() {
         var sends = 0
         render(
             draft = "/approve once",
@@ -243,9 +314,11 @@ class ComposerBarSendStopTest {
             onSend = { sends++ },
         )
 
+        compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled().assertIsSelected()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").performClick().assertIsSelected()
+        assertEquals(0, sends)
         compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
         assertEquals(1, sends)
-        compose.onNodeWithContentDescription("排队等待当前任务完成").assertDoesNotExist()
     }
 
     private fun render(

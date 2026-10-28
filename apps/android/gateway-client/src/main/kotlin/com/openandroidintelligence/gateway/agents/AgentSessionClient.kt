@@ -141,27 +141,31 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
     suspend fun steer(
         agent: CoreAgent,
         sessionId: String,
-        generationId: String,
+        generationId: String?,
         text: String,
         clientMessageId: String,
     ): NativeSteeringResult {
-        requireCapability(agent.capabilities.steer && agent.online)
-        if (generationId.isBlank() || text.isBlank() || clientMessageId.isBlank())
+        if (generationId != null && generationId.isBlank() || text.isBlank() || clientMessageId.isBlank())
             throw AgentSessionException("INVALID_REQUEST")
-        val value = request(
-            "POST",
-            sessionTarget(agent, sessionId) + "/steer",
-            mapOf(
-                "text" to text,
-                "generationId" to generationId,
-                "clientMessageId" to clientMessageId,
-            ),
-        )
+        val value = try {
+            request(
+                "POST",
+                sessionTarget(agent, sessionId) + "/steer",
+                buildMap {
+                    put("text", text)
+                    if (generationId != null) put("generationId", generationId)
+                    put("clientMessageId", clientMessageId)
+                },
+                requestId = clientMessageId,
+            )
+        } catch (_: IOException) {
+            throw AgentSessionException("OUTCOME_UNKNOWN")
+        }
         val steering = JsonFields.obj(JsonFields.field(value, "steering"))
             ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
         val returnedGeneration = JsonFields.string(steering, "generationId")
         val outcome = JsonFields.string(steering, "outcome")
-        if (returnedGeneration != generationId || outcome != "accepted")
+        if (returnedGeneration.isNullOrBlank() || generationId != null && returnedGeneration != generationId || outcome != "accepted")
             throw AgentSessionException("OUTCOME_UNKNOWN")
         return NativeSteeringResult(returnedGeneration, outcome)
     }

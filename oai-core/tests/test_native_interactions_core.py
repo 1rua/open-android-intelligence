@@ -194,12 +194,71 @@ async def test_steering_targets_the_exact_generation_without_creating_another_tu
             "steer": False,
         },
     }
-    unsupported = await client.post(
+    forwarded = await client.post(
         PREFIX + "/agents/interactive/sessions/chat/steer",
         json={"text": "x", "generationId": "gen_native"},
         headers=write_headers(),
     )
-    assert unsupported.status == 405
+    assert forwarded.status == 200, await forwarded.text()
+    assert host.calls[-1] == ("steer", "alice", "chat", "gen_native", "x", None)
+
+
+@pytest.mark.asyncio
+async def test_steering_without_a_client_generation_uses_the_host_session_and_replays_its_receipt(native_api):
+    client, host = native_api
+    path = PREFIX + "/agents/interactive/sessions/chat/steer"
+    text = " \t/steer 保留原文\n'quoted'  "
+    body = {"text": text, "clientMessageId": "cm_current"}
+    headers = write_headers("steer-current")
+    response = await client.post(path, json=body, headers=headers)
+    assert response.status == 200, await response.text()
+    receipt = await response.json()
+    assert receipt == {"steering": {"generationId": "gen_native", "outcome": "accepted"}}
+    assert host.calls == [("generation", "alice", "chat"),
+                          ("steer", "alice", "chat", "gen_native", text, "cm_current")]
+    # Replaying a request must not retarget whatever round is current later.
+    async def later_generation(*_):
+        raise AssertionError("a completed receipt must not query or steer a successor round")
+    host.current_generation = later_generation
+    replay = await client.post(path, json=body, headers=headers)
+    assert replay.status == 200
+    assert await replay.json() == receipt
+
+
+@pytest.mark.asyncio
+async def test_a_definite_missing_generation_replays_its_rejection_instead_of_becoming_unknown(native_api):
+    client, host = native_api
+    async def idle(*_):
+        return None
+    host.current_generation = idle
+    path = PREFIX + "/agents/interactive/sessions/chat/steer"
+    body = {"text": "forward only to a live task", "clientMessageId": "cm_idle"}
+    headers = write_headers("steer-idle")
+    first = await client.post(path, json=body, headers=headers)
+    assert first.status == 409
+    rejection = await first.json()
+    assert rejection == {"error": {"code": "STEER_UNAVAILABLE"}}
+    host.current_generation = InteractiveHost().current_generation
+    replay = await client.post(path, json=body, headers=headers)
+    assert replay.status == 409
+    assert await replay.json() == rejection
+    assert host.calls == []
+    # A new explicit user attempt can target the task which is running now.
+    fresh = await client.post(path, json=body, headers=write_headers("steer-new-attempt"))
+    assert fresh.status == 200
+    assert host.calls[-1][0] == "steer"
+
+
+@pytest.mark.asyncio
+async def test_steering_cannot_resolve_a_generation_from_a_different_session(native_api):
+    client, host = native_api
+    async def wrong_session(*_):
+        return {"generationId": "gen_other", "conversationId": "other", "state": "running"}
+    host.current_generation = wrong_session
+    response = await client.post(PREFIX + "/agents/interactive/sessions/chat/steer",
+                                 json={"text": "current session only"}, headers=write_headers())
+    assert response.status == 502
+    assert not any(call[0] == "steer" for call in host.calls)
 
 
 @pytest.mark.asyncio

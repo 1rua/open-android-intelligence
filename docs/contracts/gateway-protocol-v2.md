@@ -1229,7 +1229,7 @@ type NormalizedActualResult =
 | GET `/agents/{agent}/sessions/{id}/history` | — | `{messages:[{id,role,text,createdAt}]}` |
 | GET `/agents/{agent}/sessions/{id}/generation` | — | `{generation:null}` 或 `{generation:{generationId,conversationId,state}}` |
 | POST `/agents/{agent}/sessions/{id}/messages` | `{text}` | SSE `event: message`，事件形状见第 17.3 节 |
-| POST `/agents/{agent}/sessions/{id}/steer` | `{text,generationId,clientMessageId?}` | `{steering:{generationId,outcome:"accepted"}}`；只修改指定的运行中轮次 |
+| POST `/agents/{agent}/sessions/{id}/steer` | `{text,generationId?,clientMessageId?}` | `{steering:{generationId,outcome:"accepted"}}`；把输入交给宿主原生会话处理 |
 | PATCH `/agents/{agent}/sessions/{id}` | `{action:"rename"\|"archive", value?}` | `{session:{...}}` |
 | DELETE `/agents/{agent}/sessions/{id}` | — | 原生删除，需能力声明 |
 | POST `/agents/{agent}/sessions/{id}/cancel` | `{generationId}` | `{session:{generationId,outcome}}`，精确取消该轮次 |
@@ -1274,20 +1274,32 @@ Queue 是本机尚未提交给 Agent 的待发送状态，不新增 Gateway 路�
 时保持暂停。查询本身失败也不能被当作空闲。发送结果未知的队首必须保留
 `OUTCOME_UNKNOWN`，禁止仅凭重连事件自动重发。
 
-Steering 是独立写操作，只有 Agent 明确声明 `steer=true` 时才可调用：
+引导是独立写操作，用于立即把原文输入交给宿主的原生命令与忙碌处理路径。
+客户端、Core 和会话适配器不得以缓存的 `steer` 能力位为前置挡板；该字段继续保留
+给既有客户端读取，实际接收结果由宿主返回。
 
-- 请求必须携带当前真实 `generationId`；Core、插件和宿主都必须核对账号、
-  会话、活动任务和 generation 完全一致。
-- 成功仅返回同一 `generationId` 和 `outcome: accepted`，不得创建新的用户消息、
-  dispatch 或 generation，也不得进入 Queue 后伪装成实时引导。
-- 宿主不能接收该时刻的引导、任务已完成或能力未声明时，必须返回明确错误；
+Android 生成中显示“引导 / 排队”两个模式选择项，默认选择引导。点击模式只改变
+选择并保留草稿，点击发送键才提交；排队按既有本机队列处理。能力标记缺失、为
+`false` 或客户端仍在等待首个轮次标识时，都不能只留下排队选项。
+
+- 请求可以携带已观察到的真实 `generationId`；未携带时，服务端从已认证账号和
+  指定会话读取当前轮次。Core、插件和宿主仍须核对账号、会话、活动任务和目标轮次。
+- 成功仅返回同一 `generationId` 和 `outcome: accepted`，网关不为该操作另建普通
+  dispatch 或 generation；宿主自己的历史记录由宿主处理。`accepted` 表示已交给
+  宿主，不代表模型已经执行完毕。
+  插件不得自行改用工具批次结束后才消费的 `agent.steer()`；立即打断、引导或宿主
+  自己的忙碌处理策略均由原生输入分派决定。
+- 宿主不能接收该时刻的输入或目标任务已完成时，必须返回明确错误；
   客户端把文本保留为可重试/可改选 Queue 的状态，不得自动降级发送。
-- 文本附件不通过 Steering 通道传输；带附件的消息只能选择 Queue 或普通发送。
-- 同一 `Idempotency-Key` 重放返回同一 steering 回执，不得调用宿主两次。
+- 当前 Steering 载荷为文本；附件沿既有上传与普通消息路径传输。模式选择不因
+  附件禁用；无法提交时须保留草稿和附件，不得只发送正文或自动改成 Queue。
+- 同一 `Idempotency-Key` 重放返回首次目标的 steering 回执，不得重新查询并改投后继
+  轮次，不得调用宿主两次。结果未知时须先查询，不能通过切换模式生成第二次提交。
 
-审批文本命令 `/approve`、`/deny` 属于当前阻塞轮次的控制面。它们不以普通忙时
-Queue/Steering 处理，也不得等待普通 generation 锁；Hermes 适配器只把这两个
-受控命令送入宿主的活动会话命令入口。其他斜杠命令仍按宿主既有语义处理。
+斜杠命令原文交给宿主，不维护仅允许 `/approve`、`/deny` 的客户端或插件命令白名单。
+Hermes 原生命令输入不等待普通消息的 generation 锁；`/new` 在原生消息入口同样
+交给宿主。第 7.1 节旧命令端点已经创建会话时的防重复处理只作用于该旧端点。
+用户显式选择排队的输入仍按该选择保留在本机，不能因文本前缀被偷偷改变模式。
 
 ### 17.4 请求预算
 

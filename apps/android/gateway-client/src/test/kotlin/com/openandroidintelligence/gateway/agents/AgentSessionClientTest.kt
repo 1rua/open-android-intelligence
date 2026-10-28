@@ -254,14 +254,14 @@ class AgentSessionClientTest {
         assertEquals("${AgentSessionClient.ROOT}/hermes/commands?languageCode=zh-CN", transport.requests.single().target)
     }
 
-    @Test fun steeringUsesItsOwnEndpointAndRequiresTheAdvertisedCapability() = runBlocking {
+    @Test fun steeringUsesItsOwnEndpointWithoutAClientCapabilityDecision() = runBlocking {
         val transport = RecordingTransport(
             """{"steering":{"generationId":"native-round","outcome":"accepted"}}""",
         )
         val steerable = agent.copy(
             id = "hermes",
             kind = "hermes",
-            capabilities = agent.capabilities.copy(steer = true),
+            capabilities = agent.capabilities.copy(steer = false),
         )
         val result = client(transport).steer(
             steerable,
@@ -289,6 +289,26 @@ class AgentSessionClientTest {
                 )
             }.exceptionOrNull() is AgentSessionException,
         )
+    }
+
+    @Test fun aLostSteeringReplyStaysUnknownAndRetryKeepsTheSameOperationIdentity() = runBlocking {
+        val requests = mutableListOf<WireRequest>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request
+                throw IOException("reply lost after host admission")
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        repeat(2) {
+            val failure = runCatching { client(transport).steer(agent, "native", null, "original input", "cm_same") }
+                .exceptionOrNull()
+            assertEquals("OUTCOME_UNKNOWN", (failure as? AgentSessionException)?.code)
+        }
+        assertEquals(2, requests.size)
+        requests.forEach { request ->
+            assertEquals("cm_same", request.headers.single { it.name.equals("Idempotency-Key", true) }.value)
+        }
     }
 
     @Test fun currentGenerationDistinguishesIdleFromARunningTurn() = runBlocking {

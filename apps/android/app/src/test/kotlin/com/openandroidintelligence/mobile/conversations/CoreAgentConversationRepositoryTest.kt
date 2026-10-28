@@ -681,7 +681,7 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         assertEquals("首轮请求应已开始", 1, posts.size)
 
         // 第一轮还没结束时发送第二条：必须排队，而不是把 SESSION_BUSY 抛给用户。
-        val second = repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_two"), "第二条"))
+        val second = repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_two"), "第二条", delivery = MessageDeliveryMode.QUEUE))
         assertEquals("cm_two", second.messageId)
         assertEquals("首轮结束前排队的消息不能并发发送", 1, posts.size)
 
@@ -695,7 +695,12 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         val bodies = mutableListOf<String>()
         val releaseFirst = CompletableDeferred<Unit>()
         val transport = object : GatewayByteTransport {
-            override suspend fun execute(request: WireRequest): WireResponse = error("stream only")
+            override suspend fun execute(request: WireRequest): WireResponse {
+                assertTrue(request.target.endsWith("/steer"))
+                bodies += request.body.toString(Charsets.UTF_8)
+                return WireResponse(200, listOf(RawHeader("Content-Type", "application/json")),
+                    """{"steering":{"generationId":"host_current","outcome":"accepted"}}""".toByteArray())
+            }
             override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
             override suspend fun <T> consumeResponse(
                 request: WireRequest,
@@ -726,6 +731,32 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         assertEquals(2, bodies.size)
     }
 
+    @Test fun steeringReachesTheHostWithoutALocalTurnOrAdvertisedCapability() = runTest {
+        val requests = mutableListOf<WireRequest>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request
+                return WireResponse(200, listOf(RawHeader("Content-Type", "application/json")),
+                    """{"steering":{"generationId":"host_current","outcome":"accepted"}}""".toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repo = CoreAgentConversationRepository(client(transport),
+            { sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(steer = false)) },
+            { "s_1" }, backgroundScope, StandardTestDispatcher(testScheduler))
+        val text = " \t/steer 保留原文\n'quoted'  "
+        val accepted = repo.steerMessage("s_1", OutgoingMessage(ClientMessageId("cm_immediate"), text,
+            delivery = MessageDeliveryMode.STEER))
+        assertEquals(MessageDeliveryMode.STEER, accepted.delivery)
+        assertEquals("host_current", accepted.generationId)
+        assertEquals("/open-android-intelligence/v2/agents/hermes/sessions/s_1/steer", requests.single().target)
+        val json = com.openandroidintelligence.gateway.schema.JsonFields.obj(
+            com.openandroidintelligence.gateway.schema.Json.parse(requests.single().body.decodeToString()))
+        assertEquals(text, com.openandroidintelligence.gateway.schema.JsonFields.string(json, "text"))
+        assertEquals(null, com.openandroidintelligence.gateway.schema.JsonFields.field(json, "generationId"))
+        assertTrue(repo.pendingDeliveries("s_1").isEmpty())
+    }
+
     @Test fun queueAndSteeringUseDifferentHostPathsAndKeepTheirOrder() = runTest {
         val messageBodies = mutableListOf<String>()
         val steerBodies = mutableListOf<String>()
@@ -736,7 +767,7 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
                     val body = request.body.toString(Charsets.UTF_8)
                     steerBodies += body
                     val generationId = Regex(""""generationId":"([^"]+)"""")
-                        .find(body)?.groupValues?.get(1) ?: error("generation id missing")
+                        .find(body)?.groupValues?.get(1) ?: "host_current"
                     return WireResponse(
                         200,
                         listOf(RawHeader("Content-Type", "application/json")),
@@ -766,7 +797,7 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         }
         val repo = CoreAgentConversationRepository(
             client(transport),
-            { sampleAgent.copy(kind = "codex") },
+            { sampleAgent.copy(kind = "codex", capabilities = sampleAgent.capabilities.copy(steer = false)) },
             { "s_1" },
             backgroundScope,
             StandardTestDispatcher(testScheduler),
@@ -796,11 +827,11 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
             OutgoingMessage(ClientMessageId("cm_steer"), "check the failing test first", delivery = MessageDeliveryMode.STEER),
         )
         assertEquals(MessageDeliveryMode.STEER, steered.delivery)
-        assertTrue(steered.generationId?.startsWith("local_") == true)
+        assertEquals("host_current", steered.generationId)
         assertEquals("steering must not create a message turn", 1, messageBodies.size)
         assertEquals(1, steerBodies.size)
         assertTrue(steerBodies.single().contains("check the failing test first"))
-        assertTrue(steerBodies.single().contains(steered.generationId.orEmpty()))
+        assertFalse("the server resolves a round the client has not observed", steerBodies.single().contains("generationId"))
 
         releaseFirst.complete(Unit)
         runCurrent()

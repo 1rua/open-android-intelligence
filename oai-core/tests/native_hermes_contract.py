@@ -3,19 +3,24 @@ import asyncio
 import hashlib
 import io
 import zipfile
-from contextlib import closing
+from contextlib import closing, nullcontext
 import os
 from pathlib import Path
 import socket
 import sys
+import threading
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(os.environ["HERMES_SDK_ROOT"]).resolve()))
 
 from aiohttp import ClientSession
 from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platforms.base import ExecApprovalPrompt
+from gateway.platforms.base import ExecApprovalPrompt, MessageEvent
 from gateway.platform_registry import platform_registry
 from gateway.session import SessionStore
+from gateway.run import GatewayRunner
+from gateway.session_state import SessionState
+from agent.interrupt_control import InterruptControlMixin
 from hermes_cli.plugins import PluginContext, PluginManager, parse_manifest_file
 from oai_hermes_adapter.runtime import NATIVE_HERMES_AVAILABLE
 from oai_hermes_adapter.platform_identity import GATEWAY_PLATFORM_IDS
@@ -68,6 +73,63 @@ assert all(entry.adapter_factory(PlatformConfig(enabled=True, extra={})) is runt
 store = SessionStore(Path(os.environ["HERMES_HOME"]) / "sessions", GatewayConfig())
 runtime.set_session_store(store)
 
+# The real host resolver, including plugin-platform defaults, owns tool choice.
+# A custom platform name must neither remove default tools nor undo host limits.
+tool_runner = GatewayRunner.__new__(GatewayRunner)
+tool_runner._delivery_adapter_for = lambda source: runtime
+from toolsets import resolve_toolset
+for platform_id in GATEWAY_PLATFORM_IDS:
+    tool_source = runtime._agent_source("toolset-contract", "alice", platform_id)
+    assert runtime.toolsets_for_source(tool_source) is None
+    for config, terminal_allowed in (
+        ({}, True),
+        ({"platform_toolsets": {platform_id: ["file"]}}, False),
+        ({"platform_toolsets": {"cli": ["file"]}}, True),
+        ({"agent": {"disabled_toolsets": ["terminal"]}}, False),
+    ):
+        enabled, disabled = tool_runner._resolve_turn_toolsets(config, tool_source, platform_id)
+        selected_tools = {tool for name in enabled for tool in resolve_toolset(name)}
+        selected_tools -= {tool for name in (disabled or []) for tool in resolve_toolset(name)}
+        assert ("terminal" in selected_tools) is terminal_allowed, (platform_id, config, enabled, disabled)
+
+
+class NativePolicyRunner(GatewayRunner):
+    """Control host policy/config and execution, keeping its busy dispatcher real."""
+
+    def _delivery_adapter_for(self, source):
+        return runtime
+
+    def _is_user_authorized_for_source(self, source):
+        return True
+
+    def _admit_bot_message_for_source(self, source):
+        return True
+
+    def _effective_busy_input_mode(self, source):
+        return self.synthetic_mode
+
+    def _effective_busy_text_mode(self, source):
+        return "interrupt"
+
+    def _profile_scope_for_source(self, source):
+        return nullcontext()
+
+    async def _route_plaintext_approval_while_busy(self, event, session_key):
+        return False
+
+    async def _session_has_compression_in_flight(self, session_key):
+        return False
+
+
+class NativeControlledAgent(InterruptControlMixin):
+    _supports_active_turn_redirect = True
+
+    def __init__(self):
+        self._model_request_active = threading.Event()
+        self._model_request_active.set()
+        self._interrupt_requested = False
+        self._active_children = []
+
 # Persist a legacy platform binding before the new adapter acquires the old
 # account directory. No account database or native session ID is replaced.
 with closing(core.open_gateway_account("alice")) as account:
@@ -88,6 +150,7 @@ async def scenario():
     approvals = []
     approval_continuations = []
     received_media = []
+    followup_entered, followup_release = asyncio.Event(), asyncio.Event()
     import oai_hermes_adapter.approvals as gateway_core_module
     original_resolver = gateway_core_module.resolve_host_approval
     loop = asyncio.get_running_loop()
@@ -107,6 +170,10 @@ async def scenario():
 
     class Handler:
         async def receive(self, event):
+            if event.text == "controlled pending followup":
+                followup_entered.set()
+                await followup_release.wait()
+                return "controlled followup completed"
             if event.media_urls:
                 received_media.append((event.message_type.value, list(event.media_types),
                     [Path(path).read_bytes() for path in event.media_urls]))
@@ -177,6 +244,54 @@ async def scenario():
         database = store._db_for_key(binding["sessionKey"])
         assert database.get_session(binding["agentSessionId"]) is not None
         assert database.get_session_title(binding["agentSessionId"]) == "native Alice title"
+        # An App guidance input must enter the actual host busy dispatcher.
+        # The old bridge called agent.steer directly, ignoring interrupt mode.
+        guidance_events = []
+        async def consume_guidance_turn():
+            async for item in adapter.send(alice, a["id"], "block until cancelled"):
+                guidance_events.append(item)
+        guidance_task = asyncio.create_task(consume_guidance_turn())
+        await asyncio.wait_for(entered.wait(), 3)
+        host_runner = NativePolicyRunner.__new__(NativePolicyRunner)
+        host_runner._sessions = {binding["sessionKey"]: SessionState()}
+        host_runner._draining = False
+        host_runner.synthetic_mode = "interrupt"
+        host_agent = NativeControlledAgent()
+        host_runner._session_state(binding["sessionKey"]).turn.agent = host_agent
+        original_runner, original_busy = runtime.gateway_runner, runtime._busy_session_handler
+        runtime.gateway_runner = host_runner
+        runtime.set_busy_session_handler(host_runner._handle_active_session_busy_message)
+        os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = "false"
+        try:
+            generation_id = guidance_events[0]["generationId"]
+            assert runtime.native_steering_available()
+            receipt = await adapter.steer(alice, a["id"], "原文引导：立刻检查失败路径", generation_id, "native_guidance")
+            assert receipt == {"generationId": generation_id, "outcome": "accepted"}
+            assert "原文引导：立刻检查失败路径" in (getattr(host_agent, "_pending_redirect", None) or ""), \
+                "guidance bypassed the host's interrupt policy and only queued agent.steer"
+            assert not getattr(host_agent, "_pending_steer", None)
+            runtime._pending_messages[binding["sessionKey"]] = MessageEvent(
+                text="controlled pending followup", source=runtime._agent_source(a["id"], "alice"),
+                message_id="pending_followup", metadata={"gateway_session_key": binding["sessionKey"]},
+                allow_gateway_control=True)
+            command_receipt = await asyncio.wait_for(
+                runtime.dispatch_native_input("alice", a["id"], "/stop", "native_stop"), 3)
+            await asyncio.wait_for(followup_entered.wait(), 3)
+            followup_task = runtime._session_tasks[binding["sessionKey"]]
+            assert not followup_task.done(), "the command must not wait for its drained successor"
+            captured = list(command_receipt["messages"])
+            assert command_receipt["outcome"] == "accepted"
+            followup_release.set()
+            await asyncio.wait_for(asyncio.shield(followup_task), 3)
+            assert command_receipt["messages"] == captured, "a successor reply cannot join the command receipt"
+        finally:
+            followup_release.set()
+            runtime.gateway_runner = original_runner
+            runtime.set_busy_session_handler(original_busy)
+            block.set()
+            await asyncio.wait_for(guidance_task, 3)
+            block.clear()
+            entered.clear()
         database.append_message(binding["agentSessionId"], "assistant", "native persisted history", timestamp=1)
         assert any(row["text"] == "native persisted history" for row in await adapter.history(alice, a["id"]))
         try:

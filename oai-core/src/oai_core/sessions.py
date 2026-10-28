@@ -187,11 +187,11 @@ class AgentRegistry:
                         or (owner in existing.accounts and existing.accounts[owner] != native)):
                     raise ValueError("Adapter account mappings must be one-to-one across shared host scope")
 
-    def get(self, agent_id: str, capability: str) -> SessionAdapter:
+    def get(self, agent_id: str, capability: str | None = None) -> SessionAdapter:
         adapter = self._adapters.get(agent_id)
         if adapter is None:
             raise AdapterError("AGENT_NOT_FOUND", 404)
-        if adapter.descriptor().get("capabilities", {}).get(capability) is not True:
+        if capability is not None and adapter.descriptor().get("capabilities", {}).get(capability) is not True:
             raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
         return adapter
 
@@ -711,14 +711,16 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @endpoint
     async def steer(request: web.Request) -> web.Response:
         principal = await principal_for(request)
-        adapter = registry.get(request.match_info["agent_id"], "steer")
+        adapter = registry.get(request.match_info["agent_id"])
         session_id = safe_session_id(request)
         body = await body_for(request, {"text", "generationId", "clientMessageId"})
         text = body.get("text")
         generation_id = body.get("generationId")
         client_message_id = body.get("clientMessageId")
         if (not isinstance(text, str) or not text.strip() or len(text) > 262144
-                or not isinstance(generation_id, str) or not generation_id or len(generation_id) > 1024
+                or generation_id is not None and (
+                    not isinstance(generation_id, str) or not generation_id or len(generation_id) > 1024
+                )
                 or client_message_id is not None and (
                     not isinstance(client_message_id, str)
                     or re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", client_message_id) is None
@@ -729,7 +731,30 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
             raise AdapterError("HOST_INCOMPATIBLE", 502)
         request_id, receipt = operation(request, principal, body)
         if receipt is None:
-            steering = await steer_fn(principal, session_id, text, generation_id, client_message_id)
+            if generation_id is None:
+                current = getattr(adapter, "current_generation", None)
+                if not callable(current):
+                    raise AdapterError("HOST_INCOMPATIBLE", 502)
+                generation = await current(principal, session_id)
+                if generation is None:
+                    receipt = {"error": {"code": "STEER_UNAVAILABLE"}}
+                    registry.operations.complete(principal.account_id, request_id, receipt)
+                    return web.json_response(receipt, status=409, headers={"Cache-Control": "no-store"})
+                if (not isinstance(generation, dict)
+                        or generation.get("conversationId") != session_id
+                        or not isinstance(generation.get("generationId"), str)
+                        or not generation["generationId"]
+                        or generation.get("state") not in {"queued", "running", "unknown"}):
+                    raise AdapterError("HOST_INCOMPATIBLE", 502)
+                generation_id = generation["generationId"]
+            try:
+                steering = await steer_fn(principal, session_id, text, generation_id, client_message_id)
+            except AdapterError as exc:
+                if exc.code != "STEER_UNAVAILABLE":
+                    raise
+                receipt = {"error": {"code": exc.code}}
+                registry.operations.complete(principal.account_id, request_id, receipt)
+                return web.json_response(receipt, status=409, headers={"Cache-Control": "no-store"})
             if (not isinstance(steering, dict)
                     or set(steering) != {"generationId", "outcome"}
                     or steering.get("generationId") != generation_id
@@ -737,7 +762,8 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                 raise AdapterError("HOST_INCOMPATIBLE", 502)
             receipt = {"steering": steering}
             registry.operations.complete(principal.account_id, request_id, receipt)
-        return web.json_response(receipt, headers={"Cache-Control": "no-store"})
+        status = 409 if receipt.get("error", {}).get("code") == "STEER_UNAVAILABLE" else 200
+        return web.json_response(receipt, status=status, headers={"Cache-Control": "no-store"})
 
     async def manage(request: web.Request, principal: Principal, action: str, value: Any = None) -> web.Response:
         adapter = registry.get(request.match_info["agent_id"], action)

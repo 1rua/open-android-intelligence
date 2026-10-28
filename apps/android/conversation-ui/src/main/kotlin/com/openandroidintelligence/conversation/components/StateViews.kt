@@ -127,10 +127,10 @@ fun specificFailureText(code: String): String? {
         value.contains("APPROVAL_FAILED") ->
             "审批决策没有送达 Gateway，卡片已恢复为可点击，请重试。"
         value.startsWith("STEERED:") ->
-            "引导已进入当前任务，没有创建新的排队消息。"
+            "引导消息已交给 Agent，由 Agent 处理当前任务。"
         value.startsWith("STEERING_UNAVAILABLE:") -> when {
             value.endsWith(":ATTACHMENTS") -> "实时引导只接受文本；带附件的消息请选择排队。"
-            else -> "当前 Agent 不支持实时引导，请选择排队或等待本轮完成。"
+            else -> "这次引导未能提交，草稿已保留，请查看返回结果后重试。"
         }
         value.contains("CONVERSATION_MANAGEMENT_UNSUPPORTED") -> "当前 Gateway 不支持会话管理，请安装配套网关更新后重试。"
         value.contains("CONVERSATION_DELETE_UNSUPPORTED") -> "当前 Agent 不支持删除对话，会话记录已保留。"

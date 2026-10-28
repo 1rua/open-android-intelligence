@@ -234,8 +234,6 @@ class RemoteSessionAdapter:
 
     async def steer(self, principal: Principal, session_id: str, text: str, generation_id: str,
                     client_message_id: str | None = None) -> dict[str, Any]:
-        if not self.capabilities.get("steer"):
-            raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
         body: dict[str, Any] = {"text": text, "generationId": generation_id}
         if client_message_id is not None:
             body["clientMessageId"] = client_message_id

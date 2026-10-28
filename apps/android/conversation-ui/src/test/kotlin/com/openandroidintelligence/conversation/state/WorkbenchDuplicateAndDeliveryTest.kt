@@ -198,7 +198,7 @@ class WorkbenchDuplicateAndDeliveryTest {
         val repository = Repository()
         repository.generationId.value = "gen_live"
         repository.generationState.value = GenerationState.RUNNING
-        val controller = controller(repository, supportsSteering = true, resetGenerationOnOpen = false)
+        val controller = controller(repository, resetGenerationOnOpen = false)
         runCurrent()
         controller.editDraft("先检查失败用例")
         controller.sendDraft(MessageDeliveryMode.STEER)
@@ -210,6 +210,114 @@ class WorkbenchDuplicateAndDeliveryTest {
         assertEquals("STEERED:CURRENT_TURN", controller.state.value.notice)
         assertTrue("引导不是独立用户回合", rows(controller).none { it.isUser })
         assertTrue(rows(controller).any { it.text.contains("已引导") })
+        controller.close()
+    }
+
+    @Test
+    fun steeringDoesNotRequireAClientCapabilityAndKeepsTheOriginalCommandText() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        val text = " /host-command 'a b'\n 保留末尾空白  "
+        controller.editDraft(text)
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+
+        assertEquals(listOf(text), repository.steered)
+        assertTrue(repository.submitted.isEmpty())
+        assertTrue(controller.state.value.pendingDeliveries.isEmpty())
+        controller.close()
+    }
+
+    @Test
+    fun selectedSteeringIsNotChangedIntoANormalMessageWhenLocalStateIsIdle() = runTest {
+        val repository = Repository()
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("将已选择的引导交给宿主处理")
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+
+        assertEquals(listOf("将已选择的引导交给宿主处理"), repository.steered)
+        assertTrue(repository.submitted.isEmpty())
+        controller.close()
+    }
+
+    @Test
+    fun aKnownSteeringFailureCanBeSentAsTheNewlySelectedQueueMode() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        repository.failNextSteer = true
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        val text = "保留内容并改选排队"
+        controller.editDraft(text)
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+        assertEquals(text, controller.state.value.draft)
+        val failedClientId = repository.steeringClientIds.single()
+
+        repository.queueNextSend = true
+        controller.sendDraft(MessageDeliveryMode.QUEUE)
+        runCurrent()
+
+        assertEquals(listOf(MessageDeliveryMode.QUEUE), repository.submittedModes)
+        assertEquals(listOf(text), repository.steered)
+        assertNotEquals("改变发送方式后不得复用已提交的请求身份", failedClientId, repository.submittedClientIds.single())
+        controller.close()
+    }
+
+    @Test
+    fun retryingSteeringAfterAnExplicitNotForwardedResponseUsesANewIdentity() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        repository.failNextSteer = true
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        val text = "宿主尚未开始当前轮次，稍后再次引导"
+        controller.editDraft(text)
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+        assertEquals(text, controller.state.value.draft)
+        val rejectedClientId = repository.steeringClientIds.single()
+
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+
+        assertEquals(listOf(text, text), repository.steered)
+        assertNotEquals("明确未转交的重试必须创建新请求", rejectedClientId, repository.steeringClientIds.last())
+        assertEquals("明确未转交不得查询为旧操作", 0, repository.messageQueries)
+        assertTrue(repository.submitted.isEmpty())
+        controller.close()
+    }
+
+    @Test
+    fun anUnknownSteeringOutcomeCannotBeResubmittedUnderAnotherDeliveryMode() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        repository.loseNextSteerReceipt = true
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        val text = "先确认当前引导是否已被接收"
+        controller.editDraft(text)
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+        assertTrue(controller.state.value.hasUnknownSubmissionOutcome)
+        assertEquals(text, controller.state.value.draft)
+
+        controller.sendDraft(MessageDeliveryMode.QUEUE)
+        runCurrent()
+
+        assertEquals(listOf(text), repository.steered)
+        assertTrue(repository.submitted.isEmpty())
+        assertTrue(controller.state.value.pendingDeliveries.isEmpty())
+        assertEquals(text, controller.state.value.draft)
+        assertTrue(controller.state.value.notice.orEmpty().startsWith("SEND_OUTCOME_UNKNOWN:"))
         controller.close()
     }
 
@@ -280,7 +388,6 @@ class WorkbenchDuplicateAndDeliveryTest {
 
     private fun TestScope.controller(
         repository: Repository,
-        supportsSteering: Boolean = false,
         resetGenerationOnOpen: Boolean = true,
     ) = WorkbenchController(
         workbenchTestScope(), repository, object : AgentCommandCatalogRepository {
@@ -295,11 +402,14 @@ class WorkbenchDuplicateAndDeliveryTest {
             }
         },
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
-        supportsSteering = supportsSteering,
     )
 
     private class Repository : ConversationRepository, GenerationTracker, MessageOutcomeQuery {
-        override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? = null
+        var messageQueries = 0
+        override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? {
+            messageQueries++
+            return null
+        }
         override val generationId = MutableStateFlow<String?>(null)
         override val generationState = MutableStateFlow(GenerationState.IDLE)
         val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 16)
@@ -310,18 +420,25 @@ class WorkbenchDuplicateAndDeliveryTest {
             Conversation(ConversationId("conv_new"), "新对话", 1)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         val submitted = mutableListOf<String>()
+        val submittedModes = mutableListOf<MessageDeliveryMode>()
+        val submittedClientIds = mutableListOf<ClientMessageId>()
         val steered = mutableListOf<String>()
+        val steeringClientIds = mutableListOf<ClientMessageId>()
         private val pendingByConversation = mutableMapOf<String, MutableList<PendingDelivery>>()
         var queueNextSend = false
         var retryCalls = 0
         /** 首次发送模拟"会话忙"，用于覆盖失败后重试的重复 key 场景。 */
         var failNextSend = false
+        var failNextSteer = false
+        var loseNextSteerReceipt = false
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
             if (failNextSend) {
                 failNextSend = false
                 throw IllegalStateException("SESSION_BUSY")
             }
             submitted += message.text
+            submittedModes += message.delivery
+            submittedClientIds += message.clientMessageId
             if (queueNextSend) {
                 pendingByConversation.getOrPut("conv_a") { mutableListOf() } += PendingDelivery(
                     message.clientMessageId,
@@ -339,6 +456,15 @@ class WorkbenchDuplicateAndDeliveryTest {
         }
         override suspend fun steerMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
             steered += message.text
+            steeringClientIds += message.clientMessageId
+            if (loseNextSteerReceipt) {
+                loseNextSteerReceipt = false
+                throw java.io.IOException("STEERING_RECEIPT_LOST")
+            }
+            if (failNextSteer) {
+                failNextSteer = false
+                error("STEER_UNAVAILABLE")
+            }
             return MessageAcceptance(
                 "steer_${message.clientMessageId.value}",
                 message.clientMessageId.value,

@@ -1421,8 +1421,6 @@ class GatewayRuntime(
                 supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
                 supportsApprovalCards = approvalClient != null && (!nativeAgentSessions ||
                     _nativeAgents.value?.state?.value?.agent?.capabilities?.approvals == true),
-                supportsSteering = nativeAgentSessions &&
-                    _nativeAgents.value?.state?.value?.agent?.capabilities?.steer == true,
                 supportsConversationManagement = "conversation-management-v1" in conversationUi || nativeAgentSessions,
                 supportsConversationDelete = if (nativeAgentSessions) _nativeAgents.value?.state?.value?.agent?.capabilities?.delete == true
                     else "conversation-management-v1" in conversationUi,

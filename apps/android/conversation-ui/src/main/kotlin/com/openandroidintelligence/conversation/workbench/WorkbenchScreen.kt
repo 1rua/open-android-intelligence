@@ -578,7 +578,6 @@ fun WorkbenchScreen(
                                     attachments = state.attachments,
                                     inFlightAttachmentIds = state.inFlightAttachmentIds,
                                     hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
-                                    steeringEnabled = state.steeringSupported,
                                     pendingDeliveries = state.pendingDeliveries,
                                     onRetryPendingDelivery = controller::retryPendingDeliveries,
                                     onRemoveAttachment = controller::removeAttachment,
