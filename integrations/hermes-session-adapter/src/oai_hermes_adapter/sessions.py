@@ -151,6 +151,57 @@ class HermesSessionAdapter:
 
         return await asyncio.to_thread(read)
 
+    async def generation(
+        self, principal: Any, session_id: str, *,
+        client_message_id: str | None = None, generation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read an accepted turn's durable outcome, including after host shutdown.
+
+        The active-turn view deliberately forgets terminal generations. Recovery
+        must address the original accepted identity and never infer success from
+        the absence of active work or resubmit the prompt.
+        """
+        identities = (client_message_id, generation_id)
+        if not any(value is not None for value in identities) or any(
+                value is not None and (not isinstance(value, str)
+                                       or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", value))
+                for value in identities):
+            raise AdapterError("SCHEMA_INVALID", 400)
+
+        def read() -> dict[str, Any]:
+            with self._account(principal) as account:
+                self._summary(account, session_id)
+                row = account.store.database.execute(
+                    "SELECT message_id,client_message_id FROM messages "
+                    "WHERE conversation_id=? AND client_message_id=? AND sender='user'",
+                    (session_id, client_message_id),
+                ).fetchone() if client_message_id is not None else None
+                generation = (account.conversations.workflow.for_message(row["message_id"]) if row else
+                              account.conversations.workflow._get("generation:" + generation_id)
+                              if client_message_id is None and generation_id is not None else None)
+                if (generation is None or generation["conversationId"] != session_id
+                        or generation_id is not None and generation["generationId"] != generation_id):
+                    raise AdapterError("GENERATION_NOT_FOUND", 404)
+                if row is None:
+                    row = account.store.database.execute(
+                        "SELECT message_id,client_message_id FROM messages "
+                        "WHERE conversation_id=? AND message_id=? AND sender='user'",
+                        (session_id, generation["messageIds"][0]),
+                    ).fetchone()
+                if row is None:
+                    raise AdapterError("GENERATION_NOT_FOUND", 404)
+                dispatch = account.store.database.execute(
+                    "SELECT revision FROM conversation_message_dispatch WHERE message_id=?",
+                    (generation["messageIds"][0],),
+                ).fetchone()
+                return {
+                    "conversationId": session_id, "generationId": generation["generationId"],
+                    "clientMessageId": row["client_message_id"], "userMessageId": row["message_id"],
+                    "state": generation["state"], "revision": int(dispatch["revision"]) if dispatch else 0,
+                }
+
+        return await asyncio.to_thread(read)
+
     async def create(self, principal: Any, title: str | None) -> dict[str, Any]:
         if not self.descriptor()["capabilities"]["create"]:
             raise AdapterError("UNSUPPORTED_CAPABILITY", 409)

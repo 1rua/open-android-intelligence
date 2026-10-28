@@ -42,7 +42,14 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         if not secrets.compare_digest(supplied, "Bearer " + token):
             return web.json_response({"code": "AUTHENTICATION_REQUIRED"}, status=401)
         try:
-            if request.query_string and not request.path.startswith(PREFIX + "/commands"):
+            generation_query = (request.method == "GET"
+                                and request.path.startswith(PREFIX + "/sessions/")
+                                and request.path.endswith("/generation"))
+            if request.query_string and not (request.path == PREFIX + "/commands" or generation_query):
+                raise AdapterError("SCHEMA_INVALID", 400)
+            if generation_query and (set(request.query) - {"clientMessageId", "generationId"}
+                                     or any(len(request.query.getall(key)) != 1
+                                            for key in request.query)):
                 raise AdapterError("SCHEMA_INVALID", 400)
             if request.path not in {PREFIX + "/status", PREFIX + "/commands"}:
                 account = request.headers.get("X-OAI-Account")
@@ -106,8 +113,15 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         if request.method == "GET" and action == "history":
             return web.json_response({"messages": await adapter.history(principal, session_id)})
         if request.method == "GET" and action == "generation":
+            if request.query:
+                generation = await adapter.generation(
+                    principal, session_id, client_message_id=request.query.get("clientMessageId"),
+                    generation_id=request.query.get("generationId"),
+                )
+            else:
+                generation = await adapter.current_generation(principal, session_id)
             return web.json_response({
-                "generation": await adapter.current_generation(principal, session_id),
+                "generation": generation,
             })
         if request.method != "POST" or action not in {"messages", "steer", "rename", "archive", "delete", "cancel"}:
             raise AdapterError("NOT_FOUND", 404)

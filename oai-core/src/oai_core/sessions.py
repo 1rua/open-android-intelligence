@@ -103,6 +103,8 @@ class SessionAdapter(Protocol):
     async def create(self, principal: Principal, title: str | None) -> dict[str, Any]: ...
     def send(self, principal: Principal, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]: ...
     async def current_generation(self, principal: Principal, session_id: str) -> dict[str, Any] | None: ...
+    async def generation(self, principal: Principal, session_id: str, *, client_message_id: str | None = None,
+                         generation_id: str | None = None) -> dict[str, Any] | None: ...
     async def steer(self, principal: Principal, session_id: str, text: str, generation_id: str,
                     client_message_id: str | None = None) -> dict[str, Any]: ...
     async def manage(self, principal: Principal, session_id: str, action: str, value: Any = None) -> dict[str, Any]: ...
@@ -596,15 +598,32 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     async def current_generation(request: web.Request) -> web.Response:
         principal = await principal_for(request)
         adapter = registry.get(request.match_info["agent_id"], "send")
-        current = getattr(adapter, "current_generation", None)
+        session_id = safe_session_id(request)
+        query = request.query
+        if (set(query) - {"clientMessageId", "generationId"}
+                or any(len(query.getall(key)) != 1 for key in query)):
+            raise AdapterError("INVALID_GENERATION_QUERY")
+        client_message_id, generation_id = query.get("clientMessageId"), query.get("generationId")
+        if (client_message_id is not None and re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", client_message_id) is None
+                or generation_id is not None and (not generation_id or len(generation_id) > 1024)):
+            raise AdapterError("INVALID_GENERATION_QUERY")
+        specific = client_message_id is not None or generation_id is not None
+        current = getattr(adapter, "generation" if specific else "current_generation", None)
         if not callable(current):
             raise AdapterError("UNSUPPORTED_CAPABILITY", 501)
-        generation = await current(principal, safe_session_id(request))
+        generation = (await current(principal, session_id, client_message_id=client_message_id, generation_id=generation_id)
+                      if specific else await current(principal, session_id))
+        states = {"queued", "running", "unknown", "completed", "failed", "cancelled"} if specific else {"queued", "running", "unknown"}
         if generation is not None and (
             not isinstance(generation, dict)
             or not isinstance(generation.get("generationId"), str)
-            or generation.get("conversationId") != request.match_info["session_id"]
-            or generation.get("state") not in {"queued", "running", "unknown"}
+            or not generation["generationId"]
+            or generation.get("conversationId") != session_id
+            or generation.get("state") not in states
+            or specific and (
+                client_message_id is not None and generation.get("clientMessageId") != client_message_id
+                or generation_id is not None and generation.get("generationId") != generation_id
+                or type(generation.get("revision")) is not int or generation["revision"] < 0)
         ):
             raise AdapterError("HOST_INCOMPATIBLE", 502)
         return web.json_response({"generation": generation}, headers={"Cache-Control": "no-store"})

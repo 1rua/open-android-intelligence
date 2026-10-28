@@ -206,6 +206,47 @@ def test_hermes_runtime_must_share_its_gateway_core(core):
 
 
 @pytest.mark.asyncio
+async def test_completed_generation_remains_queryable_after_stream_and_runtime_close(core):
+    adapter = HermesSessionAdapter(core)
+    alice = Principal("alice", device_id="phone")
+    conversation = (await adapter.list_sessions(alice))[0]["id"]
+    account = core.open_gateway_account("alice")
+    try:
+        accepted = account.conversations.accept_message(
+            conversation, "durable-client", "synthetic", [], "phone", "accept", "accept")
+        account.conversations.workflow.claim(accepted["messageId"])
+        account.conversations.workflow.settle(accepted["messageId"], "completed")
+    finally:
+        account.close()
+
+    receipt = await adapter.generation(alice, conversation, client_message_id="durable-client")
+    assert receipt == {
+        "conversationId": conversation, "generationId": accepted["generationId"],
+        "clientMessageId": "durable-client", "userMessageId": accepted["messageId"],
+        "state": "completed", "revision": 0,
+    }
+    assert await adapter.generation(alice, conversation, generation_id=accepted["generationId"]) == receipt
+    with pytest.raises(AdapterError) as mismatch:
+        await adapter.generation(alice, conversation, generation_id=accepted["generationId"],
+                                 client_message_id="different-client")
+    assert mismatch.value.code == "GENERATION_NOT_FOUND"
+    with pytest.raises(AdapterError) as another_account:
+        await adapter.generation(Principal("bob"), conversation, generation_id=accepted["generationId"])
+    assert another_account.value.status == 404
+
+    token = "synthetic-terminal-query-bridge-token-1234567890"
+    async with TestClient(TestServer(create_hermes_bridge_app(adapter, token, ["alice", "bob"]))) as client:
+        headers = {"Authorization": "Bearer " + token, "X-OAI-Account": "alice"}
+        path = "/oai/session-adapter/v1/sessions/" + conversation + "/generation"
+        response = await client.get(path, params={"clientMessageId": "durable-client"}, headers=headers)
+        assert response.status == 200
+        assert (await response.json())["generation"] == receipt
+        for query in ("clientMessageId=", "accountId=bob", "clientMessageId=a&clientMessageId=b"):
+            response = await client.get(path + "?" + query, headers=headers)
+            assert response.status == 400
+
+
+@pytest.mark.asyncio
 async def test_unrenderable_exec_approval_falls_back_to_the_host_text_prompt(core, monkeypatch):
     calls, events = [], []
     monkeypatch.setattr("oai_hermes_adapter.approvals.resolve_host_approval",

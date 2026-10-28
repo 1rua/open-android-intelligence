@@ -12,7 +12,7 @@ import json
 import logging
 import uuid
 from typing import Any, AsyncIterator, Mapping
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import aiohttp
 
@@ -184,6 +184,21 @@ class RemoteSessionAdapter:
         result = await self._request(
             "GET",
             f"/sessions/{quote(session_id, safe='')}/generation",
+            headers=self._headers(principal),
+        )
+        generation = result.get("generation")
+        if generation is not None and not isinstance(generation, dict):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        return generation
+
+    async def generation(self, principal: Principal, session_id: str, *, client_message_id: str | None = None,
+                         generation_id: str | None = None) -> dict[str, Any] | None:
+        query = {key: value for key, value in (("clientMessageId", client_message_id), ("generationId", generation_id))
+                 if value is not None}
+        if not query:
+            raise AdapterError("INVALID_GENERATION_QUERY")
+        result = await self._request(
+            "GET", f"/sessions/{quote(session_id, safe='')}/generation?{urlencode(query)}",
             headers=self._headers(principal),
         )
         generation = result.get("generation")
