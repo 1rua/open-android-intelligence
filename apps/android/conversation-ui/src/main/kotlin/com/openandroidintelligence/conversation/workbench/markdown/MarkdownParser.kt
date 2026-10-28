@@ -20,34 +20,6 @@ object MarkdownParser {
         "<tool_call(?:\\s+name=[\"']([^\"']*)[\"'])?\\s*>([\\s\\S]*)$",
         RegexOption.IGNORE_CASE
     )
-    /**
-     * Hermes / 宿主以纯文本发送的工具调用行，例如「调用工具：execute_code」。
-     * 只在独立成行时识别，避免把正文里的同义句子误判成工具卡。
-     */
-    private val hermesToolLineRegex = Regex(
-        "^\\s*[^\\p{L}\\p{N}]*\\s*(?:调用工具|工具调用|Tool call|Calling tool)\\s*[：:]\\s*(.+?)\\s*$",
-        RegexOption.IGNORE_CASE,
-    )
-
-    /**
-     * Hermes 实时进度行（agent/display.py 的友好工具标签），例如
-     * 「Running code ...」「Searching files for ...」「Reading ...」。
-     * 实时会话里这些是普通文本；不识别就会既没有工具卡、也不会聚合。
-     */
-    private val hermesActivityLineRegex = Regex(
-        "^\\s*[^\\p{L}\\p{N}]*\\s*(" +
-            "Running code|Running|Searching files(?: for)?|Searching the web(?: for)?|" +
-            "Searching past sessions|Searching|Reading skill|Reading|Writing|Editing|" +
-            "Browsing|Clicking|Typing|Generating image|Generating video|Generating speech|" +
-            "Looking at the image|Listing skills|Updating skill|Delegating|Scheduling|Asking|" +
-            "Updating memory|Updating tasks" +
-            ")\\b\\s*(.*)$",
-        RegexOption.IGNORE_CASE,
-    )
-
-    /** host_history.py 用「、」连接同一条进度消息里的多个工具名。 */
-    private val hermesToolNameSeparator = Regex("[、，]")
-    private val hermesToolNameAndArgs = Regex("^([A-Za-z0-9._~-]{1,128})(?:\\s+|\\s*[(（]\\s*)(.*)$")
     private val thinkStartRegex = Regex("<think(?:\\s+[^>]*)?>", RegexOption.IGNORE_CASE)
     private val thinkEndRegex = Regex("</think>", RegexOption.IGNORE_CASE)
     private val headingRegex = Regex("^(#{1,6})\\s+(.*)$")
@@ -429,148 +401,11 @@ private const val MaxBlockquoteDepth = 8
         )
     }
 
-    /**
-     * 解析 Hermes 的纯文本工具调用行：工具名后的剩余文本作为命令/参数，
-     * 没有参数时标记 [TimelineBlock.ToolCallBlock.invocationOnly]。
-     */
-    private fun parseHermesToolLines(
-        text: String,
-        quoteDepth: Int,
-        includeActivities: Boolean,
-    ): List<TimelineBlock> {
-        val blocks = mutableListOf<TimelineBlock>()
-        val pending = mutableListOf<String>()
-
-        fun flushPending() {
-            if (pending.isEmpty()) return
-            val chunk = pending.joinToString("\n").trim()
-            pending.clear()
-            if (chunk.isNotEmpty()) {
-                // 已拆掉全部工具行，递归不会再命中 Hermes 分支。
-                blocks.addAll(parseNonCodeText(chunk, quoteDepth, recognizeToolCalls = true))
-            }
-        }
-
-        text.lines().forEach { line ->
-            val match = hermesToolLineRegex.find(line.trim())
-            if (match == null) {
-                val activity = if (includeActivities) hermesActivityLineRegex.find(line.trim()) else null
-                if (activity == null) {
-                    pending += line
-                } else {
-                    flushPending()
-                    val verb = activity.groupValues[1]
-                    val command = activity.groupValues[2].trim()
-                    blocks += TimelineBlock.ToolCallBlock(
-                        toolName = hermesToolNameForVerb(verb),
-                        command = command,
-                        isSuccess = true,
-                        summary = null,
-                        invocationOnly = true,
-                    )
-                }
-            } else {
-                flushPending()
-                val namesText = match.groupValues[1]
-                    .trim()
-                    .trim('*', '`', ' ')
-                // 一条消息可能写成「调用工具：execute_code、search_files」：每个名称一张卡。
-                namesText.split(hermesToolNameSeparator)
-                    .map { it.trim().trim('*', '`', ' ') }
-                    .filter { it.isNotEmpty() }
-                    .forEach { segment ->
-                        val withArgs = hermesToolNameAndArgs.find(segment)
-                        val toolName: String
-                        val command: String
-                        if (withArgs != null) {
-                            toolName = withArgs.groupValues[1]
-                            command = withArgs.groupValues[2].trim()
-                        } else {
-                            toolName = segment
-                            command = ""
-                        }
-                        blocks += TimelineBlock.ToolCallBlock(
-                            toolName = toolName.ifBlank { "执行命令" },
-                            command = command,
-                            isSuccess = true,
-                            summary = null,
-                            invocationOnly = true,
-                        )
-                    }
-            }
-        }
-        flushPending()
-        return blocks.ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
-    }
-
-/**
- * 是否为 Hermes 工具占位行，或整条消息都是实时工具进度行。
- *
- * 活动行只在“整条消息没有别的内容”时识别：最终回答里出现一句
- * "Reading the error message..." 不能被误判成 read_file 工具卡。
- */
-internal fun mayContainHermesToolText(text: String): Boolean {
-    if (text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }) return true
-    return isHermesActivityOnlyText(text)
-}
-
-internal fun isHermesActivityOnlyText(text: String): Boolean {
-    val lines = text.lines().filter { it.isNotBlank() }
-    // 至少两行，且行尾没有句读：单行或带句号的 "Reading your question..." 更像正文，
-    // 而不是 Hermes 的工具进度预览。
-    return lines.size >= 2 && lines.all { line ->
-        val trimmed = line.trim()
-        // Hermes 的预览会用 "..." 截断长命令，这仍是进度行；单个句号/问号/感叹号
-        // 才更像正文句尾。
-        val truncatedPreview = trimmed.endsWith("...")
-        val sentenceEnd = !truncatedPreview &&
-            (trimmed.endsWith(".") || trimmed.endsWith("!") || trimmed.endsWith("?"))
-        hermesActivityLineRegex.matches(trimmed) && !sentenceEnd
-    }
-}
-
-    /** 把 Hermes 的友好动词映射回工具名；未知动词保留原文作为工具名。 */
-    private fun hermesToolNameForVerb(verb: String): String = when (verb.trim().lowercase()) {
-        "running code" -> "execute_code"
-        "running" -> "terminal"
-        "searching files", "searching files for" -> "search_files"
-        "searching the web", "searching the web for" -> "web_search"
-        "searching past sessions" -> "session_search"
-        "reading", "reading skill" -> "read_file"
-        "writing" -> "write_file"
-        "editing" -> "patch"
-        "browsing" -> "browser_navigate"
-        "clicking" -> "browser_click"
-        "typing" -> "browser_type"
-        "generating image" -> "image_generate"
-        "generating video" -> "video_generate"
-        "generating speech" -> "text_to_speech"
-        "looking at the image" -> "vision_analyze"
-        "listing skills" -> "skills_list"
-        "updating skill" -> "skill_manage"
-        "delegating" -> "delegate_task"
-        "scheduling" -> "cronjob_manage"
-        "asking" -> "clarify"
-        "updating memory" -> "memory"
-        "updating tasks" -> "todo_list"
-        else -> verb.trim()
-    }
-
     private fun parseNonCodeText(
         text: String,
         quoteDepth: Int = 0,
         recognizeToolCalls: Boolean = true,
     ): List<TimelineBlock> {
-        // Hermes 的工具调用是纯文本行（不是 XML/围栏），必须先拆成 ToolCallBlock，
-        // 否则它会被当成普通段落：既没有工具卡，也不会参与执行过程聚合。
-        if (recognizeToolCalls && mayContainHermesToolText(text)) {
-            val hasExplicitToolLine = text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }
-            return parseHermesToolLines(
-                text = text,
-                quoteDepth = quoteDepth,
-                includeActivities = !hasExplicitToolLine && isHermesActivityOnlyText(text),
-            )
-        }
         val lines = text.lines()
         val blocks = mutableListOf<TimelineBlock>()
         var lineIndex = 0

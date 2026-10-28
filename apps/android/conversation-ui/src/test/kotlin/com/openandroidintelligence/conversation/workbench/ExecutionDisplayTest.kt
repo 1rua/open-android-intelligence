@@ -476,79 +476,17 @@ class ExecutionDisplayTest {
     }
 
     @Test
-    fun terminalGenerationFoldsHermesToolOnlySegmentWithoutAFinalAnswer() {
+    fun plainToolWordsStayOrdinaryMessagesAfterLaterReplies() {
         val entries = listOf(
             userEntry("u1", "查一下"),
-            assistantEntry("a1", "调用工具：execute_code"),
-            assistantEntry("a2", "调用工具：read_file"),
-        )
-
-        val item = TimelineDisplayModel()
-            .build(entries, generation = GenerationState.COMPLETED)
-            .last()
-
-        assertTrue(
-            item is TimelineDisplayItem.Execution,
-            "生成终态后即使没有最终正文，Hermes 过程段也必须折叠",
-        )
-        assertFalse((item as TimelineDisplayItem.Execution).run.hasFinalAnswer)
-    }
-
-    @Test
-    fun terminalGenerationFoldsHermesCardsEvenWhenEntriesStillSayStreaming() {
-        val entries = listOf(
-            userEntry("u1", "查一下"),
-            assistantEntry("a1", "调用工具：execute_code", streaming = true),
-            assistantEntry("a2", "最终答案", streaming = true),
-        )
-
-        val run = (TimelineDisplayModel()
-            .build(entries, generation = GenerationState.COMPLETED)
-            .last() as TimelineDisplayItem.Execution).run
-
-        assertEquals("a2", run.finalEntry.key)
-        assertTrue(run.hasFinalAnswer)
-        assertFalse(run.finalEntryIsStreaming, "生成已结束，即使快照仍是 STREAMING 也不能常驻光标")
-    }
-
-    @Test
-    fun completedHermesToolMessagesStayVisibleUntilTheFinalAnswerArrives() {
-        val beforeFinal = listOf(
-            userEntry("u1", "查一下"),
-            assistantEntry("a1", "调用工具：execute_code"),
-            assistantEntry("a2", "调用工具：read_file"),
+            assistantEntry("a1", "Running code examples\nReading documentation", streaming = true),
+            assistantEntry("a2", "Tool call: execute_code", streaming = true),
         )
         val model = TimelineDisplayModel()
-
-        val liveItems = model.build(beforeFinal)
-        assertTrue(
-            liveItems.drop(1).all { it is TimelineDisplayItem.Single },
-            "还没有最终回答时，逐步到达的 Hermes 工具消息应保持逐条可见",
-        )
-
-        val withFinal = beforeFinal + assistantEntry("a3", "最终答案")
-        assertTrue(
-            model.build(withFinal).last() is TimelineDisplayItem.Execution,
-            "最终回答出现后同一段应收成一个执行面板",
-        )
-    }
-
-    @Test
-    fun hermesToolMessagesFoldIntoOneExecutionRun() {
-        val entries = listOf(
-            userEntry("u1", "查一下"),
-            assistantEntry("a1", "Running code import sqlite3\nReading core.py"),
-            assistantEntry("a2", "调用工具：execute_code"),
-            assistantEntry("a3", "调用工具：read_file"),
-            assistantEntry("a4", "最终答案：插件能力尚未发布。"),
-        )
-
-        val run = (TimelineDisplayModel().build(entries).last() as TimelineDisplayItem.Execution).run
-
-        assertEquals(4, run.stepCount)
-        assertEquals("a4", run.finalEntry.key)
-        assertTrue(run.hasFinalAnswer)
-        assertTrue(run.steps.any { it is ExecutionStep.ToolCall && it.block.invocationOnly })
+        assertTrue(model.build(entries).all { it is TimelineDisplayItem.Single })
+        val withFinal = model.build(entries + assistantEntry("a3", "最终回答"), GenerationState.COMPLETED)
+        assertEquals(listOf("u1", "a1", "a2", "a3"), withFinal.map { it.key })
+        assertTrue(withFinal.all { it is TimelineDisplayItem.Single })
     }
 
     @Test
