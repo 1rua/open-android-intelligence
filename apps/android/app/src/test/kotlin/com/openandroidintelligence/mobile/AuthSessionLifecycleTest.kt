@@ -1,19 +1,16 @@
 package com.openandroidintelligence.mobile
 
 import android.app.Application
-import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.conversation.ports.TimelineMessage
-import com.openandroidintelligence.conversation.ports.TimelinePage
-import com.openandroidintelligence.conversation.model.MessagePart
-import com.openandroidintelligence.conversation.model.ConversationId
-import com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror
-import com.openandroidintelligence.conversation.ports.ConversationScope
+import com.openandroidintelligence.gateway.account.AccountProfile
+import com.openandroidintelligence.kernel.AndroidAuditStore
+import com.openandroidintelligence.kernel.InMemoryAuditSink
+import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
+import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.first
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -23,22 +20,27 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE)
+@Config(sdk = [34], application = Application::class)
 class AuthSessionLifecycleTest {
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-    private lateinit var gateway: FakeGatewayServer
-    private lateinit var credentialStore: InMemoryGatewayCredentialStore
-    private lateinit var deviceKeys: InMemoryGatewayDeviceKeyStore
-    private lateinit var pairingGrants: InMemoryGatewayPairingStore
+    private lateinit var gateway: LoopbackGatewayStub
+    private lateinit var credentialStore: InMemoryCredentialStore
+    private lateinit var deviceKeys: InMemoryDeviceKeySource
+    private lateinit var pairingGrants: PairingGrantStateHolder
 
     @Before
     fun setup() {
-        gateway = FakeGatewayServer()
-        credentialStore = InMemoryGatewayCredentialStore()
-        deviceKeys = InMemoryGatewayDeviceKeyStore()
-        pairingGrants = InMemoryGatewayPairingStore()
+        gateway = LoopbackGatewayStub()
+        credentialStore = InMemoryCredentialStore()
+        deviceKeys = InMemoryDeviceKeySource()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        pairingGrants = PairingGrantStateHolder(
+            store = InMemoryPairingGrantStore(),
+            audit = AndroidAuditStore(InMemoryAuditSink()),
+        )
         gateway.respond(NEGOTIATE_PATH, """{"data":{"status":"active","sessionRenewalToken":"renewal_stub","accessToken":"acc_stub","account":{"accountId":"acc_stub"},"device":{"deviceId":"dev_stub"}}}""")
         gateway.respond(REFRESH_PATH, """{"data":{"accessToken":"acc_new","sessionRenewalToken":"renewal_new","refreshToken":"refresh_new"}}""")
+        gateway.respond(PASSWORD_PATH, """{"data":{"sessionRenewalToken":"renewal_stub","accessToken":"acc_stub","account":{"accountId":"acc_stub"},"device":{"deviceId":"dev_stub"},"refreshToken":"refresh_stub"}}""")
     }
 
     @After
@@ -126,5 +128,6 @@ class AuthSessionLifecycleTest {
         private const val AWAIT_MILLIS = 3000L
         private const val NEGOTIATE_PATH = "/open-android-intelligence/v2/sessions/negotiate"
         private const val REFRESH_PATH = "/open-android-intelligence/v2/sessions/refresh"
+        private const val PASSWORD_PATH = "/open-android-intelligence/v2/credentials/password"
     }
 }
