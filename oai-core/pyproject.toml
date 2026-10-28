@@ -23,6 +23,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "oai_core.gateway" = ["contracts/**/*", "contracts/*"]
+"oai_core.skills" = ["**/*", "*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

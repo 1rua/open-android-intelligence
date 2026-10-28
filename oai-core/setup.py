@@ -27,16 +27,28 @@ def copy_contract(destination):
         shutil.copyfile(source / relative, target)
 
 
+def copy_skills(destination):
+    for source in (PACKAGE_ROOT / "skills", PACKAGE_ROOT.parent / "integrations" / "skills"):
+        if (source / "oai-client" / "SKILL.md").is_file():
+            target = Path(destination) / "skills"
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(source, target)
+            return
+    raise RuntimeError("oai-client skill assets are required to build OAI Core")
+
+
 class BuildPy(build_py):
     def run(self):
         super().run()
         copy_contract(Path(self.build_lib) / "oai_core" / "gateway" / "contracts")
+        copy_skills(Path(self.build_lib) / "oai_core")
 
 
 class SourceDistribution(sdist):
     def make_release_tree(self, base_dir, files):
         super().make_release_tree(base_dir, files)
         copy_contract(Path(base_dir) / "gateway-contract")
+        copy_skills(Path(base_dir))
 
 
 setup(cmdclass={"build_py": BuildPy, "sdist": SourceDistribution})

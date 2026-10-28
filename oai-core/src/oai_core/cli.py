@@ -52,6 +52,10 @@ def _parser() -> argparse.ArgumentParser:
         operation = commands.add_parser(command)
         operation.add_argument("request_id")
     commands.add_parser("mcp", help="Run the official MCP stdio server using your scoped Core credential")
+    skill = commands.add_parser("skill", help="Manage and deploy OAI skills for AI agents")
+    skills = skill.add_subparsers(dest="skill_command", required=True)
+    skill_install = skills.add_parser("install", help="Install oai-client skill to agent directories")
+    skill_install.add_argument("--dest", action="append", type=Path, help="Explicit destination directory")
     return parser
 
 
@@ -116,6 +120,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "serve":
             from .server import run
             run(args.config)
+            return 0
+        if args.command == "skill":
+            from .skills_installer import install_skills_to_hosts
+            installed = install_skills_to_hosts(target_dirs=args.dest)
+            print(json.dumps({"skill": "oai-client", "installed": [str(p) for p in installed]}, ensure_ascii=False))
             return 0
         if args.command in {"account", "policy"}:
             print(json.dumps(_local_admin(args), ensure_ascii=False))

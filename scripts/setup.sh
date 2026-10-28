@@ -470,6 +470,7 @@ main() {
     printf "\n"
     success "OAI Core 配置流程已全部完成！"
     info "您可随时在终端直接运行 oai 或执行 ${TARGET_DIR}/start-core.sh 启动服务。"
+    info "内置 oai-client skill 已同步部署，支持接入或未接入的 Agent 读取与操控连接的客户端。"
 }
 
 if [ "${BASH_SOURCE[0]:-}" = "$0" ] || [ -z "${BASH_SOURCE[0]:-}" ]; then
