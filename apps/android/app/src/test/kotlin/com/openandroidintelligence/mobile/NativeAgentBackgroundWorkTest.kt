@@ -121,6 +121,24 @@ class NativeAgentBackgroundWorkTest {
         }
     }
 
+    @Test fun accountExitAcceptsAWorkbenchAlreadyRetiredByAgentReplacement() {
+        Fixture().use { fixture ->
+            fixture.selectSession("codex")
+            // The Agent collector closes the old workbench before its IO
+            // replacement is installed. Account exit can observe this owner.
+            val retired = MutableStateFlow(false)
+            val retiring = CoroutineScope(Dispatchers.Unconfined).launch(start = CoroutineStart.UNDISPATCHED) {
+                requireNotNull(fixture.runtime.controller.value).closeAndAwait()
+                retired.value = true
+            }
+            try { awaitState(retired) { it } } finally { retiring.cancel() }
+            fixture.runtime.chooseAnotherAccount()
+            awaitState(fixture.runtime.phase) { it is ConnectionPhase.Disconnected }
+            assertNull(fixture.runtime.nativeAgents.value)
+            assertFalse(fixture.recovery.hasPendingWork)
+        }
+    }
+
     @Test fun nativeSendingStillRequiresTheUserNotificationSettingAndPermission() {
         Fixture().use { fixture ->
             val native = fixture.selectSession("dsh")

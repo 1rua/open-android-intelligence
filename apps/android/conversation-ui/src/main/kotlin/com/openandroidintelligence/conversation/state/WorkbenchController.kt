@@ -819,6 +819,9 @@ class WorkbenchController(
     private var pendingCheckpoint: WorkbenchCheckpoint? = null
     private var checkpointFailure: Throwable? = null
     private var closingJobs: List<Job> = emptyList()
+    private val persistenceLifecycleMutex = Mutex()
+    private var persistenceRetired = false
+    private var retirementFailure: Throwable? = null
     /** Watchdog for one accepted turn: the difference between "thinking" and "broken". */
     private var replyWatchdog: Job? = null
     private data class ReplyWatchdogTarget(
@@ -1321,24 +1324,41 @@ class WorkbenchController(
     }
 
     /** 正常账号切换先提交，再等所有旧 IO 收尾；即时认证撤销仍使用同步 close。 */
-    suspend fun closeAndAwait() {
-        val caller=currentCoroutineContext()[Job]
-        var failure: Throwable? = null
-        if (!closed) {
-            try { flushPendingPersistence() }
-            catch (cause: Throwable) { failure=cause }
+    suspend fun closeAndAwait() = persistenceLifecycleMutex.withLock {
+        currentCoroutineContext().ensureActive()
+        if (persistenceRetired) {
+            retirementFailure?.let { throw it }
+            return@withLock
         }
-        close()
+        val caller=currentCoroutineContext()[Job]
+        var failure: Throwable? = if (closed) checkpointFailure else null
+        // Once retirement owns this local boundary, caller cancellation cannot
+        // abandon its disk commit. It is propagated after the real result is
+        // recorded, never cached as another caller's cancellation.
         withContext(NonCancellable) {
+            if (!closed) {
+                try { flushOpenPersistence() }
+                catch (cause: Throwable) { failure=retirementStorageFailure(cause) }
+            }
+            close()
             closingJobs.distinct().filter { it !== caller }.forEach { it.join() }
             cancelledSendPersistenceFailure?.let { cause ->
-                if (failure == null) failure=cause else if (failure !== cause) failure?.addSuppressed(cause)
+                if (failure == null) failure=retirementStorageFailure(cause)
+                else if (failure !== cause) failure?.addSuppressed(cause)
             }
             try { (persistence as? AwaitableWorkbenchPersistence)?.let { store -> withContext(persistenceDispatcher) { store.closeStore() } } }
-            catch (cause: Throwable) { if (failure == null) failure=cause else failure?.addSuppressed(cause) }
+            catch (cause: Throwable) {
+                if (failure == null) failure=retirementStorageFailure(cause) else failure?.addSuppressed(cause)
+            }
+            retirementFailure=failure
+            persistenceRetired=true
         }
+        caller?.ensureActive()
         failure?.let { throw it }
     }
+
+    private fun retirementStorageFailure(cause: Throwable): Throwable =
+        if (cause is CancellationException) java.io.IOException("LOCAL_SAVE_INTERRUPTED", cause) else cause
 
     fun cancel() = close()
 
@@ -5165,11 +5185,21 @@ class WorkbenchController(
     }
 
     /** 发送、事件确认和结束账号前必须等待真实提交，错误交给调用方处理。 */
-    suspend fun flushPendingPersistence() {
+    suspend fun flushPendingPersistence() = persistenceLifecycleMutex.withLock {
+        currentCoroutineContext().ensureActive()
+        retirementFailure?.let { throw it }
+        if (!persistenceRetired) flushOpenPersistence()
+    }
+
+    private suspend fun flushOpenPersistence() {
         currentCoroutineContext().ensureActive()
         if (persistence==null) return
         persistCheckpoint()
-        checkpointJob?.join()
+        val saving = checkpointJob
+        saving?.join()
+        // join observes completion, not success. A parent-cancelled writer may
+        // have exited before the checkpoint reached disk.
+        if (saving?.isCancelled == true) throw java.io.IOException("LOCAL_SAVE_INTERRUPTED")
         checkpointFailure?.let { throw it }
         withContext(persistenceDispatcher) { (persistence as? AwaitableWorkbenchPersistence)?.flush() }
     }
