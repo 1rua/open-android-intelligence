@@ -80,3 +80,88 @@ async def test_missing_record_is_a_no_op():
     from oai_hermes_adapter.runtime import report_dispatch_delivered
 
     assert await report_dispatch_delivered(_Account(), None, "claim_1") is False
+
+
+@pytest.mark.asyncio
+async def test_completion_retires_all_materialized_attachment_files(tmp_path):
+    """A successful host callback must finish even when inbound media exists."""
+    from types import SimpleNamespace
+    from oai_hermes_adapter.runtime import SessionOnlyAdapter
+
+    closed = []
+    account = SimpleNamespace(
+        conversations=SimpleNamespace(dispatch_message=lambda _identity: None),
+        close=lambda: closed.append(True),
+    )
+    paths = [tmp_path / "first.png", tmp_path / "second.pdf"]
+    for path in paths:
+        path.write_bytes(b"synthetic attachment")
+    runtime = SessionOnlyAdapter.__new__(SessionOnlyAdapter)
+    runtime.services = SimpleNamespace(core=SimpleNamespace(open_gateway_account=lambda _owner: account))
+    runtime._processing_media_files = {("alice", "client-attachment"): paths}
+    event = SimpleNamespace(source=SimpleNamespace(user_id="alice"), message_id="client-attachment")
+
+    await runtime.on_processing_complete(event, "completed")
+
+    assert closed == [True]
+    assert runtime._processing_media_files == {}
+    assert all(not path.exists() for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_identical_replies_with_distinct_native_ids_remain_distinct():
+    """Content equality cannot replace the host's explicit message identity."""
+    from types import SimpleNamespace
+    from oai_hermes_adapter.runtime import SessionOnlyAdapter
+
+    runtime = SessionOnlyAdapter.__new__(SessionOnlyAdapter)
+    runtime._turn_replies = {}
+    runtime._conv_to_account = {"chat": "alice"}
+    runtime._account_id = None
+    writes = []
+    async def complete(chat, identity, content, **_kwargs):
+        writes.append((chat, identity, content))
+    runtime.complete_message = complete
+
+    first = await runtime.send("chat", "same synthetic reply", metadata={"messageId": "native-one"})
+    second = await runtime.send("chat", "same synthetic reply", metadata={"messageId": "native-two"})
+    finalized = await runtime.edit_message("chat", "native-two", "same synthetic reply", finalize=True)
+
+    assert [first.message_id, second.message_id, finalized.message_id] == ["native-one", "native-two", "native-two"]
+    assert [identity for _, identity, _ in writes] == ["native-one", "native-two", "native-two"]
+
+
+@pytest.mark.asyncio
+async def test_tool_observer_failure_cannot_block_authoritative_completion_or_media_cleanup(tmp_path, caplog):
+    from types import SimpleNamespace
+    from oai_hermes_adapter.runtime import SessionOnlyAdapter
+
+    settled, dispatch_updates, cleaned, closed = [], [], [], []
+    generation = {"generationId": "gen-one", "state": "running", "revision": 1}
+    def settle(message_id, status):
+        settled.append((message_id, status))
+        generation["state"] = status
+    record = {"messageId": "msg-one", "conversationId": "chat", "status": "delivered"}
+    account = SimpleNamespace(conversations=SimpleNamespace(
+        dispatch_message=lambda identity: record,
+        workflow=SimpleNamespace(for_message=lambda identity: generation, settle=settle),
+        update_dispatch_status=lambda *args: dispatch_updates.append(args)), close=lambda: closed.append(True))
+    runtime = SessionOnlyAdapter.__new__(SessionOnlyAdapter)
+    runtime.services = SimpleNamespace(core=SimpleNamespace(open_gateway_account=lambda owner: account))
+    runtime._processing_media_files = {("alice", "client-one"): []}
+    async def completed_cleanup(*args):
+        cleaned.append(args)
+    runtime.withdraw_generation_approvals = completed_cleanup
+    runtime._finish_streaming_replies = completed_cleanup
+    def observer_failure(*args):
+        raise RuntimeError("private synthetic observer payload")
+    runtime._tool_observer = SimpleNamespace(close_generation=observer_failure)
+    event = SimpleNamespace(source=SimpleNamespace(user_id="alice"), message_id="client-one")
+
+    await runtime.on_processing_complete(event, "completed")
+
+    assert settled == [("msg-one", "completed")]
+    assert dispatch_updates[0][1] == "completed"
+    assert len(cleaned) == 2 and closed == [True]
+    assert runtime._processing_media_files == {}
+    assert "private synthetic observer payload" not in caplog.text

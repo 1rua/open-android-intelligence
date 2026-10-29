@@ -277,6 +277,109 @@ async def test_current_generation_is_exposed_for_safe_queue_reconnect(native_api
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["completed", "failed", "cancelled", "unknown"])
+async def test_specific_generation_query_recovers_persisted_outcome_without_current_task(native_api, state):
+    client, host = native_api
+    receipt = {"generationId": "gen_finished", "conversationId": "chat", "clientMessageId": "cm_sent",
+               "state": state, "revision": 4}
+
+    async def generation(principal, session_id, *, client_message_id=None, generation_id=None):
+        host.calls.append(("receipt", principal.account_id, session_id, client_message_id, generation_id))
+        return receipt
+
+    host.generation = generation
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation",
+                                params={"clientMessageId": "cm_sent", "generationId": "gen_finished"},
+                                headers={"X-Test-User": "bob"})
+    assert response.status == 200, await response.text()
+    assert await response.json() == {"generation": receipt}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert host.calls == [("receipt", "bob", "chat", "cm_sent", "gen_finished")]
+
+
+@pytest.mark.asyncio
+async def test_specific_generation_query_never_falls_back_to_unrelated_current_task(native_api):
+    client, host = native_api
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation?clientMessageId=cm_old")
+    assert response.status == 501
+    assert host.calls == []
+
+
+@pytest.mark.asyncio
+async def test_persisted_generation_query_survives_host_offline_capability_changes(native_api):
+    client, host = native_api
+    descriptor = host.descriptor()
+    descriptor["capabilities"] = dict.fromkeys(descriptor["capabilities"], False)
+    host.descriptor = lambda: descriptor
+    receipt = {"generationId": "gen_saved", "conversationId": "chat", "clientMessageId": "cm_saved",
+               "state": "completed", "revision": 0}
+
+    async def generation(*_, **kwargs):
+        return receipt
+
+    host.generation = generation
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation?clientMessageId=cm_saved")
+    assert response.status == 200, await response.text()
+    assert await response.json() == {"generation": receipt}
+
+
+@pytest.mark.asyncio
+async def test_generation_query_passes_bounded_conditional_wait_without_starting_work(native_api):
+    client, host = native_api
+
+    async def generation(principal, session_id, **kwargs):
+        host.calls.append((principal.account_id, session_id, kwargs))
+        return {"generationId": "gen_wait", "conversationId": session_id, "clientMessageId": "cm_wait",
+                "state": "completed", "revision": 3}
+
+    host.generation = generation
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation",
+                                params={"clientMessageId": "cm_wait", "afterRevision": "2", "waitMs": "20000"})
+    assert response.status == 200, await response.text()
+    assert (await response.json())["generation"]["state"] == "completed"
+    assert host.calls == [("alice", "chat", {"client_message_id": "cm_wait", "generation_id": None,
+                                             "after_revision": 2, "wait_ms": 20000})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["waitMs=25001", "waitMs=-1", "waitMs=true", "afterRevision=-1",
+                                    "afterRevision=9223372036854775808", "waitMs=10", "afterRevision=1.5"])
+async def test_generation_query_bounds_long_poll_parameters(native_api, suffix):
+    client, host = native_api
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation?clientMessageId=cm_wait&" + suffix)
+    assert response.status == 400, await response.text()
+    assert host.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("override", [
+    {"conversationId": "other"}, {"generationId": "other"}, {"clientMessageId": "other"},
+    {"state": "success"}, {"revision": -1}, {"revision": True},
+])
+async def test_specific_generation_query_rejects_mismatched_or_invalid_host_receipts(native_api, override):
+    client, host = native_api
+
+    async def generation(*_, **kwargs):
+        return {"generationId": "gen_finished", "conversationId": "chat", "clientMessageId": "cm_sent",
+                "state": "completed", "revision": 4, **override}
+
+    host.generation = generation
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation",
+                                params={"clientMessageId": "cm_sent", "generationId": "gen_finished"})
+    assert response.status == 502, await response.text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["clientMessageId=", "generationId=", "clientMessageId=a&clientMessageId=b",
+                                         "accountId=bob", "generationId=" + "x" * 1025])
+async def test_generation_query_rejects_invalid_or_ambiguous_identity(native_api, query):
+    client, host = native_api
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation?" + query)
+    assert response.status == 400, await response.text()
+    assert host.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("override", [
     {"approvalId": "unrelated-approval"}, {"conversationId": "unrelated-chat"},
     {"decision": {"sessionKey": "synthetic-internal-secret"}},

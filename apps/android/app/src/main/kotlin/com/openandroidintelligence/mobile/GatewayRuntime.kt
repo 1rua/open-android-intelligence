@@ -1611,8 +1611,9 @@ class GatewayRuntime(
                             _controller.value = buildWorkbenchController(newAgentName)
                         } else {
                             // Initial requests may have run before Agent discovery completed.
-                            // Refresh the existing controller without discarding its draft.
-                            _controller.value?.refreshThreads()
+                            // Agent discovery now supplies the subscription identity.
+                            // Rebind the event consumer without discarding its draft.
+                            _controller.value?.onForegrounded()
                             _controller.value?.loadCatalog()
                         }
                     }
@@ -1767,6 +1768,7 @@ class GatewayRuntime(
                 if (sessionJob === ownedJob) _connectionStatus.value = status
                 updateScreenConnection(status == EventStreamStatus.LIVE)
                 if (status == EventStreamStatus.LIVE && sessionJob === ownedJob) {
+                    coreAgentRepo?.connectionRestored()
                     withContext(Dispatchers.IO) { reconcileNotifications(force = true) }
                     _controller.value?.refreshThreads()
                 }

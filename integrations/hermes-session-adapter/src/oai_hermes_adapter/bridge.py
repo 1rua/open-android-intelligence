@@ -42,7 +42,14 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         if not secrets.compare_digest(supplied, "Bearer " + token):
             return web.json_response({"code": "AUTHENTICATION_REQUIRED"}, status=401)
         try:
-            if request.query_string and not request.path.startswith(PREFIX + "/commands"):
+            generation_query = (request.method == "GET"
+                                and request.path.startswith(PREFIX + "/sessions/")
+                                and request.path.endswith("/generation"))
+            if request.query_string and not (request.path == PREFIX + "/commands" or generation_query):
+                raise AdapterError("SCHEMA_INVALID", 400)
+            if generation_query and (set(request.query) - {"clientMessageId", "generationId", "afterRevision", "waitMs"}
+                                     or any(len(request.query.getall(key)) != 1
+                                            for key in request.query)):
                 raise AdapterError("SCHEMA_INVALID", 400)
             if request.path not in {PREFIX + "/status", PREFIX + "/commands"}:
                 account = request.headers.get("X-OAI-Account")
@@ -106,8 +113,23 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         if request.method == "GET" and action == "history":
             return web.json_response({"messages": await adapter.history(principal, session_id)})
         if request.method == "GET" and action == "generation":
+            if request.query:
+                def integer(key, default):
+                    value = request.query.get(key)
+                    if value is None:
+                        return default
+                    if not value.isascii() or not value.isdecimal():
+                        raise AdapterError("SCHEMA_INVALID", 400)
+                    return int(value)
+                generation = await adapter.generation(
+                    principal, session_id, client_message_id=request.query.get("clientMessageId"),
+                    generation_id=request.query.get("generationId"),
+                    after_revision=integer("afterRevision", None), wait_ms=integer("waitMs", 0),
+                )
+            else:
+                generation = await adapter.current_generation(principal, session_id)
             return web.json_response({
-                "generation": await adapter.current_generation(principal, session_id),
+                "generation": generation,
             })
         if request.method != "POST" or action not in {"messages", "steer", "rename", "archive", "delete", "cancel"}:
             raise AdapterError("NOT_FOUND", 404)
@@ -248,3 +270,8 @@ def register(ctx: Any) -> None:
         ctx.register_platform(name=platform_id, label="OAI Core Hermes Sessions", adapter_factory=factory,
             check_fn=gateway_enabled, validate_config=lambda config: True,
             install_hint="Install the optional oai-hermes-session-adapter and configure OAI_HERMES_*", emoji="📱")
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        from .tool_events import pre_tool_call, post_tool_call
+        register_hook("pre_tool_call", pre_tool_call)
+        register_hook("post_tool_call", post_tool_call)

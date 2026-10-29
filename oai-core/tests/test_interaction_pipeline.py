@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import json
+import logging
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -62,6 +63,7 @@ class ControlledExecution(UnsupportedApprovalMixin):
         self.approval_timeout_seconds = 30
         self.resolver_return_gate = None
         self.host_finished = asyncio.Event()
+        self.observer_release = asyncio.Event()
         backend.generation_canceller = self.cancel
 
     @staticmethod
@@ -127,6 +129,9 @@ class ControlledExecution(UnsupportedApprovalMixin):
         self.emit_text(owner, conversation, generation_id, "开始")
         if text == "hold":
             await asyncio.Event().wait()
+        elif text == "disconnect":
+            await self.observer_release.wait()
+            self.emit_text(owner, conversation, generation_id, "开始：观察断开后完成")
         elif text == "approval":
             host_request = "host-request-secret-" + generation_id
             pending = SimpleNamespace(release=asyncio.Event(), choice=None)
@@ -213,7 +218,7 @@ async def pipeline(tmp_path, monkeypatch):
                 bob = await phone_login(client, core, "bob")
                 yield SimpleNamespace(client=client, core=core, backend=backend, runtime=runtime,
                                       alice=alice, bob=bob, catalog=catalog,
-                                      conversation=conversations["native-alice"])
+                                      conversation=conversations["native-alice"], host=host)
     finally:
         await runtime.close()
         backend.close()
@@ -245,6 +250,7 @@ async def test_signed_discovery_and_versioned_host_catalog_cross_both_http_layer
     assert response.status == 200, await response.text()
     capabilities = (await response.json())["agents"][0]["capabilities"]
     assert all(capabilities[name] for name in ("commands", "approvals", "cancel"))
+    assert capabilities["generationRecovery"]
     response = await request(p.client, p.alice, "GET", AGENT + "/commands?languageCode=zh-CN")
     assert response.status == 200, await response.text()
     first = await response.json()
@@ -257,6 +263,39 @@ async def test_signed_discovery_and_versioned_host_catalog_cross_both_http_layer
     p.catalog[1] = {**p.catalog[1], "description": "插件更新后的描述"}
     response = await request(p.client, p.alice, "GET", AGENT + "/commands?languageCode=zh-CN")
     assert (await response.json())["catalogVersion"] != first["catalogVersion"]
+
+
+@pytest.mark.asyncio
+async def test_boundary_timing_logs_public_identity_without_transcript_or_tokens(pipeline, caplog):
+    p = pipeline
+    caplog.set_level(logging.DEBUG, logger="oai_core.native_sessions")
+    private_text = "private-synthetic-transcript-must-not-enter-diagnostics"
+    path = AGENT + "/sessions/" + p.conversation + "/messages"
+    stream = await request(p.client, p.alice, "POST", path,
+        {"text": private_text, "clientMessageId": "timing-client"})
+    try:
+        events = []
+        while True:
+            event = await next_event(stream)
+            events.append(event)
+            if event["type"] in {"done", "error"}:
+                break
+        assert events[-1]["type"] == "done"
+    finally:
+        stream.close()
+    traces = [json.loads(record.getMessage().removeprefix("native_session "))
+              for record in caplog.records if record.name == "oai_core.native_sessions"]
+    assert traces[0]["stage"] == "T2"
+    writes = [trace for trace in traces if trace["stage"] == "T5"]
+    assert [trace["eventType"] for trace in writes] == ["generation", "delta", "done"]
+    assert all(trace["clientMessageId"] == "timing-client" for trace in traces)
+    assert all(trace["monotonicNs"] > 0 and trace["elapsedMs"] >= 0 for trace in traces)
+    assert all(left["monotonicNs"] <= right["monotonicNs"] for left, right in zip(traces, traces[1:]))
+    serialized = json.dumps(traces)
+    assert private_text not in serialized
+    assert TOKEN not in serialized
+    assert "native-key-secret" not in serialized
+    assert "Authorization" not in serialized
 
 
 @pytest.mark.asyncio
@@ -327,6 +366,66 @@ async def test_signed_approval_card_decision_unblocks_host_once_without_leaking_
         assert ("已允许" if decision == "once" else "已拒绝") in "".join(event.get("text", "") for event in events)
     finally:
         stream.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["phone", "bridge"])
+async def test_observer_disconnect_keeps_one_accepted_host_turn_and_recovers_terminal(pipeline, monkeypatch, boundary):
+    p = pipeline
+    session_path = AGENT + "/sessions/" + p.conversation
+    detached = asyncio.Event()
+    unregister = p.backend.unregister_event_sink
+
+    def observer_closed(sink):
+        unregister(sink)
+        detached.set()
+
+    monkeypatch.setattr(p.backend, "unregister_event_sink", observer_closed)
+    body = {"text": "disconnect", "clientMessageId": "disconnect-client"}
+    if boundary == "phone":
+        stream = await request(p.client, p.alice, "POST", session_path + "/messages", body)
+        generation = await next_event(stream)
+        assert (await next_event(stream))["type"] == "delta"
+    else:
+        stream = await p.host.post("/oai/session-adapter/v1/sessions/" + p.conversation + "/messages",
+            json=body, headers={"Authorization": "Bearer " + TOKEN,
+                               "X-OAI-Account": "native-alice", "X-OAI-Device": "phone"})
+        generation = json.loads(await stream.content.readline())
+        assert json.loads(await stream.content.readline())["type"] == "delta"
+    assert generation["type"] == "generation"
+    generation_id = generation["generationId"]
+    task = p.runtime.turns[("native-alice", p.conversation, generation_id)]
+    try:
+        stream.connection.transport.abort()
+        stream.close()
+        # A further committed frame makes both HTTP observers encounter the
+        # closed socket, rather than merely assuming the disconnect was seen.
+        p.runtime.emit_text("native-alice", p.conversation, generation_id, "开始：观察连接关闭")
+        await asyncio.wait_for(detached.wait(), 6)
+        assert not task.done()
+        assert p.runtime.interrupted == []
+        response = await request(p.client, p.alice, "GET", session_path + "/generation?clientMessageId=disconnect-client")
+        assert response.status == 200, await response.text()
+        assert (await response.json())["generation"]["state"] == "running"
+        p.runtime.observer_release.set()
+        await asyncio.wait_for(p.runtime.host_finished.wait(), 3)
+        response = await request(p.client, p.alice, "GET", session_path + "/generation?clientMessageId=disconnect-client")
+        assert response.status == 200, await response.text()
+        receipt = (await response.json())["generation"]
+        assert receipt["state"] == "completed"
+        assert receipt["generationId"] == generation_id
+        assert len(p.runtime.turns) == 1
+        account = p.backend.open_gateway_account("native-alice")
+        try:
+            assert account.store.database.execute(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id=? AND sender='user'",
+                (p.conversation,)).fetchone()[0] == 1
+        finally:
+            account.close()
+    finally:
+        stream.close()
+        p.runtime.observer_release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

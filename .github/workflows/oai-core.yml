@@ -65,11 +65,13 @@ jobs:
         run: |
           "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio
           env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
-            oai-core/tests tests/test_install_script.py -q \
+            oai-core/tests tests/test_install_script.py tools/test_smart_test.py -q \
             --ignore=oai-core/tests/test_hermes.py \
             --ignore=oai-core/tests/test_hermes_native.py \
             --ignore=oai-core/tests/test_hermes_interactions.py \
             --ignore=oai-core/tests/test_hermes_approval_prompts.py \
+            --ignore=oai-core/tests/test_structured_tool_history.py \
+            --ignore=oai-core/tests/test_native_tool_events.py \
             --ignore=oai-core/tests/test_interaction_pipeline.py
           bash -n scripts/install.sh
           bash -n scripts/setup.sh
@@ -98,6 +100,7 @@ jobs:
           python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py
           oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py
           oai-core/tests/test_hermes_approval_prompts.py
+          oai-core/tests/test_structured_tool_history.py oai-core/tests/test_native_tool_events.py
           oai-core/tests/test_hermes_dispatch_delivery.py -q
 
   dsh:
@@ -167,6 +170,7 @@ jobs:
           --tests '*ApplicationCompositionTest'
           --tests '*AndroidApiCompatibilityTest'
           --tests '*CoreAgentConversationRepositoryTest'
+          --tests '*NativeRecoveryOwnershipTest'
           --tests '*NativeConversationOrganizationStoreTest'
       - name: Play screen integration and Android API compatibility
         working-directory: apps/android
@@ -181,4 +185,5 @@ jobs:
           --tests '*ApplicationCompositionTest'
           --tests '*AndroidApiCompatibilityTest'
           --tests '*CoreAgentConversationRepositoryTest'
+          --tests '*NativeRecoveryOwnershipTest'
           --tests '*NativeConversationOrganizationStoreTest'

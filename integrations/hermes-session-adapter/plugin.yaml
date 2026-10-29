@@ -9,7 +9,7 @@ license: MIT
 python_runtime: ">=3.11"
 requires_hermes: ">=0.20.0"
 provides_tools: []
-provides_hooks: []
+provides_hooks: [pre_tool_call, post_tool_call]
 requires_env:
   - OAI_HERMES_SESSION_TOKEN
   - OAI_HERMES_GATEWAY_ROOT

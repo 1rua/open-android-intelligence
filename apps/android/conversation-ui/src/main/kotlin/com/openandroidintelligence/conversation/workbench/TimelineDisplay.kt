@@ -3,6 +3,8 @@ package com.openandroidintelligence.conversation.workbench
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.state.TimelineEntry
 
 /**
@@ -86,8 +88,9 @@ sealed interface ExecutionStep {
         override val entryKey: String,
         val blockIndex: Int,
         val entryIsStreaming: Boolean,
+        val nativeStepId: String? = null,
     ) : ExecutionStep {
-        override val stepKey: String get() = "$entryKey#$blockIndex"
+        override val stepKey: String get() = nativeStepId?.let { "$entryKey:$it" } ?: "$entryKey#$blockIndex"
     }
 
     data class Narrative(
@@ -151,6 +154,12 @@ class TimelineDisplayModel(
 
         val items = mutableListOf<TimelineDisplayItem>()
         val segment = mutableListOf<EntryAnalysis>()
+        // 结构化步骤只按宿主明确提供的 generation / step 身份关联，
+        // 普通正文、相似时间以及相邻位置都不参与归属判断。
+        val nativeGroups = entries.filter { isExecutionEligible(it) && !it.generationId.isNullOrBlank() }
+            .groupBy { requireNotNull(it.generationId) }
+            .filterValues { group -> group.any { it.executionSteps.isNotEmpty() } }
+        val emittedNativeGroups = mutableSetOf<String>()
 
         fun flushSegment() {
             if (segment.isEmpty()) return
@@ -161,7 +170,18 @@ class TimelineDisplayModel(
         }
 
         entries.forEach { entry ->
-            if (isExecutionEligible(entry)) {
+            val nativeGroup = entry.generationId?.let(nativeGroups::get)
+            if (isExecutionEligible(entry) && nativeGroup != null) {
+                flushSegment()
+                val nativeGenerationId = requireNotNull(entry.generationId)
+                if (emittedNativeGroups.add(nativeGenerationId)) {
+                    items += TimelineDisplayItem.Execution(buildNativeRun(nativeGenerationId, nativeGroup))
+                }
+                // 原生工具步骤与回答分别呈现；同轮的多条合法回复全部保留。
+                if (entry.text.isNotBlank() || entry.attachments.isNotEmpty()) {
+                    items += TimelineDisplayItem.Single(entry)
+                }
+            } else if (isExecutionEligible(entry)) {
                 val analysis = analyse(entry)
                 segment += analysis
                 // 已完成且有正常正文的消息就是一个回答边界。后续助手消息即使
@@ -174,6 +194,43 @@ class TimelineDisplayModel(
         }
         flushSegment()
         return items
+    }
+
+    private fun buildNativeRun(generationId: String, entries: List<TimelineEntry>): AssistantExecutionRun {
+        val latest = linkedMapOf<String, NativeExecutionStep>()
+        entries.forEach { entry -> entry.executionSteps.forEach { step ->
+            val previous = latest[step.stepId]
+            if (previous == null || step.revision > previous.revision) latest[step.stepId] = step
+        } }
+        val segmentKey = "execution:$generationId"
+        val steps = latest.values.mapIndexed { index, step ->
+            ExecutionStep.ToolCall(
+                block = TimelineBlock.ToolCallBlock(
+                    toolName = step.toolName,
+                    command = step.arguments,
+                    output = step.output,
+                    isSuccess = step.status != NativeExecutionStatus.FAILED,
+                    isRunning = step.status == NativeExecutionStatus.RUNNING,
+                    executionStatus = step.status,
+                ),
+                entryKey = segmentKey,
+                blockIndex = index,
+                entryIsStreaming = step.status == NativeExecutionStatus.RUNNING,
+                nativeStepId = step.stepId,
+            )
+        }
+        return AssistantExecutionRun(
+            segmentKey = segmentKey,
+            finalEntry = entries.first(),
+            finalBlocks = emptyList(),
+            steps = steps,
+            stepCount = steps.size,
+            failedStepCount = latest.values.count { it.status == NativeExecutionStatus.FAILED },
+            interrupted = false,
+            isStreaming = latest.values.any { it.status == NativeExecutionStatus.RUNNING },
+            finalEntryIsStreaming = false,
+            hasFinalAnswer = false,
+        )
     }
 
     private fun buildSegment(
@@ -197,13 +254,8 @@ class TimelineDisplayModel(
         // 仍在增量的最后一段，历史段由 anyFinalVisible / !anyStreaming 自然覆盖。
         val stickyFinalStarted = isLastSegment && latchedFinalSegmentKey == segmentKey
         if (isLastSegment && anyFinalVisible) latchedFinalSegmentKey = segmentKey
-        // Hermes 会逐步发送“调用工具：xxx”占位消息与活动日志；还没有最终正文时
-        // 先把它们逐条显示（用户能看到每张工具卡），等最终回答出现再聚合。
-        // XML/fenced 工具消息保持原有规则：执行段结束即折叠。
-        val hermesProcessSegment = entries.all(::looksLikeHermesProcessEntry)
         val shouldFold = hasExecutionBlocks &&
-            (anyFinalVisible || stickyFinalStarted ||
-                (!anyStreaming && (!hermesProcessSegment || terminalGeneration)))
+            (anyFinalVisible || stickyFinalStarted || !anyStreaming)
 
         if (!shouldFold) {
             return entries.map { entry ->
@@ -315,7 +367,7 @@ class TimelineDisplayModel(
                 executionCount = 0,
                 tailStartIndex = 0,
                 finalBlocks = emptyList(),
-                finalVisible = entry.text.isNotBlank() && !looksLikeHermesActivityLog(entry.text),
+                finalVisible = entry.text.isNotBlank(),
             )
         }
         return analyseParsed(entry)
@@ -402,56 +454,11 @@ private fun isExecutionEligible(entry: TimelineEntry): Boolean =
  *
  * `$ adb` 是普通 bash 围栏升格工具卡的兼容路径；保守地包含它，避免漏掉工具卡。
  */
-/** 廉价预扫描：先做关键字 contains，避免对普通历史逐行跑正则。 */
-private fun mayContainHermesMarkup(text: String): Boolean {
-    if (text.contains("调用工具") || text.contains("工具调用") ||
-        text.contains("Tool call", ignoreCase = true) ||
-        text.contains("Calling tool", ignoreCase = true)
-    ) {
-        return true
-    }
-    val activityKeywords = listOf(
-        "Running code", "Running ", "Searching files", "Searching the web",
-        "Searching past sessions", "Reading ", "Writing ", "Editing ",
-        "Browsing ", "Clicking ", "Typing ", "Generating image", "Generating video",
-        "Generating speech", "Looking at the image", "Listing skills",
-        "Updating skill", "Delegating", "Scheduling", "Asking", "Updating memory",
-        "Updating tasks",
-    )
-    return activityKeywords.any { text.contains(it, ignoreCase = true) } &&
-        MarkdownParser.mayContainHermesToolText(text)
-}
-
-/** 一条助手消息是否属于 Hermes 的工具占位/活动日志（而不是真实最终回答）。 */
-private fun looksLikeHermesProcessEntry(entry: TimelineEntry): Boolean {
-    val text = entry.text
-    if (text.isBlank()) return false
-    return text.contains("调用工具", ignoreCase = true) ||
-        text.contains("工具调用", ignoreCase = true) ||
-        text.contains("Tool call", ignoreCase = true) ||
-        text.contains("Calling tool", ignoreCase = true) ||
-        looksLikeHermesActivityLog(text)
-}
-
-/**
- * Hermes 的工具活动日志（Running code / Searching files / Reading ...）只是过程叙述。
- *
- * 它们没有 XML/围栏标记，但若被当成最终正文，会在第一张工具卡出现时提前折叠成
- * “最终回答是工具日志”的错误形态。整条消息所有行都是活动日志时才视为过程文本。
- */
-internal fun looksLikeHermesActivityLog(text: String): Boolean =
-    MarkdownParser.isHermesActivityOnlyText(text)
-
 internal fun mayContainExecutionMarkup(text: String): Boolean =
-    mayContainHermesMarkup(text) ||
-        text.contains("<think", ignoreCase = true) ||
+    text.contains("<think", ignoreCase = true) ||
         text.contains("<tool_call", ignoreCase = true) ||
         text.contains("```tool_call", ignoreCase = true) ||
         text.contains("```tool:", ignoreCase = true) ||
-        text.contains("调用工具", ignoreCase = true) ||
-        text.contains("工具调用", ignoreCase = true) ||
-        text.contains("Tool call", ignoreCase = true) ||
-        text.contains("Calling tool", ignoreCase = true) ||
         text.contains("\$ adb", ignoreCase = true)
 
 /** 执行块：思考与工具调用。步骤计数、折叠条件都以它为准。 */

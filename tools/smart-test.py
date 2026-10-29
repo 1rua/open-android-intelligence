@@ -140,6 +140,26 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "--ignore=oai-core/tests/test_hermes_interactions.py",
             "--ignore=oai-core/tests/test_hermes_approval_prompts.py",
             "--ignore=oai-core/tests/test_interaction_pipeline.py",
+            "--ignore=oai-core/tests/test_structured_tool_history.py",
+            "--ignore=oai-core/tests/test_native_tool_events.py",
+        ])
+        if ret != 0:
+            return ret
+
+    # 可选 Hermes 适配器必须单独验证：独立 Core 环境不安装它，而
+    # affects_hermes 不能只被识别却从不触发测试。SDK 用例需显式提供固定 SDK。
+    if impact["is_full_required"] or impact["affects_hermes"] or level == "full":
+        print("\n--- Hermes 原生会话与工具回归 ---")
+        ret = run_command([
+            "python3", "-m", "pytest", "-q",
+            "oai-core/tests/test_hermes.py",
+            "oai-core/tests/test_hermes_native.py",
+            "oai-core/tests/test_hermes_interactions.py",
+            "oai-core/tests/test_hermes_approval_prompts.py",
+            "oai-core/tests/test_hermes_dispatch_delivery.py",
+            "oai-core/tests/test_interaction_pipeline.py",
+            "oai-core/tests/test_structured_tool_history.py",
+            "oai-core/tests/test_native_tool_events.py",
         ])
         if ret != 0:
             return ret

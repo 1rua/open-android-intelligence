@@ -59,6 +59,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
@@ -93,7 +98,7 @@ class CoreAgentConversationRepository(
     private val _generationState = MutableStateFlow(GenerationState.IDLE)
     override val generationState: StateFlow<GenerationState> = _generationState.asStateFlow()
 
-    private val _streamHealth = MutableStateFlow<StreamHealth>(StreamHealth.LIVE)
+    private val _streamHealth = MutableStateFlow<StreamHealth>(StreamHealth.IDLE)
     override val streamHealth: Flow<StreamHealth> = _streamHealth.asStateFlow()
 
     private data class AgentEvent(val agentId: String, val event: VerifiedConversationEvent)
@@ -103,15 +108,24 @@ class CoreAgentConversationRepository(
 
     private suspend fun emitEvent(agentId: String, event: VerifiedConversationEvent) {
         _events.emit(AgentEvent(agentId, event))
+        GatewayLog.protocolEvidence("T7.event_emitted", mapOf("agentId" to agentId,
+            "eventId" to event.eventId, "eventType" to event.javaClass.simpleName))
     }
 
-    private class NativeTurn(val agent: CoreAgent, val conversationId: String) {
+    private class NativeTurn(val agent: CoreAgent, val conversationId: String, val clientMessageId: String? = null) {
+        @Volatile var state: GenerationState = GenerationState.QUEUED
+        @Volatile var userMessageId: String? = null
+        @Volatile var receiptRevision: Long = -1
+        val messageRevisions = ConcurrentHashMap<String, Long>()
         @Volatile var generationId: String? = if (agent.kind == "hermes") null else "local_${UUID.randomUUID()}"
         @Volatile var hostGenerationId: String? = null
         @Volatile var cancelled: Boolean = false
     }
     private data class ApprovalRoute(val agent: CoreAgent, val conversationId: String, val choices: Set<String>)
     private val turns = ConcurrentHashMap<Pair<String, String>, NativeTurn>()
+    private val recoveringTurns = ConcurrentHashMap<Pair<String, String>, NativeTurn>()
+    private val recoveryJobs = ConcurrentHashMap<Pair<String, String>, Job>()
+    private val settledClients = ConcurrentHashMap<Pair<String, String>, String>()
     private val approvals = ConcurrentHashMap<String, ApprovalRoute>()
     private val approvalFallbacks =
         ConcurrentHashMap<String, MutableList<VerifiedConversationEvent.ApprovalTextFallback>>()
@@ -132,20 +146,32 @@ class CoreAgentConversationRepository(
         }
     }
 
+    private fun ownsTurn(turn: NativeTurn): Boolean {
+        val key = turn.agent.id to turn.conversationId
+        return turns[key] === turn || recoveringTurns[key] === turn
+    }
+
     private fun isSelected(turn: NativeTurn): Boolean =
-        currentAgent()?.id == turn.agent.id && activeConversationId() == turn.conversationId
+        currentAgent()?.id == turn.agent.id && activeConversationId() == turn.conversationId && ownsTurn(turn)
 
     fun activeConversationChanged() {
         val agentId = currentAgent()?.id
         val conversationId = activeConversationId()
-        val turn = if (agentId != null && conversationId != null) turns[agentId to conversationId] else null
+        val turn = if (agentId != null && conversationId != null) turns[agentId to conversationId] ?: recoveringTurns[agentId to conversationId] else null
         _generationId.value = turn?.generationId
         _generationState.value = when {
             turn == null -> GenerationState.IDLE
             turn.cancelled -> GenerationState.CANCELLED
-            turn.generationId == null -> GenerationState.QUEUED
-            else -> GenerationState.RUNNING
+            else -> turn.state
         }
+        _streamHealth.value = if (turn == null) StreamHealth.IDLE else
+            if (recoveringTurns[agentId to conversationId] === turn) StreamHealth.RECONNECTING else StreamHealth.CONNECTING
+        if (turn != null && recoveringTurns[agentId to conversationId] === turn) startRecovery(turn)
+    }
+
+    /** A Core connection transition restarts reads only; it never submits a prompt. */
+    fun connectionRestored() {
+        recoveringTurns.values.forEach(::startRecovery)
     }
 
     private suspend fun emitApproval(
@@ -291,11 +317,22 @@ class CoreAgentConversationRepository(
             return TimelinePage(emptyList(), null)
         }
         val messages = withContext(ioDispatcher) { client.history(agent, conversationId) }
-        val timelineMessages = messages.map { msg ->
+        val timelineMessages = messages.map { timelineMessage(it, conversationId) }
+        if (agent.capabilities.generationRecovery && turns[agent.id to conversationId] == null &&
+            recoveringTurns[agent.id to conversationId] == null) {
+            messages.lastOrNull { it.role == "user" && it.clientMessageId != null }?.clientMessageId?.let { clientId ->
+                if (settledClients[agent.id to conversationId] != clientId) startRecovery(NativeTurn(agent, conversationId, clientId))
+            }
+        }
+        return TimelinePage(messages = timelineMessages, nextCursor = null)
+    }
+
+    private fun timelineMessage(msg: com.openandroidintelligence.gateway.agents.NativeAgentMessage,
+        conversationId: String): TimelineMessage {
             val isUser = msg.role.equals("user", ignoreCase = true)
-            TimelineMessage(
+            return TimelineMessage(
                 id = msg.id,
-                sender = if (isUser) "user" else "assistant",
+                sender = msg.role.lowercase().takeIf { it in setOf("user", "assistant", "system", "tool") } ?: "system",
                 parts = buildList {
                     if (msg.text.isNotEmpty()) add(MessagePart.Text(msg.text))
                     msg.attachments.forEach { attachment -> add(MessagePart.Attachment(
@@ -305,9 +342,146 @@ class CoreAgentConversationRepository(
                 timestamp = parseDate(msg.createdAt),
                 conversationId = ConversationId(conversationId),
                 clientMessageId = msg.clientMessageId?.let { ClientMessageId(if (isUser) it else "assistant_$it") },
+                generationId = msg.generationId,
+                contentRevision = msg.contentRevision,
+                state = msg.state ?: "CONFIRMED",
+                executionSteps = msg.executionSteps.map { step ->
+                    com.openandroidintelligence.conversation.model.NativeExecutionStep(
+                        step.stepId, step.eventId, step.toolName, step.arguments, step.output,
+                        runCatching { com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(step.status.uppercase()) }
+                            .getOrDefault(com.openandroidintelligence.conversation.model.NativeExecutionStatus.UNKNOWN),
+                        step.revision,
+                    )
+                },
             )
         }
-        return TimelinePage(messages = timelineMessages, nextCursor = null)
+
+    private suspend fun restoreHistory(turn: NativeTurn) {
+        val history = client.history(turn.agent, turn.conversationId)
+        for (native in history) {
+            val message = timelineMessage(native, turn.conversationId)
+            val previous = turn.messageRevisions[message.id] ?: -1L
+            val revision = message.contentRevision ?: (previous + 1)
+            // A delayed host snapshot cannot overwrite a newer live snapshot.
+            if (revision < previous) continue
+            turn.messageRevisions[message.id] = revision
+            emitEvent(turn.agent.id, VerifiedConversationEvent.TimelineUpsert(
+                "history:${turn.agent.id}:${turn.conversationId}:${message.id}:$revision:${turn.receiptRevision}",
+                System.currentTimeMillis(), revision, message))
+        }
+    }
+
+    private fun startRecovery(turn: NativeTurn) {
+        val clientId = turn.clientMessageId ?: return
+        if (!turn.agent.capabilities.generationRecovery) return
+        val key = turn.agent.id to turn.conversationId
+        val job = synchronized(recoveryJobs) {
+            // A historical lookup cannot take ownership from another live client.
+            if (turns[key]?.let { it !== turn } == true || recoveringTurns[key]?.let { it !== turn } == true) return
+            if (recoveryJobs[key]?.isActive == true || recoveryJobs[key]?.isCompleted == false) return
+            recoveringTurns[key] = turn
+            parentScope.launch(ioDispatcher, start = CoroutineStart.LAZY) {
+                var failures = 0
+                var unchangedUnknown = 0
+                var drainAfterRecovery = false
+                try {
+                    while (isActive) {
+                        try {
+                            val previousRevision = turn.receiptRevision
+                            val receipt = client.generation(turn.agent, turn.conversationId, clientId,
+                                turn.hostGenerationId, previousRevision.takeIf { it >= 0 },
+                                if (previousRevision >= 0) 25000 else 0)
+                            if (receipt.revision < previousRevision) throw AgentSessionException("AGENT_RESPONSE_INVALID")
+                            if (turn.state in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
+                                receipt.state !in setOf("completed", "failed", "cancelled"))
+                                throw AgentSessionException("AGENT_RESPONSE_INVALID")
+                            rememberGeneration(turn, receipt.generationId)
+                            turn.userMessageId = receipt.userMessageId
+                            turn.receiptRevision = receipt.revision
+                            failures = 0
+                            if (isSelected(turn)) {
+                                _generationId.value = receipt.generationId
+                                _streamHealth.value = StreamHealth.LIVE
+                            }
+                            emitEvent(turn.agent.id, VerifiedConversationEvent.MessageAccepted(
+                                "receipt:${receipt.generationId}:${receipt.revision}:accepted", System.currentTimeMillis(),
+                                receipt.userMessageId, clientId, ConversationId(turn.conversationId), agentReceived = false))
+                            // Snapshot compensation restores all real messages and structured steps, including
+                            // earlier non-prefix edits in a generation with more than one assistant message.
+                            restoreHistory(turn)
+                            turn.state = when (receipt.state) {
+                                "queued" -> GenerationState.QUEUED
+                                "running" -> GenerationState.RUNNING
+                                "completed" -> GenerationState.COMPLETED
+                                "failed" -> GenerationState.FAILED
+                                "cancelled" -> GenerationState.CANCELLED
+                                else -> GenerationState.OUTCOME_UNKNOWN
+                            }
+                            if (isSelected(turn)) _generationState.value = turn.state
+                            val terminal = receipt.state in setOf("completed", "failed", "cancelled")
+                            if (receipt.state == "cancelled") {
+                                emitEvent(turn.agent.id, VerifiedConversationEvent.GenerationCancelled(
+                                    "receipt:${receipt.generationId}:${receipt.revision}:cancelled", System.currentTimeMillis(),
+                                    receipt.generationId, ConversationId(turn.conversationId)))
+                            } else if (receipt.state != "unknown") {
+                                emitEvent(turn.agent.id, VerifiedConversationEvent.MessageStatus(
+                                    "receipt:${receipt.generationId}:${receipt.revision}:status", System.currentTimeMillis(),
+                                    ConversationId(turn.conversationId), receipt.userMessageId, ClientMessageId(clientId),
+                                    when (receipt.state) {
+                                        "completed" -> AgentMessageStatus.COMPLETED
+                                        "failed" -> AgentMessageStatus.FAILED
+                                        "queued" -> AgentMessageStatus.QUEUED
+                                        else -> AgentMessageStatus.DELIVERED
+                                    }, receipt.revision, null, receipt.generationId))
+                            }
+                            GatewayLog.protocolEvidence("T11.generation_reconciled", mapOf("agentId" to turn.agent.id,
+                                "conversationId" to turn.conversationId, "clientMessageId" to clientId,
+                                "generationId" to receipt.generationId, "state" to receipt.state, "revision" to receipt.revision))
+                            if (terminal) {
+                                settledClients[key] = clientId
+                                queueUnknownBarriers.remove(key)
+                                if (isSelected(turn)) { _generationId.value = null; _streamHealth.value = StreamHealth.IDLE }
+                                drainAfterRecovery = true
+                                return@launch
+                            }
+                            unchangedUnknown = if (receipt.state == "unknown" && receipt.revision == previousRevision)
+                                unchangedUnknown + 1 else 0
+                            if (unchangedUnknown >= 3) {
+                                if (isSelected(turn)) _streamHealth.value = StreamHealth.FAILED
+                                return@launch
+                            }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (failure: Exception) {
+                            failures++
+                            GatewayLog.w("OaiLatency", "recovery.failed agent=${turn.agent.id} conversation=${turn.conversationId} " +
+                                "client=$clientId type=${failure.javaClass.simpleName} code=${(failure as? AgentSessionException)?.code} attempt=$failures")
+                            if (turn.state !in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED))
+                                turn.state = GenerationState.OUTCOME_UNKNOWN
+                            if (isSelected(turn)) { _generationState.value = turn.state; _streamHealth.value = StreamHealth.RECONNECTING }
+                            if (failures >= 6 || (failure as? AgentSessionException)?.code in setOf(
+                                    "SESSION_REVOKED", "UNSUPPORTED", "UNSUPPORTED_CAPABILITY", "GENERATION_NOT_FOUND", "AGENT_RESPONSE_INVALID")) {
+                                if (isSelected(turn)) _streamHealth.value = StreamHealth.FAILED
+                                return@launch
+                            }
+                            // Only transient read failures retry, with a finite increasing backoff.
+                            delay((250L shl (failures - 1)).coerceAtMost(8000))
+                        }
+                    }
+                } finally {
+                    val completedJob = currentCoroutineContext()[Job]
+                    synchronized(recoveryJobs) {
+                        recoveryJobs.remove(key, completedJob)
+                        if (drainAfterRecovery) recoveringTurns.remove(key, turn)
+                    }
+                    // Relinquish both recovery slots before a fast queued turn
+                    // can complete and request its own reconciliation.
+                    if (drainAfterRecovery && isActive) {
+                        parentScope.launch(ioDispatcher) { drainQueuedSends(turn.agent, turn.conversationId) }
+                    }
+                }
+            }.also { recoveryJobs[key] = it }
+        }
+        job.start()
     }
 
     override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {
@@ -328,10 +502,17 @@ class CoreAgentConversationRepository(
 
     override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
         if (message.delivery == MessageDeliveryMode.STEER) return steerMessage(conversationId, message)
-        val agent = requireAgent()
+        return submitMessageForAgent(requireAgent(), conversationId, message)
+    }
+
+    private suspend fun submitMessageForAgent(agent: CoreAgent, conversationId: String, message: OutgoingMessage): MessageAcceptance {
         val key = agent.id to conversationId
-        val turn = NativeTurn(agent, conversationId)
-        if (turns.putIfAbsent(key, turn) != null) {
+        val turn = NativeTurn(agent, conversationId, message.clientMessageId.value)
+        val previous = synchronized(recoveryJobs) {
+            if (recoveringTurns.containsKey(key)) throw AgentSessionException("OUTCOME_UNKNOWN")
+            turns.putIfAbsent(key, turn)
+        }
+        if (previous != null) {
             if (message.delivery != MessageDeliveryMode.QUEUE) {
                 return steerMessage(conversationId, message)
             }
@@ -350,6 +531,7 @@ class CoreAgentConversationRepository(
         GatewayLog.d("OaiLatency", "send.start client=${message.clientMessageId.value} conversation=$conversationId")
         turn.generationId?.let { rememberGeneration(turn, it, fromHost = false) }
         var messageId = message.clientMessageId.value
+        var userAccepted = false
         var assistantMsgId = "stream_${message.clientMessageId.value}"
         var assistantHasNativeId = false
         var firstDeltaLogged = false
@@ -357,9 +539,14 @@ class CoreAgentConversationRepository(
         if (isSelected(turn)) {
             _generationId.value = turn.generationId
             _generationState.value = if (turn.generationId == null) GenerationState.QUEUED else GenerationState.RUNNING
+            _streamHealth.value = StreamHealth.CONNECTING
         }
         parentScope.launch(ioDispatcher) {
             var drainAfterTurn = false
+            var recoverAfterTurn = false
+            var nativeRevision: Long? = null
+            var nativeEventId: String? = null
+            var nativeExecutionRevision = -1L
             val text = StringBuilder()
             // Coalesce complete message snapshots, never raw deltas. UI backpressure
             // can delay this publisher but cannot suspend the HTTP/SSE reader.
@@ -369,7 +556,11 @@ class CoreAgentConversationRepository(
             val publisher = launch {
                 val delivered = mutableMapOf<String, String>()
                 for (snapshot in snapshots) for (event in snapshot) {
-                    val id = if (event is VerifiedConversationEvent.TimelineUpsert) "message:${event.message.id}" else event.eventId
+                    val id = when (event) {
+                        is VerifiedConversationEvent.TimelineUpsert -> "message:${event.message.id}"
+                        is VerifiedConversationEvent.ExecutionStepsUpdated -> "execution:${event.generationId}"
+                        else -> event.eventId
+                    }
                     if (delivered[id] != event.eventId) {
                         emitEvent(agent.id, event)
                         delivered[id] = event.eventId
@@ -380,23 +571,26 @@ class CoreAgentConversationRepository(
                 pending[key] = event
                 snapshots.trySend(pending.values.toList()).getOrThrow()
             }
-            var revision = assistantTimestamp
+            var revision = 0L
             var lastSnapshotNanos = 0L
             var lastPublishedState: String? = null
             var lastPublishedLength = -1
-            fun publish(state: String) {
+            fun publish(state: String, associateClient: Boolean = true) {
                 val current = text.toString()
                 // 没有任何可见变化时不占用管道：每一帧都应该携带新内容，否则
                 // 真正的打字帧会被同内容的空帧挤掉。
                 if (state == lastPublishedState && current.length == lastPublishedLength) return
                 lastPublishedState = state
                 lastPublishedLength = current.length
+                val contentRevision = nativeRevision ?: maxOf(++revision, (turn.messageRevisions[assistantMsgId] ?: -1L) + 1)
+                turn.messageRevisions[assistantMsgId] = contentRevision
                 enqueue("message:$assistantMsgId", VerifiedConversationEvent.TimelineUpsert(
-                    eventId = "evt_${UUID.randomUUID()}", occurredAt = System.currentTimeMillis(),
-                    revision = ++revision, message = TimelineMessage(
+                    eventId = "${nativeEventId ?: "evt_${UUID.randomUUID()}"}:$state", occurredAt = System.currentTimeMillis(),
+                    revision = contentRevision, message = TimelineMessage(
                         id = assistantMsgId, sender = "assistant", parts = listOf(MessagePart.Text(current)),
                         timestamp = assistantTimestamp, state = state,
-                        clientMessageId = ClientMessageId("assistant_${message.clientMessageId.value}"),
+                        clientMessageId = if (associateClient) ClientMessageId("assistant_${message.clientMessageId.value}") else null,
+                        contentRevision = nativeRevision, localPlaceholder = !assistantHasNativeId,
                         generationId = turn.generationId, conversationId = ConversationId(conversationId))))
             }
             suspend fun flush() {
@@ -407,22 +601,23 @@ class CoreAgentConversationRepository(
                 val id = turn.generationId ?: return
                 emitEvent(agent.id, VerifiedConversationEvent.GenerationCancelled("evt_${UUID.randomUUID()}",
                     System.currentTimeMillis(), id, ConversationId(conversationId)))
+                turn.state = GenerationState.CANCELLED
                 if (isSelected(turn)) _generationState.value = GenerationState.CANCELLED
             }
             try {
-                enqueue("accepted", VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
-                    System.currentTimeMillis(), messageId, message.clientMessageId.value, ConversationId(conversationId)))
                 val result = client.send(agent, conversationId, message.text,
                     attachmentIds = message.attachmentIds, clientMessageId = message.clientMessageId.value, onEvent = { event ->
                     when (event) {
                         is NativeAgentStreamEvent.MessageIdentity -> {
+                            if (isSelected(turn)) _streamHealth.value = StreamHealth.LIVE
                             event.messageId?.let { remoteId ->
                                 if (remoteId != assistantMsgId) {
                                     if (assistantHasNativeId && text.isNotEmpty()) {
-                                        publish("CONFIRMED")
+                                        publish("CONFIRMED", associateClient = false)
                                         text.clear()
                                         assistantTimestamp = System.currentTimeMillis()
                                     }
+                                    if (!assistantHasNativeId) pending.remove("message:$assistantMsgId")
                                     assistantMsgId = remoteId
                                     assistantHasNativeId = true
                                     lastSnapshotNanos = 0L
@@ -430,11 +625,16 @@ class CoreAgentConversationRepository(
                                     lastPublishedLength = -1
                                 }
                             }
+                            nativeRevision = event.contentRevision
+                            nativeEventId = event.eventId
                             event.userMessageId?.let { remoteId ->
-                                if (remoteId != messageId) {
+                                turn.userMessageId = remoteId
+                                if (!userAccepted || remoteId != messageId) {
                                     messageId = remoteId
+                                    userAccepted = true
                                     enqueue("accepted", VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
-                                        System.currentTimeMillis(), remoteId, message.clientMessageId.value, ConversationId(conversationId)))
+                                        System.currentTimeMillis(), remoteId, message.clientMessageId.value, ConversationId(conversationId),
+                                        agentReceived = false))
                                 }
                                 GatewayLog.d("OaiLatency",
                                     "accept.identity elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
@@ -442,9 +642,45 @@ class CoreAgentConversationRepository(
                         }
                         is NativeAgentStreamEvent.Generation -> {
                             rememberGeneration(turn, event.generationId)
-                            if (isSelected(turn)) {
-                                _generationId.value = event.generationId
-                                _generationState.value = GenerationState.RUNNING
+                            val lifecycleRevision = event.revision
+                            val lifecycleState = event.state
+                            if (!turn.cancelled && turn.state !in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)) {
+                                val advancesLifecycle = lifecycleState != null && lifecycleRevision != null && lifecycleRevision > turn.receiptRevision
+                                val legacyGeneration = lifecycleState == null && event.executionSteps == null
+                                if (advancesLifecycle || legacyGeneration) {
+                                    if (advancesLifecycle) turn.receiptRevision = requireNotNull(lifecycleRevision)
+                                    turn.state = when (lifecycleState) {
+                                        "queued" -> GenerationState.QUEUED
+                                        "unknown" -> GenerationState.OUTCOME_UNKNOWN
+                                        else -> GenerationState.RUNNING
+                                    }
+                                    if (isSelected(turn)) {
+                                        _generationId.value = event.generationId
+                                        _generationState.value = turn.state
+                                    }
+                                    if (advancesLifecycle && lifecycleState in setOf("queued", "running")) {
+                                        val acceptedId = event.userMessageId ?: turn.userMessageId
+                                        if (acceptedId != null) enqueue("delivery:${event.generationId}", VerifiedConversationEvent.MessageStatus(
+                                            "lifecycle:${event.generationId}:$lifecycleRevision", System.currentTimeMillis(),
+                                            ConversationId(conversationId), acceptedId, message.clientMessageId,
+                                            if (lifecycleState == "queued") AgentMessageStatus.QUEUED else AgentMessageStatus.DELIVERED,
+                                            requireNotNull(lifecycleRevision), null, event.generationId))
+                                    }
+                                }
+                            }
+                            val executionRevision = event.executionRevision
+                            val executionSteps = event.executionSteps
+                            if (executionSteps != null && executionRevision != null && executionRevision > nativeExecutionRevision) {
+                                nativeExecutionRevision = executionRevision
+                                enqueue("execution:${event.generationId}", VerifiedConversationEvent.ExecutionStepsUpdated(
+                                    requireNotNull(event.eventId), System.currentTimeMillis(), ConversationId(conversationId),
+                                    event.generationId, executionRevision, executionSteps.map { step ->
+                                        com.openandroidintelligence.conversation.model.NativeExecutionStep(
+                                            step.stepId, step.eventId, step.toolName, step.arguments, step.output,
+                                            runCatching { com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(step.status.uppercase()) }
+                                                .getOrDefault(com.openandroidintelligence.conversation.model.NativeExecutionStatus.UNKNOWN),
+                                            step.revision)
+                                    }, event.clientMessageId, event.userMessageId))
                             }
                         }
                         is NativeAgentStreamEvent.ApprovalRequested -> emitApproval(turn, event.approval, true) { enqueue(it.eventId, it) }
@@ -457,6 +693,7 @@ class CoreAgentConversationRepository(
                             GatewayLog.d("OaiLatency",
                                 "first.delta elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
                         }
+                        if (isSelected(turn)) _streamHealth.value = StreamHealth.LIVE
                         text.append(delta)
                         val now = System.nanoTime()
                         if (lastSnapshotNanos == 0L || now - lastSnapshotNanos >= 33_000_000L) {
@@ -466,6 +703,7 @@ class CoreAgentConversationRepository(
                     }
                 }
                 result.generationId?.let { rememberGeneration(turn, it) }
+                result.revision?.let { turn.receiptRevision = maxOf(turn.receiptRevision, it) }
                 result.text?.let { text.clear(); text.append(it) }
                 GatewayLog.d("OaiLatency",
                     "stream.done outcome=${result.outcome} elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
@@ -474,29 +712,40 @@ class CoreAgentConversationRepository(
                     flush()
                     cancelled()
                     drainAfterTurn = true
+                    recoverAfterTurn = agent.capabilities.generationRecovery
                 } else if (result.outcome != "completed") {
                     publish("OUTCOME_UNKNOWN")
                     flush()
                     queueUnknownBarriers.add(key)
+                    turn.state = GenerationState.OUTCOME_UNKNOWN
+                    recoverAfterTurn = true
                     if (isSelected(turn)) _generationState.value = GenerationState.OUTCOME_UNKNOWN
                 } else {
                     publish("CONFIRMED")
                     flush()
                     emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
                         System.currentTimeMillis(), ConversationId(conversationId), messageId,
-                        message.clientMessageId, AgentMessageStatus.COMPLETED, 1L, null, turn.generationId))
+                        message.clientMessageId, AgentMessageStatus.COMPLETED, result.revision ?: 1L, null, turn.generationId))
+                    turn.state = GenerationState.COMPLETED
                     if (isSelected(turn)) _generationState.value = GenerationState.COMPLETED
                     drainAfterTurn = true
+                    recoverAfterTurn = agent.capabilities.generationRecovery
                 }
             } catch (cancelled: CancellationException) {
                 // Closing a reader says nothing about whether Hermes stopped.
                 throw cancelled
             } catch (failure: Exception) {
                 GatewayLog.w("OaiLatency", "turn.failed client=${message.clientMessageId.value} " +
-                    "type=${failure.javaClass.simpleName} code=${(failure as? AgentSessionException)?.code} msg=${failure.message}")
+                    "type=${failure.javaClass.simpleName} code=${(failure as? AgentSessionException)?.code}")
                 if (turn.cancelled) { publish("CANCELLED"); flush(); cancelled() }
-                else if (failure is AgentSessionException && failure.code == "OUTCOME_UNKNOWN") {
+                else if (failure is AgentSessionException && (failure.code in setOf(
+                        "OUTCOME_UNKNOWN", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "STREAM_INTERRUPTED",
+                        "AGENT_UNAVAILABLE", "AGENT_STREAM_TOO_LARGE", "AGENT_STREAM_INVALID", "INVALID_AGENT_EVENT", "CURSOR_EXPIRED",
+                    ) || failure.code == "AGENT_FAILED" && agent.capabilities.generationRecovery && turn.userMessageId != null)) {
                     queueUnknownBarriers.add(key)
+                    turn.state = GenerationState.OUTCOME_UNKNOWN
+                    recoverAfterTurn = true
+                    if (isSelected(turn)) _streamHealth.value = StreamHealth.RECONNECTING
                     if (text.isNotEmpty()) publish("OUTCOME_UNKNOWN")
                     flush()
                     if (isSelected(turn)) _generationState.value = GenerationState.OUTCOME_UNKNOWN
@@ -512,9 +761,18 @@ class CoreAgentConversationRepository(
                 }
             } finally {
                 snapshots.close()
-                turns.remove(key, turn)
-                if (isSelected(turn) && _generationId.value == turn.generationId) _generationId.value = null
-                if (drainAfterTurn) {
+                val needsRecovery = recoverAfterTurn && agent.capabilities.generationRecovery
+                synchronized(recoveryJobs) {
+                    if (!needsRecovery && isSelected(turn) && _generationId.value == turn.generationId) {
+                        _generationId.value = null
+                        _streamHealth.value = if (drainAfterTurn) StreamHealth.IDLE else StreamHealth.FAILED
+                    }
+                    // Transfer ownership atomically: another send cannot enter
+                    // between the live reader and its durable reconciliation.
+                    if (turns.remove(key, turn) && needsRecovery) recoveringTurns[key] = turn
+                }
+                if (needsRecovery) startRecovery(turn)
+                if (drainAfterTurn && !recoverAfterTurn) {
                     queueUnknownBarriers.remove(key)
                     // A confirmed terminal state is the only local proof that
                     // draining the next queued turn cannot overlap this one.
@@ -523,7 +781,8 @@ class CoreAgentConversationRepository(
             }
         }
         // Only the host's first generation frame can issue a cancellable turn ID.
-        return MessageAcceptance(messageId, message.clientMessageId.value, turn.generationId.takeIf { agent.kind != "hermes" })
+        return MessageAcceptance(messageId, message.clientMessageId.value, turn.generationId.takeIf { agent.kind != "hermes" },
+            authoritative = false)
     }
 
     private data class QueuedSend(
@@ -559,14 +818,14 @@ class CoreAgentConversationRepository(
 
     private suspend fun drainQueuedSends(agent: CoreAgent, conversationId: String) {
         val key = agent.id to conversationId
-        if (turns.containsKey(key)) return
+        if (turns.containsKey(key) || recoveringTurns.containsKey(key)) return
         if (key in queueUnknownBarriers) return
         val head = synchronized(queuedSends) { queuedSends[key]?.firstOrNull() }
         if (head?.state == PendingDeliveryState.OUTCOME_UNKNOWN) return
         val next = takeQueuedSend(key) ?: return
         next.state = PendingDeliveryState.SENDING
         try {
-            submitMessage(conversationId, next.message.copy(delivery = MessageDeliveryMode.QUEUE))
+            submitMessageForAgent(agent, conversationId, next.message.copy(delivery = MessageDeliveryMode.QUEUE))
         } catch (busy: AgentSessionException) {
             if (busy.code != "SESSION_BUSY") {
                 GatewayLog.w("OaiLatency", "queued send failed client=${next.message.clientMessageId.value} code=${busy.code}")
@@ -634,7 +893,7 @@ class CoreAgentConversationRepository(
     private suspend fun retryPendingDeliveriesFor(agent: CoreAgent, conversationId: String) {
         val key = agent.id to conversationId
         val queued = synchronized(queuedSends) { queuedSends[key]?.toList().orEmpty() }
-        if (queued.isEmpty() || turns.containsKey(key)) return
+        if (queued.isEmpty() || turns.containsKey(key) || recoveringTurns.containsKey(key)) return
         if (queued.first().state == PendingDeliveryState.OUTCOME_UNKNOWN) return
         val current = try {
             withContext(ioDispatcher) { client.currentGeneration(agent, conversationId) }
@@ -710,8 +969,8 @@ class CoreAgentConversationRepository(
     }
 
     override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> {
-        val agentId = currentAgent()?.id
-        return _events.filter { it.agentId == agentId }.map { it.event }
+        val subscribedAgentId = currentAgent()?.id
+        return _events.filter { it.agentId == subscribedAgentId }.map { it.event }
     }
 
     override suspend fun cancelGeneration(generationId: String, requestId: String): CancelGenerationResult {
@@ -833,9 +1092,33 @@ class CoreAgentConversationRepository(
     }
 
     override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? {
-        return timeline(conversationId, PageRequest(null, 100)).messages.firstOrNull {
-            it.sender == "user" && it.clientMessageId == clientMessageId
+        val agent = requireAgent()
+        // A restored local send atom has no in-memory NativeTurn. Query its durable
+        // identity before returning absence; otherwise an explicit retry could resend.
+        val receipt = if (agent.capabilities.generationRecovery) withContext(ioDispatcher) {
+            client.generation(agent, conversationId, clientMessageId.value)
+        } else null
+        val message = withContext(ioDispatcher) { client.history(agent, conversationId) }
+            .map { timelineMessage(it, conversationId) }
+            .firstOrNull { it.sender == "user" && it.clientMessageId == clientMessageId }
+        if (receipt != null && settledClients[agent.id to conversationId] != clientMessageId.value) {
+            val key = agent.id to conversationId
+            val recovery = synchronized(recoveryJobs) {
+                val owner = turns[key] ?: recoveringTurns[key]
+                when {
+                    owner == null -> NativeTurn(agent, conversationId, clientMessageId.value)
+                    owner.clientMessageId == clientMessageId.value && turns[key] == null -> owner
+                    else -> null
+                }
+            }
+            recovery?.let { turn ->
+                rememberGeneration(turn, receipt.generationId)
+                startRecovery(turn)
+            }
         }
+        return message ?: receipt?.let { TimelineMessage(it.userMessageId, "user", emptyList(), 0,
+            conversationId = ConversationId(conversationId), clientMessageId = clientMessageId,
+            generationId = it.generationId) }
     }
 
     private fun parseDate(value: String?): Long {

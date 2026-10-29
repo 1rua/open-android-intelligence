@@ -46,6 +46,9 @@ data class TimelineMessage(
     val contentRevision: Long? = null,
     /** Gateway generation identity, when supplied by a live event. */
     val generationId: String? = null,
+    val executionSteps: List<NativeExecutionStep> = emptyList(),
+    /** 仅端侧临时流式行设为 true；不能从真实 ID 的字符串形式猜测。 */
+    val localPlaceholder: Boolean = false,
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)
@@ -120,6 +123,8 @@ data class MessageAcceptance(
     val correlationId: String,
     val generationId: String? = null,
     val delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL,
+    /** false 表示本地已记录/启动提交，尚无服务端身份回执。 */
+    val authoritative: Boolean = true,
 )
 
 enum class CancelGenerationOutcome {
@@ -297,6 +302,8 @@ sealed interface VerifiedConversationEvent {
         val messageId: String,
         val correlationId: String,
         val conversationId: ConversationId? = null,
+        /** Legacy Gateway acceptance also means delivered; native Core can acknowledge admission only. */
+        val agentReceived: Boolean = true,
     ) : VerifiedConversationEvent
 
     data class MessageStatus(
@@ -356,6 +363,18 @@ sealed interface VerifiedConversationEvent {
         override val occurredAt: Long,
         val revision: Long,
         val message: TimelineMessage,
+    ) : VerifiedConversationEvent
+
+    /** Native execution facts have their own revision domain, separate from message content. */
+    data class ExecutionStepsUpdated(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val conversationId: ConversationId,
+        val generationId: String,
+        val executionRevision: Long,
+        val steps: List<NativeExecutionStep>,
+        val clientMessageId: String? = null,
+        val userMessageId: String? = null,
     ) : VerifiedConversationEvent
 
     data class TimelineTombstoned(

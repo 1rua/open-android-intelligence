@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from importlib.metadata import entry_points
@@ -21,12 +22,13 @@ from .gateway.http import _status
 
 from .auth import Principal
 from .operations import NativeOperations, OperationConflict
+from .native_diagnostics import trace_native_stage
 
 logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
 CAPABILITIES = (
     "list", "history", "create", "send", "steer", "rename", "archive", "delete",
-    "cancel", "stream", "commands", "approvals", "attachments",
+    "cancel", "stream", "commands", "approvals", "attachments", "generationRecovery",
 )
 STREAM_EVENT_TYPES = frozenset({"delta", "done", "error", "generation", "approval_requested", "approval_resolved"})
 PROTOCOL_VERSIONS = ("1.0", "v1")
@@ -103,6 +105,9 @@ class SessionAdapter(Protocol):
     async def create(self, principal: Principal, title: str | None) -> dict[str, Any]: ...
     def send(self, principal: Principal, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]: ...
     async def current_generation(self, principal: Principal, session_id: str) -> dict[str, Any] | None: ...
+    async def generation(self, principal: Principal, session_id: str, *, client_message_id: str | None = None,
+                         generation_id: str | None = None, after_revision: int | None = None,
+                         wait_ms: int = 0) -> dict[str, Any] | None: ...
     async def steer(self, principal: Principal, session_id: str, text: str, generation_id: str,
                     client_message_id: str | None = None) -> dict[str, Any]: ...
     async def manage(self, principal: Principal, session_id: str, action: str, value: Any = None) -> dict[str, Any]: ...
@@ -595,16 +600,46 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @endpoint
     async def current_generation(request: web.Request) -> web.Response:
         principal = await principal_for(request)
-        adapter = registry.get(request.match_info["agent_id"], "send")
-        current = getattr(adapter, "current_generation", None)
+        session_id = safe_session_id(request)
+        query = request.query
+        if (set(query) - {"clientMessageId", "generationId", "afterRevision", "waitMs"}
+                or any(len(query.getall(key)) != 1 for key in query)):
+            raise AdapterError("INVALID_GENERATION_QUERY")
+        client_message_id, generation_id = query.get("clientMessageId"), query.get("generationId")
+        if (client_message_id is not None and re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", client_message_id) is None
+                or generation_id is not None and (not generation_id or len(generation_id) > 1024)):
+            raise AdapterError("INVALID_GENERATION_QUERY")
+        specific = client_message_id is not None or generation_id is not None
+        wait_options: dict[str, int] = {}
+        for key, option, maximum in (("afterRevision", "after_revision", 2**63 - 1), ("waitMs", "wait_ms", 25000)):
+            if key in query:
+                value = query[key]
+                if not specific or re.fullmatch(r"0|[1-9][0-9]{0,18}", value) is None or int(value) > maximum:
+                    raise AdapterError("INVALID_GENERATION_QUERY")
+                wait_options[option] = int(value)
+        if wait_options.get("wait_ms", 0) and "after_revision" not in wait_options:
+            raise AdapterError("INVALID_GENERATION_QUERY")
+        # Durable receipts remain readable after the host stops accepting new
+        # work. Authentication and the adapter's account/session checks still apply.
+        adapter = registry.get(request.match_info["agent_id"], None if specific else "send")
+        current = getattr(adapter, "generation" if specific else "current_generation", None)
         if not callable(current):
             raise AdapterError("UNSUPPORTED_CAPABILITY", 501)
-        generation = await current(principal, safe_session_id(request))
+        generation = (await current(principal, session_id, client_message_id=client_message_id, generation_id=generation_id, **wait_options)
+                      if specific else await current(principal, session_id))
+        if specific and not await active(principal):
+            raise AdapterError("SESSION_REVOKED", 401)
+        states = {"queued", "running", "unknown", "completed", "failed", "cancelled"} if specific else {"queued", "running", "unknown"}
         if generation is not None and (
             not isinstance(generation, dict)
             or not isinstance(generation.get("generationId"), str)
-            or generation.get("conversationId") != request.match_info["session_id"]
-            or generation.get("state") not in {"queued", "running", "unknown"}
+            or not generation["generationId"]
+            or generation.get("conversationId") != session_id
+            or generation.get("state") not in states
+            or specific and (
+                client_message_id is not None and generation.get("clientMessageId") != client_message_id
+                or generation_id is not None and generation.get("generationId") != generation_id
+                or type(generation.get("revision")) is not int or generation["revision"] < 0)
         ):
             raise AdapterError("HOST_INCOMPATIBLE", 502)
         return web.json_response({"generation": generation}, headers={"Cache-Control": "no-store"})
@@ -612,6 +647,7 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @routes.post(PREFIX + "/{agent_id}/sessions/{session_id}/messages")
     @endpoint
     async def send(request: web.Request) -> web.StreamResponse:
+        started_ns = time.monotonic_ns()
         principal = await principal_for(request)
         adapter = registry.get(request.match_info["agent_id"], "send")
         registry.get(request.match_info["agent_id"], "stream")
@@ -638,12 +674,24 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         if receipt is not None:
             # The transcript is read from its native host, never replayed from Core.
             raise AdapterError("REQUEST_ALREADY_EXECUTED", 409)
+        trace_native_stage("T2", client_message_id=client_message_id, request_id=request_id,
+                           state="validated", event_type="request", started_ns=started_ns)
         stream = adapter.send(principal, session_id, text, **kwargs)
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
         await response.prepare(request)
 
+        first_delta_written = False
         async def emit(event: dict[str, Any]) -> None:
+            nonlocal first_delta_written
             await response.write(("event: message\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
+            if event.get("type") != "delta" or not first_delta_written:
+                trace_native_stage("T5", client_message_id=event.get("clientMessageId", client_message_id),
+                    generation_id=event.get("generationId"), message_id=event.get("messageId"),
+                    event_id=event.get("eventId"), revision=event.get("contentRevision"),
+                    state=event.get("outcome", event.get("code")), event_type=event.get("type"),
+                    request_id=request_id, started_ns=started_ns)
+            if event.get("type") == "delta":
+                first_delta_written = True
 
         pending: asyncio.Task | None = None
         try:

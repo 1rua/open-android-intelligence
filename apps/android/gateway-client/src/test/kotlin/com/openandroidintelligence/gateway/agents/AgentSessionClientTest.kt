@@ -374,6 +374,165 @@ class AgentSessionClientTest {
         }
     }
 
+    @Test fun durableGenerationReceiptsRemainQueryableOfflineAndKeepExactIdentity() = runBlocking {
+        val recoverable = agent.copy(online = false, capabilities = agent.capabilities.copy(generationRecovery = true))
+        val transport = RecordingTransport("""{"generation":{"generationId":"gen_old","conversationId":"native","clientMessageId":"cm_old","userMessageId":"user_old","state":"completed","revision":9}}""")
+        val receipt = client(transport).generation(recoverable, "native", "cm_old", "gen_old", 8, 25000)
+        assertEquals("completed", receipt.state)
+        assertEquals(9, receipt.revision)
+        assertEquals("GET", transport.requests.single().method)
+        assertEquals("${AgentSessionClient.ROOT}/codex/sessions/native/generation?afterRevision=8&clientMessageId=cm_old&generationId=gen_old&waitMs=25000", transport.requests.single().target)
+        assertTrue(transport.requests.single().body.isEmpty())
+    }
+
+    @Test fun generationRecoveryRejectsForeignOrMalformedReceipts() = runBlocking {
+        val recoverable = agent.copy(capabilities = agent.capabilities.copy(generationRecovery = true))
+        for (bad in listOf("\"conversationId\":\"other\"", "\"clientMessageId\":\"other\"", "\"generationId\":\"other\"", "\"revision\":-1", "\"state\":\"invented\"")) {
+            val base = """{"generationId":"gen_old","conversationId":"native","clientMessageId":"cm_old","userMessageId":"user_old","state":"completed","revision":9}"""
+            val key = bad.substringBefore(':')
+            val fields = base.removeSurrounding("{", "}").split(',').filterNot { it.startsWith(key) } + bad
+            val transport = RecordingTransport("{\"generation\":{${fields.joinToString(",")}}}")
+            assertEquals("AGENT_RESPONSE_INVALID", runCatching {
+                client(transport).generation(recoverable, "native", "cm_old", "gen_old")
+            }.exceptionOrNull()?.message)
+        }
+    }
+
+    @Test fun nativeDeltaIdentityRejectsReplayedEventsAndLowerContentRevisionsWithoutMergingRealMessages() = runBlocking {
+        val frames = listOf(
+            """{"type":"generation","generationId":"g","userMessageId":"u","clientMessageId":"cm"}""",
+            """{"type":"delta","messageId":"stream_real_one","eventId":"evt_two","contentRevision":2,"text":"A"}""",
+            """{"type":"delta","messageId":"stream_real_one","eventId":"evt_two","contentRevision":2,"text":"A"}""",
+            """{"type":"delta","messageId":"stream_real_one","eventId":"evt_old","contentRevision":1,"text":"stale"}""",
+            """{"type":"delta","messageId":"stream_real_one","eventId":"evt_three","contentRevision":3,"text":"B"}""",
+            """{"type":"delta","messageId":"stream_real_one","eventId":"evt_three","contentRevision":4,"text":"replayed"}""",
+            """{"type":"delta","messageId":"stream_real_two","eventId":"evt_four","contentRevision":1,"text":"AB"}""",
+            """{"type":"delta","messageId":"stream_real_two","eventId":"evt_four","contentRevision":1,"text":"AB"}""",
+            """{"type":"done","messageId":"stream_real_two","eventId":"evt_four","contentRevision":1,"generationId":"g","text":"AB","outcome":"completed"}""",
+        )
+        val output = linkedMapOf<String, StringBuilder>()
+        var messageId: String? = null
+        val result = client(streamTransport(frames)).send(agent, "native", "synthetic", clientMessageId = "cm",
+            onEvent = { if (it is NativeAgentStreamEvent.MessageIdentity) messageId = it.messageId }) {
+            output.getOrPut(requireNotNull(messageId)) { StringBuilder() }.append(it)
+        }
+        assertEquals(mapOf("stream_real_one" to "AB", "stream_real_two" to "AB"), output.mapValues { it.value.toString() })
+        assertEquals("completed", result.outcome)
+        assertEquals("AB", result.text)
+    }
+
+    @Test fun oldDoneContentCannotReplaceANewerMessageButStillConfirmsTheLifecycle() = runBlocking {
+        val events = mutableListOf<NativeAgentStreamEvent>()
+        val output = StringBuilder()
+        val result = client(streamTransport(listOf(
+            """{"type":"generation","generationId":"g"}""",
+            """{"type":"delta","messageId":"answer","eventId":"new","contentRevision":2,"text":"newer"}""",
+            """{"type":"done","generationId":"g","messageId":"answer","eventId":"old","contentRevision":1,"text":"stale","outcome":"completed"}""",
+        ))).send(agent, "native", "synthetic", onEvent = { events += it }) { output.append(it) }
+        assertEquals("newer", output.toString())
+        assertEquals("completed", result.outcome)
+        assertNull("A lower-version final snapshot cannot overwrite newer accepted text", result.text)
+        assertEquals(2L, events.filterIsInstance<NativeAgentStreamEvent.MessageIdentity>().last().contentRevision)
+    }
+
+    @Test fun eventOnlyReplayBudgetStopsObservationInsteadOfEvictingIdentityProtection() = runBlocking {
+        val frames = (1..4097).map { """{"type":"delta","messageId":"answer","eventId":"evt_$it","text":"x"}""" } +
+            """{"type":"done","messageId":"answer","text":"complete"}"""
+        try {
+            client(streamTransport(frames)).send(agent, "native", "synthetic") {}
+            fail("A bounded replay ledger must reconcile rather than forget unversioned event identities")
+        } catch (failure: AgentSessionException) {
+            assertEquals("OUTCOME_UNKNOWN", failure.code)
+        }
+    }
+
+    @Test fun legacyDeltasWithoutReliableMetadataKeepTheirOriginalAppendSemantics() = runBlocking {
+        val output = StringBuilder()
+        client(streamTransport(listOf("""{"type":"delta","text":"same"}""",
+            """{"type":"delta","text":"same"}""", """{"type":"done","text":"samesame"}""")))
+            .send(agent, "native", "synthetic") { output.append(it) }
+        assertEquals("samesame", output.toString())
+    }
+
+    @Test fun generationQueryEncodesNativeIdentityAsAQueryValueWhileKeepingCanonicalSignedOrder() = runBlocking {
+        val nativeGeneration = "gen/one?x=中 &"
+        val recoverable = agent.copy(capabilities = agent.capabilities.copy(generationRecovery = true))
+        val transport = RecordingTransport("""{"generation":{"generationId":"$nativeGeneration","conversationId":"native","clientMessageId":"cm","userMessageId":"u","state":"completed","revision":2}}""")
+        val receipt = client(transport).generation(recoverable, "native", "cm", nativeGeneration, 1, 25000)
+        assertEquals(nativeGeneration, receipt.generationId)
+        assertEquals("${AgentSessionClient.ROOT}/codex/sessions/native/generation?afterRevision=1&clientMessageId=cm&generationId=gen%2Fone%3Fx%3D%E4%B8%AD%20%26&waitMs=25000", transport.requests.single().target)
+    }
+
+    @Test fun terminalGenerationKeepsItsDurableLifecycleRevisionApartFromMessageContent() = runBlocking {
+        val result = client(streamTransport(listOf(
+            """{"type":"generation","generationId":"g","state":"queued","revision":0}""",
+            """{"type":"generation","generationId":"g","state":"running","revision":1}""",
+            """{"type":"delta","generationId":"g","messageId":"answer","eventId":"content-99","contentRevision":99,"text":"answer"}""",
+            """{"type":"done","generationId":"g","messageId":"answer","eventId":"content-99","contentRevision":99,"revision":2,"text":"answer","outcome":"completed"}""",
+        ))).send(agent, "native", "synthetic") {}
+        assertEquals(2L, result.revision)
+        assertEquals("completed", result.outcome)
+    }
+
+    @Test fun generationLifecycleKeepsQueuedRunningAndToolRevisionsIndependent() = runBlocking {
+        val observed = mutableListOf<NativeAgentStreamEvent.Generation>()
+        val frames = listOf(
+            """{"type":"generation","generationId":"g","state":"queued","revision":1,"clientMessageId":"cm","userMessageId":"u"}""",
+            """{"type":"generation","generationId":"g","state":"running","revision":2,"clientMessageId":"cm","userMessageId":"u","eventId":"received"}""",
+            """{"type":"generation","generationId":"g","state":"queued","revision":1,"clientMessageId":"cm","userMessageId":"u"}""",
+            """{"type":"generation","generationId":"g","executionRevision":30,"eventId":"tools","executionSteps":[{"stepId":"call","eventId":"native:2","toolName":"read","arguments":"{}","status":"running","revision":30}]}""",
+            """{"type":"done","generationId":"g","outcome":"completed"}""",
+        )
+        client(streamTransport(frames)).send(agent, "native", "synthetic", clientMessageId = "cm", onEvent = {
+            if (it is NativeAgentStreamEvent.Generation) observed += it
+        }) {}
+        assertEquals(listOf("queued", "running"), observed.mapNotNull { it.state })
+        assertEquals(listOf(1L, 2L), observed.filter { it.state != null }.map { it.revision })
+        assertEquals(30L, observed.single { it.executionSteps != null }.executionRevision)
+        assertNull(observed.single { it.executionSteps != null }.state)
+    }
+
+    @Test fun nativeExecutionSnapshotsKeepTheirOwnRevisionAndDoNotResetAssistantContentIdentity() = runBlocking {
+        val frames = listOf(
+            """{"type":"generation","generationId":"g","userMessageId":"u","clientMessageId":"cm"}""",
+            """{"type":"delta","generationId":"g","messageId":"answer","eventId":"text_one","contentRevision":9,"text":"private body"}""",
+            """{"type":"generation","generationId":"g","userMessageId":"u","clientMessageId":"cm","eventId":"tool_one","executionRevision":1,"executionSteps":[{"stepId":"call","eventId":"tool_one","toolName":"read","arguments":"{}","output":null,"status":"running","revision":1}]}""",
+            """{"type":"generation","generationId":"g","userMessageId":"u","clientMessageId":"cm","eventId":"tool_two","executionRevision":2,"executionSteps":[{"stepId":"call","eventId":"tool_two","toolName":"read","arguments":"{}","output":"synthetic output","status":"completed","revision":2}]}""",
+            """{"type":"done","generationId":"g","messageId":"answer","eventId":"text_one","contentRevision":9,"text":"private body"}""",
+        )
+        val events = mutableListOf<NativeAgentStreamEvent>()
+        val result = client(streamTransport(frames)).send(agent, "native", "synthetic", clientMessageId = "cm", onEvent = { events += it }) {}
+        val tools = events.filterIsInstance<NativeAgentStreamEvent.Generation>().filter { it.executionSteps != null }
+        assertEquals(listOf(1L, 2L), tools.map { it.executionRevision })
+        assertEquals(listOf("running", "completed"), tools.map { it.executionSteps!!.single().status })
+        assertTrue("Tool snapshots must not reset the live assistant content version",
+            events.filterIsInstance<NativeAgentStreamEvent.MessageIdentity>().filter { it.messageId == "answer" }.all { it.contentRevision == 9L })
+        assertEquals("answer", result.messageId)
+    }
+
+    @Test fun networkEvidenceRecordsOnlyTheFirstDeltaAndControlBoundariesWithoutPrivateBody() = runBlocking {
+        val previousEnabled = com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidenceEnabled
+        val previousSink = com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink
+        val logs = mutableListOf<String>()
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidenceEnabled = true
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { _, message -> logs += message }
+        try {
+            val frames = listOf("""{"type":"generation","generationId":"g","clientMessageId":"cm"}""") +
+                (1..20).map { """{"type":"delta","messageId":"answer","eventId":"evt_$it","contentRevision":$it,"text":"private token"}""" } +
+                """{"type":"done","generationId":"g","messageId":"answer","text":"private token"}"""
+            client(streamTransport(frames)).send(agent, "native", "synthetic", clientMessageId = "cm") {}
+            assertEquals(1, logs.count { "T1.request_started" in it })
+            assertEquals(3, logs.count { "T6.sse_read" in it })
+            assertFalse(logs.any { "private token" in it || "Bearer access" in it })
+        } finally {
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidenceEnabled = previousEnabled
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = previousSink
+        }
+    }
+
+    private fun streamTransport(frames: List<String>) = RecordingTransport(
+        frames.joinToString("") { "event: message\ndata: $it\n\n" }, "text/event-stream")
+
     private fun client(transport: GatewayByteTransport) = AgentSessionClient(GatewayHttpClient(
         GatewayProfile("account", "device", "session", "https://core.example", accessToken = "access"),
         transport, { ByteArray(64) }, InMemoryEventCursorStore()))

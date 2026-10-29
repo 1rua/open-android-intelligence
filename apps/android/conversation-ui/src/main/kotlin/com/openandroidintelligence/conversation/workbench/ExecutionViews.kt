@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -35,6 +36,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import com.openandroidintelligence.conversation.components.ExpandableRegion
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.AppRadius
@@ -183,6 +185,9 @@ fun ExecutionProcessPanel(
     val stateColors = LocalAppStateColors.current
 
     val hasFailure = run.steps.any { it is ExecutionStep.ToolCall && !it.block.isSuccess }
+    val nativeStatuses = run.steps.filterIsInstance<ExecutionStep.ToolCall>().mapNotNull { it.block.executionStatus }
+    val unknownSteps = nativeStatuses.count { it == NativeExecutionStatus.UNKNOWN }
+    val nativeRunning = nativeStatuses.any { it == NativeExecutionStatus.RUNNING }
     val accentColor = when {
         hasFailure -> MaterialTheme.colorScheme.error
         run.interrupted -> stateColors.warning
@@ -207,13 +212,17 @@ fun ExecutionProcessPanel(
 
     val baseTitle = if (expanded) {
         "执行过程 · ${run.stepCount} 步"
+    } else if (unknownSteps > 0 || nativeRunning) {
+        "执行过程 · ${run.stepCount} 步"
     } else {
         "已完成 ${run.stepCount} 步执行与思考"
     }
     val failureSuffix = if (run.failedStepCount > 0) " · 含 ${run.failedStepCount} 步失败" else ""
     val interruptedSuffix = if (run.interrupted) " · 已中断" else ""
     val actionSuffix = if (expanded) " · 点击收起" else " · 点击展开"
-    val title = "$baseTitle$failureSuffix$interruptedSuffix$actionSuffix"
+    val unknownSuffix = if (unknownSteps > 0) " · $unknownSteps 步结果未知" else ""
+    val runningSuffix = if (nativeRunning) " · 执行中" else ""
+    val title = "$baseTitle$failureSuffix$interruptedSuffix$unknownSuffix$runningSuffix$actionSuffix"
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -236,7 +245,11 @@ fun ExecutionProcessPanel(
                     }
                     .semantics {
                         contentDescription =
-                            "执行过程，已完成 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"
+                            if (unknownSteps > 0 || nativeRunning) {
+                                "执行过程，${run.stepCount} 步$unknownSuffix$runningSuffix，${if (expanded) "已展开" else "已收起"}"
+                            } else {
+                                "执行过程，已完成 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"
+                            }
                         stateDescription = if (expanded) "已展开" else "已收起"
                     }
                     .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
@@ -281,29 +294,31 @@ fun ExecutionProcessPanel(
                         ),
                     verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
                 ) {
-                    run.steps.forEach { step ->
-                        when (step) {
-                            is ExecutionStep.Thought -> MarkdownThoughtBlockView(
-                                block = step.block,
-                                // 过程区里的步骤只在整轮仍流式时保留实时指示；
-                                // 已折叠的步骤默认是已完成或已中断的。
-                                isStreaming = run.isStreaming && step.entryIsStreaming,
-                                timingKey = step.stepKey,
-                            )
+                    run.steps.forEachIndexed { index, step ->
+                        key(step.stepKey ?: "${step.entryKey}:$index") {
+                            when (step) {
+                                is ExecutionStep.Thought -> MarkdownThoughtBlockView(
+                                    block = step.block,
+                                    // 过程区里的步骤只在整轮仍流式时保留实时指示；
+                                    // 已折叠的步骤默认是已完成或已中断的。
+                                    isStreaming = run.isStreaming && step.entryIsStreaming,
+                                    timingKey = step.stepKey,
+                                )
 
-                            is ExecutionStep.ToolCall -> MarkdownToolCallView(
-                                block = step.block,
-                                isStreaming = run.isStreaming && step.entryIsStreaming,
-                                timingKey = step.stepKey,
-                            )
+                                is ExecutionStep.ToolCall -> MarkdownToolCallView(
+                                    block = step.block,
+                                    isStreaming = run.isStreaming && step.entryIsStreaming,
+                                    timingKey = step.stepKey,
+                                )
 
-                            is ExecutionStep.Narrative -> CompositionLocalProvider(
-                                LocalMarkdownCompact provides true,
-                            ) {
-                                MarkdownDocumentView(blocks = listOf(step.block), isStreaming = false)
+                                is ExecutionStep.Narrative -> CompositionLocalProvider(
+                                    LocalMarkdownCompact provides true,
+                                ) {
+                                    MarkdownDocumentView(blocks = listOf(step.block), isStreaming = false)
+                                }
+
+                                is ExecutionStep.Attachments -> processAttachmentsSlot(step.entry)
                             }
-
-                            is ExecutionStep.Attachments -> processAttachmentsSlot(step.entry)
                         }
                     }
                 }

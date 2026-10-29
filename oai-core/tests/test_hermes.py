@@ -1,5 +1,6 @@
 """Real Gateway account stores and wire events around native runtime seams."""
 import asyncio
+from contextlib import closing
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,6 +57,7 @@ async def test_account_binding_is_authority_and_unbound_conversations_are_not_na
     account.close()
     assert len(await adapter.list_sessions(Principal("alice"))) == 1
     assert not await adapter.status()
+    assert adapter.descriptor()["capabilities"]["generationRecovery"]
     assert not adapter.descriptor()["capabilities"]["create"]
     with pytest.raises(AdapterError):
         await adapter.create(Principal("alice"), "new")
@@ -69,6 +71,13 @@ async def test_remote_mapping_is_one_to_one_and_header_identity_cannot_be_inject
     async with TestClient(TestServer(app)) as client:
         url = str(client.make_url("/")).rstrip("/")
         remote = HermesRemoteSessionAdapter(url, token, {"core-alice": "alice", "core-bob": "bob"})
+        registry = AgentRegistry([remote])
+        try:
+            discovered = await registry.discover()
+            assert not discovered[0]["online"]
+            assert discovered[0]["capabilities"]["generationRecovery"]
+        finally:
+            await registry.close()
         assert (await remote.list_sessions(Principal("core-alice")))[0]["title"] == "alice"
         assert (await remote.list_sessions(Principal("core-bob")))[0]["title"] == "bob"
         with pytest.raises(AdapterError) as error:
@@ -161,6 +170,81 @@ async def test_core_and_real_hermes_http_bridge_share_the_bounded_message_budget
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_state", ["completed", "cancelled"])
+async def test_generation_frame_distinguishes_server_acceptance_from_native_admission(core, terminal_state):
+    """A saved queued request is not proof the native handler has started."""
+    principal = Principal("alice", device_id="phone")
+    admitted, finished = asyncio.Event(), asyncio.Event()
+
+    class Runtime:
+        _loop = asyncio.get_running_loop()
+        _session_store = object()
+        _message_handler = staticmethod(lambda: None)
+        services = SimpleNamespace(core=core)
+
+        def _track_background_task(self, task, label):
+            self.task = task
+
+        async def _notify_agent_inbound(self, path, body, response, owner):
+            await admitted.wait()
+            accepted = response["data"]
+            with closing(core.open_gateway_account(owner)) as account:
+                # Another message's delivery receipt must not advance this turn.
+                account.events.append("conversation.message.status", "other-client", {
+                    "conversationId": accepted["conversationId"], "messageId": "other-user",
+                    "clientMessageId": "other-client", "status": "delivered", "revision": 99,
+                    "errorCode": None})
+                claim = account.conversations.claim_dispatch("admission-client")
+                account.conversations.update_dispatch_status(accepted["messageId"], "delivered", None,
+                    "admission-client", claim_token=claim["claimToken"])
+                self.running = account.conversations.workflow.for_message(accepted["messageId"])
+                self.delivered_event = account.events.read_after(None)[-1]["eventId"]
+            await finished.wait()
+            with closing(core.open_gateway_account(owner)) as account:
+                account.conversations.workflow.settle(accepted["messageId"], terminal_state)
+                if terminal_state == "cancelled":
+                    account.events.append("conversation.generation.cancelled", "cancel", {
+                        "conversationId": accepted["conversationId"], "generationId": accepted["generationId"],
+                        "outcome": "CANCELLED"})
+                # A replayed old delivered receipt cannot reopen a terminal turn.
+                account.events.append("conversation.message.status", "late-delivery", {
+                    "conversationId": accepted["conversationId"], "messageId": accepted["messageId"],
+                    "clientMessageId": "admission-client", "status": "delivered", "revision": 1,
+                    "errorCode": None})
+
+    runtime = Runtime()
+    adapter = HermesSessionAdapter(core, runtime)
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    stream = adapter.send(principal, conversation, "synthetic prompt", client_message_id="admission-client")
+    try:
+        queued = await anext(stream)
+        with closing(core.open_gateway_account("alice")) as account:
+            accepted = account.conversations.workflow.for_message(queued["userMessageId"])
+        assert queued["state"] == accepted["state"] == "queued"
+        assert queued["revision"] == accepted["revision"]
+        admitted.set()
+        running = await asyncio.wait_for(anext(stream), timeout=2)
+        assert running == {"type": "generation", "generationId": queued["generationId"],
+            "clientMessageId": "admission-client", "userMessageId": queued["userMessageId"],
+            "state": "running", "revision": runtime.running["revision"], "eventId": runtime.delivered_event}
+        assert running["revision"] > queued["revision"]
+        finished.set()
+        rest = [event async for event in stream]
+        assert not any(event.get("state") == "running" for event in rest)
+        assert rest[-1]["type"] == "done" and rest[-1]["outcome"] == terminal_state
+        with closing(core.open_gateway_account("alice")) as account:
+            terminal = account.conversations.workflow.for_message(queued["userMessageId"])
+        assert rest[-1]["revision"] == terminal["revision"] == running["revision"] + 1
+        assert queued["revision"] == 0 and running["revision"] == 1
+    finally:
+        admitted.set()
+        finished.set()
+        await stream.aclose()
+        if hasattr(runtime, "task"):
+            await asyncio.gather(runtime.task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_real_event_store_frames_stream_accumulated_native_text_and_do_not_leak_accounts(core):
     adapter = HermesSessionAdapter(core)
     conversation = (await adapter.list_sessions(Principal("alice")))[0]["id"]
@@ -191,18 +275,170 @@ async def test_real_event_store_frames_stream_accumulated_native_text_and_do_not
     events = [event async for event in adapter.send(Principal("alice", device_id="phone"), conversation, "hello")]
     assert [event["text"] for event in events if event["type"] == "delta"] == ["原生", "回复"]
     assert events[0]["type"] == "generation"
-    assert events[-1] == {"type": "done", "text": "原生回复", "outcome": "completed",
+    with closing(core.open_gateway_account("alice")) as account:
+        terminal = account.conversations.workflow.for_message(events[0]["userMessageId"])
+    assert events[-1] == {"type": "done", "text": "原生回复", "outcome": "completed", "revision": terminal["revision"],
                           "generationId": events[0]["generationId"], "messageId": "reply",
+                          "contentRevision": 0, "eventId": events[-2]["eventId"],
                           "clientMessageId": events[0]["clientMessageId"], "userMessageId": events[0]["userMessageId"]}
+    assert all(event["generationId"] == events[0]["generationId"] for event in events)
+    assert [event["contentRevision"] for event in events if event["type"] == "delta"] == [0, 0]
     assert core._event_sinks == []
     with pytest.raises(AdapterError) as error:
         await anext(adapter.send(Principal("bob", device_id="phone"), conversation, "hello"))
     assert error.value.status == 404
 
 
+@pytest.mark.asyncio
+async def test_slow_stream_replays_every_native_message_in_commit_order(core):
+    """A stalled phone cannot evict earlier real replies behind a delta burst."""
+    principal = Principal("alice", device_id="phone")
+
+    class Runtime:
+        _loop = asyncio.get_running_loop()
+        _session_store = object()
+        _message_handler = staticmethod(lambda: None)
+        services = SimpleNamespace(core=core)
+
+        def _track_background_task(self, task, label):
+            self.task = task
+
+        async def _notify_agent_inbound(self, path, body, response, owner):
+            accepted = response["data"]
+            with closing(core.open_gateway_account(owner)) as account, account.store.transaction():
+                core.request_command_approval(account, "burst-approval", accepted["conversationId"],
+                    "synthetic command", "synthetic approval", [{"choice": "once", "label": "允许一次"}], 60)
+                account.approvals.settle("burst-approval", "once")
+                account.events.append("conversation.approval.resolved", "burst-approval", {
+                    "approvalId": "burst-approval", "conversationId": accepted["conversationId"],
+                    "decision": "once", "decidedAt": 1000,
+                })
+                for index in range(1030):
+                    account.events.append("conversation.message.delta", "burst", {
+                        "conversationId": accepted["conversationId"],
+                        "messageId": f"reply-{index}",
+                        "sender": "assistant", "parts": [{"type": "text", "text": str(index)}],
+                        "text": str(index), "timestamp": 1000, "revision": index,
+                        "generationId": accepted["generationId"],
+                    })
+                account.conversations.workflow.settle(accepted["messageId"], "completed")
+
+    runtime = Runtime()
+    adapter = HermesSessionAdapter(core, runtime)
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    stream = adapter.send(principal, conversation, "synthetic", client_message_id="slow-client")
+    try:
+        first = await anext(stream)
+        assert first["type"] == "generation"
+        # Leave the observer suspended until the entire host burst commits.
+        await runtime.task
+        await asyncio.sleep(0)
+        events = [event async for event in stream]
+    finally:
+        await stream.aclose()
+    replies = [event for event in events if event["type"] == "delta"]
+    assert [event["type"] for event in events[:2]] == ["approval_requested", "approval_resolved"]
+    assert [event["messageId"] for event in replies] == [f"reply-{index}" for index in range(1030)]
+    assert events[-1]["type"] == "done"
+    assert events[-1]["text"] == "1029"
+    assert core._event_sinks == []
+
+
 def test_hermes_runtime_must_share_its_gateway_core(core):
     with pytest.raises(ValueError):
         HermesSessionAdapter(core, SimpleNamespace(services=SimpleNamespace(core=object())))
+
+
+@pytest.mark.asyncio
+async def test_completed_generation_remains_queryable_after_stream_and_runtime_close(core):
+    adapter = HermesSessionAdapter(core)
+    alice = Principal("alice", device_id="phone")
+    conversation = (await adapter.list_sessions(alice))[0]["id"]
+    account = core.open_gateway_account("alice")
+    try:
+        accepted = account.conversations.accept_message(
+            conversation, "durable-client", "synthetic", [], "phone", "accept", "accept")
+        assert account.conversations.workflow.for_message(accepted["messageId"])["revision"] == 0
+        account.conversations.workflow.claim(accepted["messageId"])
+        assert account.conversations.workflow.for_message(accepted["messageId"])["revision"] == 1
+        account.conversations.workflow.settle(accepted["messageId"], "completed")
+        account.conversations.workflow.settle(accepted["messageId"], "running")
+    finally:
+        account.close()
+
+    receipt = await adapter.generation(alice, conversation, client_message_id="durable-client")
+    assert receipt == {
+        "conversationId": conversation, "generationId": accepted["generationId"],
+        "clientMessageId": "durable-client", "userMessageId": accepted["messageId"],
+        "state": "completed", "revision": 2,
+    }
+    assert await adapter.generation(alice, conversation, generation_id=accepted["generationId"]) == receipt
+    assert await asyncio.wait_for(adapter.generation(
+        alice, conversation, generation_id=accepted["generationId"], after_revision=2, wait_ms=25000), .5) == receipt
+    with pytest.raises(AdapterError) as mismatch:
+        await adapter.generation(alice, conversation, generation_id=accepted["generationId"],
+                                 client_message_id="different-client")
+    assert mismatch.value.code == "GENERATION_NOT_FOUND"
+    with pytest.raises(AdapterError) as another_account:
+        await adapter.generation(Principal("bob"), conversation, generation_id=accepted["generationId"])
+    assert another_account.value.status == 404
+
+    token = "synthetic-terminal-query-bridge-token-1234567890"
+    async with TestClient(TestServer(create_hermes_bridge_app(adapter, token, ["alice", "bob"]))) as client:
+        headers = {"Authorization": "Bearer " + token, "X-OAI-Account": "alice"}
+        path = "/oai/session-adapter/v1/sessions/" + conversation + "/generation"
+        response = await client.get(path, params={"clientMessageId": "durable-client"}, headers=headers)
+        assert response.status == 200
+        assert (await response.json())["generation"] == receipt
+        for query in ("clientMessageId=", "accountId=bob", "clientMessageId=a&clientMessageId=b"):
+            response = await client.get(path + "?" + query, headers=headers)
+            assert response.status == 400
+
+
+@pytest.mark.asyncio
+async def test_generation_long_poll_wakes_on_committed_turn_event(core, monkeypatch):
+    adapter = HermesSessionAdapter(core)
+    principal = Principal("alice", device_id="phone")
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    with closing(core.open_gateway_account("alice")) as account:
+        accepted = account.conversations.accept_message(
+            conversation, "wait-client", "synthetic", [], "phone", "accept", "accept")
+    registered = asyncio.Event()
+    original_register = core.register_event_sink
+    def register(sink):
+        original_register(sink)
+        registered.set()
+    monkeypatch.setattr(core, "register_event_sink", register)
+    waiter = asyncio.create_task(adapter.generation(
+        principal, conversation, client_message_id="wait-client", after_revision=0, wait_ms=25000))
+    await asyncio.wait_for(registered.wait(), .5)
+    with closing(core.open_gateway_account("alice")) as account:
+        account.conversations.workflow.settle(accepted["messageId"], "failed")
+        account.events.append("conversation.message.status", "terminal-wake", {
+            "conversationId": conversation, "messageId": accepted["messageId"],
+            "clientMessageId": "wait-client", "status": "failed", "revision": 1,
+            "errorCode": "AGENT_UNAVAILABLE", "generationId": accepted["generationId"],
+        })
+    result = await asyncio.wait_for(waiter, .5)
+    assert result["state"] == "failed"
+    assert result["revision"] == 1
+    assert core._event_sinks == []
+
+
+@pytest.mark.asyncio
+async def test_history_preserves_authoritative_identity_revision_and_generation(core):
+    adapter = HermesSessionAdapter(core)
+    alice = Principal("alice")
+    conversation = (await adapter.list_sessions(alice))[0]["id"]
+    core.history_reader = lambda *_args: [{
+        "messageId": "native-assistant", "sender": "assistant", "text": "synthetic",
+        "timestamp": 1000, "generationId": "generation-native", "contentRevision": 7,
+        "state": "CONFIRMED", "anchorClientMessageId": "client-native", "parts": [],
+    }]
+    message = (await adapter.history(alice, conversation))[0]
+    assert message["generationId"] == "generation-native"
+    assert message["contentRevision"] == 7
+    assert message["state"] == "CONFIRMED"
 
 
 @pytest.mark.asyncio

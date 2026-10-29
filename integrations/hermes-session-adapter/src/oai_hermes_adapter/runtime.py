@@ -23,6 +23,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 
 from oai_core.gateway.core import AgentSessionBindings, GatewayError, NEW_CONVERSATION_COMMAND, iso_millis, _epoch_millis
 from oai_core.sessions import AdapterError
+from oai_core.native_diagnostics import trace_native_stage
 from .platform_identity import GATEWAY_PLATFORM_ID, GATEWAY_PLATFORM_IDS
 from .context import native_input_receipt, trusted_turn
 from .bridge import NativeApprovalMixin, create_hermes_bridge_app
@@ -30,9 +31,9 @@ from .sessions import HermesSessionAdapter
 from .backend import SessionBackend
 from .host_history import HermesHistoryPort
 from .history_media import HistoryMedia
+from .tool_events import NativeToolObserver
 
 logger = logging.getLogger(__name__)
-MAX_REMEMBERED_TURNS = 256
 NATIVE_HERMES_AVAILABLE = True
 
 
@@ -93,7 +94,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         self._background_tasks = set()
         self._conv_to_account = {}
         self._processing_media_files = {}
-        self._turn_replies = {}
         self._generation_locks = {}
         self._conversation_platforms = {}
         self._streaming_replies = {}
@@ -112,6 +112,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             history = HermesHistoryPort(self.services.core, self._session_store)
             self.services.core.history_reader = history.read
             self.services.core.conversation_manager = history.manage
+            self._tool_observer = NativeToolObserver(self.services.core, history)
             self._cleanup_inbound_media_cache()
             self._app = create_hermes_bridge_app(HermesSessionAdapter(self.services.core, self), self._token, self._accounts)
             self._runner = web.AppRunner(self._app)
@@ -346,7 +347,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 candidate = metadata.get("messageId") or metadata.get("message_id")
                 if isinstance(candidate, str) and candidate:
                     named = candidate
-            message_id = self._published_reply_id(chat_id, content, named)
+            message_id = named or f"msg_{uuid.uuid4().hex}"
             if isinstance(metadata, dict) and metadata.get("expect_edits"):
                 await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
             else:
@@ -376,7 +377,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             generation = self._reply_generation(account, chat_id)
             if generation and generation["state"] in {"completed", "failed", "cancelled"}:
                 return SendResult(success=False, error="GENERATION_FINISHED", retryable=False)
-            message_id=self._published_reply_id(chat_id,caption or "",None)
+            message_id=f"msg_{uuid.uuid4().hex}"
             part=HistoryMedia(account).register(chat_id,message_id,file_path)
             key=f"history-media-reply:{message_id}:{part['attachmentId']}"
             account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,account.store.seal_json(part,key)))
@@ -401,44 +402,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         finally: account.close()
 
 
-    def _published_reply_id(self, chat_id: str, text: str, proposed: Optional[str]) -> str:
-        """The message id one logical reply is published under.
-
-        A host can publish the same reply more than once in a turn — a finalize
-        plus a final send, a retried delivery. That is one message, not two:
-        minting a second id would put the reply in the account's timeline twice,
-        and nothing downstream could collapse the copies because the ids really
-        do differ. The first id of a turn's reply is therefore kept, and a new
-        user message is what starts a new turn.
-        """
-        remembered = self._turn_replies.get(chat_id)
-        if remembered is not None and remembered[0] == text:
-            if proposed is not None and proposed != remembered[1]:
-                logger.info(
-                    "[open_android] %s published the same reply again as %s; keeping %s",
-                    chat_id, proposed, remembered[1],
-                )
-            return remembered[1]
-        identity = proposed or f"msg_{uuid.uuid4().hex[:12]}"
-        self._remember_turn_reply(chat_id, text, identity)
-        return identity
-
-
-    def _remember_turn_reply(self, chat_id: str, text: str, message_id: str) -> None:
-        self._turn_replies.pop(chat_id, None)
-        self._turn_replies[chat_id] = (text, message_id)
-        while len(self._turn_replies) > MAX_REMEMBERED_TURNS:
-            eldest = next(iter(self._turn_replies), None)
-            if eldest is None:
-                break
-            self._turn_replies.pop(eldest, None)
-
-
-    def _forget_turn_reply(self, chat_id: str) -> None:
-        """A new user message starts a new turn: the same text is a new reply."""
-        self._turn_replies.pop(chat_id, None)
-
-
     async def edit_message(
         self,
         chat_id: str,
@@ -459,7 +422,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             return SendResult(success=False, error="ACCOUNT_NOT_CONFIGURED", retryable=False)
         now_iso = iso_millis()
         if finalize:
-            message_id = self._published_reply_id(chat_id, content, message_id)
             await self.complete_message(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
         else:
             await self.stream_delta(chat_id, message_id, content, occurred_at=now_iso, account_id=target_account)
@@ -558,7 +520,12 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                     payload["timestamp"] = saved["timestamp"]
                     payload["revision"] = saved["revision"]
             correlation_id = origin["messageId"] if origin and origin.get("conversationId") == chat_id else message_id
-            account.events.append(event_type, correlation_id, payload, occurred_at)
+            saved_event = account.events.append(event_type, correlation_id, payload, occurred_at)
+            if event_type == "conversation.message.delta" and generation and message_id not in self._streaming_replies.get(
+                    (target_account, chat_id, generation["generationId"]), {}):
+                trace_native_stage("T4", client_message_id=origin.get("clientMessageId") if origin else None,
+                    generation_id=generation["generationId"], message_id=message_id,
+                    event_id=saved_event["eventId"], revision=payload.get("revision"), event_type="first_delta")
             if generation:
                 key = (target_account, chat_id, generation["generationId"])
                 if event_type == "conversation.message.delta":
@@ -915,7 +882,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             self._conv_to_account[conv_id] = source_account
             # A user turn boundary: whatever the Agent answered before belongs to
             # the previous turn, so the same text from now on is a new message.
-            self._forget_turn_reply(conv_id)
 
             data = json.loads(body_bytes.decode("utf-8"))
             user_text = data.get("text") or data.get("content") or ""
@@ -1001,8 +967,12 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             origin_row = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?",(f"message-device:{client_message_id}",)).fetchone() if account is not None else None
             binding_row = account.agent_sessions.lookup(conversation_id) if account is not None else None
             origin = json.loads(origin_row[0]) if origin_row else {}
+            generation = account.conversations.workflow.for_message(dispatch_record["messageId"]) if dispatch_record else None
             token = trusted_turn.set({**origin,"core":self.services.core,"accountId":source_account,
-                "sessionId":binding_row.get("agentSessionId") if binding_row else None})
+                "sessionId":binding_row.get("agentSessionId") if binding_row else None,
+                "conversationId":conversation_id,"clientMessageId":client_message_id,
+                "generationId":generation.get("generationId") if generation else None,
+                "executionObserver":getattr(self,"_tool_observer",None)})
             try:
                 await self.handle_message(event)
             finally:
@@ -1189,6 +1159,9 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             await report_dispatch_delivered(account, record, getattr(event, "_gateway_claim_token", None))
             if not generation:
                 return
+            trace_native_stage("T3", client_message_id=client_id, generation_id=generation["generationId"],
+                message_id=record["messageId"], revision=generation.get("revision"),
+                state=generation["state"], event_type="host_admitted")
             key = (account_id, record["conversationId"], generation["generationId"])
             # Some host versions run lifecycle hooks in a separate Task. The
             # native session map, rather than the hook's current Task, owns the
@@ -1228,6 +1201,14 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 if generation:
                     await self.withdraw_generation_approvals(account_id, record["conversationId"], generation["generationId"])
                     await self._finish_streaming_replies(account_id, record["conversationId"], generation["generationId"])
+                    observer = getattr(self, "_tool_observer", None)
+                    if observer is not None:
+                        try:
+                            await asyncio.to_thread(observer.close_generation, account_id, record["conversationId"],
+                                generation["generationId"], record["messageId"])
+                        except Exception as observation_failure:
+                            logger.warning("Native tool terminal observation unavailable errorType=%s",
+                                type(observation_failure).__name__)
                 if generation and generation["state"]=="cancelled":
                     status, error_code = "failed", "AGENT_UNAVAILABLE"
                 if status=="completed" and record["status"]=="queued":
@@ -1237,6 +1218,11 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                     record["messageId"], status, error_code,
                     f"agent-complete-{record['messageId']}",
                 )
+                settled = account.conversations.workflow.for_message(record["messageId"])
+                if settled:
+                    trace_native_stage("T10", client_message_id=client_message_id,
+                        generation_id=settled["generationId"], message_id=record["messageId"],
+                        revision=settled.get("revision"), state=settled["state"], event_type="terminal_committed")
         except Exception as exc:
             logger.warning(
                 "[open_android] Agent completion status failed messageId=%s errorCode=%s",
@@ -1247,4 +1233,4 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 account.close()
             for media_path in self._processing_media_files.pop((account_id, client_message_id), []):
                 with suppress(OSError):
-                    media_HistoryMedia._retire_path(path)
+                    HistoryMedia._retire_path(media_path)

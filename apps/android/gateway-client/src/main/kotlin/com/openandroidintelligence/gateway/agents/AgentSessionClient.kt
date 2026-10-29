@@ -25,6 +25,7 @@ data class AgentCapabilities(
     val rename: Boolean = false, val archive: Boolean = false,
     val delete: Boolean = false, val cancel: Boolean = false, val stream: Boolean = false,
     val commands: Boolean = false, val approvals: Boolean = false, val attachments: Boolean = false,
+    val generationRecovery: Boolean = false,
 )
 data class CoreAgent(val id: String, val name: String, val kind: String, val online: Boolean,
     val sessionScope: String, val capabilities: AgentCapabilities)
@@ -32,16 +33,28 @@ data class NativeAgentSession(val id: String, val title: String?, val updatedAt:
 data class NativeAgentAttachment(val id: String, val filename: String, val mediaType: String,
     val sizeBytes: Long? = null, val sha256: String? = null)
 data class NativeAgentMessage(val id: String, val role: String, val text: String, val createdAt: String?,
-    val clientMessageId: String? = null, val attachments: List<NativeAgentAttachment> = emptyList())
+    val clientMessageId: String? = null, val attachments: List<NativeAgentAttachment> = emptyList(),
+    val generationId: String? = null, val contentRevision: Long? = null, val state: String? = null,
+    val executionSteps: List<NativeAgentExecutionStep> = emptyList())
+data class NativeAgentExecutionStep(val stepId: String, val eventId: String, val toolName: String,
+    val arguments: String, val output: String?, val status: String, val revision: Long)
 data class NativeGenerationResult(val outcome: String, val generationId: String?, val messageId: String? = null,
-    val userMessageId: String? = null, val clientMessageId: String? = null, val text: String? = null)
+    val userMessageId: String? = null, val clientMessageId: String? = null, val text: String? = null,
+    val revision: Long? = null)
 data class NativeSteeringResult(val generationId: String, val outcome: String)
 data class NativeCurrentGeneration(val generationId: String, val conversationId: String, val state: String)
+data class NativeGenerationReceipt(val generationId: String, val conversationId: String,
+    val clientMessageId: String, val userMessageId: String, val state: String, val revision: Long)
 sealed interface NativeAgentStreamEvent {
-    data class Generation(val generationId: String) : NativeAgentStreamEvent
+    data class Generation(val generationId: String,
+        val executionSteps: List<NativeAgentExecutionStep>? = null,
+        val executionRevision: Long? = null, val eventId: String? = null,
+        val clientMessageId: String? = null, val userMessageId: String? = null,
+        val state: String? = null, val revision: Long? = null) : NativeAgentStreamEvent
     data class ApprovalRequested(val approval: JsonValue.JObject) : NativeAgentStreamEvent
     data class ApprovalResolved(val approval: JsonValue.JObject) : NativeAgentStreamEvent
-    data class MessageIdentity(val messageId: String?, val userMessageId: String?, val clientMessageId: String?) : NativeAgentStreamEvent
+    data class MessageIdentity(val messageId: String?, val userMessageId: String?, val clientMessageId: String?,
+        val contentRevision: Long? = null, val eventId: String? = null) : NativeAgentStreamEvent
 }
 class AgentSessionException(val code: String, val status: Int = 0) : IllegalStateException(code)
 
@@ -54,7 +67,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             JsonFields.bool(value, "online") ?: false,
             required(value, "sessionScope").also { check(it in setOf("account", "deployment")) { "AGENTS_INVALID" } },
             AgentCapabilities(cap("list"), cap("history"), cap("create"), cap("send"), cap("steer"), cap("rename"),
-                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments")))
+                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments"), cap("generationRecovery")))
     }
 
     suspend fun sessions(agent: CoreAgent): List<NativeAgentSession> {
@@ -70,6 +83,12 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                 JsonFields.string(it, "clientMessageId"), JsonFields.objects(it, "attachments").map { attachment ->
                     NativeAgentAttachment(required(attachment, "attachmentId"), required(attachment, "filename"),
                         required(attachment, "mediaType"), JsonFields.long(attachment, "sizeBytes"), JsonFields.string(attachment, "sha256"))
+                }, JsonFields.string(it, "generationId"), JsonFields.long(it, "contentRevision"),
+                JsonFields.string(it, "state"), JsonFields.objects(it, "executionSteps").map { step ->
+                    NativeAgentExecutionStep(required(step, "stepId"), required(step, "eventId"),
+                        required(step, "toolName"), JsonFields.string(step, "arguments").orEmpty(),
+                        JsonFields.string(step, "output"), JsonFields.string(step, "status") ?: "unknown",
+                        JsonFields.long(step, "revision")?.takeIf { revision -> revision >= 0 } ?: 0)
                 })
         }
     }
@@ -138,6 +157,34 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         return NativeCurrentGeneration(generationId, conversationId, state)
     }
 
+    /** Reads the original accepted identity even while the host is offline. Never resends. */
+    suspend fun generation(agent: CoreAgent, sessionId: String, clientMessageId: String,
+        generationId: String? = null, afterRevision: Long? = null, waitMs: Int = 0): NativeGenerationReceipt {
+        requireCapability(agent.capabilities.generationRecovery)
+        require(clientMessageId.isNotBlank() && (afterRevision == null || afterRevision >= 0) &&
+            waitMs in 0..25000 && (waitMs == 0 || afterRevision != null))
+        val query = buildList {
+            add("clientMessageId=${segment(clientMessageId)}")
+            generationId?.let { add("generationId=${queryValue(it)}") }
+            afterRevision?.let { add("afterRevision=$it") }
+            if (waitMs > 0) add("waitMs=$waitMs")
+        }.sorted().joinToString("&")
+        val value = request("GET", sessionTarget(agent, sessionId) + "/generation?" + query)
+        val receipt = JsonFields.obj(JsonFields.field(value, "generation"))
+            ?: throw AgentSessionException("OUTCOME_UNKNOWN")
+        val returnedGeneration = required(receipt, "generationId")
+        val returnedClient = required(receipt, "clientMessageId")
+        val returnedSession = required(receipt, "conversationId")
+        val state = required(receipt, "state")
+        val revision = JsonFields.long(receipt, "revision") ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        if (returnedClient != clientMessageId || returnedSession != sessionId ||
+            generationId != null && returnedGeneration != generationId || revision < 0 ||
+            state !in setOf("queued", "running", "unknown", "completed", "failed", "cancelled"))
+            throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        return NativeGenerationReceipt(returnedGeneration, returnedSession, returnedClient,
+            required(receipt, "userMessageId"), state, revision)
+    }
+
     suspend fun steer(
         agent: CoreAgent,
         sessionId: String,
@@ -186,6 +233,9 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         if (clientMessageId != null) payload["clientMessageId"] = clientMessageId
         val request = jsonRequest("POST", sessionTarget(agent, sessionId) + "/messages", payload)
             .copy(headers = listOf(RawHeader("Content-Type", "application/json"), RawHeader("Accept", "text/event-stream")))
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T1.request_started", mapOf(
+            "agentId" to agent.id, "conversationId" to sessionId, "clientMessageId" to clientMessageId,
+            "monotonicNs" to System.nanoTime()))
         return try {
             http.consumeResponse(request) { status, headers, stream ->
                 if (status !in 200..299) {
@@ -202,7 +252,14 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                 var generationId: String? = null
                 var outcome = "completed"
                 var finalText: String? = null
+                var finalRevision: Long? = null
                 var identity = NativeAgentStreamEvent.MessageIdentity(null, null, null)
+                val contentRevisions = mutableMapOf<String, Long>()
+                val contentEventIds = LinkedHashSet<String>()
+                val versionlessEventIds = LinkedHashSet<String>()
+                var executionRevision = -1L
+                var generationRevision = -1L
+                var firstDeltaObserved = false
                 while (!done) {
                     currentCoroutineContext().ensureActive()
                     val read = stream.read(buffer)
@@ -210,15 +267,58 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                     for (event in parser.feedBytes(buffer.copyOf(read))) {
                         if (event.event != "message") continue
                         val value = JsonFields.obj(Json.parse(event.data)) ?: error("AGENT_STREAM_INVALID")
+                        val type = JsonFields.string(value, "type") ?: throw AgentSessionException("AGENT_STREAM_INVALID")
+                        val frameClient = JsonFields.string(value, "clientMessageId")
+                        if (frameClient != null && clientMessageId != null && frameClient != clientMessageId)
+                            throw AgentSessionException("AGENT_STREAM_INVALID")
+                        val frameGeneration = JsonFields.string(value, "generationId")
+                        if (frameGeneration != null && generationId != null && frameGeneration != generationId)
+                            throw AgentSessionException("AGENT_STREAM_INVALID")
+                        val frameMessage = JsonFields.string(value, "messageId") ?: identity.messageId
+                        val frameRevision = JsonFields.long(value, "contentRevision")
+                        if (frameRevision != null && frameRevision < 0) throw AgentSessionException("AGENT_STREAM_INVALID")
+                        val frameEventId = JsonFields.string(value, "eventId")
+                        // Only delta payloads are duplicate append operations. A done frame may
+                        // legally reuse the final message event ID and must still settle the turn.
+                        if (type == "delta") {
+                            if (frameEventId != null && (frameEventId in contentEventIds || frameEventId in versionlessEventIds)) continue
+                            if (frameMessage != null && frameRevision != null &&
+                                frameRevision <= (contentRevisions[frameMessage] ?: -1L)) continue
+                        }
+                        val staleDoneContent = type == "done" && frameMessage != null && frameRevision != null &&
+                            frameRevision < (contentRevisions[frameMessage] ?: -1L)
+                        val contentFrame = (type == "delta" || type == "done") && !staleDoneContent
                         val nextIdentity = NativeAgentStreamEvent.MessageIdentity(
-                            JsonFields.string(value, "messageId") ?: identity.messageId,
+                            if (contentFrame) frameMessage else identity.messageId,
                             JsonFields.string(value, "userMessageId") ?: identity.userMessageId,
-                            JsonFields.string(value, "clientMessageId") ?: identity.clientMessageId)
+                            frameClient ?: identity.clientMessageId,
+                            if (contentFrame) frameRevision else identity.contentRevision,
+                            if (contentFrame) frameEventId else identity.eventId)
                         if (nextIdentity != identity) {
                             identity = nextIdentity
-                            if (identity.clientMessageId != null && clientMessageId != null && identity.clientMessageId != clientMessageId)
-                                throw AgentSessionException("AGENT_STREAM_INVALID")
                             onEvent(identity)
+                        }
+                        if (type != "delta" || !firstDeltaObserved) {
+                            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T6.sse_read", mapOf(
+                                "clientMessageId" to clientMessageId, "generationId" to frameGeneration,
+                                "eventId" to frameEventId, "eventType" to type, "contentRevision" to frameRevision))
+                        }
+                        if (type == "delta") {
+                            firstDeltaObserved = true
+                            if (frameMessage != null && frameRevision != null) contentRevisions[frameMessage] = frameRevision
+                            if (frameEventId != null) {
+                                if (frameRevision == null) {
+                                    // Without versions, evicting an ID could append a replay twice.
+                                    // Stop observation and reconcile instead of silently weakening identity.
+                                    if (versionlessEventIds.size >= MAX_REMEMBERED_CONTENT_EVENTS)
+                                        throw AgentSessionException("OUTCOME_UNKNOWN")
+                                    versionlessEventIds += frameEventId
+                                } else {
+                                    contentEventIds += frameEventId
+                                    // Revision barriers keep older versions rejected after event-ID eviction.
+                                    if (contentEventIds.size > MAX_REMEMBERED_CONTENT_EVENTS) contentEventIds.remove(contentEventIds.first())
+                                }
+                            }
                         }
                         when (JsonFields.string(value, "type")) {
                             "delta" -> onDelta(JsonFields.string(value, "text") ?: error("AGENT_STREAM_INVALID"))
@@ -226,7 +326,38 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                                 val id = required(value, "generationId")
                                 if (generationId != null && generationId != id) throw AgentSessionException("AGENT_STREAM_INVALID")
                                 generationId = id
-                                onEvent(NativeAgentStreamEvent.Generation(id))
+                                val stateField = JsonFields.field(value, "state")
+                                val revisionField = JsonFields.field(value, "revision")
+                                var lifecycleState: String? = null
+                                var lifecycleRevision: Long? = null
+                                if (stateField != null || revisionField != null) {
+                                    val declaredState = JsonFields.string(value, "state")
+                                    val declaredRevision = JsonFields.long(value, "revision")
+                                    if (declaredState !in setOf("queued", "running", "unknown") || declaredRevision == null || declaredRevision < 0)
+                                        throw AgentSessionException("AGENT_STREAM_INVALID")
+                                    if (declaredRevision > generationRevision) {
+                                        generationRevision = declaredRevision
+                                        lifecycleState = declaredState
+                                        lifecycleRevision = declaredRevision
+                                    }
+                                }
+                                val stepField = JsonFields.field(value, "executionSteps")
+                                val steps = if (stepField == null) null else {
+                                    if (stepField !is JsonValue.JArray) throw AgentSessionException("AGENT_STREAM_INVALID")
+                                    stepField.items.map { item ->
+                                        decodeExecutionStep(JsonFields.obj(item) ?: throw AgentSessionException("AGENT_STREAM_INVALID"))
+                                    }
+                                }
+                                val nextRevision = JsonFields.long(value, "executionRevision")
+                                if (steps != null) {
+                                    if (nextRevision == null || nextRevision < 0 || frameEventId.isNullOrBlank())
+                                        throw AgentSessionException("AGENT_STREAM_INVALID")
+                                    if (nextRevision <= executionRevision) continue
+                                    executionRevision = nextRevision
+                                }
+                                if ((stateField != null || revisionField != null) && lifecycleState == null && steps == null) continue
+                                onEvent(NativeAgentStreamEvent.Generation(id, steps, nextRevision, frameEventId,
+                                    frameClient ?: identity.clientMessageId, identity.userMessageId, lifecycleState, lifecycleRevision))
                             }
                             "approval_requested", "approval_resolved" -> {
                                 val approval = JsonFields.obj(JsonFields.field(value, "approval")) ?: error("AGENT_STREAM_INVALID")
@@ -234,7 +365,12 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                                     NativeAgentStreamEvent.ApprovalRequested(approval) else NativeAgentStreamEvent.ApprovalResolved(approval))
                             }
                             "done" -> {
-                                finalText = JsonFields.string(value, "text")
+                                val revisionField = JsonFields.field(value, "revision")
+                                val returnedRevision = JsonFields.long(value, "revision")
+                                if (revisionField != null && (returnedRevision == null || returnedRevision < 0 || returnedRevision < generationRevision))
+                                    throw AgentSessionException("AGENT_STREAM_INVALID")
+                                finalRevision = returnedRevision
+                                finalText = JsonFields.string(value, "text").takeUnless { staleDoneContent }
                                 val returnedId = JsonFields.string(value, "generationId")
                                 if (returnedId != null && generationId != null && returnedId != generationId)
                                     throw AgentSessionException("AGENT_STREAM_INVALID")
@@ -250,13 +386,22 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                     }
                 }
                 if (!done) throw AgentSessionException("OUTCOME_UNKNOWN")
-                NativeGenerationResult(outcome, generationId, identity.messageId, identity.userMessageId, identity.clientMessageId, finalText)
+                NativeGenerationResult(outcome, generationId, identity.messageId, identity.userMessageId, identity.clientMessageId, finalText, finalRevision)
             }
         } catch (_: IOException) {
             // A transport failure cannot establish whether the native turn ran.
             // Preserve the draft and partial output; never resend it here.
             throw AgentSessionException("OUTCOME_UNKNOWN")
         }
+    }
+
+    private fun decodeExecutionStep(step: JsonValue.JObject): NativeAgentExecutionStep {
+        val revision = JsonFields.long(step, "revision") ?: throw AgentSessionException("AGENT_STREAM_INVALID")
+        if (revision < 0) throw AgentSessionException("AGENT_STREAM_INVALID")
+        return NativeAgentExecutionStep(required(step, "stepId"), required(step, "eventId"), required(step, "toolName"),
+            JsonFields.string(step, "arguments").orEmpty(), JsonFields.string(step, "output"),
+            JsonFields.string(step, "status")?.takeIf { it in setOf("running", "completed", "failed", "unknown") } ?: "unknown",
+            revision)
     }
 
     private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null, requestId: String? = null): JsonValue.JObject {
@@ -312,10 +457,15 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
     companion object {
         const val ROOT = "/open-android-intelligence/v2/agents"
         private const val MAX_ERROR_BODY_BYTES = 8 * 1024
+        private const val MAX_REMEMBERED_CONTENT_EVENTS = 4096
         internal fun segment(value: String): String {
             require(value.isNotBlank() && value !in setOf(".", "..") && value.none { it == '/' || it == '\\' }) {
                 "AGENT_IDENTIFIER_INVALID"
             }
+            return queryValue(value)
+        }
+        private fun queryValue(value: String): String {
+            require(value.isNotBlank()) { "AGENT_IDENTIFIER_INVALID" }
             return value.toByteArray(Charsets.UTF_8).joinToString("") { byte ->
                 val number = byte.toInt() and 255
                 val char = number.toChar()

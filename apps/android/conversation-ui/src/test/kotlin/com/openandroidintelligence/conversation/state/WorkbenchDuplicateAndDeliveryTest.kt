@@ -18,6 +18,32 @@ import org.junit.Test
 class WorkbenchDuplicateAndDeliveryTest {
 
     @Test
+    fun serverAcceptanceOnlyPreservesWaitingForAgentUntilItsDeliveredReceipt() = runTest {
+        val repository = Repository()
+        val controller = controller(repository)
+        try {
+            runCurrent()
+            controller.editDraft("等待 Agent 接收")
+            controller.sendDraft()
+            runCurrent()
+            val prompt = rows(controller).single { it.isUser }
+            assertEquals(AgentMessageStatus.QUEUED, prompt.messageStatus)
+            repository.events.emit(VerifiedConversationEvent.MessageAccepted(
+                "server-only", 100, prompt.key, prompt.clientMessageId!!.value, ConversationId("conv_a"),
+                agentReceived = false,
+            ))
+            runCurrent()
+            assertEquals(AgentMessageStatus.QUEUED, rows(controller).single { it.isUser }.messageStatus)
+            repository.events.emit(VerifiedConversationEvent.MessageStatus(
+                "native-delivered", 101, ConversationId("conv_a"), prompt.key, prompt.clientMessageId!!,
+                AgentMessageStatus.DELIVERED, 1, null, "native-generation",
+            ))
+            runCurrent()
+            assertEquals(AgentMessageStatus.DELIVERED, rows(controller).single { it.isUser }.messageStatus)
+        } finally { controller.close() }
+    }
+
+    @Test
     fun aPlatformUserRowWithAnotherIdCollapsesIntoTheAcceptedRow() = runTest {
         val repository = Repository()
         val controller = controller(repository, resetGenerationOnOpen = false)

@@ -13,6 +13,8 @@ import threading
 from contextlib import nullcontext
 from typing import Any, Mapping
 from .history_media import HistoryMedia
+from .tool_history import project_execution
+from .tool_events import execution_prefix, merge_history_execution
 
 
 def visible_text(content: Any) -> str:
@@ -46,7 +48,7 @@ def _deleted(row: Mapping[str, Any]) -> bool:
 
 def _wire(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     names = {"messageId", "clientMessageId", "conversationId", "sender", "text", "parts",
-             "timestamp", "state", "batchId", "anchorClientMessageId"}
+             "timestamp", "state", "batchId", "anchorClientMessageId", "generationId", "executionSteps"}
     result = {key: value for key, value in snapshot.items() if key in names}
     if isinstance(snapshot.get("revision"), int):
         result["contentRevision"] = snapshot["revision"]
@@ -146,7 +148,9 @@ class HermesHistoryPort:
                     if chain:
                         delete(chain, sessions_dir=getattr(self.session_store, "sessions_dir", None))
                     # Presentation KV is native long-lived content too.
-                    keys = [name for name, _ in database.list_meta_prefix(self._presentation_prefix(account_id, conversation_id))]
+                    prefixes = (self._presentation_prefix(account_id, conversation_id),
+                                execution_prefix(self.storage_owner, account_id, conversation_id))
+                    keys = [name for prefix in prefixes for name, _ in database.list_meta_prefix(prefix)]
                     if keys:
                         database._execute_write(lambda conn: conn.executemany("DELETE FROM state_meta WHERE key=?", [(name,) for name in keys]))
                     if entry is not None:
@@ -309,6 +313,10 @@ class HermesHistoryPort:
             "timestamp": payload["timestamp"], "state": state}
         if payload.get("anchorClientMessageId"):
             snapshot["anchorClientMessageId"] = payload["anchorClientMessageId"]
+        if payload.get("generationId"):
+            snapshot["generationId"] = payload["generationId"]
+        if payload.get("executionSteps"):
+            snapshot["executionSteps"] = list(payload["executionSteps"])
         if state == "DELETED":
             snapshot.update(text="", parts=[])
         with self._migration_lock:
@@ -431,6 +439,16 @@ class HermesHistoryPort:
             self._host_user_edits(account, database, session_id, rows, presentations)
             self._bind_replies(account, session_id, rows, presentations)
             native_by_client = {str(row["platform_message_id"]): row for row in rows if row.get("role") == "user" and row.get("platform_message_id")}
+            def generation_for_client(client_id: str) -> str | None:
+                accepted = account.store.database.execute(
+                    "SELECT message_id FROM messages WHERE conversation_id=? AND client_message_id=? AND sender='user'",
+                    (conversation_id, client_id),
+                ).fetchone()
+                generation = account.conversations.workflow.for_message(accepted[0]) if accepted else None
+                return generation["generationId"] if generation and generation["conversationId"] == conversation_id else None
+            execution = project_execution(rows, generation_for_client)
+            with self._migration_lock:
+                merge_history_execution(database, self.storage_owner, account_id, conversation_id, execution)
             result = {}
             for row in rows:
                 role = row.get("role")
@@ -477,16 +495,18 @@ class HermesHistoryPort:
                     display_text = "" if owned_user else text
                     reply_parts = HistoryMedia(account).reply_parts(message_id) if role == "assistant" else []
                     if role == "assistant" and not text and not reply_parts:
-                        text = _tool_activity(row)
-                        if not text:
+                        text = "" if row["id"] in execution else _tool_activity(row)
+                        if not text and not execution.get(row["id"], {}).get("executionSteps"):
                             continue
                     item = {"messageId": message_id, "clientMessageId": client_id, "conversationId": conversation_id,
                         "sender": role, "text": display_text if role == "user" else text,
                         "parts": ([{"type": "text", "text": display_text}] if display_text else []) if role == "user"
                             else ([{"type": "text", "text": text}] if text else []) + reply_parts,
                         "timestamp": millis, "state": "CONFIRMED"}
+                if role == "assistant":
+                    item.update(execution.get(row["id"], {}))
                 if _deleted(row):
-                    item.update(state="DELETED", text="", parts=[])
+                    item.update(state="DELETED", text="", parts=[], executionSteps=[])
                 result[message_id] = item
             for message_id, snapshot in presentations.items():
                 item = _wire(snapshot)
@@ -495,6 +515,9 @@ class HermesHistoryPort:
                     item.update(state="DELETED", text="", parts=[])
                 if message_id in result and result[message_id].get("state") == "DELETED":
                     item.update(state="DELETED", text="", parts=[])
+                elif message_id in result:
+                    item.update({key: result[message_id][key] for key in ("generationId", "executionSteps")
+                                 if key in result[message_id]})
                 result[message_id] = item
             for item in result.values():
                 if item["state"] == "DELETED":
@@ -593,6 +616,8 @@ class HermesHistoryPort:
                     # 回调已持宿主写锁，读取回退会再次取同一锁；必须复用当前连接。
                     prefix = self._presentation_prefix(account_id)
                     conn.execute("DELETE FROM state_meta WHERE substr(key,1,?)=?", (len(prefix), prefix))
+                    tools_prefix = execution_prefix(self.storage_owner, account_id)
+                    conn.execute("DELETE FROM state_meta WHERE substr(key,1,?)=?", (len(tools_prefix), tools_prefix))
                     for session_id in sessions:
                         conn.execute("DELETE FROM messages WHERE session_id=? AND role='session_meta' "
                             "AND display_kind=? AND json_valid(display_metadata) "

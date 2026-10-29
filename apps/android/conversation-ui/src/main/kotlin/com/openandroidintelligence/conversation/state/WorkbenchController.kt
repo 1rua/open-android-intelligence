@@ -33,6 +33,8 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.toOutcome
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository
@@ -113,6 +115,11 @@ data class TimelineEntry(
     val approval: ApprovalCardState? = null,
     /** 明确的客户端身份优先于旧历史的正文相似判断。 */
     val clientMessageId: ClientMessageId? = null,
+    val generationId: String? = null,
+    val executionSteps: List<com.openandroidintelligence.conversation.model.NativeExecutionStep> = emptyList(),
+    val localPlaceholder: Boolean = false,
+    /** View-only execution facts; this row is never an Assistant message in mirrored history. */
+    val executionFact: Boolean = false,
 )
 
 data class WorkbenchUiState(
@@ -336,6 +343,16 @@ class WorkbenchController(
     private val frozenBatches=LinkedHashMap<String,SavedBatch>()
     private val collectingUnits=LinkedHashMap<String,Pair<String,OutgoingMessage>>()
     private val mirrored = LinkedHashMap<String, TimelineMessage>()
+    private data class NativeExecutionFacts(
+        val revision: Long,
+        val occurredAt: Long,
+        val steps: List<NativeExecutionStep>,
+        val clientMessageId: String?,
+        val userMessageId: String?,
+    )
+    // Native tool observations are view facts, not Assistant messages. They must
+    // never enter mirrored history or its message/content revision domain.
+    private val executionFacts = LinkedHashMap<Pair<String, String>, NativeExecutionFacts>()
     private val sendAtomsByThread = LinkedHashMap<String, LinkedHashMap<String, LocalSendAtom>>()
     private val sendAtomsMutex=Mutex()
     private var sendAtomsEpoch=0L
@@ -343,6 +360,38 @@ class WorkbenchController(
 
     /** 同步界面路径只读投影；未装载状态由 historyHydrated 明确表示。 */
     private fun atomsFor(threadId: String): Map<String,LocalSendAtom> = sendAtomsByThread[threadId].orEmpty()
+
+    private fun recordExecutionFacts(event: VerifiedConversationEvent.ExecutionStepsUpdated) {
+        if (event.generationId.isBlank() || event.executionRevision < 0 || event.steps.any {
+                it.stepId.isBlank() || it.eventId.isBlank() || it.toolName.isBlank() || it.revision < 0
+            }) return
+        val key = event.conversationId.value to event.generationId
+        val previous = executionFacts[key]
+        if (previous != null && event.executionRevision <= previous.revision) return
+        val clientId = event.clientMessageId?.takeIf { it.isNotBlank() }
+        val userId = event.userMessageId?.takeIf { it.isNotBlank() }
+        // A later snapshot cannot move an existing generation to a new prompt.
+        if (previous?.clientMessageId != null && clientId != null && previous.clientMessageId != clientId ||
+            previous?.userMessageId != null && userId != null && previous.userMessageId != userId) return
+        val steps = linkedMapOf<String, NativeExecutionStep>()
+        previous?.steps?.forEach { steps[it.stepId] = it }
+        event.steps.forEach { incoming ->
+            val old = steps[incoming.stepId]
+            val completed = old?.status in setOf(NativeExecutionStatus.COMPLETED, NativeExecutionStatus.FAILED)
+            if (old == null || incoming.revision > old.revision &&
+                !(completed && incoming.status in setOf(NativeExecutionStatus.RUNNING, NativeExecutionStatus.UNKNOWN))) {
+                steps[incoming.stepId] = incoming
+            }
+        }
+        executionFacts[key] = NativeExecutionFacts(event.executionRevision, previous?.occurredAt ?: event.occurredAt,
+            steps.values.toList(), previous?.clientMessageId ?: clientId, previous?.userMessageId ?: userId)
+    }
+
+    private fun rememberExecutionTerminal(threadId: String, generationId: String): Boolean {
+        val changed = finishedGenerations.add(threadId to generationId)
+        while (finishedGenerations.size > 4096) finishedGenerations.remove(finishedGenerations.first())
+        return changed
+    }
 
     private fun recoveredAtoms(atoms: List<LocalSendAtom>)=atoms.map { atom ->
         if (atom.submissionState==LocalSubmissionState.PREPARED) atom.copy(submissionState=LocalSubmissionState.OUTCOME_UNKNOWN) else atom
@@ -457,6 +506,7 @@ class WorkbenchController(
 
     private suspend fun applySendEvent(event: VerifiedConversationEvent) {
         when (event) {
+            is VerifiedConversationEvent.ExecutionStepsUpdated -> recordExecutionFacts(event)
             is VerifiedConversationEvent.MessageStatus -> {
                 event.generationId?.let { generationId ->
                     rememberMessageGeneration(event.conversationId.value, event.messageId, event.clientMessageId.value, generationId, event.revision)
@@ -465,7 +515,10 @@ class WorkbenchController(
                 if (event.status in setOf(com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
                         com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED)) {
                     activeWork.settledClient(event.conversationId.value, event.clientMessageId.value)
-                    event.generationId?.let { activeWork.terminal(event.conversationId.value, it) }
+                    event.generationId?.let {
+                        activeWork.terminal(event.conversationId.value, it)
+                        rememberExecutionTerminal(event.conversationId.value, it)
+                    }
                 }
             }
             is VerifiedConversationEvent.GenerationCancelled -> event.conversationId?.value?.let {
@@ -476,7 +529,9 @@ class WorkbenchController(
             else -> Unit
         }
         val threadId=when (event) {
+            is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
             is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
+            is VerifiedConversationEvent.ExecutionStepsUpdated -> event.conversationId.value
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value
             is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value
             is VerifiedConversationEvent.PendingDeliveryUpdated -> event.delivery.conversationId.value
@@ -485,6 +540,22 @@ class WorkbenchController(
         threadId?.let { hydrateSendAtoms(it) }
         applyHistoricalAttachmentEvent(event)
         when (event) {
+            is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value?.let { target ->
+                // A receipt can only settle the exact recorded local submission.
+                // Invalid/foreign correlation must not terminate the event consumer.
+                if (event.correlationId.isBlank() || event.messageId.isBlank() ||
+                    atomsFor(target)[event.correlationId] == null) return@let
+                acceptSendAtom(target, event.correlationId, event.messageId)
+                changeSendAtom(target, event.correlationId) { old -> old?.let { atom ->
+                    if (event.agentReceived && atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED)
+                        atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
+                    else atom
+                } }
+                nativePendingSubmissions.remove(event.correlationId)?.let { (threadId, attachments) ->
+                    attachments.forEach { releaseSubmittedAttachment(threadId, it) }
+                    if (failedSubmission?.clientMessageId == event.correlationId) failedSubmission = null
+                }
+            }
             is VerifiedConversationEvent.MessageStatus -> changeSendAtom(event.conversationId.value, event.clientMessageId.value) { old ->
                 old?.let { atom ->
                     if (event.revision <= atom.statusRevision) atom else {
@@ -962,9 +1033,12 @@ class WorkbenchController(
         val voiceAttempt: VoiceAttempt? = null,
         val delivery: com.openandroidintelligence.conversation.ports.MessageDeliveryMode =
             com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL,
+        val optimisticEntry: TimelineEntry? = null,
+        val generationBeforeSubmit: GenerationState? = null,
     )
     private var pendingSubmission: DraftSubmission? = null
     private var failedSubmission: DraftSubmission? = null
+    private val nativePendingSubmissions = mutableMapOf<String, Pair<String, List<String>>>()
     private val userRenamedThreads = mutableSetOf<String>()
     private val approvalCards = LinkedHashMap<String, ApprovalCardState>()
     private val approvalFallbacks = LinkedHashMap<String, ApprovalCardState.TextOnly>()
@@ -1074,6 +1148,7 @@ class WorkbenchController(
         snapshotDeletedIdsByThread.remove(threadId)
         userRenamedThreads.remove(threadId)
         creationReceipts.remove(threadId)
+        executionFacts.keys.removeAll { it.first == threadId }
         approvalCards.entries.removeAll { it.value.request.conversationId?.value == threadId }
         historicalAttachments.snapshot().keys.filter { it.threadId == threadId }.forEach { historicalAttachments.remove(it) }
         val organization = _state.value.organization
@@ -1327,13 +1402,18 @@ class WorkbenchController(
                 val pending = requestedCancellations[activeThreadId to (generationId ?: lastObservedGenerationId)]
                     ?.takeIf { it.factRevision == generationFactRevision }
                 if (generation in setOf(GenerationState.FAILED,GenerationState.COMPLETED)) pending?.trackerTerminal = generation
+                val executionSettled = generationId != null &&
+                    generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
+                    activeThreadId?.let { rememberExecutionTerminal(it, generationId) } == true
                 update { state ->
-                    if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
+                    val next = if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
                     else if (generation == GenerationState.FAILED && generationId != null && activeThreadId to generationId in cancelledGenerations)
                         state.copy(generation=GenerationState.CANCELLED)
                     else if (pending != null && generation != GenerationState.COMPLETED)
                         state.copy(generation=GenerationState.CANCEL_REQUESTED)
                     else state.copy(generation=generation)
+                    if (executionSettled && (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty))
+                        next.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch))) else next
                 }
             } }
         }
@@ -2167,7 +2247,7 @@ class WorkbenchController(
     }
 
     /** Creates the first thread through the same authoritative Gateway endpoint. */
-    private fun bootstrapConversationForFirstMessage(): Deferred<Result<String>> {
+    private fun bootstrapConversationForFirstMessage(optimisticEntry: TimelineEntry?): Deferred<Result<String>> {
         bootstrapJob?.takeIf { it.isActive }?.let { return it }
         return workScope.async {
             try {
@@ -2178,9 +2258,14 @@ class WorkbenchController(
                 renderedEntryCache.clear()
                 mirroredRevisions.clear()
                 timelineJob?.cancel()
-                update {
-                    it.copy(activeThreadId = conversation.id.value, activeThreadTitle = conversation.title,
-                        timeline = Loadable.Empty, pendingBatch = emptyList(), notice = null)
+                update { state ->
+                    // The first send was already frozen and shown before the
+                    // create request. Its identity stays visible while its
+                    // durable send record is written for the new conversation.
+                    val pending = optimisticEntry?.let(::listOf).orEmpty()
+                    state.copy(activeThreadId = conversation.id.value, activeThreadTitle = conversation.title,
+                        timeline = if (pending.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(pending)),
+                        pendingBatch = pending, notice = null)
                 }
                 observeThreadEvents()
                 refreshThreads()
@@ -2195,17 +2280,27 @@ class WorkbenchController(
 
     fun editDraft(text: String) {
         val opensCommands = text.startsWith("/") && !_state.value.draft.startsWith("/")
-        cancelPendingSubmission()
+        // A frozen message belongs to its own pending send. Editing the next
+        // draft must not withdraw it while its attachments are still uploading.
+        if (pendingSubmission?.optimisticEntry == null) cancelPendingSubmission()
         draftRevision++
         update { it.copy(draft = text) }
         if (opensCommands) loadCatalog()
     }
 
     fun cancelPendingSubmission() {
-        pendingSubmission?.let { activeWork.cancelPending(it.clientMessageId) }
+        val cancelled = pendingSubmission
+        cancelled?.let { activeWork.cancelPending(it.clientMessageId) }
         pendingSubmission = null
         if (_state.value.composer == ComposerState.WAITING_ATTACHMENTS) {
-            update { it.copy(composer = ComposerState.EDITING, notice = null) }
+            update { state ->
+                val pending = state.pendingBatch.filterNot { it.key == cancelled?.optimisticEntry?.key }
+                state.copy(composer = ComposerState.EDITING, notice = null,
+                    draft = state.draft.ifEmpty { cancelled?.text.orEmpty() },
+                    pendingBatch = pending,
+                    timeline = if (cancelled?.optimisticEntry != null) Loadable.Ready(renderTimeline(pending)) else state.timeline,
+                    generation = cancelled?.generationBeforeSubmit ?: state.generation)
+            }
         }
     }
 
@@ -2612,11 +2707,27 @@ class WorkbenchController(
                 delivery = effectiveDelivery)
         } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId,
             delivery = effectiveDelivery)
-        pendingSubmission?.let { activeWork.begin(it.clientMessageId, it.conversationId) }
+        val frozen = requireNotNull(pendingSubmission)
+        val localEntry = TimelineEntry(
+            key = "local_${frozen.clientMessageId}", sender = "user", text = frozen.text,
+            isUser = true, timestamp = activeThreadId?.let { atomsFor(it)[frozen.clientMessageId]?.timestamp }
+                ?: System.currentTimeMillis(), pendingAcceptance = true, batchGroupId = null,
+            attachments = current.attachments.filter { it.id.value in frozen.attachmentIds }.map {
+                com.openandroidintelligence.conversation.model.TimelineAttachment(it.id.value, it.filename,
+                    it.mediaType, previewBytes = attachmentPreviews[it.id.value])
+            }, clientMessageId = ClientMessageId(frozen.clientMessageId), localPlaceholder = true,
+        )
+        pendingSubmission = frozen.copy(optimisticEntry = localEntry, generationBeforeSubmit = current.generation)
+        activeWork.begin(frozen.clientMessageId, frozen.conversationId)
         beginLegacyTurn(activeThreadId)
         generationFactRevision++
-        update { state -> state.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null,
+        // 点击这一次状态变更即显示冻结的发送单元；网络与可靠写盘随后异步执行。
+        update { state -> state.copy(draft = "", composer = ComposerState.WAITING_ATTACHMENTS, notice = null,
+            timeline = appendLocal(state.timeline, localEntry),
+            pendingBatch = state.pendingBatch.filterNot { it.key == localEntry.key } + localEntry,
             generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED) }
+        GatewayLog.protocolEvidence("T0.local_bubble", mapOf("clientMessageId" to frozen.clientMessageId,
+            "conversationId" to frozen.conversationId))
         submitWhenAttachmentsVerified()
     }
 
@@ -2651,17 +2762,17 @@ class WorkbenchController(
             inFlightAttachmentIds = it.inFlightAttachmentIds + submission.attachmentIds,
         ) }
         return workScope.launch {
-            var localEntryKey: String? = null
-            var sendTarget: String? = null
+            var localEntryKey: String? = submission.optimisticEntry?.key
+            var sendTarget: String? = submission.conversationId
             // Whether this send emptied the composer: only then may a failure
             // hand the text back. The draft revision cannot answer that,
             // because releasing the attachment drafts below advances it too.
-            var draftWasCleared = false
+            var draftWasCleared = submission.optimisticEntry != null
             try {
                 if (submission.isolatedThreadEpoch != null &&
                     (threadEpoch != submission.isolatedThreadEpoch || activeThreadId != submission.conversationId)) return@launch
                 val target = submission.conversationId ?: activeThreadId
-                    ?: bootstrapConversationForFirstMessage().await().getOrThrow()
+                    ?: bootstrapConversationForFirstMessage(submission.optimisticEntry).await().getOrThrow()
                 sendTarget = target
                 submission.voiceAttempt?.conversationId = target
                 hydrateSendAtoms(target)
@@ -2685,7 +2796,7 @@ class WorkbenchController(
                 submittedAttachments.zip(remoteIds).forEach { (attachment, remoteId) ->
                     rememberHistoricalAttachment(target, attachment.copy(draftId = remoteId), ClientMessageId(submission.clientMessageId))
                 }
-                val entry = TimelineEntry(
+                val entry = submission.optimisticEntry ?: TimelineEntry(
                     key = "local_" + submission.clientMessageId, sender = "user",
                     text = submission.text.ifBlank { if (submittedAttachments.isNotEmpty()) "" else "[附件]" }, isUser = true,
                     timestamp = System.currentTimeMillis(), pendingAcceptance = true,
@@ -2871,6 +2982,18 @@ class WorkbenchController(
                                 )
                             }
                         }
+                    } else if (!acceptance.authoritative) {
+                        nativePendingSubmissions[message.clientMessageId.value] = target to submission.attachmentIds
+                        // An SSE receipt may race the local initiation return.
+                        if (atomsFor(target)[message.clientMessageId.value]?.submissionState == LocalSubmissionState.ACCEPTED) {
+                            nativePendingSubmissions.remove(message.clientMessageId.value)
+                            submission.attachmentIds.forEach { releaseSubmittedAttachment(target, it) }
+                            if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
+                        }
+                        if (activeThreadId == target) update { state -> state.copy(composer = ComposerState.EDITING,
+                            timeline = Loadable.Ready(renderTimeline(state.pendingBatch)), notice = null) }
+                        persistCheckpoint()
+                        return@launch
                     } else {
                         acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId, generationId = acceptance.generationId)
                     if (activeThreadId == target) {
@@ -3813,6 +3936,7 @@ class WorkbenchController(
                         if (event.deleted) event.conversationId?.value?.let { id ->
                             deletedThreads.add(id)
                             sendAtomsByThread.remove(id)
+                            executionFacts.keys.removeAll { it.first == id }
                             if (activeThreadId == id) leaveManagedThread(id)
                         }
                         refreshThreads()
@@ -3823,6 +3947,7 @@ class WorkbenchController(
                         is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value
                         is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value
                         is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
+                        is VerifiedConversationEvent.ExecutionStepsUpdated -> event.conversationId.value
                         is VerifiedConversationEvent.TitleUpdated -> event.conversationId.value
                         is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
                         is VerifiedConversationEvent.PendingDeliveryUpdated -> event.delivery.conversationId.value
@@ -3833,6 +3958,8 @@ class WorkbenchController(
                     if ((event is VerifiedConversationEvent.TimelineUpsert && event.message.conversationId == null) ||
                         (event is VerifiedConversationEvent.TimelineTombstoned && event.conversationId == null)) return@collect
                     applySendEvent(event)
+                    GatewayLog.protocolEvidence("T8.event_applied", mapOf("eventId" to event.eventId,
+                        "eventType" to event.javaClass.simpleName))
                     val currentActiveId = activeThreadId ?: run {
                         refreshThreads()
                         return@collect
@@ -3843,6 +3970,11 @@ class WorkbenchController(
                     if (event.eventId.isNotBlank() && handledEventIds.contains(event.eventId)) return@collect
                     when (event) {
                         is VerifiedConversationEvent.ConversationsChanged -> Unit // handled before timeline routing
+                        is VerifiedConversationEvent.ExecutionStepsUpdated -> {
+                            if (event.conversationId.value == currentActiveId) update { state ->
+                                state.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch)))
+                            }
+                        }
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                             val eventConvId = event.conversationId?.value
                             val correlationId = event.correlationId
@@ -3860,7 +3992,7 @@ class WorkbenchController(
                                     // 会话流已经确认这条消息属实：先把提示从"等待接收"推进到"已接收"，
                                     // 不必等首个 token（Hermes 一轮可能要思考数秒到数十秒）。
                                     identified?.let { atom ->
-                                        if (atom.submissionState == LocalSubmissionState.ACCEPTED &&
+                                        if (event.agentReceived && atom.submissionState == LocalSubmissionState.ACCEPTED &&
                                             atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED
                                         ) {
                                             atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
@@ -4359,19 +4491,23 @@ class WorkbenchController(
 
     /** 原生模式或明确关联到提交的消息以真实行 ID 为准；同轮也可有多条相同正文。 */
     private fun haveDistinctNativeAssistantIds(
-        firstId: String, firstClientId: ClientMessageId?,
-        secondId: String, secondClientId: ClientMessageId?,
+        firstId: String, firstClientId: ClientMessageId?, firstLocal: Boolean,
+        secondId: String, secondClientId: ClientMessageId?, secondLocal: Boolean,
     ): Boolean {
+        if (authoritativeMessageIds) return firstId != secondId && !firstLocal && !secondLocal
+        // 旧 Gateway 的无身份行继续沿用兼容规则；原生真实 ID 从不按前缀分类。
         fun isTemporary(id: String) = id.startsWith("local_") || id.startsWith("stream_") || id.startsWith("asst_")
-        return (authoritativeMessageIds || firstClientId != null || secondClientId != null) && firstId != secondId &&
-            !isTemporary(firstId) && !isTemporary(secondId)
+        return (firstClientId != null || secondClientId != null) && firstId != secondId &&
+            !firstLocal && !secondLocal && !isTemporary(firstId) && !isTemporary(secondId)
     }
 
     private fun haveDistinctNativeAssistantIds(first: TimelineMessage, second: TimelineMessage): Boolean =
-        haveDistinctNativeAssistantIds(first.id, first.clientMessageId, second.id, second.clientMessageId)
+        haveDistinctNativeAssistantIds(first.id, first.clientMessageId, first.localPlaceholder,
+            second.id, second.clientMessageId, second.localPlaceholder)
 
     private fun haveDistinctNativeAssistantIds(first: TimelineEntry, second: TimelineEntry): Boolean =
-        haveDistinctNativeAssistantIds(first.key, first.clientMessageId, second.key, second.clientMessageId)
+        haveDistinctNativeAssistantIds(first.key, first.clientMessageId, first.localPlaceholder,
+            second.key, second.clientMessageId, second.localPlaceholder)
 
     private fun messageTextOf(message: TimelineMessage): String =
         message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
@@ -4606,6 +4742,9 @@ class WorkbenchController(
             },
             submissionFailureCode = message.localSubmissionFailure,
             clientMessageId = message.clientMessageId,
+            generationId = message.generationId,
+            executionSteps = message.executionSteps,
+            localPlaceholder = message.localPlaceholder,
         )
         if (cacheable) {
             renderedEntryCache[message.id] = RenderedTimelineEntry(message, cancelled, entry)
@@ -4641,10 +4780,47 @@ class WorkbenchController(
         // content, so the folding and pruning above must never touch it. Each
         // card still takes the place its own timestamp earned, so it reads where
         // it happened rather than trailing the whole conversation.
-        val withCards = insertApprovalRows(rendered, approvalRowsForActiveThread())
+        val withCards = insertApprovalRows(insertNativeExecutionRows(rendered), approvalRowsForActiveThread())
         // A receipt is navigation, not content, for the same reason.
         val receiptRow = activeThreadId?.let(::creationReceiptRow) ?: return ensureUniqueKeys(withCards)
         return ensureUniqueKeys(withCards + receiptRow)
+    }
+
+    private fun insertNativeExecutionRows(entries: List<TimelineEntry>): List<TimelineEntry> {
+        val threadId = activeThreadId ?: return entries
+        fun visibleSteps(generationId: String, steps: List<NativeExecutionStep>): List<NativeExecutionStep> =
+            if (threadId to generationId in finishedGenerations) steps.map { step ->
+                if (step.status == NativeExecutionStatus.RUNNING) step.copy(status = NativeExecutionStatus.UNKNOWN) else step
+            } else steps
+        val result = entries.map { entry ->
+            val generationId = entry.generationId
+            if (generationId != null && entry.executionSteps.isNotEmpty())
+                entry.copy(executionSteps = visibleSteps(generationId, entry.executionSteps)) else entry
+        }.toMutableList()
+        executionFacts.forEach { (identity, facts) ->
+            val (conversationId, generationId) = identity
+            if (conversationId != threadId || facts.steps.isEmpty()) return@forEach
+            val anchors = result.withIndex().filter { (_, entry) ->
+                entry.isUser && (facts.userMessageId != null && entry.key == facts.userMessageId ||
+                    facts.clientMessageId != null && entry.clientMessageId?.value == facts.clientMessageId)
+            }
+            // Identity ambiguity fails closed. An unanchored fact is retained
+            // until its exact prompt or an actual message of that generation is read.
+            if (anchors.size > 1) return@forEach
+            val anchor = anchors.singleOrNull()
+            val messageIndex = result.indexOfFirst { !it.executionFact && !it.isUser && it.generationId == generationId }
+            var index = anchor?.index?.plus(1) ?: messageIndex.takeIf { it >= 0 } ?: return@forEach
+            while (index < result.size && result[index].executionFact) index++
+            val row = TimelineEntry(
+                key = "execution-fact:$generationId", sender = "system", text = "", isUser = false,
+                timestamp = anchor?.value?.timestamp ?: result.getOrNull(messageIndex)?.timestamp ?: facts.occurredAt,
+                pendingAcceptance = false, batchGroupId = null, generationId = generationId,
+                clientMessageId = facts.clientMessageId?.let { runCatching { ClientMessageId(it) }.getOrNull() },
+                executionSteps = visibleSteps(generationId, facts.steps), executionFact = true,
+            )
+            result.add(index, row)
+        }
+        return result
     }
 
     /**
@@ -4706,11 +4882,19 @@ class WorkbenchController(
                 val sameClientIdentity = entry.clientMessageId != null && entry.clientMessageId == lastEntry?.clientMessageId
                 val differentClientIdentities = entry.clientMessageId != null && lastEntry?.clientMessageId != null &&
                     entry.clientMessageId != lastEntry.clientMessageId
+                val distinctNativeIds = authoritativeMessageIds && lastEntry != null &&
+                    !entry.localPlaceholder && !lastEntry.localPlaceholder && entry.key != lastEntry.key
                 val isDuplicateUser = lastEntry != null && lastEntry.isUser &&
-                    !differentClientIdentities &&
-                    (sameClientIdentity || (normalizeEntryKey(entry.key) == normalizeEntryKey(lastEntry.key)) ||
-                     (entry.text == lastEntry.text && entry.attachments == lastEntry.attachments &&
-                      Math.abs(entry.timestamp - lastEntry.timestamp) <= 10_000L))
+                    !differentClientIdentities && !distinctNativeIds &&
+                    if (authoritativeMessageIds) {
+                        // Native history owns identity. A prefix, body or nearby
+                        // timestamp cannot turn two real user messages into one.
+                        sameClientIdentity || entry.key == lastEntry.key
+                    } else {
+                        sameClientIdentity || normalizeEntryKey(entry.key) == normalizeEntryKey(lastEntry.key) ||
+                            (entry.text == lastEntry.text && entry.attachments == lastEntry.attachments &&
+                                Math.abs(entry.timestamp - lastEntry.timestamp) <= 10_000L)
+                    }
                 if (isDuplicateUser) {
                     if (lastEntry!!.pendingAcceptance && !entry.pendingAcceptance) {
                         result[result.size - 1] = entry
@@ -4744,11 +4928,24 @@ class WorkbenchController(
 
         val keep = BooleanArray(entries.size) { true }
         val indexByIdentity = HashMap<String, Int>()
+        val nativeIdsByClient = if (authoritativeMessageIds) entries.asSequence()
+            .filter { it.isUser && !it.localPlaceholder && it.clientMessageId != null }
+            .groupBy { requireNotNull(it.clientMessageId).value }
+            .mapValues { (_, rows) -> rows.map { it.key }.distinct() } else emptyMap()
         entries.forEachIndexed { index, entry ->
             if (!entry.isUser) return@forEachIndexed
-            val identity = entry.clientMessageId?.value?.takeIf { it.isNotBlank() }
-                ?: normalizeEntryKey(entry.key).takeIf { it.isNotBlank() }
-                ?: return@forEachIndexed
+            val clientId = entry.clientMessageId?.value?.takeIf { it.isNotBlank() }
+            val identity = if (authoritativeMessageIds) {
+                when {
+                    // One explicit client can replace its local placeholder,
+                    // but cannot collapse several distinct native message IDs.
+                    clientId != null && nativeIdsByClient[clientId].orEmpty().size <= 1 -> "client:$clientId"
+                    entry.key.isNotBlank() -> "message:${entry.key}"
+                    else -> return@forEachIndexed
+                }
+            } else {
+                clientId ?: normalizeEntryKey(entry.key).takeIf { it.isNotBlank() } ?: return@forEachIndexed
+            }
             val previous = indexByIdentity[identity]
             if (previous == null) {
                 indexByIdentity[identity] = index
@@ -4936,7 +5133,7 @@ class WorkbenchController(
     /** Apply a freshly rebuilt baseline while preserving an unsent local draft. */
     fun onMirrorRebuilt() {
         sendAtomsEpoch++
-        handledEventIds.clear(); mirrored.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
+        handledEventIds.clear(); mirrored.clear(); executionFacts.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
         update { it.copy(historyHydrated=activeThreadId==null,timeline=if(activeThreadId==null) it.timeline else Loadable.Loading) }
         refreshThreads(); activeThreadId?.let(::reloadTimeline)
     }
