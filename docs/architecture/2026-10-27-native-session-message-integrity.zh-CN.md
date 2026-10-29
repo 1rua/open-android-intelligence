@@ -8,6 +8,10 @@
 
 Hermes 的 `generation` 事件返回真实 `userMessageId`、原始 `clientMessageId` 和 `generationId`。Assistant 的 `delta` 和 `done` 事件返回宿主实际发布的 `messageId`；客户端必须按此 ID 分开保存同一轮中的多条消息。`delta.text` 是该消息的新增文本，`done.text` 是最后一条消息的完整文本。兼容旧宿主时，这些新增身份字段可以缺省，不能用随机 ID 宣称已与远端历史对齐。
 
+2026-10-29 补充：Hermes 将同一持久展示快照的 `revision` 作为 `contentRevision` 随 `delta` 和 `done` 透传，并附带原始 `eventId` 与 `generationId`。`done.eventId` 对应最后一条消息的持久事件，不是手机已经消费的确认，也不是额外生成的执行终态事件。历史的 `contentRevision` 与此字段来自相同修订域；它与 generation 生命周期的 `revision` 是两个独立计数，不能相互比较。旧宿主没有可信修订时字段缺省，不用手机时间伪造宿主版本。
+
+`generationRecovery=true` 表示支持按原 `clientMessageId` 或 `generationId` 查询持久执行事实。客户端通过 `GET /generation?clientMessageId=...&generationId=...` 对账，两个身份同时提供时必须指向同一已受理任务。返回 `conversationId`、`generationId`、`clientMessageId`、`userMessageId`、`state`、`revision`，且账号授权与原生会话绑定仍由现有认证路径核对。可选 `afterRevision` 和 `waitMs` 实现最长 25000 毫秒的条件等待；事件唤醒后重新读取持久记录，不重新发送消息。该能力独立于宿主当前在线状态。活动任务查询为空仍不能证明成功；只有 completed、failed、cancelled 是可确认终态。字段缺省的旧宿主按不支持恢复处理。
+
 Hermes 历史投影保留真实 ID、原始时间值及附件元数据。用户消息返回原始 `clientMessageId`；同一轮有多条 Assistant 消息时，只有最后一条回复返回用户轮次的 `clientMessageId`，其余消息通过各自真实 `id` 对齐。历史中的数字时间来自既有 HistoryPort 的毫秒值。Codex 的流式消息返回原生 item ID，与 `thread/read` 历史身份一致。DSH 从匹配本次请求的原生用户事件及持久化 Assistant 事件取得 ID，在 `done` 中返回 `userMessageId` 与 `messageId`；流式 attempt/chunk 没有稳定消息身份时不作猜测，旧宿主未提供的 ID 继续缺省。
 
 Generic 和 DSH 旧纯文本桥不接受新的请求字段，Core 在调用这些旧桥时保留原有纯文本请求结构；本次未为它们声明附件处理能力。

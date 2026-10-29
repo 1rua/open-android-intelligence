@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import json
+import logging
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -262,6 +263,39 @@ async def test_signed_discovery_and_versioned_host_catalog_cross_both_http_layer
     p.catalog[1] = {**p.catalog[1], "description": "插件更新后的描述"}
     response = await request(p.client, p.alice, "GET", AGENT + "/commands?languageCode=zh-CN")
     assert (await response.json())["catalogVersion"] != first["catalogVersion"]
+
+
+@pytest.mark.asyncio
+async def test_boundary_timing_logs_public_identity_without_transcript_or_tokens(pipeline, caplog):
+    p = pipeline
+    caplog.set_level(logging.DEBUG, logger="oai_core.native_sessions")
+    private_text = "private-synthetic-transcript-must-not-enter-diagnostics"
+    path = AGENT + "/sessions/" + p.conversation + "/messages"
+    stream = await request(p.client, p.alice, "POST", path,
+        {"text": private_text, "clientMessageId": "timing-client"})
+    try:
+        events = []
+        while True:
+            event = await next_event(stream)
+            events.append(event)
+            if event["type"] in {"done", "error"}:
+                break
+        assert events[-1]["type"] == "done"
+    finally:
+        stream.close()
+    traces = [json.loads(record.getMessage().removeprefix("native_session "))
+              for record in caplog.records if record.name == "oai_core.native_sessions"]
+    assert traces[0]["stage"] == "T2"
+    writes = [trace for trace in traces if trace["stage"] == "T5"]
+    assert [trace["eventType"] for trace in writes] == ["generation", "delta", "done"]
+    assert all(trace["clientMessageId"] == "timing-client" for trace in traces)
+    assert all(trace["monotonicNs"] > 0 and trace["elapsedMs"] >= 0 for trace in traces)
+    assert all(left["monotonicNs"] <= right["monotonicNs"] for left, right in zip(traces, traces[1:]))
+    serialized = json.dumps(traces)
+    assert private_text not in serialized
+    assert TOKEN not in serialized
+    assert "native-key-secret" not in serialized
+    assert "Authorization" not in serialized
 
 
 @pytest.mark.asyncio

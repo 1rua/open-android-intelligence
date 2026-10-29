@@ -23,3 +23,15 @@
 固定 Hermes SDK `75b083e9399115b12513385252811f09c3503c90` 中，`gateway/delivery_ledger.py` 的交付账本重试生成 `Recovered reply`；`gateway/run.py` 的 `build_resume_recovery_note` 和 `gateway/run_turn_runner.py` 的恢复路径在 `resume_pending` 下生成中断提示。客户端 SSE/NDJSON 观察关闭不会调用本适配器的宿主中断入口。上述测试断言一条原始用户记录和一次任务分派，不能冒充已测试 Hermes 进程真正重启后的 `resume_pending` 行为；不得按这些正文关键词删除合法上游消息。
 
 扩展四文件回归时又复现取消竞争：宿主 Task 先被显式取消，权威 cancelled 回执稍后提交。观察器立即 await 已取消 Task 会提前退出，得到 error 而不是 done；原先 200 毫秒等待掩盖了此窗口。修复后只以持久 generation 终态关闭流，任务取消本身不能证明 Agent 失败；完成回调或取消交接尚未提交时等待其真实事件。异常任务没有持久终态时明确返回 `OUTCOME_UNKNOWN`。
+
+上述四文件回归修复后共 70 项通过。后续将持久消息的 `revision` 作为 SSE `contentRevision` 透传，并保留 `eventId`、`generationId`，让历史和实时内容使用同一原生修订域。generation 生命周期版本保持独立。消息与审批、HTTP 链路专项共 49 项通过，未把手机时间作为宿主版本。
+
+## 阶段日志和可测量边界
+
+通过 Python 标准日志器 `oai_core.native_sessions` 的 DEBUG 级别按需开启诊断，默认不输出。Core 记录 T2（请求验证后）和 T5（SSE write 返回后）；真实 Hermes runtime 回调记录 T3（宿主开始处理）、T4（每条真实消息首个增量持久化）和 T10（终态写入完成）。T5 只采样首个文本增量、身份和控制/终态，不逐 token 连续刷日志。日志仅包含公开消息、请求、事件、generation 身份、版本、状态及单调时钟，不包含账号名称、会话密钥、令牌、正文、工具参数或附件。
+
+`monotonicNs` 只能直接比较同一进程的阶段；Core 与 Adapter 位于不同机器时，不能相减后声称网络时延。Core 的 `elapsedMs` 从本次 HTTP 处理入口计时。T5 的 write 返回证明服务端写入调用完成，不等于 Android 已读取或 Compose 已渲染。合成 HTTP 用例验证 T2→T5 首帧→done 时序并断言私有合成正文及令牌未进入日志；固定 SDK 隔离进程验证真实宿主 T3→T4→T10 回调时序及相同脱敏边界。没有真实手机 T0/T1/T6–T9/T11 记录时，不声称已测量全链路吞吐或视觉流畅度。
+
+现有 `delta.text` 只表达追加片段。同一真实 ID 的非前缀编辑后若出现另一条真实消息，前条编辑不能由最后一个 done.text 表达。固定 SDK 合成处理器覆盖此序列，并核对前条编辑在权威历史中保留更高 `contentRevision`。Android 正常终态也应按每个真实 ID 补偿历史；本轮不新增未经协商的 snapshot 事件，也不宣称已支持编辑的实时替换。
+
+固定 SDK 六文件专项：`test_hermes.py`、`test_hermes_native.py`、`test_hermes_interactions.py`、`test_interaction_pipeline.py`、`test_hermes_approval_prompts.py`、`test_hermes_dispatch_delivery.py`，71 项通过、0 跳过，耗时 26.05 秒。使用共享依赖的隔离测试解释器，SDK 固定为上文提交；该结果包含真实宿主生命周期/SessionStore 合约，但处理器返回合成回复，不调用真实模型。

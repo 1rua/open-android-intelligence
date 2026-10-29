@@ -339,7 +339,15 @@ class HermesSessionAdapter:
         pending_events = deque()
         previous = ""
         assistant_message_id = None
+        assistant_revision = None
+        assistant_event_id = None
         identity = {"clientMessageId": client_id, "userMessageId": accepted["messageId"]}
+        def message_identity():
+            return {
+                **({"messageId": assistant_message_id} if assistant_message_id else {}),
+                **({"contentRevision": assistant_revision} if assistant_revision is not None else {}),
+                **({"eventId": assistant_event_id} if assistant_event_id else {}),
+            }
         try:
             yield {"type": "generation", "generationId": generation_id, **identity}
             async with asyncio.timeout(1800):
@@ -376,7 +384,7 @@ class HermesSessionAdapter:
                             if status in {"completed", "cancelled"}:
                                 yield {"type": "done", "text": previous, "generationId": generation_id,
                                        "outcome": "cancelled" if status == "cancelled" else "completed", **identity,
-                                       **({"messageId": assistant_message_id} if assistant_message_id else {})}
+                                       **message_identity()}
                             else:
                                 yield {"type": "error", "code": "AGENT_FAILED"}
                             return
@@ -405,7 +413,7 @@ class HermesSessionAdapter:
                                 if belongs(tail) and tail.get("eventType") == "conversation.approval.resolved":
                                     yield {"type": "approval_resolved", "approval": tail["payload"], "generationId": generation_id}
                         yield {"type": "done", "text": previous, "generationId": generation_id, "outcome": "cancelled", **identity,
-                               **({"messageId": assistant_message_id} if assistant_message_id else {})}
+                               **message_identity()}
                         return
                     if event.get("eventType") in {"conversation.message.delta", "conversation.message.completed"}:
                         payload = event["payload"]
@@ -416,9 +424,13 @@ class HermesSessionAdapter:
                         if message_id != assistant_message_id:
                             previous = ""
                         assistant_message_id = message_id
+                        revision = payload.get("revision")
+                        assistant_revision = revision if type(revision) is int and revision >= 0 else None
+                        assistant_event_id = event["eventId"]
                         if current.startswith(previous):
                             if current[len(previous):]:
-                                yield {"type": "delta", "text": current[len(previous):], "messageId": message_id, **identity}
+                                yield {"type": "delta", "text": current[len(previous):], "generationId": generation_id,
+                                       **message_identity(), **identity}
                         previous = current
         except TimeoutError:
             yield {"type": "error", "code": "AGENT_TIMEOUT"}

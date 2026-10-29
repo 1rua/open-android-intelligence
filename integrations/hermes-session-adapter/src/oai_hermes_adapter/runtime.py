@@ -23,6 +23,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 
 from oai_core.gateway.core import AgentSessionBindings, GatewayError, NEW_CONVERSATION_COMMAND, iso_millis, _epoch_millis
 from oai_core.sessions import AdapterError
+from oai_core.native_diagnostics import trace_native_stage
 from .platform_identity import GATEWAY_PLATFORM_ID, GATEWAY_PLATFORM_IDS
 from .context import native_input_receipt, trusted_turn
 from .bridge import NativeApprovalMixin, create_hermes_bridge_app
@@ -517,7 +518,12 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                     payload["timestamp"] = saved["timestamp"]
                     payload["revision"] = saved["revision"]
             correlation_id = origin["messageId"] if origin and origin.get("conversationId") == chat_id else message_id
-            account.events.append(event_type, correlation_id, payload, occurred_at)
+            saved_event = account.events.append(event_type, correlation_id, payload, occurred_at)
+            if event_type == "conversation.message.delta" and generation and message_id not in self._streaming_replies.get(
+                    (target_account, chat_id, generation["generationId"]), {}):
+                trace_native_stage("T4", client_message_id=origin.get("clientMessageId") if origin else None,
+                    generation_id=generation["generationId"], message_id=message_id,
+                    event_id=saved_event["eventId"], revision=payload.get("revision"), event_type="first_delta")
             if generation:
                 key = (target_account, chat_id, generation["generationId"])
                 if event_type == "conversation.message.delta":
@@ -1147,6 +1153,9 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             await report_dispatch_delivered(account, record, getattr(event, "_gateway_claim_token", None))
             if not generation:
                 return
+            trace_native_stage("T3", client_message_id=client_id, generation_id=generation["generationId"],
+                message_id=record["messageId"], revision=generation.get("revision"),
+                state=generation["state"], event_type="host_admitted")
             key = (account_id, record["conversationId"], generation["generationId"])
             # Some host versions run lifecycle hooks in a separate Task. The
             # native session map, rather than the hook's current Task, owns the
@@ -1195,6 +1204,11 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                     record["messageId"], status, error_code,
                     f"agent-complete-{record['messageId']}",
                 )
+                settled = account.conversations.workflow.for_message(record["messageId"])
+                if settled:
+                    trace_native_stage("T10", client_message_id=client_message_id,
+                        generation_id=settled["generationId"], message_id=record["messageId"],
+                        revision=settled.get("revision"), state=settled["state"], event_type="terminal_committed")
         except Exception as exc:
             logger.warning(
                 "[open_android] Agent completion status failed messageId=%s errorCode=%s",

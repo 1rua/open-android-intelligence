@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from importlib.metadata import entry_points
@@ -21,6 +22,7 @@ from .gateway.http import _status
 
 from .auth import Principal
 from .operations import NativeOperations, OperationConflict
+from .native_diagnostics import trace_native_stage
 
 logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
@@ -645,6 +647,7 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @routes.post(PREFIX + "/{agent_id}/sessions/{session_id}/messages")
     @endpoint
     async def send(request: web.Request) -> web.StreamResponse:
+        started_ns = time.monotonic_ns()
         principal = await principal_for(request)
         adapter = registry.get(request.match_info["agent_id"], "send")
         registry.get(request.match_info["agent_id"], "stream")
@@ -671,12 +674,24 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         if receipt is not None:
             # The transcript is read from its native host, never replayed from Core.
             raise AdapterError("REQUEST_ALREADY_EXECUTED", 409)
+        trace_native_stage("T2", client_message_id=client_message_id, request_id=request_id,
+                           state="validated", event_type="request", started_ns=started_ns)
         stream = adapter.send(principal, session_id, text, **kwargs)
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
         await response.prepare(request)
 
+        first_delta_written = False
         async def emit(event: dict[str, Any]) -> None:
+            nonlocal first_delta_written
             await response.write(("event: message\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
+            if event.get("type") != "delta" or not first_delta_written:
+                trace_native_stage("T5", client_message_id=event.get("clientMessageId", client_message_id),
+                    generation_id=event.get("generationId"), message_id=event.get("messageId"),
+                    event_id=event.get("eventId"), revision=event.get("contentRevision"),
+                    state=event.get("outcome", event.get("code")), event_type=event.get("type"),
+                    request_id=request_id, started_ns=started_ns)
+            if event.get("type") == "delta":
+                first_delta_written = True
 
         pending: asyncio.Task | None = None
         try:

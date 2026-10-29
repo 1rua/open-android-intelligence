@@ -202,7 +202,10 @@ async def test_real_event_store_frames_stream_accumulated_native_text_and_do_not
     assert events[0]["type"] == "generation"
     assert events[-1] == {"type": "done", "text": "原生回复", "outcome": "completed",
                           "generationId": events[0]["generationId"], "messageId": "reply",
+                          "contentRevision": 0, "eventId": events[-2]["eventId"],
                           "clientMessageId": events[0]["clientMessageId"], "userMessageId": events[0]["userMessageId"]}
+    assert all(event["generationId"] == events[0]["generationId"] for event in events)
+    assert [event["contentRevision"] for event in events if event["type"] == "delta"] == [0, 0]
     assert core._event_sinks == []
     with pytest.raises(AdapterError) as error:
         await anext(adapter.send(Principal("bob", device_id="phone"), conversation, "hello"))

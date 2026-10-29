@@ -2,6 +2,8 @@
 import asyncio
 import hashlib
 import io
+import json
+import logging
 import zipfile
 from contextlib import closing, nullcontext
 import os
@@ -30,6 +32,14 @@ from oai_core.auth import Principal
 from oai_hermes_adapter.bridge import register
 from oai_core.server import create_app, create_core
 from oai_core.sessions import AdapterError
+
+native_traces = []
+class NativeTraceCapture(logging.Handler):
+    def emit(self, record):
+        native_traces.append(json.loads(record.getMessage().removeprefix("native_session ")))
+trace_logger = logging.getLogger("oai_core.native_sessions")
+trace_logger.setLevel(logging.DEBUG)
+trace_logger.addHandler(NativeTraceCapture())
 
 repository, temporary = Path(sys.argv[1]), Path(sys.argv[2])
 assert NATIVE_HERMES_AVAILABLE
@@ -170,6 +180,10 @@ async def scenario():
 
     class Handler:
         async def receive(self, event):
+            if event.text == "private diagnostic prompt":
+                await runtime.stream_delta(event.source.chat_id, "diagnostic-reply", "private diagnostic partial")
+                await runtime.complete_message(event.source.chat_id, "diagnostic-reply", "private diagnostic final")
+                return "private diagnostic final"
             if event.text == "controlled pending followup":
                 followup_entered.set()
                 await followup_release.wait()
@@ -307,6 +321,27 @@ async def scenario():
         events = [event async for event in adapter.send(alice, a["id"], "synthetic prompt")]
         assert events[-1]["type"] == "done", events
         assert "native synthetic reply" == "".join(event.get("text", "") for event in events if event["type"] == "delta"), events
+        diagnostic_events = [event async for event in adapter.send(alice, a["id"], "private diagnostic prompt",
+            client_message_id="diagnostic-client")]
+        assert diagnostic_events[-1]["type"] == "done"
+        # A non-prefix native edit followed by a second real message is still
+        # authoritative in history. Terminal recovery must reconcile every ID,
+        # rather than using done.text as the entire turn's transcript.
+        assert diagnostic_events[-1]["messageId"] != "diagnostic-reply"
+        edited = next(message for message in await adapter.history(alice, a["id"])
+                      if message["id"] == "diagnostic-reply")
+        assert edited["text"] == "private diagnostic final"
+        partial = next(event for event in diagnostic_events
+                       if event.get("messageId") == "diagnostic-reply" and event["type"] == "delta")
+        assert edited["contentRevision"] > partial["contentRevision"]
+        timings = [trace for trace in native_traces if trace.get("clientMessageId") == "diagnostic-client"]
+        assert {trace["stage"] for trace in timings} == {"T3", "T4", "T10"}, timings
+        assert all(trace["monotonicNs"] > 0 for trace in timings)
+        assert timings[0]["stage"] == "T3" and timings[-1]["stage"] == "T10", timings
+        serialized = json.dumps(timings)
+        assert "private diagnostic" not in serialized
+        assert os.environ["OAI_HERMES_SESSION_TOKEN"] not in serialized
+        assert binding["sessionKey"] not in serialized
         # The real Hermes dispatch receives private verified files with their
         # original MIME type, including a pure image and a text/document turn.
         document = io.BytesIO()
