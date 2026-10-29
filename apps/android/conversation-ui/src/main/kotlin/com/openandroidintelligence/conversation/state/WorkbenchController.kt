@@ -113,6 +113,9 @@ data class TimelineEntry(
     val approval: ApprovalCardState? = null,
     /** 明确的客户端身份优先于旧历史的正文相似判断。 */
     val clientMessageId: ClientMessageId? = null,
+    val generationId: String? = null,
+    val executionSteps: List<com.openandroidintelligence.conversation.model.NativeExecutionStep> = emptyList(),
+    val localPlaceholder: Boolean = false,
 )
 
 data class WorkbenchUiState(
@@ -4606,6 +4609,9 @@ class WorkbenchController(
             },
             submissionFailureCode = message.localSubmissionFailure,
             clientMessageId = message.clientMessageId,
+            generationId = message.generationId,
+            executionSteps = message.executionSteps,
+            localPlaceholder = message.localPlaceholder,
         )
         if (cacheable) {
             renderedEntryCache[message.id] = RenderedTimelineEntry(message, cancelled, entry)

@@ -44,6 +44,7 @@ import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.AttachmentDownloadState
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
@@ -53,6 +54,7 @@ import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -637,6 +639,39 @@ fun TimelineDisplayRow(
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
     onOpenAttachmentPreview: ((String) -> Unit)? = null,
 ) {
+    if (GatewayLog.protocolEvidenceEnabled) {
+        val entry = when (item) {
+            is TimelineDisplayItem.Single -> item.entry
+            is TimelineDisplayItem.Execution -> item.run.finalEntry
+        }
+        val steps = (item as? TimelineDisplayItem.Execution)?.run?.steps.orEmpty()
+        val hasContent = entry.text.isNotBlank() || entry.attachments.isNotEmpty() || steps.isNotEmpty()
+        val streaming = when (item) {
+            is TimelineDisplayItem.Single -> entry.isStreaming
+            is TimelineDisplayItem.Execution -> item.run.isStreaming
+        }
+        val unknownStep = steps.filterIsInstance<ExecutionStep.ToolCall>()
+            .any { it.block.executionStatus == NativeExecutionStatus.UNKNOWN }
+        var observed by rememberSaveable(item.key) { mutableIntStateOf(0) }
+        // SideEffect 只在本次组合成功应用后执行。首个可见内容与非流式快照
+        // 各记录一次，不按 token 记录，也不把此边界冒充屏幕/GPU呈现测量。
+        SideEffect {
+            if (hasContent) {
+                val phases = buildList {
+                    if ((observed and 1) == 0) add(1 to "first_visible")
+                    if (!streaming && !entry.pendingAcceptance && !unknownStep && (observed and 2) == 0)
+                        add(2 to "non_streaming_visible")
+                }
+                phases.forEach { (bit, phase) ->
+                    GatewayLog.protocolEvidence("T9.compose_applied", mapOf(
+                        "messageId" to entry.key, "clientMessageId" to entry.clientMessageId?.value,
+                        "generationId" to entry.generationId, "phase" to phase, "stepCount" to steps.size,
+                    ))
+                    observed = observed or bit
+                }
+            }
+        }
+    }
     CompositionLocalProvider(LocalExecutionTiming provides timing) {
         when (item) {
             is TimelineDisplayItem.Single -> TimelineRow(

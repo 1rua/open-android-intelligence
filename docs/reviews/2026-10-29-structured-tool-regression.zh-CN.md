@@ -23,3 +23,19 @@ PYTHONPATH=oai-core/src:integrations/hermes-session-adapter/src python -m pytest
 ```
 
 覆盖原生步骤身份、跨轮隔离、无明确 generation 的安全回退、无结果与明确错误区分、畸形工具字段安全跳过，以及真实历史端口和原生会话适配器贯通。该结果不代表真实模型、实时工具 start/finish 事件或手机画面已验收；Android 接收和展示在后续步骤完成。
+
+## 第二步：压缩边界与重复原生调用
+
+增加两项边界后专项先得到 `2 failed, 5 passed`：压缩摘要没有原请求身份，后续调用仍沿用了前一轮 generation；同一原生 call ID 的重复源行被转成额外的“调用工具”正文。修复后 `7 passed`。压缩摘要现在关闭当前关联，重复调用只保留由真实 ID 唯一标识的结构化步骤，不额外伪造正文。
+
+## Android 展示的失败反馈
+
+真实 `:conversation-ui:testDebugUnitTest` 中的 `StructuredExecutionDisplayTest` 首轮为 **5 tests，4 failures，0 skipped**。没有结构化聚合时，多条源消息仍是单行，过程卡为空，步骤版本无法按 ID 合并；无 generation 的普通正文回退用例通过。后续修改将以这四项失败作为反馈信号。
+
+## 第三步：结构化卡片与展示状态
+
+修复后，`StructuredExecutionDisplayTest` 扩展到 6 项，`StructuredToolComposeTest` 为 3 项，两类共 9 项在恢复后的持久 worktree 中全部通过。覆盖单轮一张过程卡、独立最终回答、多轮隔离、重复步骤只取较新版本、审批行保留，以及“已完成”不伪称成功、“结果未知”不伪称失败。
+
+Compose 的 T9 诊断仅在显式调试开关下记录首个可见快照及非流式快照；正文继续变化不会每个 token 写日志，测试确认日志不含合成私有正文。此处测量的是组合成功应用的边界，不等于显示屏或 GPU 已完成呈现。
+
+同轮的兼容验证为 conversation-ui 154 项，其中 153 项通过；剩余一项来自另一个尚未提交的 Workbench 受理逻辑修改，暴露了既有精确关联保护被绕过。该失败不记为通过，交由消息恢复步骤修正。本步骤只提交结构化展示与必要的可选模型字段，原生 HTTP 解码、消息恢复和实时工具钩子另行验证。
