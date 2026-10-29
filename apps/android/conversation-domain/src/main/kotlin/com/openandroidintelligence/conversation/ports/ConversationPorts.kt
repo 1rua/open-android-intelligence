@@ -363,6 +363,18 @@ sealed interface VerifiedConversationEvent {
         val message: TimelineMessage,
     ) : VerifiedConversationEvent
 
+    /** Native execution facts have their own revision domain, separate from message content. */
+    data class ExecutionStepsUpdated(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val conversationId: ConversationId,
+        val generationId: String,
+        val executionRevision: Long,
+        val steps: List<NativeExecutionStep>,
+        val clientMessageId: String? = null,
+        val userMessageId: String? = null,
+    ) : VerifiedConversationEvent
+
     data class TimelineTombstoned(
         override val eventId: String,
         override val occurredAt: Long,

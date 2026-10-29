@@ -33,6 +33,8 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.toOutcome
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository
@@ -116,6 +118,8 @@ data class TimelineEntry(
     val generationId: String? = null,
     val executionSteps: List<com.openandroidintelligence.conversation.model.NativeExecutionStep> = emptyList(),
     val localPlaceholder: Boolean = false,
+    /** View-only execution facts; this row is never an Assistant message in mirrored history. */
+    val executionFact: Boolean = false,
 )
 
 data class WorkbenchUiState(
@@ -339,6 +343,16 @@ class WorkbenchController(
     private val frozenBatches=LinkedHashMap<String,SavedBatch>()
     private val collectingUnits=LinkedHashMap<String,Pair<String,OutgoingMessage>>()
     private val mirrored = LinkedHashMap<String, TimelineMessage>()
+    private data class NativeExecutionFacts(
+        val revision: Long,
+        val occurredAt: Long,
+        val steps: List<NativeExecutionStep>,
+        val clientMessageId: String?,
+        val userMessageId: String?,
+    )
+    // Native tool observations are view facts, not Assistant messages. They must
+    // never enter mirrored history or its message/content revision domain.
+    private val executionFacts = LinkedHashMap<Pair<String, String>, NativeExecutionFacts>()
     private val sendAtomsByThread = LinkedHashMap<String, LinkedHashMap<String, LocalSendAtom>>()
     private val sendAtomsMutex=Mutex()
     private var sendAtomsEpoch=0L
@@ -346,6 +360,38 @@ class WorkbenchController(
 
     /** 同步界面路径只读投影；未装载状态由 historyHydrated 明确表示。 */
     private fun atomsFor(threadId: String): Map<String,LocalSendAtom> = sendAtomsByThread[threadId].orEmpty()
+
+    private fun recordExecutionFacts(event: VerifiedConversationEvent.ExecutionStepsUpdated) {
+        if (event.generationId.isBlank() || event.executionRevision < 0 || event.steps.any {
+                it.stepId.isBlank() || it.eventId.isBlank() || it.toolName.isBlank() || it.revision < 0
+            }) return
+        val key = event.conversationId.value to event.generationId
+        val previous = executionFacts[key]
+        if (previous != null && event.executionRevision <= previous.revision) return
+        val clientId = event.clientMessageId?.takeIf { it.isNotBlank() }
+        val userId = event.userMessageId?.takeIf { it.isNotBlank() }
+        // A later snapshot cannot move an existing generation to a new prompt.
+        if (previous?.clientMessageId != null && clientId != null && previous.clientMessageId != clientId ||
+            previous?.userMessageId != null && userId != null && previous.userMessageId != userId) return
+        val steps = linkedMapOf<String, NativeExecutionStep>()
+        previous?.steps?.forEach { steps[it.stepId] = it }
+        event.steps.forEach { incoming ->
+            val old = steps[incoming.stepId]
+            val completed = old?.status in setOf(NativeExecutionStatus.COMPLETED, NativeExecutionStatus.FAILED)
+            if (old == null || incoming.revision > old.revision &&
+                !(completed && incoming.status in setOf(NativeExecutionStatus.RUNNING, NativeExecutionStatus.UNKNOWN))) {
+                steps[incoming.stepId] = incoming
+            }
+        }
+        executionFacts[key] = NativeExecutionFacts(event.executionRevision, previous?.occurredAt ?: event.occurredAt,
+            steps.values.toList(), previous?.clientMessageId ?: clientId, previous?.userMessageId ?: userId)
+    }
+
+    private fun rememberExecutionTerminal(threadId: String, generationId: String): Boolean {
+        val changed = finishedGenerations.add(threadId to generationId)
+        while (finishedGenerations.size > 4096) finishedGenerations.remove(finishedGenerations.first())
+        return changed
+    }
 
     private fun recoveredAtoms(atoms: List<LocalSendAtom>)=atoms.map { atom ->
         if (atom.submissionState==LocalSubmissionState.PREPARED) atom.copy(submissionState=LocalSubmissionState.OUTCOME_UNKNOWN) else atom
@@ -460,6 +506,7 @@ class WorkbenchController(
 
     private suspend fun applySendEvent(event: VerifiedConversationEvent) {
         when (event) {
+            is VerifiedConversationEvent.ExecutionStepsUpdated -> recordExecutionFacts(event)
             is VerifiedConversationEvent.MessageStatus -> {
                 event.generationId?.let { generationId ->
                     rememberMessageGeneration(event.conversationId.value, event.messageId, event.clientMessageId.value, generationId, event.revision)
@@ -468,7 +515,10 @@ class WorkbenchController(
                 if (event.status in setOf(com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
                         com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED)) {
                     activeWork.settledClient(event.conversationId.value, event.clientMessageId.value)
-                    event.generationId?.let { activeWork.terminal(event.conversationId.value, it) }
+                    event.generationId?.let {
+                        activeWork.terminal(event.conversationId.value, it)
+                        rememberExecutionTerminal(event.conversationId.value, it)
+                    }
                 }
             }
             is VerifiedConversationEvent.GenerationCancelled -> event.conversationId?.value?.let {
@@ -481,6 +531,7 @@ class WorkbenchController(
         val threadId=when (event) {
             is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
             is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
+            is VerifiedConversationEvent.ExecutionStepsUpdated -> event.conversationId.value
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value
             is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value
             is VerifiedConversationEvent.PendingDeliveryUpdated -> event.delivery.conversationId.value
@@ -1097,6 +1148,7 @@ class WorkbenchController(
         snapshotDeletedIdsByThread.remove(threadId)
         userRenamedThreads.remove(threadId)
         creationReceipts.remove(threadId)
+        executionFacts.keys.removeAll { it.first == threadId }
         approvalCards.entries.removeAll { it.value.request.conversationId?.value == threadId }
         historicalAttachments.snapshot().keys.filter { it.threadId == threadId }.forEach { historicalAttachments.remove(it) }
         val organization = _state.value.organization
@@ -1350,13 +1402,18 @@ class WorkbenchController(
                 val pending = requestedCancellations[activeThreadId to (generationId ?: lastObservedGenerationId)]
                     ?.takeIf { it.factRevision == generationFactRevision }
                 if (generation in setOf(GenerationState.FAILED,GenerationState.COMPLETED)) pending?.trackerTerminal = generation
+                val executionSettled = generationId != null &&
+                    generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
+                    activeThreadId?.let { rememberExecutionTerminal(it, generationId) } == true
                 update { state ->
-                    if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
+                    val next = if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
                     else if (generation == GenerationState.FAILED && generationId != null && activeThreadId to generationId in cancelledGenerations)
                         state.copy(generation=GenerationState.CANCELLED)
                     else if (pending != null && generation != GenerationState.COMPLETED)
                         state.copy(generation=GenerationState.CANCEL_REQUESTED)
                     else state.copy(generation=generation)
+                    if (executionSettled && (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty))
+                        next.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch))) else next
                 }
             } }
         }
@@ -3879,6 +3936,7 @@ class WorkbenchController(
                         if (event.deleted) event.conversationId?.value?.let { id ->
                             deletedThreads.add(id)
                             sendAtomsByThread.remove(id)
+                            executionFacts.keys.removeAll { it.first == id }
                             if (activeThreadId == id) leaveManagedThread(id)
                         }
                         refreshThreads()
@@ -3889,6 +3947,7 @@ class WorkbenchController(
                         is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value
                         is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value
                         is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
+                        is VerifiedConversationEvent.ExecutionStepsUpdated -> event.conversationId.value
                         is VerifiedConversationEvent.TitleUpdated -> event.conversationId.value
                         is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
                         is VerifiedConversationEvent.PendingDeliveryUpdated -> event.delivery.conversationId.value
@@ -3911,6 +3970,11 @@ class WorkbenchController(
                     if (event.eventId.isNotBlank() && handledEventIds.contains(event.eventId)) return@collect
                     when (event) {
                         is VerifiedConversationEvent.ConversationsChanged -> Unit // handled before timeline routing
+                        is VerifiedConversationEvent.ExecutionStepsUpdated -> {
+                            if (event.conversationId.value == currentActiveId) update { state ->
+                                state.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch)))
+                            }
+                        }
                         is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                             val eventConvId = event.conversationId?.value
                             val correlationId = event.correlationId
@@ -4716,10 +4780,47 @@ class WorkbenchController(
         // content, so the folding and pruning above must never touch it. Each
         // card still takes the place its own timestamp earned, so it reads where
         // it happened rather than trailing the whole conversation.
-        val withCards = insertApprovalRows(rendered, approvalRowsForActiveThread())
+        val withCards = insertApprovalRows(insertNativeExecutionRows(rendered), approvalRowsForActiveThread())
         // A receipt is navigation, not content, for the same reason.
         val receiptRow = activeThreadId?.let(::creationReceiptRow) ?: return ensureUniqueKeys(withCards)
         return ensureUniqueKeys(withCards + receiptRow)
+    }
+
+    private fun insertNativeExecutionRows(entries: List<TimelineEntry>): List<TimelineEntry> {
+        val threadId = activeThreadId ?: return entries
+        fun visibleSteps(generationId: String, steps: List<NativeExecutionStep>): List<NativeExecutionStep> =
+            if (threadId to generationId in finishedGenerations) steps.map { step ->
+                if (step.status == NativeExecutionStatus.RUNNING) step.copy(status = NativeExecutionStatus.UNKNOWN) else step
+            } else steps
+        val result = entries.map { entry ->
+            val generationId = entry.generationId
+            if (generationId != null && entry.executionSteps.isNotEmpty())
+                entry.copy(executionSteps = visibleSteps(generationId, entry.executionSteps)) else entry
+        }.toMutableList()
+        executionFacts.forEach { (identity, facts) ->
+            val (conversationId, generationId) = identity
+            if (conversationId != threadId || facts.steps.isEmpty()) return@forEach
+            val anchors = result.withIndex().filter { (_, entry) ->
+                entry.isUser && (facts.userMessageId != null && entry.key == facts.userMessageId ||
+                    facts.clientMessageId != null && entry.clientMessageId?.value == facts.clientMessageId)
+            }
+            // Identity ambiguity fails closed. An unanchored fact is retained
+            // until its exact prompt or an actual message of that generation is read.
+            if (anchors.size > 1) return@forEach
+            val anchor = anchors.singleOrNull()
+            val messageIndex = result.indexOfFirst { !it.executionFact && !it.isUser && it.generationId == generationId }
+            var index = anchor?.index?.plus(1) ?: messageIndex.takeIf { it >= 0 } ?: return@forEach
+            while (index < result.size && result[index].executionFact) index++
+            val row = TimelineEntry(
+                key = "execution-fact:$generationId", sender = "system", text = "", isUser = false,
+                timestamp = anchor?.value?.timestamp ?: result.getOrNull(messageIndex)?.timestamp ?: facts.occurredAt,
+                pendingAcceptance = false, batchGroupId = null, generationId = generationId,
+                clientMessageId = facts.clientMessageId?.let { runCatching { ClientMessageId(it) }.getOrNull() },
+                executionSteps = visibleSteps(generationId, facts.steps), executionFact = true,
+            )
+            result.add(index, row)
+        }
+        return result
     }
 
     /**
@@ -5011,7 +5112,7 @@ class WorkbenchController(
     /** Apply a freshly rebuilt baseline while preserving an unsent local draft. */
     fun onMirrorRebuilt() {
         sendAtomsEpoch++
-        handledEventIds.clear(); mirrored.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
+        handledEventIds.clear(); mirrored.clear(); executionFacts.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
         update { it.copy(historyHydrated=activeThreadId==null,timeline=if(activeThreadId==null) it.timeline else Loadable.Loading) }
         refreshThreads(); activeThreadId?.let(::reloadTimeline)
     }
