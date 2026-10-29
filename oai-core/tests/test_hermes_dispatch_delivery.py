@@ -129,3 +129,39 @@ async def test_identical_replies_with_distinct_native_ids_remain_distinct():
 
     assert [first.message_id, second.message_id, finalized.message_id] == ["native-one", "native-two", "native-two"]
     assert [identity for _, identity, _ in writes] == ["native-one", "native-two", "native-two"]
+
+
+@pytest.mark.asyncio
+async def test_tool_observer_failure_cannot_block_authoritative_completion_or_media_cleanup(tmp_path, caplog):
+    from types import SimpleNamespace
+    from oai_hermes_adapter.runtime import SessionOnlyAdapter
+
+    settled, dispatch_updates, cleaned, closed = [], [], [], []
+    generation = {"generationId": "gen-one", "state": "running", "revision": 1}
+    def settle(message_id, status):
+        settled.append((message_id, status))
+        generation["state"] = status
+    record = {"messageId": "msg-one", "conversationId": "chat", "status": "delivered"}
+    account = SimpleNamespace(conversations=SimpleNamespace(
+        dispatch_message=lambda identity: record,
+        workflow=SimpleNamespace(for_message=lambda identity: generation, settle=settle),
+        update_dispatch_status=lambda *args: dispatch_updates.append(args)), close=lambda: closed.append(True))
+    runtime = SessionOnlyAdapter.__new__(SessionOnlyAdapter)
+    runtime.services = SimpleNamespace(core=SimpleNamespace(open_gateway_account=lambda owner: account))
+    runtime._processing_media_files = {("alice", "client-one"): []}
+    async def completed_cleanup(*args):
+        cleaned.append(args)
+    runtime.withdraw_generation_approvals = completed_cleanup
+    runtime._finish_streaming_replies = completed_cleanup
+    def observer_failure(*args):
+        raise RuntimeError("private synthetic observer payload")
+    runtime._tool_observer = SimpleNamespace(close_generation=observer_failure)
+    event = SimpleNamespace(source=SimpleNamespace(user_id="alice"), message_id="client-one")
+
+    await runtime.on_processing_complete(event, "completed")
+
+    assert settled == [("msg-one", "completed")]
+    assert dispatch_updates[0][1] == "completed"
+    assert len(cleaned) == 2 and closed == [True]
+    assert runtime._processing_media_files == {}
+    assert "private synthetic observer payload" not in caplog.text

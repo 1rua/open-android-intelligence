@@ -270,3 +270,8 @@ def register(ctx: Any) -> None:
         ctx.register_platform(name=platform_id, label="OAI Core Hermes Sessions", adapter_factory=factory,
             check_fn=gateway_enabled, validate_config=lambda config: True,
             install_hint="Install the optional oai-hermes-session-adapter and configure OAI_HERMES_*", emoji="📱")
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        from .tool_events import pre_tool_call, post_tool_call
+        register_hook("pre_tool_call", pre_tool_call)
+        register_hook("post_tool_call", post_tool_call)

@@ -76,6 +76,7 @@ manager = PluginManager()
 register(PluginContext(manifest, manager))
 assert set(manager._plugin_platform_names) == set(GATEWAY_PLATFORM_IDS)
 assert not manager._plugin_tool_names
+assert {"pre_tool_call", "post_tool_call"} <= set(manager._hooks), "native tool observers are not registered"
 entries = [platform_registry.get(name) for name in GATEWAY_PLATFORM_IDS]
 assert all(entry is not None and entry.check_fn() for entry in entries)
 runtime = entries[0].adapter_factory(PlatformConfig(enabled=True, extra={}))
@@ -155,6 +156,8 @@ legacy_session_id = entry.session_id
 
 async def scenario():
     block = asyncio.Event()
+    tool_continue = asyncio.Event()
+    tool_cancel_entered = asyncio.Event()
     entered = asyncio.Event()
     approval_answered = asyncio.Event()
     approvals = []
@@ -180,6 +183,25 @@ async def scenario():
 
     class Handler:
         async def receive(self, event):
+            if event.text in {"native structured tools", "native tools cancel"}:
+                with closing(runtime.services.core.open_gateway_account(event.source.user_id)) as account:
+                    bound = account.agent_sessions.lookup(event.source.chat_id)
+                native_database = store._db_for_key(bound["sessionKey"])
+                native_session = bound["agentSessionId"]
+                native_database.append_message(native_session, "user", event.text, platform_message_id=event.message_id)
+                native_database.append_message(native_session, "assistant", "", tool_calls=[{
+                    "id": "native-live-call", "type": "function", "function": {"name": "read", "arguments": '{"path":"synthetic"}'}}])
+                hook = {"tool_name": "read", "args": {"path": "synthetic"}, "session_id": native_session,
+                        "tool_call_id": "native-live-call", "turn_id": "native-live-turn"}
+                assert await asyncio.to_thread(manager.invoke_hook, "pre_tool_call", **hook) == []
+                if event.text == "native tools cancel":
+                    tool_cancel_entered.set()
+                    await asyncio.Event().wait()
+                await tool_continue.wait()
+                assert await asyncio.to_thread(manager.invoke_hook, "post_tool_call", **hook,
+                    status="ok", result="native tool result") == []
+                native_database.append_message(native_session, "tool", "native tool result", tool_call_id="native-live-call")
+                return "native tools final"
             if event.text == "private diagnostic prompt":
                 await runtime.stream_delta(event.source.chat_id, "diagnostic-reply", "private diagnostic partial")
                 await runtime.complete_message(event.source.chat_id, "diagnostic-reply", "private diagnostic final")
@@ -342,6 +364,36 @@ async def scenario():
         assert "private diagnostic" not in serialized
         assert os.environ["OAI_HERMES_SESSION_TOKEN"] not in serialized
         assert binding["sessionKey"] not in serialized
+        tool_events = []
+        async with asyncio.timeout(5):
+            async for event in adapter.send(alice, a["id"], "native structured tools", client_message_id="native-tools-client"):
+                tool_events.append(event)
+                if event.get("executionSteps") and event["executionSteps"][0]["status"] == "running":
+                    tool_continue.set()
+        tool_snapshots = [event for event in tool_events if event.get("executionSteps")]
+        assert tool_snapshots, "public native hooks did not publish structured execution"
+        assert tool_snapshots[0]["executionSteps"][0]["status"] == "running"
+        assert tool_snapshots[-1]["executionSteps"][0]["stepId"] == "native-live-call"
+        assert tool_snapshots[-1]["executionSteps"][0]["status"] == "completed"
+        assert all(event["type"] == "generation" and event["generationId"] == tool_events[0]["generationId"]
+                   for event in tool_snapshots)
+        assert tool_events[-1]["type"] == "done"
+        tool_history = next(message for message in await adapter.history(alice, a["id"])
+                            if any(step["stepId"] == "native-live-call" for step in message.get("executionSteps", [])))
+        assert tool_history["executionSteps"] == tool_snapshots[-1]["executionSteps"]
+        tool_cancel = adapter.send(alice, a["id"], "native tools cancel", client_message_id="native-tool-cancel")
+        cancel_identity = await anext(tool_cancel)
+        async with asyncio.timeout(5):
+            while True:
+                running_tool = await anext(tool_cancel)
+                if running_tool.get("executionSteps"):
+                    assert running_tool["executionSteps"][0]["status"] == "running"
+                    break
+            await tool_cancel_entered.wait()
+            await adapter.manage(alice, a["id"], "cancel", {"generationId": cancel_identity["generationId"]})
+            cancelled_tools = [event async for event in tool_cancel]
+        assert cancelled_tools[-1]["type"] == "done" and cancelled_tools[-1]["outcome"] == "cancelled"
+        assert [event for event in cancelled_tools if event.get("executionSteps")][-1]["executionSteps"][0]["status"] == "unknown"
         # The real Hermes dispatch receives private verified files with their
         # original MIME type, including a pure image and a text/document turn.
         document = io.BytesIO()

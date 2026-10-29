@@ -35,3 +35,21 @@
 现有 `delta.text` 只表达追加片段。同一真实 ID 的非前缀编辑后若出现另一条真实消息，前条编辑不能由最后一个 done.text 表达。固定 SDK 合成处理器覆盖此序列，并核对前条编辑在权威历史中保留更高 `contentRevision`。Android 正常终态也应按每个真实 ID 补偿历史；本轮不新增未经协商的 snapshot 事件，也不宣称已支持编辑的实时替换。
 
 固定 SDK 六文件专项：`test_hermes.py`、`test_hermes_native.py`、`test_hermes_interactions.py`、`test_interaction_pipeline.py`、`test_hermes_approval_prompts.py`、`test_hermes_dispatch_delivery.py`，71 项通过、0 跳过，耗时 26.05 秒。使用共享依赖的隔离测试解释器，SDK 固定为上文提交；该结果包含真实宿主生命周期/SessionStore 合约，但处理器返回合成回复，不调用真实模型。
+
+## 公开工具回调与实时步骤
+
+继续核对固定 SDK 后发现，`format_tool_event` 的显示回调并非完整工具生命周期的唯一入口。公开插件 `pre_tool_call` / `post_tool_call` 回调包含原生 `session_id`、`tool_call_id`、`turn_id`，且 SDK 对有界回调线程复制调用上下文。第一条真实固定 SDK 回归先失败：插件没有注册这两个回调。
+
+适配器现在只将回调当作观察器，始终返回 `None`，不修改参数、结果、审批策略或工具执行。原消息分派前，从该条已受理记录建立可信账号、会话、client、generation 与原生 session 上下文。工具回调必须精确匹配该上下文，并在真实原生历史中找到当前用户轮次内的 `tool_calls[].id`；不会查询“当前活动 generation”代替身份。缺少身份、跨账号/会话、错 turn 或已经终结的回调均不认领步骤。
+
+步骤正文与参数仅保存在 Hermes 原生 KV，与模型 transcript 分开。Core 账号 EventStore 只提交合法 `gateway.notice` 唤醒：`noticeCode=oai.native.execution.updated`，`correlationId` 精确等于原已受理 userMessageId，不携带工具参数或结果。原生观察器读到此通知后，通过既有 `generation` SSE 类型发送可选的 `executionSteps`、`executionRevision` 和真实通知事件 `eventId`。旧客户端可以忽略扩展字段，不新增其会拒绝的 SSE 类型。
+
+实时步骤与历史投影读取同一份原生 KV，按原生 call ID 及持久执行修订合并。收到真实工具结果只证明完成，只有宿主显式错误状态才标失败；未收到 post 但已有原生工具结果时可由历史补偿。生成终态时，仍无结果的运行中步骤转为 `unknown`，不伪造成功或长期保持执行中。
+
+新增隔离回归覆盖无可信上下文、原生身份不匹配、重复回调、错 turn、终态后晚到回调、缺 post 的持久补偿以及 live/history 同版本。固定 SDK 测试经过真实插件注册与公开回调，并让宿主在 pre 后等待手机收到运行中步骤，再发出 post，验证执行期间追加和最终归属。八文件专项共 83 项通过、0 跳过，耗时 27.95 秒；`git diff --check` 通过。测试仍使用合成处理器，不调用真实模型或工具，不代替用户手机验收。
+
+交叉审查再补两条真实失败回归：历史先初始化两个步骤、随后收到第一步 pre 时会重排；工具终态观察器异常会阻止已有 generation 结算。修复为历史与实时共用原生 source 行 ID/索引排序，观察器终态关闭失败只记录异常类型，执行终态及媒体收尾继续完成。两条先失败后通过；受影响工具观察与投递专项 14 项通过，不记录异常携带的私有合成文本。
+
+显式取消的独立路径也会在 done 之前关闭尚无结果的步骤并送达 `unknown` 快照；不只依赖宿主稍晚的完成回调。固定 SDK 场景已验证执行中取消后收到步骤 unknown，再收到 cancelled done。读取工具快照失败只报告异常类型并继续观察执行，不把旁路展示存储故障解释为 Agent 执行失败。
+
+最终八文件回归：85 项通过、0 跳过，耗时 29.59 秒；只有既存 aiohttp request key 建议警告。此结果包含上述 source 顺序、旁路失败和真实 SDK 取消快照补偿。

@@ -14,6 +14,7 @@ from contextlib import nullcontext
 from typing import Any, Mapping
 from .history_media import HistoryMedia
 from .tool_history import project_execution
+from .tool_events import merge_history_execution
 
 
 def visible_text(content: Any) -> str:
@@ -444,6 +445,8 @@ class HermesHistoryPort:
                 generation = account.conversations.workflow.for_message(accepted[0]) if accepted else None
                 return generation["generationId"] if generation and generation["conversationId"] == conversation_id else None
             execution = project_execution(rows, generation_for_client)
+            with self._migration_lock:
+                merge_history_execution(database, self.storage_owner, account_id, conversation_id, execution)
             result = {}
             for row in rows:
                 role = row.get("role")

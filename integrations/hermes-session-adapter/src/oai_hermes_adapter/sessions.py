@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import re
 import uuid
 from collections import deque
@@ -9,6 +10,8 @@ from contextlib import contextmanager
 from typing import Any, AsyncIterator
 from oai_core.gateway.core import APPROVAL_CHOICES
 from oai_core.sessions import AdapterError
+
+logger = logging.getLogger(__name__)
 
 
 def is_host_command(text: str) -> bool:
@@ -314,9 +317,14 @@ class HermesSessionAdapter:
         accepted, cursor = await asyncio.to_thread(accept)
         generation_id = accepted.get("generationId")
         changed = asyncio.Event()
+        from .tool_events import NOTICE_CODE
+        def is_execution_notice(event):
+            return (event.get("eventType") == "gateway.notice"
+                    and event.get("correlationId") == accepted["messageId"]
+                    and event.get("payload", {}).get("noticeCode") == NOTICE_CODE)
         def sink(account_id, event):
             payload = event.get("payload", {})
-            if account_id == principal.account_id and payload.get("conversationId") == session_id:
+            if account_id == principal.account_id and (payload.get("conversationId") == session_id or is_execution_notice(event)):
                 if payload.get("generationId") not in {None, generation_id}:
                     return
                 loop.call_soon_threadsafe(changed.set)
@@ -327,7 +335,7 @@ class HermesSessionAdapter:
                 return account.events.read_after(cursor, limit=128)
         def belongs(event):
             payload = event.get("payload", {})
-            return (payload.get("conversationId") == session_id
+            return is_execution_notice(event) or (payload.get("conversationId") == session_id
                     and payload.get("generationId") in {None, generation_id})
         self.core.register_event_sink(sink)
         body = {"clientMessageId": client_id, "text": text, "attachmentIds": attachment_ids}
@@ -348,6 +356,16 @@ class HermesSessionAdapter:
                 **({"contentRevision": assistant_revision} if assistant_revision is not None else {}),
                 **({"eventId": assistant_event_id} if assistant_event_id else {}),
             }
+        async def execution_frame(event_id):
+            observer = getattr(self.runtime, "_tool_observer", None)
+            try:
+                snapshot = (await asyncio.to_thread(observer.snapshot, principal.account_id, session_id, generation_id)
+                            if observer is not None else None)
+            except Exception as observation_failure:
+                logger.warning("Native tool snapshot unavailable errorType=%s", type(observation_failure).__name__)
+                return None
+            return ({"type": "generation", "generationId": generation_id, **identity,
+                     "eventId": event_id, **snapshot} if snapshot is not None else None)
         try:
             yield {"type": "generation", "generationId": generation_id, **identity}
             async with asyncio.timeout(1800):
@@ -394,6 +412,11 @@ class HermesSessionAdapter:
                     cursor = event["eventId"]
                     if not belongs(event):
                         continue
+                    if is_execution_notice(event):
+                        frame = await execution_frame(event["eventId"])
+                        if frame is not None:
+                            yield frame
+                        continue
                     if event.get("eventType") == "core.approval.unsupported":
                         yield {"type": "error", "code": "UNSUPPORTED_APPROVAL"}
                         return
@@ -405,6 +428,14 @@ class HermesSessionAdapter:
                         withdraw = getattr(self.runtime, "withdraw_generation_approvals", None)
                         if callable(withdraw):
                             await withdraw(principal.account_id, session_id, generation_id)
+                        observer = getattr(self.runtime, "_tool_observer", None)
+                        if observer is not None:
+                            try:
+                                await asyncio.to_thread(observer.close_generation, principal.account_id, session_id,
+                                    generation_id, accepted["messageId"])
+                            except Exception as observation_failure:
+                                logger.warning("Native cancelled tool observation unavailable errorType=%s",
+                                    type(observation_failure).__name__)
                         # Publish the authoritative withdrawn cards after the
                         # cancellation barrier; late text cannot revive it.
                         while tail_events := await asyncio.to_thread(read_events):
@@ -412,6 +443,10 @@ class HermesSessionAdapter:
                                 cursor = tail["eventId"]
                                 if belongs(tail) and tail.get("eventType") == "conversation.approval.resolved":
                                     yield {"type": "approval_resolved", "approval": tail["payload"], "generationId": generation_id}
+                                elif is_execution_notice(tail):
+                                    frame = await execution_frame(tail["eventId"])
+                                    if frame is not None:
+                                        yield frame
                         yield {"type": "done", "text": previous, "generationId": generation_id, "outcome": "cancelled", **identity,
                                **message_identity()}
                         return

@@ -31,6 +31,7 @@ from .sessions import HermesSessionAdapter
 from .backend import SessionBackend
 from .host_history import HermesHistoryPort
 from .history_media import HistoryMedia
+from .tool_events import NativeToolObserver
 
 logger = logging.getLogger(__name__)
 NATIVE_HERMES_AVAILABLE = True
@@ -111,6 +112,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             history = HermesHistoryPort(self.services.core, self._session_store)
             self.services.core.history_reader = history.read
             self.services.core.conversation_manager = history.manage
+            self._tool_observer = NativeToolObserver(self.services.core, history)
             self._cleanup_inbound_media_cache()
             self._app = create_hermes_bridge_app(HermesSessionAdapter(self.services.core, self), self._token, self._accounts)
             self._runner = web.AppRunner(self._app)
@@ -965,8 +967,12 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             origin_row = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?",(f"message-device:{client_message_id}",)).fetchone() if account is not None else None
             binding_row = account.agent_sessions.lookup(conversation_id) if account is not None else None
             origin = json.loads(origin_row[0]) if origin_row else {}
+            generation = account.conversations.workflow.for_message(dispatch_record["messageId"]) if dispatch_record else None
             token = trusted_turn.set({**origin,"core":self.services.core,"accountId":source_account,
-                "sessionId":binding_row.get("agentSessionId") if binding_row else None})
+                "sessionId":binding_row.get("agentSessionId") if binding_row else None,
+                "conversationId":conversation_id,"clientMessageId":client_message_id,
+                "generationId":generation.get("generationId") if generation else None,
+                "executionObserver":getattr(self,"_tool_observer",None)})
             try:
                 await self.handle_message(event)
             finally:
@@ -1195,6 +1201,14 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 if generation:
                     await self.withdraw_generation_approvals(account_id, record["conversationId"], generation["generationId"])
                     await self._finish_streaming_replies(account_id, record["conversationId"], generation["generationId"])
+                    observer = getattr(self, "_tool_observer", None)
+                    if observer is not None:
+                        try:
+                            await asyncio.to_thread(observer.close_generation, account_id, record["conversationId"],
+                                generation["generationId"], record["messageId"])
+                        except Exception as observation_failure:
+                            logger.warning("Native tool terminal observation unavailable errorType=%s",
+                                type(observation_failure).__name__)
                 if generation and generation["state"]=="cancelled":
                     status, error_code = "failed", "AGENT_UNAVAILABLE"
                 if status=="completed" and record["status"]=="queued":
