@@ -12,8 +12,9 @@ import logging
 from typing import Any, Mapping
 
 from .context import trusted_turn
+from oai_core.gateway.core import CONVERSATION_EXECUTION_NOTICE_CODE
 
-NOTICE_CODE = "oai.native.execution.updated"
+NOTICE_CODE = CONVERSATION_EXECUTION_NOTICE_CODE
 _NAMESPACE = "oai_native_execution_v1:"
 logger = logging.getLogger(__name__)
 

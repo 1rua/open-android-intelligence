@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 WIRE_PROTOCOL = "2.1"
 PROTOCOL_VERSION = {"major": 2, "minor": 1}
+CONVERSATION_EXECUTION_NOTICE_CODE = "oai.native.execution.updated"
 
 # One transport that wants committed events as they happen. The account id is
 # the account the event belongs to, so a stream never has to guess it.
@@ -1603,6 +1604,20 @@ class EventStore:
         self.store.record_event(event)
         return event
 
+    def replay_conversation_id(self, event: Mapping[str, Any]) -> str | None:
+        """The exact conversation facts covered by acknowledged native replay."""
+        kind, payload = event.get("eventType", ""), event.get("payload", {})
+        if kind.startswith(("conversation.message.", "conversation.generation.", "conversation.approval.")):
+            value = payload.get("conversationId")
+            return value if isinstance(value, str) and value else None
+        if kind == "gateway.notice" and payload.get("noticeCode") == CONVERSATION_EXECUTION_NOTICE_CODE:
+            accepted = self.store.database.execute(
+                "SELECT conversation_id FROM messages WHERE message_id=? AND sender='user'",
+                (event.get("correlationId"),),
+            ).fetchone()
+            return accepted[0] if accepted else None
+        return None
+
     def release_device_request(self, request_id: str) -> None:
         self.release_device_requests({request_id})
 
@@ -1666,13 +1681,8 @@ class EventStore:
                 if not (row["event_type"].startswith("conversation.") or row["event_type"] == "gateway.notice"):
                     continue
                 payload = self.store.open_json(row["payload_json"], f"event:{row['event_id']}:payload")
-                conversation_id = payload.get("conversationId")
-                if not conversation_id and row["event_type"] == "gateway.notice":
-                    accepted = self.store.database.execute(
-                        "SELECT conversation_id FROM messages WHERE message_id=? AND sender='user'",
-                        (row["correlation_id"],),
-                    ).fetchone()
-                    conversation_id = accepted[0] if accepted else None
+                conversation_id = self.replay_conversation_id({"eventType": row["event_type"],
+                    "payload": payload, "correlationId": row["correlation_id"]})
                 if isinstance(conversation_id, str) and conversation_id:
                     key = "conversation-event-pruned:v1:" + hashlib.sha256(conversation_id.encode()).hexdigest()
                     self.store.database.execute(

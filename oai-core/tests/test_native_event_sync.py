@@ -330,3 +330,44 @@ async def test_foreign_expired_events_do_not_invalidate_current_session_cursor(c
     own = append(core, conversation, "retained-own")
     page = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, cursor=initial["cursor"])
     assert [event["eventId"] for event in page["events"]] == [own["eventId"]]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_ack_remains_valid_when_only_the_tail_row_is_pruned(core):
+    adapter = HermesSessionAdapter(core)
+    conversation = await session(adapter)
+    append(core, conversation, "retained-older-event")
+    with closing(core.open_gateway_account("alice")) as account:
+        tail = account.events.append("gateway.notice", "unrelated-tail", {"noticeCode": "unrelated"})
+    snapshot = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, snapshot=True)
+    with closing(core.open_gateway_account("alice")) as account:
+        account.store.database.execute("UPDATE events SET expires_at='1970-01-01T00:00:00.000Z' WHERE event_id=?", (tail["eventId"],))
+        account.events.purge_expired()
+    await adapter.ack_events(ALICE, conversation, consumer_id=CONSUMER, cursor=snapshot["cursor"])
+    assert (await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER))["events"] == []
+
+
+@pytest.mark.asyncio
+async def test_unrelated_notice_does_not_create_a_native_replay_gap(core):
+    adapter = HermesSessionAdapter(core)
+    conversation = await session(adapter)
+    with closing(core.open_gateway_account("alice")) as account:
+        accepted = account.conversations.accept_message(conversation, "notice-client", "prompt", [], "phone", "notice", "notice")
+    initial = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, snapshot=True)
+    with closing(core.open_gateway_account("alice")) as account:
+        notice = account.events.append("gateway.notice", accepted["messageId"], {"noticeCode": "unrelated"})
+        account.store.database.execute("UPDATE events SET expires_at='1970-01-01T00:00:00.000Z' WHERE event_id=?", (notice["eventId"],))
+        account.events.purge_expired()
+    assert (await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, cursor=initial["cursor"]))["events"] == []
+
+
+@pytest.mark.asyncio
+async def test_non_replayed_management_events_do_not_expire_message_cursor(core):
+    adapter = HermesSessionAdapter(core)
+    conversation = await session(adapter)
+    initial = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, snapshot=True)
+    with closing(core.open_gateway_account("alice")) as account:
+        account.conversations.management.commit(conversation, "archive", True, "archive-native-test")
+        account.store.database.execute("UPDATE events SET expires_at='1970-01-01T00:00:00.000Z' WHERE event_type='conversation.updated'")
+        account.events.purge_expired()
+    assert (await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, cursor=initial["cursor"]))["events"] == []

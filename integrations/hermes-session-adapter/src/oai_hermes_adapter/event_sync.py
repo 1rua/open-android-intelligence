@@ -10,7 +10,6 @@ from typing import Any
 
 from oai_core.sessions import AdapterError
 from oai_core.gateway.core import iso_millis
-from .tool_events import NOTICE_CODE
 
 
 class NativeEventSync:
@@ -55,22 +54,13 @@ class NativeEventSync:
 
     @staticmethod
     def _tail(store):
-        row = store.database.execute("SELECT event_id,sequence FROM events ORDER BY sequence DESC LIMIT 1").fetchone()
-        if row is not None:
-            return {"v": 1, "sequence": row["sequence"], "eventId": row["event_id"]}
+        # AUTOINCREMENT's cumulative boundary never decreases when TTL cleanup
+        # removes only the tail while an older event remains.
         row = store.database.execute("SELECT seq FROM sqlite_sequence WHERE name='events'").fetchone()
         return {"v": 1, "sequence": row[0] if row else 0, "eventId": None}
 
     def _belongs(self, account, event):
-        kind, payload = event["eventType"], event["payload"]
-        if kind.startswith(("conversation.message.", "conversation.generation.", "conversation.approval.")):
-            return payload.get("conversationId") == self.session_id
-        if kind == "gateway.notice" and payload.get("noticeCode") == NOTICE_CODE:
-            row = account.store.database.execute(
-                "SELECT conversation_id FROM messages WHERE message_id=? AND sender='user'",
-                (event["correlationId"],)).fetchone()
-            return row is not None and row[0] == self.session_id
-        return False
+        return account.events.replay_conversation_id(event) == self.session_id
 
     def _approvals(self, account):
         result = []
