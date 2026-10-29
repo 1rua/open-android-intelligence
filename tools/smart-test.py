@@ -142,6 +142,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "--ignore=oai-core/tests/test_interaction_pipeline.py",
             "--ignore=oai-core/tests/test_structured_tool_history.py",
             "--ignore=oai-core/tests/test_native_tool_events.py",
+            "--ignore=oai-core/tests/test_native_event_sync.py",
         ])
         if ret != 0:
             return ret
@@ -160,6 +161,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "oai-core/tests/test_interaction_pipeline.py",
             "oai-core/tests/test_structured_tool_history.py",
             "oai-core/tests/test_native_tool_events.py",
+            "oai-core/tests/test_native_event_sync.py",
         ])
         if ret != 0:
             return ret

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
 CAPABILITIES = (
     "list", "history", "create", "send", "steer", "rename", "archive", "delete",
-    "cancel", "stream", "commands", "approvals", "attachments", "generationRecovery",
+    "cancel", "stream", "commands", "approvals", "attachments", "generationRecovery", "eventSync",
 )
 STREAM_EVENT_TYPES = frozenset({"delta", "done", "error", "generation", "approval_requested", "approval_resolved"})
 PROTOCOL_VERSIONS = ("1.0", "v1")
@@ -39,6 +39,29 @@ SESSION_REQUEST_MAX_BYTES = 1024 * 1024
 def session_request_json(body: Any) -> str:
     """Use the same UTF-8 JSON representation for validation and host requests."""
     return json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+
+
+def native_event_query(query: Any) -> dict[str, Any]:
+    """One bounded query contract at the Core and trusted loopback bridge."""
+    if (set(query) - {"cursor", "limit", "waitMs", "snapshot"}
+            or any(len(query.getall(key)) != 1 for key in query)):
+        raise AdapterError("INVALID_EVENT_QUERY", 400)
+    cursor = query.get("cursor")
+    if cursor is not None and not 1 <= len(cursor) <= 8192:
+        raise AdapterError("INVALID_EVENT_CURSOR", 400)
+    result: dict[str, Any] = {"cursor": cursor}
+    for key, name, default, maximum, minimum in (("limit", "limit", 128, 128, 1),
+                                               ("waitMs", "wait_ms", 0, 25000, 0)):
+        value = query.get(key, str(default))
+        if re.fullmatch(r"0|[1-9][0-9]{0,18}", value) is None or not minimum <= int(value) <= maximum:
+            raise AdapterError("INVALID_EVENT_QUERY", 400)
+        result[name] = int(value)
+    if "snapshot" in query and query["snapshot"] != "true":
+        raise AdapterError("INVALID_EVENT_QUERY", 400)
+    result["snapshot"] = "snapshot" in query
+    if result["snapshot"] and (cursor is not None or result["wait_ms"]):
+        raise AdapterError("INVALID_EVENT_QUERY", 400)
+    return result
 
 
 class AdapterError(Exception):
@@ -108,6 +131,11 @@ class SessionAdapter(Protocol):
     async def generation(self, principal: Principal, session_id: str, *, client_message_id: str | None = None,
                          generation_id: str | None = None, after_revision: int | None = None,
                          wait_ms: int = 0) -> dict[str, Any] | None: ...
+    async def event_page(self, principal: Principal, session_id: str, *, consumer_id: str,
+                         cursor: str | None = None, limit: int = 128, wait_ms: int = 0,
+                         snapshot: bool = False) -> dict[str, Any]: ...
+    async def ack_events(self, principal: Principal, session_id: str, *, consumer_id: str,
+                         cursor: str) -> dict[str, Any]: ...
     async def steer(self, principal: Principal, session_id: str, text: str, generation_id: str,
                     client_message_id: str | None = None) -> dict[str, Any]: ...
     async def manage(self, principal: Principal, session_id: str, action: str, value: Any = None) -> dict[str, Any]: ...
@@ -643,6 +671,80 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         ):
             raise AdapterError("HOST_INCOMPATIBLE", 502)
         return web.json_response({"generation": generation}, headers={"Cache-Control": "no-store"})
+
+    def event_observer(principal: Principal, agent_id: str) -> str:
+        if not principal.device_id or principal.pairing_generation is None:
+            raise AdapterError("DEVICE_CONTEXT_REQUIRED", 403)
+        # Core selects the consumer; request bodies and headers cannot choose
+        # another account, Agent, device, or pairing generation's ACK.
+        return hashlib.sha256(json.dumps([principal.account_id, agent_id, principal.device_id,
+            principal.pairing_generation], separators=(",", ":")).encode()).hexdigest()
+
+    @routes.get(PREFIX + "/{agent_id}/sessions/{session_id}/events")
+    @endpoint
+    async def session_events(request: web.Request) -> web.Response:
+        principal = await principal_for(request)
+        session_id, agent_id = safe_session_id(request), request.match_info["agent_id"]
+        adapter = registry.get(agent_id, "eventSync")
+        options = native_event_query(request.query)
+        read = getattr(adapter, "event_page", None)
+        if not callable(read):
+            raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
+        page = await read(principal, session_id, consumer_id=event_observer(principal, agent_id), **options)
+        if not await active(principal):
+            raise AdapterError("SESSION_REVOKED", 401)
+        if (not isinstance(page, dict) or not isinstance(page.get("events"), list)
+                or len(page["events"]) > options["limit"] or type(page.get("hasMore")) is not bool
+                or not isinstance(page.get("cursor"), str) or not 1 <= len(page["cursor"]) <= 8192):
+            raise AdapterError("INVALID_AGENT_EVENT", 502)
+        if options["snapshot"] and (page["events"] or page["hasMore"] or "approvals" not in page):
+            raise AdapterError("INVALID_AGENT_EVENT", 502)
+        ids = set()
+        for event in page["events"]:
+            if (not isinstance(event, dict) or not isinstance(event.get("eventId"), str)
+                    or not event["eventId"] or event["eventId"] in ids or not isinstance(event.get("payload"), dict)
+                    or event["payload"].get("conversationId", session_id) != session_id
+                    or not isinstance(event.get("eventType"), str)
+                    or not (event["eventType"].startswith(("conversation.message.", "conversation.generation.", "conversation.approval."))
+                            or event["eventType"] == "gateway.notice")
+                    or not contracts.validate_dispatched(contracts.dispatched_registry_id,
+                        {"kind": "event", "eventType": event.get("eventType")},
+                        {key: event.get(key) for key in ("correlationId", "occurredAt", "payload")})):
+                raise AdapterError("INVALID_AGENT_EVENT", 502)
+            ids.add(event["eventId"])
+        if "approvals" in page:
+            if not options["snapshot"] or not isinstance(page["approvals"], list):
+                raise AdapterError("INVALID_AGENT_EVENT", 502)
+            for frame in page["approvals"]:
+                if not isinstance(frame, dict) or frame.get("type") not in {"approval_requested", "approval_resolved"}:
+                    raise AdapterError("INVALID_AGENT_EVENT", 502)
+                validate_approval(frame.get("approval"), resolved=frame["type"] == "approval_resolved")
+                if frame["approval"]["conversationId"] != session_id:
+                    raise AdapterError("INVALID_AGENT_EVENT", 502)
+        return web.json_response(page, headers={"Cache-Control": "no-store"})
+
+    @routes.post(PREFIX + "/{agent_id}/sessions/{session_id}/events/ack")
+    @endpoint
+    async def acknowledge_session_events(request: web.Request) -> web.Response:
+        principal = await principal_for(request)
+        session_id, agent_id = safe_session_id(request), request.match_info["agent_id"]
+        adapter = registry.get(agent_id, "eventSync")
+        if request.query:
+            raise AdapterError("INVALID_EVENT_QUERY", 400)
+        body = await body_for(request, {"cursor"})
+        cursor = body.get("cursor")
+        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 8192:
+            raise AdapterError("INVALID_EVENT_CURSOR", 400)
+        ack = getattr(adapter, "ack_events", None)
+        if not callable(ack):
+            raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
+        receipt = await ack(principal, session_id, consumer_id=event_observer(principal, agent_id), cursor=cursor)
+        if not await active(principal):
+            raise AdapterError("SESSION_REVOKED", 401)
+        if (not isinstance(receipt, dict) or not isinstance(receipt.get("cursor"), str)
+                or not 1 <= len(receipt["cursor"]) <= 8192):
+            raise AdapterError("INVALID_AGENT_EVENT", 502)
+        return web.json_response(receipt, headers={"Cache-Control": "no-store"})
 
     @routes.post(PREFIX + "/{agent_id}/sessions/{session_id}/messages")
     @endpoint

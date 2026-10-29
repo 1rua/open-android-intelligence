@@ -19,7 +19,7 @@ from aiohttp import web
 from .sessions import HermesSessionAdapter
 from .approvals import NativeApprovalMixin
 from oai_core.gateway.core import APPROVAL_CHOICES, GatewayError
-from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES
+from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES, native_event_query
 
 PREFIX = "/oai/session-adapter/v1"
 IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
@@ -45,7 +45,9 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             generation_query = (request.method == "GET"
                                 and request.path.startswith(PREFIX + "/sessions/")
                                 and request.path.endswith("/generation"))
-            if request.query_string and not (request.path == PREFIX + "/commands" or generation_query):
+            events_query = (request.method == "GET" and request.path.startswith(PREFIX + "/sessions/")
+                            and request.path.endswith("/events"))
+            if request.query_string and not (request.path == PREFIX + "/commands" or generation_query or events_query):
                 raise AdapterError("SCHEMA_INVALID", 400)
             if generation_query and (set(request.query) - {"clientMessageId", "generationId", "afterRevision", "waitMs"}
                                      or any(len(request.query.getall(key)) != 1
@@ -112,6 +114,9 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         principal, session_id, action = request["principal"], request.match_info["session_id"], request.match_info["action"]
         if request.method == "GET" and action == "history":
             return web.json_response({"messages": await adapter.history(principal, session_id)})
+        if request.method == "GET" and action == "events":
+            return web.json_response(await adapter.event_page(principal, session_id,
+                consumer_id=observer_for(request), **native_event_query(request.query)))
         if request.method == "GET" and action == "generation":
             if request.query:
                 def integer(key, default):
@@ -231,6 +236,20 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         return web.json_response(await adapter.decide_approval(request["principal"], request.match_info["session_id"],
             request.match_info["approval_id"], body["decision"]))
 
+    def observer_for(request):
+        values = request.headers.getall("X-OAI-Observer", [])
+        if len(values) != 1 or re.fullmatch(r"[a-f0-9]{64}", values[0]) is None:
+            raise AdapterError("INVALID_EVENT_OBSERVER", 400)
+        return values[0]
+
+    async def events_ack(request):
+        body = await body_for(request)
+        if not isinstance(body, dict) or set(body) != {"cursor"}:
+            raise AdapterError("SCHEMA_INVALID", 400)
+        return web.json_response(await adapter.ack_events(request["principal"], request.match_info["session_id"],
+            consumer_id=observer_for(request), cursor=body["cursor"]))
+
+    app.router.add_post(PREFIX + "/sessions/{session_id}/events/ack", events_ack)
     app.router.add_post(PREFIX + "/attachments", attachment_create)
     app.router.add_put(PREFIX + "/attachments/{attachment_id}/content", attachment_content)
     app.router.add_get(PREFIX + "/status", status)
