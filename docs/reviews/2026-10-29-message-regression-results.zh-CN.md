@@ -27,7 +27,7 @@
 
 独立 Core 环境明确不安装 Hermes Session Adapter。首次完整收集执行结果为 315 通过、8 跳过、2 失败：8 项是未设置 SDK 的宿主投递测试，在固定 SDK 专项中已实际执行；2 项在当前文件系统创建符号链接 fixture 时失败，单独提升环境权限重跑仍失败。保留原安全断言，不将它们记为通过。
 
-以上为分步结果，各轮范围有交叠。最后整合后的 fast/pr 门禁、Android 完整受影响模块结果和 CI 提交身份在完成后追加。
+以上为分步结果，各轮范围有交叠。最新 `dev 822c2170` 已自动整合且通过下列验证；fast/pr 仍因两个已说明的文件系统 fixture 失败，不能记为整套门禁通过。
 
 ## 架构、数据与验收边界
 
@@ -36,3 +36,14 @@
 本次 SDK 测试使用隔离 Home、临时数据库及合成处理器，不调用真实模型或真实危险工具。未进行用户手机、厂商后台策略、生产代理、真实模型、跨机器阶段时延或宿主真实进程死亡验收。只有出现明确执行终态才能结束未知状态；观察断开不等同执行失败。
 
 详细证据见 [基线与迁移对照](2026-10-29-message-regression-baseline.zh-CN.md)、[Android 修复](2026-10-29-android-message-recovery.zh-CN.md)、[服务端修复](2026-10-29-server-message-recovery.zh-CN.md)、[结构化展示](2026-10-29-structured-tool-regression.zh-CN.md)、[测试门禁](2026-10-29-message-test-gates.zh-CN.md) 以及 [恢复契约](../architecture/2026-10-29-native-session-recovery.zh-CN.md)。
+
+
+## 整合最新 dev 后的实际结果
+
+整合源码的八个 Android 受影响模块共 **2216 项通过、0 失败、0 跳过**：control-ports 14、capability-ports 51、screen-control 21、device-primitives 22、conversation-domain 32、conversation-ui 655、gateway-client 308、App Full 1113。`noVpnSurfaceCheck` 同时通过。Gradle 结果为 `BUILD SUCCESSFUL in 27m 53s`，长测试以后台会话执行，未前台等待 CI。数量来自各模块本轮真实 XML，不沿用旧 PR 的历史计数。
+
+App Full 的两项 `AuthSessionLifecycleTest` 均通过，先前 PR 基线缺失的 dev 离线退出屏障已由整合提交保留。消息恢复、实时工具和账号授权没有依靠排除这些测试取得成功。Play 变体关键兼容验证另行记录。
+
+整合版固定 SDK 八文件与测试入口回归为 **92 项通过、0 失败、0 跳过**（90 项宿主相关与 2 项 runner）。DSH 18 项通过。`npm run test:fast`、`npm run test:pr` 各自实际执行：锁检查通过，Core 阶段均 **348 通过、2 失败**；失败仍是符号链接 fixture 创建失败，所以两命令均在 Core 阶段返回失败，没有把后续模块伪记为已执行。后续 Hermes 和 Android 是上述单独明确执行的结果。
+
+整合前提交 `2bd1fbcf63e8f29e19fd27514c18ec63fee27bfa` 的远端 Actions 已通过，Run ID `40897199579`；这是该提交的 CI 证据，不能代替尚未推送的整合提交。后续提交只记录触发与链接，不阻塞轮询等待。
