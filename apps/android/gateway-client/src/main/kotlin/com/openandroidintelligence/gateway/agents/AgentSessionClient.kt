@@ -252,6 +252,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                 var generationId: String? = null
                 var outcome = "completed"
                 var finalText: String? = null
+                var finalRevision: Long? = null
                 var identity = NativeAgentStreamEvent.MessageIdentity(null, null, null)
                 val contentRevisions = mutableMapOf<String, Long>()
                 val contentEventIds = LinkedHashSet<String>()
@@ -364,6 +365,11 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                                     NativeAgentStreamEvent.ApprovalRequested(approval) else NativeAgentStreamEvent.ApprovalResolved(approval))
                             }
                             "done" -> {
+                                val revisionField = JsonFields.field(value, "revision")
+                                val returnedRevision = JsonFields.long(value, "revision")
+                                if (revisionField != null && (returnedRevision == null || returnedRevision < 0 || returnedRevision < generationRevision))
+                                    throw AgentSessionException("AGENT_STREAM_INVALID")
+                                finalRevision = returnedRevision
                                 finalText = JsonFields.string(value, "text").takeUnless { staleDoneContent }
                                 val returnedId = JsonFields.string(value, "generationId")
                                 if (returnedId != null && generationId != null && returnedId != generationId)
@@ -380,7 +386,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                     }
                 }
                 if (!done) throw AgentSessionException("OUTCOME_UNKNOWN")
-                NativeGenerationResult(outcome, generationId, identity.messageId, identity.userMessageId, identity.clientMessageId, finalText)
+                NativeGenerationResult(outcome, generationId, identity.messageId, identity.userMessageId, identity.clientMessageId, finalText, finalRevision)
             }
         } catch (_: IOException) {
             // A transport failure cannot establish whether the native turn ran.

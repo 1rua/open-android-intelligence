@@ -703,6 +703,7 @@ class CoreAgentConversationRepository(
                     }
                 }
                 result.generationId?.let { rememberGeneration(turn, it) }
+                result.revision?.let { turn.receiptRevision = maxOf(turn.receiptRevision, it) }
                 result.text?.let { text.clear(); text.append(it) }
                 GatewayLog.d("OaiLatency",
                     "stream.done outcome=${result.outcome} elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
@@ -724,7 +725,7 @@ class CoreAgentConversationRepository(
                     flush()
                     emitEvent(agent.id, VerifiedConversationEvent.MessageStatus("evt_${UUID.randomUUID()}",
                         System.currentTimeMillis(), ConversationId(conversationId), messageId,
-                        message.clientMessageId, AgentMessageStatus.COMPLETED, 1L, null, turn.generationId))
+                        message.clientMessageId, AgentMessageStatus.COMPLETED, result.revision ?: 1L, null, turn.generationId))
                     turn.state = GenerationState.COMPLETED
                     if (isSelected(turn)) _generationState.value = GenerationState.COMPLETED
                     drainAfterTurn = true
