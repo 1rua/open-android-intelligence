@@ -14,6 +14,39 @@ import org.junit.Test
 class StateViewsTest {
 
     @Test
+    fun localSaveFailureNamesPhoneStorageWithoutReportingANetworkDisconnect() {
+        for (code in listOf("LOCAL_SAVE_FAILED:IOException", "EVENTS_FAILED:NATIVE_EVENT_SYNC_FAILED:LOCAL_SAVE_FAILED:IOException")) {
+            val text = noticeText(code)
+            assertTrue(text.contains("本机") && text.contains("保存") && text.contains("存储"))
+            assertTrue(text.contains("重新进入会话"))
+            assertTrue("本机保存错误不能报网络断线", !text.contains("通道已断开") && !text.contains("检查网络"))
+            assertTrue("本机同步失败不能声称 Agent 任务停止", !text.contains("任务已停止") && !text.contains("任务已取消"))
+        }
+    }
+
+    @Test
+    fun ackFailureNamesTheUnconfirmedProgressAndPreservesLocalRecords() {
+        val text = noticeText("EVENTS_FAILED:NATIVE_EVENT_SYNC_FAILED:ACK_FAILED:IOException")
+        assertTrue(text.contains("确认") && text.contains("本机") && text.contains("已保留"))
+        assertTrue(text.contains("重新进入会话"))
+        assertTrue(!text.contains("通道已断开") && !text.contains("任务已停止") && !text.contains("任务已取消"))
+    }
+
+    @Test
+    fun nativeProtocolAndProjectionFailuresCannotBeMisreportedAsNetworkOutages() {
+        for (code in listOf("EVENT_APPLY_FAILED:IllegalStateException",
+            "EVENTS_FAILED:NATIVE_EVENT_SYNC_FAILED:READ_FAILED:AGENT_RESPONSE_INVALID",
+            "EVENTS_FAILED:NATIVE_EVENT_SYNC_FAILED:READ_FAILED:NATIVE_EVENT_SCOPE_MISMATCH")) {
+            val text = noticeText(code)
+            assertTrue(text.contains("同步") && text.contains("重试"))
+            assertTrue(text.contains("版本") || text.contains("数据"))
+            assertTrue(!text.contains("通道已断开") && !text.contains("检查网络"))
+            assertTrue(!text.contains("任务已停止") && !text.contains("任务已取消"))
+        }
+        assertTrue(noticeText("EVENTS_FAILED:EVENT_STREAM_FAILED").contains("实时通道已断开"))
+    }
+
+    @Test
     fun sessionRejectionNamesThePostLoginEventChannelAndKeepsAccountHistory() {
         val rejected = readableFailure("SESSION_REJECTED", CONNECTION_FAILURE_FALLBACK)
         assertTrue("登录成功后的事件认证拒绝必须区分于网络失败", rejected.contains("登录") && rejected.contains("事件"))

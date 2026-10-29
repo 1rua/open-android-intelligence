@@ -1,5 +1,6 @@
 """Portable installer regressions: no host SDK, personal paths or live accounts."""
 from contextlib import closing
+import errno
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,21 @@ import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 HELPER = runpy.run_path(str(REPOSITORY / "scripts" / "core_setup.py"))
+
+
+@pytest.fixture(autouse=True)
+def isolated_host_configuration(tmp_path, monkeypatch):
+    """A direct test invocation must never discover the operator's host files."""
+    isolated_user = tmp_path / "isolated-user"
+    hermes = isolated_user / ".hermes"
+    dsh = isolated_user / ".dsh-cline"
+    hermes.mkdir(parents=True)
+    dsh.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(isolated_user))
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+    monkeypatch.setenv("DSH_HOME", str(dsh))
+    for name in ("OAI_HERMES_SESSION_TOKEN", "OAI_DSH_ADAPTER_TOKEN", "OAI_INIT_ADMIN_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def run_bash(source, *, environment=None):
@@ -73,6 +89,7 @@ CFG_HOST=127.0.0.1
 CFG_PORT=8045
 CFG_USERNAME=alice
 CFG_PASSWORD=synthetic-installer-password
+install_selected_agent_plugins() {{ return 0; }}
 '''
     source += "guide_initial_configuration\n" if name == "install.sh" else "save_configuration_and_account\n"
     run_bash(source, environment=environment)
@@ -148,16 +165,31 @@ def test_start_script_loads_private_environment_and_refuses_readable_secrets(ins
     assert token not in rejected.stdout + rejected.stderr
 
 
-def test_rejects_symlink_and_insecure_token_file(tmp_path):
+def test_rejects_insecure_token_file(tmp_path):
     external = tmp_path / "external"
     external.write_text("OAI_HERMES_SESSION_TOKEN=synthetic-token-12345678901234567890\n")
     external.chmod(0o644)
     with pytest.raises(ValueError, match="0600"):
         HELPER["read_tokens"](external)
+
+
+def test_rejects_symlink_token_file(tmp_path):
+    external = tmp_path / "external"
+    external.write_text("OAI_HERMES_SESSION_TOKEN=synthetic-token-12345678901234567890\n")
+    external.chmod(0o600)
     linked = tmp_path / "linked"
-    linked.symlink_to(external)
-    with pytest.raises(OSError):
+    try:
+        linked.symlink_to(external)
+    except (NotImplementedError, PermissionError, FileNotFoundError) as exc:
+        assert external.is_file() and linked.parent.is_dir()
+        # Some managed filesystems cannot create links. Exercise the real
+        # O_NOFOLLOW rejection against an existing harmless interpreter link.
+        linked = Path(sys.base_prefix) / "bin" / "python3"
+        if not linked.is_symlink():
+            pytest.skip(f"无法创建 fixture，且没有可用的现有符号链接: {type(exc).__name__}")
+    with pytest.raises(OSError) as failure:
         HELPER["read_tokens"](linked)
+    assert failure.value.errno == errno.ELOOP
     with pytest.raises(ValueError, match="symlink"):
         HELPER["private_write"](linked, "ignored")
 

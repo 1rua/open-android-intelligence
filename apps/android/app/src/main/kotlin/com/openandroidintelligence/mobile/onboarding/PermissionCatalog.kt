@@ -265,9 +265,13 @@ internal const val KERNEL_CALL_LOG_READ = "kernel.call-log.read"
 
 /** 权限页底部的固定说明：需求要求区分系统权限与 Agent 授权。 */
 const val PERMISSION_NOTICE_TITLE = "权限 ≠ 授权"
+const val PERMISSION_INTRO_BODY =
+    "以下权限只影响对应功能。可选权限跳过不影响登录与对话；" +
+        "设备能力由本机决定：插件启用后默认开启，仍需满足系统权限和本地范围设置。"
 const val PERMISSION_NOTICE_BODY =
-    "系统权限只决定应用能否访问某项能力；Agent 能否真正调用，取决于插件是否启用、" +
-        "以及你是否在「设备能力与配对授权」里按账号授予。"
+    "设备能力由 Android 本机决定，可在插件管理中关闭；已关闭的设置会保留。" +
+        "旧设置需先在本机复核。系统权限、通知读取范围、屏幕许可、后台许可和敏感操作确认仍分别检查，" +
+        "不需要再为 Gateway 账号单独开启设备能力。"
 
 /**
  * 读取系统当前是否已授予本应用「通知使用权」。

@@ -2,6 +2,9 @@ package com.openandroidintelligence.mobile.conversations
 
 import android.content.Context
 import com.openandroidintelligence.conversation.model.LocalSendAtom
+import com.openandroidintelligence.conversation.ports.ConversationPage
+import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
+import com.openandroidintelligence.gateway.agents.NativeEventApproval
 import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.TimelinePage
@@ -18,15 +21,60 @@ import kotlinx.coroutines.withContext
 class NativeConversationMirror(
     private val context: Context,
     private val baseScope: ConversationScope,
-    private val currentAgentId: () -> String?,
+    currentAgentId: () -> String?,
     private val keyProvider: AesGcmKeyProvider? = null,
-) : AwaitableWorkbenchPersistence {
+    private val observerId: String? = null,
+) : AwaitableWorkbenchPersistence, NativeConversationStore {
 
-    private fun delegateMirror(): EncryptedConversationMirror {
-        val agentId = currentAgentId() ?: "default"
-        // 范围派生：在 accountId 维度拼接 agentId 确保 SQLite 与私有密文分区完全物理隔离
-        val scoped = baseScope.copy(accountId = "${baseScope.accountId}#native#$agentId")
-        return EncryptedConversationMirror(context, scoped, keyProvider)
+    // 在控制器创建时固定 Agent；迟到的 IO 仍只能写入原分区。
+    private val ownerAgentId = currentAgentId()
+    private val mirrorDelegate = lazy {
+        val agentId = checkNotNull(ownerAgentId) { "NATIVE_AGENT_REQUIRED" }
+        require(agentId.isNotBlank()) { "NATIVE_AGENT_REQUIRED" }
+        EncryptedConversationMirror(context, baseScope.copy(accountId = "${baseScope.accountId}#native#$agentId"), keyProvider)
+    }
+
+    private val mirror get() = mirrorDelegate.value
+    private fun delegateMirror() = mirror
+
+    /** 连接的全部子任务完成后关闭仓储持有的句柄，不触发新的存储初始化。 */
+    internal fun close() {
+        if (mirrorDelegate.isInitialized()) mirror.closeNativeStore()
+    }
+
+    override suspend fun saveConversations(page: ConversationPage) = withContext(Dispatchers.IO) {
+        mirror.saveNativeConversations(page)
+    }
+
+    override suspend fun recoveryIdentities(conversationId: String) = withContext(Dispatchers.IO) {
+        mirror.nativeRecoveryIdentities(conversationId)
+    }
+
+    override suspend fun commitEvents(events: List<VerifiedConversationEvent>) = withContext(Dispatchers.IO) {
+        mirror.commitNativeEvents(events)
+    }
+
+    override suspend fun commitApprovals(conversationId: String, approvals: List<NativeEventApproval>) = withContext(Dispatchers.IO) {
+        mirror.commitNativeApprovals(conversationId, approvals)
+    }
+
+    override suspend fun loadApprovals(conversationId: String) = withContext(Dispatchers.IO) {
+        mirror.nativeApprovals(conversationId)
+    }
+
+    private fun observer() = checkNotNull(observerId) { "NATIVE_EVENT_OBSERVER_REQUIRED" }
+    override suspend fun pendingAck(conversationId: String) = withContext(Dispatchers.IO) {
+        mirror.nativePendingAck(observer(), conversationId)
+    }
+    override suspend fun eventCursor(conversationId: String) = withContext(Dispatchers.IO) {
+        mirror.nativeEventCursor(observer(), conversationId)
+    }
+    override suspend fun commitPage(conversationId: String, events: List<VerifiedConversationEvent>,
+        approvals: List<NativeEventApproval>, cursor: String) = withContext(Dispatchers.IO) {
+        mirror.commitNativePage(observer(), conversationId, events, approvals, cursor)
+    }
+    override suspend fun confirmAck(conversationId: String, cursor: String) = withContext(Dispatchers.IO) {
+        mirror.confirmNativeAck(observer(), conversationId, cursor)
     }
 
     override fun load(): WorkbenchCheckpoint? {
@@ -34,7 +82,7 @@ class NativeConversationMirror(
     }
 
     override fun save(checkpoint: WorkbenchCheckpoint) {
-        delegateMirror().save(checkpoint)
+        delegateMirror().saveNativeCheckpoint(checkpoint)
     }
 
     override fun loadSendAtoms(conversationId: String): List<LocalSendAtom> {
@@ -59,7 +107,7 @@ class NativeConversationMirror(
 
     override suspend fun saveCheckpoint(checkpoint: WorkbenchCheckpoint) {
         withContext(Dispatchers.IO) {
-            delegateMirror().saveCheckpoint(checkpoint)
+            delegateMirror().saveNativeCheckpoint(checkpoint)
         }
     }
 

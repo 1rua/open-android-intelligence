@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 WIRE_PROTOCOL = "2.1"
 PROTOCOL_VERSION = {"major": 2, "minor": 1}
+CONVERSATION_EXECUTION_NOTICE_CODE = "oai.native.execution.updated"
 
 # One transport that wants committed events as they happen. The account id is
 # the account the event belongs to, so a stream never has to guess it.
@@ -1603,6 +1604,20 @@ class EventStore:
         self.store.record_event(event)
         return event
 
+    def replay_conversation_id(self, event: Mapping[str, Any]) -> str | None:
+        """The exact conversation facts covered by acknowledged native replay."""
+        kind, payload = event.get("eventType", ""), event.get("payload", {})
+        if kind.startswith(("conversation.message.", "conversation.generation.", "conversation.approval.")):
+            value = payload.get("conversationId")
+            return value if isinstance(value, str) and value else None
+        if kind == "gateway.notice" and payload.get("noticeCode") == CONVERSATION_EXECUTION_NOTICE_CODE:
+            accepted = self.store.database.execute(
+                "SELECT conversation_id FROM messages WHERE message_id=? AND sender='user'",
+                (event.get("correlationId"),),
+            ).fetchone()
+            return accepted[0] if accepted else None
+        return None
+
     def release_device_request(self, request_id: str) -> None:
         self.release_device_requests({request_id})
 
@@ -1654,10 +1669,29 @@ class EventStore:
             expiry = min(_now(row['expires_at']),_now(payload.get('expiresAt',row['expires_at'])))
             self.store.database.execute("UPDATE events SET payload_json=?,expires_at=? WHERE event_id=?",(self.store.seal_json(payload,purpose),iso_millis(expiry),row['event_id']))
         if legacy: self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES ('event-body-policy-v2',?)",(str(legacy[-1]['sequence']),))
-        return self.store.database.execute(
-            "DELETE FROM events WHERE sequence IN (SELECT sequence FROM events WHERE expires_at <= ? ORDER BY expires_at LIMIT ?)",
-            (iso_millis(now), limit),
-        ).rowcount
+        # Native replay positions are sequence boundaries, including an empty
+        # ledger. Preserve a per-conversation gap marker before removing rows;
+        # otherwise a phone can never distinguish an empty page from lost facts.
+        with self.store.transaction():
+            expired = self.store.database.execute(
+                "SELECT * FROM events WHERE expires_at <= ? ORDER BY expires_at,sequence LIMIT ?",
+                (iso_millis(now), limit),
+            ).fetchall()
+            for row in expired:
+                if not (row["event_type"].startswith("conversation.") or row["event_type"] == "gateway.notice"):
+                    continue
+                payload = self.store.open_json(row["payload_json"], f"event:{row['event_id']}:payload")
+                conversation_id = self.replay_conversation_id({"eventType": row["event_type"],
+                    "payload": payload, "correlationId": row["correlation_id"]})
+                if isinstance(conversation_id, str) and conversation_id:
+                    key = "conversation-event-pruned:v1:" + hashlib.sha256(conversation_id.encode()).hexdigest()
+                    self.store.database.execute(
+                        "INSERT INTO account_metadata(key,value) VALUES (?,?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",
+                        (key, str(row["sequence"])),
+                    )
+            self.store.database.executemany("DELETE FROM events WHERE sequence=?", [(row["sequence"],) for row in expired])
+            return len(expired)
 
     def _map(self, row: sqlite3.Row) -> dict[str, Any]:
         return {

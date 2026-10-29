@@ -118,6 +118,10 @@ fun specificFailureText(code: String): String? {
             }
             "登录已成功，但 App 未能完成${stage}的初始化。账号资料和历史记录已保留，请更新 App 后重试；若持续发生，请查看手机上的连接诊断。"
         }
+        value.contains("LOCAL_SAVE_FAILED") ->
+            "本机会话记录保存失败，同步已暂停。请检查手机存储空间，恢复后重新进入会话重试同步；请勿重复发送原消息。"
+        value.contains("EVENT_APPLY_FAILED") ->
+            "会话同步数据未能处理，本机记录已保留。请重新进入会话重试；若持续失败，请检查 App 与 Core 的版本兼容性。"
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
         value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请让网关部署者执行插件仓的 tools/hermes-account.py init-key 生成受限密钥文件（或修复其权限后）并重启网关。"
         value.contains("APPROVAL_UNSUPPORTED") ->
@@ -190,6 +194,10 @@ fun specificFailureText(code: String): String? {
         value.contains("429") || value.contains("RATE_LIMIT") -> "请求过于频繁，请稍后重试。"
         value.contains("REPLY_TIMEOUT") || value.contains("NO_REPLY") ->
             "Gateway 一直没有返回回复。已尝试重新同步会话，若仍无内容请检查 Gateway 与 Agent 是否在运行。"
+        value.contains("NATIVE_EVENT_SYNC_FAILED:ACK_FAILED") ->
+            "会话同步进度尚未获 Gateway 确认，本机记录已保留。请检查连接后重新进入会话重试同步，避免重复发送原消息。"
+        value.contains("NATIVE_EVENT_SYNC_FAILED:READ_FAILED") ->
+            "读取会话同步数据失败，本机记录已保留。请重新进入会话重试；若持续失败，请检查 App、Core 与 Agent 的版本兼容性。"
         value.contains("EVENTS_FAILED") || value.contains("EVENT_STREAM") ->
             "与 Gateway 的实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务后重试。"
         value.contains("TIMEOUT") || value.contains("TIMED OUT") -> "连接超时，请检查网络后重试。"

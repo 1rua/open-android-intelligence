@@ -32,6 +32,9 @@ class AuthSessionLifecycleTest {
 
     @Before
     fun setup() {
+        // Keep Robolectric font/native extraction outside the measured login.
+        // The production login deadline below remains three seconds.
+        org.robolectric.nativeruntime.DefaultNativeRuntimeLoader.injectAndLoad()
         gateway = LoopbackGatewayStub()
         credentialStore = InMemoryCredentialStore()
         deviceKeys = InMemoryDeviceKeySource()
@@ -138,10 +141,8 @@ class AuthSessionLifecycleTest {
     }
 
     private fun awaitConnected(runtime: GatewayRuntime): GatewayRuntime {
-        assertTrue(
-            "等待登录连接超时：phase=${runtime.phase.value}",
-            awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Connected },
-        )
+        val connected = awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Connected }
+        assertTrue("等待登录连接超时：phase=${runtime.phase.value}", connected)
         return runtime
     }
 

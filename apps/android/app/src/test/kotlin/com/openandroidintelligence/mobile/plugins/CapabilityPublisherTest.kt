@@ -13,6 +13,9 @@ import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -32,11 +35,14 @@ class CapabilityPublisherTest {
         var failAfter = false
         var policyRevision = 0
         var lookups = 0
+        var catalog = emptyList<JsonValue.JObject>()
+        var afterPublication: suspend () -> Unit = {}
+        var beforeLookup: (Int) -> Unit = {}
         val bodies = mutableListOf<JsonValue.JObject>()
         override suspend fun execute(request: WireRequest): WireResponse {
-            if (request.method == "GET") lookups++
+            if (request.method == "GET") { lookups++; beforeLookup(lookups) }
             val data = if (request.method == "GET") mapOf("grantRevision" to revision, "grantDigest" to digest,
-                "capabilityPublicationVersion" to version, "capabilityPolicy" to mapOf("revision" to policyRevision, "enabled" to emptyMap<String,Boolean>()))
+                "capabilityPublicationVersion" to version, "capabilities" to catalog, "capabilityPolicy" to mapOf("revision" to policyRevision, "enabled" to emptyMap<String,Boolean>()))
             else {
                 val body = JsonFields.obj(Json.parse(request.body.decodeToString()))!!
                 bodies += body
@@ -46,6 +52,8 @@ class CapabilityPublisherTest {
                 val next = Json.sha256(JsonValue.JObject(payload))
                 if (next != digest) revision++
                 digest = next
+                catalog = JsonFields.objects(body, "inventory")
+                afterPublication()
                 if (failAfter) { failAfter = false; throw IOException("POST accepted, ACK lost") }
                 mapOf("grantRevision" to revision, "grantDigest" to digest)
             }
@@ -62,12 +70,15 @@ class CapabilityPublisherTest {
         val remote = Remote()
         var foreignChanges = 0
         var authorizationAvailable = true
+        var bindingAvailable = true
+        var ownerAvailable = true
         val scope = "publisher-test-${java.util.UUID.randomUUID()}"
         private val http = GatewayHttpClient(GatewayProfile("account","device","session","https://gateway.example",accessToken="test"),
             remote,{ ByteArray(64) },InMemoryEventCursorStore())
         fun publisher() = CapabilityPublisher(context,http,scope,remote.revision,{ grants.state.value?.revision ?: 0L },host,
             foreignChange = { foreignChanges++ },keyProvider=TestDocumentKeys,
-            authorizationCurrent = { authorizationAvailable })
+            authorizationCurrent = { authorizationAvailable },
+            bindingCurrent = { bindingAvailable }, ownerCurrent = { ownerAvailable })
     }
 
     @Test fun acceptedPublicationWithLostAckIsRecoveredByGetAfterProcessRestart() = runBlocking {
@@ -190,5 +201,121 @@ class CapabilityPublisherTest {
             fixture.host.installStore.installRoot.deleteRecursively()
             Thread.setDefaultUncaughtExceptionHandler(previousHandler)
         }
+    }
+
+    @Test fun aSuccessfulPostReturnsItsFreshCatalogRatherThanThePrePublicationSnapshot() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.catalog = listOf(JsonFields.obj(Json.of(mapOf(
+            "pluginId" to "org.example.previous", "capabilityId" to "org.example.previous.query",
+            "capabilityVersion" to "1.0.0", "status" to "READY",
+        )))!!)
+        val publisher = fixture.publisher()
+        publisher.sync()
+        assertTrue(publisher.state.value.capabilities.isEmpty())
+        assertEquals(2, fixture.remote.lookups)
+    }
+
+    @Test fun changingLocalAuthorizationWhileAwaitingAckRejectsTheOldSuccess() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.afterPublication = { fixture.grants.updatePrimitive("kernel.sms.read", false) }
+        val failure = runCatching { fixture.publisher().sync() }.exceptionOrNull()
+        assertEquals("LOCAL_AUTHORIZATION_CHANGED", failure?.message)
+        assertFalse(fixture.grants.state.value!!.permits("kernel.sms.read"))
+    }
+
+    @Test fun losingTheAuthorizationAgreementWhileAwaitingAckRejectsTheOldSuccess() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.afterPublication = { fixture.authorizationAvailable = false }
+        val failure = runCatching { fixture.publisher().sync() }.exceptionOrNull()
+        assertEquals("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED", failure?.message)
+    }
+
+    @Test fun changingThePluginSnapshotWhileAwaitingAckRejectsTheOldSuccess() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.afterPublication = { fixture.host.revision.value++ }
+        val failure = runCatching { fixture.publisher().sync() }.exceptionOrNull()
+        assertEquals("LOCAL_AUTHORIZATION_CHANGED", failure?.message)
+    }
+
+    @Test fun readbackOfAnotherRevisionCannotBeReportedAsSynchronized() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.beforeLookup = { count -> if (count == 2) fixture.remote.revision++ }
+        val publisher = fixture.publisher()
+        val failure = runCatching { publisher.sync() }.exceptionOrNull()
+        assertEquals("CAPABILITY_PUBLICATION_STALE", failure?.message)
+        assertEquals("SYNC_FAILED", publisher.state.value.status)
+        assertTrue(publisher.state.value.capabilities.isEmpty())
+    }
+
+    @Test fun rebindingWithTheSameLocalRevisionRejectsAnOlderPublication() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.afterPublication = { fixture.bindingAvailable = false }
+        val publisher = fixture.publisher()
+        assertEquals("PAIRING_BINDING_CHANGED", runCatching { publisher.sync() }.exceptionOrNull()?.message)
+        assertNotEquals("SYNCED", publisher.state.value.status)
+    }
+
+    @Test fun aPreviousConnectionCannotPublishItsDelayedSuccessToTheCurrentOwner() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.afterPublication = { fixture.ownerAvailable = false }
+        val publisher = fixture.publisher()
+        assertEquals("DEVICE_SESSION_CHANGED", runCatching { publisher.sync() }.exceptionOrNull()?.message)
+        assertNotEquals("SYNCED", publisher.state.value.status)
+    }
+
+    @Test fun aFailedPublicationRetainsItsCodeWhileRetryingAndClearsItAfterFreshReadback() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.failBefore = true
+        val publisher = fixture.publisher()
+        assertNotNull(runCatching { publisher.sync() }.exceptionOrNull())
+        assertEquals("SYNC_FAILED", publisher.state.value.status)
+        assertEquals("NETWORK_ERROR", publisher.state.value.errorCode)
+        fixture.remote.beforeLookup = { count ->
+            if (count == 2) {
+                assertEquals("SYNC_RETRYING", publisher.state.value.status)
+                assertEquals("NETWORK_ERROR", publisher.state.value.errorCode)
+            }
+        }
+        publisher.sync()
+        assertEquals("SYNCED", publisher.state.value.status)
+        assertNull(publisher.state.value.errorCode)
+        assertEquals(fixture.remote.revision, publisher.state.value.grantRevision)
+        assertEquals(fixture.remote.digest, publisher.state.value.grantDigest)
+    }
+
+    @Test fun aFailedReadbackRecoversByGetWithoutRepeatingAnAcceptedPublication() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.beforeLookup = { count -> if (count == 2) throw IOException("readback interrupted") }
+        val publisher = fixture.publisher()
+        assertNotNull(runCatching { publisher.sync() }.exceptionOrNull())
+        assertEquals("SYNC_FAILED", publisher.state.value.status)
+        assertEquals("NETWORK_ERROR", publisher.state.value.errorCode)
+        assertEquals(1, fixture.remote.bodies.size)
+        publisher.sync()
+        assertEquals("SYNCED", publisher.state.value.status)
+        assertEquals(1, fixture.remote.bodies.size)
+    }
+
+    @Test fun aNewerAcknowledgedRevisionRequiresAReadbackBeforeDisplayingReadyAgain() = runBlocking {
+        val fixture = Fixture()
+        val publisher = fixture.publisher()
+        publisher.sync()
+        assertTrue(publisher.observeChange(fixture.remote.revision + 1, fixture.remote.digest))
+        assertEquals("SYNC_REQUIRED", publisher.state.value.status)
+        assertTrue(publisher.state.value.capabilities.isEmpty())
+    }
+
+    @Test fun aCancelledSynchronizationCannotPublishSuccessWhenItsTransportReturnsLate() = runBlocking {
+        val fixture = Fixture()
+        fixture.remote.afterPublication = { currentCoroutineContext().cancel() }
+        val publisher = fixture.publisher()
+        val operation = launch { publisher.sync() }
+        operation.join()
+        assertTrue(operation.isCancelled)
+        assertNotEquals("SYNCED", publisher.state.value.status)
+        fixture.remote.afterPublication = {}
+        publisher.sync()
+        assertEquals("SYNCED", publisher.state.value.status)
+        assertEquals(1, fixture.remote.bodies.size)
     }
 }

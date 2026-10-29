@@ -5,6 +5,8 @@ import asyncio
 from concurrent.futures import Future
 from contextlib import suppress
 from copy import deepcopy
+from contextvars import ContextVar
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -13,6 +15,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import threading
 from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional
 import uuid
@@ -29,7 +32,7 @@ from .context import native_input_receipt, trusted_turn
 from .bridge import NativeApprovalMixin, create_hermes_bridge_app
 from .sessions import HermesSessionAdapter
 from .backend import SessionBackend
-from .host_history import HermesHistoryPort
+from .host_history import HermesHistoryPort, NATIVE_INPUT_KEY
 from .history_media import HistoryMedia
 from .tool_events import NativeToolObserver
 
@@ -70,6 +73,220 @@ async def report_dispatch_delivered(
             message_id, str(getattr(exc, "code", "INTERNAL_ERROR")),
         )
         return False
+
+
+_native_input_origin = ContextVar("oai_hermes_native_input_origin", default=None)
+
+
+# The fixed SDK has lifecycle/tool hooks, but no structured mid-turn input hook.
+# Pin the small producer/persistence contract; a different implementation stays
+# unavailable until its native feedback tests prove the same row semantics.
+def _native_input_contract() -> bool:
+    import inspect
+    try:
+        from agent.interrupt_control import InterruptControlMixin
+        from agent.session_persistence import SessionPersistenceMixin
+        from agent.prompt_builder import steer_user_row
+        from agent.agent_runtime_helpers import _requeue_pending_steer, apply_pending_steer_to_tool_results
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+        from agent.conversation_loop import _apply_active_turn_redirect
+        checks = (
+            (InterruptControlMixin, "2c19f9fbe6ad20d0c45d23be06b22ea311deccd62e7636b337b7cec9d47d309f"),
+            (SessionPersistenceMixin, "418a8356d10e64c36b589bf8c8864fa7e6375ea40ccd541a8dd22d7cb09af734"),
+            (steer_user_row, "b404a50fabf9dae2339f39b6886eb2f16d184da6d58f9d3d8f2cb46e1d3b7861"),
+            (_requeue_pending_steer, "a3028faa109c0f3217aa9341691296516e8a118489324611102a9d7cf653b3f4"),
+            (apply_pending_steer_to_tool_results, "082070fe6d4056f3d1d69becfec796fbd4aeaf309769cfa32592ed7cc4457f29"),
+            (_inject_steer_after_newest_tool_result, "ec91f8a3d459cdc3812ac589c00b71659f9baefcb3bad72053388ca6c763eaa4"),
+            (_apply_active_turn_redirect, "5ca8b6eed8e6a1f29987589a71689fa44e5ee28a5110ffbe3958293ba5dd801c"),
+        )
+        return all(hashlib.sha256(inspect.getsource(method).encode()).hexdigest() == expected
+                   for method, expected in checks)
+    except (ImportError, OSError, TypeError):
+        return False
+
+
+class _NativeInputText(str):
+    """Native pending-text carrier; string operations preserve receipt objects."""
+    def __new__(cls, text, inputs, tokens=None):
+        value = super().__new__(cls, text)
+        value.inputs = tuple(inputs)
+        value.tokens = tuple(tokens) if tokens is not None else (object(),)
+        return value
+
+    def strip(self, chars=None):
+        return type(self)(super().strip(chars), self.inputs, self.tokens)
+
+    def __deepcopy__(self, memo):
+        # Receipts/tokens are process-local immutable provenance, not transcript
+        # content to clone during native API preparation or compression.
+        return self
+
+    def __add__(self, other):
+        return type(self)(super().__add__(other), self.inputs + getattr(other, "inputs", ()),
+                          self.tokens + getattr(other, "tokens", ()))
+
+    def __radd__(self, other):
+        return type(self)(str.__add__(other, self), getattr(other, "inputs", ()) + self.inputs,
+                          getattr(other, "tokens", ()) + self.tokens)
+
+
+class _NativeInputCapture:
+    """Instance-local bridge for the verified SDK's string-only queue.
+
+    No content/prefix matching: redirect/fallback rows carry receipt objects;
+    typed steer rows consume the native drain batches in producer order. A
+    missing/extra batch aborts persistence instead of guessing an identity.
+    """
+    @staticmethod
+    def supports(agent: Any) -> bool:
+        from agent.interrupt_control import InterruptControlMixin
+        from agent.session_persistence import SessionPersistenceMixin
+        methods = {
+            "steer": InterruptControlMixin.steer, "redirect": InterruptControlMixin.redirect,
+            "clear_interrupt": InterruptControlMixin.clear_interrupt,
+            "_drain_pending_steer": InterruptControlMixin._drain_pending_steer,
+            "_drain_pending_redirect": InterruptControlMixin._drain_pending_redirect,
+            "_flush_messages_to_session_db": SessionPersistenceMixin._flush_messages_to_session_db,
+        }
+        capture = getattr(agent, "_oai_native_input_capture", None)
+        installed = capture.installed if isinstance(capture, _NativeInputCapture) else {}
+        return (getattr(agent, "api_mode", None) != "codex_app_server"
+                and all(getattr(type(agent), name, None) is method for name, method in methods.items())
+                and all(getattr(agent, name, None) is installed[name] if name in installed else
+                        getattr(getattr(agent, name, None), "__func__", None) is method
+                        for name, method in methods.items()))
+
+
+    def __init__(self, agent: Any, history: HermesHistoryPort, owner: tuple[str, str, str]):
+        self.agent, self.history, self.owner = agent, history, owner
+        # Reuse the native reentrant persistence lock; a second lock would
+        # invert lock order when _persist_session() calls the wrapped flush.
+        self.lock = getattr(agent, "_session_persist_lock", None) or threading.RLock()
+        agent._session_persist_lock = self.lock
+        self.drained = []
+        self.admitted = set()
+        # Keep object references, so pre-install rows cannot consume a new receipt
+        # and Python id reuse cannot turn an old row into a new one.
+        self.existing = list(getattr(agent, "_session_messages", None) or [])
+        for kind in ("steer", "redirect"):
+            setattr(agent, kind, self._admit(getattr(agent, kind), kind))
+            name = "_drain_pending_" + kind
+            setattr(agent, name, self._drain(getattr(agent, name), kind))
+        agent.clear_interrupt = self._clear(agent.clear_interrupt)
+        agent._flush_messages_to_session_db = self._flush(agent._flush_messages_to_session_db)
+        self.installed = {name: getattr(agent, name) for name in (
+            "steer", "redirect", "clear_interrupt", "_drain_pending_steer",
+            "_drain_pending_redirect", "_flush_messages_to_session_db")}
+
+    def _admit(self, method, kind):
+        @wraps(method)
+        def admit(text):
+            with self.lock:
+                staged = None
+                if not isinstance(text, _NativeInputText):
+                    origin = _native_input_origin.get()
+                    if origin is not None:
+                        if (origin["accountId"], origin["conversationId"], origin["sessionKey"]) != self.owner:
+                            raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+                        staged = self.history.stage_native_input(origin)
+                        if staged["key"] in self.admitted or staged["record"].get("status") == "accepted":
+                            return True
+                    text = _NativeInputText(text, (staged,))
+                pending = getattr(self.agent, "_pending_" + kind, None)
+                if pending and not isinstance(pending, _NativeInputText):
+                    # Mixing an earlier, uncaptured input would destroy its identity.
+                    return False
+                accepted = method(text)
+                if accepted and staged is not None:
+                    self.admitted.add(staged["key"])
+                    try:
+                        self.history.accept_native_input(staged)
+                    except Exception:
+                        # Already accepted by the host: don't return False and make
+                        # the busy dispatcher inject the same input a second time.
+                        logger.exception("[open_android] Native input accepted; presentation write pending")
+                return accepted
+        return admit
+
+    def _drain(self, method, kind):
+        @wraps(method)
+        def drain():
+            with self.lock:
+                text = method()
+                if not text:
+                    return text
+                if not isinstance(text, _NativeInputText):
+                    text = _NativeInputText(text, (None,))
+                if kind == "steer":
+                    # Requeue retains the carrier (including when new steer text is
+                    # concatenated); supersede only an un-emitted batch of its tokens.
+                    self.drained = [batch for batch in self.drained if batch["row"] is not None
+                                    or not set(batch["text"].tokens).intersection(text.tokens)]
+                    self.drained.append({"text": text, "row": None})
+                return text
+        return drain
+
+    def _clear(self, method):
+        @wraps(method)
+        def clear(**kwargs):
+            with self.lock:
+                pending = getattr(self.agent, "_pending_steer", None)
+                result = method(**kwargs)
+                if kwargs.get("hard_cancel") and isinstance(pending, _NativeInputText):
+                    self.drained = [batch for batch in self.drained if batch["row"] is not None
+                                    or not set(batch["text"].tokens).intersection(pending.tokens)]
+                return result
+        return clear
+
+    def _stamp(self, row, text):
+        inputs = text.inputs
+        if any(item is None for item in inputs):
+            if any(item is not None for item in inputs):
+                raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+            return
+        metadata = row.get("display_metadata") or {}
+        row["display_metadata"] = {**metadata, NATIVE_INPUT_KEY: {
+            "version": 1, "storageOwner": self.history.storage_owner,
+            "accountId": self.owner[0], "conversationId": self.owner[1],
+            "inputKeys": list(dict.fromkeys(item["key"] for item in inputs)),
+        }}
+        if len(inputs) == 1 and not row.get("platform_message_id"):
+            row["platform_message_id"] = inputs[0]["record"]["clientMessageId"]
+
+    def _flush(self, method):
+        @wraps(method)
+        def flush(messages, *args, **kwargs):
+            from agent.context_compressor import _DB_PERSISTED_MARKER
+            with self.lock:
+                rows = [row for row in messages if isinstance(row, dict) and row.get("role") == "user"
+                        and not row.get(_DB_PERSISTED_MARKER)
+                        and not (row.get("display_metadata") or {}).get(NATIVE_INPUT_KEY)
+                        and not any(row is previous for previous in self.existing)]
+                for row in rows:
+                    content = row.get("content")
+                    if isinstance(content, _NativeInputText):
+                        self._stamp(row, content)
+                        for batch in self.drained:
+                            if batch["row"] is None and set(batch["text"].tokens) == set(content.tokens):
+                                batch["row"] = row
+                typed = [row for row in rows if row.get("display_kind") == "steer"
+                         and not isinstance(row.get("content"), _NativeInputText)]
+                queued = getattr(self.agent, "_pending_steer", None)
+                tokens = set(queued.tokens) if isinstance(queued, _NativeInputText) else set()
+                batches = [batch for batch in self.drained if batch["row"] is None
+                           and not tokens.intersection(batch["text"].tokens)]
+                # This equality is only a structural batch count, never text identity.
+                if len(typed) != len(batches):
+                    raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+                for row, batch in zip(typed, batches):
+                    self._stamp(row, batch["text"])
+                    batch["row"] = row
+                result = method(messages, *args, **kwargs)
+                if result:
+                    self.drained = [batch for batch in self.drained
+                                    if batch["row"] is None or not batch["row"].get(_DB_PERSISTED_MARKER)]
+                return result
+        return flush
 
 
 class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
@@ -155,12 +372,73 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             return
 
         async def forward(event: Any, session_key: str) -> bool:
-            accepted = await handler(event, session_key)
-            if accepted:
-                event._gateway_accepted = True
-            return accepted
+            try:
+                origin = self._native_input_capture(event, session_key)
+            except AdapterError:
+                # BasePlatformAdapter falls back to interrupt/queue if a busy
+                # callback raises or returns False. Consume this refusal without
+                # accepting the event, so it cannot leak through that fallback.
+                return True
+            token = _native_input_origin.set(origin)
+            try:
+                accepted = await handler(event, session_key)
+                if accepted:
+                    event._gateway_accepted = True
+                return accepted
+            finally:
+                _native_input_origin.reset(token)
 
         super().set_busy_session_handler(forward)
+
+    async def handle_message(self, event: Any) -> None:
+        # Public adapter intake also covers the runner's priority busy path,
+        # which can bypass BasePlatformAdapter's busy callback entirely.
+        session_key = self._event_session_key(event)
+        runner = self._host_runner()
+        agent = getattr(runner, "_running_agents", {}).get(session_key)
+        origin = None
+        if agent is not None:
+            from gateway.run import _AGENT_PENDING_SENTINEL
+            if agent is not _AGENT_PENDING_SENTINEL:
+                origin = self._native_input_capture(event, session_key)
+        token = _native_input_origin.set(origin)
+        try:
+            await super().handle_message(event)
+        finally:
+            _native_input_origin.reset(token)
+
+    def _native_input_capture(self, event: Any, session_key: str) -> dict[str, Any] | None:
+        runner = self._host_runner()
+        agent = getattr(runner, "_running_agents", {}).get(session_key)
+        history = getattr(getattr(self.services.core, "history_reader", None), "__self__", None)
+        source = event.source
+        command = event.get_command() if event.is_command() else None
+        # Commands other than /steer and the host's queue mode retain normal
+        # structured MessageEvent delivery and need no string-queue capture.
+        if command and command != "steer":
+            return None
+        mode = getattr(runner, "_effective_busy_input_mode", None)
+        if not command and callable(mode) and mode(source) == "queue":
+            return None
+        if (not _native_input_contract() or not _NativeInputCapture.supports(agent)
+                or not callable(getattr(history, "stage_native_input", None))):
+            raise AdapterError("STEER_UNAVAILABLE", 409)
+        account_id, conversation_id = str(source.user_id or ""), str(source.chat_id or "")
+        if not account_id or not conversation_id or not event.message_id:
+            raise AdapterError("HOST_INCOMPATIBLE", 409)
+        owner = (account_id, conversation_id, session_key)
+        capture = getattr(agent, "_oai_native_input_capture", None)
+        if capture is None:
+            capture = agent._oai_native_input_capture = _NativeInputCapture(agent, history, owner)
+        if capture.owner != owner:
+            raise AdapterError("HOST_INCOMPATIBLE", 409)
+        context = trusted_turn.get() or {}
+        source_fields = {"platform": source.platform.value, **{name: getattr(source, name, None) for name in
+            ("chat_id", "thread_id", "chat_type", "user_id", "scope_id", "profile", "message_id")}}
+        return {"accountId": account_id, "conversationId": conversation_id, "sessionKey": session_key,
+            "clientMessageId": str(event.message_id), "text": str(event.text or ""),
+            "timestamp": int(event.timestamp.timestamp() * 1000),
+            "generationId": context.get("generationId"), "source": source_fields}
 
     async def _dispatch_inline_reply(self, event: Any, **kwargs: Any) -> None:
         await super()._dispatch_inline_reply(event, **kwargs)
@@ -172,7 +450,13 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         self.services.core.generation_canceller = self._generation_canceller
 
     def native_steering_available(self) -> bool:
-        return callable(getattr(self, "_message_handler", None))
+        runner = self._host_runner()
+        return (callable(getattr(self, "_message_handler", None))
+                and callable(getattr(self._busy_session_handler, "__call__", None))
+                and callable(getattr(getattr(getattr(self.services.core, "history_reader", None), "__self__", None), "stage_native_input", None))
+                and runner is not None and _native_input_contract()
+                and all(_NativeInputCapture.supports(agent) for agent in
+                        getattr(runner, "_running_agents", {}).values()))
 
     async def steer_native_turn(
         self,
@@ -186,6 +470,8 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         """Delegate input to the host without choosing its interrupt/steer policy."""
         if not text.strip():
             raise AdapterError("INVALID_REQUEST", 400)
+        if not self.native_steering_available():
+            raise AdapterError("STEER_UNAVAILABLE", 409)
         loop = self._loop
         if loop is None or loop.is_closed() or not loop.is_running():
             raise AdapterError("STEER_UNAVAILABLE", 409)
@@ -198,7 +484,8 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             if task.done() or self._session_tasks.get(session_key) is not task:
                 raise AdapterError("STEER_UNAVAILABLE", 409)
             await self.dispatch_native_input(account_id, conversation_id, text,
-                                             client_message_id or "native_" + uuid.uuid4().hex)
+                                             client_message_id or "native_" + uuid.uuid4().hex,
+                                             generation_id=generation_id)
             return {"generationId": generation_id, "outcome": "accepted"}
 
         if asyncio.get_running_loop() is loop:
@@ -809,6 +1096,8 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         conversation_id: str,
         text: str,
         client_message_id: str,
+        *,
+        generation_id: str | None = None,
     ) -> dict[str, Any]:
         """Hand original input to the host's native command/busy dispatcher."""
         account = self.services.core.open_gateway_account(account_id)
@@ -832,6 +1121,9 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             "core": self.services.core,
             "accountId": account_id,
             "sessionId": binding.get("agentSessionId"),
+            "conversationId": conversation_id,
+            "clientMessageId": client_message_id,
+            "generationId": generation_id,
         })
         receipt = {"accountId": account_id, "conversationId": conversation_id, "messages": [], "open": True}
         receipt_token = native_input_receipt.set(receipt)

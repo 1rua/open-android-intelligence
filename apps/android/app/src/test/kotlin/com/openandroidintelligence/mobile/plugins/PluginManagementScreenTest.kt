@@ -410,6 +410,9 @@ class PluginManagementScreenTest {
         )
         assertEquals("服务端仍使用旧账号能力策略，请升级 OAI Core", capabilityStatusLabel("GATEWAY_DISABLED"))
         assertEquals("本机能力尚未开启或需要重新同步", capabilityStatusLabel("LOCAL_GRANT_REQUIRED"))
+        assertTrue(capabilityStatusLabel("SYNC_FAILED", "GRANT_STALE").contains("GRANT_STALE"))
+        assertTrue(capabilityStatusLabel("SYNC_RETRYING", "NETWORK_ERROR").contains("正在重试同步"))
+        assertTrue(capabilityStatusLabel("LOCAL_GRANT_REQUIRED", "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED").contains("复核旧的本机设置"))
     }
 
     // ------------------------------------------------------------------

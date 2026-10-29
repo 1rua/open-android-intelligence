@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import errno
 import json
 import os
 from pathlib import Path
@@ -106,9 +107,19 @@ def test_config_rejects_unprotected_or_symlinked_credentials(tmp_path):
         load_client_config(path)
     os.chmod(path, 0o600)
     link = tmp_path / "linked.json"
-    link.symlink_to(path)
-    with pytest.raises(CoreClientError, match="CLIENT_CONFIG_INVALID"):
+    try:
+        link.symlink_to(path)
+    except (NotImplementedError, PermissionError, FileNotFoundError) as exc:
+        assert path.is_file() and link.parent.is_dir()
+        link = Path(sys.base_prefix) / "bin" / "python3"
+        if not link.is_symlink():
+            pytest.skip(f"无法创建 fixture，且没有可用的现有符号链接: {type(exc).__name__}")
+    with pytest.raises(CoreClientError, match="CLIENT_CONFIG_INVALID") as failure:
         load_client_config(link)
+    # ELOOP proves the OS rejected the link before target ownership/content;
+    # invalid JSON from reading an executable must not make this test green.
+    assert isinstance(failure.value.__cause__, OSError)
+    assert failure.value.__cause__.errno == errno.ELOOP
 
 
 def test_cli_logout_revokes_before_removing_local_credential(tmp_path, capsys):

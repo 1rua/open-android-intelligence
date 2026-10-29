@@ -130,15 +130,21 @@ class PairingGrantStateHolder(
     private val _state = MutableStateFlow<PairingGrantState?>(null)
     val state: StateFlow<PairingGrantState?> = _state.asStateFlow()
 
-    private var binding: PairingGrantBinding? = null
+    private data class BoundGrant(val binding: PairingGrantBinding, val state: PairingGrantState)
+
+    @Volatile private var boundGrant: BoundGrant? = null
 
     @Synchronized
     fun bind(nextBinding: PairingGrantBinding) {
-        binding = nextBinding
+        // No previous account remains authoritative while the next scope is loading.
+        boundGrant = null
+        _state.value = null
         val loaded = runCatching { store.load(nextBinding) }
             .getOrElse { PairingGrantState.legacy(nextBinding.pairingId) }
-        _state.value = loaded.takeIf { it.pairingId == nextBinding.pairingId }?.withStablePluginCapabilityDenials()
+        val next = loaded.takeIf { it.pairingId == nextBinding.pairingId }?.withStablePluginCapabilityDenials()
             ?: PairingGrantState.legacy(nextBinding.pairingId)
+        boundGrant = BoundGrant(nextBinding, next)
+        _state.value = next
     }
 
     @Synchronized
@@ -197,21 +203,24 @@ class PairingGrantStateHolder(
     fun updateScreenSelection(enabled: Boolean): PairingGrantState =
         update { current -> current.copy(screenSelectionEnabled = enabled) }
 
-    @Synchronized
-    fun currentBinding(): PairingGrantBinding? = binding
+    fun currentBinding(): PairingGrantBinding? = boundGrant?.binding
 
-    fun currentKernelGrant(pairingId: String): PairingGrant? =
-        _state.value?.takeIf { binding?.pairingId == pairingId }?.asKernelGrant()
+    fun currentKernelGrant(pairingId: String): PairingGrant? {
+        val current = boundGrant ?: return null
+        return current.state.takeIf {
+            current.binding.pairingId == pairingId && it.pairingId == pairingId
+        }?.asKernelGrant()
+    }
 
     @Synchronized
     fun unbind() {
-        binding = null
+        boundGrant = null
         _state.value = null
     }
 
     @Synchronized
     fun clearCurrent() {
-        val currentBinding = binding ?: return
+        val currentBinding = boundGrant?.binding ?: return
         store.clear(currentBinding)
         unbind()
     }
@@ -219,14 +228,15 @@ class PairingGrantStateHolder(
     @Synchronized
     fun clearFor(target: PairingGrantBinding) {
         store.clear(target)
-        if (binding == target) unbind()
+        if (boundGrant?.binding == target) unbind()
     }
 
     private fun update(
         transform: (PairingGrantState) -> PairingGrantState,
     ): PairingGrantState {
-        val currentBinding = binding ?: error("PAIRING_GRANT_NOT_BOUND")
-        val current = _state.value ?: PairingGrantState(currentBinding.pairingId)
+        val bound = boundGrant ?: error("PAIRING_GRANT_NOT_BOUND")
+        val currentBinding = bound.binding
+        val current = bound.state
         val next = transform(current).withStablePluginCapabilityDenials()
         if (next == current) return current
         val persisted = next.copy(revision = current.revision + 1L)
@@ -244,6 +254,7 @@ class PairingGrantStateHolder(
             runCatching { store.save(currentBinding, current) }
             throw cause
         }
+        boundGrant = BoundGrant(currentBinding, persisted)
         _state.value = persisted
         return persisted
     }

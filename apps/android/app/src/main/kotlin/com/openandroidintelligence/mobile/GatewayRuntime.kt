@@ -40,6 +40,8 @@ import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvi
 import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStore
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
+import com.openandroidintelligence.mobile.plugins.DeviceCapabilitySyncState
+import com.openandroidintelligence.mobile.plugins.capabilitySyncErrorCode
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.filterNotNull
@@ -169,8 +171,7 @@ class GatewayRuntime(
     private var capabilityPublisher: com.openandroidintelligence.mobile.plugins.CapabilityPublisher? = null
     private var deviceAuthorizationAgreement: java.util.concurrent.atomic.AtomicBoolean? = null
     val deviceConfirmation = MutableStateFlow<com.openandroidintelligence.mobile.plugins.DeviceConfirmation?>(null)
-    val deviceCapabilityStatuses = MutableStateFlow<Map<String,String>>(emptyMap())
-    val deviceCapabilitySyncStatus = MutableStateFlow("SYNC_REQUIRED")
+    val deviceCapabilityState = MutableStateFlow(DeviceCapabilitySyncState())
     val connectedAccountId: String? get() = lastAccountId.takeIf {
         activeHttpClient != null && _localSessionState.value !is LocalSessionState.SignedOut
     }
@@ -1227,8 +1228,7 @@ class GatewayRuntime(
                         authorizationAgreement.set(false)
                         executionDriver?.cancelAll()
                         com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
-                        deviceCapabilityStatuses.value = emptyMap()
-                        deviceCapabilitySyncStatus.value = "AUTHORIZATION_MODEL_UNSUPPORTED"
+                        deviceCapabilityState.value = DeviceCapabilitySyncState("AUTHORIZATION_MODEL_UNSUPPORTED")
                     }
                     accessTokenHolder = rotated.accessToken
                     lastSessionId = rotated.sessionId
@@ -1359,17 +1359,24 @@ class GatewayRuntime(
         }
         if (pluginHost != null && deviceRequests != null && androidDeviceAuthorization) {
             initializePostLogin(InitializationStage.DEVICE_EXECUTION) {
-                val publisher = com.openandroidintelligence.mobile.plugins.CapabilityPublisher(context,http,binding.storageKey,session.grantRevision,
-                    localRevision = { pairingGrants.state.value?.revision ?: 0L },host = pluginHost,
+                lateinit var publisher: com.openandroidintelligence.mobile.plugins.CapabilityPublisher
+                publisher = com.openandroidintelligence.mobile.plugins.CapabilityPublisher(context,http,binding.storageKey,session.grantRevision,
+                    localRevision = { pairingGrants.currentKernelGrant(binding.pairingId)?.revision ?: -1L },host = pluginHost,
                     foreignChange = { executionDriver?.cancelAll() },
-                    authorizationCurrent = { authorizationAgreement.get() && sessionRenewal === renewal })
+                    authorizationCurrent = { authorizationAgreement.get() },
+                    bindingCurrent = { pairingGrants.currentBinding() == binding },
+                    ownerCurrent = { sessionRenewal === renewal && sessionJob === ownedJob && capabilityPublisher === publisher })
                 capabilityPublisher = publisher
                 sessionScope.launch {
-                    publisher.gatewayCapabilities.collect { entries ->
-                        deviceCapabilityStatuses.value = entries.mapNotNull { entry ->
-                            val id = JsonFields.string(entry,"capabilityId") ?: return@mapNotNull null
-                            id to (JsonFields.string(entry,"status") ?: "SYNC_REQUIRED")
-                        }.toMap()
+                    combine(publisher.state, pairingGrants.state, pluginHost.revision) { state, local, hostRevision ->
+                        if (local?.pairingId != binding.pairingId) DeviceCapabilitySyncState()
+                        else state.forLocalState(local.revision, hostRevision)
+                    }.collect { state ->
+                        state.publishTo(deviceCapabilityState,
+                            ownerCurrent = { authorizationAgreement.get() && sessionRenewal === renewal && sessionJob === ownedJob &&
+                                capabilityPublisher === publisher && pairingGrants.currentBinding() == binding },
+                            currentLocalRevision = { pairingGrants.currentKernelGrant(binding.pairingId)?.revision ?: -1L },
+                            currentHostRevision = { pluginHost.revision.value })
                     }
                 }
                 val executor = com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver(context,sessionScope,http,pluginHost,
@@ -1391,24 +1398,35 @@ class GatewayRuntime(
                     }
                 }
                 sessionScope.launch(Dispatchers.IO) {
+                    var publicationNotice: String? = null
                     kotlinx.coroutines.flow.combine(pairingGrants.state,pluginHost.revision) { _, _ -> Unit }.collectLatest {
                         com.openandroidintelligence.control.ScreenHostRegistry.current?.refreshAuthorization()
                         while (isActive) {
+                            if (sessionRenewal !== renewal || sessionJob !== ownedJob || capabilityPublisher !== publisher) break
                             if (!authorizationAgreement.get()) {
-                                deviceCapabilitySyncStatus.value = "AUTHORIZATION_MODEL_UNSUPPORTED"
+                                deviceCapabilityState.value = DeviceCapabilitySyncState("AUTHORIZATION_MODEL_UNSUPPORTED")
                                 break
                             }
                             // OS permission changes and listener reconnects need
                             // reconciliation even when plugin/local-grant flows are unchanged.
-                            try { publisher.sync(); deviceCapabilitySyncStatus.value = "SYNCED"; delay(5_000) }
+                            try {
+                                publisher.sync()
+                                if (sessionRenewal === renewal && sessionJob === ownedJob && capabilityPublisher === publisher) {
+                                    publicationNotice?.let { _operationNotice.compareAndSet(it, null) }
+                                    publicationNotice = null
+                                }
+                                delay(5_000)
+                            }
                             catch (cancelled: CancellationException) { throw cancelled }
-                            catch (_: Exception) {
+                            catch (cause: Exception) {
+                                if (sessionRenewal !== renewal || sessionJob !== ownedJob || capabilityPublisher !== publisher) break
                                 if (!authorizationAgreement.get()) {
-                                    deviceCapabilitySyncStatus.value = "AUTHORIZATION_MODEL_UNSUPPORTED"
+                                    deviceCapabilityState.value = DeviceCapabilitySyncState("AUTHORIZATION_MODEL_UNSUPPORTED")
                                     break
                                 }
-                                deviceCapabilitySyncStatus.value = "SYNC_FAILED"
-                                _operationNotice.value = "设备能力状态同步失败，正在重试。"; delay(2_000)
+                                publicationNotice = "设备能力状态同步未完成（${capabilitySyncErrorCode(cause)}），正在重试。"
+                                _operationNotice.value = publicationNotice
+                                delay(2_000)
                             }
                         }
                     }
@@ -1418,8 +1436,7 @@ class GatewayRuntime(
             executionDriver = null
             capabilityPublisher = null
             com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
-            deviceCapabilityStatuses.value = emptyMap()
-            deviceCapabilitySyncStatus.value = "AUTHORIZATION_MODEL_UNSUPPORTED"
+            deviceCapabilityState.value = DeviceCapabilitySyncState("AUTHORIZATION_MODEL_UNSUPPORTED")
         }
         val attachmentCoordinator = initializePostLogin(InitializationStage.ATTACHMENT_RECOVERY) {
             val attachmentTransport = HttpAttachmentTransport(http)
@@ -1497,6 +1514,16 @@ class GatewayRuntime(
             }
             error("SNAPSHOT_STALE")
         }
+        // 每个会话连接保留固定的 Agent 存储；界面切换不能改变迟到 IO 的写入范围。
+        val nativeStores = java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.mobile.conversations.NativeConversationMirror>()
+        fun nativeStore(agent: com.openandroidintelligence.gateway.agents.CoreAgent) = nativeStores.computeIfAbsent(agent.id) {
+            com.openandroidintelligence.mobile.conversations.NativeConversationMirror(context, conversationScope,
+                currentAgentId = { agent.id }, keyProvider = localDocumentKeyProvider,
+                observerId = "${session.deviceId}:${session.pairingGeneration}")
+        }
+        ownedJob.invokeOnCompletion {
+            nativeStores.values.forEach { store -> runCatching { store.close() } }
+        }
         val coreAgentRepo = if (nativeAgentSessions) {
             com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
                 client = com.openandroidintelligence.gateway.agents.AgentSessionClient(http),
@@ -1508,6 +1535,7 @@ class GatewayRuntime(
                 approvalAudit = decisionAudit,
                 organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                     context, conversationScope, localDocumentKeyProvider),
+                storeForAgent = ::nativeStore,
             )
         } else null
         val activeRepo: ConversationRepository = coreAgentRepo ?: mirroredRepository
@@ -1520,7 +1548,10 @@ class GatewayRuntime(
                 )
             } else catalogRepository
 
+        var workbenchAgentId: String? = null
         fun buildWorkbenchController(currentAgentName: String? = null): WorkbenchController {
+            val ownerAgentId = _nativeAgents.value?.state?.value?.agent?.id
+            workbenchAgentId = ownerAgentId
             return WorkbenchController(
                 scope = sessionScope,
                 repository = activeRepo,
@@ -1550,12 +1581,10 @@ class GatewayRuntime(
                 onActiveThreadChanged = { threadId -> activeThread.set(threadId); repository.activeConversationChanged(); coreAgentRepo?.activeConversationChanged() },
                 streamHealthSource = (activeRepo as? com.openandroidintelligence.conversation.model.StreamHealthSource) ?: workbenchRepository,
                 persistence = if (nativeAgentSessions) {
-                    com.openandroidintelligence.mobile.conversations.NativeConversationMirror(
-                        context,
-                        conversationScope,
-                        currentAgentId = { _nativeAgents.value?.state?.value?.agent?.id },
-                        keyProvider = localDocumentKeyProvider,
-                    )
+                    ownerAgentId?.let { agentId ->
+                        com.openandroidintelligence.mobile.conversations.NativeConversationMirror(
+                            context, conversationScope, currentAgentId = { agentId }, keyProvider = localDocumentKeyProvider)
+                    }
                 } else mirror,
                 media = mediaCache,
                 downloads = downloads,
@@ -1605,10 +1634,10 @@ class GatewayRuntime(
                         val capabilitiesChanged = capabilityState?.conversationDeleteSupported != (newAgent?.capabilities?.delete == true) ||
                             capabilityState?.conversationArchiveSupported != (newAgent?.capabilities?.archive == true) ||
                             capabilityState?.conversationRenameSupported != (newAgent?.capabilities?.rename == true)
-                        if (!isFirstObservation || capabilitiesChanged) {
-                            // Recreate workbench controller cleanly on agent switch
-                            _controller.value?.close()
-                            _controller.value = buildWorkbenchController(newAgentName)
+                        if (!isFirstObservation || capabilitiesChanged || workbenchAgentId != selected) {
+                            // 等待旧分区 IO 收尾后，才创建固定绑定新 Agent 的工作台。
+                            _controller.value?.closeAndAwait()
+                            _controller.value = withContext(Dispatchers.IO) { buildWorkbenchController(newAgentName) }
                         } else {
                             // Initial requests may have run before Agent discovery completed.
                             // Agent discovery now supplies the subscription identity.
@@ -1912,8 +1941,7 @@ class GatewayRuntime(
         capabilityPublisher = null
         deviceAuthorizationAgreement?.set(false)
         deviceAuthorizationAgreement = null
-        deviceCapabilityStatuses.value = emptyMap()
-        deviceCapabilitySyncStatus.value = "SYNC_REQUIRED"
+        deviceCapabilityState.value = DeviceCapabilitySyncState()
         deviceConfirmation.value = null
         sessionJob?.cancel()
         sessionJob = null
@@ -1959,7 +1987,7 @@ class GatewayRuntime(
                 }
                 executionDriver?.cancelAll()
                 gatewayGrantRevision = revision
-                deviceCapabilitySyncStatus.value = "SYNC_REQUIRED"
+                deviceCapabilityState.value = DeviceCapabilitySyncState()
                 _operationNotice.value = "设备能力状态已变化，正在重新同步；本机开关保持原设置。"
             }
         }

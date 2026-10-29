@@ -214,6 +214,21 @@ class RemoteSessionAdapter:
             raise AdapterError("HOST_INCOMPATIBLE", 502)
         return generation
 
+    async def event_page(self, principal: Principal, session_id: str, *, consumer_id: str,
+                         cursor: str | None = None, limit: int = 128, wait_ms: int = 0,
+                         snapshot: bool = False) -> dict[str, Any]:
+        query = {"limit": limit, "waitMs": wait_ms}
+        if cursor is not None:
+            query["cursor"] = cursor
+        if snapshot:
+            query["snapshot"] = "true"
+        return await self._request("GET", f"/sessions/{quote(session_id, safe='')}/events?{urlencode(query)}",
+            headers={**self._headers(principal), "X-OAI-Observer": consumer_id})
+
+    async def ack_events(self, principal: Principal, session_id: str, *, consumer_id: str, cursor: str) -> dict[str, Any]:
+        return await self._request("POST", f"/sessions/{quote(session_id, safe='')}/events/ack", {"cursor": cursor},
+            headers={**self._headers(principal), "X-OAI-Observer": consumer_id})
+
     def _attachment_key(self, attachment_id: str) -> str:
         return "native-attachment:" + hashlib.sha256((self.agent_id + ":" + attachment_id).encode()).hexdigest()
 

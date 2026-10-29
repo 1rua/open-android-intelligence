@@ -70,6 +70,8 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         "is_full_required": False,
         "affects_security_or_contract": False,
         "affects_oai_core": False,
+        "affects_configuration": False,
+        "affects_android_kernel": False,
         "affects_hermes": False,
         "affects_dsh": False,
         "affects_plugins": False,
@@ -90,6 +92,11 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
                 impact["is_full_required"] = True
                 break
 
+        if f in {"scripts/core_setup.py", "scripts/setup.sh", "scripts/install.sh",
+                 "tests/test_install_script.py", "tests/test_core_setup_transaction.py"}:
+            impact["affects_configuration"] = True
+        if f.startswith("apps/android/platform-kernel/"):
+            impact["affects_android_kernel"] = True
         if f.startswith("oai-core/"):
             impact["affects_oai_core"] = True
         if "hermes" in f:
@@ -134,15 +141,25 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     if impact["is_full_required"] or impact["affects_oai_core"] or level == "full":
         print("\n--- 阶段 2: OAI Core 单元测试 ---")
         ret = run_command([
-            "python3", "-m", "pytest", "oai-core/tests", "tests/test_install_script.py", "-q",
+            "python3", "-m", "pytest", "oai-core/tests", "tests/test_install_script.py",
+            "tests/test_core_setup_transaction.py", "-q",
             "--ignore=oai-core/tests/test_hermes.py",
             "--ignore=oai-core/tests/test_hermes_native.py",
+            "--ignore=oai-core/tests/test_hermes_native_origin.py",
             "--ignore=oai-core/tests/test_hermes_interactions.py",
             "--ignore=oai-core/tests/test_hermes_approval_prompts.py",
             "--ignore=oai-core/tests/test_interaction_pipeline.py",
             "--ignore=oai-core/tests/test_structured_tool_history.py",
             "--ignore=oai-core/tests/test_native_tool_events.py",
+            "--ignore=oai-core/tests/test_native_event_sync.py",
         ])
+        if ret != 0:
+            return ret
+
+    elif impact["affects_configuration"]:
+        print("\n--- Core 配置保存与安装向导回归 ---")
+        ret = run_command(["python3", "-m", "pytest", "tests/test_install_script.py",
+                           "tests/test_core_setup_transaction.py", "oai-core/tests/test_core_config.py", "-q"])
         if ret != 0:
             return ret
 
@@ -154,12 +171,14 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "python3", "-m", "pytest", "-q",
             "oai-core/tests/test_hermes.py",
             "oai-core/tests/test_hermes_native.py",
+            "oai-core/tests/test_hermes_native_origin.py",
             "oai-core/tests/test_hermes_interactions.py",
             "oai-core/tests/test_hermes_approval_prompts.py",
             "oai-core/tests/test_hermes_dispatch_delivery.py",
             "oai-core/tests/test_interaction_pipeline.py",
             "oai-core/tests/test_structured_tool_history.py",
             "oai-core/tests/test_native_tool_events.py",
+            "oai-core/tests/test_native_event_sync.py",
         ])
         if ret != 0:
             return ret
@@ -184,6 +203,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             ":capability-ports:testDebugUnitTest",
             ":screen-control:testDebugUnitTest",
             ":device-primitives:testDebugUnitTest",
+            ":platform-kernel:testDebugUnitTest",
             "noVpnSurfaceCheck",
             ":conversation-domain:testDebugUnitTest",
             ":conversation-ui:testDebugUnitTest",
@@ -200,6 +220,8 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
                 ":screen-control:testDebugUnitTest",
                 ":device-primitives:testDebugUnitTest",
             ])
+        if impact["affects_android_kernel"]:
+            android_tasks.append(":platform-kernel:testDebugUnitTest")
         if impact["affects_android_conversation"]:
             android_tasks.extend([
                 ":conversation-domain:testDebugUnitTest",

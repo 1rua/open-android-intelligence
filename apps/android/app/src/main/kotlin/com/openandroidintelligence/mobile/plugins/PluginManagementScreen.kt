@@ -108,9 +108,9 @@ fun PluginManagementScreen(
     val app = context.applicationContext as? OpenAndroidIntelligenceApplication
     val host = app?.pluginHost?.takeIf { pluginRuntimesWired }
     val pluginRevision = host?.revision?.collectAsState()?.value
-    val gatewayStatuses = app?.gatewayRuntime?.deviceCapabilityStatuses?.collectAsState()?.value.orEmpty()
-    val gatewaySync = app?.gatewayRuntime?.deviceCapabilitySyncStatus?.collectAsState()?.value ?: "SYNC_REQUIRED"
+    val gatewayState = app?.gatewayRuntime?.deviceCapabilityState?.collectAsState()?.value ?: DeviceCapabilitySyncState()
     val pairingGrantState = app?.pairingGrants?.state?.collectAsState()?.value
+    val currentGatewayState = gatewayState.forLocalState(pairingGrantState?.revision ?: -1L, pluginRevision ?: -1L)
     val capabilityMigrationRequired = app?.pluginHost?.capabilityMigrationRequired() == true || pairingGrantState?.migrationRequired == true
     var installed by remember { mutableStateOf(resolvedStore.listInstalled()) }
     var pendingApproval by remember { mutableStateOf<ByteArray?>(null) }
@@ -497,11 +497,9 @@ fun PluginManagementScreen(
                                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                                     // 能力状态：图标 + 语义色 + 文字三件套，颜色不是唯一信号。
                                     host.entries(id).forEach { entry ->
-                                        val status = when (gatewaySync) {
-                                            "SYNC_FAILED", "AUTHORIZATION_MODEL_UNSUPPORTED" -> gatewaySync
-                                            else -> gatewayStatuses[entry.id] ?: if (gatewaySync == "SYNCED") "STATUS_UNAVAILABLE" else "SYNC_REQUIRED"
-                                        }
-                                        CapabilityStatusRow(entryId = entry.id, status = status)
+                                        val diagnostic = currentGatewayState.diagnostic(DeviceCapabilityIdentity(id, entry.id, entry.version))
+                                        val status = diagnostic.status
+                                        CapabilityStatusRow(entryId = entry.id, status = status, reason = diagnostic.reason)
                                         if (status == "PROVIDER_NOT_SELECTED" && host.isCapabilityEnabled(id)) {
                                             TextButton(
                                                 onClick = {
@@ -614,7 +612,8 @@ fun PluginManagementScreen(
     }
 }
 
-internal fun capabilityStatusLabel(status: String): String = when(status) {
+internal fun capabilityStatusLabel(status: String, reason: String? = null): String {
+    val label = when(status) {
     "READY" -> "服务端报告已就绪；本机权限与数据范围仍单独检查"
     "GATEWAY_DISABLED" -> "服务端仍使用旧账号能力策略，请升级 OAI Core"
     "AUTHORIZATION_MODEL_UNSUPPORTED" -> "服务端尚不支持 Android 统一授权，请升级 OAI Core；当前设备能力不可用"
@@ -624,10 +623,14 @@ internal fun capabilityStatusLabel(status: String): String = when(status) {
     "ANDROID_PERMISSION_REQUIRED" -> "需要 Android 系统权限"
     "PROVIDER_UNAVAILABLE" -> "本机采集器或监听服务未就绪"
     "PROVIDER_NOT_SELECTED" -> "尚未选择此能力提供者"
-    "SYNC_FAILED" -> "Gateway 能力同步失败，正在重试"
+    "SYNCING" -> "正在同步本机能力设置，尚未确认服务端状态"
+    "SYNC_RETRYING" -> "正在重试同步，尚未确认当前能力状态"
+    "SYNC_FAILED" -> "设备能力同步失败，正在重试"
     "ANDROID_STATE_UNKNOWN" -> "Android 版本未提供详细授权状态"
     "STATUS_UNAVAILABLE" -> "Gateway 未提供能力状态；请检查连接与 OAI Core 版本"
     else -> "等待同步当前设备能力状态"
+    }
+    return if (reason.isNullOrBlank()) label else "$label；${com.openandroidintelligence.mobile.deviceCapabilityReasonLabel(reason)}"
 }
 
 /** 一个已安装插件的真实状态与其声明式设置贡献。 */
@@ -706,7 +709,7 @@ private fun isSafePluginDirectoryName(value: String): Boolean = Regex("[A-Za-z0-
  * [LocalAppStateColors] 的 success / warning 与 M3 的 error，不再借用品牌 primary。
  */
 @Composable
-private fun CapabilityStatusRow(entryId: String, status: String) {
+private fun CapabilityStatusRow(entryId: String, status: String, reason: String? = null) {
     val stateColors = LocalAppStateColors.current
     val icon: ImageVector
     val tone: SettingsTone
@@ -748,7 +751,7 @@ private fun CapabilityStatusRow(entryId: String, status: String) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = capabilityStatusLabel(status),
+                text = capabilityStatusLabel(status, reason),
                 style = MaterialTheme.typography.bodySmall,
                 color = textColor,
             )

@@ -279,3 +279,20 @@ fun NotificationPushCapabilityItem(
         modifier = modifier.testTag("notification-push-capability-item"),
     )
 }
+
+/** Human-readable next steps for the actual device publication or Android blocking code. */
+internal fun deviceCapabilityReasonLabel(reason: String): String {
+    val code = reason.takeIf { Regex("[A-Z][A-Z0-9_]{0,127}").matches(it) }
+        ?: return "尚未提供可识别的阻塞原因"
+    val description = when (code) {
+        "LOCAL_AUTHORIZATION_CHANGED" -> "本机设置已变化，正在同步最新设置"
+        "PAIRING_BINDING_CHANGED", "DEVICE_SESSION_CHANGED" -> "连接已变化，等待当前连接重新同步"
+        "GRANT_STALE", "CAPABILITY_PUBLICATION_STALE" -> "服务端状态版本已变化，正在重新读取"
+        "NETWORK_ERROR" -> "网络暂不可用，连接恢复后自动重试"
+        "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED" -> "请在插件管理中复核旧的本机设置"
+        "LOCAL_CAPABILITY_DISABLED" -> "本机已关闭此能力"
+        "CAPABILITY_DIGEST_MISMATCH", "CAPABILITY_BINDING_INVALID", "PAIRING_INVALID" -> "状态校验未通过，请检查 OAI Core 版本"
+        else -> "当前阻塞原因"
+    }
+    return "$description（$code）"
+}

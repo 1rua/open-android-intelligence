@@ -459,9 +459,10 @@ save_configuration_and_account() {
     [ "$INSTALL_DSH" -eq 0 ] || selected_agents+=(dsh)
     [ "$INSTALL_HERMES" -eq 0 ] || selected_agents+=(hermes)
     [ "$INSTALL_CODEX" -eq 0 ] || selected_agents+=(codex)
-    local hermes_account=""
-    if [ "$INSTALL_HERMES" -eq 1 ]; then
+    local hermes_account="${HERMES_ACCOUNT:-}"
+    if [ "$INSTALL_HERMES" -eq 1 ] && [ -z "$hermes_account" ]; then
         prompt_read "请输入与 Core 账号一对一绑定的既有 Hermes 账号" hermes_account "${CFG_USERNAME}"
+        HERMES_ACCOUNT="$hermes_account"
     fi
     local agents_csv
     agents_csv=$(IFS=,; printf '%s' "${selected_agents[*]}")
@@ -475,21 +476,71 @@ save_configuration_and_account() {
         local branch="${OAI_BRANCH:-dev}"
         local helper_url="https://raw.githubusercontent.com/1rua/open-android-intelligence/${branch}/scripts/core_setup.py"
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL "${helper_url}" -o "${tmp_helper}" 2>/dev/null || true
+            if ! curl -fsSL "${helper_url}" -o "${tmp_helper}" 2>/dev/null; then
+                error "配置辅助脚本下载失败；保留旧配置，请重试。"
+                return 1
+            fi
         elif command -v wget >/dev/null 2>&1; then
-            wget -qO "${tmp_helper}" "${helper_url}" 2>/dev/null || true
+            if ! wget -qO "${tmp_helper}" "${helper_url}" 2>/dev/null; then
+                error "配置辅助脚本下载失败；保留旧配置，请重试。"
+                return 1
+            fi
+        else
+            error "未找到 curl 或 wget，无法下载配置辅助脚本。"
+            return 1
         fi
-        if [ -f "${tmp_helper}" ]; then
-            helper="${tmp_helper}"
+        if [ ! -s "${tmp_helper}" ]; then
+            error "下载的配置辅助脚本为空；保留旧配置，请重试。"
+            return 1
         fi
+        helper="${tmp_helper}"
     fi
-    if [ ! -f "$helper" ]; then
-        error "未找到配置辅助脚本 core_setup.py，请确保已安装 OAI Core 或网络连通。"
-        exit 1
+    if [ ! -s "$helper" ]; then
+        error "配置辅助脚本 core_setup.py 缺失或为空，请确保已安装 OAI Core 或网络连通。"
+        return 1
     fi
+    local request_id
+    request_id=$("${VENV_PYTHON}" -c 'import secrets; print(secrets.token_hex(16))') || return 1
+    local save_status=0
     OAI_INIT_ADMIN_PASSWORD="${CFG_PASSWORD}" "${VENV_PYTHON}" "$helper" \
         --root "${TARGET_DIR}" --host "${CFG_HOST}" --port "${CFG_PORT}" \
-        --username "${CFG_USERNAME}" --agents "$agents_csv" --hermes-account "$hermes_account"
+        --username "${CFG_USERNAME}" --agents "$agents_csv" --hermes-account "$hermes_account" \
+        --request-id "$request_id" || save_status=$?
+    if [ "$save_status" -ne 0 ] && [ "$save_status" -ne 2 ]; then
+        error "配置未提交完成；请检查恢复 journal。"
+        return "$save_status"
+    fi
+    if ! "${VENV_PYTHON}" - "$helper" "${TARGET_DIR}" "$request_id" <<'VERIFY_COMMIT'
+import json
+from pathlib import Path
+import runpy
+import stat
+import sys
+try:
+    helper = runpy.run_path(sys.argv[1])
+    root = Path(sys.argv[2]).resolve()
+    with helper["configuration_lock"](root):
+        state = json.loads(helper["owned_bytes"](root / "runtime/configuration-journal.json", private=True))
+        if (state.get("version") != 1 or state.get("status") != "committed"
+                or state.get("request_id") != sys.argv[3]):
+            raise ValueError("The current configuration request did not commit")
+        required = {"core.json", "start-core.sh", "runtime/secrets/adapter-tokens.env"}
+        entries = state["entries"]
+        if not required <= {entry["target"] for entry in entries if entry["kind"] == "file"}:
+            raise ValueError("Incomplete configuration transaction")
+        for entry in entries:
+            target = root / entry["target"]
+            if helper["path_hash"](target, entry["kind"]) != entry["after"]:
+                raise ValueError("Committed configuration changed")
+            if entry["kind"] == "file" and stat.S_IMODE(target.stat().st_mode) != entry["mode"]:
+                raise ValueError("Committed configuration permissions changed")
+except Exception:
+    raise SystemExit(1) from None
+VERIFY_COMMIT
+    then
+        error "本次配置事务未通过提交校验；请保留 journal 并检查配置。"
+        return 1
+    fi
     if [ "${helper}" = "${TARGET_DIR}/.tmp_core_setup.py" ]; then
         # 兼容清理临时文件（遵循工作区安全删除规则，优先使用 trash-cli 或移至 /tmp）
         if command -v trash-put >/dev/null 2>&1; then
@@ -499,12 +550,18 @@ save_configuration_and_account() {
             mv "${helper}" /tmp/oai-trash/ 2>/dev/null || true
         fi
     fi
+    local plugin_status=0
+    install_selected_agent_plugins || plugin_status=$?
+    if [ "$save_status" -eq 2 ] || [ "$plugin_status" -ne 0 ]; then
+        warn "部分完成：配置事务已提交，可选 skill 或插件安装尚未完成，请按提示重试。"
+        return 2
+    fi
     success "配置与启动脚本已保存；既有账号密码、密钥和存储路径已保留。"
     info "桥接凭据存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
-    install_selected_agent_plugins
 }
 
 install_selected_agent_plugins() {
+    local partial=0
     # 1. Hermes 插件自动安装
     if [ "${INSTALL_HERMES:-0}" -eq 1 ]; then
         info "正在为 Hermes 环境安装 OAI 适配器插件..."
@@ -539,6 +596,7 @@ install_selected_agent_plugins() {
                 if [ -d "${oai_core_dir}" ] && [ -d "${hermes_adapter_dir}" ]; then
                     "${hermes_pip}" install --no-deps "${oai_core_dir}" "${hermes_adapter_dir}" 2>&1 || {
                         warn "向 Hermes Python 环境安装本地依赖失败，将继续尝试常规安装流程..."
+                        partial=2
                     }
                 fi
             fi
@@ -556,10 +614,12 @@ install_selected_agent_plugins() {
                 warn "尝试使用备用源 1rua/hermes-android-gateway 安装..."
                 hermes plugins install 1rua/hermes-android-gateway --force --no-deps --enable 2>&1 || {
                     warn "Hermes 插件自动安装失败，您可在 Hermes 环境手动执行: hermes plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable"
+                    partial=2
                 }
             fi
         else
-            warn "未检测到全局 hermes 命令，已为您配置环境变量与账号绑定。请在 Hermes 终端中运行:"
+            partial=2
+            warn "未检测到全局 hermes 命令；配置已保存，插件仍需手动安装。请在 Hermes 终端中运行:"
             warn "  hermes plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable"
         fi
     fi
@@ -570,12 +630,13 @@ install_selected_agent_plugins() {
         if [ ! -d "${dsh_adapter_dir}" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ]; then
             dsh_adapter_dir="$(cd "${OAI_SETUP_SCRIPT_DIR}/../integrations/dsh-session-adapter" 2>/dev/null && pwd || echo "")"
         fi
-        info "DSH 环境变量与安全凭据已自动注入并同步至 ~/.dsh-cline / ~/.dsh 环境。"
+        info "Core 配置已提交；已发现的 DSH 环境文件已纳入配置事务。"
         if command -v plugin_manager >/dev/null 2>&1; then
             info "正在执行 DSH 插件注册: plugin_manager action=install_bundle target=${dsh_adapter_dir}"
-            plugin_manager action=install_bundle target="${dsh_adapter_dir}" 2>/dev/null || true
+            plugin_manager action=install_bundle target="${dsh_adapter_dir}" 2>/dev/null || partial=2
         else
-            info "如需在 DSH 会话中生效，请在 DSH 会话内运行:"
+            partial=2
+            info "DSH 插件尚需手动安装；请在 DSH 会话内运行:"
             info "  plugin_manager action=install_bundle target=${dsh_adapter_dir}"
             info "安装后重启 DSH profile 即可自动建立连接。"
         fi
@@ -585,6 +646,7 @@ install_selected_agent_plugins() {
     if [ "${INSTALL_CODEX:-0}" -eq 1 ]; then
         info "Codex app-server 配置已写入 core.json，Core 启动后将自动按需拉起并管理 Codex 进程。"
     fi
+    return "$partial"
 }
 
 # 注入全局 CLI 命令至 ~/.local/bin 并确保 PATH 环境变量
@@ -651,10 +713,18 @@ show_menu() {
     local hermes_status="未启用"
     local dsh_status="未启用"
     local codex_status="未启用"
+    local existing_types=""
+    if [ -f "${CONFIG_FILE}" ]; then
+        existing_types=$(OAI_CONFIG_PATH="${CONFIG_FILE}" "${VENV_PYTHON}" -c 'import json,os; print(",".join(a.get("type", "") for a in json.load(open(os.environ["OAI_CONFIG_PATH"])).get("agents", [])))' 2>/dev/null || true)
+    fi
+    [[ ",$existing_types," == *,hermes,* ]] && hermes_status="保留现有"
+    [[ ",$existing_types," == *,dsh,* ]] && dsh_status="保留现有"
+    [[ ",$existing_types," == *,codex,* ]] && codex_status="保留现有"
     [ "${INSTALL_HERMES}" -eq 1 ] && hermes_status="已启用"
     [ "${INSTALL_DSH}" -eq 1 ] && dsh_status="已启用"
     [ "${INSTALL_CODEX}" -eq 1 ] && codex_status="已启用"
     printf "  ${GREEN}3.${NC} 配置 AI Agent 适配器接入  [Hermes: %s | DSH: %s | Codex: %s]\n" "$hermes_status" "$dsh_status" "$codex_status"
+    printf "     选择否表示不新增接入；已配置的 Agent 保留。移除须显式编辑 core.json 的 agents。\n"
     printf "  ${GREEN}4.${NC} 保存当前配置并生成启动脚本\n"
     printf "  ${GREEN}5.${NC} 配置系统开机与桌面自启动\n"
     printf "  ${GREEN}6.${NC} 注册全局 CLI 命令 (oai)\n"
@@ -665,12 +735,18 @@ show_menu() {
 
 run_full_wizard() {
     info "开始运行完整配置向导..."
-    configure_network
-    configure_account
-    configure_agent_integrations
-    save_configuration_and_account
-    configure_autostart
-    install_cli_wrapper
+    configure_network || return $?
+    configure_account || return $?
+    configure_agent_integrations || return $?
+    local save_status=0
+    save_configuration_and_account || save_status=$?
+    if [ "$save_status" -ne 0 ] && [ "$save_status" -ne 2 ]; then return "$save_status"; fi
+    configure_autostart || { warn "部分完成：配置已保存，自启动设置未完成。"; return 2; }
+    install_cli_wrapper || { warn "部分完成：配置已保存，CLI 注册未完成。"; return 2; }
+    if [ "$save_status" -eq 2 ]; then
+        warn "部分完成：配置已提交，可选安装仍需重试。"
+        return 2
+    fi
     printf "\n"
     success "完整配置向导已全部完成！"
     info "您可随时在终端直接运行 oai 或执行 ${TARGET_DIR}/start-core.sh 启动服务。"
@@ -695,7 +771,7 @@ menu_loop() {
                 configure_agent_integrations
                 ;;
             4)
-                save_configuration_and_account
+                save_configuration_and_account || warn "操作未全部完成，请查看上方提示。"
                 ;;
             5)
                 configure_autostart
@@ -704,7 +780,7 @@ menu_loop() {
                 install_cli_wrapper
                 ;;
             7)
-                run_full_wizard
+                run_full_wizard || warn "操作未全部完成，请查看上方提示。"
                 ;;
             0|q|Q)
                 info "已退出配置向导。"

@@ -26,6 +26,7 @@ data class AgentCapabilities(
     val delete: Boolean = false, val cancel: Boolean = false, val stream: Boolean = false,
     val commands: Boolean = false, val approvals: Boolean = false, val attachments: Boolean = false,
     val generationRecovery: Boolean = false,
+    val eventSync: Boolean = false,
 )
 data class CoreAgent(val id: String, val name: String, val kind: String, val online: Boolean,
     val sessionScope: String, val capabilities: AgentCapabilities)
@@ -38,6 +39,9 @@ data class NativeAgentMessage(val id: String, val role: String, val text: String
     val executionSteps: List<NativeAgentExecutionStep> = emptyList())
 data class NativeAgentExecutionStep(val stepId: String, val eventId: String, val toolName: String,
     val arguments: String, val output: String?, val status: String, val revision: Long)
+data class NativeEventApproval(val type: String, val approval: JsonValue.JObject)
+data class NativeEventPage(val events: List<JsonValue.JObject>, val cursor: String, val hasMore: Boolean,
+    val approvals: List<NativeEventApproval>? = null)
 data class NativeGenerationResult(val outcome: String, val generationId: String?, val messageId: String? = null,
     val userMessageId: String? = null, val clientMessageId: String? = null, val text: String? = null,
     val revision: Long? = null)
@@ -67,7 +71,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             JsonFields.bool(value, "online") ?: false,
             required(value, "sessionScope").also { check(it in setOf("account", "deployment")) { "AGENTS_INVALID" } },
             AgentCapabilities(cap("list"), cap("history"), cap("create"), cap("send"), cap("steer"), cap("rename"),
-                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments"), cap("generationRecovery")))
+                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments"), cap("generationRecovery"), cap("eventSync")))
     }
 
     suspend fun sessions(agent: CoreAgent): List<NativeAgentSession> {
@@ -183,6 +187,50 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             throw AgentSessionException("AGENT_RESPONSE_INVALID")
         return NativeGenerationReceipt(returnedGeneration, returnedSession, returnedClient,
             required(receipt, "userMessageId"), state, revision)
+    }
+
+    /** 可选的原生持久事件面；宿主离线时仍可读取，不使用账号通用事件游标。 */
+    suspend fun events(agent: CoreAgent, sessionId: String, cursor: String? = null,
+        limit: Int = 128, waitMs: Int = 0, snapshot: Boolean = false): NativeEventPage {
+        requireCapability(agent.capabilities.eventSync)
+        require(limit in 1..128 && waitMs in 0..25000 && (!snapshot || cursor == null && waitMs == 0))
+        cursor?.let(::requireEventCursor)
+        val query = buildList {
+            cursor?.let { add("cursor=$it") }
+            add("limit=$limit")
+            if (snapshot) add("snapshot=true")
+            if (waitMs > 0) add("waitMs=$waitMs")
+        }.sorted().joinToString("&")
+        val page = request("GET", sessionTarget(agent, sessionId) + "/events?" + query)
+        val returnedCursor = required(page, "cursor").also(::requireEventCursor)
+        val hasMore = JsonFields.bool(page, "hasMore") ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        val events = objects(page, "events").onEach { event ->
+            required(event, "eventId")
+            required(event, "eventType")
+            if (JsonFields.obj(JsonFields.field(event, "payload")) == null)
+                throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        }
+        val approvals = if (snapshot) objects(page, "approvals").map { item ->
+            val type = required(item, "type")
+            if (type !in setOf("approval_requested", "approval_resolved")) throw AgentSessionException("AGENT_RESPONSE_INVALID")
+            NativeEventApproval(type, JsonFields.obj(JsonFields.field(item, "approval"))
+                ?: throw AgentSessionException("AGENT_RESPONSE_INVALID"))
+        } else null
+        return NativeEventPage(events, returnedCursor, hasMore, approvals)
+    }
+
+    /** 只确认调用方已经可靠应用的页；旧 cursor 返回的服务端位置可能更靠后。 */
+    suspend fun ackEvents(agent: CoreAgent, sessionId: String, cursor: String): String {
+        requireCapability(agent.capabilities.eventSync)
+        requireEventCursor(cursor)
+        return required(request("POST", sessionTarget(agent, sessionId) + "/events/ack", mapOf("cursor" to cursor)), "cursor")
+            .also(::requireEventCursor)
+    }
+
+    private fun requireEventCursor(cursor: String) {
+        require(cursor.length in 1..8192 && cursor.all { it.isLetterOrDigit() && it.code < 128 || it == '_' || it == '-' }) {
+            "INVALID_EVENT_CURSOR"
+        }
     }
 
     suspend fun steer(

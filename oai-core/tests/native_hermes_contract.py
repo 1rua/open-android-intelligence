@@ -23,6 +23,7 @@ from gateway.session import SessionStore
 from gateway.run import GatewayRunner
 from gateway.session_state import SessionState
 from agent.interrupt_control import InterruptControlMixin
+from agent.session_persistence import SessionPersistenceMixin
 from hermes_cli.plugins import PluginContext, PluginManager, parse_manifest_file
 from oai_hermes_adapter.runtime import NATIVE_HERMES_AVAILABLE
 from oai_hermes_adapter.platform_identity import GATEWAY_PLATFORM_IDS
@@ -133,7 +134,7 @@ class NativePolicyRunner(GatewayRunner):
         return False
 
 
-class NativeControlledAgent(InterruptControlMixin):
+class NativeControlledAgent(InterruptControlMixin, SessionPersistenceMixin):
     _supports_active_turn_redirect = True
 
     def __init__(self):

@@ -9,6 +9,9 @@ on:
       - 'scripts/setup.sh'
       - 'scripts/core_setup.py'
       - 'tests/test_install_script.py'
+      - 'tests/test_core_setup_transaction.py'
+      - 'tools/smart-test.py'
+      - 'tools/test_smart_test.py'
       - 'integrations/dsh-session-adapter/**'
       - 'integrations/hermes-session-adapter/**'
       - 'gateway-contract/**'
@@ -23,6 +26,9 @@ on:
       - 'scripts/setup.sh'
       - 'scripts/core_setup.py'
       - 'tests/test_install_script.py'
+      - 'tests/test_core_setup_transaction.py'
+      - 'tools/smart-test.py'
+      - 'tools/test_smart_test.py'
       - 'integrations/dsh-session-adapter/**'
       - 'integrations/hermes-session-adapter/**'
       - 'gateway-contract/**'
@@ -63,11 +69,13 @@ jobs:
             oai-core/tests/independent_core_contract.py "$state"
       - name: Core protocol, security, CLI, MCP and installer regressions
         run: |
-          "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio
+          "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio PyYAML==6.0.3
           env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
-            oai-core/tests tests/test_install_script.py tools/test_smart_test.py -q \
+            oai-core/tests tests/test_install_script.py tests/test_core_setup_transaction.py tools/test_smart_test.py -q \
             --ignore=oai-core/tests/test_hermes.py \
             --ignore=oai-core/tests/test_hermes_native.py \
+            --ignore=oai-core/tests/test_hermes_native_origin.py \
+            --ignore=oai-core/tests/test_native_event_sync.py \
             --ignore=oai-core/tests/test_hermes_interactions.py \
             --ignore=oai-core/tests/test_hermes_approval_prompts.py \
             --ignore=oai-core/tests/test_structured_tool_history.py \
@@ -86,7 +94,7 @@ jobs:
       - name: Install optional Session Adapter and native test dependencies
         run: >-
           python -m pip install -e ./oai-core -e ./integrations/hermes-session-adapter
-          pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
+          pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1 requests==2.33.0
       - name: Check out the pinned native Hermes SDK
         uses: actions/checkout@v4
         with:
@@ -98,6 +106,7 @@ jobs:
           HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
         run: >-
           python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py
+          oai-core/tests/test_hermes_native_origin.py oai-core/tests/test_native_event_sync.py
           oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py
           oai-core/tests/test_hermes_approval_prompts.py
           oai-core/tests/test_structured_tool_history.py oai-core/tests/test_native_tool_events.py
@@ -135,6 +144,32 @@ jobs:
         with:
           gradle-version: '8.12'
           cache-read-only: ${{ github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
+      # These tests install signed packages made from the real Rust payloads.
+      # A fresh Actions checkout has no ignored plugins/target artifacts.
+      - name: Setup Rust for Android reference plugins
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+          targets: wasm32-unknown-unknown
+      - name: Cache Android reference plugin builds
+        uses: Swatinem/rust-cache@v2
+        env:
+          # Cache metadata runs inside plugins, whose local pin is 1.88.0.
+          # Keep cache inspection aligned with the explicit CI build toolchain.
+          RUSTUP_TOOLCHAIN: 1.90.0
+        with:
+          workspaces: plugins -> target
+          cache-workspace-crates: true
+      - name: Build real WASM fixtures before Android tests
+        run: |
+          cargo +1.90.0 build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml --target-dir plugins/target
+          for plugin in notifications sms call_log screen_reader screen_capture screen_control; do
+            artifact="plugins/target/wasm32-unknown-unknown/release/${plugin}.wasm"
+            if [ ! -s "$artifact" ]; then
+              echo "::error::Missing compiled Android fixture: $artifact"
+              exit 1
+            fi
+          done
       - name: Screen primitives, local authorization and projection lifecycle
         working-directory: apps/android
         run: >-
@@ -143,6 +178,7 @@ jobs:
           :capability-ports:testDebugUnitTest
           :screen-control:testDebugUnitTest
           :device-primitives:testDebugUnitTest
+          :platform-kernel:testDebugUnitTest
           noVpnSurfaceCheck
       - name: Conversation ordering, rendering, identity and persistence regressions
         working-directory: apps/android
@@ -172,6 +208,16 @@ jobs:
           --tests '*CoreAgentConversationRepositoryTest'
           --tests '*NativeRecoveryOwnershipTest'
           --tests '*NativeConversationOrganizationStoreTest'
+          --tests '*NativeConversationMirrorTest'
+          --tests '*NativeEventOwnerTest'
+          --tests '*NativeEventSynchronizerTest'
+          --tests '*NativeRecoveryCommitTest'
+          --tests '*DeviceCapabilitySyncStateTest'
+          --tests '*ClientCapabilityAuthorizationTest'
+          --tests '*PluginManagementScreenTest'
+          --tests '*PairingGrantPersistenceTest'
+          --tests '*PermissionCatalogTest'
+          --tests '*SettingsCapabilityUiTest'
       - name: Play screen integration and Android API compatibility
         working-directory: apps/android
         run: >-
@@ -187,3 +233,13 @@ jobs:
           --tests '*CoreAgentConversationRepositoryTest'
           --tests '*NativeRecoveryOwnershipTest'
           --tests '*NativeConversationOrganizationStoreTest'
+          --tests '*NativeConversationMirrorTest'
+          --tests '*NativeEventOwnerTest'
+          --tests '*NativeEventSynchronizerTest'
+          --tests '*NativeRecoveryCommitTest'
+          --tests '*DeviceCapabilitySyncStateTest'
+          --tests '*ClientCapabilityAuthorizationTest'
+          --tests '*PluginManagementScreenTest'
+          --tests '*PairingGrantPersistenceTest'
+          --tests '*PermissionCatalogTest'
+          --tests '*SettingsCapabilityUiTest'

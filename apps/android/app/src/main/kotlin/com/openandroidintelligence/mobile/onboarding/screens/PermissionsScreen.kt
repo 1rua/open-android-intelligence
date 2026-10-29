@@ -51,6 +51,7 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHeader
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.mobile.onboarding.PERMISSION_NOTICE_BODY
+import com.openandroidintelligence.mobile.onboarding.PERMISSION_INTRO_BODY
 import com.openandroidintelligence.mobile.onboarding.PERMISSION_NOTICE_TITLE
 import com.openandroidintelligence.mobile.onboarding.PermissionEntry
 import com.openandroidintelligence.mobile.onboarding.PermissionGroup
@@ -126,8 +127,7 @@ fun PermissionsScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
             Text(
-                text = "以下权限只影响对应功能。可选权限跳过不影响登录与对话；" +
-                    "系统权限也不等于 Agent 授权——设备能力需在插件启用后按账号单独授权。",
+                text = PERMISSION_INTRO_BODY,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

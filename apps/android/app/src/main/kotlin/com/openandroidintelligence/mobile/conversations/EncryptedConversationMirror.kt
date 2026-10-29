@@ -179,15 +179,111 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     private fun message(m: TimelineMessage): Map<String,Any?> = mapOf("id" to m.id,"sender" to m.sender,"parts" to parts(m.parts),
         "timestamp" to m.timestamp,"state" to m.state,"conversationId" to m.conversationId?.value,"errorCode" to m.errorCode,
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
-        "contentRevision" to m.contentRevision,"generationId" to m.generationId)
+        "contentRevision" to m.contentRevision,"generationId" to m.generationId,
+        "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
+            "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision) })
     private fun decodeMessage(o: JsonValue.JObject) = TimelineMessage(str(o,"id"),str(o,"sender"),decodeParts(o),
         JsonFields.long(o,"timestamp") ?: 0L,str(o,"state"),JsonFields.string(o,"conversationId")?.let(::ConversationId),
         JsonFields.string(o,"errorCode"),JsonFields.string(o,"batchId"),JsonFields.string(o,"clientMessageId")?.let(::ClientMessageId),
-        JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"))
+        JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"),
+        executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
+            str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
+            com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0) })
     private fun attachment(a: AttachmentDraft) = mapOf("id" to a.id.value,"name" to a.filename,"mediaType" to a.mediaType,
         "size" to a.sizeBytes,"sha256" to a.sha256,"state" to a.state.name)
     private fun decodeAttachment(o: JsonValue.JObject) = AttachmentDraft(AttachmentDraftId(str(o,"id")),str(o,"name"),str(o,"mediaType"),
         JsonFields.long(o,"size") ?: 0L,str(o,"sha256"),AttachmentState.valueOf(str(o,"state")))
+    /** 只返回有真实 generation 关联或本机未确认提交的身份；普通宿主 user 行不构成受理凭据。 */
+    @Synchronized fun nativeRecoveryIdentities(conversationId: String): List<NativeRecoveryIdentity> {
+        val links = read("generation-facts")?.let(::messageGenerations).orEmpty()
+            .filter { it.conversationId == conversationId }.associateBy { it.messageId }
+        return loadSendAtoms(conversationId).filterNot { atom -> atom.isDeleted ||
+            atom.delivery == MessageDeliveryMode.STEER || atom.status in setOf(AgentMessageStatus.COMPLETED, AgentMessageStatus.FAILED) }
+            .mapNotNull { atom ->
+                val generation = (links[atom.clientMessageId.value] ?: links[atom.messageId])?.generationId
+                if (generation == null && atom.submissionState != LocalSubmissionState.OUTCOME_UNKNOWN) null
+                else NativeRecoveryIdentity(atom.clientMessageId.value, generation)
+            }
+    }
+
+    @Synchronized fun commitNativeEvents(events: List<VerifiedConversationEvent>) {
+        documents.transaction { events.forEach(::apply) }
+        documents.flush()
+    }
+
+    @Synchronized fun nativeApprovals(conversationId: String): List<com.openandroidintelligence.gateway.agents.NativeEventApproval> =
+        read("native-approvals:$conversationId")?.let { saved ->
+            JsonFields.objects(saved, "items").map { item ->
+                com.openandroidintelligence.gateway.agents.NativeEventApproval(str(item, "type"), obj(JsonFields.field(item, "approval")))
+            }
+        }.orEmpty()
+
+    @Synchronized fun commitNativeApprovals(conversationId: String,
+        approvals: List<com.openandroidintelligence.gateway.agents.NativeEventApproval>) {
+        documents.transaction { saveNativeApprovals(conversationId, approvals) }
+        documents.flush()
+    }
+
+    private fun saveNativeApprovals(conversationId: String,
+        approvals: List<com.openandroidintelligence.gateway.agents.NativeEventApproval>) {
+        val retained = nativeApprovals(conversationId).toMutableList()
+        for (approval in approvals) {
+            val id = str(approval.approval, "approvalId")
+            check(str(approval.approval, "conversationId") == conversationId) { "NATIVE_APPROVAL_SCOPE_MISMATCH" }
+            val resolved = retained.any { str(it.approval, "approvalId") == id && it.type == "approval_resolved" }
+            if (approval.type == "approval_requested" && resolved) continue
+            retained.removeAll { str(it.approval, "approvalId") == id && it.type == approval.type }
+            retained += approval
+        }
+        documents.write("native-approvals:$conversationId", encode(mapOf("items" to retained.map {
+            mapOf("type" to it.type, "approval" to it.approval)
+        })))
+    }
+
+    private fun nativeSyncKey(observer: String, conversationId: String) =
+        "native-event-sync:" + SqliteConversationRecords.digest(Json.canonical(Json.of(listOf(observer, conversationId))))
+
+    @Synchronized fun nativePendingAck(observer: String, conversationId: String): String? =
+        read(nativeSyncKey(observer, conversationId))?.let { JsonFields.string(it, "pending") }
+    @Synchronized fun nativeEventCursor(observer: String, conversationId: String): String? =
+        read(nativeSyncKey(observer, conversationId))?.let { JsonFields.string(it, "cursor") }
+
+    @Synchronized fun commitNativePage(observer: String, conversationId: String, events: List<VerifiedConversationEvent>,
+        approvals: List<com.openandroidintelligence.gateway.agents.NativeEventApproval>, cursor: String) {
+        documents.transaction {
+            events.forEach(::apply)
+            saveNativeApprovals(conversationId, approvals)
+            documents.write(nativeSyncKey(observer, conversationId), encode(mapOf(
+                "cursor" to nativeEventCursor(observer, conversationId), "pending" to cursor)))
+        }
+        documents.flush()
+    }
+
+    @Synchronized fun confirmNativeAck(observer: String, conversationId: String, cursor: String) {
+        documents.transaction {
+            check(nativePendingAck(observer, conversationId) == cursor) { "NATIVE_EVENT_OWNER_CHANGED" }
+            documents.write(nativeSyncKey(observer, conversationId), encode(mapOf("cursor" to cursor)))
+        }
+        documents.flush()
+    }
+
+    /** 旧 native 工作台以 checkpoint 为列表来源；新权威读取接管后不再允许旧 checkpoint 覆盖。 */
+    @Synchronized fun saveNativeCheckpoint(checkpoint: WorkbenchCheckpoint): Unit = documents.transaction {
+        if (checkpoint.threadsHydrated && read("native-threads-authority") == null) {
+            saveThreads(checkpoint.threads, checkpoint.threadsSnapshotRevision)
+        }
+        save(checkpoint)
+    }
+
+    suspend fun saveNativeConversations(page: ConversationPage) = withContext(ioDispatcher) {
+        check(page.authoritative && page.nextCursor == null) { "NATIVE_HISTORY_INCOMPLETE" }
+        documents.transaction {
+            saveThreads(page.conversations, page.snapshotRevision)
+            documents.write("native-threads-authority", encode(mapOf("version" to 1)))
+        }
+        documents.flush()
+    }
+
     @Synchronized override fun save(checkpoint: WorkbenchCheckpoint): Unit = documents.transaction {
         val hadGlobalHistory=threads() != null
         checkpoint.deletedThreadIds.filterNot(::isConversationDeleted).forEach(::deleteConversation)
@@ -648,7 +744,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     override suspend fun saveSendAtomsDurably(conversationId: String, atoms: List<LocalSendAtom>) =
         withContext(ioDispatcher) { saveSendAtoms(conversationId,atoms) }
     override suspend fun flush() = withContext(ioDispatcher) { documents.flush() }
-    override suspend fun closeStore() = withContext(ioDispatcher) { documents.close() }
+    override suspend fun closeStore() = withContext(ioDispatcher) { closeNativeStore() }
+    internal fun closeNativeStore() = documents.close()
     suspend fun saveThreadsDurably(threads: List<ConversationSummary>,revision: Long? = null,expectedEpoch: Long? = null) = withContext(ioDispatcher) { saveThreads(threads,revision,expectedEpoch) }
     suspend fun saveOrganizationDurably(value: ConversationOrganization) = withContext(ioDispatcher) { saveOrganization(value) }
     suspend fun deleteConversationDurably(id: String) = withContext(ioDispatcher) { deleteConversation(id); documents.flush() }

@@ -45,7 +45,7 @@ class HermesSessionAdapter:
                                  "archive": manager, "delete": manager,
                                  "cancel": send and callable(getattr(self.core, "generation_canceller", None)),
                                  "approvals": send and bool(getattr(self.runtime, "native_approvals_available", False)),
-                                 "commands": True, "attachments": send, "generationRecovery": True}}
+                                 "commands": True, "attachments": send, "generationRecovery": True, "eventSync": True}}
 
     def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
         from .host_commands import command_catalog
@@ -227,6 +227,17 @@ class HermesSessionAdapter:
                     return await asyncio.to_thread(read)
         finally:
             self.core.unregister_event_sink(wake)
+
+    async def event_page(self, principal: Any, session_id: str, *, consumer_id: str,
+                         cursor: str | None = None, limit: int = 128, wait_ms: int = 0,
+                         snapshot: bool = False) -> dict[str, Any]:
+        from .event_sync import NativeEventSync
+        return await NativeEventSync(self, principal, session_id, consumer_id).page(
+            cursor=cursor, limit=limit, wait_ms=wait_ms, snapshot=snapshot)
+
+    async def ack_events(self, principal: Any, session_id: str, *, consumer_id: str, cursor: str) -> dict[str, Any]:
+        from .event_sync import NativeEventSync
+        return await NativeEventSync(self, principal, session_id, consumer_id).acknowledge(cursor)
 
     async def create(self, principal: Any, title: str | None) -> dict[str, Any]:
         if not self.descriptor()["capabilities"]["create"]:
