@@ -151,7 +151,8 @@ fun WorkbenchScreen(
     // that the user cannot see from the timeline, so it says so out loud.
     LaunchedEffect(state.streamHealth) {
         if (state.streamHealth == StreamHealth.FAILED) {
-            snackbar.showSnackbar("实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务。")
+            snackbar.showSnackbar(state.notice?.let(::noticeText)
+                ?: "实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务。")
         }
     }
 
