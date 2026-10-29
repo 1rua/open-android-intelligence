@@ -413,7 +413,8 @@ class HermesSessionAdapter:
                                 continue
                             if status in {"completed", "cancelled"}:
                                 yield {"type": "done", "text": previous, "generationId": generation_id,
-                                       "outcome": "cancelled" if status == "cancelled" else "completed", **identity,
+                                       "outcome": "cancelled" if status == "cancelled" else "completed",
+                                       "revision": int(generation.get("revision", 0)), **identity,
                                        **message_identity()}
                             else:
                                 yield {"type": "error", "code": "AGENT_FAILED"}
@@ -474,8 +475,9 @@ class HermesSessionAdapter:
                                     frame = await execution_frame(tail["eventId"])
                                     if frame is not None:
                                         yield frame
-                        yield {"type": "done", "text": previous, "generationId": generation_id, "outcome": "cancelled", **identity,
-                               **message_identity()}
+                        generation = await asyncio.to_thread(read_generation)
+                        yield {"type": "done", "text": previous, "generationId": generation_id, "outcome": "cancelled",
+                               "revision": int(generation.get("revision", 0)), **identity, **message_identity()}
                         return
                     if event.get("eventType") in {"conversation.message.delta", "conversation.message.completed"}:
                         payload = event["payload"]

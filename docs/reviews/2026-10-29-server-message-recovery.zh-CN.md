@@ -73,3 +73,11 @@
 精准回归同时验证 queued → 原生 delivered → running，以及其他消息的 delivered 和终态后重放的旧 delivered 均不能错误推进本轮。修复后该专项通过；完整固定 SDK 回归结果补记如下。
 
 固定 SDK 八文件回归最终为 **89 项通过、0 失败、0 跳过**。新增 running 帧使一处原生取消测试的“下一帧必为 done”假定失效，已改为只允许同 generation 的控制帧并明确等待 done/error，原有 cancelled done 断言保留。`git diff --check` 通过；本轮完整日志位于仓库忽略的 `.toolchains/pr64-admission-regression-final.log`。
+
+## done 终态沿用持久生命周期修订
+
+queued/running 帧已经携带生命周期 revision，完成或取消的 done 也必须返回同一持久修订域，不能让客户端以固定版本 1 关闭已经处于 running revision 1 的消息。将受理测试扩展为完成与取消两个终态后，旧实现两项均失败（done 缺少 revision）。
+
+正常完成分支使用已经读取的持久 generation 终态修订；显式取消分支在补齐审批和工具快照后，再读取同一持久 generation 的 revision。正文 contentRevision 不变，也不由本地计数猜终态版本。测试验证 queued 0 → running 1 → done 2，并把 done 修订与实际存储逐项核对，同时保留终态后旧 delivered 不回退的断言。
+
+直接 `test_hermes.py` 回归 24 项通过；固定 SDK 八文件回归 **90 项通过、0 失败、0 跳过**，`git diff --check` 通过。完整日志保存在仓库忽略的 `.toolchains/pr64-terminal-revision-regression.log`。

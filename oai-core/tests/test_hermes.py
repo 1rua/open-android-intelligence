@@ -170,7 +170,8 @@ async def test_core_and_real_hermes_http_bridge_share_the_bounded_message_budget
 
 
 @pytest.mark.asyncio
-async def test_generation_frame_distinguishes_server_acceptance_from_native_admission(core):
+@pytest.mark.parametrize("terminal_state", ["completed", "cancelled"])
+async def test_generation_frame_distinguishes_server_acceptance_from_native_admission(core, terminal_state):
     """A saved queued request is not proof the native handler has started."""
     principal = Principal("alice", device_id="phone")
     admitted, finished = asyncio.Event(), asyncio.Event()
@@ -200,7 +201,11 @@ async def test_generation_frame_distinguishes_server_acceptance_from_native_admi
                 self.delivered_event = account.events.read_after(None)[-1]["eventId"]
             await finished.wait()
             with closing(core.open_gateway_account(owner)) as account:
-                account.conversations.workflow.settle(accepted["messageId"], "completed")
+                account.conversations.workflow.settle(accepted["messageId"], terminal_state)
+                if terminal_state == "cancelled":
+                    account.events.append("conversation.generation.cancelled", "cancel", {
+                        "conversationId": accepted["conversationId"], "generationId": accepted["generationId"],
+                        "outcome": "CANCELLED"})
                 # A replayed old delivered receipt cannot reopen a terminal turn.
                 account.events.append("conversation.message.status", "late-delivery", {
                     "conversationId": accepted["conversationId"], "messageId": accepted["messageId"],
@@ -226,7 +231,11 @@ async def test_generation_frame_distinguishes_server_acceptance_from_native_admi
         finished.set()
         rest = [event async for event in stream]
         assert not any(event.get("state") == "running" for event in rest)
-        assert rest[-1]["type"] == "done" and rest[-1]["outcome"] == "completed"
+        assert rest[-1]["type"] == "done" and rest[-1]["outcome"] == terminal_state
+        with closing(core.open_gateway_account("alice")) as account:
+            terminal = account.conversations.workflow.for_message(queued["userMessageId"])
+        assert rest[-1]["revision"] == terminal["revision"] == running["revision"] + 1
+        assert queued["revision"] == 0 and running["revision"] == 1
     finally:
         admitted.set()
         finished.set()
@@ -266,7 +275,9 @@ async def test_real_event_store_frames_stream_accumulated_native_text_and_do_not
     events = [event async for event in adapter.send(Principal("alice", device_id="phone"), conversation, "hello")]
     assert [event["text"] for event in events if event["type"] == "delta"] == ["原生", "回复"]
     assert events[0]["type"] == "generation"
-    assert events[-1] == {"type": "done", "text": "原生回复", "outcome": "completed",
+    with closing(core.open_gateway_account("alice")) as account:
+        terminal = account.conversations.workflow.for_message(events[0]["userMessageId"])
+    assert events[-1] == {"type": "done", "text": "原生回复", "outcome": "completed", "revision": terminal["revision"],
                           "generationId": events[0]["generationId"], "messageId": "reply",
                           "contentRevision": 0, "eventId": events[-2]["eventId"],
                           "clientMessageId": events[0]["clientMessageId"], "userMessageId": events[0]["userMessageId"]}
