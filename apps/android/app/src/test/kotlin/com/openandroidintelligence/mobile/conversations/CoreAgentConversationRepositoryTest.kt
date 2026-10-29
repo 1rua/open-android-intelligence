@@ -52,6 +52,63 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoreAgentConversationRepositoryTest {
 
+    @Test fun localSubmissionCannotInventAServerAcceptance() = runTest {
+        val response = CompletableDeferred<WireResponse>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest) = response.await()
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler))
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+        }
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_wait"), "问题"))
+        runCurrent()
+        assertTrue("A suspended HTTP request is not a server receipt",
+            events.filterIsInstance<VerifiedConversationEvent.MessageAccepted>().isEmpty())
+    }
+
+    @Test fun droppedDoneAutomaticallyRestoresHistoryAndDurableTerminalWithoutResending() = runTest {
+        val requests = mutableListOf<WireRequest>()
+        val stream = listOf(
+            """{"type":"generation","generationId":"gen_lost","userMessageId":"user_lost","clientMessageId":"cm_lost"}""",
+            """{"type":"delta","messageId":"assistant_lost","text":"收到的部分"}"""
+        ).joinToString("") { "event: message\ndata: $it\n\n" }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request
+                val body = when {
+                    request.method == "POST" -> stream
+                    request.target.contains("/generation?") -> """{"generation":{"generationId":"gen_lost","conversationId":"s_1","clientMessageId":"cm_lost","userMessageId":"user_lost","state":"completed","revision":7}}"""
+                    request.target.endsWith("/history") -> """{"messages":[{"id":"user_lost","role":"user","text":"问题","clientMessageId":"cm_lost"},{"id":"assistant_lost","role":"assistant","text":"完整回答","clientMessageId":"cm_lost","generationId":"gen_lost","contentRevision":7}]}"""
+                    else -> error("Unexpected request ${request.target}")
+                }
+                return WireResponse(200, listOf(RawHeader("Content-Type", if (request.method == "POST") "text/event-stream" else "application/json")), body.toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val agent = sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(generationRecovery = true))
+        val repo = CoreAgentConversationRepository(client(transport), { agent }, { "s_1" }, backgroundScope,
+            StandardTestDispatcher(testScheduler))
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+        }
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_lost"), "问题"))
+        runCurrent()
+        assertEquals("断流后自动查询原 generation 的持久回执", 1, requests.count { it.target.contains("/generation?") })
+        assertEquals("恢复禁止重新提交", 1, requests.count { it.method == "POST" })
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+        val answer = events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+            .last { it.message.id == "assistant_lost" }.message
+        assertEquals("完整回答", (answer.parts.single() as com.openandroidintelligence.conversation.model.MessagePart.Text).value)
+        assertEquals("CONFIRMED", answer.state)
+        assertEquals(1, events.filterIsInstance<VerifiedConversationEvent.MessageStatus>()
+            .count { it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED })
+    }
+
     @Test fun historyKeepsMillisecondsOffsetsAndNativeNumericTimestamps() = runTest {
         val dates = listOf("1780000000.123", "1780000000124", "\"2026-05-28T20:26:40.125Z\"",
             "\"2026-05-28T22:26:40.126+02:00\"", "\"invalid\"", "null")

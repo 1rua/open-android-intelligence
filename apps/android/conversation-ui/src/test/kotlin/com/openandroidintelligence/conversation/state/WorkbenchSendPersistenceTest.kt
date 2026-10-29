@@ -11,6 +11,18 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchSendPersistenceTest {
+    @Test fun sendClickImmediatelyMovesTheFrozenDraftIntoTheTimeline() = runTest {
+        val repository = EmptyHostHistory()
+        val controller = controller(repository)
+        runCurrent(); controller.openThread("conv_a"); runCurrent()
+        controller.editDraft("立即显示的本地消息")
+        controller.sendDraft()
+        assertEquals("点击返回前清空已冻结草稿", "", controller.state.value.draft)
+        assertEquals("不等待 IO 调度或服务端", listOf("立即显示的本地消息"), userTexts(controller))
+        assertTrue("网络尚未被调度", repository.messages.isEmpty())
+        controller.close()
+    }
+
     @Test fun acceptedMessageSurvivesSwitchingAwayBeforeHostHistoryIsAvailable() = runTest {
         val repository = EmptyHostHistory()
         val controller = controller(repository)

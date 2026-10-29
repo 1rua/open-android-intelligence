@@ -25,6 +25,7 @@ data class AgentCapabilities(
     val rename: Boolean = false, val archive: Boolean = false,
     val delete: Boolean = false, val cancel: Boolean = false, val stream: Boolean = false,
     val commands: Boolean = false, val approvals: Boolean = false, val attachments: Boolean = false,
+    val generationRecovery: Boolean = false,
 )
 data class CoreAgent(val id: String, val name: String, val kind: String, val online: Boolean,
     val sessionScope: String, val capabilities: AgentCapabilities)
@@ -32,16 +33,23 @@ data class NativeAgentSession(val id: String, val title: String?, val updatedAt:
 data class NativeAgentAttachment(val id: String, val filename: String, val mediaType: String,
     val sizeBytes: Long? = null, val sha256: String? = null)
 data class NativeAgentMessage(val id: String, val role: String, val text: String, val createdAt: String?,
-    val clientMessageId: String? = null, val attachments: List<NativeAgentAttachment> = emptyList())
+    val clientMessageId: String? = null, val attachments: List<NativeAgentAttachment> = emptyList(),
+    val generationId: String? = null, val contentRevision: Long? = null, val state: String? = null,
+    val executionSteps: List<NativeAgentExecutionStep> = emptyList())
+data class NativeAgentExecutionStep(val stepId: String, val eventId: String, val toolName: String,
+    val arguments: String, val output: String?, val status: String, val revision: Long)
 data class NativeGenerationResult(val outcome: String, val generationId: String?, val messageId: String? = null,
     val userMessageId: String? = null, val clientMessageId: String? = null, val text: String? = null)
 data class NativeSteeringResult(val generationId: String, val outcome: String)
 data class NativeCurrentGeneration(val generationId: String, val conversationId: String, val state: String)
+data class NativeGenerationReceipt(val generationId: String, val conversationId: String,
+    val clientMessageId: String, val userMessageId: String, val state: String, val revision: Long)
 sealed interface NativeAgentStreamEvent {
     data class Generation(val generationId: String) : NativeAgentStreamEvent
     data class ApprovalRequested(val approval: JsonValue.JObject) : NativeAgentStreamEvent
     data class ApprovalResolved(val approval: JsonValue.JObject) : NativeAgentStreamEvent
-    data class MessageIdentity(val messageId: String?, val userMessageId: String?, val clientMessageId: String?) : NativeAgentStreamEvent
+    data class MessageIdentity(val messageId: String?, val userMessageId: String?, val clientMessageId: String?,
+        val contentRevision: Long? = null, val eventId: String? = null) : NativeAgentStreamEvent
 }
 class AgentSessionException(val code: String, val status: Int = 0) : IllegalStateException(code)
 
@@ -54,7 +62,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             JsonFields.bool(value, "online") ?: false,
             required(value, "sessionScope").also { check(it in setOf("account", "deployment")) { "AGENTS_INVALID" } },
             AgentCapabilities(cap("list"), cap("history"), cap("create"), cap("send"), cap("steer"), cap("rename"),
-                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments")))
+                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments"), cap("generationRecovery")))
     }
 
     suspend fun sessions(agent: CoreAgent): List<NativeAgentSession> {
@@ -70,6 +78,12 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                 JsonFields.string(it, "clientMessageId"), JsonFields.objects(it, "attachments").map { attachment ->
                     NativeAgentAttachment(required(attachment, "attachmentId"), required(attachment, "filename"),
                         required(attachment, "mediaType"), JsonFields.long(attachment, "sizeBytes"), JsonFields.string(attachment, "sha256"))
+                }, JsonFields.string(it, "generationId"), JsonFields.long(it, "contentRevision"),
+                JsonFields.string(it, "state"), JsonFields.objects(it, "executionSteps").map { step ->
+                    NativeAgentExecutionStep(required(step, "stepId"), required(step, "eventId"),
+                        required(step, "toolName"), JsonFields.string(step, "arguments").orEmpty(),
+                        JsonFields.string(step, "output"), JsonFields.string(step, "status") ?: "unknown",
+                        JsonFields.long(step, "revision")?.takeIf { revision -> revision >= 0 } ?: 0)
                 })
         }
     }
@@ -136,6 +150,34 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             ?.takeIf { it in setOf("queued", "running", "unknown") }
             ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
         return NativeCurrentGeneration(generationId, conversationId, state)
+    }
+
+    /** Reads the original accepted identity even while the host is offline. Never resends. */
+    suspend fun generation(agent: CoreAgent, sessionId: String, clientMessageId: String,
+        generationId: String? = null, afterRevision: Long? = null, waitMs: Int = 0): NativeGenerationReceipt {
+        requireCapability(agent.capabilities.generationRecovery)
+        require(clientMessageId.isNotBlank() && (afterRevision == null || afterRevision >= 0) &&
+            waitMs in 0..25000 && (waitMs == 0 || afterRevision != null))
+        val query = buildList {
+            add("clientMessageId=${segment(clientMessageId)}")
+            generationId?.let { add("generationId=${segment(it)}") }
+            afterRevision?.let { add("afterRevision=$it") }
+            if (waitMs > 0) add("waitMs=$waitMs")
+        }.sorted().joinToString("&")
+        val value = request("GET", sessionTarget(agent, sessionId) + "/generation?" + query)
+        val receipt = JsonFields.obj(JsonFields.field(value, "generation"))
+            ?: throw AgentSessionException("OUTCOME_UNKNOWN")
+        val returnedGeneration = required(receipt, "generationId")
+        val returnedClient = required(receipt, "clientMessageId")
+        val returnedSession = required(receipt, "conversationId")
+        val state = required(receipt, "state")
+        val revision = JsonFields.long(receipt, "revision") ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        if (returnedClient != clientMessageId || returnedSession != sessionId ||
+            generationId != null && returnedGeneration != generationId || revision < 0 ||
+            state !in setOf("queued", "running", "unknown", "completed", "failed", "cancelled"))
+            throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        return NativeGenerationReceipt(returnedGeneration, returnedSession, returnedClient,
+            required(receipt, "userMessageId"), state, revision)
     }
 
     suspend fun steer(
@@ -213,13 +255,18 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                         val nextIdentity = NativeAgentStreamEvent.MessageIdentity(
                             JsonFields.string(value, "messageId") ?: identity.messageId,
                             JsonFields.string(value, "userMessageId") ?: identity.userMessageId,
-                            JsonFields.string(value, "clientMessageId") ?: identity.clientMessageId)
+                            JsonFields.string(value, "clientMessageId") ?: identity.clientMessageId,
+                            JsonFields.long(value, "contentRevision"), JsonFields.string(value, "eventId"))
                         if (nextIdentity != identity) {
                             identity = nextIdentity
                             if (identity.clientMessageId != null && clientMessageId != null && identity.clientMessageId != clientMessageId)
                                 throw AgentSessionException("AGENT_STREAM_INVALID")
                             onEvent(identity)
                         }
+                        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T6.sse_read", mapOf(
+                            "clientMessageId" to clientMessageId, "generationId" to JsonFields.string(value, "generationId"),
+                            "eventId" to JsonFields.string(value, "eventId"), "eventType" to JsonFields.string(value, "type"),
+                            "contentRevision" to JsonFields.long(value, "contentRevision")))
                         when (JsonFields.string(value, "type")) {
                             "delta" -> onDelta(JsonFields.string(value, "text") ?: error("AGENT_STREAM_INVALID"))
                             "generation" -> {

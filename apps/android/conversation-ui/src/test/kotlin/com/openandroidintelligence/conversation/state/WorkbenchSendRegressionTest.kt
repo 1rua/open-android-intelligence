@@ -46,6 +46,84 @@ class WorkbenchSendRegressionTest {
         assertEquals(listOf("att_restored"),repository.sent.single().attachmentIds)
         controller.cancel()
     }
+    @Test fun editingTheNextDraftDoesNotWithdrawAFrozenAttachmentSubmission() = runTest {
+        val repository = RecordingRepository()
+        val upload = kotlinx.coroutines.flow.MutableStateFlow(
+            AttachmentDraftState(AttachmentDraftId("draft_1"), AttachmentState.UPLOADING),
+        )
+        val coordinator = object : RecordingAttachmentCoordinator() {
+            override suspend fun prepare(selection: LocalAttachmentSelection) =
+                super.prepare(selection).copy(state = AttachmentState.UPLOADING)
+            override fun observe(draftId: String) = upload
+        }
+        val controller = controllerWithAttachments(repository, coordinator)
+        try {
+            runCurrent()
+            controller.openThread("conv_attachment")
+            runCurrent()
+            controller.addAttachment(LocalAttachmentSelection("report.pdf", "application/pdf",
+                AttachmentContentSource { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }))
+            runCurrent()
+            controller.editDraft("已冻结的附件问题")
+            controller.sendDraft()
+            val before = (controller.state.value.timeline as Loadable.Ready).value.single { it.isUser }
+            assertEquals(ComposerState.WAITING_ATTACHMENTS, controller.state.value.composer)
+            assertTrue(repository.sent.isEmpty())
+
+            controller.editDraft("下一条尚未发送的草稿")
+            runCurrent()
+            val pending = (controller.state.value.timeline as Loadable.Ready).value.single { it.isUser }
+            assertEquals("编辑新草稿不能移除上一条冻结气泡", before.key, pending.key)
+            assertEquals("已冻结的附件问题", pending.text)
+            assertEquals("下一条尚未发送的草稿", controller.state.value.draft)
+            assertTrue(repository.sent.isEmpty())
+
+            upload.value = AttachmentDraftState(AttachmentDraftId("draft_1"), AttachmentState.VERIFIED, progress = 1f)
+            runCurrent()
+            assertEquals(listOf("已冻结的附件问题"), repository.sent.map { it.text })
+            assertEquals(before.clientMessageId, repository.sent.single().clientMessageId)
+            assertEquals(listOf("att_draft_1"), repository.sent.single().attachmentIds)
+            assertEquals("下一条尚未发送的草稿", controller.state.value.draft)
+        } finally {
+            controller.close()
+        }
+    }
+
+    @Test fun anExplicitCancelStillWithdrawsAFrozenAttachmentSubmission() = runTest {
+        val repository = RecordingRepository()
+        val upload = kotlinx.coroutines.flow.MutableStateFlow(
+            AttachmentDraftState(AttachmentDraftId("draft_1"), AttachmentState.UPLOADING),
+        )
+        val coordinator = object : RecordingAttachmentCoordinator() {
+            override suspend fun prepare(selection: LocalAttachmentSelection) =
+                super.prepare(selection).copy(state = AttachmentState.UPLOADING)
+            override fun observe(draftId: String) = upload
+        }
+        val controller = controllerWithAttachments(repository, coordinator)
+        try {
+            runCurrent()
+            controller.openThread("conv_attachment")
+            runCurrent()
+            controller.addAttachment(LocalAttachmentSelection("report.pdf", "application/pdf",
+                AttachmentContentSource { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }))
+            runCurrent()
+            controller.editDraft("已冻结的附件问题")
+            controller.sendDraft()
+            controller.editDraft("下一条尚未发送的草稿")
+            controller.cancelPendingSubmission()
+            runCurrent()
+            assertEquals("显式取消只撤回冻结消息，不能覆盖新草稿", "下一条尚未发送的草稿", controller.state.value.draft)
+            assertEquals(ComposerState.EDITING, controller.state.value.composer)
+            assertTrue((controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().none { it.isUser })
+
+            upload.value = AttachmentDraftState(AttachmentDraftId("draft_1"), AttachmentState.VERIFIED, progress = 1f)
+            runCurrent()
+            assertTrue("显式取消后上传完成也不能自动发送", repository.sent.isEmpty())
+        } finally {
+            controller.close()
+        }
+    }
+
     @Test fun acceptedHttpMessageRemainsQueuedUntilMonotonicAgentStatusArrives() = runTest {
         val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 8)
         val repository = object : RecordingRepository() {

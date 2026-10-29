@@ -374,6 +374,30 @@ class AgentSessionClientTest {
         }
     }
 
+    @Test fun durableGenerationReceiptsRemainQueryableOfflineAndKeepExactIdentity() = runBlocking {
+        val recoverable = agent.copy(online = false, capabilities = agent.capabilities.copy(generationRecovery = true))
+        val transport = RecordingTransport("""{"generation":{"generationId":"gen_old","conversationId":"native","clientMessageId":"cm_old","userMessageId":"user_old","state":"completed","revision":9}}""")
+        val receipt = client(transport).generation(recoverable, "native", "cm_old", "gen_old", 8, 25000)
+        assertEquals("completed", receipt.state)
+        assertEquals(9, receipt.revision)
+        assertEquals("GET", transport.requests.single().method)
+        assertEquals("${AgentSessionClient.ROOT}/codex/sessions/native/generation?afterRevision=8&clientMessageId=cm_old&generationId=gen_old&waitMs=25000", transport.requests.single().target)
+        assertTrue(transport.requests.single().body.isEmpty())
+    }
+
+    @Test fun generationRecoveryRejectsForeignOrMalformedReceipts() = runBlocking {
+        val recoverable = agent.copy(capabilities = agent.capabilities.copy(generationRecovery = true))
+        for (bad in listOf("\"conversationId\":\"other\"", "\"clientMessageId\":\"other\"", "\"generationId\":\"other\"", "\"revision\":-1", "\"state\":\"invented\"")) {
+            val base = """{"generationId":"gen_old","conversationId":"native","clientMessageId":"cm_old","userMessageId":"user_old","state":"completed","revision":9}"""
+            val key = bad.substringBefore(':')
+            val fields = base.removeSurrounding("{", "}").split(',').filterNot { it.startsWith(key) } + bad
+            val transport = RecordingTransport("{\"generation\":{${fields.joinToString(",")}}}")
+            assertEquals("AGENT_RESPONSE_INVALID", runCatching {
+                client(transport).generation(recoverable, "native", "cm_old", "gen_old")
+            }.exceptionOrNull()?.message)
+        }
+    }
+
     private fun client(transport: GatewayByteTransport) = AgentSessionClient(GatewayHttpClient(
         GatewayProfile("account", "device", "session", "https://core.example", accessToken = "access"),
         transport, { ByteArray(64) }, InMemoryEventCursorStore()))

@@ -479,6 +479,7 @@ class WorkbenchController(
             else -> Unit
         }
         val threadId=when (event) {
+            is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
             is VerifiedConversationEvent.MessageStatus -> event.conversationId.value
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value
             is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value
@@ -488,6 +489,22 @@ class WorkbenchController(
         threadId?.let { hydrateSendAtoms(it) }
         applyHistoricalAttachmentEvent(event)
         when (event) {
+            is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value?.let { target ->
+                // A receipt can only settle the exact recorded local submission.
+                // Invalid/foreign correlation must not terminate the event consumer.
+                if (event.correlationId.isBlank() || event.messageId.isBlank() ||
+                    atomsFor(target)[event.correlationId] == null) return@let
+                acceptSendAtom(target, event.correlationId, event.messageId)
+                changeSendAtom(target, event.correlationId) { old -> old?.let { atom ->
+                    if (atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED)
+                        atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
+                    else atom
+                } }
+                nativePendingSubmissions.remove(event.correlationId)?.let { (threadId, attachments) ->
+                    attachments.forEach { releaseSubmittedAttachment(threadId, it) }
+                    if (failedSubmission?.clientMessageId == event.correlationId) failedSubmission = null
+                }
+            }
             is VerifiedConversationEvent.MessageStatus -> changeSendAtom(event.conversationId.value, event.clientMessageId.value) { old ->
                 old?.let { atom ->
                     if (event.revision <= atom.statusRevision) atom else {
@@ -965,9 +982,12 @@ class WorkbenchController(
         val voiceAttempt: VoiceAttempt? = null,
         val delivery: com.openandroidintelligence.conversation.ports.MessageDeliveryMode =
             com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL,
+        val optimisticEntry: TimelineEntry? = null,
+        val generationBeforeSubmit: GenerationState? = null,
     )
     private var pendingSubmission: DraftSubmission? = null
     private var failedSubmission: DraftSubmission? = null
+    private val nativePendingSubmissions = mutableMapOf<String, Pair<String, List<String>>>()
     private val userRenamedThreads = mutableSetOf<String>()
     private val approvalCards = LinkedHashMap<String, ApprovalCardState>()
     private val approvalFallbacks = LinkedHashMap<String, ApprovalCardState.TextOnly>()
@@ -2170,7 +2190,7 @@ class WorkbenchController(
     }
 
     /** Creates the first thread through the same authoritative Gateway endpoint. */
-    private fun bootstrapConversationForFirstMessage(): Deferred<Result<String>> {
+    private fun bootstrapConversationForFirstMessage(optimisticEntry: TimelineEntry?): Deferred<Result<String>> {
         bootstrapJob?.takeIf { it.isActive }?.let { return it }
         return workScope.async {
             try {
@@ -2181,9 +2201,14 @@ class WorkbenchController(
                 renderedEntryCache.clear()
                 mirroredRevisions.clear()
                 timelineJob?.cancel()
-                update {
-                    it.copy(activeThreadId = conversation.id.value, activeThreadTitle = conversation.title,
-                        timeline = Loadable.Empty, pendingBatch = emptyList(), notice = null)
+                update { state ->
+                    // The first send was already frozen and shown before the
+                    // create request. Its identity stays visible while its
+                    // durable send record is written for the new conversation.
+                    val pending = optimisticEntry?.let(::listOf).orEmpty()
+                    state.copy(activeThreadId = conversation.id.value, activeThreadTitle = conversation.title,
+                        timeline = if (pending.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(pending)),
+                        pendingBatch = pending, notice = null)
                 }
                 observeThreadEvents()
                 refreshThreads()
@@ -2198,17 +2223,27 @@ class WorkbenchController(
 
     fun editDraft(text: String) {
         val opensCommands = text.startsWith("/") && !_state.value.draft.startsWith("/")
-        cancelPendingSubmission()
+        // A frozen message belongs to its own pending send. Editing the next
+        // draft must not withdraw it while its attachments are still uploading.
+        if (pendingSubmission?.optimisticEntry == null) cancelPendingSubmission()
         draftRevision++
         update { it.copy(draft = text) }
         if (opensCommands) loadCatalog()
     }
 
     fun cancelPendingSubmission() {
-        pendingSubmission?.let { activeWork.cancelPending(it.clientMessageId) }
+        val cancelled = pendingSubmission
+        cancelled?.let { activeWork.cancelPending(it.clientMessageId) }
         pendingSubmission = null
         if (_state.value.composer == ComposerState.WAITING_ATTACHMENTS) {
-            update { it.copy(composer = ComposerState.EDITING, notice = null) }
+            update { state ->
+                val pending = state.pendingBatch.filterNot { it.key == cancelled?.optimisticEntry?.key }
+                state.copy(composer = ComposerState.EDITING, notice = null,
+                    draft = state.draft.ifEmpty { cancelled?.text.orEmpty() },
+                    pendingBatch = pending,
+                    timeline = if (cancelled?.optimisticEntry != null) Loadable.Ready(renderTimeline(pending)) else state.timeline,
+                    generation = cancelled?.generationBeforeSubmit ?: state.generation)
+            }
         }
     }
 
@@ -2615,11 +2650,27 @@ class WorkbenchController(
                 delivery = effectiveDelivery)
         } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId,
             delivery = effectiveDelivery)
-        pendingSubmission?.let { activeWork.begin(it.clientMessageId, it.conversationId) }
+        val frozen = requireNotNull(pendingSubmission)
+        val localEntry = TimelineEntry(
+            key = "local_${frozen.clientMessageId}", sender = "user", text = frozen.text,
+            isUser = true, timestamp = activeThreadId?.let { atomsFor(it)[frozen.clientMessageId]?.timestamp }
+                ?: System.currentTimeMillis(), pendingAcceptance = true, batchGroupId = null,
+            attachments = current.attachments.filter { it.id.value in frozen.attachmentIds }.map {
+                com.openandroidintelligence.conversation.model.TimelineAttachment(it.id.value, it.filename,
+                    it.mediaType, previewBytes = attachmentPreviews[it.id.value])
+            }, clientMessageId = ClientMessageId(frozen.clientMessageId), localPlaceholder = true,
+        )
+        pendingSubmission = frozen.copy(optimisticEntry = localEntry, generationBeforeSubmit = current.generation)
+        activeWork.begin(frozen.clientMessageId, frozen.conversationId)
         beginLegacyTurn(activeThreadId)
         generationFactRevision++
-        update { state -> state.copy(composer = ComposerState.WAITING_ATTACHMENTS, notice = null,
+        // 点击这一次状态变更即显示冻结的发送单元；网络与可靠写盘随后异步执行。
+        update { state -> state.copy(draft = "", composer = ComposerState.WAITING_ATTACHMENTS, notice = null,
+            timeline = appendLocal(state.timeline, localEntry),
+            pendingBatch = state.pendingBatch.filterNot { it.key == localEntry.key } + localEntry,
             generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED) }
+        GatewayLog.protocolEvidence("T0.local_bubble", mapOf("clientMessageId" to frozen.clientMessageId,
+            "conversationId" to frozen.conversationId))
         submitWhenAttachmentsVerified()
     }
 
@@ -2654,17 +2705,17 @@ class WorkbenchController(
             inFlightAttachmentIds = it.inFlightAttachmentIds + submission.attachmentIds,
         ) }
         return workScope.launch {
-            var localEntryKey: String? = null
-            var sendTarget: String? = null
+            var localEntryKey: String? = submission.optimisticEntry?.key
+            var sendTarget: String? = submission.conversationId
             // Whether this send emptied the composer: only then may a failure
             // hand the text back. The draft revision cannot answer that,
             // because releasing the attachment drafts below advances it too.
-            var draftWasCleared = false
+            var draftWasCleared = submission.optimisticEntry != null
             try {
                 if (submission.isolatedThreadEpoch != null &&
                     (threadEpoch != submission.isolatedThreadEpoch || activeThreadId != submission.conversationId)) return@launch
                 val target = submission.conversationId ?: activeThreadId
-                    ?: bootstrapConversationForFirstMessage().await().getOrThrow()
+                    ?: bootstrapConversationForFirstMessage(submission.optimisticEntry).await().getOrThrow()
                 sendTarget = target
                 submission.voiceAttempt?.conversationId = target
                 hydrateSendAtoms(target)
@@ -2688,7 +2739,7 @@ class WorkbenchController(
                 submittedAttachments.zip(remoteIds).forEach { (attachment, remoteId) ->
                     rememberHistoricalAttachment(target, attachment.copy(draftId = remoteId), ClientMessageId(submission.clientMessageId))
                 }
-                val entry = TimelineEntry(
+                val entry = submission.optimisticEntry ?: TimelineEntry(
                     key = "local_" + submission.clientMessageId, sender = "user",
                     text = submission.text.ifBlank { if (submittedAttachments.isNotEmpty()) "" else "[附件]" }, isUser = true,
                     timestamp = System.currentTimeMillis(), pendingAcceptance = true,
@@ -2874,6 +2925,18 @@ class WorkbenchController(
                                 )
                             }
                         }
+                    } else if (!acceptance.authoritative) {
+                        nativePendingSubmissions[message.clientMessageId.value] = target to submission.attachmentIds
+                        // An SSE receipt may race the local initiation return.
+                        if (atomsFor(target)[message.clientMessageId.value]?.submissionState == LocalSubmissionState.ACCEPTED) {
+                            nativePendingSubmissions.remove(message.clientMessageId.value)
+                            submission.attachmentIds.forEach { releaseSubmittedAttachment(target, it) }
+                            if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
+                        }
+                        if (activeThreadId == target) update { state -> state.copy(composer = ComposerState.EDITING,
+                            timeline = Loadable.Ready(renderTimeline(state.pendingBatch)), notice = null) }
+                        persistCheckpoint()
+                        return@launch
                     } else {
                         acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId, generationId = acceptance.generationId)
                     if (activeThreadId == target) {
@@ -3836,6 +3899,8 @@ class WorkbenchController(
                     if ((event is VerifiedConversationEvent.TimelineUpsert && event.message.conversationId == null) ||
                         (event is VerifiedConversationEvent.TimelineTombstoned && event.conversationId == null)) return@collect
                     applySendEvent(event)
+                    GatewayLog.protocolEvidence("T8.event_applied", mapOf("eventId" to event.eventId,
+                        "eventType" to event.javaClass.simpleName))
                     val currentActiveId = activeThreadId ?: run {
                         refreshThreads()
                         return@collect
@@ -4362,19 +4427,23 @@ class WorkbenchController(
 
     /** 原生模式或明确关联到提交的消息以真实行 ID 为准；同轮也可有多条相同正文。 */
     private fun haveDistinctNativeAssistantIds(
-        firstId: String, firstClientId: ClientMessageId?,
-        secondId: String, secondClientId: ClientMessageId?,
+        firstId: String, firstClientId: ClientMessageId?, firstLocal: Boolean,
+        secondId: String, secondClientId: ClientMessageId?, secondLocal: Boolean,
     ): Boolean {
+        if (authoritativeMessageIds) return firstId != secondId && !firstLocal && !secondLocal
+        // 旧 Gateway 的无身份行继续沿用兼容规则；原生真实 ID 从不按前缀分类。
         fun isTemporary(id: String) = id.startsWith("local_") || id.startsWith("stream_") || id.startsWith("asst_")
-        return (authoritativeMessageIds || firstClientId != null || secondClientId != null) && firstId != secondId &&
-            !isTemporary(firstId) && !isTemporary(secondId)
+        return (firstClientId != null || secondClientId != null) && firstId != secondId &&
+            !firstLocal && !secondLocal && !isTemporary(firstId) && !isTemporary(secondId)
     }
 
     private fun haveDistinctNativeAssistantIds(first: TimelineMessage, second: TimelineMessage): Boolean =
-        haveDistinctNativeAssistantIds(first.id, first.clientMessageId, second.id, second.clientMessageId)
+        haveDistinctNativeAssistantIds(first.id, first.clientMessageId, first.localPlaceholder,
+            second.id, second.clientMessageId, second.localPlaceholder)
 
     private fun haveDistinctNativeAssistantIds(first: TimelineEntry, second: TimelineEntry): Boolean =
-        haveDistinctNativeAssistantIds(first.key, first.clientMessageId, second.key, second.clientMessageId)
+        haveDistinctNativeAssistantIds(first.key, first.clientMessageId, first.localPlaceholder,
+            second.key, second.clientMessageId, second.localPlaceholder)
 
     private fun messageTextOf(message: TimelineMessage): String =
         message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
