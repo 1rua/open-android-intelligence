@@ -296,4 +296,12 @@ class SettingsCapabilityUiTest {
         compose.onNodeWithText("系统通知推送").performClick()
         assertEquals(true, toggled)
     }
+
+    @Test
+    fun deviceCapabilityFailureReasonsExplainRecoveryAndKeepTheActualCode() {
+        assertEquals("服务端状态版本已变化，正在重新读取（GRANT_STALE）", deviceCapabilityReasonLabel("GRANT_STALE"))
+        assertEquals("本机设置已变化，正在同步最新设置（LOCAL_AUTHORIZATION_CHANGED）", deviceCapabilityReasonLabel("LOCAL_AUTHORIZATION_CHANGED"))
+        assertEquals("网络暂不可用，连接恢复后自动重试（NETWORK_ERROR）", deviceCapabilityReasonLabel("NETWORK_ERROR"))
+        assertEquals("尚未提供可识别的阻塞原因", deviceCapabilityReasonLabel("invalid private message"))
+    }
 }

@@ -5,6 +5,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class PairingGrantStateTest {
 
@@ -112,5 +115,43 @@ class PairingGrantStateTest {
         assertEquals(2L, restored.state.value?.revision)
         assertTrue(restored.state.value?.granted.isNullOrEmpty())
         assertTrue(restored.state.value?.migrationRequired == true)
+    }
+
+    @Test
+    fun changingBindingsNeverExposesThePreviousAccountsGrantWhileLoading() {
+        val other = binding.copy(accountId = "account-b")
+        val backing = InMemoryPairingGrantStore()
+        val loading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>(null)
+        val store = object : PairingGrantStore {
+            override fun load(target: PairingGrantBinding): PairingGrantState {
+                if (target == other) {
+                    loading.countDown()
+                    check(release.await(5, TimeUnit.SECONDS)) { "binding load was not released" }
+                }
+                return backing.load(target)
+            }
+            override fun save(target: PairingGrantBinding, state: PairingGrantState) = backing.save(target, state)
+            override fun clear(target: PairingGrantBinding) = backing.clear(target)
+        }
+        val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
+        val worker = Thread {
+            try { holder.bind(other) } catch (cause: Throwable) { failure.set(cause) }
+        }
+        worker.start()
+        try {
+            assertTrue(loading.await(5, TimeUnit.SECONDS))
+            assertNull(holder.currentKernelGrant(other.pairingId))
+            assertNull(holder.currentKernelGrant(binding.pairingId))
+            assertNull(holder.state.value)
+        } finally {
+            release.countDown()
+            worker.join(5_000)
+        }
+        assertNull(failure.get())
+        assertFalse(worker.isAlive)
+        assertEquals(other.pairingId, holder.currentKernelGrant(other.pairingId)?.pairingId)
+        assertNull(holder.currentKernelGrant(binding.pairingId))
     }
 }

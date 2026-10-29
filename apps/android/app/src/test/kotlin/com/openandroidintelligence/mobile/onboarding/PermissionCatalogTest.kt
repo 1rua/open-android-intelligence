@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile.onboarding
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -140,5 +141,15 @@ class PermissionCatalogTest {
             "通知使用权不应被当作无需操作的权限",
             notificationAccess.id != "screen_capture",
         )
+    }
+
+    @Test
+    fun permissionGuidanceUsesAndroidLocalSettingsAndRetainsIndependentConsent() {
+        assertTrue(PERMISSION_INTRO_BODY.contains("设备能力由本机决定"))
+        assertFalse(PERMISSION_INTRO_BODY.contains("按账号单独授权"))
+        assertTrue(PERMISSION_NOTICE_BODY.contains("已关闭的设置会保留"))
+        assertTrue(PERMISSION_NOTICE_BODY.contains("旧设置需先在本机复核"))
+        assertTrue(PERMISSION_NOTICE_BODY.contains("敏感操作确认仍分别检查"))
+        assertFalse(PERMISSION_NOTICE_BODY.contains("设备能力与配对授权"))
     }
 }
