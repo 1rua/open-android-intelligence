@@ -29,6 +29,8 @@ def visible_text(content: Any) -> str:
 PRESENTATION_KIND = "oai_gateway_presentation_v1"
 PRESENTATION_KEY = "oaiGatewayPresentation"
 PRESENTATION_NAMESPACE = "oai_gateway_presentation_v2:"
+NATIVE_INPUT_NAMESPACE = "oai_gateway_native_input_v1:"
+NATIVE_INPUT_KEY = "oaiGatewayNativeInputs"
 
 
 def _message_parts(account: Any, row: Any, text: str) -> list[dict[str, Any]]:
@@ -149,6 +151,7 @@ class HermesHistoryPort:
                         delete(chain, sessions_dir=getattr(self.session_store, "sessions_dir", None))
                     # Presentation KV is native long-lived content too.
                     prefixes = (self._presentation_prefix(account_id, conversation_id),
+                                NATIVE_INPUT_NAMESPACE + self._presentation_prefix(account_id, conversation_id),
                                 execution_prefix(self.storage_owner, account_id, conversation_id))
                     keys = [name for prefix in prefixes for name, _ in database.list_meta_prefix(prefix)]
                     if keys:
@@ -297,6 +300,106 @@ class HermesHistoryPort:
                     snapshot["batchId"] = generation["batchId"]
                 self._save(account, database, session_id, snapshot)
 
+    def stage_native_input(self, origin: Mapping[str, Any]) -> dict[str, Any]:
+        """Save an authored input before the host reduces an event to steer(str).
+
+        This record is not a transcript row. A native drain/flush must carry its
+        key before history may associate it with a physical host message.
+        """
+        account_id, conversation_id = origin["accountId"], origin["conversationId"]
+        client_id = origin["clientMessageId"]
+        if not isinstance(client_id, str) or not client_id:
+            raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+        account = self.core.open_gateway_account(account_id)
+        try:
+            binding = account.agent_sessions.lookup(conversation_id)
+            if not binding or binding.get("sessionKey") != origin["sessionKey"]:
+                raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+            database = self._database(binding["agentSessionId"], binding["sessionKey"])
+            session_id = self._session_chain(database, binding["agentSessionId"])[-1]
+            key = NATIVE_INPUT_NAMESPACE + self._presentation_prefix(account_id, conversation_id) + hashlib.sha256(client_id.encode()).hexdigest()
+            with self._migration_lock:
+                presentations = self._presentations(database, account_id, conversation_id, self._history_rows(database, session_id))
+                # Normal/batched sends already own their original message IDs and parts.
+                inputs = [dict(item) for item in presentations.values() if item.get("sender") == "user"
+                          and (item.get("anchorClientMessageId") or item.get("clientMessageId")) == client_id]
+                if not inputs:
+                    timestamp = origin["timestamp"]
+                    inputs = [{"messageId": "msg_native_input_" + hashlib.sha256(
+                        f"{account_id}:{conversation_id}:{client_id}".encode()).hexdigest()[:40],
+                        "clientMessageId": client_id, "anchorClientMessageId": client_id,
+                        "conversationId": conversation_id, "sender": "user", "text": origin["text"],
+                        "parts": [{"type": "text", "text": origin["text"]}],
+                        "timestamp": timestamp, "state": "CONFIRMED"}]
+                if origin.get("generationId"):
+                    inputs = [{**item, "generationId": origin["generationId"]} for item in inputs]
+                stored = {"version": 1, "storageOwner": self.storage_owner, "accountId": account_id,
+                    "conversationId": conversation_id, "sessionId": session_id, "clientMessageId": client_id,
+                    "source": dict(origin["source"]), "text": origin["text"], "inputs": inputs,
+                    "generationId": origin.get("generationId"),
+                    "status": "staged"}
+                previous = database.get_meta(key)
+                if previous:
+                    previous = json.loads(previous)
+                    # A retry keeps the first timestamp/identity; different input cannot reuse it.
+                    fields = ("storageOwner", "accountId", "conversationId", "clientMessageId", "source", "text", "generationId")
+                    if (previous.get("version") != 1 or previous.get("sessionId") not in self._session_chain(database, session_id)
+                            or any(previous.get(name) != stored.get(name) for name in fields)):
+                        raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+                    return {"key": key, "record": previous}
+                database.set_meta(key, json.dumps(stored, separators=(",", ":")))
+                return {"key": key, "record": stored}
+        finally:
+            account.close()
+
+    def accept_native_input(self, staged: Mapping[str, Any]) -> None:
+        """The original survives even when an accepted steer has not drained yet."""
+        record = staged["record"]
+        account = self.core.open_gateway_account(record["accountId"])
+        try:
+            binding = account.agent_sessions.lookup(record["conversationId"])
+            database = self._database(binding["agentSessionId"], binding["sessionKey"])
+            with self._migration_lock:
+                database.set_meta(staged["key"], json.dumps({**record, "status": "accepted"}, separators=(",", ":")))
+                for snapshot in record["inputs"]:
+                    self._save(account, database, record["sessionId"], dict(snapshot))
+        finally:
+            account.close()
+
+    def _native_input_bindings(self, account: Any, database: Any, session_id: str,
+                               rows: list[dict[str, Any]], conversation_id: str) -> dict[str, list[dict[str, Any]]]:
+        """Resolve only producer-stamped native rows, never text or prefix matches."""
+        result = {}
+        chain = set(self._session_chain(database, session_id))
+        prefix = NATIVE_INPUT_NAMESPACE + self._presentation_prefix(account.account_id, conversation_id)
+        for row in rows:
+            metadata = row.get("display_metadata")
+            binding = metadata.get(NATIVE_INPUT_KEY) if isinstance(metadata, Mapping) else None
+            if not isinstance(binding, Mapping):
+                continue
+            if (binding.get("version") != 1 or binding.get("storageOwner") != self.storage_owner
+                    or binding.get("accountId") != account.account_id
+                    or binding.get("conversationId") != conversation_id):
+                raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+            keys = binding.get("inputKeys")
+            if (row.get("role") != "user" or not isinstance(keys, list) or not keys
+                    or not all(isinstance(key, str) for key in keys) or len(set(keys)) != len(keys)):
+                raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+            snapshots = []
+            for key in keys:
+                if not isinstance(key, str) or not key.startswith(prefix):
+                    raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+                value = database.get_meta(key)
+                record = json.loads(value) if value else {}
+                if (record.get("version") != 1 or record.get("storageOwner") != self.storage_owner
+                        or record.get("accountId") != account.account_id
+                        or record.get("conversationId") != conversation_id
+                        or record.get("sessionId") not in chain or not record.get("inputs")):
+                    raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+                snapshots.extend(dict(item) for item in record["inputs"])
+            result[self._native_key(session_id, row)] = snapshots
+        return result
+
     def record_visible(self, account: Any, payload: Mapping[str, Any], state: str = "CONFIRMED") -> dict[str, Any] | None:
         if not visible_text(payload.get("parts")) and not any(
                 part.get("type") != "text" for part in payload.get("parts", [])) and state != "DELETED":
@@ -435,7 +538,12 @@ class HermesHistoryPort:
                         account.store.database.execute("UPDATE messages SET text='' WHERE message_id=?", (mid,))
                 rows = self._history_rows(database, session_id)
 
+            native_inputs = self._native_input_bindings(account, database, session_id, rows, conversation_id)
             presentations = self._presentations(database, account_id, conversation_id, rows)
+            for snapshots in native_inputs.values():
+                for snapshot in snapshots:
+                    if snapshot["messageId"] not in presentations:
+                        presentations[snapshot["messageId"]] = self._save(account, database, session_id, dict(snapshot))
             self._host_user_edits(account, database, session_id, rows, presentations)
             self._bind_replies(account, session_id, rows, presentations)
             native_by_client = {str(row["platform_message_id"]): row for row in rows if row.get("role") == "user" and row.get("platform_message_id")}
@@ -453,6 +561,14 @@ class HermesHistoryPort:
             for row in rows:
                 role = row.get("role")
                 if role not in {"user", "assistant"} or row.get("_compressed_summary"):
+                    continue
+                linked = native_inputs.get(self._native_key(session_id, row))
+                if linked:
+                    for snapshot in linked:
+                        item = _wire(presentations[snapshot["messageId"]])
+                        if _deleted(row):
+                            item.update(state="DELETED", text="", parts=[])
+                        result[snapshot["messageId"]] = item
                     continue
                 text = visible_text(row.get("content"))
                 native_id = f"{session_id}:{row['id']}"
