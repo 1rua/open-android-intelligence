@@ -13,6 +13,7 @@ import threading
 from contextlib import nullcontext
 from typing import Any, Mapping
 from .history_media import HistoryMedia
+from .tool_history import project_execution
 
 
 def visible_text(content: Any) -> str:
@@ -435,6 +436,14 @@ class HermesHistoryPort:
             self._host_user_edits(account, database, session_id, rows, presentations)
             self._bind_replies(account, session_id, rows, presentations)
             native_by_client = {str(row["platform_message_id"]): row for row in rows if row.get("role") == "user" and row.get("platform_message_id")}
+            def generation_for_client(client_id: str) -> str | None:
+                accepted = account.store.database.execute(
+                    "SELECT message_id FROM messages WHERE conversation_id=? AND client_message_id=? AND sender='user'",
+                    (conversation_id, client_id),
+                ).fetchone()
+                generation = account.conversations.workflow.for_message(accepted[0]) if accepted else None
+                return generation["generationId"] if generation and generation["conversationId"] == conversation_id else None
+            execution = project_execution(rows, generation_for_client)
             result = {}
             for row in rows:
                 role = row.get("role")
@@ -481,16 +490,18 @@ class HermesHistoryPort:
                     display_text = "" if owned_user else text
                     reply_parts = HistoryMedia(account).reply_parts(message_id) if role == "assistant" else []
                     if role == "assistant" and not text and not reply_parts:
-                        text = _tool_activity(row)
-                        if not text:
+                        text = "" if execution.get(row["id"], {}).get("executionSteps") else _tool_activity(row)
+                        if not text and not execution.get(row["id"], {}).get("executionSteps"):
                             continue
                     item = {"messageId": message_id, "clientMessageId": client_id, "conversationId": conversation_id,
                         "sender": role, "text": display_text if role == "user" else text,
                         "parts": ([{"type": "text", "text": display_text}] if display_text else []) if role == "user"
                             else ([{"type": "text", "text": text}] if text else []) + reply_parts,
                         "timestamp": millis, "state": "CONFIRMED"}
+                if role == "assistant":
+                    item.update(execution.get(row["id"], {}))
                 if _deleted(row):
-                    item.update(state="DELETED", text="", parts=[])
+                    item.update(state="DELETED", text="", parts=[], executionSteps=[])
                 result[message_id] = item
             for message_id, snapshot in presentations.items():
                 item = _wire(snapshot)
@@ -499,6 +510,9 @@ class HermesHistoryPort:
                     item.update(state="DELETED", text="", parts=[])
                 if message_id in result and result[message_id].get("state") == "DELETED":
                     item.update(state="DELETED", text="", parts=[])
+                elif message_id in result:
+                    item.update({key: result[message_id][key] for key in ("generationId", "executionSteps")
+                                 if key in result[message_id]})
                 result[message_id] = item
             for item in result.values():
                 if item["state"] == "DELETED":
