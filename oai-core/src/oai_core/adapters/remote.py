@@ -23,6 +23,9 @@ from ..sessions import CAPABILITIES, STREAM_EVENT_TYPES, AdapterError, NativeAtt
 logger = logging.getLogger(__name__)
 
 REMOTE_PREFIX = "/oai/session-adapter/v1"
+# Match the existing native Codex frame budget and stay below Android's SSE
+# frame budget. aiohttp's default line budget is too small for final snapshots.
+MAX_STREAM_EVENT_BYTES = 8 * 1024 * 1024
 
 
 class RemoteSessionAdapter:
@@ -321,13 +324,24 @@ class RemoteSessionAdapter:
                     json=body if body is not None else {"text": text},
                     timeout=aiohttp.ClientTimeout(total=self.stream_timeout_seconds),
                     allow_redirects=False,
+                    read_bufsize=MAX_STREAM_EVENT_BYTES // 2,
                 ) as response:
                     if response.status != 200:
                         value = await response.json()
                         raise AdapterError(str(value.get("code", "AGENT_UNAVAILABLE")), response.status)
                     terminal = False
-                    async for line in response.content:
-                        if not line or not line.strip():
+                    while True:
+                        try:
+                            line = await response.content.readline()
+                        except (ValueError, aiohttp.http_exceptions.LineTooLong):
+                            # Parser exceptions may include a transcript prefix.
+                            # Expose only the framing error, never that content.
+                            raise AdapterError("AGENT_STREAM_TOO_LARGE", 502) from None
+                        if not line:
+                            break
+                        if len(line) > MAX_STREAM_EVENT_BYTES:
+                            raise AdapterError("AGENT_STREAM_TOO_LARGE", 502)
+                        if not line.strip():
                             continue
                         value = json.loads(line)
                         if not isinstance(value, dict) or value.get("type") not in STREAM_EVENT_TYPES:
