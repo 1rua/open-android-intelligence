@@ -15,9 +15,10 @@ def project_execution(rows: list[dict[str, Any]], generation_for_client: Callabl
     generation: str | None = None
     calls: dict[str, tuple[int, dict[str, Any]]] = {}
     for row in rows:
-        if row.get("role") == "user" and not row.get("_compressed_summary"):
+        if row.get("role") == "user":
             client = row.get("platform_message_id")
-            generation = generation_for_client(client) if isinstance(client, str) and client else None
+            generation = (generation_for_client(client)
+                          if not row.get("_compressed_summary") and isinstance(client, str) and client else None)
             calls = {}
         if generation is None or row.get("active", 1) in (0, False) and not row.get("compacted", 0):
             continue

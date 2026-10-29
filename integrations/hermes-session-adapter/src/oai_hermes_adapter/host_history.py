@@ -490,7 +490,7 @@ class HermesHistoryPort:
                     display_text = "" if owned_user else text
                     reply_parts = HistoryMedia(account).reply_parts(message_id) if role == "assistant" else []
                     if role == "assistant" and not text and not reply_parts:
-                        text = "" if execution.get(row["id"], {}).get("executionSteps") else _tool_activity(row)
+                        text = "" if row["id"] in execution else _tool_activity(row)
                         if not text and not execution.get(row["id"], {}).get("executionSteps"):
                             continue
                     item = {"messageId": message_id, "clientMessageId": client_id, "conversationId": conversation_id,

@@ -70,8 +70,10 @@ def test_history_port_and_session_adapter_deliver_structured_tool_facts(tmp_path
     rows = [{"id": 1, "role": "user", "platform_message_id": "client", "content": "prompt", "timestamp": 1},
             {"id": 2, "role": "assistant", "content": "", "timestamp": 2, "tool_calls": [
                 {"id": "native-call", "function": {"name": "read", "arguments": "{}"}}]},
-            {"id": 3, "role": "tool", "tool_call_id": "native-call", "content": "result", "timestamp": 3},
-            {"id": 4, "role": "assistant", "content": "final", "timestamp": 4}]
+            {"id": 3, "role": "assistant", "content": "", "timestamp": 3, "tool_calls": [
+                {"id": "native-call", "function": {"name": "read", "arguments": "{}"}}]},
+            {"id": 4, "role": "tool", "tool_call_id": "native-call", "content": "result", "timestamp": 4},
+            {"id": 5, "role": "assistant", "content": "final", "timestamp": 5}]
     metadata = {}
     database = SimpleNamespace(get_session=lambda session: {"id": session}, get_messages=lambda *args, **kw: rows,
         get_meta=metadata.get, set_meta=lambda key, value: metadata.update({key: value}),
@@ -83,6 +85,7 @@ def test_history_port_and_session_adapter_deliver_structured_tool_facts(tmp_path
     final = next(row for row in history if row["text"] == "final")
     assert tool["generationId"] == final["generationId"] == accepted["generationId"]
     assert tool["text"] == ""
+    assert not any(row["text"].startswith("调用工具：") for row in history)
     assert tool["executionSteps"][0]["stepId"] == "native-call"
     assert tool["executionSteps"][0]["output"] == "result"
     assert tool["executionSteps"][0]["status"] == "completed"
@@ -94,3 +97,13 @@ def test_malformed_native_tool_fields_do_not_break_history_page():
             {"id": 3, "role": "tool", "tool_call_id": ["not", "an", "id"], "content": "result"},
             {"id": 4, "role": "assistant", "tool_calls": [{"id": [], "function": {"name": "read", "arguments": "{}"}}]}]
     assert project_execution(rows, lambda client: "g") == {2: {"generationId": "g"}, 4: {"generationId": "g"}}
+
+
+def test_compression_summary_without_request_identity_closes_tool_attribution():
+    rows = [{"id": 1, "role": "user", "platform_message_id": "client"},
+            {"id": 2, "role": "assistant", "tool_calls": [{"id": "before", "function": {"name": "read", "arguments": "{}"}}]},
+            {"id": 3, "role": "user", "_compressed_summary": True, "content": "summary"},
+            {"id": 4, "role": "assistant", "tool_calls": [{"id": "after", "function": {"name": "read", "arguments": "{}"}}]}]
+    projected = project_execution(rows, lambda client: "g")
+    assert 2 in projected
+    assert 4 not in projected
