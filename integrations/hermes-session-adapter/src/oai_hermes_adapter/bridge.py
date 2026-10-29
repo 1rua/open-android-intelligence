@@ -47,7 +47,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
                                 and request.path.endswith("/generation"))
             if request.query_string and not (request.path == PREFIX + "/commands" or generation_query):
                 raise AdapterError("SCHEMA_INVALID", 400)
-            if generation_query and (set(request.query) - {"clientMessageId", "generationId"}
+            if generation_query and (set(request.query) - {"clientMessageId", "generationId", "afterRevision", "waitMs"}
                                      or any(len(request.query.getall(key)) != 1
                                             for key in request.query)):
                 raise AdapterError("SCHEMA_INVALID", 400)
@@ -114,9 +114,17 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             return web.json_response({"messages": await adapter.history(principal, session_id)})
         if request.method == "GET" and action == "generation":
             if request.query:
+                def integer(key, default):
+                    value = request.query.get(key)
+                    if value is None:
+                        return default
+                    if not value.isascii() or not value.isdecimal():
+                        raise AdapterError("SCHEMA_INVALID", 400)
+                    return int(value)
                 generation = await adapter.generation(
                     principal, session_id, client_message_id=request.query.get("clientMessageId"),
                     generation_id=request.query.get("generationId"),
+                    after_revision=integer("afterRevision", None), wait_ms=integer("waitMs", 0),
                 )
             else:
                 generation = await adapter.current_generation(principal, session_id)

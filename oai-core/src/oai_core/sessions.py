@@ -104,7 +104,8 @@ class SessionAdapter(Protocol):
     def send(self, principal: Principal, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]: ...
     async def current_generation(self, principal: Principal, session_id: str) -> dict[str, Any] | None: ...
     async def generation(self, principal: Principal, session_id: str, *, client_message_id: str | None = None,
-                         generation_id: str | None = None) -> dict[str, Any] | None: ...
+                         generation_id: str | None = None, after_revision: int | None = None,
+                         wait_ms: int = 0) -> dict[str, Any] | None: ...
     async def steer(self, principal: Principal, session_id: str, text: str, generation_id: str,
                     client_message_id: str | None = None) -> dict[str, Any]: ...
     async def manage(self, principal: Principal, session_id: str, action: str, value: Any = None) -> dict[str, Any]: ...
@@ -599,7 +600,7 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         principal = await principal_for(request)
         session_id = safe_session_id(request)
         query = request.query
-        if (set(query) - {"clientMessageId", "generationId"}
+        if (set(query) - {"clientMessageId", "generationId", "afterRevision", "waitMs"}
                 or any(len(query.getall(key)) != 1 for key in query)):
             raise AdapterError("INVALID_GENERATION_QUERY")
         client_message_id, generation_id = query.get("clientMessageId"), query.get("generationId")
@@ -607,14 +608,25 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                 or generation_id is not None and (not generation_id or len(generation_id) > 1024)):
             raise AdapterError("INVALID_GENERATION_QUERY")
         specific = client_message_id is not None or generation_id is not None
+        wait_options: dict[str, int] = {}
+        for key, option, maximum in (("afterRevision", "after_revision", 2**63 - 1), ("waitMs", "wait_ms", 25000)):
+            if key in query:
+                value = query[key]
+                if not specific or re.fullmatch(r"0|[1-9][0-9]{0,18}", value) is None or int(value) > maximum:
+                    raise AdapterError("INVALID_GENERATION_QUERY")
+                wait_options[option] = int(value)
+        if wait_options.get("wait_ms", 0) and "after_revision" not in wait_options:
+            raise AdapterError("INVALID_GENERATION_QUERY")
         # Durable receipts remain readable after the host stops accepting new
         # work. Authentication and the adapter's account/session checks still apply.
         adapter = registry.get(request.match_info["agent_id"], None if specific else "send")
         current = getattr(adapter, "generation" if specific else "current_generation", None)
         if not callable(current):
             raise AdapterError("UNSUPPORTED_CAPABILITY", 501)
-        generation = (await current(principal, session_id, client_message_id=client_message_id, generation_id=generation_id)
+        generation = (await current(principal, session_id, client_message_id=client_message_id, generation_id=generation_id, **wait_options)
                       if specific else await current(principal, session_id))
+        if specific and not await active(principal):
+            raise AdapterError("SESSION_REVOKED", 401)
         states = {"queued", "running", "unknown", "completed", "failed", "cancelled"} if specific else {"queued", "running", "unknown"}
         if generation is not None and (
             not isinstance(generation, dict)

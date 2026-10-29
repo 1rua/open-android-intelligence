@@ -46,7 +46,7 @@ def _deleted(row: Mapping[str, Any]) -> bool:
 
 def _wire(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     names = {"messageId", "clientMessageId", "conversationId", "sender", "text", "parts",
-             "timestamp", "state", "batchId", "anchorClientMessageId"}
+             "timestamp", "state", "batchId", "anchorClientMessageId", "generationId", "executionSteps"}
     result = {key: value for key, value in snapshot.items() if key in names}
     if isinstance(snapshot.get("revision"), int):
         result["contentRevision"] = snapshot["revision"]
@@ -309,6 +309,10 @@ class HermesHistoryPort:
             "timestamp": payload["timestamp"], "state": state}
         if payload.get("anchorClientMessageId"):
             snapshot["anchorClientMessageId"] = payload["anchorClientMessageId"]
+        if payload.get("generationId"):
+            snapshot["generationId"] = payload["generationId"]
+        if payload.get("executionSteps"):
+            snapshot["executionSteps"] = list(payload["executionSteps"])
         if state == "DELETED":
             snapshot.update(text="", parts=[])
         with self._migration_lock:

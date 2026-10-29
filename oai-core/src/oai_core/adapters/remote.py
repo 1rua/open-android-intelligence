@@ -192,11 +192,16 @@ class RemoteSessionAdapter:
         return generation
 
     async def generation(self, principal: Principal, session_id: str, *, client_message_id: str | None = None,
-                         generation_id: str | None = None) -> dict[str, Any] | None:
+                         generation_id: str | None = None, after_revision: int | None = None,
+                         wait_ms: int = 0) -> dict[str, Any] | None:
         query = {key: value for key, value in (("clientMessageId", client_message_id), ("generationId", generation_id))
                  if value is not None}
         if not query:
             raise AdapterError("INVALID_GENERATION_QUERY")
+        if after_revision is not None:
+            query["afterRevision"] = after_revision
+        if wait_ms:
+            query["waitMs"] = wait_ms
         result = await self._request(
             "GET", f"/sessions/{quote(session_id, safe='')}/generation?{urlencode(query)}",
             headers=self._headers(principal),

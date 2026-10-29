@@ -23,7 +23,8 @@ async def test_remote_generation_query_forwards_encoded_identity_and_account_wit
         adapter = HermesRemoteSessionAdapter(str(client.make_url("/")).rstrip("/"),
                                              "test-only-receipt-token-1234567890123456", {"core-alice": "native-alice"})
         result = await adapter.generation(Principal("core-alice"), "chat", client_message_id="cm_one",
-                                          generation_id="gen/one?x")
+                                          generation_id="gen/one?x", after_revision=2, wait_ms=20000)
         assert result == receipt
         assert requests == [("GET", "/oai/session-adapter/v1/sessions/chat/generation",
-                             {"clientMessageId": "cm_one", "generationId": "gen/one?x"}, "native-alice")]
+                             {"clientMessageId": "cm_one", "generationId": "gen/one?x", "afterRevision": "2", "waitMs": "20000"},
+                             "native-alice")]

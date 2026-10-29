@@ -1,5 +1,6 @@
 """Real Gateway account stores and wire events around native runtime seams."""
 import asyncio
+from contextlib import closing
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -214,8 +215,11 @@ async def test_completed_generation_remains_queryable_after_stream_and_runtime_c
     try:
         accepted = account.conversations.accept_message(
             conversation, "durable-client", "synthetic", [], "phone", "accept", "accept")
+        assert account.conversations.workflow.for_message(accepted["messageId"])["revision"] == 0
         account.conversations.workflow.claim(accepted["messageId"])
+        assert account.conversations.workflow.for_message(accepted["messageId"])["revision"] == 1
         account.conversations.workflow.settle(accepted["messageId"], "completed")
+        account.conversations.workflow.settle(accepted["messageId"], "running")
     finally:
         account.close()
 
@@ -223,9 +227,11 @@ async def test_completed_generation_remains_queryable_after_stream_and_runtime_c
     assert receipt == {
         "conversationId": conversation, "generationId": accepted["generationId"],
         "clientMessageId": "durable-client", "userMessageId": accepted["messageId"],
-        "state": "completed", "revision": 0,
+        "state": "completed", "revision": 2,
     }
     assert await adapter.generation(alice, conversation, generation_id=accepted["generationId"]) == receipt
+    assert await asyncio.wait_for(adapter.generation(
+        alice, conversation, generation_id=accepted["generationId"], after_revision=2, wait_ms=25000), .5) == receipt
     with pytest.raises(AdapterError) as mismatch:
         await adapter.generation(alice, conversation, generation_id=accepted["generationId"],
                                  client_message_id="different-client")
@@ -244,6 +250,52 @@ async def test_completed_generation_remains_queryable_after_stream_and_runtime_c
         for query in ("clientMessageId=", "accountId=bob", "clientMessageId=a&clientMessageId=b"):
             response = await client.get(path + "?" + query, headers=headers)
             assert response.status == 400
+
+
+@pytest.mark.asyncio
+async def test_generation_long_poll_wakes_on_committed_turn_event(core, monkeypatch):
+    adapter = HermesSessionAdapter(core)
+    principal = Principal("alice", device_id="phone")
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    with closing(core.open_gateway_account("alice")) as account:
+        accepted = account.conversations.accept_message(
+            conversation, "wait-client", "synthetic", [], "phone", "accept", "accept")
+    registered = asyncio.Event()
+    original_register = core.register_event_sink
+    def register(sink):
+        original_register(sink)
+        registered.set()
+    monkeypatch.setattr(core, "register_event_sink", register)
+    waiter = asyncio.create_task(adapter.generation(
+        principal, conversation, client_message_id="wait-client", after_revision=0, wait_ms=25000))
+    await asyncio.wait_for(registered.wait(), .5)
+    with closing(core.open_gateway_account("alice")) as account:
+        account.conversations.workflow.settle(accepted["messageId"], "failed")
+        account.events.append("conversation.message.status", "terminal-wake", {
+            "conversationId": conversation, "messageId": accepted["messageId"],
+            "clientMessageId": "wait-client", "status": "failed", "revision": 1,
+            "errorCode": "AGENT_UNAVAILABLE", "generationId": accepted["generationId"],
+        })
+    result = await asyncio.wait_for(waiter, .5)
+    assert result["state"] == "failed"
+    assert result["revision"] == 1
+    assert core._event_sinks == []
+
+
+@pytest.mark.asyncio
+async def test_history_preserves_authoritative_identity_revision_and_generation(core):
+    adapter = HermesSessionAdapter(core)
+    alice = Principal("alice")
+    conversation = (await adapter.list_sessions(alice))[0]["id"]
+    core.history_reader = lambda *_args: [{
+        "messageId": "native-assistant", "sender": "assistant", "text": "synthetic",
+        "timestamp": 1000, "generationId": "generation-native", "contentRevision": 7,
+        "state": "CONFIRMED", "anchorClientMessageId": "client-native", "parts": [],
+    }]
+    message = (await adapter.history(alice, conversation))[0]
+    assert message["generationId"] == "generation-native"
+    assert message["contentRevision"] == 7
+    assert message["state"] == "CONFIRMED"
 
 
 @pytest.mark.asyncio

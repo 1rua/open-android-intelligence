@@ -125,6 +125,18 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("deployment", result["agents"][0]["sessionScope"])
         self.assertFalse(result["agents"][2]["capabilities"]["send"])
 
+    async def test_generation_wait_rechecks_revocation_before_returning_host_receipt(self):
+        async def generation(principal, session_id, **kwargs):
+            self.active = False
+            return {"generationId": "gen_saved", "conversationId": session_id, "clientMessageId": "cm_saved",
+                    "revision": 2, "state": "completed"}
+        self.host.generation = generation
+        response = await self.client.get(BASE + "/codex/sessions/terminal-1/generation",
+                                         params={"clientMessageId": "cm_saved", "afterRevision": "1", "waitMs": "20000"},
+                                         headers=self.user())
+        self.assertEqual(401, response.status)
+        self.assertEqual({"error": {"code": "SESSION_REVOKED"}}, await response.json())
+
     async def test_stream_is_native_and_missing_completion_is_error(self):
         path = BASE + "/codex/sessions/terminal-1/messages"
         response = await self.client.post(path, json={"text": "hello"}, headers=self.user())

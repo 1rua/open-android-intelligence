@@ -42,6 +42,19 @@ class ConversationWorkflow:
         return json.loads(row[0]) if row else None
 
     def _put(self, key: str, value: Any) -> None:
+        if key.startswith("generation:"):
+            # Lifecycle readers reconcile an exact turn across connections.
+            # Its revision belongs to this record, not the independent delivery
+            # receipt. Keep compare/increment/write within the account lock.
+            with self.store.transaction():
+                previous = self._get(key)
+                semantic = {name: item for name, item in value.items() if name != "revision"}
+                if previous is not None and semantic == {
+                        name: item for name, item in previous.items() if name != "revision"}:
+                    return
+                value = {**semantic, "revision": int(previous.get("revision", 0)) + 1 if previous else 0}
+                self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)", (key, json.dumps(value, separators=(",", ":"))))
+            return
         self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)", (key, json.dumps(value, separators=(",", ":"))))
 
     def register(self, accepted: Mapping[str, Any], device_id: str, created_at: str) -> str:

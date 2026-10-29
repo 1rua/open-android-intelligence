@@ -131,6 +131,8 @@ class HermesSessionAdapter:
                     result.append({"id": row["messageId"], "role": row.get("sender", "assistant"),
                         "text": row.get("text", ""), "createdAt": row.get("createdAt", row.get("timestamp")),
                         "clientMessageId": client_id,
+                        **{field: row[field] for field in ("generationId", "contentRevision", "state", "executionSteps")
+                           if field in row},
                         "attachments": [dict(part) for part in row.get("parts", []) if part.get("type") == "attachment"]})
                 return result
         return await asyncio.to_thread(read)
@@ -154,6 +156,7 @@ class HermesSessionAdapter:
     async def generation(
         self, principal: Any, session_id: str, *,
         client_message_id: str | None = None, generation_id: str | None = None,
+        after_revision: int | None = None, wait_ms: int = 0,
     ) -> dict[str, Any]:
         """Read an accepted turn's durable outcome, including after host shutdown.
 
@@ -167,9 +170,12 @@ class HermesSessionAdapter:
                                        or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", value))
                 for value in identities):
             raise AdapterError("SCHEMA_INVALID", 400)
+        if (after_revision is not None and (type(after_revision) is not int or after_revision < 0)
+                or type(wait_ms) is not int or not 0 <= wait_ms <= 25000):
+            raise AdapterError("SCHEMA_INVALID", 400)
 
         def read() -> dict[str, Any]:
-            with self._account(principal) as account:
+            with self._account(principal) as account, account.store.transaction():
                 self._summary(account, session_id)
                 row = account.store.database.execute(
                     "SELECT message_id,client_message_id FROM messages "
@@ -190,17 +196,33 @@ class HermesSessionAdapter:
                     ).fetchone()
                 if row is None:
                     raise AdapterError("GENERATION_NOT_FOUND", 404)
-                dispatch = account.store.database.execute(
-                    "SELECT revision FROM conversation_message_dispatch WHERE message_id=?",
-                    (generation["messageIds"][0],),
-                ).fetchone()
                 return {
                     "conversationId": session_id, "generationId": generation["generationId"],
                     "clientMessageId": row["client_message_id"], "userMessageId": row["message_id"],
-                    "state": generation["state"], "revision": int(dispatch["revision"]) if dispatch else 0,
+                    "state": generation["state"], "revision": int(generation.get("revision", 0)),
                 }
 
-        return await asyncio.to_thread(read)
+        if after_revision is None or wait_ms == 0:
+            return await asyncio.to_thread(read)
+        loop, changed = asyncio.get_running_loop(), asyncio.Event()
+        def wake(account_id, event):
+            if account_id == principal.account_id and event.get("payload", {}).get("conversationId") == session_id:
+                loop.call_soon_threadsafe(changed.set)
+        self.core.register_event_sink(wake)
+        deadline = loop.time() + wait_ms / 1000
+        try:
+            while True:
+                changed.clear()
+                receipt = await asyncio.to_thread(read)
+                if (receipt["state"] in {"completed", "failed", "cancelled"}
+                        or receipt["revision"] > after_revision or loop.time() >= deadline):
+                    return receipt
+                try:
+                    await asyncio.wait_for(changed.wait(), deadline - loop.time())
+                except TimeoutError:
+                    return await asyncio.to_thread(read)
+        finally:
+            self.core.unregister_event_sink(wake)
 
     async def create(self, principal: Any, title: str | None) -> dict[str, Any]:
         if not self.descriptor()["capabilities"]["create"]:

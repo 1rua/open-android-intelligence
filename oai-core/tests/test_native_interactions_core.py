@@ -324,6 +324,34 @@ async def test_persisted_generation_query_survives_host_offline_capability_chang
 
 
 @pytest.mark.asyncio
+async def test_generation_query_passes_bounded_conditional_wait_without_starting_work(native_api):
+    client, host = native_api
+
+    async def generation(principal, session_id, **kwargs):
+        host.calls.append((principal.account_id, session_id, kwargs))
+        return {"generationId": "gen_wait", "conversationId": session_id, "clientMessageId": "cm_wait",
+                "state": "completed", "revision": 3}
+
+    host.generation = generation
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation",
+                                params={"clientMessageId": "cm_wait", "afterRevision": "2", "waitMs": "20000"})
+    assert response.status == 200, await response.text()
+    assert (await response.json())["generation"]["state"] == "completed"
+    assert host.calls == [("alice", "chat", {"client_message_id": "cm_wait", "generation_id": None,
+                                             "after_revision": 2, "wait_ms": 20000})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["waitMs=25001", "waitMs=-1", "waitMs=true", "afterRevision=-1",
+                                    "afterRevision=9223372036854775808", "waitMs=10", "afterRevision=1.5"])
+async def test_generation_query_bounds_long_poll_parameters(native_api, suffix):
+    client, host = native_api
+    response = await client.get(PREFIX + "/agents/interactive/sessions/chat/generation?clientMessageId=cm_wait&" + suffix)
+    assert response.status == 400, await response.text()
+    assert host.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("override", [
     {"conversationId": "other"}, {"generationId": "other"}, {"clientMessageId": "other"},
     {"state": "success"}, {"revision": -1}, {"revision": True},
