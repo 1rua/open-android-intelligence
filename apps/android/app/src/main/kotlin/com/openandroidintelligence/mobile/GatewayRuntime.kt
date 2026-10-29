@@ -1514,6 +1514,16 @@ class GatewayRuntime(
             }
             error("SNAPSHOT_STALE")
         }
+        // 每个会话连接保留固定的 Agent 存储；界面切换不能改变迟到 IO 的写入范围。
+        val nativeStores = java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.mobile.conversations.NativeConversationMirror>()
+        fun nativeStore(agent: com.openandroidintelligence.gateway.agents.CoreAgent) = nativeStores.computeIfAbsent(agent.id) {
+            com.openandroidintelligence.mobile.conversations.NativeConversationMirror(context, conversationScope,
+                currentAgentId = { agent.id }, keyProvider = localDocumentKeyProvider,
+                observerId = "${session.deviceId}:${session.pairingGeneration}")
+        }
+        ownedJob.invokeOnCompletion {
+            nativeStores.values.forEach { store -> runCatching { store.close() } }
+        }
         val coreAgentRepo = if (nativeAgentSessions) {
             com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
                 client = com.openandroidintelligence.gateway.agents.AgentSessionClient(http),
@@ -1525,6 +1535,7 @@ class GatewayRuntime(
                 approvalAudit = decisionAudit,
                 organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                     context, conversationScope, localDocumentKeyProvider),
+                storeForAgent = ::nativeStore,
             )
         } else null
         val activeRepo: ConversationRepository = coreAgentRepo ?: mirroredRepository
@@ -1537,7 +1548,10 @@ class GatewayRuntime(
                 )
             } else catalogRepository
 
+        var workbenchAgentId: String? = null
         fun buildWorkbenchController(currentAgentName: String? = null): WorkbenchController {
+            val ownerAgentId = _nativeAgents.value?.state?.value?.agent?.id
+            workbenchAgentId = ownerAgentId
             return WorkbenchController(
                 scope = sessionScope,
                 repository = activeRepo,
@@ -1567,12 +1581,10 @@ class GatewayRuntime(
                 onActiveThreadChanged = { threadId -> activeThread.set(threadId); repository.activeConversationChanged(); coreAgentRepo?.activeConversationChanged() },
                 streamHealthSource = (activeRepo as? com.openandroidintelligence.conversation.model.StreamHealthSource) ?: workbenchRepository,
                 persistence = if (nativeAgentSessions) {
-                    com.openandroidintelligence.mobile.conversations.NativeConversationMirror(
-                        context,
-                        conversationScope,
-                        currentAgentId = { _nativeAgents.value?.state?.value?.agent?.id },
-                        keyProvider = localDocumentKeyProvider,
-                    )
+                    ownerAgentId?.let { agentId ->
+                        com.openandroidintelligence.mobile.conversations.NativeConversationMirror(
+                            context, conversationScope, currentAgentId = { agentId }, keyProvider = localDocumentKeyProvider)
+                    }
                 } else mirror,
                 media = mediaCache,
                 downloads = downloads,
@@ -1622,10 +1634,10 @@ class GatewayRuntime(
                         val capabilitiesChanged = capabilityState?.conversationDeleteSupported != (newAgent?.capabilities?.delete == true) ||
                             capabilityState?.conversationArchiveSupported != (newAgent?.capabilities?.archive == true) ||
                             capabilityState?.conversationRenameSupported != (newAgent?.capabilities?.rename == true)
-                        if (!isFirstObservation || capabilitiesChanged) {
-                            // Recreate workbench controller cleanly on agent switch
-                            _controller.value?.close()
-                            _controller.value = buildWorkbenchController(newAgentName)
+                        if (!isFirstObservation || capabilitiesChanged || workbenchAgentId != selected) {
+                            // 等待旧分区 IO 收尾后，才创建固定绑定新 Agent 的工作台。
+                            _controller.value?.closeAndAwait()
+                            _controller.value = withContext(Dispatchers.IO) { buildWorkbenchController(newAgentName) }
                         } else {
                             // Initial requests may have run before Agent discovery completed.
                             // Agent discovery now supplies the subscription identity.
