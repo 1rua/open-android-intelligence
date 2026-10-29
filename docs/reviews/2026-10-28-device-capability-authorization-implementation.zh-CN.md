@@ -1,6 +1,6 @@
 # Android 唯一设备能力授权：分支实施记录
 
-开始日期：2026-10-28；最新验证：2026-10-29，基于 `dev@4a5fd397c5612fe8b3024c9b3b2754e217c68ccd`。状态：**已在 `feature/android-device-authority-20261028` 分支实施，PR 准备中；真机验收待完成**。
+开始日期：2026-10-28；最新验证：2026-10-29，基于 `dev@4a5fd397c5612fe8b3024c9b3b2754e217c68ccd`。状态：**本地 feature 分支和提交已完成，真机验收待完成；远端推送被自动审批拒绝，PR 尚未建立**。
 
 本记录描述本 feature 分支的源码实现与当前验证，不表示 PR 已合并、正式发布或真实设备验收已通过。历史只读排查仍固定在 `dev@e5c7f42a59262f404888858045aa975830dafb61`，见[只读修复计划](2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)和[Core 基线证据](2026-10-28-device-capability-authorization-core-evidence.zh-CN.md)。二者中的代码事实、当时测试结果和原 32 份 Markdown 清单属于 e5 阶段记录；本报告不回写为 e5 已实现。
 
@@ -88,6 +88,7 @@ HTTP 设备请求在每次真正发送前重新检查授权，包括收到 401 �
 | 其他 Android 模块 | `control-ports` 14、`capability-ports` 51、`screen-control` 21、`device-primitives` 22、`conversation-domain` 32、`conversation-ui` 638 项通过 | 按各模块 JUnit 报告计数 |
 | Android App 完整单测 | `app:testFullDebugUnitTest` 汇总 1105 项，0 failures/errors/skips；PR 级任务成功 | 覆盖旧记录复核、插件关闭/同作者更新、后台隔离、系统权限拒绝、真实 Core HTTP、丢 Claim/Result 回复及登出/刷新竞态 |
 | Fast 首轮报告 | `npm run test:fast` 的 Gradle App 测试阶段曾出现多个 `Could not write XML test results` 报告错误并返回失败；其中对应 App JUnit XML 为 1105 项、0 failures/errors | Fast 结果仍按失败记录，不改报为通过。随后 `npm run test:pr` 对最新基线重新执行完整 Android 任务并成功 |
+| 远端推送与 PR | 尚未完成 | 自动审批审查拒绝了向 `origin` 推送 feature 分支；原因是判定这会向尚未验证可信的外部目标导出整个分支，并认为没有充分 push 授权。没有通过其他途径创建 PR，也没有启动 GitHub Actions。当前功能分支提交仍保存在本地 worktree。 |
 | 真实手机与混合版本部署 | 尚未验收 | 未在真实设备申请/撤销系统权限、通知范围、屏幕许可，也未做真实 Gateway 升级或生产回滚 |
 
-设备授权的实现与最终本地验证已完成；部署升级、真机验收和 GitHub Actions 后续状态尚未完成。交付仍是未合入 `dev` 的 PR，请 Review 后再安排生产迁移和设备验收。
+设备授权的实现与最终本地验证已完成；部署升级、真机验收和 GitHub Actions 后续状态尚未完成。当前交付是本地提交的 feature 分支，没有对应的远端 PR，也未部署；生产迁移与真实设备验收仍待后续完成。推送阻塞需另行取得允许远端写入的批准。
