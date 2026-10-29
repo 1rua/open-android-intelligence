@@ -63,3 +63,13 @@
 注入 `fail_next_commit` 的回归先失败，修复后确认：没有未提交的通知被交付，已存工具步骤仍引用真实原生来源，后续原生结果可以通过历史补偿为完成且不会执行工具。此处没有声明跨两个数据库的原子事务。
 
 重新接续后再次运行固定 SDK 八文件回归：**88 项通过、0 失败、0 跳过**，耗时 33.28 秒；`git diff --check` 通过。覆盖两个清理隔离场景及跨库提交失败注入，日志保存在仓库忽略的 `.toolchains/pr64-final-tools-storage.log`。
+
+## 服务端受理与宿主开始处理的明确区分
+
+新增真实 EventStore 回归将宿主分派挂起，验证初始 generation 帧只表达服务端已可靠受理的 queued 状态。旧实现首帧只有 generation ID、没有 state/revision，专项先得到 `1 failed`（缺少 `state`），因此 Android 不能用该帧证明 Agent 已开始处理。
+
+初始帧现在从受理事务内的持久 generation 记录附带 `state` 和生命周期 `revision`；后台 Task 的创建不是 running 证据。只有消费到精确匹配当前受理 userMessageId/clientMessageId 的 delivered 持久回执后，再读取同一 generation 的权威状态并发送 running 与生命周期修订。其他消息的 delivered 不会推进本轮；如果读取时该 generation 已终结，则抑制迟到的 running，保留原有 done 顺序。正文 contentRevision、工具 executionRevision 与生命周期 revision 仍是三个独立域。
+
+精准回归同时验证 queued → 原生 delivered → running，以及其他消息的 delivered 和终态后重放的旧 delivered 均不能错误推进本轮。修复后该专项通过；完整固定 SDK 回归结果补记如下。
+
+固定 SDK 八文件回归最终为 **89 项通过、0 失败、0 跳过**。新增 running 帧使一处原生取消测试的“下一帧必为 done”假定失效，已改为只允许同 generation 的控制帧并明确等待 done/error，原有 cancelled done 断言保留。`git diff --check` 通过；本轮完整日志位于仓库忽略的 `.toolchains/pr64-admission-regression-final.log`。

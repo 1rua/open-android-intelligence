@@ -445,11 +445,18 @@ async def scenario():
         pending = adapter.send(alice, a["id"], "block until cancelled")
         generation = await anext(pending)
         assert generation["type"] == "generation"
-        first = asyncio.create_task(anext(pending))
+        async def next_terminal():
+            while True:
+                event = await anext(pending)
+                if event["type"] in {"done", "error"}:
+                    return event
+                assert event["type"] == "generation" and event["generationId"] == generation["generationId"], event
+        first = asyncio.create_task(next_terminal())
         await asyncio.wait_for(entered.wait(), 5)
         cancelled = await adapter.manage(alice, a["id"], "cancel", {"generationId": generation["generationId"]})
         assert cancelled["outcome"] == "cancelled", cancelled
-        assert (await asyncio.wait_for(first, 5))["outcome"] == "cancelled"
+        terminal = await asyncio.wait_for(first, 5)
+        assert terminal["type"] == "done" and terminal["outcome"] == "cancelled", terminal
         await pending.aclose()
         # Cancelling a waiting approval must invalidate the native task before
         # denying the wait, so it cannot resume another model/tool step.

@@ -170,6 +170,72 @@ async def test_core_and_real_hermes_http_bridge_share_the_bounded_message_budget
 
 
 @pytest.mark.asyncio
+async def test_generation_frame_distinguishes_server_acceptance_from_native_admission(core):
+    """A saved queued request is not proof the native handler has started."""
+    principal = Principal("alice", device_id="phone")
+    admitted, finished = asyncio.Event(), asyncio.Event()
+
+    class Runtime:
+        _loop = asyncio.get_running_loop()
+        _session_store = object()
+        _message_handler = staticmethod(lambda: None)
+        services = SimpleNamespace(core=core)
+
+        def _track_background_task(self, task, label):
+            self.task = task
+
+        async def _notify_agent_inbound(self, path, body, response, owner):
+            await admitted.wait()
+            accepted = response["data"]
+            with closing(core.open_gateway_account(owner)) as account:
+                # Another message's delivery receipt must not advance this turn.
+                account.events.append("conversation.message.status", "other-client", {
+                    "conversationId": accepted["conversationId"], "messageId": "other-user",
+                    "clientMessageId": "other-client", "status": "delivered", "revision": 99,
+                    "errorCode": None})
+                claim = account.conversations.claim_dispatch("admission-client")
+                account.conversations.update_dispatch_status(accepted["messageId"], "delivered", None,
+                    "admission-client", claim_token=claim["claimToken"])
+                self.running = account.conversations.workflow.for_message(accepted["messageId"])
+                self.delivered_event = account.events.read_after(None)[-1]["eventId"]
+            await finished.wait()
+            with closing(core.open_gateway_account(owner)) as account:
+                account.conversations.workflow.settle(accepted["messageId"], "completed")
+                # A replayed old delivered receipt cannot reopen a terminal turn.
+                account.events.append("conversation.message.status", "late-delivery", {
+                    "conversationId": accepted["conversationId"], "messageId": accepted["messageId"],
+                    "clientMessageId": "admission-client", "status": "delivered", "revision": 1,
+                    "errorCode": None})
+
+    runtime = Runtime()
+    adapter = HermesSessionAdapter(core, runtime)
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    stream = adapter.send(principal, conversation, "synthetic prompt", client_message_id="admission-client")
+    try:
+        queued = await anext(stream)
+        with closing(core.open_gateway_account("alice")) as account:
+            accepted = account.conversations.workflow.for_message(queued["userMessageId"])
+        assert queued["state"] == accepted["state"] == "queued"
+        assert queued["revision"] == accepted["revision"]
+        admitted.set()
+        running = await asyncio.wait_for(anext(stream), timeout=2)
+        assert running == {"type": "generation", "generationId": queued["generationId"],
+            "clientMessageId": "admission-client", "userMessageId": queued["userMessageId"],
+            "state": "running", "revision": runtime.running["revision"], "eventId": runtime.delivered_event}
+        assert running["revision"] > queued["revision"]
+        finished.set()
+        rest = [event async for event in stream]
+        assert not any(event.get("state") == "running" for event in rest)
+        assert rest[-1]["type"] == "done" and rest[-1]["outcome"] == "completed"
+    finally:
+        admitted.set()
+        finished.set()
+        await stream.aclose()
+        if hasattr(runtime, "task"):
+            await asyncio.gather(runtime.task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_real_event_store_frames_stream_accumulated_native_text_and_do_not_leak_accounts(core):
     adapter = HermesSessionAdapter(core)
     conversation = (await adapter.list_sessions(Principal("alice")))[0]["id"]

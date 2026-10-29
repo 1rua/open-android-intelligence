@@ -313,8 +313,13 @@ class HermesSessionAdapter:
                         account.store.database.execute("UPDATE account_metadata SET value=? WHERE key=?", (json.dumps(origin), key))
                 cursor = account.store.database.execute(
                     "SELECT event_id FROM events ORDER BY sequence DESC LIMIT 1").fetchone()
-                return accepted, cursor[0] if cursor else None
-        accepted, cursor = await asyncio.to_thread(accept)
+                generation = account.conversations.workflow.for_message(accepted["messageId"])
+                if generation is None or generation["generationId"] != accepted.get("generationId"):
+                    raise AdapterError("HOST_INCOMPATIBLE", 502)
+                return accepted, cursor[0] if cursor else None, {
+                    "state": generation["state"], "revision": int(generation.get("revision", 0)),
+                }
+        accepted, cursor, initial_generation = await asyncio.to_thread(accept)
         generation_id = accepted.get("generationId")
         changed = asyncio.Event()
         from .tool_events import NOTICE_CODE
@@ -350,6 +355,13 @@ class HermesSessionAdapter:
         assistant_revision = None
         assistant_event_id = None
         identity = {"clientMessageId": client_id, "userMessageId": accepted["messageId"]}
+        lifecycle_revision = initial_generation["revision"]
+        def read_generation():
+            with self._account(principal) as account, account.store.transaction():
+                generation = account.conversations.workflow.for_message(accepted["messageId"])
+                if generation is None or generation["generationId"] != generation_id:
+                    raise AdapterError("HOST_INCOMPATIBLE", 502)
+                return generation
         def message_identity():
             return {
                 **({"messageId": assistant_message_id} if assistant_message_id else {}),
@@ -367,7 +379,7 @@ class HermesSessionAdapter:
             return ({"type": "generation", "generationId": generation_id, **identity,
                      "eventId": event_id, **snapshot} if snapshot is not None else None)
         try:
-            yield {"type": "generation", "generationId": generation_id, **identity}
+            yield {"type": "generation", "generationId": generation_id, **identity, **initial_generation}
             async with asyncio.timeout(1800):
                 while True:
                     if not pending_events:
@@ -411,6 +423,21 @@ class HermesSessionAdapter:
                     event = pending_events.popleft()
                     cursor = event["eventId"]
                     if not belongs(event):
+                        continue
+                    if event.get("eventType") == "conversation.message.status":
+                        payload = event["payload"]
+                        if (payload.get("status") == "delivered" and payload.get("messageId") == accepted["messageId"]
+                                and payload.get("clientMessageId") == client_id):
+                            generation = await asyncio.to_thread(read_generation)
+                            # A real native delivery receipt, rather than the
+                            # existence of a background Task, proves admission.
+                            # Suppress an old delivery event if it was replayed
+                            # after this generation already reached a terminal.
+                            revision = int(generation.get("revision", 0))
+                            if generation["state"] == "running" and revision > lifecycle_revision:
+                                lifecycle_revision = revision
+                                yield {"type": "generation", "generationId": generation_id, **identity,
+                                       "state": "running", "revision": revision, "eventId": event["eventId"]}
                         continue
                     if is_execution_notice(event):
                         frame = await execution_frame(event["eventId"])
