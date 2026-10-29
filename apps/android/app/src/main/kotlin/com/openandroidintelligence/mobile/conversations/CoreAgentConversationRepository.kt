@@ -545,6 +545,7 @@ class CoreAgentConversationRepository(
             var recoverAfterTurn = false
             var nativeRevision: Long? = null
             var nativeEventId: String? = null
+            var nativeExecutionRevision = -1L
             val text = StringBuilder()
             // Coalesce complete message snapshots, never raw deltas. UI backpressure
             // can delay this publisher but cannot suspend the HTTP/SSE reader.
@@ -554,7 +555,11 @@ class CoreAgentConversationRepository(
             val publisher = launch {
                 val delivered = mutableMapOf<String, String>()
                 for (snapshot in snapshots) for (event in snapshot) {
-                    val id = if (event is VerifiedConversationEvent.TimelineUpsert) "message:${event.message.id}" else event.eventId
+                    val id = when (event) {
+                        is VerifiedConversationEvent.TimelineUpsert -> "message:${event.message.id}"
+                        is VerifiedConversationEvent.ExecutionStepsUpdated -> "execution:${event.generationId}"
+                        else -> event.eventId
+                    }
                     if (delivered[id] != event.eventId) {
                         emitEvent(agent.id, event)
                         delivered[id] = event.eventId
@@ -634,10 +639,26 @@ class CoreAgentConversationRepository(
                         }
                         is NativeAgentStreamEvent.Generation -> {
                             rememberGeneration(turn, event.generationId)
-                            turn.state = GenerationState.RUNNING
-                            if (isSelected(turn)) {
-                                _generationId.value = event.generationId
-                                _generationState.value = GenerationState.RUNNING
+                            if (!turn.cancelled && turn.state !in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)) {
+                                turn.state = GenerationState.RUNNING
+                                if (isSelected(turn)) {
+                                    _generationId.value = event.generationId
+                                    _generationState.value = GenerationState.RUNNING
+                                }
+                            }
+                            val executionRevision = event.executionRevision
+                            val executionSteps = event.executionSteps
+                            if (executionSteps != null && executionRevision != null && executionRevision > nativeExecutionRevision) {
+                                nativeExecutionRevision = executionRevision
+                                enqueue("execution:${event.generationId}", VerifiedConversationEvent.ExecutionStepsUpdated(
+                                    requireNotNull(event.eventId), System.currentTimeMillis(), ConversationId(conversationId),
+                                    event.generationId, executionRevision, executionSteps.map { step ->
+                                        com.openandroidintelligence.conversation.model.NativeExecutionStep(
+                                            step.stepId, step.eventId, step.toolName, step.arguments, step.output,
+                                            runCatching { com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(step.status.uppercase()) }
+                                                .getOrDefault(com.openandroidintelligence.conversation.model.NativeExecutionStatus.UNKNOWN),
+                                            step.revision)
+                                    }, event.clientMessageId, event.userMessageId))
                             }
                         }
                         is NativeAgentStreamEvent.ApprovalRequested -> emitApproval(turn, event.approval, true) { enqueue(it.eventId, it) }
@@ -694,7 +715,10 @@ class CoreAgentConversationRepository(
                 GatewayLog.w("OaiLatency", "turn.failed client=${message.clientMessageId.value} " +
                     "type=${failure.javaClass.simpleName} code=${(failure as? AgentSessionException)?.code}")
                 if (turn.cancelled) { publish("CANCELLED"); flush(); cancelled() }
-                else if (failure is AgentSessionException && failure.code == "OUTCOME_UNKNOWN") {
+                else if (failure is AgentSessionException && failure.code in setOf(
+                        "OUTCOME_UNKNOWN", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "STREAM_INTERRUPTED",
+                        "AGENT_UNAVAILABLE", "AGENT_STREAM_TOO_LARGE", "AGENT_STREAM_INVALID", "INVALID_AGENT_EVENT",
+                    )) {
                     queueUnknownBarriers.add(key)
                     turn.state = GenerationState.OUTCOME_UNKNOWN
                     recoverAfterTurn = true

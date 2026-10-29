@@ -45,7 +45,10 @@ data class NativeCurrentGeneration(val generationId: String, val conversationId:
 data class NativeGenerationReceipt(val generationId: String, val conversationId: String,
     val clientMessageId: String, val userMessageId: String, val state: String, val revision: Long)
 sealed interface NativeAgentStreamEvent {
-    data class Generation(val generationId: String) : NativeAgentStreamEvent
+    data class Generation(val generationId: String,
+        val executionSteps: List<NativeAgentExecutionStep>? = null,
+        val executionRevision: Long? = null, val eventId: String? = null,
+        val clientMessageId: String? = null, val userMessageId: String? = null) : NativeAgentStreamEvent
     data class ApprovalRequested(val approval: JsonValue.JObject) : NativeAgentStreamEvent
     data class ApprovalResolved(val approval: JsonValue.JObject) : NativeAgentStreamEvent
     data class MessageIdentity(val messageId: String?, val userMessageId: String?, val clientMessageId: String?,
@@ -160,7 +163,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             waitMs in 0..25000 && (waitMs == 0 || afterRevision != null))
         val query = buildList {
             add("clientMessageId=${segment(clientMessageId)}")
-            generationId?.let { add("generationId=${segment(it)}") }
+            generationId?.let { add("generationId=${queryValue(it)}") }
             afterRevision?.let { add("afterRevision=$it") }
             if (waitMs > 0) add("waitMs=$waitMs")
         }.sorted().joinToString("&")
@@ -228,6 +231,9 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         if (clientMessageId != null) payload["clientMessageId"] = clientMessageId
         val request = jsonRequest("POST", sessionTarget(agent, sessionId) + "/messages", payload)
             .copy(headers = listOf(RawHeader("Content-Type", "application/json"), RawHeader("Accept", "text/event-stream")))
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T1.request_started", mapOf(
+            "agentId" to agent.id, "conversationId" to sessionId, "clientMessageId" to clientMessageId,
+            "monotonicNs" to System.nanoTime()))
         return try {
             http.consumeResponse(request) { status, headers, stream ->
                 if (status !in 200..299) {
@@ -245,6 +251,11 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                 var outcome = "completed"
                 var finalText: String? = null
                 var identity = NativeAgentStreamEvent.MessageIdentity(null, null, null)
+                val contentRevisions = mutableMapOf<String, Long>()
+                val contentEventIds = LinkedHashSet<String>()
+                val versionlessEventIds = LinkedHashSet<String>()
+                var executionRevision = -1L
+                var firstDeltaObserved = false
                 while (!done) {
                     currentCoroutineContext().ensureActive()
                     val read = stream.read(buffer)
@@ -252,28 +263,81 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                     for (event in parser.feedBytes(buffer.copyOf(read))) {
                         if (event.event != "message") continue
                         val value = JsonFields.obj(Json.parse(event.data)) ?: error("AGENT_STREAM_INVALID")
+                        val type = JsonFields.string(value, "type") ?: throw AgentSessionException("AGENT_STREAM_INVALID")
+                        val frameClient = JsonFields.string(value, "clientMessageId")
+                        if (frameClient != null && clientMessageId != null && frameClient != clientMessageId)
+                            throw AgentSessionException("AGENT_STREAM_INVALID")
+                        val frameGeneration = JsonFields.string(value, "generationId")
+                        if (frameGeneration != null && generationId != null && frameGeneration != generationId)
+                            throw AgentSessionException("AGENT_STREAM_INVALID")
+                        val frameMessage = JsonFields.string(value, "messageId") ?: identity.messageId
+                        val frameRevision = JsonFields.long(value, "contentRevision")
+                        if (frameRevision != null && frameRevision < 0) throw AgentSessionException("AGENT_STREAM_INVALID")
+                        val frameEventId = JsonFields.string(value, "eventId")
+                        // Only delta payloads are duplicate append operations. A done frame may
+                        // legally reuse the final message event ID and must still settle the turn.
+                        if (type == "delta") {
+                            if (frameEventId != null && (frameEventId in contentEventIds || frameEventId in versionlessEventIds)) continue
+                            if (frameMessage != null && frameRevision != null &&
+                                frameRevision <= (contentRevisions[frameMessage] ?: -1L)) continue
+                        }
+                        val staleDoneContent = type == "done" && frameMessage != null && frameRevision != null &&
+                            frameRevision < (contentRevisions[frameMessage] ?: -1L)
+                        val contentFrame = (type == "delta" || type == "done") && !staleDoneContent
                         val nextIdentity = NativeAgentStreamEvent.MessageIdentity(
-                            JsonFields.string(value, "messageId") ?: identity.messageId,
+                            if (contentFrame) frameMessage else identity.messageId,
                             JsonFields.string(value, "userMessageId") ?: identity.userMessageId,
-                            JsonFields.string(value, "clientMessageId") ?: identity.clientMessageId,
-                            JsonFields.long(value, "contentRevision"), JsonFields.string(value, "eventId"))
+                            frameClient ?: identity.clientMessageId,
+                            if (contentFrame) frameRevision else identity.contentRevision,
+                            if (contentFrame) frameEventId else identity.eventId)
                         if (nextIdentity != identity) {
                             identity = nextIdentity
-                            if (identity.clientMessageId != null && clientMessageId != null && identity.clientMessageId != clientMessageId)
-                                throw AgentSessionException("AGENT_STREAM_INVALID")
                             onEvent(identity)
                         }
-                        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T6.sse_read", mapOf(
-                            "clientMessageId" to clientMessageId, "generationId" to JsonFields.string(value, "generationId"),
-                            "eventId" to JsonFields.string(value, "eventId"), "eventType" to JsonFields.string(value, "type"),
-                            "contentRevision" to JsonFields.long(value, "contentRevision")))
+                        if (type != "delta" || !firstDeltaObserved) {
+                            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T6.sse_read", mapOf(
+                                "clientMessageId" to clientMessageId, "generationId" to frameGeneration,
+                                "eventId" to frameEventId, "eventType" to type, "contentRevision" to frameRevision))
+                        }
+                        if (type == "delta") {
+                            firstDeltaObserved = true
+                            if (frameMessage != null && frameRevision != null) contentRevisions[frameMessage] = frameRevision
+                            if (frameEventId != null) {
+                                if (frameRevision == null) {
+                                    // Without versions, evicting an ID could append a replay twice.
+                                    // Stop observation and reconcile instead of silently weakening identity.
+                                    if (versionlessEventIds.size >= MAX_REMEMBERED_CONTENT_EVENTS)
+                                        throw AgentSessionException("OUTCOME_UNKNOWN")
+                                    versionlessEventIds += frameEventId
+                                } else {
+                                    contentEventIds += frameEventId
+                                    // Revision barriers keep older versions rejected after event-ID eviction.
+                                    if (contentEventIds.size > MAX_REMEMBERED_CONTENT_EVENTS) contentEventIds.remove(contentEventIds.first())
+                                }
+                            }
+                        }
                         when (JsonFields.string(value, "type")) {
                             "delta" -> onDelta(JsonFields.string(value, "text") ?: error("AGENT_STREAM_INVALID"))
                             "generation" -> {
                                 val id = required(value, "generationId")
                                 if (generationId != null && generationId != id) throw AgentSessionException("AGENT_STREAM_INVALID")
                                 generationId = id
-                                onEvent(NativeAgentStreamEvent.Generation(id))
+                                val stepField = JsonFields.field(value, "executionSteps")
+                                val steps = if (stepField == null) null else {
+                                    if (stepField !is JsonValue.JArray) throw AgentSessionException("AGENT_STREAM_INVALID")
+                                    stepField.items.map { item ->
+                                        decodeExecutionStep(JsonFields.obj(item) ?: throw AgentSessionException("AGENT_STREAM_INVALID"))
+                                    }
+                                }
+                                val nextRevision = JsonFields.long(value, "executionRevision")
+                                if (steps != null) {
+                                    if (nextRevision == null || nextRevision < 0 || frameEventId.isNullOrBlank())
+                                        throw AgentSessionException("AGENT_STREAM_INVALID")
+                                    if (nextRevision <= executionRevision) continue
+                                    executionRevision = nextRevision
+                                }
+                                onEvent(NativeAgentStreamEvent.Generation(id, steps, nextRevision, frameEventId,
+                                    frameClient ?: identity.clientMessageId, identity.userMessageId))
                             }
                             "approval_requested", "approval_resolved" -> {
                                 val approval = JsonFields.obj(JsonFields.field(value, "approval")) ?: error("AGENT_STREAM_INVALID")
@@ -281,7 +345,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                                     NativeAgentStreamEvent.ApprovalRequested(approval) else NativeAgentStreamEvent.ApprovalResolved(approval))
                             }
                             "done" -> {
-                                finalText = JsonFields.string(value, "text")
+                                finalText = JsonFields.string(value, "text").takeUnless { staleDoneContent }
                                 val returnedId = JsonFields.string(value, "generationId")
                                 if (returnedId != null && generationId != null && returnedId != generationId)
                                     throw AgentSessionException("AGENT_STREAM_INVALID")
@@ -304,6 +368,15 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             // Preserve the draft and partial output; never resend it here.
             throw AgentSessionException("OUTCOME_UNKNOWN")
         }
+    }
+
+    private fun decodeExecutionStep(step: JsonValue.JObject): NativeAgentExecutionStep {
+        val revision = JsonFields.long(step, "revision") ?: throw AgentSessionException("AGENT_STREAM_INVALID")
+        if (revision < 0) throw AgentSessionException("AGENT_STREAM_INVALID")
+        return NativeAgentExecutionStep(required(step, "stepId"), required(step, "eventId"), required(step, "toolName"),
+            JsonFields.string(step, "arguments").orEmpty(), JsonFields.string(step, "output"),
+            JsonFields.string(step, "status")?.takeIf { it in setOf("running", "completed", "failed", "unknown") } ?: "unknown",
+            revision)
     }
 
     private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null, requestId: String? = null): JsonValue.JObject {
@@ -359,10 +432,15 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
     companion object {
         const val ROOT = "/open-android-intelligence/v2/agents"
         private const val MAX_ERROR_BODY_BYTES = 8 * 1024
+        private const val MAX_REMEMBERED_CONTENT_EVENTS = 4096
         internal fun segment(value: String): String {
             require(value.isNotBlank() && value !in setOf(".", "..") && value.none { it == '/' || it == '\\' }) {
                 "AGENT_IDENTIFIER_INVALID"
             }
+            return queryValue(value)
+        }
+        private fun queryValue(value: String): String {
+            require(value.isNotBlank()) { "AGENT_IDENTIFIER_INVALID" }
             return value.toByteArray(Charsets.UTF_8).joinToString("") { byte ->
                 val number = byte.toInt() and 255
                 val char = number.toChar()

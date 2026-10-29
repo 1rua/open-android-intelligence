@@ -52,6 +52,74 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoreAgentConversationRepositoryTest {
 
+    @Test fun observationErrorsRecoverTheOriginalIdentityWithoutMarkingExecutionFailed() = runTest {
+        for (code in listOf("AGENT_STREAM_TOO_LARGE", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "AGENT_UNAVAILABLE")) {
+            val requests = mutableListOf<WireRequest>()
+            val stream = listOf(
+                """{"type":"generation","generationId":"gen_error","clientMessageId":"cm_error","userMessageId":"user_error"}""",
+                """{"type":"delta","messageId":"answer_error","eventId":"text_1","contentRevision":1,"text":"partial"}""",
+                """{"type":"error","code":"$code"}""",
+            ).joinToString("") { "event: message\ndata: $it\n\n" }
+            val transport = object : GatewayByteTransport {
+                override suspend fun execute(request: WireRequest): WireResponse {
+                    requests += request
+                    val body = when {
+                        request.method == "POST" -> stream
+                        request.target.contains("/generation?") -> """{"generation":{"generationId":"gen_error","conversationId":"s_1","clientMessageId":"cm_error","userMessageId":"user_error","state":"completed","revision":7}}"""
+                        request.target.endsWith("/history") -> """{"messages":[{"id":"user_error","role":"user","text":"prompt","clientMessageId":"cm_error"},{"id":"answer_error","role":"assistant","text":"complete","clientMessageId":"cm_error","generationId":"gen_error","contentRevision":7}]}"""
+                        else -> error("Unexpected recovery read")
+                    }
+                    return WireResponse(200, listOf(RawHeader("Content-Type", if (request.method == "POST") "text/event-stream" else "application/json")), body.toByteArray())
+                }
+                override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            }
+            val agent = sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(generationRecovery = true))
+            val repo = CoreAgentConversationRepository(client(transport), { agent }, { "s_1" }, backgroundScope, StandardTestDispatcher(testScheduler))
+            val events = mutableListOf<VerifiedConversationEvent>()
+            val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+                repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+            }
+            repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_error"), "prompt"))
+            runCurrent()
+            assertEquals("$code is an observation failure, so query the accepted turn", 1, requests.count { it.target.contains("/generation?") })
+            assertEquals(1, requests.count { it.method == "POST" })
+            assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+            assertTrue(events.filterIsInstance<VerifiedConversationEvent.MessageStatus>().none {
+                it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED
+            })
+            collector.cancel()
+        }
+    }
+
+    @Test fun nativeExecutionSnapshotsUseIndependentEventsAndNeverInventAssistantRows() = runTest {
+        val stream = listOf(
+            """{"type":"generation","generationId":"gen_tools","clientMessageId":"cm_tools","userMessageId":"user_tools"}""",
+            """{"type":"delta","generationId":"gen_tools","messageId":"answer_tools","eventId":"text_9","contentRevision":9,"text":"answer"}""",
+            """{"type":"generation","generationId":"gen_tools","clientMessageId":"cm_tools","userMessageId":"user_tools","eventId":"tools_1","executionRevision":1,"executionSteps":[{"stepId":"call","eventId":"native:2","toolName":"read","arguments":"{}","status":"running","revision":1}]}""",
+            """{"type":"generation","generationId":"gen_tools","clientMessageId":"cm_tools","userMessageId":"user_tools","eventId":"tools_2","executionRevision":2,"executionSteps":[{"stepId":"call","eventId":"native:2","toolName":"read","arguments":"{}","output":"result","status":"completed","revision":2}]}""",
+            """{"type":"done","generationId":"gen_tools","messageId":"answer_tools","eventId":"text_9","contentRevision":9,"text":"answer"}""",
+        ).joinToString("") { "event: message\ndata: $it\n\n" }
+        val repo = CoreAgentConversationRepository(client(object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest) = WireResponse(200, listOf(RawHeader("Content-Type", "text/event-stream")), stream.toByteArray())
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }), { sampleAgent }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler))
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+        }
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_tools"), "prompt"))
+        runCurrent()
+        val execution = events.filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().last()
+        assertEquals("gen_tools", execution.generationId)
+        assertEquals(2L, execution.executionRevision)
+        assertEquals("cm_tools", execution.clientMessageId)
+        assertEquals("user_tools", execution.userMessageId)
+        assertEquals(com.openandroidintelligence.conversation.model.NativeExecutionStatus.COMPLETED, execution.steps.single().status)
+        assertEquals(setOf("answer_tools"), events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().map { it.message.id }.toSet())
+        assertTrue(events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().all { it.message.contentRevision == 9L })
+    }
+
     @Test fun localSubmissionCannotInventAServerAcceptance() = runTest {
         val response = CompletableDeferred<WireResponse>()
         val transport = object : GatewayByteTransport {
