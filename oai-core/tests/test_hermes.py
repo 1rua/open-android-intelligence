@@ -201,6 +201,61 @@ async def test_real_event_store_frames_stream_accumulated_native_text_and_do_not
     assert error.value.status == 404
 
 
+@pytest.mark.asyncio
+async def test_slow_stream_replays_every_native_message_in_commit_order(core):
+    """A stalled phone cannot evict earlier real replies behind a delta burst."""
+    principal = Principal("alice", device_id="phone")
+
+    class Runtime:
+        _loop = asyncio.get_running_loop()
+        _session_store = object()
+        _message_handler = staticmethod(lambda: None)
+        services = SimpleNamespace(core=core)
+
+        def _track_background_task(self, task, label):
+            self.task = task
+
+        async def _notify_agent_inbound(self, path, body, response, owner):
+            accepted = response["data"]
+            with closing(core.open_gateway_account(owner)) as account, account.store.transaction():
+                core.request_command_approval(account, "burst-approval", accepted["conversationId"],
+                    "synthetic command", "synthetic approval", [{"choice": "once", "label": "允许一次"}], 60)
+                account.approvals.settle("burst-approval", "once")
+                account.events.append("conversation.approval.resolved", "burst-approval", {
+                    "approvalId": "burst-approval", "conversationId": accepted["conversationId"],
+                    "decision": "once", "decidedAt": 1000,
+                })
+                for index in range(1030):
+                    account.events.append("conversation.message.delta", "burst", {
+                        "conversationId": accepted["conversationId"],
+                        "messageId": f"reply-{index}",
+                        "sender": "assistant", "parts": [{"type": "text", "text": str(index)}],
+                        "text": str(index), "timestamp": 1000, "revision": index,
+                        "generationId": accepted["generationId"],
+                    })
+                account.conversations.workflow.settle(accepted["messageId"], "completed")
+
+    runtime = Runtime()
+    adapter = HermesSessionAdapter(core, runtime)
+    conversation = (await adapter.list_sessions(principal))[0]["id"]
+    stream = adapter.send(principal, conversation, "synthetic", client_message_id="slow-client")
+    try:
+        first = await anext(stream)
+        assert first["type"] == "generation"
+        # Leave the observer suspended until the entire host burst commits.
+        await runtime.task
+        await asyncio.sleep(0)
+        events = [event async for event in stream]
+    finally:
+        await stream.aclose()
+    replies = [event for event in events if event["type"] == "delta"]
+    assert [event["type"] for event in events[:2]] == ["approval_requested", "approval_resolved"]
+    assert [event["messageId"] for event in replies] == [f"reply-{index}" for index in range(1030)]
+    assert events[-1]["type"] == "done"
+    assert events[-1]["text"] == "1029"
+    assert core._event_sinks == []
+
+
 def test_hermes_runtime_must_share_its_gateway_core(core):
     with pytest.raises(ValueError):
         HermesSessionAdapter(core, SimpleNamespace(services=SimpleNamespace(core=object())))

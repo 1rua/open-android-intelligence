@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import uuid
+from collections import deque
 from contextlib import contextmanager
 from typing import Any, AsyncIterator
 from oai_core.gateway.core import APPROVAL_CHOICES
@@ -252,7 +253,7 @@ class HermesSessionAdapter:
             # The existing Hermes dispatch establishes device origin from a
             # verified pairing. Never fabricate one for a CLI service token.
             raise AdapterError("DEVICE_CONTEXT_REQUIRED", 403)
-        client_id, loop, queue = client_message_id or "core_" + uuid.uuid4().hex, asyncio.get_running_loop(), asyncio.Queue(maxsize=1024)
+        client_id, loop = client_message_id or "core_" + uuid.uuid4().hex, asyncio.get_running_loop()
         attachment_ids = list(attachment_ids or [])
         if is_host_command(text) and not attachment_ids:
             def validate_control() -> None:
@@ -307,25 +308,35 @@ class HermesSessionAdapter:
                             if value is not None:
                                 origin[field] = value
                         account.store.database.execute("UPDATE account_metadata SET value=? WHERE key=?", (json.dumps(origin), key))
-                return accepted
-        accepted = await asyncio.to_thread(accept)
+                cursor = account.store.database.execute(
+                    "SELECT event_id FROM events ORDER BY sequence DESC LIMIT 1").fetchone()
+                return accepted, cursor[0] if cursor else None
+        accepted, cursor = await asyncio.to_thread(accept)
         generation_id = accepted.get("generationId")
-        def enqueue(event):
-            if queue.full():
-                queue.get_nowait()
-            queue.put_nowait(event)
+        changed = asyncio.Event()
         def sink(account_id, event):
             payload = event.get("payload", {})
             if account_id == principal.account_id and payload.get("conversationId") == session_id:
                 if payload.get("generationId") not in {None, generation_id}:
                     return
-                loop.call_soon_threadsafe(enqueue, dict(event))
+                loop.call_soon_threadsafe(changed.set)
+        def read_events():
+            # Durable commit order is the buffer. A slow observer must never
+            # evict another real message, an approval, or a terminal event.
+            with self._account(principal) as account:
+                return account.events.read_after(cursor, limit=128)
+        def belongs(event):
+            payload = event.get("payload", {})
+            return (payload.get("conversationId") == session_id
+                    and payload.get("generationId") in {None, generation_id})
         self.core.register_event_sink(sink)
         body = {"clientMessageId": client_id, "text": text, "attachmentIds": attachment_ids}
         task = asyncio.create_task(self.runtime._notify_agent_inbound(
             f"/open-android-intelligence/v2/conversations/{session_id}/messages",
             json.dumps(body).encode(), {"data": accepted}, principal.account_id))
         self.runtime._track_background_task(task, "core-session-message")
+        task.add_done_callback(lambda _task: changed.set())
+        pending_events = deque()
         previous = ""
         assistant_message_id = None
         identity = {"clientMessageId": client_id, "userMessageId": accepted["messageId"]}
@@ -333,9 +344,12 @@ class HermesSessionAdapter:
             yield {"type": "generation", "generationId": generation_id, **identity}
             async with asyncio.timeout(1800):
                 while True:
-                    try:
-                        event = await asyncio.wait_for(queue.get(), .2)
-                    except TimeoutError:
+                    if not pending_events:
+                        # Clear before reading: a commit racing with the read
+                        # either appears in this page or leaves the wake set.
+                        changed.clear()
+                        pending_events.extend(await asyncio.to_thread(read_events))
+                    if not pending_events:
                         if task.done():
                             await task
                             withdraw = getattr(self.runtime, "withdraw_generation_approvals", None)
@@ -345,11 +359,10 @@ class HermesSessionAdapter:
                                 with self._account(principal) as account:
                                     return account.conversations.workflow.for_message(accepted["messageId"])
                             generation = await asyncio.to_thread(state)
-                            # A final native delta or approval decision may have
-                            # committed while the workflow read was in flight.
-                            # Drain those events before the terminal frame.
-                            await asyncio.sleep(0)
-                            if not queue.empty():
+                            # Approval withdrawal may commit more events. Apply
+                            # every committed page before publishing the terminal.
+                            pending_events.extend(await asyncio.to_thread(read_events))
+                            if pending_events:
                                 continue
                             status = (generation or {}).get("state")
                             if status in {"completed", "cancelled"}:
@@ -359,6 +372,11 @@ class HermesSessionAdapter:
                             else:
                                 yield {"type": "error", "code": "AGENT_FAILED"}
                             return
+                        await changed.wait()
+                        continue
+                    event = pending_events.popleft()
+                    cursor = event["eventId"]
+                    if not belongs(event):
                         continue
                     if event.get("eventType") == "core.approval.unsupported":
                         yield {"type": "error", "code": "UNSUPPORTED_APPROVAL"}
@@ -371,13 +389,13 @@ class HermesSessionAdapter:
                         withdraw = getattr(self.runtime, "withdraw_generation_approvals", None)
                         if callable(withdraw):
                             await withdraw(principal.account_id, session_id, generation_id)
-                        # Earlier events retain their order, but an approval
-                        # withdrawn during cancellation was just enqueued.
-                        await asyncio.sleep(0)
-                        while not queue.empty():
-                            tail = queue.get_nowait()
-                            if tail.get("eventType") == "conversation.approval.resolved":
-                                yield {"type": "approval_resolved", "approval": tail["payload"], "generationId": generation_id}
+                        # Publish the authoritative withdrawn cards after the
+                        # cancellation barrier; late text cannot revive it.
+                        while tail_events := await asyncio.to_thread(read_events):
+                            for tail in tail_events:
+                                cursor = tail["eventId"]
+                                if belongs(tail) and tail.get("eventType") == "conversation.approval.resolved":
+                                    yield {"type": "approval_resolved", "approval": tail["payload"], "generationId": generation_id}
                         yield {"type": "done", "text": previous, "generationId": generation_id, "outcome": "cancelled", **identity,
                                **({"messageId": assistant_message_id} if assistant_message_id else {})}
                         return
