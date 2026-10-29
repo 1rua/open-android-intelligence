@@ -115,6 +115,12 @@ Core wheel 在现有独立 Core 环境中安装，在 checkout 外运行真实 o
 
 需要独立验收的边界包括：真实手机熄屏/后台限制与弱网、真实模型及宿主进程中断、物理存储耗尽、现网配置目录所有权与混合版本升级、用户历史数据回滚。自动化合成故障只能证明对应源码路径，不替代这些环境证据。
 
+## PR #66 的 Android CI 追加修复
+
+旧头提交 `99f4d5a1` 的远端 run `40966830001` / Android job `123773348226` 得到 10 个缺文件失败：CI 测试清单已扩展，但缺少真实 WASM 插件的前置构建。本地已有产物使完整 Fast/PR 未暴露这项工作流缺口。
+
+本地移走而不删除两个 fixture 后，23 项定向测试复现同样 10 个失败，逐项与远端匹配。现已在 Android job 内先安装固定 Rust 工具链、缓存并真实编译 workspace，验证六个 WASM 文件齐备后才执行原测试；测试选择与断言均不变。CI 原命令本地复查 Full 566 项通过，Play 166 项通过、8 项原有产品能力跳过。步骤顺序、缓存工具链、Shell/YAML 与增量 Fast/PR 检查均通过。详细证据及本地 1.88 / CI 1.90 工具链边界见[追加记录](2026-10-30-pr66-android-ci-fixtures.zh-CN.md)。新的远端结果仍由推送后的 CI 复核，不将本地结果记作远端通过。
+
 ## 验收标准与证据范围
 
 | 要求 | 自动化证据 | 环境限制 |
@@ -132,7 +138,7 @@ Core wheel 在现有独立 Core 环境中安装，在 checkout 外运行真实 o
 
 ## 修改文件
 
-本次基于 dev 共修改 62 个文件。
+本次基于 dev 共修改 63 个文件。
 
 ### 运行实现
 
@@ -202,5 +208,6 @@ Core wheel 在现有独立 Core 环境中安装，在 checkout 外运行真实 o
 - [docs/architecture/2026-10-30-native-event-sync.zh-CN.md](../../docs/architecture/2026-10-30-native-event-sync.zh-CN.md)
 - [docs/contracts/device-capability-publication-android-v1.md](../../docs/contracts/device-capability-publication-android-v1.md)
 - [docs/reviews/2026-10-30-dev-reliability.zh-CN.md](../../docs/reviews/2026-10-30-dev-reliability.zh-CN.md)
+- [docs/reviews/2026-10-30-pr66-android-ci-fixtures.zh-CN.md](../../docs/reviews/2026-10-30-pr66-android-ci-fixtures.zh-CN.md)
 - [scripts/README.md](../../scripts/README.md)
 - [tools/smart-test.py](../../tools/smart-test.py)

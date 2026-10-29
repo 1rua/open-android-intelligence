@@ -144,6 +144,32 @@ jobs:
         with:
           gradle-version: '8.12'
           cache-read-only: ${{ github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
+      # These tests install signed packages made from the real Rust payloads.
+      # A fresh Actions checkout has no ignored plugins/target artifacts.
+      - name: Setup Rust for Android reference plugins
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+          targets: wasm32-unknown-unknown
+      - name: Cache Android reference plugin builds
+        uses: Swatinem/rust-cache@v2
+        env:
+          # Cache metadata runs inside plugins, whose local pin is 1.88.0.
+          # Keep cache inspection aligned with the explicit CI build toolchain.
+          RUSTUP_TOOLCHAIN: 1.90.0
+        with:
+          workspaces: plugins -> target
+          cache-workspace-crates: true
+      - name: Build real WASM fixtures before Android tests
+        run: |
+          cargo +1.90.0 build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml --target-dir plugins/target
+          for plugin in notifications sms call_log screen_reader screen_capture screen_control; do
+            artifact="plugins/target/wasm32-unknown-unknown/release/${plugin}.wasm"
+            if [ ! -s "$artifact" ]; then
+              echo "::error::Missing compiled Android fixture: $artifact"
+              exit 1
+            fi
+          done
       - name: Screen primitives, local authorization and projection lifecycle
         working-directory: apps/android
         run: >-
