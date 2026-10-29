@@ -84,6 +84,7 @@ async def test_expired_cursor_requires_snapshot_and_does_not_discard_new_events(
     conversation = await session(adapter)
     append(core, conversation, "before-expiry")
     page = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, snapshot=True)
+    append(core, conversation, "unconsumed-before-expiry")
     with closing(core.open_gateway_account("alice")) as account:
         account.store.database.execute("UPDATE events SET expires_at='1970-01-01T00:00:00.000Z'")
     append(core, conversation, "after-expiry")
@@ -277,3 +278,55 @@ async def test_restarting_core_http_app_recovers_offline_host_turn_without_resub
     with closing(p.backend.open_gateway_account("native-alice")) as account:
         assert account.store.database.execute("SELECT COUNT(*) FROM messages WHERE conversation_id=? AND sender='user'",
             (p.conversation,)).fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_zero_cursor_detects_unconsumed_event_pruned_while_offline(core):
+    adapter = HermesSessionAdapter(core)
+    conversation = await session(adapter)
+    initial = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, snapshot=True)
+    await adapter.ack_events(ALICE, conversation, consumer_id=CONSUMER, cursor=initial["cursor"])
+    append(core, conversation, "lost-during-offline")
+    with closing(core.open_gateway_account("alice")) as account:
+        account.store.database.execute("UPDATE events SET expires_at='1970-01-01T00:00:00.000Z'")
+        account.events.purge_expired()
+    with pytest.raises(AdapterError, match="CURSOR_EXPIRED"):
+        await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired_rows", [1, 1001])
+async def test_snapshot_boundary_survives_expiry_of_its_preceding_event(core, expired_rows):
+    adapter = HermesSessionAdapter(core)
+    conversation = await session(adapter)
+    for index in range(expired_rows):
+        append(core, conversation, f"old-{index}")
+    if expired_rows > 1:
+        with closing(core.open_gateway_account("alice")) as account:
+            account.store.database.execute("UPDATE events SET expires_at='1970-01-01T00:00:00.000Z'")
+    snapshot = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, snapshot=True)
+    # The boundary covers all prior events, even when history refresh outlasts
+    # their retention or one bounded purge leaves expired rows behind.
+    with closing(core.open_gateway_account("alice")) as account:
+        account.store.database.execute("UPDATE events SET expires_at='1970-01-01T00:00:00.000Z'")
+        account.events.purge_expired()
+    fresh = append(core, conversation, "committed-during-history")
+    await adapter.ack_events(ALICE, conversation, consumer_id=CONSUMER, cursor=snapshot["cursor"])
+    page = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER)
+    assert [event["eventId"] for event in page["events"]] == [fresh["eventId"]]
+
+
+@pytest.mark.asyncio
+async def test_foreign_expired_events_do_not_invalidate_current_session_cursor(core):
+    adapter = HermesSessionAdapter(core)
+    conversation = await session(adapter)
+    initial = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, snapshot=True)
+    with closing(core.open_gateway_account("alice")) as account:
+        other = account.conversations.create("expired-foreign", "foreign", "create-expired-foreign")["conversationId"]
+    append(core, other, "foreign-expired")
+    with closing(core.open_gateway_account("alice")) as account:
+        account.store.database.execute("UPDATE events SET expires_at='1970-01-01T00:00:00.000Z'")
+        account.events.purge_expired()
+    own = append(core, conversation, "retained-own")
+    page = await adapter.event_page(ALICE, conversation, consumer_id=CONSUMER, cursor=initial["cursor"])
+    assert [event["eventId"] for event in page["events"]] == [own["eventId"]]

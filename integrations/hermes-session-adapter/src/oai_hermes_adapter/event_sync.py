@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from oai_core.sessions import AdapterError
+from oai_core.gateway.core import iso_millis
 from .tool_events import NOTICE_CODE
 
 
@@ -103,21 +104,32 @@ class NativeEventSync:
                         "hasMore": False, "approvals": self._approvals(account)}
             cursor = cursor if cursor is not None else self._saved_ack(store)
             position = self._decode(store, cursor) if cursor is not None else {"v": 1, "sequence": 0, "eventId": None}
-            event_id = position["eventId"]
-            if event_id is None and position["sequence"]:
-                first = store.database.execute("SELECT MIN(sequence) FROM events").fetchone()[0]
-                if first is not None and first > position["sequence"] + 1:
+            marker_key = "conversation-event-pruned:v1:" + hashlib.sha256(self.session_id.encode()).hexdigest()
+            marker = store.database.execute("SELECT value FROM account_metadata WHERE key=?", (marker_key,)).fetchone()
+            if marker is not None and int(marker[0]) > position["sequence"]:
+                raise AdapterError("CURSOR_EXPIRED", 409)
+            # A snapshot owns the boundary, not the lifetime of its previous
+            # event. Include retained expired rows in this bounded scan so even
+            # an expiry backlog beyond purge's 1000-row budget is observable.
+            rows = store.database.execute(
+                "SELECT * FROM events WHERE sequence>? ORDER BY sequence LIMIT ?",
+                (position["sequence"], limit + 1),
+            ).fetchall()
+            scanned = rows[:limit]
+            events, current = [], iso_millis()
+            for row in scanned:
+                event = account.events._map(row)
+                if not self._belongs(account, event):
+                    continue
+                if row["expires_at"] <= current:
                     raise AdapterError("CURSOR_EXPIRED", 409)
-            events = account.events.read_after(event_id, limit=limit + 1)
-            scanned = events[:limit]
+                events.append(event)
             if scanned:
-                last = store.database.execute("SELECT sequence FROM events WHERE event_id=?", (scanned[-1]["eventId"],)).fetchone()
-                position = {"v": 1, "sequence": last[0], "eventId": scanned[-1]["eventId"]}
+                position = {"v": 1, "sequence": scanned[-1]["sequence"], "eventId": scanned[-1]["event_id"]}
                 cursor = self._encode(store, position)
             elif cursor is None:
                 cursor = self._encode(store, position)
-            return {"events": [event for event in scanned if self._belongs(account, event)],
-                    "cursor": cursor, "hasMore": len(events) > limit}
+            return {"events": events, "cursor": cursor, "hasMore": len(rows) > limit}
 
     async def page(self, *, cursor=None, limit=128, wait_ms=0, snapshot=False):
         if (type(limit) is not int or not 1 <= limit <= 128 or type(wait_ms) is not int

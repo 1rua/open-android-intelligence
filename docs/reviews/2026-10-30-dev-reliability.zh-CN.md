@@ -21,7 +21,7 @@
 
 Android 现有相关基线共 234 项通过。新故障 fixture 连续两轮均为两个对照通过、三个故障断言失败。它们证明存储失败下的恢复缺陷，不证明生产设备已发生磁盘耗尽。
 
-截图中的 Gateway message origin 已定位到固定 Hermes SDK 的 run_busy._steer_text_with_origin。该信息本用于模型的输入来源，必须按真实输入身份与原稿边界修复历史投影，不能按正文关键词删除。相关宿主回归仍在独立子任务中验证。
+截图中的 Gateway message origin 已通过固定 SDK `75b083e9399115b12513385252811f09c3503c90` 的真实 steer、工具结果插入和 SessionDB flush 路径复现。`run_busy._steer_text_with_origin` 加入模型来源说明，执行中追加输入绕过普通 accept/capture_submission，原生 `display_kind=steer` 行没有 platform_message_id。基线反馈为 nativePlatformMessageId=null、wireClientMessageId=null、wireTextEqualsPersistedInjection=true、originalPreserved=false；普通发送对照的原稿、client/message ID 均保留。该信息本用于模型的输入来源，修复需按真实输入身份与原稿边界关联历史，不能按正文关键词删除。相关合并输入、flush 重试、压缩、取消、宿主重开和合法原生历史的最终回归由独立子任务补齐。
 
 固定 SDK 的 delivery_ledger 生成 Recovered reply；run.py/run_turn_runner.py 在 resume_pending 恢复流程构造 System note。当前自动化断线回归没有触发宿主中断或额外用户输入。没有对应线上日志，不能认定附件中的所有恢复消息都由同一个入口导致。
 
@@ -62,7 +62,7 @@ Android 现有相关基线共 234 项通过。新故障 fixture 连续两轮均�
 
 服务端新增可选 eventSync：复用 EventStore，按当前认证作用域生成加密游标和单调 ACK；普通页严格保留提交顺序，工具通知用真实受理消息关联；过期时先固定高水位，再补原生历史和审批。公开端点与消费顺序见[同步契约](../architecture/2026-10-30-native-event-sync.zh-CN.md)。
 
-服务端首轮新增回归从 5 项失败到 5 项通过；随后扩展到 9 项，覆盖 ACK 重建恢复、Agent 别名隔离、Core 对象与磁盘账号存储重开、长等待期间撤销认证、非法与重复查询，以及跨会话工具通知过滤。关联 Core/远程流/交互/测试选择器联合验证 41 项通过。后续改动的最终计数以下节完整结果为准。
+服务端首轮新增回归从 5 项失败到 5 项通过；随后扩展到 10 项，覆盖整个 Core HTTP 应用关闭再重开、 ACK 重建恢复、Agent 别名隔离、Core 对象与磁盘账号存储重开、长等待期间撤销认证、非法与重复查询，以及跨会话工具通知过滤。关联 Core/远程流/交互/测试选择器联合验证先后 41、69 项通过。独立审查又复现空库游标无法发现丢失事件、快照依赖的旧尾事件恰好到期两个边界问题；3 个新增故障断言先失败，再改为序号边界与事务内会话清理标记，并增加其他会话过期不干扰的对照。修复后事件同步与现有 EventStore 专项 26 项通过，账号隔离/设备期限/撤销事件回归 48 项通过。后续改动的最终计数以下节完整结果为准。
 
 配置、Android 恢复、授权发布、原生输入历史在各自 worktree 中修复；主 Agent 负责整合和交叉回归。该阶段完成前，不把设计目标写作最终产品验收结论。
 

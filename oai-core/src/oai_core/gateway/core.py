@@ -1654,10 +1654,34 @@ class EventStore:
             expiry = min(_now(row['expires_at']),_now(payload.get('expiresAt',row['expires_at'])))
             self.store.database.execute("UPDATE events SET payload_json=?,expires_at=? WHERE event_id=?",(self.store.seal_json(payload,purpose),iso_millis(expiry),row['event_id']))
         if legacy: self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES ('event-body-policy-v2',?)",(str(legacy[-1]['sequence']),))
-        return self.store.database.execute(
-            "DELETE FROM events WHERE sequence IN (SELECT sequence FROM events WHERE expires_at <= ? ORDER BY expires_at LIMIT ?)",
-            (iso_millis(now), limit),
-        ).rowcount
+        # Native replay positions are sequence boundaries, including an empty
+        # ledger. Preserve a per-conversation gap marker before removing rows;
+        # otherwise a phone can never distinguish an empty page from lost facts.
+        with self.store.transaction():
+            expired = self.store.database.execute(
+                "SELECT * FROM events WHERE expires_at <= ? ORDER BY expires_at,sequence LIMIT ?",
+                (iso_millis(now), limit),
+            ).fetchall()
+            for row in expired:
+                if not (row["event_type"].startswith("conversation.") or row["event_type"] == "gateway.notice"):
+                    continue
+                payload = self.store.open_json(row["payload_json"], f"event:{row['event_id']}:payload")
+                conversation_id = payload.get("conversationId")
+                if not conversation_id and row["event_type"] == "gateway.notice":
+                    accepted = self.store.database.execute(
+                        "SELECT conversation_id FROM messages WHERE message_id=? AND sender='user'",
+                        (row["correlation_id"],),
+                    ).fetchone()
+                    conversation_id = accepted[0] if accepted else None
+                if isinstance(conversation_id, str) and conversation_id:
+                    key = "conversation-event-pruned:v1:" + hashlib.sha256(conversation_id.encode()).hexdigest()
+                    self.store.database.execute(
+                        "INSERT INTO account_metadata(key,value) VALUES (?,?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",
+                        (key, str(row["sequence"])),
+                    )
+            self.store.database.executemany("DELETE FROM events WHERE sequence=?", [(row["sequence"],) for row in expired])
+            return len(expired)
 
     def _map(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
