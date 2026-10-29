@@ -69,7 +69,7 @@ jobs:
             oai-core/tests/independent_core_contract.py "$state"
       - name: Core protocol, security, CLI, MCP and installer regressions
         run: |
-          "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio
+          "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio PyYAML==6.0.3
           env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
             oai-core/tests tests/test_install_script.py tests/test_core_setup_transaction.py tools/test_smart_test.py -q \
             --ignore=oai-core/tests/test_hermes.py \

@@ -70,14 +70,137 @@ Android 现有相关基线共 234 项通过。新故障 fixture 连续两轮均�
 
 原生输入修复已整合自 `876984a`（主分支 `a2075262`）。固定 SDK 暂无公开结构化 steer hook，实例桥接由源码指纹、方法和能力门控约束；生产捕获前保存可信原稿/来源/身份，原生排出与持久化批次携带引用，再投影到原稿，不靠正文匹配。新 13 项原生输入场景覆盖合并输入、flush 重试、压缩、取消、fallback、合法历史与不支持 SDK。旧无关联 metadata 的污染行仍保留，不推测还原。主整合使用瘦 Python 环境时有 13 项 SDK 导入错误（requests 缺失），其他 487 项通过；使用现有完整依赖环境补跑，最终结果将在门禁节记录。
 
-Android 消费链路仍在独立 worktree 中完成；主 Agent 负责整合和交叉回归。该阶段完成前，不把设计目标写作最终产品验收结论。
+Android 消费修复已整合自 `3f0ce52e`（主分支 `2b00e112`），与能力发布片段正常合并。新增 NativeConversationStore 与同步器固定账号/Agent/会话和设备配对范围；已应用消息、审批、恢复身份与 pending ACK 在加密镜像内提交后再确认游标。ACK 失败重试原位置，终态/历史落盘失败不提前 settled，工作台保存后才标记事件已处理；存储故障有次数上限并公开失败状态，不以无限重试掩盖。native 列表显式保存权威快照，旧 checkpoint 仍不能覆盖新列表。旧或 steering 原稿缺 generation ledger 时保留正文与未知状态，不阻塞其他轮次，也不重复 POST。多轮补偿使用真实页内身份与持久恢复记录，不只取最后一条用户输入。
+
+Android 末轮针对性回归 126 项通过、0 失败/跳过（客户端 37、工作台 32、App 57）。独立分支另有一条 AuthSessionLifecycle 冷启动用例早期超时，已通过同字节码控制实验定位到 Robolectric 首次 native runtime 的字体准备，约 3281ms，超过原 3 秒等待。热态登录 1022ms，提前准备 native runtime 后冷态 273ms、热态 27ms，均未放宽业务等待。旧断言字符串中的 Negotiating 是等待前读取的旧值，不能证明协议协商挂死。本次主 Fast 的全 App 1157 项运行中该用例通过；保留旧失败证据，不据此修改生产登录逻辑。
 
 ## 第三阶段：最终验证
 
-待整合后记录针对性测试、Fast、PR 门禁的准确命令、退出码、通过/失败/跳过数量与对应提交。不得把环境 fixture 失败、未执行的真机项目或远端尚未完成的 CI 计为通过。
+整合后配置专项 59 项通过、0 跳过。固定 SDK 缺依赖的 13 项错误，使用已有完整 Python 环境对原生输入/loader/事件同步补跑 31 项通过、0 跳过。链接测试以真实系统 ELOOP 验证，不再把当前文件系统不能创建链接作为成功依据。
+
+Core wheel 在现有独立 Core 环境中安装，在 checkout 外运行真实 oai serve，结果为 distribution=0.2.0、hermes_installed=false、serve=passed，并拒绝错误 Schema Hash；保留原依赖边界。wheel SHA-256 为 `627e6bffb4971719c279fef6052aa1c2db4ec2b79b049e620bdec0de2d29a557`。
+
+首轮 Fast 基于 `2b00e112`，Core 384 项、Hermes 120 项、DSH 18 项通过；Android 2337 项中 2336 项通过、1 项因文件系统不能创建符号链接 fixture 失败，尚未进入卸载实现。随后把路径穿越保护与必须创建链接的保护拆开，定向 13 项通过、1 项明确跳过。这个跳过不代表链接卸载保护已在本机验证；CI 正常文件系统继续执行该用例。最终 Fast/PR 结果以下节补记为准。配置独立复核又确认第三方修改发生在预检之后的回滚覆盖、合法 YAML refs 行被重复追加，以及远程 helper 下载失败留空文件仍报成功，已整合 `3d6c3506`（主分支 `b3cf4e06`）的针对性修复。复核先得到第三方写入竞争 6 项失败、YAML 10 项失败、远程 helper/伪成功 10 项失败；最终配置独立回归 96 项通过、1 项符号链接 fixture 跳过，主分支已有真实链接回退避免该跳过。新逻辑在每次实际替换前复核摘要，YAML 使用安全结构更新并拒绝重复键／危险类型，Shell 核对本次唯一 request_id、完整 committed journal、文件摘要和权限后才报成功。缺少 YAML 解析器给受限错误码与安装补救；其他错误不打印凭据内容。所有写者仍需遵守同一配置锁，不宣称无锁外部写者下的跨文件原子性。第二轮 Fast 使用 `b3cf4e06` 时发现的关闭竞争已在下一节修复并完成最终门禁。不得把环境 fixture 失败、未执行的真机项目或远端尚未完成的 CI 计为通过。
+
+### 整合中补充的工作台关闭竞争
+
+`b3cf4e06` 的 Fast 再次执行时，Core 422、Hermes 120、DSH 18 项通过；Android 2341 项有 1 失败、1 链接 fixture 跳过。失败为 native 账号退出等待 Disconnected 超时。检查发现 Agent 替换先关闭旧工作台、再于 IO 创建新工作台，期间账号退出仍可能读取旧实例；重复 flush 会访问已关闭的 SQLite 镜像。新增两个小回归真实得到 2 项失败，验证重复结束不幂等及原保存错误丢失。
+
+修复用同一持久化生命周期互斥锁协调 flush 与关闭，只关闭一次，并保留真实存储失败；独立复核另指出首个调用方取消不能缓存为后续调用方的取消，已补相应时序测试。Runtime 窗口用例最初在 Robolectric 主线程 runBlocking 引发测试调度等待，线程栈定位后终止隔离测试子进程，改为驱动主 looper 的异步等待，未改生产超时。取消调用方和取消保存 Job 分别有反例回归：首个调用方的取消不缓存成后续取消；保存 Job 的 join 之后仍检查 isCancelled，未完成提交明确报 LOCAL_SAVE_INTERRUPTED。修复后工作台 13 项、App 20 项联合验证通过。已提交 `c1004925`，完整 Fast/PR 已据此通过，准确计数见下一节。
+
+### 最终 Fast 与 PR 门禁
+
+源码冻结于 `c100492541696c8303231f986674bb74301fc7a4`，后续只更新报告、配置说明和 CI 测试依赖。使用已有 Python 环境、固定 Hermes SDK、JDK 21、Gradle 与 Robolectric 缓存；测试 HOME 和临时文件位于仓库忽略目录的隔离位置。
+
+- `npm run test:fast`：退出 0；Core 422、Hermes 120、DSH 18 项通过。Android 2347 项中 **2346 通过、0 失败/错误、1 跳过**，Gradle BUILD SUCCESSFUL。
+- `npm run test:pr`：退出 0；相同源码上 Core 422、Hermes 120、DSH 18 项通过，Android 同为 2346 通过、0 失败/错误、1 跳过，Gradle BUILD SUCCESSFUL。
+- 跳过项仅为 `PluginInstallStoreTest.removingADamagedPackageCannotFollowItsSymlinks`，当前文件系统不能新建链接；独立路径穿越用例已实际通过。Python 两处链接拒绝通过现有无害解释器链接及系统 ELOOP 实际验证，未跳过。
+- Fast 与 PR 完整证据分别保存在 `.toolchains/dev-reliability-20261030/fast-20261029T222026/`、`.toolchains/dev-reliability-20261030/pr-20261029T222618/`，包含源码 SHA、命令、最终退出码、XML 副本及 summary.json。目录名时间为 UTC；本报告使用 Asia/Shanghai 日期。
+
+| Android 模块 | 通过 | 失败/错误 | 跳过 |
+| --- | ---: | ---: | ---: |
+| App Full Debug | 1159 | 0 | 1 |
+| conversation-ui | 666 | 0 | 0 |
+| gateway-client | 312 | 0 | 0 |
+| platform-kernel | 69 | 0 | 0 |
+| conversation-domain | 32 | 0 | 0 |
+| capability-ports | 51 | 0 | 0 |
+| control-ports | 14 | 0 | 0 |
+| device-primitives | 22 | 0 | 0 |
+| screen-control | 21 | 0 | 0 |
 
 ## 第四阶段：交付与验收限制
 
-目标 PR 基于 dev，不修改或合并 main，不部署共享服务。最终报告将补齐修改文件、最终提交和 PR、远端构建触发信息及未闭合风险。遵守项目约束，不前台轮询 CI。
+交付分支为 `feature/dev-reliability-20261030`，PR 目标为 dev，保持打开供审查；源码验证固定在 `c100492541696c8303231f986674bb74301fc7a4`，后续报告与 CI 依赖更新不改变业务实现。不修改或合并 main，不部署共享服务。PR 链接和远端构建触发快照由最终交付消息提供；本地结果不能替代远端 CI，遵守项目约束不前台轮询等待。
 
 需要独立验收的边界包括：真实手机熄屏/后台限制与弱网、真实模型及宿主进程中断、物理存储耗尽、现网配置目录所有权与混合版本升级、用户历史数据回滚。自动化合成故障只能证明对应源码路径，不替代这些环境证据。
+
+## 验收标准与证据范围
+
+| 要求 | 自动化证据 | 环境限制 |
+| --- | --- | --- |
+| 1. 手机失联不取消已受理任务 | 真实手机/Core、Core/Adapter 两条 HTTP 断线测试；关闭整个 Core HTTP 应用后独立 Adapter 任务仍完成；任务分派、用户记录各一次 | 未进行真实厂商熄屏、真实模型运行和宿主进程被终止实验 |
+| 2. 保存可信状态并补齐离线事件 | EventStore 稳定身份、140 条消息与审批突发按序重放、隔离 ACK、数据库重开、过期/空库/1001 行清理边界回归 | 保留期外依赖宿主历史及审批快照，不承诺 EventStore 无限保存 |
+| 3. 重连不重新提交或伪造恢复输入 | GET 原身份恢复、POST 计数为一；固定 SDK 合法 System note/Recovered reply 保留对照 | 宿主真实重启的原生 resume_pending/delivery ledger 不等同于手机重连，未据无日志症状改写其逻辑 |
+| 4. 原会话恢复且不重、不漏、不乱序 | NativeEventSynchronizer、Owner、镜像、generation 修订及工作台保存失败回归，先落盘再 ACK | 旧污染行缺可信原稿时保留原内容；真实手机画面及网络延迟未验收 |
+| 5. 配置失败保留原有效数据 | 配置/Token/脚本/宿主文件故障注入摘要对照、进程中断恢复、原密钥与密码核对 | 运行中读者不享有跨文件同时可见；其他写者必须遵守锁 |
+| 6. 保存提示符合实际结果 | Shell 本次 request_id、committed journal、完整文件摘要/权限验证；下载空 helper、no-op helper、可选安装失败回归 | 不以保存成功证明宿主已在线或服务已重启 |
+| 7. 仅 Android 决定设备许可 | 授权迁移、显式关闭、绑定竞争、插件启用与系统权限回归；无 Adapter 授权设置 | 混合版本设备的实际升级仍需本机复核 |
+| 8. Core 保留发现与安全路由 | Core 身份/配对/Schema/提供者/期限/撤销测试；独立 wheel 的真实 serve 与错误 Schema 拒绝 | 未部署共享服务；现网所有权与服务管理器配置未验证 |
+| 9. UI 分清授权、插件、系统与同步 | 发布后 GET 同 digest/revision、完整提供者键、所有者竞争、错误码与引导/保存失败文案测试 | 真机权限撤销、敏感确认和系统后台限制待验收 |
+| 10. 多 Agent、账号、审批保持隔离 | 既有 Core/Android/DSH 回归、Agent 别名游标拒绝、owner 切换、审批 requested/resolved 和未知结果保护 | 本机无法新建链接的卸载链接用例明确跳过，不列为已验证安全事实 |
+
+## 修改文件
+
+本次基于 dev 共修改 62 个文件。
+
+### 运行实现
+
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/GatewayRuntime.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/GatewayRuntime.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/SettingsCapabilityUi.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/SettingsCapabilityUi.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/CoreAgentConversationRepository.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/CoreAgentConversationRepository.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/EncryptedConversationMirror.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/EncryptedConversationMirror.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationMirror.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationMirror.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationStore.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationStore.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventSynchronizer.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventSynchronizer.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/PermissionCatalog.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/PermissionCatalog.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/PermissionsScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/PermissionsScreen.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/CapabilityPublisher.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/CapabilityPublisher.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/DeviceCapabilitySyncState.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/DeviceCapabilitySyncState.kt)
+- [apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/PluginManagementScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/PluginManagementScreen.kt)
+- [apps/android/conversation-domain/src/main/kotlin/com/openandroidintelligence/conversation/model/StreamHealth.kt](../../apps/android/conversation-domain/src/main/kotlin/com/openandroidintelligence/conversation/model/StreamHealth.kt)
+- [apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/components/StateViews.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/components/StateViews.kt)
+- [apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt)
+- [apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt)
+- [apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/agents/AgentSessionClient.kt](../../apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/agents/AgentSessionClient.kt)
+- [apps/android/platform-kernel/src/main/kotlin/com/openandroidintelligence/kernel/PairingGrantState.kt](../../apps/android/platform-kernel/src/main/kotlin/com/openandroidintelligence/kernel/PairingGrantState.kt)
+- [integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py](../../integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py)
+- [integrations/hermes-session-adapter/src/oai_hermes_adapter/event_sync.py](../../integrations/hermes-session-adapter/src/oai_hermes_adapter/event_sync.py)
+- [integrations/hermes-session-adapter/src/oai_hermes_adapter/host_history.py](../../integrations/hermes-session-adapter/src/oai_hermes_adapter/host_history.py)
+- [integrations/hermes-session-adapter/src/oai_hermes_adapter/runtime.py](../../integrations/hermes-session-adapter/src/oai_hermes_adapter/runtime.py)
+- [integrations/hermes-session-adapter/src/oai_hermes_adapter/sessions.py](../../integrations/hermes-session-adapter/src/oai_hermes_adapter/sessions.py)
+- [integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_events.py](../../integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_events.py)
+- [oai-core/src/oai_core/adapters/remote.py](../../oai-core/src/oai_core/adapters/remote.py)
+- [oai-core/src/oai_core/gateway/core.py](../../oai-core/src/oai_core/gateway/core.py)
+- [oai-core/src/oai_core/sessions.py](../../oai-core/src/oai_core/sessions.py)
+- [scripts/core_setup.py](../../scripts/core_setup.py)
+- [scripts/install.sh](../../scripts/install.sh)
+- [scripts/setup.sh](../../scripts/setup.sh)
+
+### 自动化测试
+
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/AuthSessionLifecycleTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/AuthSessionLifecycleTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/NativeAgentBackgroundWorkTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/NativeAgentBackgroundWorkTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/SettingsCapabilityUiTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/SettingsCapabilityUiTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationMirrorTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationMirrorTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventOwnerTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventOwnerTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventSynchronizerTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventSynchronizerTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeRecoveryCommitTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeRecoveryCommitTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/PermissionCatalogTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/PermissionCatalogTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/CapabilityPublisherTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/CapabilityPublisherTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/DeviceCapabilitySyncStateTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/DeviceCapabilitySyncStateTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/PluginInstallStoreTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/PluginInstallStoreTest.kt)
+- [apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/PluginManagementScreenTest.kt](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/PluginManagementScreenTest.kt)
+- [apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/components/StateViewsTest.kt](../../apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/components/StateViewsTest.kt)
+- [apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchCloseSubmissionTest.kt](../../apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchCloseSubmissionTest.kt)
+- [apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchEventCommitRecoveryTest.kt](../../apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchEventCommitRecoveryTest.kt)
+- [apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/agents/NativeEventSyncClientTest.kt](../../apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/agents/NativeEventSyncClientTest.kt)
+- [apps/android/platform-kernel/src/test/kotlin/com/openandroidintelligence/kernel/PairingGrantStateTest.kt](../../apps/android/platform-kernel/src/test/kotlin/com/openandroidintelligence/kernel/PairingGrantStateTest.kt)
+- [oai-core/tests/native_hermes_contract.py](../../oai-core/tests/native_hermes_contract.py)
+- [oai-core/tests/native_hermes_origin_contract.py](../../oai-core/tests/native_hermes_origin_contract.py)
+- [oai-core/tests/test_cli_mcp.py](../../oai-core/tests/test_cli_mcp.py)
+- [oai-core/tests/test_hermes_native_origin.py](../../oai-core/tests/test_hermes_native_origin.py)
+- [oai-core/tests/test_native_event_sync.py](../../oai-core/tests/test_native_event_sync.py)
+- [tests/test_core_setup_transaction.py](../../tests/test_core_setup_transaction.py)
+- [tests/test_install_script.py](../../tests/test_install_script.py)
+- [tools/test_smart_test.py](../../tools/test_smart_test.py)
+
+### 文档与门禁
+
+- [.github/workflows/oai-core.yml](../../.github/workflows/oai-core.yml)
+- [docs/architecture/2026-10-29-native-session-recovery.zh-CN.md](../../docs/architecture/2026-10-29-native-session-recovery.zh-CN.md)
+- [docs/architecture/2026-10-30-native-event-sync.zh-CN.md](../../docs/architecture/2026-10-30-native-event-sync.zh-CN.md)
+- [docs/contracts/device-capability-publication-android-v1.md](../../docs/contracts/device-capability-publication-android-v1.md)
+- [docs/reviews/2026-10-30-dev-reliability.zh-CN.md](../../docs/reviews/2026-10-30-dev-reliability.zh-CN.md)
+- [scripts/README.md](../../scripts/README.md)
+- [tools/smart-test.py](../../tools/smart-test.py)
