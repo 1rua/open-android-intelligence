@@ -170,6 +170,7 @@ jobs:
           --tests '*ApplicationCompositionTest'
           --tests '*AndroidApiCompatibilityTest'
           --tests '*CoreAgentConversationRepositoryTest'
+          --tests '*NativeRecoveryOwnershipTest'
           --tests '*NativeConversationOrganizationStoreTest'
       - name: Play screen integration and Android API compatibility
         working-directory: apps/android
@@ -184,4 +185,5 @@ jobs:
           --tests '*ApplicationCompositionTest'
           --tests '*AndroidApiCompatibilityTest'
           --tests '*CoreAgentConversationRepositoryTest'
+          --tests '*NativeRecoveryOwnershipTest'
           --tests '*NativeConversationOrganizationStoreTest'
