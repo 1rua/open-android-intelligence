@@ -1,6 +1,6 @@
 # Android 唯一设备能力授权：分支实施记录
 
-开始日期：2026-10-28；最新验证：2026-10-29。状态：**已在 `feature/android-device-authority-20261028` 分支实施，待 PR 合入 `dev` 和真机验收**。
+开始日期：2026-10-28；最新验证：2026-10-29，基于 `dev@4a5fd397c5612fe8b3024c9b3b2754e217c68ccd`。状态：**已在 `feature/android-device-authority-20261028` 分支实施，PR 准备中；真机验收待完成**。
 
 本记录描述本 feature 分支的源码实现与当前验证，不表示 PR 已合并、正式发布或真实设备验收已通过。历史只读排查仍固定在 `dev@e5c7f42a59262f404888858045aa975830dafb61`，见[只读修复计划](2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)和[Core 基线证据](2026-10-28-device-capability-authorization-core-evidence.zh-CN.md)。二者中的代码事实、当时测试结果和原 32 份 Markdown 清单属于 e5 阶段记录；本报告不回写为 e5 已实现。
 
@@ -78,17 +78,16 @@ HTTP 设备请求在每次真正发送前重新检查授权，包括收到 401 �
 
 | 检查 | 结果 | 范围与限制 |
 | --- | --- | --- |
-| 授权代码前的红测 | 复现旧策略 false 覆盖 Android READY；额外配对 grant 缺失时插件执行被拒绝 | 与用户现象一致；不是设备/部署证据 |
-| Core 与状态迁移 | `npm run test:pr` 中 Core 套件 310 项通过；单独 SDK 原生文件测试 18 项通过 | 覆盖旧 policy 退场、历史请求 fence、账户迁移/回滚失败原子性、永久撤销、Schema/provider、核心 HTTP 和旧 Hermes 状态后端边界 |
-| OAI Core 迁移备份与旧 writer 栅栏 | Core 权威迁移回归 21 项通过；带 SDK 的 `test_hermes.py` 18 项通过 | 覆盖一次性快照、失败后无界重试被阻止、旧连接/旧 e5 Core 拒写；快照恢复验证不等于已验证业务回滚 |
-| 独立 OAI Core wheel | `open-android-intelligence-core` 0.2.0 安装后，在脱离源码 checkout、排除 Hermes SDK/旧 Gateway 环境的进程运行 `oai serve` 通过；错误 Core Schema Hash 被拒绝 | 证明安装包及运行依赖边界；不证明生产部署已经升级 |
-| Node/协议锁与 DSH | `npm run mvp:lock:check` 通过（8 项）；DSH Session Adapter 测试 18 项通过 | DSH 仅会话适配层，不单独授予设备能力 |
-| Android 模块单测 | `platform-kernel` 68、`gateway-client` 297、`control-ports` 14、`capability-ports` 51、`screen-control` 21、`device-primitives` 22、`conversation-domain` 32、`conversation-ui` 638 项通过 | 使用已固定 JDK 21、Android SDK 和本机 Gradle 缓存；这些模块结果分别记录，不把合计说成真机结果 |
-| Android App 完整单测 | 最终 `npm run test:pr` 返回成功；`app:testFullDebugUnitTest` 的当前 XML 汇总 1105 项，0 failures/errors/skips | 覆盖新的设备开关、旧授权数据复核、同作者更新关闭持久性、后台许可隔离、HTTP 端到端通知、授权协商、publisher 回滚和丢回执恢复、登出竞态及其他现有 App 回归 |
-| Fast 门禁首轮 | Core 310 项和 DSH 18 项通过；Gradle 执行完 App 测试后，Fast 收到多份 JUnit XML 写入失败并返回失败 | 这不能记为 Fast 通过。PR 级重跑中 Gradle 全部 Android 任务通过，App XML 为 1105/0；首轮 Fast 的结果写入问题仍单独保留，不把它报告成测试已通过 |
-| 真实手机与混合版本部署 | 尚未验收 | 未在真实设备上申请/撤销系统权限、通知范围、屏幕许可或验证跨版本服务器；不能标为发布验收通过 |
-| `dev` 合入与发布 | 待 PR | 本地分支已实施，未部署，未合并 |
+| 最新 `dev` 分支 | PR 提交基线为 `4a5fd397c5612fe8b3024c9b3b2754e217c68ccd`；代码提交 `18f6490009d8439e4e20a9f87a7b0bcbce1da9c0` 已重放到该基线 | PR 仍待 Review，没有合并或部署 |
+| PR 级门禁 | `npm run test:pr` 返回成功，Fast 和 PR 阶段的锁检查、Core、DSH 与 Android 模块任务全部通过 | 不代表真实设备验收或 GitHub Actions 已完成；Actions 结果不轮询 |
+| Core 与迁移 | Core 测试 311 项通过；独立授权/迁移回归 21 项通过 | 覆盖缺失/true/false/损坏旧策略、单事务迁移、快照冲突与失败重试、旧写入者拒写、旧请求 fence 及 Claim/Result/ACK |
+| Core 发行包 | `open-android-intelligence-core` 0.2.0 wheel 离开源码 checkout、在无 Hermes 插件/SDK 环境下启动 `oai serve`；错误 Core Schema Hash 被拒绝 | `verify_distribution.py` 输出 `hermes_installed: false, serve: passed`；Core Schema Hash 未改变 |
+| Session Adapter 与依赖锁 | 固定 Hermes SDK 下 `test_hermes.py` 18 项通过，1 条现有 aiohttp 警告；MVP dependency lock 8 行通过 | DSH Session Adapter 测试另有 18 项通过。Hermes 只负责会话接入 |
+| Android Gateway Client 单测 | 297 项通过 | 覆盖新旧授权模型 HTTP 头解析以及认证续期后每次发送前的授权复核 |
+| Android Platform Kernel 单测 | 68 项通过 | 覆盖默认本地决定、作者范围稳定关闭、明确拒绝优先、后台许可独立及原语返回前撤权栅栏 |
+| 其他 Android 模块 | `control-ports` 14、`capability-ports` 51、`screen-control` 21、`device-primitives` 22、`conversation-domain` 32、`conversation-ui` 638 项通过 | 按各模块 JUnit 报告计数 |
+| Android App 完整单测 | `app:testFullDebugUnitTest` 汇总 1105 项，0 failures/errors/skips；PR 级任务成功 | 覆盖旧记录复核、插件关闭/同作者更新、后台隔离、系统权限拒绝、真实 Core HTTP、丢 Claim/Result 回复及登出/刷新竞态 |
+| Fast 首轮报告 | `npm run test:fast` 的 Gradle App 测试阶段曾出现多个 `Could not write XML test results` 报告错误并返回失败；其中对应 App JUnit XML 为 1105 项、0 failures/errors | Fast 结果仍按失败记录，不改报为通过。随后 `npm run test:pr` 对最新基线重新执行完整 Android 任务并成功 |
+| 真实手机与混合版本部署 | 尚未验收 | 未在真实设备申请/撤销系统权限、通知范围、屏幕许可，也未做真实 Gateway 升级或生产回滚 |
 
-主要复现链、迁移依据和逐项源文件见[初始只读修复计划](2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)及[Core 源码证据](2026-10-28-device-capability-authorization-core-evidence.zh-CN.md)。计划与证据保留 `dev@e5c7f42a` 的历史范围，本报告记录功能分支实施及后续验证；两者不是同一阶段的测试结果。
-
-最近确认的远端 `dev` 为 `4a5fd397c5612fe8b3024c9b3b2754e217c68ccd`。在完成独立 feature 分支提交与 rebase 后，需按该基线再次执行 PR 级验证，避免把该远端提交开始的安装向导改动与本次授权实现混为一条历史。未合入 `dev`、未部署，也未做物理设备验收。
+设备授权的实现与最终本地验证已完成；部署升级、真机验收和 GitHub Actions 后续状态尚未完成。交付仍是未合入 `dev` 的 PR，请 Review 后再安排生产迁移和设备验收。
