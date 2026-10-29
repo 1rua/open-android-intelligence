@@ -57,6 +57,7 @@ async def test_account_binding_is_authority_and_unbound_conversations_are_not_na
     account.close()
     assert len(await adapter.list_sessions(Principal("alice"))) == 1
     assert not await adapter.status()
+    assert adapter.descriptor()["capabilities"]["generationRecovery"]
     assert not adapter.descriptor()["capabilities"]["create"]
     with pytest.raises(AdapterError):
         await adapter.create(Principal("alice"), "new")
@@ -70,6 +71,13 @@ async def test_remote_mapping_is_one_to_one_and_header_identity_cannot_be_inject
     async with TestClient(TestServer(app)) as client:
         url = str(client.make_url("/")).rstrip("/")
         remote = HermesRemoteSessionAdapter(url, token, {"core-alice": "alice", "core-bob": "bob"})
+        registry = AgentRegistry([remote])
+        try:
+            discovered = await registry.discover()
+            assert not discovered[0]["online"]
+            assert discovered[0]["capabilities"]["generationRecovery"]
+        finally:
+            await registry.close()
         assert (await remote.list_sessions(Principal("core-alice")))[0]["title"] == "alice"
         assert (await remote.list_sessions(Principal("core-bob")))[0]["title"] == "bob"
         with pytest.raises(AdapterError) as error:

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
 CAPABILITIES = (
     "list", "history", "create", "send", "steer", "rename", "archive", "delete",
-    "cancel", "stream", "commands", "approvals", "attachments",
+    "cancel", "stream", "commands", "approvals", "attachments", "generationRecovery",
 )
 STREAM_EVENT_TYPES = frozenset({"delta", "done", "error", "generation", "approval_requested", "approval_resolved"})
 PROTOCOL_VERSIONS = ("1.0", "v1")

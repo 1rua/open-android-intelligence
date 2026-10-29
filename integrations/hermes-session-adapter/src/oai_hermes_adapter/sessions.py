@@ -42,7 +42,7 @@ class HermesSessionAdapter:
                                  "archive": manager, "delete": manager,
                                  "cancel": send and callable(getattr(self.core, "generation_canceller", None)),
                                  "approvals": send and bool(getattr(self.runtime, "native_approvals_available", False)),
-                                 "commands": True, "attachments": send}}
+                                 "commands": True, "attachments": send, "generationRecovery": True}}
 
     def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
         from .host_commands import command_catalog
@@ -351,20 +351,28 @@ class HermesSessionAdapter:
                         pending_events.extend(await asyncio.to_thread(read_events))
                     if not pending_events:
                         if task.done():
-                            await task
-                            withdraw = getattr(self.runtime, "withdraw_generation_approvals", None)
-                            if callable(withdraw):
-                                await withdraw(principal.account_id, session_id, generation_id)
                             def state():
                                 with self._account(principal) as account:
                                     return account.conversations.workflow.for_message(accepted["messageId"])
                             generation = await asyncio.to_thread(state)
+                            status = (generation or {}).get("state")
+                            if status not in {"completed", "cancelled", "failed"}:
+                                # A host Task may finish before its completion
+                                # callback/cancel handoff commits. Task ownership
+                                # is not an authoritative execution outcome.
+                                if not task.cancelled() and task.exception() is not None:
+                                    yield {"type": "error", "code": "OUTCOME_UNKNOWN"}
+                                    return
+                                await changed.wait()
+                                continue
+                            withdraw = getattr(self.runtime, "withdraw_generation_approvals", None)
+                            if callable(withdraw):
+                                await withdraw(principal.account_id, session_id, generation_id)
                             # Approval withdrawal may commit more events. Apply
                             # every committed page before publishing the terminal.
                             pending_events.extend(await asyncio.to_thread(read_events))
                             if pending_events:
                                 continue
-                            status = (generation or {}).get("state")
                             if status in {"completed", "cancelled"}:
                                 yield {"type": "done", "text": previous, "generationId": generation_id,
                                        "outcome": "cancelled" if status == "cancelled" else "completed", **identity,
