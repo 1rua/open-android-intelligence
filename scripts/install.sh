@@ -327,6 +327,7 @@ configure_agent_plugins() {
 }
 
 install_selected_agent_plugins() {
+    local partial=0
     # 1. Hermes 插件自动安装
     if [ "${INSTALL_HERMES_PLUGIN:-0}" -eq 1 ]; then
         info "正在为 Hermes 环境安装 OAI 适配器插件..."
@@ -361,6 +362,7 @@ install_selected_agent_plugins() {
                 if [ -d "${oai_core_dir}" ] && [ -d "${hermes_adapter_dir}" ]; then
                     "${hermes_pip}" install --no-deps "${oai_core_dir}" "${hermes_adapter_dir}" 2>&1 || {
                         warn "向 Hermes Python 环境安装本地依赖失败，将继续尝试常规安装流程..."
+                        partial=2
                     }
                 fi
             fi
@@ -378,10 +380,12 @@ install_selected_agent_plugins() {
                 warn "尝试使用备用源 1rua/hermes-android-gateway 安装..."
                 hermes plugins install 1rua/hermes-android-gateway --force --no-deps --enable 2>&1 || {
                     warn "Hermes 插件自动安装失败，您可在 Hermes 环境手动执行: hermes plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable"
+                    partial=2
                 }
             fi
         else
-            warn "未检测到全局 hermes 命令，已为您配置环境变量与账号绑定。请在 Hermes 终端中运行:"
+            partial=2
+            warn "未检测到全局 hermes 命令；配置已保存，插件仍需手动安装。请在 Hermes 终端中运行:"
             warn "  hermes plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable"
         fi
     fi
@@ -392,12 +396,13 @@ install_selected_agent_plugins() {
         if [ ! -d "${dsh_adapter_dir}" ] && [ -n "${OAI_SETUP_SCRIPT_DIR}" ]; then
             dsh_adapter_dir="$(cd "${OAI_SETUP_SCRIPT_DIR}/../integrations/dsh-session-adapter" 2>/dev/null && pwd || echo "")"
         fi
-        info "DSH 环境变量与安全凭据已自动注入并同步至 ~/.dsh-cline / ~/.dsh 环境。"
+        info "Core 配置已提交；已发现的 DSH 环境文件已纳入配置事务。"
         if command -v plugin_manager >/dev/null 2>&1; then
             info "正在执行 DSH 插件注册: plugin_manager action=install_bundle target=${dsh_adapter_dir}"
-            plugin_manager action=install_bundle target="${dsh_adapter_dir}" 2>/dev/null || true
+            plugin_manager action=install_bundle target="${dsh_adapter_dir}" 2>/dev/null || partial=2
         else
-            info "如需在 DSH 会话中生效，请在 DSH 会话内运行:"
+            partial=2
+            info "DSH 插件尚需手动安装；请在 DSH 会话内运行:"
             info "  plugin_manager action=install_bundle target=${dsh_adapter_dir}"
             info "安装后重启 DSH profile 即可自动建立连接。"
         fi
@@ -407,6 +412,7 @@ install_selected_agent_plugins() {
     if [ "${INSTALL_CODEX_CONFIG:-0}" -eq 1 ]; then
         info "Codex app-server 配置已写入 core.json，Core 启动后将自动按需拉起并管理 Codex 进程。"
     fi
+    return "$partial"
 }
 
 # 引导用户完成初始化配置（账号、密码、端口、生成 core.json）
@@ -456,9 +462,18 @@ guide_initial_configuration() {
     agents_csv=$(IFS=,; printf '%s' "${selected_agents[*]}")
     local helper="${TARGET_DIR}/scripts/core_setup.py"
     [ -f "$helper" ] || helper="${OAI_SETUP_SCRIPT_DIR}/core_setup.py"
+    local save_status=0
     OAI_INIT_ADMIN_PASSWORD="${cfg_password}" "${TARGET_DIR}/.venv/bin/python" "$helper" \
         --root "${TARGET_DIR}" --host "${cfg_host}" --port "${cfg_port}" \
-        --username "${cfg_username}" --agents "$agents_csv" --hermes-account "$hermes_account"
+        --username "${cfg_username}" --agents "$agents_csv" --hermes-account "$hermes_account" || save_status=$?
+    if [ "$save_status" -ne 0 ]; then
+        if [ "$save_status" -eq 2 ]; then
+            warn "部分完成：配置事务已提交，可选 skill 安装尚未完成。"
+        else
+            error "配置保存失败；请检查恢复 journal。"
+        fi
+        return "$save_status"
+    fi
     success "配置与启动脚本已保存；既有账号、主密钥和路径保持可用。"
     info "桥接凭据仅存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
 }
@@ -680,10 +695,16 @@ main() {
     install_python_env
     detect_agents
     configure_agent_plugins
-    guide_initial_configuration
-    install_selected_agent_plugins
-    configure_autostart
-    install_cli_wrapper
+    local completion_status=0
+    guide_initial_configuration || completion_status=$?
+    if [ "$completion_status" -ne 0 ] && [ "$completion_status" -ne 2 ]; then return "$completion_status"; fi
+    install_selected_agent_plugins || completion_status=2
+    configure_autostart || completion_status=2
+    install_cli_wrapper || completion_status=2
+    if [ "$completion_status" -ne 0 ]; then
+        warn "部分完成：配置已提交，可选安装或系统集成尚需重试。"
+        return 2
+    fi
     show_completion_summary
 }
 

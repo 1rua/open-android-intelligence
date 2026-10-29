@@ -73,6 +73,7 @@ CFG_HOST=127.0.0.1
 CFG_PORT=8045
 CFG_USERNAME=alice
 CFG_PASSWORD=synthetic-installer-password
+install_selected_agent_plugins() {{ return 0; }}
 '''
     source += "guide_initial_configuration\n" if name == "install.sh" else "save_configuration_and_account\n"
     run_bash(source, environment=environment)
@@ -148,14 +149,24 @@ def test_start_script_loads_private_environment_and_refuses_readable_secrets(ins
     assert token not in rejected.stdout + rejected.stderr
 
 
-def test_rejects_symlink_and_insecure_token_file(tmp_path):
+def test_rejects_insecure_token_file(tmp_path):
     external = tmp_path / "external"
     external.write_text("OAI_HERMES_SESSION_TOKEN=synthetic-token-12345678901234567890\n")
     external.chmod(0o644)
     with pytest.raises(ValueError, match="0600"):
         HELPER["read_tokens"](external)
+
+
+def test_rejects_symlink_token_file(tmp_path):
+    external = tmp_path / "external"
+    external.write_text("OAI_HERMES_SESSION_TOKEN=synthetic-token-12345678901234567890\n")
+    external.chmod(0o600)
     linked = tmp_path / "linked"
-    linked.symlink_to(external)
+    try:
+        linked.symlink_to(external)
+    except (NotImplementedError, PermissionError, FileNotFoundError) as exc:
+        assert external.is_file() and linked.parent.is_dir()
+        pytest.skip(f"当前文件系统无法创建符号链接 fixture: {type(exc).__name__}")
     with pytest.raises(OSError):
         HELPER["read_tokens"](linked)
     with pytest.raises(ValueError, match="symlink"):
