@@ -547,7 +547,7 @@ class WorkbenchController(
                     atomsFor(target)[event.correlationId] == null) return@let
                 acceptSendAtom(target, event.correlationId, event.messageId)
                 changeSendAtom(target, event.correlationId) { old -> old?.let { atom ->
-                    if (atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED)
+                    if (event.agentReceived && atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED)
                         atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
                     else atom
                 } }
@@ -3992,7 +3992,7 @@ class WorkbenchController(
                                     // 会话流已经确认这条消息属实：先把提示从"等待接收"推进到"已接收"，
                                     // 不必等首个 token（Hermes 一轮可能要思考数秒到数十秒）。
                                     identified?.let { atom ->
-                                        if (atom.submissionState == LocalSubmissionState.ACCEPTED &&
+                                        if (event.agentReceived && atom.submissionState == LocalSubmissionState.ACCEPTED &&
                                             atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED
                                         ) {
                                             atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
@@ -4882,11 +4882,19 @@ class WorkbenchController(
                 val sameClientIdentity = entry.clientMessageId != null && entry.clientMessageId == lastEntry?.clientMessageId
                 val differentClientIdentities = entry.clientMessageId != null && lastEntry?.clientMessageId != null &&
                     entry.clientMessageId != lastEntry.clientMessageId
+                val distinctNativeIds = authoritativeMessageIds && lastEntry != null &&
+                    !entry.localPlaceholder && !lastEntry.localPlaceholder && entry.key != lastEntry.key
                 val isDuplicateUser = lastEntry != null && lastEntry.isUser &&
-                    !differentClientIdentities &&
-                    (sameClientIdentity || (normalizeEntryKey(entry.key) == normalizeEntryKey(lastEntry.key)) ||
-                     (entry.text == lastEntry.text && entry.attachments == lastEntry.attachments &&
-                      Math.abs(entry.timestamp - lastEntry.timestamp) <= 10_000L))
+                    !differentClientIdentities && !distinctNativeIds &&
+                    if (authoritativeMessageIds) {
+                        // Native history owns identity. A prefix, body or nearby
+                        // timestamp cannot turn two real user messages into one.
+                        sameClientIdentity || entry.key == lastEntry.key
+                    } else {
+                        sameClientIdentity || normalizeEntryKey(entry.key) == normalizeEntryKey(lastEntry.key) ||
+                            (entry.text == lastEntry.text && entry.attachments == lastEntry.attachments &&
+                                Math.abs(entry.timestamp - lastEntry.timestamp) <= 10_000L)
+                    }
                 if (isDuplicateUser) {
                     if (lastEntry!!.pendingAcceptance && !entry.pendingAcceptance) {
                         result[result.size - 1] = entry
@@ -4920,11 +4928,24 @@ class WorkbenchController(
 
         val keep = BooleanArray(entries.size) { true }
         val indexByIdentity = HashMap<String, Int>()
+        val nativeIdsByClient = if (authoritativeMessageIds) entries.asSequence()
+            .filter { it.isUser && !it.localPlaceholder && it.clientMessageId != null }
+            .groupBy { requireNotNull(it.clientMessageId).value }
+            .mapValues { (_, rows) -> rows.map { it.key }.distinct() } else emptyMap()
         entries.forEachIndexed { index, entry ->
             if (!entry.isUser) return@forEachIndexed
-            val identity = entry.clientMessageId?.value?.takeIf { it.isNotBlank() }
-                ?: normalizeEntryKey(entry.key).takeIf { it.isNotBlank() }
-                ?: return@forEachIndexed
+            val clientId = entry.clientMessageId?.value?.takeIf { it.isNotBlank() }
+            val identity = if (authoritativeMessageIds) {
+                when {
+                    // One explicit client can replace its local placeholder,
+                    // but cannot collapse several distinct native message IDs.
+                    clientId != null && nativeIdsByClient[clientId].orEmpty().size <= 1 -> "client:$clientId"
+                    entry.key.isNotBlank() -> "message:${entry.key}"
+                    else -> return@forEachIndexed
+                }
+            } else {
+                clientId ?: normalizeEntryKey(entry.key).takeIf { it.isNotBlank() } ?: return@forEachIndexed
+            }
             val previous = indexByIdentity[identity]
             if (previous == null) {
                 indexByIdentity[identity] = index

@@ -120,6 +120,59 @@ class CoreAgentConversationRepositoryTest {
         assertTrue(events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().all { it.message.contentRevision == 9L })
     }
 
+    @Test fun serverQueuedReceiptDoesNotClaimAgentReceivedUntilAuthoritativeRunning() = runBlocking {
+        val allowRunning = CompletableFuture<Unit>()
+        val allowDone = CompletableFuture<Unit>()
+        val parent = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val observed = java.util.concurrent.CopyOnWriteArrayList<VerifiedConversationEvent>()
+        val queued = "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"gen_lifecycle\",\"clientMessageId\":\"cm_lifecycle\",\"userMessageId\":\"user_lifecycle\",\"state\":\"queued\",\"revision\":0}\n\n"
+        val running = "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"gen_lifecycle\",\"clientMessageId\":\"cm_lifecycle\",\"userMessageId\":\"user_lifecycle\",\"state\":\"running\",\"revision\":1,\"eventId\":\"delivered\"}\n\n"
+        val done = "event: message\ndata: {\"type\":\"done\",\"generationId\":\"gen_lifecycle\",\"outcome\":\"completed\",\"revision\":2}\n\n"
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("stream only")
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+            override suspend fun <T> consumeResponse(request: WireRequest,
+                consume: suspend (Int, List<RawHeader>, InputStream) -> T): T {
+                val segments = listOf(queued, running, done).map { ByteArrayInputStream(it.toByteArray()) }
+                val input = object : InputStream() {
+                    private var segment = 0
+                    override fun read(): Int = error("buffered read required")
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                        while (segment < segments.size) {
+                            if (segment == 1) allowRunning.get(5, TimeUnit.SECONDS)
+                            if (segment == 2) allowDone.get(5, TimeUnit.SECONDS)
+                            val read = segments[segment].read(buffer, offset, length)
+                            if (read >= 0) return read
+                            segment++
+                        }
+                        return -1
+                    }
+                }
+                return input.use { consume(200, listOf(RawHeader("Content-Type", "text/event-stream")), it) }
+            }
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" }, parent)
+        val collector = parent.launch { repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(observed) }
+        try {
+            kotlinx.coroutines.yield()
+            repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_lifecycle"), "prompt"))
+            withTimeout(3000) { while (observed.filterIsInstance<VerifiedConversationEvent.MessageAccepted>().isEmpty()) kotlinx.coroutines.delay(1) }
+            assertEquals(GenerationState.QUEUED, repo.generationState.value)
+            assertTrue(observed.filterIsInstance<VerifiedConversationEvent.MessageAccepted>().none { it.agentReceived })
+            assertTrue(observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().none { it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED })
+            allowRunning.complete(Unit)
+            withTimeout(3000) { while (observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().none { it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED }) kotlinx.coroutines.delay(1) }
+            assertEquals(GenerationState.RUNNING, repo.generationState.value)
+            assertEquals(1L, observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().first { it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED }.revision)
+            allowDone.complete(Unit)
+            withTimeout(3000) { while (observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().none { it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED }) kotlinx.coroutines.delay(1) }
+            assertEquals(2L, observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().single { it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED }.revision)
+        } finally {
+            allowRunning.complete(Unit); allowDone.complete(Unit)
+            collector.cancel(); parent.cancel()
+        }
+    }
+
     @Test fun localSubmissionCannotInventAServerAcceptance() = runTest {
         val response = CompletableDeferred<WireResponse>()
         val transport = object : GatewayByteTransport {

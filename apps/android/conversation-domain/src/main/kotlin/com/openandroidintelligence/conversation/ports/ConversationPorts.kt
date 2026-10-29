@@ -302,6 +302,8 @@ sealed interface VerifiedConversationEvent {
         val messageId: String,
         val correlationId: String,
         val conversationId: ConversationId? = null,
+        /** Legacy Gateway acceptance also means delivered; native Core can acknowledge admission only. */
+        val agentReceived: Boolean = true,
     ) : VerifiedConversationEvent
 
     data class MessageStatus(

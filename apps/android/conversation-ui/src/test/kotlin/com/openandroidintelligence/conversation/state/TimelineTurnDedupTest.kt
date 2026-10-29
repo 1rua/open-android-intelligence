@@ -42,6 +42,39 @@ import org.junit.Test
 class TimelineTurnDedupTest {
 
     @Test
+    fun nativeUserMessagesWithDifferentRealIdsKeepEqualTextWithoutClientIdentity() = runTest {
+        val first = user("继续", 1_000L).copy(id = "native-user-first")
+        val second = user("继续", 1_100L).copy(id = "native-user-second")
+        assertEquals(listOf(first.id, second.id), rendered(first, second, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test
+    fun nativeUserIdsThatLookLikeLocalPrefixesRemainDifferentAcrossAnAnswer() = runTest {
+        val first = user("第一问", 1_000L).copy(id = "local_shared")
+        val answer = assistant("第一答", "native-answer", 1_500L)
+        val second = user("第二问", 2_000L).copy(id = "stream_shared")
+        assertEquals(listOf(first.id, answer.id, second.id),
+            rendered(first, answer, second, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test
+    fun nativeLocalPlaceholderStillMergesUsingItsExplicitClientIdentity() = runTest {
+        val client = com.openandroidintelligence.conversation.model.ClientMessageId("cm_native")
+        val local = user("同一次提交", 1_000L).copy(id = "local_native", clientMessageId = client,
+            state = "PENDING", localPlaceholder = true)
+        val confirmed = user("同一次提交", 1_100L).copy(id = "native-user", clientMessageId = client)
+        assertEquals(listOf(confirmed.id), rendered(local, confirmed, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test
+    fun twoRecordedNativeUserIdsCannotBeHiddenByASharedClientIdentity() = runTest {
+        val client = com.openandroidintelligence.conversation.model.ClientMessageId("cm_native")
+        val first = user("已写入的第一条", 1_000L).copy(id = "native-one", clientMessageId = client)
+        val second = user("已写入的第二条", 1_100L).copy(id = "native-two", clientMessageId = client)
+        assertEquals(listOf(first.id, second.id), rendered(first, second, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test
     fun distinctClientIdentitiesKeepRepeatedUserText() = runTest {
         val first = user("继续", timestamp = 1_000L).copy(
             clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId("cm_first"),

@@ -39,7 +39,8 @@ data class NativeAgentMessage(val id: String, val role: String, val text: String
 data class NativeAgentExecutionStep(val stepId: String, val eventId: String, val toolName: String,
     val arguments: String, val output: String?, val status: String, val revision: Long)
 data class NativeGenerationResult(val outcome: String, val generationId: String?, val messageId: String? = null,
-    val userMessageId: String? = null, val clientMessageId: String? = null, val text: String? = null)
+    val userMessageId: String? = null, val clientMessageId: String? = null, val text: String? = null,
+    val revision: Long? = null)
 data class NativeSteeringResult(val generationId: String, val outcome: String)
 data class NativeCurrentGeneration(val generationId: String, val conversationId: String, val state: String)
 data class NativeGenerationReceipt(val generationId: String, val conversationId: String,
@@ -48,7 +49,8 @@ sealed interface NativeAgentStreamEvent {
     data class Generation(val generationId: String,
         val executionSteps: List<NativeAgentExecutionStep>? = null,
         val executionRevision: Long? = null, val eventId: String? = null,
-        val clientMessageId: String? = null, val userMessageId: String? = null) : NativeAgentStreamEvent
+        val clientMessageId: String? = null, val userMessageId: String? = null,
+        val state: String? = null, val revision: Long? = null) : NativeAgentStreamEvent
     data class ApprovalRequested(val approval: JsonValue.JObject) : NativeAgentStreamEvent
     data class ApprovalResolved(val approval: JsonValue.JObject) : NativeAgentStreamEvent
     data class MessageIdentity(val messageId: String?, val userMessageId: String?, val clientMessageId: String?,
@@ -255,6 +257,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                 val contentEventIds = LinkedHashSet<String>()
                 val versionlessEventIds = LinkedHashSet<String>()
                 var executionRevision = -1L
+                var generationRevision = -1L
                 var firstDeltaObserved = false
                 while (!done) {
                     currentCoroutineContext().ensureActive()
@@ -322,6 +325,21 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                                 val id = required(value, "generationId")
                                 if (generationId != null && generationId != id) throw AgentSessionException("AGENT_STREAM_INVALID")
                                 generationId = id
+                                val stateField = JsonFields.field(value, "state")
+                                val revisionField = JsonFields.field(value, "revision")
+                                var lifecycleState: String? = null
+                                var lifecycleRevision: Long? = null
+                                if (stateField != null || revisionField != null) {
+                                    val declaredState = JsonFields.string(value, "state")
+                                    val declaredRevision = JsonFields.long(value, "revision")
+                                    if (declaredState !in setOf("queued", "running", "unknown") || declaredRevision == null || declaredRevision < 0)
+                                        throw AgentSessionException("AGENT_STREAM_INVALID")
+                                    if (declaredRevision > generationRevision) {
+                                        generationRevision = declaredRevision
+                                        lifecycleState = declaredState
+                                        lifecycleRevision = declaredRevision
+                                    }
+                                }
                                 val stepField = JsonFields.field(value, "executionSteps")
                                 val steps = if (stepField == null) null else {
                                     if (stepField !is JsonValue.JArray) throw AgentSessionException("AGENT_STREAM_INVALID")
@@ -336,8 +354,9 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                                     if (nextRevision <= executionRevision) continue
                                     executionRevision = nextRevision
                                 }
+                                if ((stateField != null || revisionField != null) && lifecycleState == null && steps == null) continue
                                 onEvent(NativeAgentStreamEvent.Generation(id, steps, nextRevision, frameEventId,
-                                    frameClient ?: identity.clientMessageId, identity.userMessageId))
+                                    frameClient ?: identity.clientMessageId, identity.userMessageId, lifecycleState, lifecycleRevision))
                             }
                             "approval_requested", "approval_resolved" -> {
                                 val approval = JsonFields.obj(JsonFields.field(value, "approval")) ?: error("AGENT_STREAM_INVALID")

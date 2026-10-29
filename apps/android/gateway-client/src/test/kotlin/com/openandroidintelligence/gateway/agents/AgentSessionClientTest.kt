@@ -463,6 +463,35 @@ class AgentSessionClientTest {
         assertEquals("${AgentSessionClient.ROOT}/codex/sessions/native/generation?afterRevision=1&clientMessageId=cm&generationId=gen%2Fone%3Fx%3D%E4%B8%AD%20%26&waitMs=25000", transport.requests.single().target)
     }
 
+    @Test fun terminalGenerationKeepsItsDurableLifecycleRevisionApartFromMessageContent() = runBlocking {
+        val result = client(streamTransport(listOf(
+            """{"type":"generation","generationId":"g","state":"queued","revision":0}""",
+            """{"type":"generation","generationId":"g","state":"running","revision":1}""",
+            """{"type":"delta","generationId":"g","messageId":"answer","eventId":"content-99","contentRevision":99,"text":"answer"}""",
+            """{"type":"done","generationId":"g","messageId":"answer","eventId":"content-99","contentRevision":99,"revision":2,"text":"answer","outcome":"completed"}""",
+        ))).send(agent, "native", "synthetic") {}
+        assertEquals(2L, result.revision)
+        assertEquals("completed", result.outcome)
+    }
+
+    @Test fun generationLifecycleKeepsQueuedRunningAndToolRevisionsIndependent() = runBlocking {
+        val observed = mutableListOf<NativeAgentStreamEvent.Generation>()
+        val frames = listOf(
+            """{"type":"generation","generationId":"g","state":"queued","revision":1,"clientMessageId":"cm","userMessageId":"u"}""",
+            """{"type":"generation","generationId":"g","state":"running","revision":2,"clientMessageId":"cm","userMessageId":"u","eventId":"received"}""",
+            """{"type":"generation","generationId":"g","state":"queued","revision":1,"clientMessageId":"cm","userMessageId":"u"}""",
+            """{"type":"generation","generationId":"g","executionRevision":30,"eventId":"tools","executionSteps":[{"stepId":"call","eventId":"native:2","toolName":"read","arguments":"{}","status":"running","revision":30}]}""",
+            """{"type":"done","generationId":"g","outcome":"completed"}""",
+        )
+        client(streamTransport(frames)).send(agent, "native", "synthetic", clientMessageId = "cm", onEvent = {
+            if (it is NativeAgentStreamEvent.Generation) observed += it
+        }) {}
+        assertEquals(listOf("queued", "running"), observed.mapNotNull { it.state })
+        assertEquals(listOf(1L, 2L), observed.filter { it.state != null }.map { it.revision })
+        assertEquals(30L, observed.single { it.executionSteps != null }.executionRevision)
+        assertNull(observed.single { it.executionSteps != null }.state)
+    }
+
     @Test fun nativeExecutionSnapshotsKeepTheirOwnRevisionAndDoNotResetAssistantContentIdentity() = runBlocking {
         val frames = listOf(
             """{"type":"generation","generationId":"g","userMessageId":"u","clientMessageId":"cm"}""",

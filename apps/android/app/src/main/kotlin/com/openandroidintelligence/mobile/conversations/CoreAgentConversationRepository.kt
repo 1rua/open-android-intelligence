@@ -405,7 +405,7 @@ class CoreAgentConversationRepository(
                             }
                             emitEvent(turn.agent.id, VerifiedConversationEvent.MessageAccepted(
                                 "receipt:${receipt.generationId}:${receipt.revision}:accepted", System.currentTimeMillis(),
-                                receipt.userMessageId, clientId, ConversationId(turn.conversationId)))
+                                receipt.userMessageId, clientId, ConversationId(turn.conversationId), agentReceived = false))
                             // Snapshot compensation restores all real messages and structured steps, including
                             // earlier non-prefix edits in a generation with more than one assistant message.
                             restoreHistory(turn)
@@ -531,6 +531,7 @@ class CoreAgentConversationRepository(
         GatewayLog.d("OaiLatency", "send.start client=${message.clientMessageId.value} conversation=$conversationId")
         turn.generationId?.let { rememberGeneration(turn, it, fromHost = false) }
         var messageId = message.clientMessageId.value
+        var userAccepted = false
         var assistantMsgId = "stream_${message.clientMessageId.value}"
         var assistantHasNativeId = false
         var firstDeltaLogged = false
@@ -628,10 +629,12 @@ class CoreAgentConversationRepository(
                             nativeEventId = event.eventId
                             event.userMessageId?.let { remoteId ->
                                 turn.userMessageId = remoteId
-                                if (remoteId != messageId) {
+                                if (!userAccepted || remoteId != messageId) {
                                     messageId = remoteId
+                                    userAccepted = true
                                     enqueue("accepted", VerifiedConversationEvent.MessageAccepted("evt_${UUID.randomUUID()}",
-                                        System.currentTimeMillis(), remoteId, message.clientMessageId.value, ConversationId(conversationId)))
+                                        System.currentTimeMillis(), remoteId, message.clientMessageId.value, ConversationId(conversationId),
+                                        agentReceived = false))
                                 }
                                 GatewayLog.d("OaiLatency",
                                     "accept.identity elapsedMs=${System.currentTimeMillis() - startedAt} client=${message.clientMessageId.value}")
@@ -639,11 +642,30 @@ class CoreAgentConversationRepository(
                         }
                         is NativeAgentStreamEvent.Generation -> {
                             rememberGeneration(turn, event.generationId)
+                            val lifecycleRevision = event.revision
+                            val lifecycleState = event.state
                             if (!turn.cancelled && turn.state !in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)) {
-                                turn.state = GenerationState.RUNNING
-                                if (isSelected(turn)) {
-                                    _generationId.value = event.generationId
-                                    _generationState.value = GenerationState.RUNNING
+                                val advancesLifecycle = lifecycleState != null && lifecycleRevision != null && lifecycleRevision > turn.receiptRevision
+                                val legacyGeneration = lifecycleState == null && event.executionSteps == null
+                                if (advancesLifecycle || legacyGeneration) {
+                                    if (advancesLifecycle) turn.receiptRevision = requireNotNull(lifecycleRevision)
+                                    turn.state = when (lifecycleState) {
+                                        "queued" -> GenerationState.QUEUED
+                                        "unknown" -> GenerationState.OUTCOME_UNKNOWN
+                                        else -> GenerationState.RUNNING
+                                    }
+                                    if (isSelected(turn)) {
+                                        _generationId.value = event.generationId
+                                        _generationState.value = turn.state
+                                    }
+                                    if (advancesLifecycle && lifecycleState in setOf("queued", "running")) {
+                                        val acceptedId = event.userMessageId ?: turn.userMessageId
+                                        if (acceptedId != null) enqueue("delivery:${event.generationId}", VerifiedConversationEvent.MessageStatus(
+                                            "lifecycle:${event.generationId}:$lifecycleRevision", System.currentTimeMillis(),
+                                            ConversationId(conversationId), acceptedId, message.clientMessageId,
+                                            if (lifecycleState == "queued") AgentMessageStatus.QUEUED else AgentMessageStatus.DELIVERED,
+                                            requireNotNull(lifecycleRevision), null, event.generationId))
+                                    }
                                 }
                             }
                             val executionRevision = event.executionRevision
