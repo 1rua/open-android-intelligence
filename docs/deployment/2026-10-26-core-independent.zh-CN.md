@@ -1,5 +1,7 @@
 # OAI Core 0.2 独立部署与 Hermes 安全切换
 
+**2026-10-28 授权规则更新**：以下独立部署、账号认证、密钥和安全切换步骤继续适用；设备能力按 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 由 Android 唯一授权。已安装且启用插件的普通前台能力默认开启，不再要求 Hermes setup 或 Core 账号能力开关；系统权限、本地限制、后台许可和敏感确认仍需满足。实现已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`。旧数据迁移、混合版本协商和真机验收状态见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；本部署说明不表示目标生产服务已升级。
+
 本次依赖方向为 `Hermes Session Adapter → OAI Core`。Android 设备协议、认证、配对、
 授权版本、请求排队与 Claim/Result/ACK 由 `oai_core.gateway` 提供唯一实现。
 Hermes 是可选的原生会话宿主。DSH、Codex 与纯设备 CLI/API/MCP 无需安装 Hermes。

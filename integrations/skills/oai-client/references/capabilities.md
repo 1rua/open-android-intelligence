@@ -2,6 +2,8 @@
 
 本参考文档总结了 OAI Core 常见设备能力标识、适用场景与典型调用参数。
 
+**2026-10-28 设备授权规则**：Android 是设备能力授权的唯一权威，已安装且启用的插件普通前台能力默认开启；本地显式开关、系统权限、后台许可、数据范围与必要敏感确认仍决定实际执行。Core 和 Agent Gateway 不另设账号能力开关。规则已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`；分支实现与验证见 [ADR-0059](../../../../docs/adr/0059-android-is-the-sole-device-capability-authority.md) 和[实施记录](../../../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。能力名称和参数始终以当前实际发现结果为准。
+
 ## 1. 基础设备信息与状态
 
 ### 设备发现
@@ -97,7 +99,8 @@ oai capabilities
 | :--- | :--- | :--- |
 | `LOGIN_REQUIRED` | 本地未保存有效凭据 | 执行 `oai login` 重新登录 |
 | `CAPABILITY_NOT_FOUND` | 设备或 Core 未注册该能力 | 检查 `oai capabilities` 输出核对 ID |
-| `CAPABILITY_DISABLED` | 服务端或手机端策略禁用了此能力 | 检查 policy 或在手机设置中开启 |
+| `CAPABILITY_DISABLED` | 本地能力关闭，或旧版本 Core 因账号策略拒绝；以实际返回原因核对 | 检查手机状态；旧 Core 的拒绝按[历史修复计划](../../../../docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)记录，不以增设服务端授权解决；当前分支状态见[实施记录](../../../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) |
+| `GATEWAY_DISABLED`（旧能力目录状态） | e5 `dev` 基线的目录状态，表示旧账号策略拒绝，与当前授权规则不一致 | 记录版本和请求关联信息并核对 Core 是否已升级；该判断已在 feature 分支修复，详见[实施记录](../../../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；不要求旧 Gateway 能力 setup |
 | `IDEMPOTENCY_CONFLICT` | 相同幂等键使用了不同的参数 | 复用相同参数重试，或生成新幂等键 |
 | `AWAITING_APPROVAL` | 操作需要用户在手机屏幕上手动授权确认 | 提醒用户查看手机屏幕并确认授权 |
 | `DEVICE_OFFLINE` | 手机客户端已断开与 Core 的长连接 | 提示用户检查手机网络及 OAI 运行状态 |

@@ -1,8 +1,7 @@
 # OAI Core 架构事实基线（2026-10-26）
 
-本文件是仓库内所有面向用户与开发者的文档在描述"统一 Core"时的唯一事实来源。
-每条结论都标注了可核对的代码位置。文档更新只允许引用本文件已经写明的内容；
-本文件未覆盖的行为，必须先读代码补进本文件，再写进其他文档。
+本文件记录“统一 Core”的实现事实，每条结论都应有可核对的代码位置。
+**2026-10-28 授权审查补充**：本文的代码事实固定于其原架构基线，明确标为“遗留”的服务端账号开关与额外 grant 检查不是新规则。当前设备授权决策见 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 和[需求修订](../superpowers/specs/2026-10-28-device-capability-authorization.md)：Android 唯一授权，普通前台能力默认开启，Core 负责认证、绑定、发现、协议验证和路由。该修复已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；当前源码与测试状态见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。不要把本文历史代码行号当作分支现况。
 
 迁移前基线：OAI `dev` 提交 `f2c4a4eab081aa48fc0307c51f0f3c8754a5891d`；设备实现迁移来源为 Hermes `b64dda00a0de9ff1a95a375dcf92f62b5a1027b3`。以下描述以本文件所在提交的实现为准，迁移分类与数据切换见[依赖迁移清单](2026-10-26-core-independence-migration.zh-CN.md)。
 
@@ -138,8 +137,8 @@
 - 非 loopback 监听必须提供 TLS 证书与私钥，或显式 `allowInsecureHttp: true`。
 - 存在 `tls.certFile` 时自动从证书计算 `tlsSpkiSha256`；TLS 终结在反代之后时须手工配置
   与手机实际所见证书一致的指纹。
-- 账号能力开关与手机授权同时生效：`oai policy set --capability ... --enabled|--disabled`。
-- `account`、`policy` 是服务端本机管理命令，不进入远程调用面。
+- **原 e5 `dev` 基线遗留**：`DeviceCapabilityPolicy.allows()` 只在账号配置显式为 `false` 时拒绝，缺项默认允许；`capability_catalog()` 用该值覆盖 Android 状态为 `GATEWAY_DISABLED`。该重复授权已在 feature 分支修复；当前实现与验证见[授权实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。不要把此处历史代码事实当作当前用户操作要求。
+- `account` 与现存的 `policy` 是服务端本机管理命令，不进入远程调用面；目标保留账号管理、停止以 `policy` 维护设备能力许可，不应指导用户借此绕过本次问题。
 - 会话桥 token 至少 32 字符，仅用于 Core 到宿主的内部认证，不能作为 Core 账号或设备凭据。
 - 维护循环每秒扫描各账号：按原生到期迁移过期请求、清理终态正文、清理事件；
   单账号失败只告警并下一轮重试。
@@ -159,7 +158,7 @@ platform ID 以保留原生会话来源键：
 - 不注册旧设备工具，不启动旧 Gateway v2 设备端口，不构造 `GatewayCore` 或设备请求调度器。会话后端只复用 Core 公共存储库；连接旧账号库时持有 SQLite 独占锁，竞争写入会失败。切换前仍须先停止旧 Gateway，并单独备份原数据库和主密钥。
 - 原生审批在宿主提供真实审批解析器时声明 `approvals`，以 `approval_requested/resolved`
   流帧传递卡片及公开终态；专门决策接口按账号和会话验证 opaque 映射后解挂宿主等待。
-  原生会话仍由适配器管理；设备授权和请求调度始终归 Core。
+  原生会话仍由适配器管理；设备请求调度归 Core，设备能力授权只归 Android。桥 Token 与 `OAI_HERMES_ACCOUNTS` 的宿主账号 allowlist 继续保留，二者都不属于被取消的账号级设备能力许可。
 - 会话标题通过账号绑定后的 SessionDB `get/set_session_title` 读写，按压缩链当前 tip 定位，
   终端修改同样可见；缺少真实标题接口时不宣称支持重命名。
 - 会话列表排除尚未绑定宿主的 Gateway 占位行。

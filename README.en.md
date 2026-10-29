@@ -45,6 +45,8 @@
 
 ## 30-Second Overview
 
+> **Device authorization rules, 2026-10-28:** Android is the sole authority for device capability authorization. Capabilities of installed and enabled device plugins default to enabled; local explicit switches, Android system permissions, local data scope, and required sensitive-operation confirmations still govern execution. OAI Core authenticates callers, binds devices, discovers capabilities, validates the protocol, and routes requests. Agent plugins bridge their hosts without additional account-level device capability grants. The rules are implemented on `feature/android-device-authority-20261028`, pending merge to `dev` and physical-device acceptance. See the [accepted ADR-0059](docs/adr/0059-android-is-the-sole-device-capability-authority.md) and the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md); historical e5 `dev` evidence is in the [repair plan](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md).
+
 The `dev` branch now features a unified deployment entrypoint: **OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**.
 The phone connects to a single OAI Core address, which simultaneously serves three API surfaces:
 1. **Android Device Protocol** (`/open-android-intelligence/v2`): Authentication, Ed25519 request signatures, pairing, and platform event streams;
@@ -64,14 +66,14 @@ Core system components:
 | Core Component | Role & Description | Repository / Path |
 | --- | --- | --- |
 | **Android App** | Connects to Core or Gateway, manages accounts and native sessions, sends multimodal attachments, and hosts the device capability sandbox | [`apps/android`](apps/android) |
-| **OAI Core** | Single Python service daemon managing device authority, dispatching requests, and offering CLI/MCP and session adapters | [`oai-core`](oai-core) |
+| **OAI Core** | Single Python service daemon providing connection authentication, device binding, capability discovery, request routing, CLI/MCP, and session adapters | [`oai-core`](oai-core) |
 | **Gateway Protocol** | Defines authentication, device event streaming, and closed-schema data contracts between phone and server | [`gateway-contract`](gateway-contract) |
 | **Session Adapters** | Host-side lightweight session bridges for DSH and Hermes; reads native transcripts without mirror databases | [`integrations`](integrations) |
 | **Third-Party Host Plugins** | Traditional standalone Gateway adapter plugins for existing deployments (Hermes / OpenClaw / DSH) | [Hermes Plugin](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw Plugin](https://github.com/1rua/openclaw-gateway-plugin) / [DSH Plugin](https://github.com/1rua/dsh-android-gateway) |
 
 > [!NOTE]
 > **Zero Relay Architecture**: The Android App communicates directly with your self-hosted OAI Core service. The project operates no public relay servers.<br>
-> **Plugin-Based Authorization**: Device capabilities are installed and authorized as isolated plugins. Sensitive operations such as sending SMS must be manually confirmed by the user on the phone screen.
+> **Android Authorization (target design)**: Installed and enabled device plugins have their capabilities enabled by default. Android decides whether an operation may run; sensitive operations such as sending SMS still require manual confirmation on the phone.
 
 ---
 
@@ -95,7 +97,7 @@ Core system components:
     </td>
     <td width="50%" valign="top">
       <h3>Zero-Trust Security & Screen Confirmation <img src="https://img.shields.io/badge/Security%20First-F59E0B?style=flat-square" alt="Security First"></h3>
-      <p>Follows the "Default Deny" security principle: plugin installation, plugin enablement, and Gateway account authorization are strictly decoupled across tiers. High-risk operations like sending SMS must be confirmed manually per item on the phone screen, strictly preventing silent execution.</p>
+      <p>Android manages device capability authorization. Installed and enabled plugins default to enabled capabilities; local explicit switches, missing system permissions, or pending required confirmations can still block execution. Connection authentication and device pairing remain required. The target design adds no Gateway account-level device capability grant.</p>
     </td>
   </tr>
   <tr>
@@ -126,7 +128,7 @@ The entire system operates across three tightly integrated layers:
    - **Secure Plugin Sandbox**: Isolates device extension plugins inside a WebAssembly runtime, enforcing strict bounds on CPU, memory, persistent local storage, and concurrent network resources.
 2. **OAI Core & Gateway Protocol v2 Layer** (The Bridge & Scheduler)
    - **Unified Listener**: `oai serve` exposes the `/v2` device protocol, `/core/v1` invocation surface, and `/v2/agents` native session surface over a single address.
-   - **Device Security Runtime**: Reuses the pinned upstream Hermes GatewayCore state machines for queuing, expiration, replay defense, cancellation, and acknowledgement.
+   - **Device Security Runtime**: The repository’s independent `oai_core.gateway` owns queuing, expiration, replay defense, cancellation, and acknowledgement. Installing or starting Core does not require the Hermes plugin.
    - **Strict Closed Contracts**: Full-field schema validation; Ed25519 signatures, timestamp bounds, and nonces prevent replay attacks; mutation requests require idempotency keys.
 3. **Agent Host & Native Session Layer** (The Backend Brain)
    - **Lightweight Session Adapters**: Hermes and DSH connect via loopback session bridges; Codex connects via native `app-server` subprocess.
@@ -141,7 +143,9 @@ The entire system operates across three tightly integrated layers:
   <img src="assets/readme/security-model.svg" alt="Security Model: Agent submits requests, kernel checks permissions, user confirms on screen" width="100%">
 </div>
 
-Security and privacy are the foundation of this project. All hardware device capabilities are **completely disabled by default**. Enabling any capability requires passing three lines of defense: **Install plugin on phone → Manually enable plugin → Authorize individually for a specific Gateway account**.
+The target device capability flow is: **Install and enable the plugin on Android → Android checks local switches, system permissions, and required confirmation → Execute the permitted request**. Installation alone does not enable a plugin. Once installed and enabled, a plugin does not require a separate Gateway account grant. Core verifies caller credentials, device bindings, and the protocol; Android makes the device capability decision.
+
+Connection authentication establishes who is calling; pairing binds the account to a device; capability authorization determines what that phone currently permits. Removing the old Gateway capability switch does not allow anonymous, cross-account, or unpaired calls. The existing image is retained; the authorization rules in this text, ADR-0059, and the implementation report describe the feature branch behavior. The historical repair plan records the earlier e5 `dev` baseline.
 
 ### Device Permission Control Matrix
 
@@ -149,7 +153,7 @@ Security and privacy are the foundation of this project. All hardware device cap
 | --- | --- |
 | **Call Logs** | **Basic metadata read-only** (contacts/numbers, timestamps, call duration); recording, answering, hanging up, or auto-dialing is strictly prohibited in any form. |
 | **SMS Records** | Controlled read access to sent and received records; **modifying operations like sending SMS must be manually clicked and confirmed on the phone screen one by one**, background dispatch is strictly prohibited. |
-| **App Notifications** | **Denied by default**; requires the user to manually select specific app package names and fields in a whitelist. In-memory end-to-end encrypted buffering without plaintext logging. |
+| **App Notifications** | The installed and enabled plugin defaults to enabled capabilities. Notification access permission and Android-local app/field selection still limit the actual data returned; unselected apps are excluded, and plaintext logging remains prohibited. |
 
 ---
 
@@ -182,7 +186,7 @@ Go to the project [Releases Page](https://github.com/1rua/open-android-intellige
 
 #### 🚀 Fast One-Click Install / Update (Recommended)
 
-Run the automated setup wizard via `curl`. It checks prerequisites, installs or updates OAI Core, detects local Agents (Hermes, DSH, Codex) to prompt one-click adapter installation, and guides you through initial credential and port configuration:
+Run the automated setup wizard via `curl`. It checks prerequisites, installs or updates OAI Core, detects local Agents (Hermes, DSH, Codex), and asks whether to install or connect the selected Agent before guiding you through initial credential and port configuration. When accepted, Hermes installation and enablement are attempted automatically; DSH registers the bundle when its plugin tool is available and otherwise prints the manual command; Codex integration is written to Core configuration. Declining Agent integration still allows a Core-only installation:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
@@ -222,7 +226,7 @@ Once running, connect your target Agents via the `agents` array in `oai-core/exa
 - **Hermes**: Install the lightweight [`integrations/hermes-session-adapter`](integrations/hermes-session-adapter/README.md) plugin (default port 8792, requires one-to-one account mapping);
 - **Codex**: Configure `codex app-server` and a dedicated `codexHome`, mapping model API keys via `envFrom`.
 
-After pairing phone and server, invoke device operations directly via CLI or MCP:
+After pairing phone and server, configure CLI or MCP credentials in the operator's own environment. Android still decides whether device operations may run. See the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) for this branch's implementation and validation, and the [repair plan](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md) for the historical e5 `dev` baseline:
 ```bash
 oai login --url http://127.0.0.1:8045 --username alice --device <DEVICE_ID>
 oai capabilities
@@ -233,12 +237,11 @@ oai mcp  # Start official FastMCP stdio server
 <details>
 <summary><b>Existing Deployments: Standalone Host Gateway Plugins (Click to expand)</b></summary>
 
-For existing standalone Gateway deployments, install the respective third-party plugins. Hermes and OpenClaw require configuring an account Master Key:
+The following commands document pinned legacy standalone Gateway deployments. They do not establish compatibility with the 2026-10-28 target authorization design. New deployments use Core and Session Adapters above; existing external plugins require a separate compatibility review. Legacy Hermes and OpenClaw deployments must retain their original account Master Key:
 
 #### Configure Hermes Host
 ```bash
 hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
-hermes gateway setup
 hermes open-android-intelligence account create -u my_user -p <set_password> --confirm-local
 ```
 
@@ -286,15 +289,12 @@ If unset, the handshake will return `null`, and the client will refuse to submit
 
 ### 4. Enable Device Capabilities on Demand
 
-All device capabilities remain dormant by default. When you need an Agent to perceive SMS or notifications, execute the standard three-tier authorization:
+Under the current feature-branch rules, installed and enabled device plugins have ordinary capabilities enabled by default. Explicit local switches, system permissions, notification app selection, separate background permission, and required sensitive-operation confirmations continue to govern execution. Agents use authenticated, device-bound Core CLI/MCP/API credentials, inspect `oai capabilities`, and follow the actual returned Schema.
 
-```bash
-# Inspect capability authorization for a specified account
-hermes open-android-intelligence capabilities list <username>
-```
+The old `dev` baseline may still report that the Gateway account has not enabled a capability. This is a legacy authorization check that conflicts with the new architecture; returning to the old Hermes capability setup is not the target user flow. The Android-only authorization repair is implemented on `feature/android-device-authority-20261028`, pending merge to `dev` and physical-device acceptance. See the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) for implementation and validation status.
 
 > [!WARNING]
-> **In-Development Status Notice**: Device plugin packaging, Ed25519 signature verification, WASM sandbox engine, and quota constraints have all been implemented and passed tests; however, the internal execution pipeline assembly within the App is actively underway, and physical full-loop verification is pending final acceptance. For progress, please refer to [Current Status](#current-status) and [Notification Capability Sync Record](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md).
+> **In-Development Status Notice**: Device plugin packaging, Ed25519 signature verification, WASM sandboxing, and quotas have automated coverage. Android-local authorization, capability publication, and device-request execution fences are connected on `feature/android-device-authority-20261028`. The complete App Fast suite is still under validation, and physical-device end-to-end acceptance remains open. See the [authorization implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) and the [notification capability sync record](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md).
 
 ---
 
@@ -362,7 +362,7 @@ This table genuinely records the automated testing, host integration, and physic
 | **OpenClaw Adapter Plugin** | Standalone repo pinned version, loaded in live host runtime, 70 shared test cases | ✅ Installation and communication protocol verified; physical Android end-to-end loop pending |
 | **DSH (DeepSeek Harness) Plugin** | Version 0.2.0; 201 automated tests; [DSH & Android Emulator Integration Record](https://github.com/1rua/dsh-android-gateway/blob/main/docs/reviews/2026-10-21-feature-completion.md) | ✅ Core session flow validated; device capability loop pending mobile plugins and physical device verification |
 | **Device Plugin Packaging & WASM Runtime** | Deterministic packaging and signing, WASM ABI conformance, memory/storage quota budget and recovery tests | ✅ Core underlying libraries passed tests; App business-layer execution scheduling pipeline being assembled |
-| **Official Reference Plugins** | Notification reading, SMS, call logs reviewed by Platform Kernel permission interception | ⚠️ Requires physical device plugin installation and tiered authorization; actual loop pending separate acceptance |
+| **Official Reference Plugins** | Notification reading, SMS, call logs reviewed by Platform Kernel permission interception | ⚠️ Android-local authorization, system permissions, and execution require acceptance; the authorization repair is implemented on the feature branch and awaits merge and physical-device acceptance |
 | **Android Client UI & Accounts** | Gradle build, Robolectric tests, and module automated tests | ✅ Account management, authentication, event bus, and encrypted offline storage integrated; physical testing pending |
 | **Companion Private Network** | tsnet pump transport pipeline and trusted IPC token issuance not ready | ⛔ Entrypoint disabled; private network tunnel provisioning not issued |
 | **Physical Device End-to-End Experience** | Android Keystore hardware crypto, silent certificate rotation, SAF dynamic authorization, live host connectivity | ⏳ Pending physical device acceptance test loop |
@@ -386,6 +386,8 @@ All project specifications and implementation records are completely archived wi
 
 | Document | Core Content | Quick Link |
 | --- | --- | --- |
+| **Device Capability Authorization Repair Plan** | Historical e5 `dev` baseline investigation, target responsibilities, migration, and acceptance criteria | [View Plan](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md) |
+| **Android Authorization Authority (ADR-0059)** | Accepted device authorization decision; see the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) for branch implementation and validation | [View ADR](docs/adr/0059-android-is-the-sole-device-capability-authority.md) |
 | **Domain Terminology & Conceptual Boundaries** | Unified terminology definitions, core entity interactions, and security responsibility boundaries | [`CONTEXT.md`](CONTEXT.md) |
 | **OAI Core Architecture Baseline** | Code traceability and verified test evidence for each architecture conclusion | [View Baseline](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) |
 | **OAI Core Deployment Guide** | Single service listener, CLI/MCP usage, and native session adapters | [`oai-core/README.md`](oai-core/README.md) |

@@ -433,7 +433,7 @@ fun SettingsScreen(
             title = { Text("确认解除设备配对") },
             text = {
                 Text(
-                    "这会撤销当前设备的 Gateway 配对凭据并清理本机授权。已建立的安全会话将被立即切断。",
+                    "这会撤销当前设备的 Gateway 配对凭据并立即切断安全会话。本机插件能力开关与 Android 系统权限仍由各自设置管理。",
                 )
             },
             confirmButton = {
@@ -719,7 +719,7 @@ private fun SettingsOverviewScreen(
             }
 
             // 模块 3: 设备权限授权
-            // 所有「把手机能力交给 Gateway」的条目统一收进子页，主览只留一个入口：
+            // 所有手机能力与权限管理条目统一收进子页，主览只留一个入口：
             // 权限散落在主览里时，用户既看不出共有哪些授权，也容易把插件跳转误认成开关。
             // 这里不再展示本机自增序号 r{N}——它对用户没有可执行意义，还容易被读成
             // Gateway 下发的权威版本（裁决 D5），因此改为陈述可执行的事实。
@@ -728,18 +728,14 @@ private fun SettingsOverviewScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
                     SettingsNavigationItem(
                         headline = "授权管理",
-                        supporting = if (uiState.isGatewayConnected) {
-                            "选择哪些手机能力可以交给当前 Gateway 使用，随时可撤销"
-                        } else {
-                            "未连接 Gateway，授权暂不可用"
-                        },
+                        supporting = "管理本机插件能力开关；系统权限、通知读取范围和屏幕会话分别设置",
                         icon = Icons.Default.Key,
                         onClick = { onNavigate(SettingsRoutes.PAIRING) },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
                         headline = "插件管理",
-                        supporting = "安装插件包、启用插件并为当前 Gateway 授权",
+                        supporting = "安装并启用插件，管理本机设备能力开关和所需系统权限",
                         icon = Icons.Default.Extension,
                         onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
@@ -757,7 +753,7 @@ private fun SettingsOverviewScreen(
 
             // 模块 4: 通知管理
             // 通知类设置单独成区：这些是「通知怎么提醒、怎么展示」的行为配置，
-            // 与「把手机能力授权给 Gateway」是两件事，不应混在同一张授权卡里。
+            // 与本机插件能力开关是两件事，不应混在同一张设置卡里。
             // 「通知读取范围」也归在这里：它配置的是读哪些应用的通知内容，
             // 属于通知的采集范围，而不是对 Gateway 的能力开关。
             SectionLabel("通知管理")
@@ -867,7 +863,7 @@ private fun SettingsOverviewScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
                         SettingsListItem(
                             headline = "解除设备配对",
-                            supporting = "撤销当前设备的 Gateway 配对凭据和本机授权",
+                            supporting = "撤销当前设备的 Gateway 配对凭据；本机能力开关与系统权限分别管理",
                             icon = Icons.Default.DeleteForever,
                             tone = SettingsTone.DANGER,
                             onClick = onRequestUnpair,
@@ -1253,7 +1249,7 @@ private fun GatewaySubScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsListItem(
                             headline = "解除设备配对",
-                            supporting = "彻底断开这台手机与该 Gateway 的关系，并清除全部授权",
+                            supporting = "撤销这台手机的 Gateway 配对凭据；本机插件开关和系统权限分别管理",
                             icon = Icons.Default.DeleteForever,
                             tone = SettingsTone.DANGER,
                             onClick = onRequestUnpair,
@@ -1268,13 +1264,13 @@ private fun GatewaySubScreen(
 /**
  * 子页面 3: 授权管理。
  *
- * 只呈现「哪些手机能力可以交给当前 Gateway」这一件事：
+ * 只呈现手机本机能力开关与相关系统权限入口：
  * 1. 通知类设置（推送、气泡、实时活动、读取范围）属于通知行为配置，已归入
  *    主览的「通知管理」区，不在这里重复出现；
  * 2. 不再展示本机自增序号、本机合成的配对标识——它们是实现细节，对用户没有
  *    可执行意义，还容易被误读成 Gateway 下发的权威版本（裁决 D5）；
- * 3. 短信读取必须经过「安装插件 → 授权」两步，因此这一行如实说明当前步骤并
- *    跳转插件管理，绝不提供一个点了也不生效的独立开关。
+ * 3. 短信读取由插件管理里的本机能力开关控制；系统权限仍由 Android 单独确认，
+ *    因此这一行跳转到插件管理，不在此处重复提供一个开关。
  */
 @Composable
 private fun PairingSubScreen(
@@ -1294,7 +1290,7 @@ private fun PairingSubScreen(
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     Text(
-                        text = "这些授权只保存在你的手机上，随时可以撤销；每次变更都会记入操作记录。",
+                        text = "插件设备能力由手机上的本机开关控制；Android 系统权限、通知读取范围和屏幕会话仍分别管理。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
@@ -1302,11 +1298,7 @@ private fun PairingSubScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
                         headline = "短信读取",
-                        supporting = if (uiState.isSmsGranted) {
-                            "已授权：当前 Gateway 可以读取短信。撤销请到插件管理中关闭该插件的授权"
-                        } else {
-                            "需要先在插件管理中安装短信插件，安装后即可为当前 Gateway 授权"
-                        },
+                        supporting = "安装并启用短信插件后，可在插件管理中设置本机能力开关；短信系统权限仍需单独授予",
                         icon = Icons.Default.Sms,
                         onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
@@ -1336,17 +1328,12 @@ private fun PairingSubScreen(
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     Text(
-                        text = "授权分两步：先安装提供能力的插件，再允许这个插件为当前 Gateway 服务。两步都完成后，Gateway 才能真正读取到手机上的内容。",
+                        text = "安装并启用插件后，本机设备能力开关默认开启，你可以随时关闭。这个开关不会代替 Android 系统权限、通知读取范围、后台设置或屏幕会话。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "授权按账号分开保存：切换到别的账号不会带走这些授权；切回来时，这个账号原来的授权仍然有效，不需要重新授权。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = "以下两种情况会清空本机授权，之后需要重新授权：主动解除设备配对；或 Gateway 报告该账号的授权已变更。",
+                        text = "这台手机为各账号分别保存能力设置。切换账号不会覆盖原来的设置，切回来时继续使用。解除设备配对则会终止对应的连接信任。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1359,7 +1346,7 @@ private fun PairingSubScreen(
 /**
  * 子页面：屏幕读取与控制。
  *
- * 三层授权分开呈现：系统权限（无障碍 / 投屏）、插件授权（安装+启用+配对授权）、
+ * 三层授权分开呈现：系统权限（无障碍 / 投屏）、本机能力开关（安装+启用插件）、
  * 本进程内的本地屏幕会话。任何一层缺失都指名缺的是哪一件，绝不用一个布尔值代替。
  *
  * 状态来自 `ScreenHostRegistry.current?.status()` —— 只读诊断，不会创建许可。

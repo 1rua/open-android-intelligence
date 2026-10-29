@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.kernel.AuditEvent
 import com.openandroidintelligence.kernel.DeveloperTrustMode
-import com.openandroidintelligence.kernel.PairingGrantCapabilities
 import com.openandroidintelligence.kernel.PairingGrantState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,9 +64,6 @@ data class SettingsUiState(
 
     val grantRevision: Long
         get() = pairingGrants?.revision ?: 0L
-
-    val isSmsGranted: Boolean
-        get() = pairingGrants?.granted?.contains(PairingGrantCapabilities.SMS) == true
 
     val isScreenSelectionGranted: Boolean
         get() = pairingGrants?.screenSelectionEnabled == true
@@ -262,10 +258,6 @@ class SettingsViewModel(
 
     fun setReduceMotion(enabled: Boolean) {
         environment.appearance.setReduceMotion(enabled)
-    }
-
-    fun setSmsGrant(enabled: Boolean) {
-        environment.pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, enabled)
     }
 
     fun setScreenSelectionGrant(enabled: Boolean) {

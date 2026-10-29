@@ -31,8 +31,10 @@ class CapabilityPublisherTest {
         var failBefore = false
         var failAfter = false
         var policyRevision = 0
+        var lookups = 0
         val bodies = mutableListOf<JsonValue.JObject>()
         override suspend fun execute(request: WireRequest): WireResponse {
+            if (request.method == "GET") lookups++
             val data = if (request.method == "GET") mapOf("grantRevision" to revision, "grantDigest" to digest,
                 "capabilityPublicationVersion" to version, "capabilityPolicy" to mapOf("revision" to policyRevision, "enabled" to emptyMap<String,Boolean>()))
             else {
@@ -59,11 +61,13 @@ class CapabilityPublisherTest {
         val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"installation")
         val remote = Remote()
         var foreignChanges = 0
+        var authorizationAvailable = true
         val scope = "publisher-test-${java.util.UUID.randomUUID()}"
         private val http = GatewayHttpClient(GatewayProfile("account","device","session","https://gateway.example",accessToken="test"),
             remote,{ ByteArray(64) },InMemoryEventCursorStore())
         fun publisher() = CapabilityPublisher(context,http,scope,remote.revision,{ grants.state.value?.revision ?: 0L },host,
-            foreignChange = { foreignChanges++; grants.clearCurrent(); grants.bind(binding) },keyProvider=TestDocumentKeys)
+            foreignChange = { foreignChanges++ },keyProvider=TestDocumentKeys,
+            authorizationCurrent = { authorizationAvailable })
     }
 
     @Test fun acceptedPublicationWithLostAckIsRecoveredByGetAfterProcessRestart() = runBlocking {
@@ -77,7 +81,7 @@ class CapabilityPublisherTest {
         assertEquals(1,fixture.remote.bodies.size)
         assertEquals(0,fixture.foreignChanges)
         assertEquals(2,restarted.grantRevision)
-        assertNull(EncryptedDocuments(fixture.context,"capability-publication:${fixture.scope}",TestDocumentKeys).read("pending"))
+        assertNull(EncryptedDocuments(fixture.context,"capability-publication:android-v1:${fixture.scope}",TestDocumentKeys).read("pending"))
     }
 
     @Test fun unsentPendingPublicationIsReplacedAfterLocalAuthorizationChanges() = runBlocking {
@@ -92,7 +96,7 @@ class CapabilityPublisherTest {
         assertEquals(0,fixture.foreignChanges)
     }
 
-    @Test fun foreignRevisionClearsLocalGrantOnceAndNeverReusesOldPendingBody() = runBlocking {
+    @Test fun foreignRevisionInvalidatesPendingBodyWithoutChangingAndroidDecisions() = runBlocking {
         val fixture = Fixture()
         fixture.grants.updatePrimitive("kernel.sms.read",true)
         fixture.remote.failBefore = true
@@ -102,8 +106,8 @@ class CapabilityPublisherTest {
         fixture.remote.digest = null
         publisher.sync()
         assertEquals(1,fixture.foreignChanges)
-        assertTrue(fixture.grants.state.value!!.granted.isEmpty())
-        assertEquals(0L,JsonFields.long(fixture.remote.bodies.last(),"localGrantRevision"))
+        assertTrue("kernel.sms.read" in fixture.grants.state.value!!.granted)
+        assertEquals(1L,JsonFields.long(fixture.remote.bodies.last(),"localGrantRevision"))
         publisher.sync()
         assertEquals(1,fixture.foreignChanges)
         assertEquals(2,fixture.remote.bodies.size)
@@ -119,14 +123,33 @@ class CapabilityPublisherTest {
         assertEquals(1,fixture.remote.bodies.size)
         assertEquals(0,fixture.foreignChanges)
         assertTrue("kernel.notifications.read" in fixture.grants.state.value!!.granted)
-        assertEquals(3,JsonFields.int(publisher.gatewayPolicy.value,"revision"))
     }
 
-    @Test fun oldGatewayStillReceivesItsOriginalPublicationShape() = runBlocking {
+    @Test fun aPeerWithoutDetailedInventoryReceivesTheCompatiblePublicationShape() = runBlocking {
         val fixture = Fixture()
         fixture.remote.version = 1
         fixture.publisher().sync()
         assertNull(JsonFields.field(fixture.remote.bodies.single(),"inventory"))
+    }
+
+    @Test fun anUnnegotiatedAuthorizationModelCannotPublishOrReadPairingState() = runBlocking {
+        val fixture = Fixture()
+        fixture.authorizationAvailable = false
+        val failure = runCatching { fixture.publisher().sync() }.exceptionOrNull()
+        assertEquals("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED", failure?.message)
+        assertEquals(0, fixture.remote.lookups)
+        assertTrue(fixture.remote.bodies.isEmpty())
+    }
+
+    @Test fun aLegacyPendingSnapshotCannotBeReplayedUnderAndroidDefaults() = runBlocking {
+        val fixture = Fixture()
+        val legacy = EncryptedDocuments(fixture.context,"capability-publication:${fixture.scope}",TestDocumentKeys)
+        legacy.write("pending",Json.canonical(Json.of(mapOf("bindings" to emptyList<Any>(),
+            "localGrantRevision" to 999,"expectedGrantRevision" to 1))).toByteArray())
+        fixture.publisher().sync()
+        assertEquals(0L,JsonFields.long(fixture.remote.bodies.single(),"localGrantRevision"))
+        assertEquals(0,fixture.foreignChanges)
+        assertNotNull(legacy.read("pending"))
     }
 
     @Test fun unreadableInstallationOmitsInventoryAndLostAckRecoveryDoesNotClaimAbsence() = runBlocking {

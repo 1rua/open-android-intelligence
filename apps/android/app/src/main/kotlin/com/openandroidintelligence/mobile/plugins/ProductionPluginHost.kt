@@ -40,6 +40,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     @Volatile var loadFailures: Map<String,String> = emptyMap(); private set
     private val modules = ConcurrentHashMap<PluginIdentity,ByteArray>()
     private val capabilities = ConcurrentHashMap<String,List<VerifiedCapability>>()
+    private val backgroundRequests = ConcurrentHashMap<String,Boolean>()
     private val uiDeclarations = ConcurrentHashMap<String,List<com.openandroidintelligence.plugin.ui.UiContribution>>()
     private val cardIds = ConcurrentHashMap<String,Set<String>>()
     private val stores = ConcurrentHashMap<PluginIdentity,PluginPrivateStore>()
@@ -82,7 +83,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
 
     @Synchronized fun reload() {
         capabilities.keys.toList().forEach { kernel.unregister(it) }
-        nativeLoader.unloadAll(); modules.clear(); capabilities.clear(); defaults.clear(); stores.clear(); proxies.clear(); uiDeclarations.clear();cardIds.clear()
+        nativeLoader.unloadAll(); modules.clear(); capabilities.clear(); backgroundRequests.clear(); defaults.clear(); stores.clear(); proxies.clear(); uiDeclarations.clear();cardIds.clear()
         val failures = linkedMapOf<String,String>()
         val installed = runCatching { installStore.listInstalled() }.getOrElse {
             failures["*"] = "PLUGIN_SCAN_FAILED"
@@ -110,6 +111,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                     }
                     val declared = entries.map { it.key }.toSet() + primitives
                     val surface = verified.security.surface
+                    val security = JsonFields.obj(JsonFields.field(manifest, "security"))
+                    backgroundRequests[id] = JsonFields.bool(JsonFields.obj(JsonFields.field(security, "background")), "requested") == true
                     kernel.register(PluginRegistration(verified.identity,verified.runtime.type,declared,
                         ResourceBudget(surface.maxInvocationMillis,surface.maxMemoryBytes,65_536,surface.maxConcurrentInvocations,surface.maxDailyNetworkBytes),
                         identityScopedGrants = true))
@@ -130,15 +133,18 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                         check(verified.runtime.abiVersion == "1.0" && verified.runtime.entrypoint == "open_android_intelligence_plugin_main") { "UNSUPPORTED_PLUGIN_ABI" }
                         modules[verified.identity] = File(verified.stagedDirectory,verified.runtime.payload ?: error("PAYLOAD_MISSING")).readBytes()
                     }
-                    for (entry in entries) defaults.putIfAbsent(entry.key,verified.identity)
                     if (preferences.getString(id,null) == verified.identity.authorKeyFingerprint && !isQuarantined(id)) enableVerified(verified)
                 } finally { verified.stagedDirectory.deleteRecursively() }
             }.onFailure {
-                kernel.unregister(id); capabilities.remove(id); preferences.edit().remove(id).commit()
+                kernel.unregister(id); capabilities.remove(id); backgroundRequests.remove(id); preferences.edit().remove(id).commit()
                 failures[view.directory.name] = if (it is PackageRejected) "PLUGIN_PACKAGE_INVALID" else "PLUGIN_LOAD_FAILED"
             }
         }
-        selector.refreshOverrides(capabilities.values.flatten().groupBy { it.key }.mapValues { (_, entries) -> entries.map { it.identity } })
+        val providers = capabilities.values.flatten().groupBy { it.key }.mapValues { (_, entries) -> entries.map { it.identity } }
+        // Declaration order is not a provider choice. Only a unique verified
+        // provider can be selected by default; multiple providers need a local choice.
+        providers.filterValues { it.size == 1 }.forEach { (key, values) -> defaults[key] = values.single() }
+        selector.refreshOverrides(providers)
         loadFailures = failures.toMap()
         revision.value++
     }
@@ -242,16 +248,68 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             quarantineNative(pluginId); throw cause
         } finally { nativeInFlight.remove(pluginId); crashPreferences.edit().remove("loading:$pluginId").commit() }
     }
+    /** Local ability switch; enabling it never grants background, system or screen permissions. */
+    fun setCapabilityEnabled(pluginId: String, enabled: Boolean) {
+        val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+        grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, enabled)
+        if (enabled) entries(pluginId).forEach {
+            selector.setOverride(it.key, grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"), it.identity)
+        }
+        revision.value++
+    }
+
+    fun isCapabilityEnabled(pluginId: String): Boolean {
+        val state = grants.state.value ?: return false
+        val registration = kernel.registrationFor(pluginId) ?: return false
+        return registration.declaredPrimitives.filterNot { it == "kernel.background.run" }.all {
+            state.permits(it) && state.permits(identityGrantKey(registration.identity, it))
+        }
+    }
+
+    fun supportsBackground(pluginId: String): Boolean =
+        backgroundRequests[pluginId] == true && kernel.registrationFor(pluginId)?.declaredPrimitives?.contains("kernel.background.run") == true
+
+    fun isBackgroundEnabled(pluginId: String): Boolean {
+        if (!supportsBackground(pluginId)) return false
+        val identity = kernel.registrationFor(pluginId)?.identity ?: return false
+        val state = grants.state.value ?: return false
+        return state.permits("kernel.background.run") && state.permits(identityGrantKey(identity, "kernel.background.run"))
+    }
+
+    /** A separate, explicit Android-local background decision; ordinary defaults never change here. */
+    fun setBackgroundEnabled(pluginId: String, enabled: Boolean) {
+        check(supportsBackground(pluginId)) { "BACKGROUND_NOT_DECLARED" }
+        val identity = kernel.registrationFor(pluginId)?.identity ?: error("PLUGIN_NOT_REGISTERED")
+        grants.updatePluginBackground(identity, enabled)
+        revision.value++
+    }
+
+    fun capabilityMigrationRequired(): Boolean = grants.state.value?.migrationRequired == true
+
+    fun completeCapabilityMigration() {
+        grants.completeCapabilityMigration()
+        revision.value++
+    }
+
+    /** Compatibility for explicit Android consent, including its separate background choice. */
     fun grant(pluginId: String, enabled: Boolean) {
         val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
         val ids = registration.declaredPrimitives
-        grants.updatePrimitives(ids + ids.map { identityGrantKey(registration.identity,it) },enabled)
+        val scoped = ids.map { identityGrantKey(registration.identity,it) }.toSet()
+        grants.updatePluginCapabilities(registration.identity, ids, enabled)
+        grants.updatePrimitives(if (enabled) ids + scoped else scoped, enabled)
         if (enabled) entries(pluginId).forEach { selector.setOverride(it.key,grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"),it.identity) }
         revision.value++
     }
     fun authorizedBindings(): List<Map<String,Any?>> = capabilitySnapshot().bindings
 
-    /** Inventory is diagnostic only. Neither installation nor a Gateway switch creates a local grant. */
+    /**
+     * Inventory describes a callable foreground binding, not a promise that
+     * every parameter or background mode has consent. v1 kernelPrimitives is
+     * the whole package's request ceiling, not per-capability dependencies:
+     * the SMS package includes both foreground queries and scheduled work.
+     * Background consent is independently enforced by the kernel/scheduler.
+     */
     @Synchronized fun capabilitySnapshot(): CapabilitySnapshot {
         val state = grants.state.value
         val bindings = mutableListOf<Map<String,Any?>>()
@@ -260,8 +318,11 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             var reason = ""
             when {
                 !isEnabled(entry.identity.pluginId) -> { status = "PLUGIN_DISABLED"; reason = "PLUGIN_DISABLED" }
-                state == null || !(entry.primitives + entry.key).all { identityGrantKey(entry.identity,it) in state.granted && it in state.granted } -> {
-                    status = "LOCAL_GRANT_REQUIRED"; reason = "PAIRING_GRANT_REQUIRED"
+                state == null || !(entry.primitives.filterNot { it == "kernel.background.run" } + entry.key).all {
+                    state.permits(identityGrantKey(entry.identity,it)) && state.permits(it)
+                } -> {
+                    status = "LOCAL_GRANT_REQUIRED"
+                    reason = if (state?.migrationRequired == true) "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED" else "LOCAL_CAPABILITY_DISABLED"
                 }
                 !runCatching { selector.select(entry.key,state.pairingId).identity == entry.identity }.getOrDefault(false) -> {
                     status = "PROVIDER_NOT_SELECTED"; reason = "PROVIDER_NOT_SELECTED"

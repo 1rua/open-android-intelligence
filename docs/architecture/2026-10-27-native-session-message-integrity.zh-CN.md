@@ -1,6 +1,6 @@
 # 原生会话消息身份与附件交付补充约定
 
-日期：2026-10-27。本文补充 [单一 Core 架构决策](../adr/0054-unify-device-authority-and-native-sessions-in-one-oai-core.md)，适用于 `/open-android-intelligence/v2/agents/{agentId}/sessions/{sessionId}` 原生会话入口。设备协议的账号认证、配对、附件上传和设备授权仍由 OAI Core 负责。
+日期：2026-10-27。本文补充 [单一 Core 架构决策](../adr/0054-unify-device-authority-and-native-sessions-in-one-oai-core.md)，适用于 `/open-android-intelligence/v2/agents/{agentId}/sessions/{sessionId}` 原生会话入口。设备协议的账号认证、配对、附件上传与请求路由仍由 OAI Core 负责；Android 唯一决定设备能力，普通前台能力默认开启，后台和敏感许可仍独立。此授权修订见 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md)，已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`。当前验证见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；原生消息身份与附件边界不变。
 
 ## 消息请求与真实身份
 

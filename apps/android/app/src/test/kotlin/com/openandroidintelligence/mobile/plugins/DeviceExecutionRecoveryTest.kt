@@ -22,8 +22,30 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34], application=Application::class)
 class DeviceExecutionRecoveryTest {
+    @Test fun restartWithTheSameVerifiedStateRecoversAResultDespiteADifferentInMemoryHostRevision() = runBlocking {
+        fixture("restart_same_authority") { _, transport, journal, scope, failures, originalHost ->
+            originalHost.revision.value = 9L
+            journal.write("req_restart", journalEntry(originalHost, transport.expiresAt, "completed",
+                mapOf("outcome" to "succeeded", "data" to mapOf("count" to 1))))
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            val trust = DeveloperTrustMode()
+            val restartedHost = ProductionPluginHost(context, PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore()),
+                trust, NativePluginLoader(trust), "install")
+            assertNotEquals(originalHost.revision.value, restartedHost.revision.value)
+            val http = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
+                transport, { ByteArray(64) }, InMemoryEventCursorStore())
+            val restarted = DeviceExecutionDriver(context, scope, http, restartedHost, "acct", "dev", 1,
+                "restart_same_authority", { 7 }, { true }, TestDocumentKeys)
+            restarted.recoverPending()
+            awaitJobs(scope)
+            assertEquals(1, transport.results.size)
+            assertTrue(transport.results.single().body.decodeToString().contains("succeeded"))
+            assertTrue(journal.keys().isEmpty())
+            assertTrue(failures.isEmpty())
+        }
+    }
     @Test fun lostClaimReplyIsRetriedWithTheSameIdempotencyKeyAndProducesATerminalResult() = runBlocking {
-        fixture("claim_retry") { driver, transport, _, scope, failures ->
+        fixture("claim_retry") { driver, transport, _, scope, failures, _ ->
             transport.claimFailures = 1
             driver.accept("req_retry")
             awaitJobs(scope)
@@ -37,7 +59,7 @@ class DeviceExecutionRecoveryTest {
     }
 
     @Test fun claimDenialCannotInventAReceiptOrEscapeAsAnUncaughtCoroutineFailure() = runBlocking {
-        fixture("claim_denied") { driver, transport, journal, scope, failures ->
+        fixture("claim_denied") { driver, transport, journal, scope, failures, host ->
             transport.claimDenied = true
             driver.accept("req_denied")
             awaitJobs(scope)
@@ -49,11 +71,10 @@ class DeviceExecutionRecoveryTest {
     }
 
     @Test fun oneOfflineJournalEntryDoesNotPreventAnotherCompletedResultFromRecovering() = runBlocking {
-        fixture("recovery_isolation") { driver, transport, journal, scope, failures ->
+        fixture("recovery_isolation") { driver, transport, journal, scope, failures, host ->
             listOf("req_offline", "req_ready").forEach { id ->
-                journal.write(id, Json.canonical(Json.of(mapOf("stage" to "completed",
-                    "expiresAt" to transport.expiresAt, "result" to mapOf("outcome" to "succeeded",
-                        "data" to mapOf("count" to 1))))).toByteArray())
+                journal.write(id, journalEntry(host, transport.expiresAt, "completed",
+                    mapOf("outcome" to "succeeded", "data" to mapOf("count" to 1))))
             }
             transport.offlineId = journal.keys().first()
             driver.recoverPending()
@@ -66,7 +87,7 @@ class DeviceExecutionRecoveryTest {
     }
 
     @Test fun aHungClaimStopsAtTheRequestDeadlineWithoutForgingAResult() = runBlocking {
-        fixture("claim_timeout") { driver, transport, journal, scope, failures ->
+        fixture("claim_timeout") { driver, transport, journal, scope, failures, host ->
             transport.expiresAt = Instant.now().plusMillis(200).toString()
             transport.hangClaim = true
             driver.accept("req_hung")
@@ -78,10 +99,9 @@ class DeviceExecutionRecoveryTest {
     }
 
     @Test fun exhaustedDeliveryRetainsTheExactResultForIdempotentRecovery() = runBlocking {
-        fixture("delivery_retry") { driver, transport, journal, scope, failures ->
-            journal.write("req_result", Json.canonical(Json.of(mapOf("stage" to "completed",
-                "expiresAt" to transport.expiresAt, "result" to mapOf("outcome" to "succeeded",
-                    "data" to mapOf("count" to 1))))).toByteArray())
+        fixture("delivery_retry") { driver, transport, journal, scope, failures, host ->
+            journal.write("req_result", journalEntry(host, transport.expiresAt, "completed",
+                mapOf("outcome" to "succeeded", "data" to mapOf("count" to 1))))
             transport.resultFailures = 4
             driver.recoverPending(); awaitJobs(scope)
             assertEquals(4, transport.results.size)
@@ -95,9 +115,8 @@ class DeviceExecutionRecoveryTest {
     }
 
     @Test fun recoveringAnAlreadyClaimedRequestCannotRepeatPluginExecution() = runBlocking {
-        fixture("claimed_recovery") { driver, transport, journal, scope, failures ->
-            journal.write("req_claimed", Json.canonical(Json.of(mapOf("stage" to "claimed",
-                "expiresAt" to transport.expiresAt))).toByteArray())
+        fixture("claimed_recovery") { driver, transport, journal, scope, failures, host ->
+            journal.write("req_claimed", journalEntry(host, transport.expiresAt, "claimed"))
             driver.recoverPending(); awaitJobs(scope)
             assertEquals(1, transport.results.size)
             assertTrue(transport.results.single().body.decodeToString().contains("outcome_unknown"))
@@ -108,7 +127,7 @@ class DeviceExecutionRecoveryTest {
     }
 
     @Test fun aForeignReceiptIsNeverUsedToUploadAResult() = runBlocking {
-        fixture("foreign_receipt") { driver, transport, journal, scope, failures ->
+        fixture("foreign_receipt") { driver, transport, journal, scope, failures, host ->
             transport.receiptAccount = "other_account"
             driver.accept("req_foreign"); awaitJobs(scope)
             assertTrue(transport.results.isEmpty())
@@ -118,7 +137,7 @@ class DeviceExecutionRecoveryTest {
     }
 
     @Test fun aHungResultUploadHasABoundedLifetimeAndKeepsTheCompletedJournal() = runBlocking {
-        fixture("result_timeout") { driver, transport, journal, scope, failures ->
+        fixture("result_timeout") { driver, transport, journal, scope, failures, host ->
             transport.hangResult = true
             driver.accept("req_hung_result")
             withTimeout(12_000) { scope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
@@ -135,7 +154,7 @@ class DeviceExecutionRecoveryTest {
     }
 
     private suspend fun fixture(name: String, block: suspend (DeviceExecutionDriver, Transport, EncryptedDocuments,
-        CoroutineScope, List<Throwable>) -> Unit) {
+        CoroutineScope, List<Throwable>, ProductionPluginHost) -> Unit) {
         val context = ApplicationProvider.getApplicationContext<Application>()
         val journal = EncryptedDocuments(context, "device-execution:$name", TestDocumentKeys)
         val failures = CopyOnWriteArrayList<Throwable>()
@@ -147,8 +166,14 @@ class DeviceExecutionRecoveryTest {
         val http = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
             transport, { ByteArray(64) }, InMemoryEventCursorStore())
         val driver = DeviceExecutionDriver(context, scope, http, host, "acct", "dev", 1, name, { 7 }, { true }, TestDocumentKeys)
-        try { block(driver, transport, journal, scope, failures) } finally { scope.cancel() }
+        try { block(driver, transport, journal, scope, failures, host) } finally { scope.cancel() }
     }
+
+    private fun journalEntry(host: ProductionPluginHost, expiresAt: String, stage: String,
+        result: Map<String,Any?>? = null): ByteArray = Json.canonical(Json.of(mapOf(
+        "stage" to stage, "expiresAt" to expiresAt, "result" to result,
+        "localAuthorizationRevision" to 0, "hostAuthorizationDigest" to executionHostAuthorizationDigest(host),
+    ))).toByteArray()
 
     private class Transport : GatewayByteTransport {
         val claims = CopyOnWriteArrayList<WireRequest>()

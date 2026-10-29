@@ -14,7 +14,6 @@ import pytest
 from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from oai_core.gateway.capability_policy import DeviceCapabilityPolicy
 from oai_core.gateway.core import CredentialStore, _jcs
 
 from oai_core.server import AUTH_KEY, CORE_KEY, DEVICE_API, create_app, create_core

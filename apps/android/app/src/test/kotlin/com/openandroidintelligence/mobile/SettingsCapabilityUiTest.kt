@@ -12,6 +12,17 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.performScrollTo
+import com.openandroidintelligence.kernel.AndroidAuditStore
+import com.openandroidintelligence.kernel.CapabilityProviderSelector
+import com.openandroidintelligence.kernel.DeveloperTrustMode
+import com.openandroidintelligence.kernel.HostEnvelope
+import com.openandroidintelligence.kernel.InMemoryAuditSink
+import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
+import com.openandroidintelligence.kernel.NativePluginLoader
+import com.openandroidintelligence.kernel.PairingGrantStateHolder
+import com.openandroidintelligence.kernel.PhoneLimits
+import com.openandroidintelligence.kernel.PluginKernel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -215,6 +226,39 @@ class SettingsCapabilityUiTest {
 
         compose.onNodeWithText("屏幕上下文分析与圈选").performClick()
         assertEquals(true, toggled)
+    }
+
+    @Test
+    fun pairingSettingsDescribeLocalCapabilitySwitchesAndSeparateSystemPermissions() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val trustMode = DeveloperTrustMode()
+        val audit = AndroidAuditStore(InMemoryAuditSink())
+        val environment = PlatformSettingsEnvironment(
+            trustMode = trustMode,
+            audit = audit,
+            auditSink = InMemoryAuditSink(),
+            allowDeveloperTrustMode = true,
+            kernel = PluginKernel(
+                hostEnvelope = HostEnvelope(primitives = emptySet()),
+                phoneLimits = PhoneLimits(primitives = emptySet()),
+                runtimes = emptyMap(),
+                audit = audit,
+                trustMode = trustMode,
+                nativeLoader = NativePluginLoader(trustMode),
+                providerSelector = CapabilityProviderSelector(phoneDefaults = emptyMap()),
+                grants = { null },
+            ),
+            pairingGrants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit),
+            appearance = AppearancePreferences(context),
+        )
+        setContent { SettingsScreen(environment = environment, onBack = {}) }
+
+        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("安装并启用插件后，本机设备能力开关默认开启", substring = true).assertExists()
+        compose.onNodeWithText("以下两种情况会清空本机授权", substring = true).assertDoesNotExist()
+        assertTrue(
+            compose.onAllNodesWithText("Android 系统权限", substring = true).fetchSemanticsNodes().isNotEmpty(),
+        )
     }
 
     @Test

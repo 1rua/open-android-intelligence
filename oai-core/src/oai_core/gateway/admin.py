@@ -288,50 +288,22 @@ class AdminService:
     grantBump = grant_bump
 
     def capabilities(self, command: Mapping[str, Any]) -> dict[str, Any]:
-        from .capability_policy import DeviceCapabilityPolicy, capability_catalog
-        import json
+        from .capability_policy import capability_catalog
         operation = str(command.get("command"))
-        if operation == "capabilities.set" and self.read_only:
-            return _failure(operation, True, "HOST_INCOMPATIBLE")
+        if operation == "capabilities.set":
+            return _failure(operation, self.read_only, "DEVICE_AUTHORIZATION_MANAGED_BY_ANDROID")
         account_id = command.get("accountId")
         if not isinstance(account_id, str) or WIRE_ID_PATTERN.fullmatch(account_id) is None:
             return _failure(operation, self.read_only, "SCHEMA_INVALID")
         if not self.core.account_exists(account_id):
             return _failure(operation, self.read_only, "ACCOUNT_NOT_FOUND")
-        if operation == "capabilities.set" and command.get("localConfirmation") is not True:
-            return _failure(operation, False, "LOCAL_CONFIRMATION_REQUIRED")
         account = self.core.open_gateway_account(account_id)
         try:
-            policy = DeviceCapabilityPolicy(account.store)
-            if operation == "capabilities.set":
-                capability_id, enabled = command.get("capabilityId"), command.get("enabled")
-                if not policy.valid_id(capability_id) or type(enabled) is not bool:
-                    return _failure(operation, False, "SCHEMA_INVALID")
-                with account.store.transaction():
-                    before = policy.snapshot()
-                    after = policy.set(capability_id, enabled)
-                    if before != after:
-                        if not enabled:
-                            rows = account.store.database.execute("SELECT * FROM device_requests").fetchall()
-                            for row in rows:
-                                if json.loads(row["capability_json"])["id"] != capability_id:
-                                    continue
-                                # Permanent fence: re-enabling cannot revive an old queued call or result.
-                                account.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
-                                    (f"device-request-policy-revoked:{row['request_id']}", "1"))
-                                account.store.database.execute("UPDATE device_requests SET parameters_json='',result_json='' WHERE request_id=?", (row["request_id"],))
-                                if row["state"] in {"pending", "claimed", "cancel_requested"}:
-                                    account.store.database.execute("UPDATE device_requests SET state=? WHERE request_id=?",
-                                        ("cancelled" if row["state"] == "pending" else "cancel_requested", row["request_id"]))
-                                    account.events.append("device.request.cancel.requested", "capabilities.set", {"requestId": row["request_id"]})
-                        account.events.append("gateway.notice", "capabilities.set", {"noticeCode": "DEVICE_CAPABILITY_POLICY_CHANGED"})
-                        account.audit.append("gateway.capability.changed", {"accountId": account_id},
-                            {"capabilityId": capability_id, "enabled": enabled, "policyRevision": after["revision"]}, "capabilities.set")
-            return _success(operation, self.read_only, {"accountId": account_id, "policy": policy.snapshot(), "capabilities": capability_catalog(account)})
+            return _success(operation, self.read_only, {
+                "accountId": account_id, "capabilities": capability_catalog(account),
+            })
         except GatewayError as exc:
             return _failure(operation, self.read_only, exc.code)
-        except (ValueError, TypeError):
-            return _failure(operation, self.read_only, "CAPABILITY_POLICY_INVALID")
         finally:
             account.close()
 
@@ -541,10 +513,10 @@ def create_admin_cli_registrar(service: AdminService) -> Callable[..., Any]:
     def registrar(program: Any, *_: Any, **__: Any) -> None:
         root = program.command("open-android-intelligence").description("Manage Open Android Intelligence Gateway accounts")
         account = root.command("account").description("Manage Open Android Intelligence Gateway accounts")
-        capabilities = root.command("capabilities").description("Account-local Agent capability switches and Android diagnostics")
-        capabilities.command("list <accountId>").description("Show switches and current device authorization states").action(
+        capabilities = root.command("capabilities").description("Android capability diagnostics")
+        capabilities.command("list <accountId>").description("Show current Android capability states").action(
             lambda account_id: service.execute({"command": "capabilities.list", "accountId": str(account_id)}))
-        capabilities.command("set <accountId> <capabilityId> <state>").description("Set on/off; Android authorization is still required").option(
+        capabilities.command("set <accountId> <capabilityId> <state>").description("Retired: manage device capabilities on Android").option(
             "--confirm-local", "Confirm this write on the local host").action(
             lambda account_id, capability_id, state, options=None: service.execute({
                 "command": "capabilities.set", "accountId": str(account_id), "capabilityId": str(capability_id),

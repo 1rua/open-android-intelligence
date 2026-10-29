@@ -109,12 +109,11 @@ class SettingsHonestyCopyTest {
     }
 
     /**
-     * 授权按账号分开保存：切到别的账号不会带走授权，切回来时原来的授权仍然有效。
-     * `PairingGrantStateHolder.bind()` 会加载该账号已持久化的授权，因此文案不能把
-     * 「切换账号」与「解除配对」混为一谈——否则用户会误以为切换就作废了授权。
+     * 授权管理说明手机本机能力设置与系统权限、通知范围和屏幕会话分别管理，
+     * 不把切换账号写成清除本机决定，也不把它与解除配对的效果混为一谈。
      */
     @Test
-    fun theAuthorisationNotesDoNotClaimSwitchingAccountsRevokesExistingGrants() {
+    fun theAuthorisationNotesSeparateLocalCapabilitySettingsFromOtherSettings() {
         compose.setContent {
             MaterialTheme {
                 Surface {
@@ -125,7 +124,9 @@ class SettingsHonestyCopyTest {
 
         compose.onNodeWithText("授权管理").performScrollTo().performClick()
 
-        compose.onNodeWithText("授权按账号分开保存", substring = true).performScrollTo().assertExists()
+        compose.onNodeWithText(
+            "这台手机为各账号分别保存能力设置。切换账号不会覆盖原来的设置，切回来时继续使用。解除设备配对则会终止对应的连接信任。",
+        ).performScrollTo().assertExists()
         compose.onNodeWithText("切换账号或解除配对后，需要重新授权").assertDoesNotExist()
     }
 
