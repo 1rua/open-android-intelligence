@@ -1,5 +1,7 @@
 # Codex 共享会话与设备授权边界
 
+> **2026-10-28 Android 授权规则**：Android 客户端是设备能力授权的唯一权威；已安装且启用的设备插件能力默认开启，仍受手机本地显式开关、Android 系统权限和必要敏感确认约束。Core 与 Agent 插件不再追加账号级设备能力授权。规则已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 和真机验收；实现与验证见[实施记录](../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。旧 `dev` 基线见 [ADR-0059](../../docs/adr/0059-android-is-the-sole-device-capability-authority.md) 和[修复计划](../../docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)。下文的身份隔离、设备绑定和共享进程凭据限制继续生效。
+
 Codex Adapter 通过管理员显式选择的 `command` 和 `codexHome` 接入一个原生
 app-server 实例。该实例中 CLI、脚本及 App 创建的可读取会话向当前 Core
 部署的全部已认证账号开放；Core 不复制会话数据库，也不建立账号归属绑定。
@@ -9,7 +11,7 @@ app-server 实例。该实例中 CLI、脚本及 App 创建的可读取会话向
 账号的 OAI 设备令牌。该阶段没有能把共享原生执行绑定到当前 App 账号的可信
 设备工具接口，因此不能给此实例配置任意账号的固定 OAI CLI/MCP 凭据。
 独立的 `oai login`、`oai invoke` 与 `oai mcp` 继续以调用者自己的账号和已配对
-设备调用 Core；这不表示共享聊天实例可以自动继承这些权限。
+设备调用 Core；这不表示共享聊天实例可以自动继承调用凭据。连接认证与设备配对限定调用主体及设备范围，Android 决定能力是否允许执行，两者不能互相替代。
 
 共享 Codex 必须使用独立的操作系统服务账号，该账号的文件系统权限不能读取
 其他账号的 OAI 客户端配置、令牌、配对密钥和 Core 的私有存储。不要在该服务

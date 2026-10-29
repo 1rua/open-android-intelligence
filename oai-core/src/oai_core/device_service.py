@@ -78,7 +78,7 @@ class DeviceService:
     def _record(self, account: Any, principal: Principal, request_id: str) -> dict[str, Any]:
         row = account.device_requests._row(request_id)
         account.device_requests._assert_binding(row, principal.device_id, principal.pairing_generation, principal.grant_revision)
-        account.device_requests._assert_capability_enabled(row)
+        account.device_requests._assert_request_not_revoked(row)
         account.device_requests._expire_if_due(row, _now())
         record = account.device_requests.get(request_id)
         record.pop("parameters", None)

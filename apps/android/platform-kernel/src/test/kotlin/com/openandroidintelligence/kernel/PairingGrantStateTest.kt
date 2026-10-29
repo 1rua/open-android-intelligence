@@ -15,7 +15,7 @@ class PairingGrantStateTest {
     )
 
     @Test
-    fun aNewBindingStartsWithNoGrantedCapabilities() {
+    fun aNewBindingUsesClientDefaultsWithoutExplicitGrants() {
         val holder = PairingGrantStateHolder(
             store = InMemoryPairingGrantStore(),
             audit = AndroidAuditStore(InMemoryAuditSink()),
@@ -26,6 +26,8 @@ class PairingGrantStateTest {
         val state = holder.state.value
         assertEquals(0L, state?.revision)
         assertTrue(state?.granted.isNullOrEmpty())
+        assertFalse(state?.migrationRequired ?: true)
+        assertTrue(state?.permits(PairingGrantCapabilities.SMS) == true)
         assertFalse(state?.screenSelectionEnabled ?: true)
     }
 
@@ -89,6 +91,7 @@ class PairingGrantStateTest {
                 pairingId = binding.pairingId,
                 granted = setOf(PairingGrantCapabilities.SMS),
                 revision = 1L,
+                defaultEnabled = true,
             ),
             grant,
         )
@@ -96,7 +99,7 @@ class PairingGrantStateTest {
     }
 
     @Test
-    fun clearingTheCurrentPairingRemovesItsPersistedGrant() {
+    fun clearingTheCurrentPairingKeepsARevocationTombstone() {
         val store = InMemoryPairingGrantStore()
         val holder = PairingGrantStateHolder(store, AndroidAuditStore(InMemoryAuditSink()))
         holder.bind(binding)
@@ -106,7 +109,8 @@ class PairingGrantStateTest {
 
         val restored = PairingGrantStateHolder(store, AndroidAuditStore(InMemoryAuditSink()))
         restored.bind(binding)
-        assertEquals(0L, restored.state.value?.revision)
+        assertEquals(2L, restored.state.value?.revision)
         assertTrue(restored.state.value?.granted.isNullOrEmpty())
+        assertTrue(restored.state.value?.migrationRequired == true)
     }
 }

@@ -26,6 +26,8 @@ from .device_service import DeviceService
 
 GATEWAY_REVISION = "b64dda00a0de9ff1a95a375dcf92f62b5a1027b3"
 DEVICE_API = "/open-android-intelligence/core/v1"
+DEVICE_AUTHORIZATION_HEADER = "X-Open-Android-Intelligence-Device-Authorization"
+DEVICE_AUTHORIZATION_MODEL = "android-v1"
 CORE_KEY = web.AppKey("oai_core", GatewayCore)
 AUTH_KEY = web.AppKey("authentication", Authentication)
 DEVICE_KEY = web.AppKey("devices", DeviceService)
@@ -116,7 +118,11 @@ class CoreTransport(GatewayTransport):
 
     async def dispatch(self, request: web.Request) -> web.StreamResponse:
         path = request.path
-        if request.method == "POST" and path == "/open-android-intelligence/v2/negotiate":
+        negotiating = request.method == "POST" and path == "/open-android-intelligence/v2/negotiate"
+        authorization_models = request.headers.getall(DEVICE_AUTHORIZATION_HEADER, []) if negotiating else []
+        if authorization_models and authorization_models != [DEVICE_AUTHORIZATION_MODEL]:
+            raise GatewayError("SCHEMA_INVALID", {"reason": "DEVICE_AUTHORIZATION_MODEL_INVALID"})
+        if negotiating:
             registry = request.app[REGISTRY_KEY]
             self.services.core.native_conversation_ui = registry.conversation_ui(await registry.discover())
         if request.method == "PUT" and re.fullmatch(r"/open-android-intelligence/v2/attachments/[^/]+/content", path):
@@ -139,6 +145,10 @@ class CoreTransport(GatewayTransport):
         headers = {k: v for k, v in result["headers"].items() if k.lower() != "content-type"}
         if path == "/open-android-intelligence/v2/negotiate" and result["statusCode"] == 200:
             headers["X-OAI-Agent-Sessions"] = "1"
+            if authorization_models:
+                # Optional, explicit semantics outside the closed JSON schema.
+                # A legacy client must never infer this agreement from v2 alone.
+                headers[DEVICE_AUTHORIZATION_HEADER] = DEVICE_AUTHORIZATION_MODEL
         return web.json_response(result["body"], status=result["statusCode"], headers=headers)
 
 

@@ -110,9 +110,12 @@ fun PluginManagementScreen(
     val pluginRevision = host?.revision?.collectAsState()?.value
     val gatewayStatuses = app?.gatewayRuntime?.deviceCapabilityStatuses?.collectAsState()?.value.orEmpty()
     val gatewaySync = app?.gatewayRuntime?.deviceCapabilitySyncStatus?.collectAsState()?.value ?: "SYNC_REQUIRED"
+    val pairingGrantState = app?.pairingGrants?.state?.collectAsState()?.value
+    val capabilityMigrationRequired = app?.pluginHost?.capabilityMigrationRequired() == true || pairingGrantState?.migrationRequired == true
     var installed by remember { mutableStateOf(resolvedStore.listInstalled()) }
     var pendingApproval by remember { mutableStateOf<ByteArray?>(null) }
     var grantPlugin by remember { mutableStateOf<String?>(null) }
+    var showCapabilityMigrationReview by remember { mutableStateOf(false) }
     var removeDamagedPlugin by remember { mutableStateOf<String?>(null) }
     var showNotificationSetup by remember { mutableStateOf(false) }
     var invokePlugin by remember { mutableStateOf<String?>(null) }
@@ -137,7 +140,7 @@ fun PluginManagementScreen(
                     if (bundledPlugin != null) resolvedStore.installBundledPlugin(bundledPlugin, bytes) else resolvedStore.install(bytes,approved)
                 }
                 refresh(); pendingApproval = null
-                notice = "已安装 ${view.pluginId} v${view.version}，可启用并为当前配对授权。"
+                notice = "已安装 ${view.pluginId} v${view.version}，启用后即可使用其设备能力。"
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (cause: Exception) {
                 if ((cause as? PackageRejected)?.message?.startsWith("APPROVAL_REQUIRED:") == true) {
@@ -157,17 +160,21 @@ fun PluginManagementScreen(
             catch (cause: Exception) { notice = installFailureNotice(cause) }
         }
     }
-    fun grantNow(id: String) { runCatching { host?.grant(id,true) ?: error("RUNTIME_UNAVAILABLE") }.fold(
+    fun selectProviderNow(id: String) { runCatching {
+        val activeHost = host ?: error("RUNTIME_UNAVAILABLE")
+        check(activeHost.isCapabilityEnabled(id)) { "LOCAL_CAPABILITY_DISABLED" }
+        activeHost.setCapabilityEnabled(id, true)
+    }.fold(
         onSuccess = {
             notice = if (host?.entries(id).orEmpty().any { "kernel.notifications.read" in it.primitives }) {
                 showNotificationSetup = true
-                "已为当前配对授权。接下来请到「通知管理 → 通知读取范围」允许读取通知、选择要读取的应用，并在系统设置中开启通知使用权。"
-            } else "已为当前配对授权并选择此提供者。"
-        },onFailure = { notice = "授权失败：请先登录 Gateway，并确认插件状态正常。" }) }
+                "已选择此通知提供者。读取范围与 Android 通知使用权仍需分别设置。"
+            } else "已选择此插件作为能力提供者。"
+        },onFailure = { notice = "无法选择提供者：请先连接设备并确认插件状态正常。" }) }
     var permissionPlugin by remember { mutableStateOf<String?>(null) }
     val requestPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val id = permissionPlugin; permissionPlugin = null
-        if (id != null && result.values.all { it }) grantNow(id) else notice = "系统权限未授予，设备能力未授权。"
+        if (id != null && result.values.all { it }) selectProviderNow(id) else notice = "系统权限未授予；本机能力开关保持原状态。"
     }
     fun sink(id: String) = PluginUiActionSink { component, action, value ->
         if (host == null) notice = "已提交 $action（$component）——$KERNEL_ABSENT_NOTICE"
@@ -187,7 +194,7 @@ fun PluginManagementScreen(
     }
     pendingApproval?.let { candidate ->
         AlertDialog(onDismissRequest = { pendingApproval = null },title = { Text("确认插件更新") },
-            text = { Text("该更新扩大了内核原语、联网、后台或资源范围。批准后仍需在配对中授予新增能力；作者和签名将再次核验。") },
+            text = { Text("该更新扩大了内核原语、联网、后台或资源范围。批准后，本机能力开关、系统权限和后台设置仍分别生效；作者和签名将再次核验。") },
             confirmButton = { TextButton(onClick = { installBytes(candidate,true) },enabled = !installing) { Text("批准更新") } },
             dismissButton = { TextButton(onClick = { pendingApproval = null }) { Text("取消") } })
     }
@@ -195,7 +202,7 @@ fun PluginManagementScreen(
         AlertDialog(
             onDismissRequest = { removeDamagedPlugin = null },
             title = { Text("卸载损坏包") },
-            text = { Text("将删除插件目录 $directoryName 的损坏包并撤销该插件的本机配对授权。重新安装后需要重新启用、授权，并重新检查通知读取范围。") },
+            text = { Text("将删除插件目录 $directoryName 的损坏包及其本机设置。重新安装后需要重新启用插件，并重新检查系统权限与通知读取范围。") },
             confirmButton = {
                 TextButton(onClick = {
                     removeDamagedPlugin = null
@@ -203,7 +210,7 @@ fun PluginManagementScreen(
                         require(isSafePluginDirectoryName(directoryName)) { "INVALID_PLUGIN_DIRECTORY" }
                         if (app != null) app.pluginHost.uninstall(directoryName) else resolvedStore.uninstall(directoryName)
                         refresh()
-                    }.fold(onSuccess = { notice = "损坏插件包已卸载，请重新安装、启用并授权。" },
+                    }.fold(onSuccess = { notice = "损坏插件包已卸载，请重新安装并启用。" },
                         onFailure = { notice = "损坏插件包未能卸载，请检查本机存储。" })
                 }, modifier = Modifier.testTag("damaged-plugin-delete-confirm")) { Text("确认卸载") }
             },
@@ -214,7 +221,7 @@ fun PluginManagementScreen(
         AlertDialog(
             onDismissRequest = { showNotificationSetup = false },
             title = { Text("完成通知读取设置") },
-            text = { Text("配对授权已保存。还需要在「通知读取范围」里允许读取、选择要读取的应用与内容，并在 Android 系统设置中开启通知使用权。") },
+            text = { Text("还需要在「通知读取范围」里允许读取、选择要读取的应用与内容，并在 Android 系统设置中开启通知使用权。") },
             confirmButton = {
                 TextButton(onClick = {
                     showNotificationSetup = false
@@ -227,8 +234,53 @@ fun PluginManagementScreen(
     }
     grantPlugin?.let { id ->
         val entries = host?.entries(id).orEmpty()
-        AlertDialog(onDismissRequest = { grantPlugin = null },title = { Text("允许这个插件为当前账号服务") },
-            text = { Text("$id\n" + entries.joinToString("\n") { "${it.key}（风险：${it.risk}）\n需要：${it.primitives.joinToString()}" }) },
+        AlertDialog(onDismissRequest = { grantPlugin = null },title = { Text("权限与能力设置") },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    Text("$id\n选择此插件作为已声明能力的提供者。本机能力开关由插件列表控制；这里不会授予配对许可。短信或通话记录系统权限仍会由 Android 单独确认。")
+                    val activeHost = host
+                    if (activeHost != null && activeHost.supportsBackground(id)) {
+                        val backgroundEnabled = activeHost.isBackgroundEnabled(id)
+                        val backgroundSettingAvailable = pairingGrantState != null && !capabilityMigrationRequired
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("允许后台任务", style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    text = when {
+                                        capabilityMigrationRequired -> "请先复核旧的本机设置"
+                                        pairingGrantState == null -> "连接设备后才能读取或修改本机后台许可"
+                                        backgroundEnabled -> "已在本机明确允许后台任务"
+                                        else -> "普通查询无需此许可；定时/后台操作仍受系统调度和当前本地授权约束"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = backgroundEnabled,
+                                enabled = backgroundSettingAvailable,
+                                onCheckedChange = { enabled ->
+                                    runCatching { activeHost.setBackgroundEnabled(id, enabled) }
+                                        .fold(
+                                            onSuccess = { notice = if (enabled) "已明确允许此插件执行后台任务。" else "已在本机关闭此插件的后台任务许可。" },
+                                            onFailure = { notice = "后台任务许可未能保存，请稍后重试。" },
+                                        )
+                                },
+                                modifier = Modifier.testTag("plugin-background-toggle:$id"),
+                            )
+                        }
+                    }
+                    entries.forEach { entry ->
+                        Text("${entry.key}（风险：${entry.risk}）\n需要：${entry.primitives.joinToString()}")
+                    }
+                }
+            },
             confirmButton = { TextButton(onClick = {
                 grantPlugin = null
                 val primitives = entries.flatMap { it.primitives }.toSet()
@@ -236,8 +288,23 @@ fun PluginManagementScreen(
                     if ("kernel.sms.read" in primitives) add(android.Manifest.permission.READ_SMS)
                     if ("kernel.call-log.read" in primitives) add(android.Manifest.permission.READ_CALL_LOG)
                 }.filter { context.checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
-                if (permissions.isEmpty()) grantNow(id) else { permissionPlugin = id; requestPermissions.launch(permissions.toTypedArray()) }
-            }) { Text("允许以上能力") } },dismissButton = { TextButton(onClick = { grantPlugin = null }) { Text("取消") } })
+                if (permissions.isEmpty()) selectProviderNow(id) else { permissionPlugin = id; requestPermissions.launch(permissions.toTypedArray()) }
+            }) { Text("检查权限并选择此提供者") } },dismissButton = { TextButton(onClick = { grantPlugin = null }) { Text("取消") } })
+    }
+    if (showCapabilityMigrationReview) {
+        AlertDialog(
+            onDismissRequest = { showCapabilityMigrationReview = false },
+            title = { Text("复核旧的本机能力设置") },
+            text = { Text("复核后，已安装且启用的插件将在本机默认允许设备能力；明确关闭的插件仍保持关闭。旧记录无法确定是否曾撤销时，请先停用不需要的插件再确认。此操作不会授予 Android 系统权限、扩大通知读取范围、开启后台同步，也不会创建屏幕会话；这些条件仍需分别检查。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showCapabilityMigrationReview = false
+                    runCatching { app?.pluginHost?.completeCapabilityMigration() ?: error("RUNTIME_UNAVAILABLE") }
+                        .fold(onSuccess = { notice = "本机能力设置已完成复核。" }, onFailure = { notice = "复核未完成，请稍后重试。" })
+                }) { Text("确认并完成复核") }
+            },
+            dismissButton = { TextButton(onClick = { showCapabilityMigrationReview = false }) { Text("稍后复核") } },
+        )
     }
     invokePlugin?.let { id ->
         AlertDialog(onDismissRequest = { invokePlugin = null },title = { Text("调用插件能力") },
@@ -251,7 +318,7 @@ fun PluginManagementScreen(
                         val result = runInterruptible(Dispatchers.IO) { host.invoke(entry.identity,accountId,selected,Json.parse(parameters),"ui_${java.util.UUID.randomUUID()}") }
                         notice = result.decodeToString().take(4096)
                     } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { notice = "调用被拒绝或失败，请检查配对授权、系统权限和参数。" }
+                    catch (_: Exception) { notice = "调用被拒绝或失败，请检查设备连接、本机能力开关、系统权限和参数。" }
                 }
             }) { Text("执行") } },dismissButton = { TextButton(onClick = { invokePlugin = null }) { Text("取消") } })
     }
@@ -335,13 +402,25 @@ fun PluginManagementScreen(
                 OperationNoticeBanner(text = text, onDismiss = { notice = null })
             }
 
+            if (capabilityMigrationRequired) {
+                SettingsSectionCard {
+                    SettingsListItem(
+                        headline = "复核旧的本机能力设置",
+                        supporting = "需要你确认如何迁移手机上已有的设置；不会自动授予系统权限或其他访问范围",
+                        icon = Icons.Default.Warning,
+                        enabled = app != null,
+                        onClick = if (app != null) ({ showCapabilityMigrationReview = true }) else null,
+                    )
+                }
+            }
+
             // 运行时事实：能否执行、能否启用，只由内核装配状态决定。
             SectionLabel("插件运行环境")
             SettingsSectionCard {
                 SettingsListItem(
                     headline = if (pluginRuntimesWired) "插件运行环境已就绪" else "当前版本暂不支持运行插件",
                     supporting = if (pluginRuntimesWired) {
-                        "已安装并启用的插件，只有在应用声明的能力、你的授权和系统权限全部满足时才会执行"
+                        "已安装并启用的插件，只有在本机能力开关、应用声明和系统权限均满足时才会执行"
                     } else {
                         "已安装插件不会运行，「启用」不可用；安装仍会校验并保管包内容"
                     },
@@ -364,11 +443,11 @@ fun PluginManagementScreen(
                             headline = if (alreadyInstalled) "${plugin.displayName}插件已安装" else "安装${plugin.displayName}插件",
                             supporting = when {
                                 !allowRuntimePlugins -> "当前版本不支持内置插件，请使用支持插件的完整版本"
-                                alreadyInstalled && host?.loadFailures?.containsKey(plugin.pluginId) == true -> "现有的包已损坏，请先卸载它，再重新安装并授权"
-                                alreadyInstalled -> if (plugin == BundledPlugin.NOTIFICATIONS)
-                                    "请在下方启用插件、授予当前配对，并配置通知读取范围与系统通知使用权"
-                                else "请在下方启用插件并授予当前配对；授权时会请求对应的系统读取权限"
-                                else -> "安装应用自带的插件，安装后还需要启用并授权"
+                            alreadyInstalled && host?.loadFailures?.containsKey(plugin.pluginId) == true -> "现有的包已损坏，请先卸载它，再重新安装"
+                            alreadyInstalled -> if (plugin == BundledPlugin.NOTIFICATIONS)
+                                "请在下方启用插件，并检查通知读取范围与系统通知使用权"
+                            else "请在下方启用插件；短信或通话记录还需要对应的系统权限"
+                            else -> "安装应用自带的插件，安装后可在下方启用并设置本机能力开关"
                             },
                             icon = Icons.Default.InstallMobile,
                             enabled = allowRuntimePlugins && !alreadyInstalled && !installing,
@@ -418,14 +497,66 @@ fun PluginManagementScreen(
                                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                                     // 能力状态：图标 + 语义色 + 文字三件套，颜色不是唯一信号。
                                     host.entries(id).forEach { entry ->
-                                        val status = if (gatewaySync == "SYNC_FAILED") gatewaySync else gatewayStatuses[entry.id] ?:
-                                            if (gatewaySync == "SYNCED") "STATUS_UNAVAILABLE" else "SYNC_REQUIRED"
+                                        val status = when (gatewaySync) {
+                                            "SYNC_FAILED", "AUTHORIZATION_MODEL_UNSUPPORTED" -> gatewaySync
+                                            else -> gatewayStatuses[entry.id] ?: if (gatewaySync == "SYNCED") "STATUS_UNAVAILABLE" else "SYNC_REQUIRED"
+                                        }
                                         CapabilityStatusRow(entryId = entry.id, status = status)
+                                        if (status == "PROVIDER_NOT_SELECTED" && host.isCapabilityEnabled(id)) {
+                                            TextButton(
+                                                onClick = {
+                                                    runCatching { host.setCapabilityEnabled(id, true) }
+                                                        .fold(
+                                                            onSuccess = { notice = "已选择此插件提供能力。" },
+                                                            onFailure = { notice = "未能选择此插件，请确认本机能力开关和设备连接。" },
+                                                        )
+                                                },
+                                            ) { Text("使用此插件提供能力") }
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        val capabilityEnabled = host.isCapabilityEnabled(id)
+                                        val localToggleAvailable = pairingGrantState != null && !capabilityMigrationRequired
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("允许此插件的设备能力", style = MaterialTheme.typography.bodyLarge)
+                                            Text(
+                                                text = when {
+                                                    capabilityMigrationRequired -> "请先复核旧的本机设置，再调整能力开关"
+                                                    pairingGrantState == null -> "连接设备后才能读取或修改本机能力设置"
+                                                    capabilityEnabled -> "本机已允许；系统权限和通知读取范围仍单独生效"
+                                                    else -> "本机已关闭；服务端不能远程开启"
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        Switch(
+                                            checked = capabilityEnabled,
+                                            enabled = localToggleAvailable,
+                                            onCheckedChange = { enabled ->
+                                                runCatching { host.setCapabilityEnabled(id, enabled) }
+                                                    .fold(
+                                                        onSuccess = { notice = if (enabled) "已在本机开启此插件的设备能力。" else "已在本机关闭此插件的设备能力。" },
+                                                        onFailure = { notice = "本机能力设置未能保存，请稍后重试。" },
+                                                    )
+                                            },
+                                            modifier = Modifier.testTag("plugin-capability-toggle:$id"),
+                                        )
+                                    }
+                                    if (pairingGrantState != null && !capabilityMigrationRequired && !host.isCapabilityEnabled(id)) {
+                                        Text(
+                                            text = "本机已关闭此插件的设备能力。服务端状态不会覆盖这个本地决定。",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
                                     }
                                     // 常规动作：FlowRow 自动换行，窄屏不会再被挤成一条溢出屏幕的长行。
                                     FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                                         TextButton(onClick = { runCatching { host.enable(id,!host.isEnabled(id)) }.fold(onSuccess={notice="插件状态已更新。"},onFailure={notice="启用失败：请检查开发者信任模式、插件兼容性或安全限制。"}) }) { Text(if(host.isEnabled(id)) "停用" else "启用") }
-                                        TextButton(onClick = { grantPlugin = id }) { Text("配对授权") }
+                                        TextButton(onClick = { grantPlugin = id }) { Text("权限与提供者") }
                                         TextButton(onClick = { runCatching { resolvedStore.rollback(id); refresh() }.fold(onSuccess={notice="已恢复到上一个版本。"},onFailure={notice="没有可以恢复的版本。"}) }) { Text("恢复上一版本") }
                                         if (host.hasNativeUi(id)) TextButton(onClick = { runCatching { host.selectNativeUi(id) }.fold(onSuccess={notice="已切换为该插件自带的界面，随时可以切回来。"},onFailure={notice="需要先开启开发者信任模式并启用插件。"}) }) { Text("使用插件界面") }
                                         if (host.isQuarantined(id)) TextButton(onClick = { host.recoverNative(id); refresh() }) { Text("解除安全限制（保持停用）") }
@@ -438,8 +569,7 @@ fun PluginManagementScreen(
                                             }) { Text("打开通知访问设置") }
                                         }
                                     }
-                                    // 危险动作单独一组：只有「卸载」和「撤销授权」，配色走 error 语义，
-                                    // 与上面的可逆操作在视觉与位置上都分开。
+                                    // 卸载与日常可逆设置分开呈现。
                                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                                     FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                                         val dangerColors = ButtonDefaults.textButtonColors(
@@ -449,15 +579,6 @@ fun PluginManagementScreen(
                                             onClick = { runCatching { host.uninstall(id); refresh() }.fold(onSuccess={notice="已卸载并清理插件数据。"},onFailure={notice="卸载未完成，请检查存储。"}) },
                                             colors = dangerColors,
                                         ) { Text("卸载") }
-                                        TextButton(
-                                            onClick = {
-                                                runCatching { host.grant(id, false) }.fold(
-                                                    onSuccess = { notice = "已撤销此插件对当前配对的授权。" },
-                                                    onFailure = { notice = "撤销失败，请先登录对应的 Gateway 账号。" },
-                                                )
-                                            },
-                                            colors = dangerColors,
-                                        ) { Text("撤销当前配对授权") }
                                     }
                                 }
                             }
@@ -494,18 +615,19 @@ fun PluginManagementScreen(
 }
 
 internal fun capabilityStatusLabel(status: String): String = when(status) {
-    "READY" -> "Gateway 与 Android 授权已就绪"
-    "GATEWAY_DISABLED" -> "当前 Gateway 账号未启用；请通过 Gateway 能力配置开启"
+    "READY" -> "服务端报告已就绪；本机权限与数据范围仍单独检查"
+    "GATEWAY_DISABLED" -> "服务端仍使用旧账号能力策略，请升级 OAI Core"
+    "AUTHORIZATION_MODEL_UNSUPPORTED" -> "服务端尚不支持 Android 统一授权，请升级 OAI Core；当前设备能力不可用"
     "PLUGIN_NOT_INSTALLED" -> "Android 未安装对应插件"
     "PLUGIN_DISABLED" -> "Android 插件未启用"
-    "LOCAL_GRANT_REQUIRED" -> "需要本机配对或采集策略授权"
+    "LOCAL_GRANT_REQUIRED" -> "本机能力尚未开启或需要重新同步"
     "ANDROID_PERMISSION_REQUIRED" -> "需要 Android 系统权限"
     "PROVIDER_UNAVAILABLE" -> "本机采集器或监听服务未就绪"
     "PROVIDER_NOT_SELECTED" -> "尚未选择此能力提供者"
     "SYNC_FAILED" -> "Gateway 能力同步失败，正在重试"
     "ANDROID_STATE_UNKNOWN" -> "Android 版本未提供详细授权状态"
-    "STATUS_UNAVAILABLE" -> "Gateway 未提供能力状态；请检查本机授权与 Gateway 版本"
-    else -> "等待同步当前 Gateway 账号的能力状态"
+    "STATUS_UNAVAILABLE" -> "Gateway 未提供能力状态；请检查连接与 OAI Core 版本"
+    else -> "等待同步当前设备能力状态"
 }
 
 /** 一个已安装插件的真实状态与其声明式设置贡献。 */
@@ -535,7 +657,7 @@ private fun InstalledPluginBlock(
     SettingsListItem(headline = headline, supporting = supporting)
 
     if (failure != null) {
-        SettingsListItem(headline = "这个插件无法载入", supporting = "请先卸载它，再重新安装并授权。", tone = SettingsTone.DANGER)
+        SettingsListItem(headline = "这个插件无法载入", supporting = "请先卸载它，再重新安装并检查本机能力开关和所需系统权限。", tone = SettingsTone.DANGER)
         return
     }
 
@@ -600,7 +722,7 @@ private fun CapabilityStatusRow(entryId: String, status: String) {
             tone = SettingsTone.DANGER
             textColor = MaterialTheme.colorScheme.error
         }
-        "GATEWAY_DISABLED", "PLUGIN_NOT_INSTALLED", "PLUGIN_DISABLED", "LOCAL_GRANT_REQUIRED",
+        "GATEWAY_DISABLED", "AUTHORIZATION_MODEL_UNSUPPORTED", "PLUGIN_NOT_INSTALLED", "PLUGIN_DISABLED", "LOCAL_GRANT_REQUIRED",
         "ANDROID_PERMISSION_REQUIRED", "PROVIDER_UNAVAILABLE", "PROVIDER_NOT_SELECTED" -> {
             icon = Icons.Default.Warning
             tone = SettingsTone.NEUTRAL

@@ -10,20 +10,23 @@ import kotlinx.coroutines.sync.withLock
 class CapabilityPublisher(context: Context,private val http: GatewayHttpClient,scopeKey: String,
     private val initialRevision: Int,private val localRevision: () -> Long,private val host: ProductionPluginHost,
     private val foreignChange: () -> Unit,
-    keyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null) {
-    private val documents = if (keyProvider == null) EncryptedDocuments(context,"capability-publication:$scopeKey")
-        else EncryptedDocuments(context,"capability-publication:$scopeKey",keyProvider)
+    keyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null,
+    private val authorizationCurrent: () -> Boolean = { true }) {
+    // The old journal can contain a positive pairing-grant snapshot. Never
+    // replay it across the change to Android-owned defaults and explicit denies.
+    private val documents = if (keyProvider == null) EncryptedDocuments(context,"capability-publication:android-v1:$scopeKey")
+        else EncryptedDocuments(context,"capability-publication:android-v1:$scopeKey",keyProvider)
     private val lock = Mutex()
     @Volatile var grantRevision = initialRevision; private set
     @Volatile private var pendingDigest: String? = documents.read("pending")?.let { digest(JsonFields.obj(Json.parse(it.decodeToString()))!!) }
     @Volatile private var lastDigest: String? = documents.read("acknowledged")?.let { JsonFields.string(JsonFields.obj(Json.parse(it.decodeToString())),"grantDigest") }
-    val gatewayPolicy = kotlinx.coroutines.flow.MutableStateFlow<JsonValue.JObject?>(null)
     val gatewayCapabilities = kotlinx.coroutines.flow.MutableStateFlow<List<JsonValue.JObject>>(emptyList())
     suspend fun sync() = lock.withLock {
-        val current = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/pairings/current")).requireData("PAIRING_LOOKUP_FAILED")
+        check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+        val current = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/pairings/current",
+            beforeSend = { check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" } })).requireData("PAIRING_LOOKUP_FAILED")
         val remoteRevision = JsonFields.int(current,"grantRevision") ?: error("PAIRING_INVALID")
         val remoteDigest = JsonFields.string(current,"grantDigest")
-        gatewayPolicy.value = JsonFields.obj(JsonFields.field(current,"capabilityPolicy"))
         gatewayCapabilities.value = JsonFields.objects(current,"capabilities")
         val pending = documents.read("pending")?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
         val acknowledged = documents.read("acknowledged")?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
@@ -38,6 +41,7 @@ class CapabilityPublisher(context: Context,private val http: GatewayHttpClient,s
         val hostRevision = host.revision.value
         val snapshot = host.capabilitySnapshot()
         check(localRevision() == local && host.revision.value == hostRevision) { "LOCAL_AUTHORIZATION_CHANGED" }
+        check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
         val body = Json.of(mapOf("bindings" to snapshot.bindings,"localGrantRevision" to local,"expectedGrantRevision" to remoteRevision) +
             // An unreadable installed package makes absence unprovable. Omit the
             // optional inventory so the Gateway uses ANDROID_STATE_UNKNOWN;
@@ -56,9 +60,14 @@ class CapabilityPublisher(context: Context,private val http: GatewayHttpClient,s
             return@withLock
         }
         documents.write("pending",Json.canonical(body).toByteArray())
+        check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
         val id = "bindings_" + digestName(Json.canonical(body))
         val response = http.execute(SignedGatewayRequest("POST","/open-android-intelligence/v2/pairings/current/capabilities",
-            body = Json.canonical(body).toByteArray(),headers = listOf(RawHeader("Content-Type","application/json")),requestId = id)).requireData("CAPABILITY_BINDING_FAILED")
+            body = Json.canonical(body).toByteArray(),headers = listOf(RawHeader("Content-Type","application/json")),requestId = id,
+            beforeSend = {
+                check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+                check(localRevision() == local && host.revision.value == hostRevision) { "LOCAL_AUTHORIZATION_CHANGED" }
+            })).requireData("CAPABILITY_BINDING_FAILED")
         check(JsonFields.string(response,"grantDigest") == pendingDigest) { "CAPABILITY_DIGEST_MISMATCH" }
         grantRevision = JsonFields.int(response,"grantRevision") ?: error("CAPABILITY_BINDING_INVALID")
         lastDigest = pendingDigest

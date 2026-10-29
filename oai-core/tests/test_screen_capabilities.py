@@ -16,7 +16,6 @@ from jsonschema import Draft202012Validator
 
 from oai_core.cli import main
 from oai_core.client import CoreClient
-from oai_core.gateway.capability_policy import DeviceCapabilityPolicy
 from oai_core.gateway.core import _jcs
 from oai_core.mcp import create_mcp
 from oai_core.server import DEVICE_API
@@ -189,25 +188,28 @@ async def test_screen_pending_cancel_claimed_cancel_failure_and_revocation(gatew
 
 
 @pytest.mark.asyncio
-async def test_screen_capability_disabled_explicitly_blocks_new_requests(gateway):
+async def test_screen_legacy_account_policy_cannot_block_android_ready_requests(gateway):
     client, core, _ = gateway
     bundle, key = await phone_login(client, core)
     capabilities, _ = await publish_screen(client, core, bundle, key)
     headers = await token(client, bundle)
     binding = capabilities[0]
 
-    # Explicitly disable this capability via DeviceCapabilityPolicy
+    # Seed an archived pre-Android-authority switch; it must have no veto.
     account = core.open_gateway_account(bundle["accountId"])
     try:
-        DeviceCapabilityPolicy(account.store).set(binding["capabilityId"], False)
+        account.store.database.execute(
+            "INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
+            ("device-capability-policy:v1", json.dumps({"revision": 1, "enabled": {binding["capabilityId"]: False}})),
+        )
     finally:
         account.close()
 
     response = await client.post(DEVICE_API + "/device-requests", json={
         "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": SCREEN[0][3],
     }, headers={**headers, "Idempotency-Key": "test-disabled"})
-    assert response.status == 403
-    assert (await response.json())["error"]["code"] == "CAPABILITY_DENIED"
+    assert response.status == 200, await response.text()
+    assert (await response.json())["state"] == "pending"
 
 
 @pytest.mark.parametrize("schema_name,parameters", [

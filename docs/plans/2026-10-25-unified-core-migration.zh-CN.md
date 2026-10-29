@@ -1,5 +1,7 @@
 # OAI 统一 Core 与多 Agent 迁移
 
+**2026-10-28 后续授权修订**：本文保留当时的统一 Core 迁移计划。设备能力规则由 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 规定：Android 唯一授权，普通前台能力默认开启，Core 不作账号级能力许可裁决；后台、系统权限与敏感操作仍单独约束。该规则已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；当前结果见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。连接认证、设备绑定、协议版本栅栏及共享会话不得继承设备凭据的规则继续有效。
+
 > 当前实现基线：分支 `feature/unified-oai-core` @ `316a0f55`。
 > 各阶段完成状态以
 > [架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)

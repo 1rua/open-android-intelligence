@@ -11,7 +11,9 @@ description: Read and control paired Android devices through OAI Core (via CLI o
 
 ## 1. 架构与接入模式
 
-OAI Core 是设备连接与能力调度的唯一权威中枢。所有 Agent 对连接手机的读取或控制，均通过 OAI Core 提供的统一接口进行，无需直接与 Android 建立底层通信：
+OAI Core 统一提供连接认证、设备绑定、能力发现、协议验证与请求路由。所有 Agent 读取或控制手机均调用 Core 接口；Android 是设备能力授权的唯一权威。
+
+**2026-10-28 Android 授权规则**：设备插件安装且启用后能力默认开启，执行仍受 Android 本地显式开关、系统权限、数据范围与必要敏感确认约束。Core 和 Agent Gateway 不追加账号级设备能力授权；会话桥 Token 不作为设备调用凭据。规则已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 和真机验收。旧 `dev` 基线遇到 `GATEWAY_DISABLED` 时，可按[修复计划](../../../docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)核对历史拒绝；实现和当前验证见[实施记录](../../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。接入形态如下：
 
 - **模式 A：独立 / 命令行 Agent（未接入 Core 会话）**：
   直接在终端执行 `oai` CLI 命令（如 `oai devices`、`oai capabilities`、`oai invoke`）。
@@ -24,7 +26,7 @@ OAI Core 是设备连接与能力调度的唯一权威中枢。所有 Agent 对�
 
 ## 2. 身份认证与准备工作
 
-在操控设备之前，必须确保客户端凭据已配置并绑定目标设备：
+在操控设备之前，必须确保客户端凭据经 Core 认证并绑定目标账号、已配对设备与有效配对代次。共享 Agent 会话不自动继承任何个人设备调用凭据；模型不得提供或覆盖账号、设备和授权版本：
 
 ### 2.1 检查认证状态
 运行 `oai devices`。

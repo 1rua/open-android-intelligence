@@ -23,10 +23,16 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
     private val host: ProductionPluginHost,private val accountId: String,private val deviceId: String,
     private val generation: Int,scopeKey: String,private val currentGrantRevision: () -> Int,
     private val isForeground: () -> Boolean,
-    keyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null) {
+    keyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null,
+    private val authorizationCurrent: () -> Boolean = { true },
+    private val localAuthorizationRevision: () -> Long = { 0L }) {
     private val documents = if (keyProvider == null) EncryptedDocuments(context,"device-execution:$scopeKey")
         else EncryptedDocuments(context,"device-execution:$scopeKey",keyProvider)
-    private val client = DeviceRequestClient(HttpDeviceRequestTransport(http))
+    private val client = DeviceRequestClient(HttpDeviceRequestTransport(http) { id ->
+        check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+        val saved = documents.read(id)?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
+        check(saved != null && journalAuthorizationCurrent(saved)) { "LOCAL_AUTHORIZATION_CHANGED" }
+    })
     private val running = ConcurrentHashMap<String,Job>()
     private val confirmations = ConcurrentHashMap<String,CompletableDeferred<Boolean>>()
     private val confirmationLock = Mutex()
@@ -35,11 +41,13 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
 
     suspend fun accept(requestId: String) {
         require(requestId.matches(Regex("[A-Za-z0-9._~-]{1,128}")))
+        if (!authorizationCurrent()) return
         if (running[requestId]?.isActive == true) return
         diagnostic(requestId,"lookup","STARTED")
         val response = try {
             withTimeout(LOOKUP_TIMEOUT_MILLIS) {
-                http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/device-requests/$requestId"))
+                http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/device-requests/$requestId",
+                    beforeSend = { check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" } }))
             }
         } catch (timeout: TimeoutCancellationException) {
             currentCoroutineContext().ensureActive()
@@ -68,7 +76,9 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
         synchronized(running) {
             if (running[requestId]?.isActive == true) return
             if (documents.read(requestId) == null) documents.write(requestId,Json.canonical(Json.of(mapOf("stage" to "received",
-                "expiresAt" to JsonFields.string(request,"expiresAt")))).toByteArray())
+                "expiresAt" to JsonFields.string(request,"expiresAt"),
+                "localAuthorizationRevision" to localAuthorizationRevision(),
+                "hostAuthorizationDigest" to executionHostAuthorizationDigest(host)))).toByteArray())
             val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
                 try { execute(requestId,request) }
                 catch (cancelled: CancellationException) { throw cancelled }
@@ -111,6 +121,7 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
         var result: DeviceRequestResult = DeviceRequestResult.OutcomeUnknown
         var persistedResult: DeviceRequestResult? = null
         try {
+            if (!authorizationCurrent()) return
             val grantRevision = JsonFields.int(request,"grantRevision") ?: error("DEVICE_REQUEST_INVALID")
             if (grantRevision != currentGrantRevision()) {
                 documents.delete(id)
@@ -118,6 +129,10 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
                 return
             }
             val old = JsonFields.obj(Json.parse(documents.read(id)!!.decodeToString())) ?: error("EXECUTION_JOURNAL_INVALID")
+            if (!journalAuthorizationCurrent(old)) {
+                diagnostic(id,"authorization","LOCAL_AUTHORIZATION_CHANGED")
+                return
+            }
             persistedResult = JsonFields.obj(JsonFields.field(old,"result"))?.let(::decodeResult)
             val remaining = (Instant.parse(JsonFields.string(request,"expiresAt")!!).toEpochMilli() - System.currentTimeMillis())
                 .coerceIn(1,EXECUTION_TIMEOUT_MILLIS)
@@ -151,8 +166,14 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
                         currentCoroutineContext().ensureActive()
                         check(Instant.parse(JsonFields.string(request,"expiresAt")!!).toEpochMilli() > System.currentTimeMillis() &&
                             grantRevision == currentGrantRevision()) { "REQUEST_LEASE_EXPIRED" }
-                        // 确认弹窗可能跨越撤权；即使取消事件丢失，也必须重新检查 Gateway 授权。
-                        val current = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/device-requests/$id"))
+                        // 确认弹窗可能跨越撤销或协议变化；查询服务端的身份与请求绑定，
+                        // 本机能力许可仍由插件内核独立裁决。
+                        if (!authorizationCurrent()) throw CapabilityDenied("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
+                        val current = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/device-requests/$id",
+                            beforeSend = {
+                                check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+                                check(journalAuthorizationCurrent(old)) { "LOCAL_AUTHORIZATION_CHANGED" }
+                            }))
                         if (current.status in setOf(401,403,404,409)) throw CapabilityDenied("GATEWAY_AUTHORIZATION_REVOKED")
                         val live = JsonFields.obj(JsonFields.field(current.requireData("DEVICE_LOOKUP_FAILED"),"request")) ?: error("DEVICE_REQUEST_INVALID")
                         if (JsonFields.string(live,"state") !in setOf("pending","claimed") ||
@@ -169,6 +190,8 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
                             ScreenHostRegistry.current?.installConfirmation(id, Json.sha256(parameters), expiresAt)
                                 ?: throw CapabilityDenied("SCREEN_PROVIDER_UNAVAILABLE")
                         }
+                        if (!authorizationCurrent()) throw CapabilityDenied("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
+                        if (!journalAuthorizationCurrent(old)) throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
                         invocationStarted = true
                         diagnostic(id,stage,"STARTED")
                         val output = runInterruptible(Dispatchers.IO) { host.invoke(entry.identity,accountId,key,parameters,id) }
@@ -223,10 +246,13 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
         error("DEVICE_CLAIM_FAILED")
     }
     private suspend fun deliver(id: String,claim: ClaimReceipt,result: DeviceRequestResult) {
+        if (!authorizationCurrent()) return
         try {
             withTimeout(DELIVERY_TIMEOUT_MILLIS) {
                 repeat(MAX_ATTEMPTS) { attempt ->
                     try {
+                        val saved = documents.read(id)?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
+                        if (!authorizationCurrent() || saved == null || !journalAuthorizationCurrent(saved)) return@withTimeout
                         client.submitResult(claim,result)
                         documents.delete(id)
                         diagnostic(id,"result","ACKNOWLEDGED")
@@ -256,8 +282,15 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
         } finally { confirmations.remove(id); confirmation.value = null }
     }
     private fun checkpoint(id: String,request: JsonValue.JObject,stage: String,result: Map<String,Any?>? = null) {
-        documents.write(id,Json.canonical(Json.of(mapOf("stage" to stage,"expiresAt" to JsonFields.string(request,"expiresAt"),"result" to result))).toByteArray())
+        val existing = documents.read(id)?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
+        val revision = JsonFields.long(existing,"localAuthorizationRevision") ?: 0L
+        val hostDigest = JsonFields.string(existing,"hostAuthorizationDigest")
+        documents.write(id,Json.canonical(Json.of(mapOf("stage" to stage,"expiresAt" to JsonFields.string(request,"expiresAt"),
+            "localAuthorizationRevision" to revision,"hostAuthorizationDigest" to hostDigest,"result" to result))).toByteArray())
     }
+    private fun journalAuthorizationCurrent(document: JsonValue.JObject): Boolean =
+        (JsonFields.long(document,"localAuthorizationRevision") ?: 0L) == localAuthorizationRevision() &&
+            JsonFields.string(document,"hostAuthorizationDigest") == executionHostAuthorizationDigest(host)
     private fun encodeResult(result: DeviceRequestResult): Map<String,Any?> = when(result) {
         is DeviceRequestResult.Succeeded -> mapOf("outcome" to "succeeded","data" to result.payload)
         is DeviceRequestResult.Failed -> mapOf("outcome" to "failed","data" to result.payload)
@@ -280,4 +313,11 @@ class DeviceExecutionDriver(context: Context,private val scope: CoroutineScope,p
         const val RETRY_DELAY_MILLIS = 500L
         const val MAX_ATTEMPTS = 4
     }
+}
+
+/** Stable across a normal process restart; unlike the in-memory host revision. */
+internal fun executionHostAuthorizationDigest(host: ProductionPluginHost): String {
+    val snapshot = host.capabilitySnapshot()
+    return Json.sha256(Json.of(mapOf("bindings" to snapshot.bindings, "inventory" to snapshot.inventory,
+        "inventoryComplete" to snapshot.inventoryComplete)))
 }

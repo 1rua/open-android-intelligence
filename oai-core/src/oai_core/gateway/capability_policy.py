@@ -1,4 +1,4 @@
-"""Account-local Agent switches. These are never Android grants or bindings."""
+"""Android capability diagnostics and read-only inspection of retired account policy."""
 from __future__ import annotations
 
 import json
@@ -40,25 +40,18 @@ class DeviceCapabilityPolicy:
         return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9.-]{1,256}", value) is not None
 
     def allows(self, capability_id: str) -> bool:
-        return self.snapshot()["enabled"].get(capability_id) is not False
+        """Legacy policy has no authority over an Android device."""
+        from .core import GatewayError
+        raise GatewayError("DEVICE_AUTHORIZATION_MANAGED_BY_ANDROID")
 
     def set(self, capability_id: str, enabled: bool) -> dict[str, Any]:
-        from .core import GatewayError, _jcs
-        if not self.valid_id(capability_id) or type(enabled) is not bool:
-            raise GatewayError("SCHEMA_INVALID")
-        value = self.snapshot()
-        if value["enabled"].get(capability_id) is enabled:
-            return value
-        value["revision"] += 1
-        value["enabled"][capability_id] = enabled
-        self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)", (POLICY_KEY, _jcs(value)))
-        return value
+        """Retain an explicit retirement error for old local callers; never write."""
+        from .core import GatewayError
+        raise GatewayError("DEVICE_AUTHORIZATION_MANAGED_BY_ANDROID")
 
 
 def capability_catalog(account: Any, device_id: str | None = None) -> list[dict[str, Any]]:
     """Current, authenticated inventory; never confuse an old/absent snapshot with absence."""
-    policy = DeviceCapabilityPolicy(account.store)
-    configured = policy.snapshot()["enabled"]
     devices = account.store.database.execute(
         "SELECT device_id,pairing_generation,grant_revision FROM device_keys" + (" WHERE device_id=?" if device_id else "") + " ORDER BY device_id",
         (device_id,) if device_id else (),
@@ -73,7 +66,12 @@ def capability_catalog(account: Any, device_id: str | None = None) -> list[dict[
         declared = {(b["pluginId"], b["capabilityId"], b["capabilityVersion"]): b for b in bindings}
         states = {(s["pluginId"], s["capabilityId"], s["capabilityVersion"]): s for s in inventory or []}
         keys = set(declared) | set(states)
-        keys |= {("", key, "") for key in set(CAPABILITY_HINTS) | set(configured) if not any(k[1] == key for k in keys)}
+        if saved is not None and not current:
+            # Retain identities only as SYNC_REQUIRED diagnostics. Stale
+            # schemas, providers and READY assertions never become callable.
+            keys |= {(item["pluginId"], item["capabilityId"], item["capabilityVersion"])
+                     for item in saved["bindings"] + saved.get("inventory", [])}
+        keys |= {("", key, "") for key in set(CAPABILITY_HINTS) if not any(k[1] == key for k in keys)}
         for key in sorted(keys):
             binding, state = declared.get(key), states.get(key)
             android_state = ("SYNC_REQUIRED" if not current else state["status"] if state else
@@ -81,16 +79,13 @@ def capability_catalog(account: Any, device_id: str | None = None) -> list[dict[
             # Inventory describes diagnostics, never a grant. READY requires a matching binding.
             if android_state == "READY" and binding is None:
                 android_state = "SYNC_REQUIRED"
-            enabled = configured.get(key[1]) is not False
-            status = "GATEWAY_DISABLED" if not enabled else android_state
             output.append({"deviceId": target, "pairingGeneration": generation, "grantRevision": revision,
                            "pluginId": key[0] or None, "capabilityId": key[1], "capabilityVersion": key[2] or None,
-                           "gatewayEnabled": enabled, "androidStatus": android_state, "status": status,
+                           "androidStatus": android_state, "status": android_state,
                            **({"reason": state["reason"]} if state and state.get("reason") else {}),
                            **({"provider": {k: binding[k] for k in ("pluginId", "authorKeyId")},
                                "risk": binding["risk"], "schema": binding["schema"]} if binding else {})})
     if not devices:
-        output = [{"capabilityId": key, "capabilityVersion": None, "gatewayEnabled": configured.get(key) is not False,
-                   "androidStatus": "PAIRING_REQUIRED", "status": "PAIRING_REQUIRED"}
-                  for key in sorted(set(CAPABILITY_HINTS) | set(configured))]
+        output = [{"capabilityId": key, "capabilityVersion": None, "androidStatus": "PAIRING_REQUIRED", "status": "PAIRING_REQUIRED"}
+                  for key in sorted(set(CAPABILITY_HINTS))]
     return output

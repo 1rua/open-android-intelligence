@@ -6,6 +6,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.printToString
@@ -25,6 +27,7 @@ import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PhoneLimits
 import com.openandroidintelligence.kernel.PluginKernel
+import com.openandroidintelligence.kernel.identityGrantKey
 import com.openandroidintelligence.mobile.AppearancePreferences
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.PlatformSettingsEnvironment
@@ -322,7 +325,7 @@ class PluginManagementScreenTest {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
         }
         // Only the legitimate row can expose normal actions or its declarative UI.
-        assertEquals(1,compose.onAllNodesWithText("配对授权").fetchSemanticsNodes().size)
+        assertEquals(1,compose.onAllNodesWithText("权限与提供者").fetchSemanticsNodes().size)
         compose.onNodeWithTag("damaged-plugin-delete:org.example.disguised").performScrollTo().performClick()
         assertTrue(disguised.exists())
         compose.onNodeWithTag("damaged-plugin-delete-confirm").performClick()
@@ -332,6 +335,81 @@ class PluginManagementScreenTest {
         assertTrue(host.isEnabled(NOTIFICATION_PLUGIN_ID))
         assertEquals(authorized,app.pairingGrants.state.value!!.granted)
         assertTrue(host.loadFailures.isEmpty())
+    }
+
+    @Test
+    @Config(application = OpenAndroidIntelligenceApplication::class)
+    fun anInstalledPluginHasOneLocalCapabilitySwitchThatDoesNotCreatePairingGrants() {
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        app.pairingGrants.bind(PairingGrantBinding("https://gateway.example", "test_toggle", "test_install"))
+        store.install(TestAlpPackages.compiledNotificationsPackage())
+        app.pluginHost.reload()
+        app.pluginHost.enable(NOTIFICATION_PLUGIN_ID, true)
+
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
+        }
+
+        val toggle = compose.onNodeWithTag("plugin-capability-toggle:$NOTIFICATION_PLUGIN_ID")
+        toggle.performScrollTo().assertIsDisplayed().assertIsEnabled().assertIsOn().performClick()
+        compose.waitForIdle()
+
+        assertFalse(app.pluginHost.isCapabilityEnabled(NOTIFICATION_PLUGIN_ID))
+        assertTrue(app.pairingGrants.state.value?.granted.orEmpty().isEmpty())
+        compose.onNodeWithText("本机已关闭；服务端不能远程开启").assertExists()
+    }
+
+    @Test
+    @Config(application = OpenAndroidIntelligenceApplication::class)
+    fun explicitBackgroundSwitchDoesNotEnableNormalCapabilityOrAndroidPermission() {
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        org.robolectric.Shadows.shadowOf(context).denyPermissions(android.Manifest.permission.READ_SMS)
+        app.pairingGrants.bind(
+            PairingGrantBinding(
+                "https://gateway.example",
+                "test_background_${java.util.UUID.randomUUID()}",
+                "test_install",
+            ),
+        )
+        store.install(TestAlpPackages.compiledSmsPackage())
+        app.pluginHost.reload()
+        app.pluginHost.enable(SMS_PLUGIN_ID, true)
+        app.pluginHost.setCapabilityEnabled(SMS_PLUGIN_ID, false)
+        assertTrue(app.pluginHost.supportsBackground(SMS_PLUGIN_ID))
+        assertEquals(
+            android.content.pm.PackageManager.PERMISSION_DENIED,
+            context.checkSelfPermission(android.Manifest.permission.READ_SMS),
+        )
+
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
+        }
+        compose.onNodeWithText("权限与提供者").performScrollTo().performClick()
+        compose.onNodeWithText("允许后台任务").assertExists()
+
+        compose.onNodeWithTag("plugin-background-toggle:$SMS_PLUGIN_ID").performClick()
+        compose.waitForIdle()
+
+        val localState = requireNotNull(app.pairingGrants.state.value)
+        assertTrue(app.pluginHost.isBackgroundEnabled(SMS_PLUGIN_ID))
+        assertFalse(app.pluginHost.isCapabilityEnabled(SMS_PLUGIN_ID))
+        val smsReadIdentity = app.pluginHost.entries(SMS_PLUGIN_ID).first().identity
+        assertFalse(localState.permits(identityGrantKey(smsReadIdentity, "kernel.sms.read")))
+        assertEquals(
+            android.content.pm.PackageManager.PERMISSION_DENIED,
+            context.checkSelfPermission(android.Manifest.permission.READ_SMS),
+        )
+    }
+
+    @Test
+    fun capabilityStatusLabelsExplainLegacyServerAndLocalReasonsWithoutInventingWireStates() {
+        assertEquals(
+            "服务端尚不支持 Android 统一授权，请升级 OAI Core；当前设备能力不可用",
+            capabilityStatusLabel("AUTHORIZATION_MODEL_UNSUPPORTED"),
+        )
+        assertEquals("服务端仍使用旧账号能力策略，请升级 OAI Core", capabilityStatusLabel("GATEWAY_DISABLED"))
+        assertEquals("本机能力尚未开启或需要重新同步", capabilityStatusLabel("LOCAL_GRANT_REQUIRED"))
     }
 
     // ------------------------------------------------------------------

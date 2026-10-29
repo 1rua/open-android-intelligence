@@ -1,8 +1,11 @@
 # Android 屏幕能力：CLI、API 与 MCP 接口
 
-本文记录本次底层屏幕能力的公开调用契约。前端调用 Android 本地授权接口的顺序见
-[前端交接说明](android-screen-frontend-handoff.zh-CN.md)。本阶段没有新增授权页面、按钮、
-系统授权弹窗包装层或首次启动步骤；没有有效本地授权时，能力安全拒绝。
+**2026-10-28 授权规则**：设备能力由 Android 唯一授权，已安装且启用插件的普通前台能力默认开启；Core/Agent Gateway 不追加账号能力许可。系统屏幕权限、本地 READ/CAPTURE/CONTROL 许可和逐次敏感确认继续生效。规则已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`。以下远程 API 示例不代表真实设备验收已经通过；当前验证范围见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
+
+本文记录屏幕能力的公开调用契约。基线源码已接入 Android 的“屏幕读取与控制”设置页、
+本地屏幕会话开始/撤销、无障碍设置和独立系统投屏授权。代码依据与调用顺序见
+[前端交接说明](android-screen-frontend-handoff.zh-CN.md)。当前 feature 在 Android 唯一授权模型下保留本地屏幕许可；
+没有有效本地授权时继续安全拒绝，源码有入口不等于真机验收通过。
 
 ## 调用链与能力隔离
 
@@ -18,8 +21,9 @@ CLI 与 MCP 均使用 `CoreClient` 请求既有设备 API；Core 沿用同一账
 | `org.openandroidintelligence.screen-control` | `org.openandroidintelligence.screen-control.control` | `kernel.screen.control` | 执行明确的 Android 操作，`write`，每请求本地确认 |
 
 三个独立受保护插件各自只声明一个内核原语。能力 ID 必须属于自身插件命名空间，不能把
-不同原语放进一个包后仅靠自然语言区分权限。安装、启用、配对授权、服务端账号能力开关、
-Android 系统权限和本地屏幕会话分别生效，任一项不能代替另一项。
+不同原语放进一个包后仅靠自然语言区分权限。仅安装不启用插件；启用后其能力默认开启，
+无需额外账号开关或重复配对 grant。有效的连接认证和设备绑定、Android 系统权限、
+本地屏幕许可及控制逐次确认仍分别生效，启用不能替代这些条件。
 
 公开参数 Schema 是 `plugins/schemas/screen-read.json`、`screen-capture.json` 与
 `screen-control.json`，随已签名 `.alp` 发布；Android 经既有能力发布机制向 Core 注册实际
@@ -37,10 +41,10 @@ oai capabilities
 
 - `capabilityId`、`capabilityVersion`、`provider` 与当前 `schema`；不要缓存过期提供者身份。
 - `status` 与 `androidStatus`：只有 `READY` 并有实际提供者绑定时才具备调用条件。
-- `gatewayEnabled`：Core 账号开关，不是手机本地授权。
+- `gatewayEnabled`：旧 `dev` 基线中的账号开关字段，不作为本分支设备能力许可。不要引导用户寻找 Gateway setup；新旧版本协商与当前行为见[授权实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
 - `reason`：缺失本地许可、系统权限或服务时的诊断原因，不包含屏幕正文或输入内容。
 
-通用状态包括 `GATEWAY_DISABLED`、`PLUGIN_NOT_INSTALLED`、`PLUGIN_DISABLED`、
+旧 `dev` 基线的目录可能返回 `GATEWAY_DISABLED`，表示额外账号策略显式关闭；这不是 Android 系统权限诊断，也不是统一的 HTTP 错误码。新授权分支不再用此账号策略裁决，当前实现及兼容边界见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。可用性仍受本地与同步原因限制，包括 `PLUGIN_NOT_INSTALLED`、`PLUGIN_DISABLED`、
 `LOCAL_GRANT_REQUIRED`、`ANDROID_PERMISSION_REQUIRED`、`PROVIDER_UNAVAILABLE`、
 `PROVIDER_NOT_SELECTED`、`SYNC_REQUIRED`、`ANDROID_STATE_UNKNOWN` 与 `PAIRING_REQUIRED`。
 `SYNC_REQUIRED` 表示配对或授权版本已变化，必须等待 Android 发布新快照。

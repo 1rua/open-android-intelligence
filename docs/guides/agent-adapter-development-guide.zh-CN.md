@@ -2,6 +2,8 @@
 
 本指南面向希望将自己的 AI Agent（或已有商业/开源 Agent 系统）接入 Open Android Intelligence (OAI) 体系的开发者。
 
+> **2026-10-28 设备授权规则**：Android 是设备能力授权的唯一权威；已安装且启用的普通前台能力默认开启，受本地显式开关、系统权限、数据范围和必要敏感确认约束。后台同步保留为 Android 本地独立许可。Core 与 Agent Gateway 均不追加账号级设备能力授权。规则已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；当前测试和真机验收边界见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
+
 通过实现标准的 **OAI Core Session Adapter**，您的 Agent 可以直接被 OAI Core 统一纳管，并通过 Android 手机客户端进行双向原生会话与设备能力互通，**不需要修改 OAI Core 核心代码，也不需要在 Android 端编写专属适配分支**。
 
 ---
@@ -19,7 +21,7 @@ OAI 遵循「设备控制中心与原生会话分离」的设计哲学：
                                       v
        +-------------------------------------------------------------+
        |                          OAI Core                           |
-       |  - 统一身份认证与授权 (Token / HMAC 签名)                     |
+       |  - 连接身份认证与设备绑定 (Token / 请求签名)                     |
        |  - 统一设备管理与调用面 (CLI / REST API / MCP Stdio)          |
        |  - 原生会话路由与幂等台账 (native-operations.sqlite)          |
        |  - AgentRegistry (显式配置驱动的发现与能力仲裁)                |
@@ -36,8 +38,9 @@ OAI 遵循「设备控制中心与原生会话分离」的设计哲学：
 
 | 组件 | 核心职责 | 绝对禁止事项 |
 | --- | --- | --- |
-| **OAI Core** | 统一设备配对、Token 签发、会话路由、幂等校验、1 MiB 请求体预算检查、能力裁剪拦截。 | 不维护 Agent 私有长对话数据库；不硬编码特定 Agent 品牌类型。 |
-| **Agent 适配器 (Adapter)** | 负责将 Core 的标准化会话请求转发给 Agent 真实宿主进程或远程服务，并将流式响应格式化为标准 SSE 事件。 | **严禁自行实现设备连接或管理设备凭据**；严禁绕过 Core 直接向手机发未授权控制指令。 |
+| **Android 客户端** | 设备能力授权的唯一权威；插件安装且启用后能力默认开启，执行时检查本地显式开关、系统权限、数据范围与必要敏感确认。 | 不接受 Agent 或 Core 参数扩大本地权限。 |
+| **OAI Core** | 连接认证、设备绑定、Token 签发、能力发现、协议验证、请求路由与幂等校验；裁剪宿主未实现的会话操作。 | 不追加账号级设备能力授权；不维护 Agent 私有长对话数据库；不硬编码特定 Agent 品牌类型。 |
+| **Agent 适配器 (Adapter)** | 将 Core 的标准化会话请求转发给 Agent 真实宿主进程或远程服务，并返回真实流式事件。 | 不提供额外设备能力授权设置；不自行实现设备连接或调度，不绕过 Core 直接向手机发送设备请求。 |
 | **Agent 宿主** | 拥有对话会话的完整事实、历史存储、上下文执行和模型调用。 | 不应当感知 OAI 底层复杂的设备签名与加密细节。 |
 
 ---
@@ -115,7 +118,8 @@ class SessionAdapter(Protocol):
 
 ### 3.2 能力声明与裁剪机制
 
-Core 规定了标准会话能力（布尔值）：
+以下声明描述宿主实际支持的**会话操作**，不是 Android 设备能力授权开关。`deviceTools` 也只是适配器能否安全接入设备工具的能力声明；它不能授权设备操作、替代调用凭据或扩大手机权限。Core 规定了标准会话能力（布尔值）：
+
 - `list`：支持查询会话列表
 - `history`：支持查询历史记录
 - `create`：支持创建新会话
@@ -165,7 +169,10 @@ Core 规定了标准会话能力（布尔值）：
 ### 4.2 严禁泄漏与混淆设备凭据
 
 1. **共享会话绝不共享设备凭据**：在 `deployment` 共享模式下，适配器和 Agent 进程严禁自动继承任何账号的 OAI 客户端配置文件（`~/.config/oai/client.json`）或设备主密钥。
-2. **设备能力调用标准途径**：如果 Agent 在对话过程中需要控制 Android 手机（读取通知、发短信、截屏等），必须使用标准的 OAI MCP Stdio 服务或通过 Core 的 `/open-android-intelligence/core/v1` REST 接口，使用经过明确授权的受限 Token 进行调用。
+2. **设备能力调用标准途径**：任何 Agent 或第三方 Gateway 插件需要读取通知、短信、屏幕或控制手机时，都使用 OAI CLI、MCP stdio 或 Core 的 `/open-android-intelligence/core/v1` REST 接口。调用凭据必须由 Core 认证并绑定目标账号、已配对设备与有效配对代次；能力 ID、版本和参数按 Core 返回的实际声明构造，不让模型提供或覆盖账号、设备、风险级别与授权版本。
+3. **Android 作最终决定**：插件安装且启用后能力默认开启；本地显式关闭、系统权限不足或必要确认未完成时，Android 仍拒绝执行。Core 记录或转发手机的能力状态，不把账号策略、会话桥账号清单或旧 capability grant 当作第二套设备授权。
+4. **区分两条链路**：原生会话走 `Android → Core → Session Adapter → Agent`；设备工具走 `Agent → Core CLI/MCP/API → Android → 设备插件`，会话桥不必经过每次设备调用。第三方接入复用同一规则，不增加专属授权开关。桥 Token、Hermes 宿主账号 allowlist 和一对一账号映射仍保护会话访问，不能混同为应移除的设备 capability allowlist。
+5. **兼容性据实声明**：`dev` 尚待本分支 PR 合入；外部旧 Hermes/OpenClaw/DSH 独立 Gateway 不会因本次实现自动完成适配。混合版本的能力状态及撤销语义按[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)和目标部署版本单独验收。
 
 ### 4.3 紧凑 UTF-8 1 MiB 请求体预算限制
 
@@ -208,3 +215,5 @@ def create_adapter(entry: dict[str, Any], storage_root: Path, core: Any) -> Sess
 | `AGENT_STREAM_INTERRUPTED` | 502 / SSE | 流式通信中途断开，或者流未以 `done` 正常终结。 |
 | `MESSAGE_TOO_LARGE` | 413 | 发送的内容编码后超过 1 MiB。 |
 | `IDEMPOTENCY_KEY_REQUIRED` | 400 | 未传递 `Idempotency-Key` 请求头（针对非 HMAC 签名的直接请求）。 |
+
+旧 `dev` 基线的能力目录若返回 `GATEWAY_DISABLED`，表示旧实现检查了账号设备能力策略；应记录 Core 版本、设备与请求关联信息，并按[历史修复计划](../reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)定位。该判断已在 `feature/android-device-authority-20261028` 分支修复，分支验证和兼容边界见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。不要要求用户回到 Agent Gateway 的旧能力 `setup` 授权。

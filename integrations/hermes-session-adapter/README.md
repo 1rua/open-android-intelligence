@@ -1,6 +1,6 @@
 # Hermes 原生会话适配器
 
-`oai-hermes-session-adapter 0.2.0` 是 OAI Core 的可选组件。Core 直接提供 Android 设备协议、认证、授权和请求队列；此包只连接 Hermes 的原生 SessionStore、SessionDB、消息 dispatcher 与生命周期。安装或启动 Core 不需要安装此包或 Hermes SDK。
+`oai-hermes-session-adapter 0.2.0` 是 OAI Core 的可选组件。Core 直接提供 Android 设备协议、连接认证、设备绑定和请求队列；此包只连接 Hermes 的原生 SessionStore、SessionDB、消息 dispatcher 与生命周期。安装或启动 Core 不需要安装此包或 Hermes SDK。
 
 ```text
 Android App ↔ OAI Core ↔ Hermes Session Adapter ↔ Hermes
@@ -8,6 +8,12 @@ Android App ↔ OAI Core ↔ Hermes Session Adapter ↔ Hermes
 ```
 
 Core 端的 `oai_core.adapters.hermes.HermesRemoteSessionAdapter` 只通过内部 HTTP 会话桥访问此适配器。原生宿主实现位于本包 `oai_hermes_adapter`；设备状态机只有 `oai_core.gateway` 一份。适配器不创建 GatewayCore、GatewayAccount、设备请求队列或设备认证服务，也不注册设备工具。
+
+## 设备授权边界
+
+**2026-10-28 设备授权规则**：Android 客户端是设备能力授权唯一权威。插件安装且启用后普通前台能力默认开启，本机显式开关、系统权限、后台许可、数据范围与必要敏感确认仍限制执行。Core 负责认证、绑定、发现、验证与路由，Hermes Session Adapter 仅负责会话接入与桥接，不追加账号级设备能力授权，也不需要旧 Gateway 能力 `setup`。规则已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`；分支实现见 [ADR-0059](../../docs/adr/0059-android-is-the-sole-device-capability-authority.md) 和[实施记录](../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。外部旧版本的兼容性须按其版本单独评估。
+
+会话桥 Token、`OAI_HERMES_ACCOUNTS` 宿主账号清单与 Core 到 Hermes 的一对一映射继续生效。它们保护会话入口与账号隔离，不是设备 capability 授权表。取消设备账号能力开关不会取消这些检查。
 
 ## 安装与配置
 
@@ -34,7 +40,7 @@ hermes plugins install "$(python -c 'from pathlib import Path; import oai_hermes
 | `OAI_HERMES_SESSION_PORT` | 默认为 `8792`；监听地址固定为 `127.0.0.1` |
 | `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE` | 原账号库使用的既有主密钥文件；保留原受限路径、所有者和 `0600` 权限 |
 
-Core 的 Hermes Agent 配置须明确提供 `accounts` 对照表，例如 `{"core-alice":"hermes-alice","core-bob":"hermes-bob"}`。不同 Core 账号不能映射同一 Hermes 账号。会话桥 Token 只认证内部桥接请求，不能作为 Core 账号 Token、Android 会话或设备授权凭据。Hermes 的设备工具统一配置 OAI Core CLI/MCP/API，并单独提供 Core 凭据。
+Core 的 Hermes Agent 配置须明确提供 `accounts` 对照表，例如 `{"core-alice":"hermes-alice","core-bob":"hermes-bob"}`。不同 Core 账号不能映射同一 Hermes 账号。会话桥 Token 只认证内部桥接请求，不能作为 Core 账号 Token、Android 会话或设备授权凭据。Hermes 的设备工具统一配置 OAI Core CLI/MCP/API，并使用经认证、绑定目标设备的独立 Core 凭据；会话接入本身不授予设备调用身份，也不能改变 Android 的能力决定。
 
 ## 迁移与回滚
 
