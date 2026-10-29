@@ -476,25 +476,70 @@ save_configuration_and_account() {
         local branch="${OAI_BRANCH:-dev}"
         local helper_url="https://raw.githubusercontent.com/1rua/open-android-intelligence/${branch}/scripts/core_setup.py"
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL "${helper_url}" -o "${tmp_helper}" 2>/dev/null || true
+            if ! curl -fsSL "${helper_url}" -o "${tmp_helper}" 2>/dev/null; then
+                error "配置辅助脚本下载失败；保留旧配置，请重试。"
+                return 1
+            fi
         elif command -v wget >/dev/null 2>&1; then
-            wget -qO "${tmp_helper}" "${helper_url}" 2>/dev/null || true
+            if ! wget -qO "${tmp_helper}" "${helper_url}" 2>/dev/null; then
+                error "配置辅助脚本下载失败；保留旧配置，请重试。"
+                return 1
+            fi
+        else
+            error "未找到 curl 或 wget，无法下载配置辅助脚本。"
+            return 1
         fi
-        if [ -f "${tmp_helper}" ]; then
-            helper="${tmp_helper}"
+        if [ ! -s "${tmp_helper}" ]; then
+            error "下载的配置辅助脚本为空；保留旧配置，请重试。"
+            return 1
         fi
+        helper="${tmp_helper}"
     fi
-    if [ ! -f "$helper" ]; then
-        error "未找到配置辅助脚本 core_setup.py，请确保已安装 OAI Core 或网络连通。"
-        exit 1
+    if [ ! -s "$helper" ]; then
+        error "配置辅助脚本 core_setup.py 缺失或为空，请确保已安装 OAI Core 或网络连通。"
+        return 1
     fi
+    local request_id
+    request_id=$("${VENV_PYTHON}" -c 'import secrets; print(secrets.token_hex(16))') || return 1
     local save_status=0
     OAI_INIT_ADMIN_PASSWORD="${CFG_PASSWORD}" "${VENV_PYTHON}" "$helper" \
         --root "${TARGET_DIR}" --host "${CFG_HOST}" --port "${CFG_PORT}" \
-        --username "${CFG_USERNAME}" --agents "$agents_csv" --hermes-account "$hermes_account" || save_status=$?
+        --username "${CFG_USERNAME}" --agents "$agents_csv" --hermes-account "$hermes_account" \
+        --request-id "$request_id" || save_status=$?
     if [ "$save_status" -ne 0 ] && [ "$save_status" -ne 2 ]; then
         error "配置未提交完成；请检查恢复 journal。"
         return "$save_status"
+    fi
+    if ! "${VENV_PYTHON}" - "$helper" "${TARGET_DIR}" "$request_id" <<'VERIFY_COMMIT'
+import json
+from pathlib import Path
+import runpy
+import stat
+import sys
+try:
+    helper = runpy.run_path(sys.argv[1])
+    root = Path(sys.argv[2]).resolve()
+    with helper["configuration_lock"](root):
+        state = json.loads(helper["owned_bytes"](root / "runtime/configuration-journal.json", private=True))
+        if (state.get("version") != 1 or state.get("status") != "committed"
+                or state.get("request_id") != sys.argv[3]):
+            raise ValueError("The current configuration request did not commit")
+        required = {"core.json", "start-core.sh", "runtime/secrets/adapter-tokens.env"}
+        entries = state["entries"]
+        if not required <= {entry["target"] for entry in entries if entry["kind"] == "file"}:
+            raise ValueError("Incomplete configuration transaction")
+        for entry in entries:
+            target = root / entry["target"]
+            if helper["path_hash"](target, entry["kind"]) != entry["after"]:
+                raise ValueError("Committed configuration changed")
+            if entry["kind"] == "file" and stat.S_IMODE(target.stat().st_mode) != entry["mode"]:
+                raise ValueError("Committed configuration permissions changed")
+except Exception:
+    raise SystemExit(1) from None
+VERIFY_COMMIT
+    then
+        error "本次配置事务未通过提交校验；请保留 journal 并检查配置。"
+        return 1
     fi
     if [ "${helper}" = "${TARGET_DIR}/.tmp_core_setup.py" ]; then
         # 兼容清理临时文件（遵循工作区安全删除规则，优先使用 trash-cli 或移至 /tmp）

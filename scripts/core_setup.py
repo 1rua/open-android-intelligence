@@ -22,6 +22,10 @@ from urllib.parse import urlsplit
 TOKEN_NAMES = {"OAI_DSH_ADAPTER_TOKEN", "OAI_HERMES_SESSION_TOKEN"}
 
 
+class DshYamlParserRequired(ValueError):
+    code = "DSH_YAML_PARSER_REQUIRED"
+
+
 def private_directory(path: Path) -> None:
     if path.is_symlink():
         raise ValueError(f"Private directory must not be a symlink: {path}")
@@ -55,7 +59,8 @@ def fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def private_write_bytes(path: Path, content: bytes, mode: int = 0o600) -> None:
+def private_write_bytes(path: Path, content: bytes, mode: int = 0o600, *,
+                        expected_hashes: tuple[str | None, ...] | None = None) -> None:
     if path.is_symlink():
         raise ValueError(f"Configuration file must not be a symlink: {path}")
     temporary = path.with_name(path.name + "." + secrets.token_hex(8) + ".tmp")
@@ -66,6 +71,10 @@ def private_write_bytes(path: Path, content: bytes, mode: int = 0o600) -> None:
         os.fsync(target.fileno())
         os.fchmod(target.fileno(), mode)
         os.fsync(target.fileno())
+    # Recheck after preparing and fsyncing the replacement, immediately before
+    # the rename. Other configuration writers still need to share the lock.
+    if expected_hashes is not None and path_hash(path) not in expected_hashes:
+        raise ValueError("Configuration changed before replacement; preserve the recovery journal")
     os.replace(temporary, path)
     fsync_directory(path.parent)
 
@@ -139,7 +148,7 @@ class ConfigurationTransaction:
     data changed by another writer or to use a backup whose hash no longer matches.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, request_id: str | None = None):
         self.root = root
         self.journal = root / "runtime" / "configuration-journal.json"
         self.identifier = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + secrets.token_hex(4)
@@ -148,7 +157,8 @@ class ConfigurationTransaction:
         fsync_directory(self.directory.parent)
         self.snapshots = {}
         self.guards = {}
-        self.state = {"version": 1, "id": self.identifier, "status": "preparing", "entries": []}
+        self.state = {"version": 1, "id": self.identifier, "request_id": request_id,
+                      "status": "preparing", "entries": []}
         self.persist()
 
     def relative(self, path: Path) -> str:
@@ -231,11 +241,18 @@ class ConfigurationTransaction:
             target = self.root / entry["target"]
             staged = self.root / entry["staged"]
             if entry["kind"] == "directory":
+                if path_hash(staged, "directory") != entry["after"]:
+                    raise ValueError("Prepared configuration verification failed")
+                if path_hash(target, "directory") != entry["before"]:
+                    raise ValueError("Configuration changed before replacement; preserve the recovery journal")
                 os.replace(staged, target)
                 fsync_directory(staged.parent)
                 fsync_directory(target.parent)
             else:
-                private_write_bytes(target, owned_bytes(staged), entry["mode"])
+                content = owned_bytes(staged)
+                if content is None or content_hash(content) != entry["after"]:
+                    raise ValueError("Prepared configuration verification failed")
+                private_write_bytes(target, content, entry["mode"], expected_hashes=(entry["before"],))
         self.state["status"] = "committed"
         self.persist()
 
@@ -254,16 +271,24 @@ class ConfigurationTransaction:
         for entry in reversed(self.state["entries"]):
             target = self.root / entry["target"]
             actual = path_hash(target, entry["kind"])
+            if actual not in {entry["before"], entry["after"]}:
+                raise ValueError("Configuration changed after interruption; preserve journal and inspect manually")
             if entry["before"] is None:
                 if actual is not None:
                     retained = self.root / entry.get("retained", entry["staged"])
                     if retained.exists() or retained.is_symlink():
                         raise ValueError("Recovery retention path already exists; preserve journal")
+                    if path_hash(target, entry["kind"]) != entry["after"]:
+                        raise ValueError("Configuration changed after interruption; preserve journal and inspect manually")
                     os.replace(target, retained)
                     fsync_directory(target.parent)
                     fsync_directory(retained.parent)
             elif actual != entry["before"] or stat.S_IMODE(target.stat().st_mode) != entry["old_mode"]:
-                private_write_bytes(target, owned_bytes(self.root / entry["backup"]), entry["old_mode"])
+                content = owned_bytes(self.root / entry["backup"])
+                if content is None or content_hash(content) != entry["before"]:
+                    raise ValueError("Configuration backup verification failed; preserve the recovery journal")
+                private_write_bytes(target, content, entry["old_mode"],
+                                    expected_hashes=(entry["before"], entry["after"]))
         self.state["status"] = "rolled_back"
         self.persist()
 
@@ -430,14 +455,17 @@ def validate_agent_settings(settings: dict, core, tokens: dict[str, str], direct
         asyncio.run(registry.close())
 
 
-def configure(root: Path, host: str, port: int, username: str, selected: list[str], hermes_account: str | None) -> bool:
+def configure(root: Path, host: str, port: int, username: str, selected: list[str], hermes_account: str | None,
+              *, request_id: str | None = None) -> bool:
     validate_listener(host, port)
+    if request_id is not None and re.fullmatch(r"[0-9a-f]{32}", request_id) is None:
+        raise ValueError("Invalid configuration request ID")
     if len(set(selected)) != len(selected) or set(selected) - {"dsh", "hermes", "codex"}:
         raise ValueError("Invalid Agent selection")
     root = root.resolve()
     with configuration_lock(root):
         ConfigurationTransaction.recover(root)
-        transaction = ConfigurationTransaction(root)
+        transaction = ConfigurationTransaction(root, request_id=request_id)
         try:
             existed = prepare_configuration(transaction, host, port, username, selected, hermes_account)
             transaction.commit()
@@ -680,37 +708,41 @@ def sync_dsh_adapter_env(token: str, *, transaction: ConfigurationTransaction | 
 
 
 def update_dsh_credentials_yaml(path: Path, key: str, value: str, *, transaction: ConfigurationTransaction | None = None) -> None:
-    # The credential format only needs one scalar ref. Preserve all unrelated
-    # lines, and never replace a file that could not be read.
     content = read_configuration_text(path, transaction)
-    lines = content.splitlines()
-    output, in_refs, updated = [], False, False
-    has_version = any(line.startswith("version:") for line in lines)
-    has_refs = any(line == "refs:" for line in lines)
-    scalar = dotenv_scalar(value)
-    if not has_version:
-        output.append("version: 1")
-    for line in lines:
-        if line == "refs:":
-            in_refs = True
-            output.append(line)
-            continue
-        if in_refs and line and not line[0].isspace():
-            if not updated:
-                output.append(f"  {key}: {scalar}")
-                updated = True
-            in_refs = False
-        if in_refs and line.strip().startswith(key + ":"):
-            if not updated:
-                output.append(f"  {key}: {scalar}")
-                updated = True
-            continue
-        output.append(line)
-    if not has_refs:
-        output.append("refs:")
-    if not updated:
-        output.append(f"  {key}: {scalar}")
-    write_configuration_text(path, "\n".join(output) + "\n", transaction)
+    if not content.strip():
+        write_configuration_text(path, f"version: 1\nrefs:\n  {key}: {dotenv_scalar(value)}\n", transaction)
+        return
+    # PyYAML is optional for Core. Refuse an existing document if its structure
+    # cannot be parsed safely rather than guessing with line-based edits.
+    try:
+        import yaml
+    except ImportError:
+        raise DshYamlParserRequired("Existing DSH credentials require PyYAML for safe updates; preserve the original file") from None
+
+    class CredentialsLoader(yaml.SafeLoader):
+        def construct_mapping(self, node, deep=False):
+            self.flatten_mapping(node)
+            mapping = {}
+            for key_node, value_node in node.value:
+                name = self.construct_object(key_node, deep=deep)
+                if not isinstance(name, str) or name in mapping:
+                    raise ValueError("DSH credentials require unique string keys")
+                mapping[name] = self.construct_object(value_node, deep=deep)
+            return mapping
+
+    try:
+        credentials = yaml.load(content, Loader=CredentialsLoader)
+        if not isinstance(credentials, dict) or not isinstance(credentials.get("refs", {}), dict):
+            raise ValueError("DSH credentials require a mapping with a refs mapping")
+        credentials.setdefault("version", 1)
+        # A YAML alias may share refs with an unrelated section. Copy only
+        # this mapping so adding the OAI reference cannot mutate that section.
+        credentials["refs"] = {**credentials.get("refs", {}), key: value}
+        text = yaml.safe_dump(credentials, allow_unicode=True, sort_keys=False)
+    except yaml.YAMLError:
+        raise ValueError("DSH credentials contain unsupported or invalid YAML; preserve the original file") from None
+    write_configuration_text(path, text, transaction)
+
 
 
 def sync_hermes_adapter_env(token: str, account_id: str, *, transaction: ConfigurationTransaction | None = None,
@@ -749,16 +781,22 @@ def main() -> None:
     parser.add_argument("--username", required=True)
     parser.add_argument("--agents", default="")
     parser.add_argument("--hermes-account")
+    parser.add_argument("--request-id")
     arguments = parser.parse_args()
     selected = arguments.agents.split(",") if arguments.agents else []
     if len(set(selected)) != len(selected) or set(selected) - {"dsh", "hermes", "codex"}:
         parser.error("Invalid Agent selection")
     try:
-        complete = configure(arguments.root, arguments.host, arguments.port, arguments.username, selected, arguments.hermes_account)
+        complete = configure(arguments.root, arguments.host, arguments.port, arguments.username, selected,
+                             arguments.hermes_account, request_id=arguments.request_id)
     except Exception as exc:
         # Exception strings may originate in parsers of credential files. Do not
         # echo their contents, passwords or adapter tokens to terminal/logs.
-        print(f"[ERROR] 配置保存失败（{type(exc).__name__}）；旧配置已保留或有待恢复。请检查权限、输入及 runtime/configuration-journal.json。", file=sys.stderr)
+        if isinstance(exc, DshYamlParserRequired):
+            print(f"[ERROR] 配置保存失败（{exc.code}）；安全更新已有 DSH YAML 需要 PyYAML，旧配置已保留。"
+                  f"请在当前 Python 环境安装后重试：{shlex.quote(sys.executable)} -m pip install PyYAML==6.0.3", file=sys.stderr)
+        else:
+            print(f"[ERROR] 配置保存失败（{type(exc).__name__}）；旧配置已保留或有待恢复。请检查权限、输入及 runtime/configuration-journal.json。", file=sys.stderr)
         raise SystemExit(1) from None
     if not complete:
         print("[PARTIAL] 配置事务已提交；可选 skill 安装未全部完成。")

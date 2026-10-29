@@ -462,17 +462,55 @@ guide_initial_configuration() {
     agents_csv=$(IFS=,; printf '%s' "${selected_agents[*]}")
     local helper="${TARGET_DIR}/scripts/core_setup.py"
     [ -f "$helper" ] || helper="${OAI_SETUP_SCRIPT_DIR}/core_setup.py"
+    if [ ! -s "$helper" ]; then
+        error "配置辅助脚本 core_setup.py 缺失或为空；保留旧配置，请检查安装。"
+        return 1
+    fi
+    local request_id
+    request_id=$("${TARGET_DIR}/.venv/bin/python" -c 'import secrets; print(secrets.token_hex(16))') || return 1
     local save_status=0
     OAI_INIT_ADMIN_PASSWORD="${cfg_password}" "${TARGET_DIR}/.venv/bin/python" "$helper" \
         --root "${TARGET_DIR}" --host "${cfg_host}" --port "${cfg_port}" \
-        --username "${cfg_username}" --agents "$agents_csv" --hermes-account "$hermes_account" || save_status=$?
-    if [ "$save_status" -ne 0 ]; then
-        if [ "$save_status" -eq 2 ]; then
-            warn "部分完成：配置事务已提交，可选 skill 安装尚未完成。"
-        else
-            error "配置保存失败；请检查恢复 journal。"
-        fi
+        --username "${cfg_username}" --agents "$agents_csv" --hermes-account "$hermes_account" \
+        --request-id "$request_id" || save_status=$?
+    if [ "$save_status" -ne 0 ] && [ "$save_status" -ne 2 ]; then
+        error "配置保存失败；请检查恢复 journal。"
         return "$save_status"
+    fi
+    if ! "${TARGET_DIR}/.venv/bin/python" - "$helper" "${TARGET_DIR}" "$request_id" <<'VERIFY_COMMIT'
+import json
+from pathlib import Path
+import runpy
+import stat
+import sys
+try:
+    helper = runpy.run_path(sys.argv[1])
+    root = Path(sys.argv[2]).resolve()
+    with helper["configuration_lock"](root):
+        state = json.loads(helper["owned_bytes"](root / "runtime/configuration-journal.json", private=True))
+        if (state.get("version") != 1 or state.get("status") != "committed"
+                or state.get("request_id") != sys.argv[3]):
+            raise ValueError("The current configuration request did not commit")
+        required = {"core.json", "start-core.sh", "runtime/secrets/adapter-tokens.env"}
+        entries = state["entries"]
+        if not required <= {entry["target"] for entry in entries if entry["kind"] == "file"}:
+            raise ValueError("Incomplete configuration transaction")
+        for entry in entries:
+            target = root / entry["target"]
+            if helper["path_hash"](target, entry["kind"]) != entry["after"]:
+                raise ValueError("Committed configuration changed")
+            if entry["kind"] == "file" and stat.S_IMODE(target.stat().st_mode) != entry["mode"]:
+                raise ValueError("Committed configuration permissions changed")
+except Exception:
+    raise SystemExit(1) from None
+VERIFY_COMMIT
+    then
+        error "本次配置事务未通过提交校验；请保留 journal 并检查配置。"
+        return 1
+    fi
+    if [ "$save_status" -eq 2 ]; then
+        warn "部分完成：配置事务已提交，可选 skill 安装尚未完成。"
+        return 2
     fi
     success "配置与启动脚本已保存；既有账号、主密钥和路径保持可用。"
     info "桥接凭据仅存于 runtime/secrets/adapter-tokens.env（0600），启动脚本不含凭据。"
