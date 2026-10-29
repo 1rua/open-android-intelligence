@@ -17,6 +17,21 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 HELPER = runpy.run_path(str(REPOSITORY / "scripts" / "core_setup.py"))
 
 
+@pytest.fixture(autouse=True)
+def isolated_host_configuration(tmp_path, monkeypatch):
+    """A direct test invocation must never discover the operator's host files."""
+    isolated_user = tmp_path / "isolated-user"
+    hermes = isolated_user / ".hermes"
+    dsh = isolated_user / ".dsh-cline"
+    hermes.mkdir(parents=True)
+    dsh.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(isolated_user))
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+    monkeypatch.setenv("DSH_HOME", str(dsh))
+    for name in ("OAI_HERMES_SESSION_TOKEN", "OAI_DSH_ADAPTER_TOKEN", "OAI_INIT_ADMIN_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def run_bash(source, *, environment=None):
     result = subprocess.run(["bash", "-c", source], cwd=REPOSITORY,
                             env=environment, capture_output=True, text=True)
