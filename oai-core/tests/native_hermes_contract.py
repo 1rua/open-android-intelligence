@@ -32,6 +32,7 @@ from oai_core.auth import Principal
 from oai_hermes_adapter.bridge import register
 from oai_core.server import create_app, create_core
 from oai_core.sessions import AdapterError
+from oai_hermes_adapter.tool_events import execution_key
 
 native_traces = []
 class NativeTraceCapture(logging.Handler):
@@ -484,6 +485,8 @@ async def scenario():
         await adapter.manage(alice, a["id"], "delete")
         assert database.get_session(binding["agentSessionId"]) is None
         assert database.get_session(compressed_tip) is None
+        tool_key = execution_key(runtime._tool_observer.history.storage_owner, "alice", a["id"], tool_events[0]["generationId"])
+        assert database.get_meta(tool_key) is None, "deleted conversation retained tool arguments/results"
         try:
             await adapter.history(alice, a["id"])
         except AdapterError as error:

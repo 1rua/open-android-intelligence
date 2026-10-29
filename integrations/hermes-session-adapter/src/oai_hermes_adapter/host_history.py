@@ -14,7 +14,7 @@ from contextlib import nullcontext
 from typing import Any, Mapping
 from .history_media import HistoryMedia
 from .tool_history import project_execution
-from .tool_events import merge_history_execution
+from .tool_events import execution_prefix, merge_history_execution
 
 
 def visible_text(content: Any) -> str:
@@ -148,7 +148,9 @@ class HermesHistoryPort:
                     if chain:
                         delete(chain, sessions_dir=getattr(self.session_store, "sessions_dir", None))
                     # Presentation KV is native long-lived content too.
-                    keys = [name for name, _ in database.list_meta_prefix(self._presentation_prefix(account_id, conversation_id))]
+                    prefixes = (self._presentation_prefix(account_id, conversation_id),
+                                execution_prefix(self.storage_owner, account_id, conversation_id))
+                    keys = [name for prefix in prefixes for name, _ in database.list_meta_prefix(prefix)]
                     if keys:
                         database._execute_write(lambda conn: conn.executemany("DELETE FROM state_meta WHERE key=?", [(name,) for name in keys]))
                     if entry is not None:
@@ -614,6 +616,8 @@ class HermesHistoryPort:
                     # 回调已持宿主写锁，读取回退会再次取同一锁；必须复用当前连接。
                     prefix = self._presentation_prefix(account_id)
                     conn.execute("DELETE FROM state_meta WHERE substr(key,1,?)=?", (len(prefix), prefix))
+                    tools_prefix = execution_prefix(self.storage_owner, account_id)
+                    conn.execute("DELETE FROM state_meta WHERE substr(key,1,?)=?", (len(tools_prefix), tools_prefix))
                     for session_id in sessions:
                         conn.execute("DELETE FROM messages WHERE session_id=? AND role='session_meta' "
                             "AND display_kind=? AND json_valid(display_metadata) "

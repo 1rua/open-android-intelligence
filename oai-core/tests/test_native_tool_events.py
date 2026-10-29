@@ -8,7 +8,7 @@ import pytest
 from oai_core.server import create_core
 from oai_hermes_adapter.context import trusted_turn
 from oai_hermes_adapter.host_history import HermesHistoryPort
-from oai_hermes_adapter.tool_events import NativeToolObserver, NOTICE_CODE, post_tool_call, pre_tool_call
+from oai_hermes_adapter.tool_events import NativeToolObserver, NOTICE_CODE, execution_key, post_tool_call, pre_tool_call
 
 
 @pytest.fixture
@@ -60,7 +60,8 @@ def test_live_hooks_and_history_use_the_same_persistent_step_revision(native_too
             notices = [item for item in account.events.read_after(None) if item["eventType"] == "gateway.notice"]
         assert len(notices) == 2
         assert all(item["payload"] == {"noticeCode": NOTICE_CODE} and item["correlationId"] == accepted["messageId"] for item in notices)
-        assert completed["executionSteps"][0]["eventId"] == notices[-1]["eventId"]
+        assert completed["executionSteps"][0]["eventId"] == "native-session:2"
+        assert completed["executionSteps"][0]["eventId"] != notices[-1]["eventId"]
         assert event["args"] == {"path": "private synthetic path"}
     finally:
         trusted_turn.reset(token)
@@ -125,3 +126,92 @@ def test_history_initialized_steps_keep_native_order_after_later_pre_hook(native
         trusted_turn.reset(token)
     after = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])
     assert [step["stepId"] for step in after["executionSteps"]] == ["native-call", "native-second-call"]
+
+
+@pytest.fixture
+def owned_execution_history(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+    core = create_core({"storageRoot": str(tmp_path / "accounts"), "masterKeyFile": str(tmp_path / "master"),
+        "contractRoot": str(Path(__file__).resolve().parents[2] / "gateway-contract")})
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE state_meta(key TEXT PRIMARY KEY,value TEXT)")
+    connection.execute("CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,display_kind TEXT,display_metadata TEXT)")
+    connection.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY,message_count INTEGER,tool_call_count INTEGER)")
+    sessions, identities = {}, {}
+    def delete_sessions(values, **kwargs):
+        for value in values:
+            sessions.pop(value, None)
+    class NativeDatabase(SimpleNamespace):
+        __hash__ = object.__hash__
+    database = NativeDatabase(get_session=sessions.get, get_messages=lambda *args, **kwargs: [],
+        get_meta=lambda key: next((row[0] for row in connection.execute("SELECT value FROM state_meta WHERE key=?", (key,))), None),
+        set_meta=lambda key, value: connection.execute("INSERT OR REPLACE INTO state_meta VALUES (?,?)", (key, value)),
+        list_meta_prefix=lambda prefix: list(connection.execute("SELECT key,value FROM state_meta WHERE substr(key,1,?)=?", (len(prefix), prefix))),
+        _execute_write=lambda callback: callback(connection), _active_transcript_counts=lambda conn, session: (0, 0),
+        set_session_archived=lambda *args: True, delete_sessions=delete_sessions)
+    for owner, label in (("one", "delete"), ("one", "keep"), ("two", "other")):
+        with closing(core.open_gateway_account(owner)) as account:
+            if not account.credentials.has_password():
+                account.credentials.create_password("synthetic-password")
+            conversation = account.conversations.create(label, label, label)["conversationId"]
+            session_id = "native-" + label
+            sessions[session_id] = {"id": session_id}
+            connection.execute("INSERT INTO sessions VALUES (?,0,0)", (session_id,))
+            account.agent_sessions.record(conversation, label)
+            account.agent_sessions.attach(conversation, session_id, session_id)
+            identities[label] = (owner, conversation, "generation-" + label)
+    history = HermesHistoryPort(core, SimpleNamespace(_db_for_key=lambda key: database))
+    monkeypatch.setattr("oai_hermes_adapter.host_history.HistoryMedia.retire_account_media", lambda *args: None)
+    keys = {}
+    for label, (owner, conversation, generation) in identities.items():
+        key = execution_key(history.storage_owner, owner, conversation, generation)
+        database.set_meta(key, json.dumps({"storageOwner": history.storage_owner, "accountId": owner,
+            "conversationId": conversation, "generationId": generation, "revision": 1,
+            "steps": [{"stepId": "call", "arguments": "private synthetic parameter", "output": "private synthetic result"}]}))
+        keys[label] = key
+    return history, database, identities, keys
+
+
+def test_delete_native_conversation_retires_only_its_owned_execution_content(owned_execution_history):
+    history, database, identities, keys = owned_execution_history
+    owner, conversation, _ = identities["delete"]
+    history.manage(owner, conversation, "delete")
+    assert database.get_meta(keys["delete"]) is None
+    assert database.get_meta(keys["keep"]) is not None
+    assert database.get_meta(keys["other"]) is not None
+
+
+def test_remove_account_retires_execution_content_without_touching_other_accounts(owned_execution_history):
+    history, database, _, keys = owned_execution_history
+    history.cleanup_account("one")
+    assert database.get_meta(keys["delete"]) is None
+    assert database.get_meta(keys["keep"]) is None
+    assert database.get_meta(keys["other"]) is not None
+
+
+def test_failed_notice_commit_keeps_native_source_identity_and_does_not_publish_uncommitted_event(native_tools):
+    core, history, observer, context, event, rows, accepted = native_tools
+    from oai_core.gateway.core import TransactionOutcomeUnknown
+    real_open = core.open_gateway_account
+    injected = real_open("synthetic")
+    injected.store.fail_next_commit = True
+    core.open_gateway_account = lambda owner: injected if owner == "synthetic" else real_open(owner)
+    delivered = []
+    core.register_event_sink(lambda owner, value: delivered.append(value))
+    try:
+        with pytest.raises(TransactionOutcomeUnknown):
+            observer.record(context, **event)
+    finally:
+        core.open_gateway_account = real_open
+        injected.close()
+    saved = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])
+    assert saved["executionSteps"][0]["eventId"] == "native-session:2"
+    assert delivered == []
+    with closing(real_open("synthetic")) as account:
+        notices = [item for item in account.events.read_after(None) if item["eventType"] == "gateway.notice"]
+    assert notices == []
+    rows.append({"id": 3, "role": "tool", "tool_call_id": "native-call", "content": "durable result", "timestamp": 3})
+    projected = next(row for row in history.read("synthetic", context["conversationId"]) if row.get("executionSteps"))
+    assert projected["executionSteps"][0]["status"] == "completed"
+    assert len(rows) == 3  # Recovery observes stored facts; it never executes a tool.

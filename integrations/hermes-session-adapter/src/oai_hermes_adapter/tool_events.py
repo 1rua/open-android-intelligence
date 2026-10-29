@@ -18,9 +18,13 @@ _NAMESPACE = "oai_native_execution_v1:"
 logger = logging.getLogger(__name__)
 
 
+def execution_prefix(storage_owner: str, account_id: str, conversation_id: str | None = None) -> str:
+    prefix = _NAMESPACE + storage_owner + ":" + hashlib.sha256(account_id.encode()).hexdigest() + ":"
+    return prefix if conversation_id is None else prefix + hashlib.sha256(conversation_id.encode()).hexdigest() + ":"
+
+
 def execution_key(storage_owner: str, account_id: str, conversation_id: str, generation_id: str) -> str:
-    identity = json.dumps([storage_owner, account_id, conversation_id, generation_id], separators=(",", ":"))
-    return _NAMESPACE + hashlib.sha256(identity.encode()).hexdigest()
+    return execution_prefix(storage_owner, account_id, conversation_id) + hashlib.sha256(generation_id.encode()).hexdigest()
 
 
 def public_execution(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -149,8 +153,12 @@ class NativeToolObserver:
             if old and all(old.get(name) == value for name, value in step.items()):
                 return
             snapshot["revision"] += 1
-            event = account.events.append("gateway.notice", record["messageId"], {"noticeCode": NOTICE_CODE})
-            known[tool_call_id] = {**step, "revision": snapshot["revision"], "eventId": event["eventId"]}
+            account.events.append("gateway.notice", record["messageId"], {"noticeCode": NOTICE_CODE})
+            # Native KV and the notification ledger are separate databases.
+            # Reference the committed native call source, never an uncommitted
+            # notification that can still roll back after this KV write.
+            known[tool_call_id] = {**step, "revision": snapshot["revision"],
+                "eventId": f"{source['session_id']}:{source['id']}"}
             snapshot["steps"] = sorted(known.values(), key=lambda item: (item.get("sourceMessageId", 0), item.get("sourceIndex", 0)))
             database.set_meta(key, json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")))
 
@@ -173,11 +181,11 @@ class NativeToolObserver:
             saved = read_execution(database, self.history.storage_owner, account_id, conversation_id, generation_id)
             if not saved or not any(step["status"] == "running" for step in saved["steps"]):
                 return
-            event = account.events.append("gateway.notice", message_id, {"noticeCode": NOTICE_CODE})
+            account.events.append("gateway.notice", message_id, {"noticeCode": NOTICE_CODE})
             for step in saved["steps"]:
                 if step["status"] == "running":
                     saved["revision"] += 1
-                    step.update(status="unknown", revision=saved["revision"], eventId=event["eventId"])
+                    step.update(status="unknown", revision=saved["revision"])
             database.set_meta(execution_key(self.history.storage_owner, account_id, conversation_id, generation_id),
                               json.dumps(saved, ensure_ascii=False, separators=(",", ":")))
 
