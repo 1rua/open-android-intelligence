@@ -48,6 +48,17 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     inputs.files(fileTree(contractRoot) {
         include("schemas/**/*.json", "vectors/**/*.json", "src/**/*.ts", "core-dispatched-schemas.json")
     }).withPropertyName("historyMediaContract").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+    // The device-capability integration peer is this checkout's Core. Changes
+    // to its protocol/runtime must invalidate the Android end-to-end result.
+    val corePython = providers.environmentVariable("OAI_CORE_PYTHON").orNull?.takeIf { it.isNotBlank() } ?: historyPython
+    environment("OAI_CORE_PYTHON", corePython)
+    inputs.property("deviceCapabilityPythonExecutable", corePython)
+    inputs.file(repositoryRoot.resolve("oai-core/tests/device_capability_fixture.py"))
+        .withPropertyName("deviceCapabilityCoreFixture").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+    inputs.files(fileTree(repositoryRoot.resolve("oai-core/src")) {
+        include("**/*.py")
+        exclude("**/__pycache__/**")
+    }).withPropertyName("deviceCapabilityCoreSources").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
     if (sdkRoot != null) inputs.files(fileTree(sdkRoot) {
         include("**/*.py", "pyproject.toml", "requirements*.txt")
         exclude(".git/**", "**/__pycache__/**", "tests/**", "docs/**", "**/.venv/**", "**/node_modules/**")

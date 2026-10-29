@@ -45,6 +45,8 @@
 
 ## 30 秒看懂
 
+> **2026-10-28 授权规则**：Android 客户端是设备能力授权的唯一权威。已安装且启用的设备插件，其能力默认开启；实际执行仍受手机本地显式开关、Android 系统权限、数据范围设置和必要的敏感操作确认约束。OAI Core 负责身份认证、设备绑定、能力发现、协议校验与请求路由；Hermes、DSH 等 Agent 插件负责接入与桥接，两者均不另设账号级设备能力授权。规则已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 和真机验收。实现与当前验证见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；旧 `dev` 基线证据见[修复计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)。
+
 > [!TIP]
 > ### Open Android Intelligence（OAI）是**一个统一的安卓客户端，用于连接多种主流 Agent**（如 Hermes、DSH、Codex、OpenClaw 等）。
 >
@@ -55,14 +57,14 @@
 | 核心组件 | 定位与说明 | 代码位置 / 仓库 |
 | --- | --- | --- |
 | **Android App** | 连接 Core 或 Gateway、管理账号与原生会话，发送用户选定的多模态附件，承载设备能力沙箱 | [`apps/android`](apps/android) |
-| **OAI Core** | 单一 Python 服务进程，统一管理设备权威、调度设备请求并提供 CLI/MCP 与会话适配 | [`oai-core`](oai-core) |
+| **OAI Core** | 单一 Python 服务进程，统一承载连接认证、设备绑定、能力发现与请求路由，并提供 CLI/MCP 与会话适配 | [`oai-core`](oai-core) |
 | **Gateway Protocol** | 定义手机与服务端之间的身份认证、设备事件流和全字段封闭数据协议 | [`gateway-contract`](gateway-contract) |
 | **会话适配器** | 宿主侧轻量 Session Adapter，直通 DSH 与 Hermes 原生会话，不维护第二份聊天历史 | [`integrations`](integrations) |
 | **三方宿主插件** | 面向既有独立网关部署的适配插件（Hermes / OpenClaw / DSH） | [Hermes 插件](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw 插件](https://github.com/1rua/openclaw-gateway-plugin) / [DSH 插件](https://github.com/1rua/dsh-android-gateway) |
 
 > [!NOTE]
 > **无中转架构**：Android App 直接与用户自托管的 OAI Core 服务端通信，项目本身不提供任何公网中转服务器。<br>
-> **插件化授权**：设备能力按插件安装与授权，发短信等敏感操作必须由用户在手机屏幕上手动确认。
+> **手机统一授权（当前 feature 规则）**：设备插件安装并启用后普通能力默认开启，Android 决定能否执行；系统权限、独立后台许可和必要敏感操作确认仍各自生效。
 
 
 ---
@@ -87,7 +89,7 @@
     </td>
     <td width="50%" valign="top">
       <h3>零信任安全与屏幕确认 <img src="https://img.shields.io/badge/安全第一-F59E0B?style=flat-square" alt="安全第一"></h3>
-      <p>遵循「默认拒绝」安全准则：插件安装、插件启用、网关账号授权严格分级解耦。短信发送等高风险操作必须经由用户在手机屏幕逐条手动确认，严禁静默执行。</p>
+      <p>设备能力统一在 Android 客户端管理。插件安装并启用后能力默认开启，本地显式关闭、缺少系统权限或未完成必要确认时不能执行。连接身份认证和设备配对持续生效；目标设计不要求网关账号另行授予设备能力。</p>
     </td>
   </tr>
   <tr>
@@ -133,7 +135,9 @@
   <img src="assets/readme/security-model.svg" alt="安全模型：Agent 提请求，内核查权限，你在屏幕上确认" width="100%">
 </div>
 
-安全与隐私是本项目的立身之本。所有设备硬件能力**默认完全关闭**。开启一项能力必须经过三道防线：**在手机上安装插件 → 手动启用插件 → 为特定网关账号单独授权**。
+当前 feature 分支中的设备能力流程是：**在手机安装并启用插件 → Android 检查本地开关、系统权限与必要确认 → 执行允许的请求**。安装后尚未启用的插件不能执行；已安装且启用的插件无需再为 Gateway 账号勾选能力授权。Core 验证调用凭据、目标设备绑定和协议，Android 作出设备能力的最终决定。
+
+连接认证回答“谁在调用”，设备配对回答“可路由到哪台设备”，设备能力授权回答“手机当前允许做什么”，三者属于不同安全层级。取消旧 Gateway 能力开关不会开放匿名调用、跨账号调用或未配对设备调用。上方图片保留既有版本；当前 feature 分支授权规则以本段和已接受的 ADR-0059 为准，旧 `dev` 基线证据见[修复计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)，实现与验证见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
 
 ### 设备权限管控矩阵
 
@@ -141,7 +145,7 @@
 | --- | --- |
 | **通话记录** | **仅允许只读基础元数据**（联系人/号码、时间戳、通话时长）；严禁任何形式的录音、代接、挂断或自动拨号。 |
 | **短信记录** | 仅支持受控读取收发记录；**发短信等变更操作必须在手机屏幕上手动逐条点击确认**，绝不允许后台代发。 |
-| **应用通知** | **默认全部禁止**；需用户手动在白名单中勾选指定应用包名与字段，内存采用端到端加密缓冲，不落明文日志。 |
+| **应用通知** | 插件安装并启用后能力默认开启；通知访问权限、手机上的应用包名范围与字段设置继续限制实际数据读取，未选中的应用不得外发，不落明文日志。 |
 
 ---
 
@@ -175,7 +179,7 @@
 
 #### 🚀 极速一键安装 / 更新（推荐）
 
-通过 `curl` 运行自动化安装向导，脚本将自动检测系统依赖、安装或更新 OAI Core、探测本机 Agent（如 Hermes、DSH、Codex）并记录接入配置，最后引导完成账号与端口配置。Hermes 会话适配器作为可选组件单独安装，已有账号不会被向导重置：
+通过 `curl` 运行自动化安装向导，脚本将自动检测系统依赖、安装或更新 OAI Core、探测本机 Agent（如 Hermes、DSH、Codex），提示是否一同安装或接入所选 Agent，再引导完成账号与端口配置。接受后，Hermes 插件会尝试自动安装并启用；DSH 会在工具可用时自动注册 bundle，否则显示手动命令；Codex 配置写入 Core 配置。拒绝 Agent 接入时仍可只安装 OAI Core。已有账号不会被向导重置：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
@@ -215,7 +219,7 @@ oai serve --config oai-core/examples/core.json
 - **Hermes**：安装轻量插件 [`integrations/hermes-session-adapter`](integrations/hermes-session-adapter/README.md)（默认端口 8792，需账号一对一映射）；
 - **Codex**：配置 `codex app-server` 与专属 `codexHome`，通过 `envFrom` 映射模型凭据。
 
-手机端与服务端配对后，即可使用 `oai` 命令行或 MCP 工具直接调用手机硬件能力：
+手机端与服务端配对后，可在操作人的独立环境配置 `oai` 或 MCP 调用凭据。能力可用性仍须由 Android 检查；本分支的授权实现与验证见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)，e5 `dev` 基线排查见[修复计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)：
 ```bash
 oai login --url http://127.0.0.1:8045 --username alice --device <DEVICE_ID>
 oai capabilities
@@ -226,12 +230,11 @@ oai mcp  # 启动标准 FastMCP stdio 接口
 <details>
 <summary><b>既有部署：为 Agent 宿主安装独立网关插件（点击展开）</b></summary>
 
-若仍使用既有独立网关架构，可分别配置三方宿主插件。Hermes 和 OpenClaw 需配置账号主密钥（Master Key）：
+以下为固定旧版本的独立网关部署记录，不代表这些外部插件已适配 2026-10-28 的目标授权设计。它们不得用于给新 Core 增加设备能力授权；新接入使用上文 Core 与 Session Adapter。既有部署需单独评估兼容性。Hermes 和 OpenClaw 的旧部署仍需保留原账号主密钥（Master Key）：
 
 #### 配置 Hermes 宿主
 ```bash
 hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
-hermes gateway setup
 hermes open-android-intelligence account create -u my_user -p <设置密码> --confirm-local
 ```
 
@@ -279,15 +282,12 @@ OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64位十六进制字�
 
 ### 4. 设备能力按需启用
 
-所有设备能力默认保持休眠。需要让 Agent 感知短信或通知时，需执行标准三阶授权：
+当前 feature 分支规则下，在手机的插件管理中安装并启用设备插件后，其普通设备能力默认开启。用户可在 Android 本地明确关闭能力；系统权限、通知应用范围、后台许可和必要的单次敏感操作确认继续生效。Agent 使用已认证且绑定目标设备的 Core CLI/MCP/API，先读取 `oai capabilities` 的实际声明，再按 Schema 调用。
 
-```bash
-# 查看指定账号的能力授权情况
-hermes open-android-intelligence capabilities list <账号名>
-```
+旧 `dev` 基线可能显示“当前 Gateway 账号未启用；请通过 Gateway 能力配置开启”。这是旧授权判断与新架构不一致的表现，不能把回到 Hermes 配置能力开关作为目标操作流程。Android 唯一授权修复已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 并完成真机验收；实现和验证状态见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
 
 > [!WARNING]
-> **开发中状态说明**：设备插件包打标、Ed25519 签名校验、WASM 沙箱引擎及配额约束均已实现并完成测试；但 App 内部执行管道装配正在进行中，真机全链路闭环尚未最终验收。进展请查阅[当前状态](#当前状态)及[通知能力同步记录](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md)。
+> **开发中状态说明**：设备插件打包、Ed25519 签名校验、WASM 沙箱引擎及配额约束已有自动化覆盖；Android 本地授权、能力发布和设备请求执行栅栏已在 `feature/android-device-authority-20261028` 分支接通。完整 App Fast 套件仍在验证，真机全链路尚未验收。授权实现及证据见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)，其他能力同步进展见[通知能力同步记录](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md)。
 
 ---
 
@@ -349,13 +349,13 @@ apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/fu
 
 | 业务领域与核心能力 | 当前验证依据与范围 | 真实完备度与状态 |
 | --- | --- | --- |
-| **OAI Core 服务端与会话桥** | Python 63 项测试（含真实 HTTP/签名/幂等/设备事件/MCP/Hermes原生SDK）；DSH 会话桥 16 项测试通过 | ✅ 协议替身测试通过；物理真机与生产模型端到端联调待闭环 |
+| **OAI Core 服务端与会话桥** | OAI Core 209 项测试通过；DSH 会话桥 16 项测试通过 | ✅ 代码与协议测试通过；物理真机与生产模型端到端联调待闭环 |
 | **Hermes / OpenClaw 契约一致性** | 两端各自 70 组 TS/Python 共享契约用例逐条对齐比对 | ✅ 覆盖两端网关适配器协议一致性，不代表终端执行全链路 |
 | **Hermes 网关适配器** | pytest 单元测试 + 真实 aiohttp SSE/WS 握手、签名与凭据撤销测试 | ✅ 协议层已覆盖；宿主上下文历史与工具执行结果回传待完善 |
 | **OpenClaw 适配器插件** | 独立仓固定版本、宿主真实运行时动态载入、70 组共享测试用例 | ✅ 安装与通讯协议通过验证；Android 真机端对端待闭环 |
 | **DSH (DeepSeek Harness) 插件** | 版本 0.2.0；201 项自动化测试；[DSH 与 Android 模拟器集成记录](https://github.com/1rua/dsh-android-gateway/blob/main/docs/reviews/2026-10-21-feature-completion.md) | ✅ 会话核心主流程已跑通；设备能力闭环待手机端插件与真机验证 |
-| **设备插件打包与 WASM 运行时** | 确定性打包签名、WASM ABI 规范对接、内存存储预算配额及恢复测试 | ✅ 核心底层库测试通过；App 业务层执行调度管线待装配 |
-| **官方参考插件业务** | 通知读取、短信、通话记录经平台内核权限拦截审查 | ⚠️ 需真机载入插件并完成多级授权，实际闭环待单独验收 |
+| **设备插件打包与 WASM 运行时** | 确定性打包签名、WASM ABI 规范对接、内存存储预算配额及恢复测试 | ✅ 核心底层库有自动化覆盖；本分支已接通 Android 本地授权、能力发布与执行栅栏；App Fast 及真机执行验收仍待完成 |
+| **官方参考插件业务** | 通知读取、短信、通话记录经平台内核权限拦截审查 | ⚠️ 需验证手机统一授权规则、系统权限与实际执行；统一授权修复已在 feature 分支实施，待合入和真机验收 |
 | **Android 客户端界面与账号** | Gradle 编译、Robolectric 测试与模块自动化测试 | ✅ 账号管理、身份认证、事件总线与离线加密存储已接入；物理真机测试待开展 |
 | **Companion 私网通道** | tsnet pump 传输管线与可信 IPC 令牌签发未就绪 | ⛔ 入口已切断关闭，暂不签发私网通道 |
 | **物理真机端到端体验** | Android Keystore 硬件加解密、证书静默轮换、SAF 动态授权、真实宿主互联 | ⏳ 待真机验收测试闭环 |
@@ -379,6 +379,8 @@ apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/fu
 
 | 文档名称 | 核心内容 | 快速入口 |
 | --- | --- | --- |
+| **设备能力授权修复计划** | e5 `dev` 基线的历史排查、目标职责、兼容迁移与验收清单 | [查看计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md) |
+| **Android 唯一授权权威（ADR-0059）** | 已接受的设备授权决策；分支实现与当前验证见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) | [查看 ADR](docs/adr/0059-android-is-the-sole-device-capability-authority.md) |
 | **领域术语与概念边界** | 统一术语定义、核心实体交互与安全责任边界 | [`CONTEXT.md`](CONTEXT.md) |
 | **OAI Core 架构事实基线** | 每条架构结论的代码出处与实测依据 | [查看基线](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) |
 | **OAI Core 统一服务说明** | 单一服务监听、CLI/MCP 使用与原生会话接入 | [`oai-core/README.md`](oai-core/README.md) |

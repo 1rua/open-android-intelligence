@@ -53,7 +53,7 @@ import org.junit.Test
 class CoreAgentConversationRepositoryTest {
 
     @Test fun observationErrorsRecoverTheOriginalIdentityWithoutMarkingExecutionFailed() = runTest {
-        for (code in listOf("AGENT_STREAM_TOO_LARGE", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "AGENT_UNAVAILABLE")) {
+        for (code in listOf("AGENT_STREAM_TOO_LARGE", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "AGENT_UNAVAILABLE", "CURSOR_EXPIRED")) {
             val requests = mutableListOf<WireRequest>()
             val stream = listOf(
                 """{"type":"generation","generationId":"gen_error","clientMessageId":"cm_error","userMessageId":"user_error"}""",
@@ -171,6 +171,42 @@ class CoreAgentConversationRepositoryTest {
             allowRunning.complete(Unit); allowDone.complete(Unit)
             collector.cancel(); parent.cancel()
         }
+    }
+
+    @Test fun acceptedAgentFailureUsesTheDurableTerminalRevisionInsteadOfReusingTheRunningRevision() = runTest {
+        val requests = mutableListOf<WireRequest>()
+        val stream = listOf(
+            """{"type":"generation","generationId":"gen_failed","clientMessageId":"cm_failed","userMessageId":"user_failed","state":"queued","revision":0}""",
+            """{"type":"generation","generationId":"gen_failed","clientMessageId":"cm_failed","userMessageId":"user_failed","state":"running","revision":1,"eventId":"delivered"}""",
+            """{"type":"error","code":"AGENT_FAILED"}""",
+        ).joinToString("") { "event: message\ndata: $it\n\n" }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request
+                val body = when {
+                    request.method == "POST" -> stream
+                    request.target.contains("/generation?") -> """{"generation":{"generationId":"gen_failed","conversationId":"s_1","clientMessageId":"cm_failed","userMessageId":"user_failed","state":"failed","revision":2}}"""
+                    request.target.endsWith("/history") -> """{"messages":[{"id":"user_failed","role":"user","text":"prompt","clientMessageId":"cm_failed"}]}"""
+                    else -> error("Unexpected synthetic request")
+                }
+                return WireResponse(200, listOf(RawHeader("Content-Type", if (request.method == "POST") "text/event-stream" else "application/json")), body.toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val agent = sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(generationRecovery = true))
+        val repository = CoreAgentConversationRepository(client(transport), { agent }, { "s_1" }, backgroundScope, StandardTestDispatcher(testScheduler))
+        val events = mutableListOf<VerifiedConversationEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            repository.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(events)
+        }
+        repository.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_failed"), "prompt"))
+        runCurrent()
+        assertEquals("A code-only stream error cannot supply the durable terminal revision", 1, requests.count { it.target.contains("/generation?") })
+        assertEquals(1, requests.count { it.method == "POST" })
+        assertEquals(GenerationState.FAILED, repository.generationState.value)
+        val failure = events.filterIsInstance<VerifiedConversationEvent.MessageStatus>().single { it.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.FAILED }
+        assertEquals(2L, failure.revision)
+        assertEquals("gen_failed", failure.generationId)
     }
 
     @Test fun localSubmissionCannotInventAServerAcceptance() = runTest {

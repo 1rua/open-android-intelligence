@@ -37,7 +37,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowNotificationListenerService
 import org.robolectric.shadow.api.Shadow
 
-/** Signed ALP -> Android grants/NLS -> publisher -> real signed Hermes HTTP -> native tool -> kernel/WASM -> notifications. */
+/** Signed ALP -> Android local policy/NLS -> publisher -> independent Core HTTP/token API -> kernel/WASM -> notifications. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34], application=Application::class)
 class NotificationCapabilityHttpTest {
@@ -47,11 +47,13 @@ class NotificationCapabilityHttpTest {
         val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
         val root = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { File(it,"gateway-contract").isDirectory }
-        val plugin = File(System.getenv("HERMES_PLUGIN_ROOT") ?: File(root,".hermes-gateway-plugin").path)
         val log = File.createTempFile("capability-http-", ".log")
-        val process = ProcessBuilder(System.getenv("OAI_HERMES_PYTHON") ?: "python3",File(plugin,"tests/device_capability_fixture.py").path,
+        val fixture = ProcessBuilder(System.getenv("OAI_CORE_PYTHON") ?: System.getenv("OAI_HERMES_PYTHON") ?: "python3",
+            File(root,"oai-core/tests/device_capability_fixture.py").path,
             "--contract-root",System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT") ?: File(root,"gateway-contract").path)
-            .directory(plugin).redirectError(log).start()
+            .directory(root).redirectError(log)
+        fixture.environment()["PYTHONPATH"] = File(root,"oai-core/src").path
+        val process = fixture.start()
         val input = process.inputStream.bufferedReader()
         val output = process.outputStream.bufferedWriter()
         fun control(operation: String, extra: Map<String,Any?> = emptyMap()): JsonValue.JObject {
@@ -69,6 +71,7 @@ class NotificationCapabilityHttpTest {
             val keys = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
             val auth = GatewayAuthClient(GatewayTransport(GatewayProfile("pre","pre","pre",baseUrl),factory),"notification_install","test",34)
             val negotiation = auth.negotiate("notification_negotiation")
+            assertTrue(negotiation.androidDeviceAuthorization)
             val session = auth.loginWithPassword(negotiation.negotiationId,"alice","device-fixture-only".toCharArray(),
                 "Notification regression",ed25519WirePublicKey(keys.public))
             val profile = GatewayProfile(session.accountId,session.deviceId,session.sessionId,baseUrl,accessToken=session.accessToken)
@@ -107,12 +110,12 @@ class NotificationCapabilityHttpTest {
                 audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },host::mediate)
             host.attach(kernel)
             var publisher = CapabilityPublisher(context,http,binding.storageKey,session.grantRevision,
-                { grants.state.value!!.revision },host,{ error("Unexpected foreign grant") },TestDocumentKeys)
+                { grants.state.value!!.revision },host,{ error("Unexpected foreign grant") },TestDocumentKeys,
+                authorizationCurrent = { negotiation.androidDeviceAuthorization })
             suspend fun currentStatus(): String {
                 val data = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/pairings/current")).requireData("LOOKUP")
                 return JsonFields.string(JsonFields.objects(data,"capabilities").first { JsonFields.string(it,"capabilityId") == ID },"androidStatus")!!
             }
-            assertEquals(true,JsonFields.bool(control("switch",mapOf("capabilityId" to ID,"enabled" to true)),"ok"))
             publisher.sync();assertEquals("PLUGIN_NOT_INSTALLED",currentStatus())
             // Exercise the shipped APK package when supplied; ordinary source-only builds use the same signed installer.
             val notificationsPackage = try { readBundledPluginPackage(context, BundledPlugin.NOTIFICATIONS) }
@@ -125,9 +128,9 @@ class NotificationCapabilityHttpTest {
             assertFalse(host.isEnabled(PLUGIN))
             assertTrue(host.authorizedBindings().isEmpty())
             val entry = host.entries(PLUGIN).single()
+            // Enabling the signed plugin defaults its capabilities on. System
+            // permission, notification scope and listener readiness remain gates.
             host.enable(PLUGIN,true)
-            publisher.sync();assertEquals("LOCAL_GRANT_REQUIRED",currentStatus())
-            host.grant(PLUGIN,true)
 
             // The same runtime-only composition used by the production APK.
             val manager = context.getSystemService(NotificationManager::class.java)
@@ -150,9 +153,11 @@ class NotificationCapabilityHttpTest {
 
             var foreground = false
             val driver = DeviceExecutionDriver(context,executionScope,http,host,session.accountId,session.deviceId,session.pairingGeneration,
-                binding.storageKey,{ publisher.grantRevision },{ foreground },TestDocumentKeys)
+                binding.storageKey,{ publisher.grantRevision },{ foreground },TestDocumentKeys,
+                authorizationCurrent = { negotiation.androidDeviceAuthorization },
+                localAuthorizationRevision = { grants.state.value!!.revision })
             suspend fun invoke(): JsonValue.JObject {
-                control("start",mapOf("capabilityId" to ID,"parameters" to mapOf("limit" to 10)))
+                assertEquals(true,JsonFields.bool(control("start",mapOf("capabilityId" to ID,"parameters" to mapOf("limit" to 10))),"started"))
                 var requestId: String? = null
                 withTimeout(5_000) { while(requestId == null) { requestId=JsonFields.string(control("pending"),"requestId");if(requestId == null) delay(20) } }
                 driver.accept(requestId!!)
@@ -180,11 +185,11 @@ class NotificationCapabilityHttpTest {
             host.enable(PLUGIN,true)
             publisher.sync();assertEquals("READY",currentStatus())
             assertEquals("succeeded",JsonFields.string(invoke(),"outcome"))
-            assertEquals(true,JsonFields.bool(control("switch",mapOf("capabilityId" to ID,"enabled" to false)),"ok"))
-            control("start",mapOf("capabilityId" to ID))
-            assertEquals("GATEWAY_DISABLED",JsonFields.string(control("result"),"reason"))
-            control("switch",mapOf("capabilityId" to ID,"enabled" to true))
-            // OS revocation removes bindings; reconnect and publisher recreation restore them only with the existing local grant.
+            assertEquals(true,JsonFields.bool(control("legacy_policy",mapOf("capabilityId" to ID,"enabled" to false)),"ok"))
+            publisher.sync();assertEquals("READY",currentStatus())
+            assertEquals("succeeded",JsonFields.string(invoke(),"outcome"))
+            // OS revocation removes bindings; reconnect restores only current
+            // Android-local decisions, never a Gateway account switch.
             shadowOf(manager).setNotificationListenerAccessGranted(component,false)
             // Even before the next sync, an already-attested request must hit the real Android permission gate.
             val revoked = invoke()
@@ -196,7 +201,8 @@ class NotificationCapabilityHttpTest {
             publisher.sync();assertEquals("PROVIDER_UNAVAILABLE",currentStatus())
             listener.onListenerConnected()
             publisher = CapabilityPublisher(context,http,binding.storageKey,publisher.grantRevision,
-                { grants.state.value!!.revision },host,{ error("Unexpected foreign grant") },TestDocumentKeys)
+                { grants.state.value!!.revision },host,{ error("Unexpected foreign grant") },TestDocumentKeys,
+                authorizationCurrent = { negotiation.androidDeviceAuthorization })
             publisher.sync();assertEquals("READY",currentStatus())
             assertEquals("succeeded",JsonFields.string(invoke(),"outcome"))
             host.enable(PLUGIN,false);publisher.sync();assertEquals("PLUGIN_DISABLED",currentStatus())

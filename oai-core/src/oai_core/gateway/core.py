@@ -36,6 +36,17 @@ from .account_paths import (
 from .audit import AuditStore
 from .contract_assets import CONTRACT_DIRECTORY_NAME, CONTRACT_ROOT_ENV
 from .credentials import hash_password, verify_password
+from .device_authority import (
+    AUTHORITY_BACKUP_KEY,
+    AUTHORITY_MODEL,
+    AUTHORITY_MODEL_KEY,
+    AuthorityBackupConflict,
+    backup_legacy_device_authority,
+    install_authority_writer_guards,
+    read_authority_model,
+    register_authority_writer,
+    writer_guards_installed,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1010,6 +1021,14 @@ class AccountStore:
         ensure_account_directories(paths)
         self.database = database if database is not None else sqlite3.connect(str(paths.database), isolation_level=None, check_same_thread=False)
         self.database.row_factory = sqlite3.Row
+        try:
+            register_authority_writer(self.database)
+            model = read_authority_model(self.database)
+            if model is not None and model != AUTHORITY_MODEL:
+                raise GatewayError("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
+        except BaseException:
+            self.database.close()
+            raise
         self.database.execute("PRAGMA journal_mode = WAL")
         self.database.execute("PRAGMA foreign_keys = ON")
         self._transaction_depth = 0
@@ -1585,11 +1604,15 @@ class EventStore:
         return event
 
     def release_device_request(self, request_id: str) -> None:
+        self.release_device_requests({request_id})
+
+    def release_device_requests(self, request_ids: set[str]) -> None:
+        """Scrub request parameters while preserving event IDs and cursors."""
         rows = self.store.database.execute("SELECT event_id,payload_json FROM events WHERE event_type='device.requested'")
         for row in rows:
             purpose = f"event:{row['event_id']}:payload"
             payload = self.store.open_json(row["payload_json"], purpose)
-            if payload.get("requestId") == request_id and "parameters" in payload:
+            if payload.get("requestId") in request_ids and "parameters" in payload:
                 payload["parameters"] = {}
                 self.store.database.execute("UPDATE events SET payload_json=? WHERE event_id=?", (self.store.seal_json(payload,purpose),row["event_id"]))
 
@@ -2763,17 +2786,15 @@ class DeviceRequestStore:
             "requiresForegroundConfirmation": risk == "high-privilege-ephemeral" or bool(requires_foreground_confirmation),
         }
         if not self.capabilities.validate(device_id, int(pairing_generation), int(grant_revision), record):
-            from .capability_policy import DeviceCapabilityPolicy
-            if not DeviceCapabilityPolicy(self.store).allows(record["capability"]["id"]):
-                raise GatewayError("CAPABILITY_DENIED", {"reason": "GATEWAY_DISABLED"})
             raise GatewayError("SCHEMA_INVALID")
         parameters_json = "" if state == "expired" else self.store.seal_json(
             parameters, f"device-request:{self.account_id}:{request_id}:parameters"
         )
         with self.store.transaction():
-            from .capability_policy import DeviceCapabilityPolicy
-            if not DeviceCapabilityPolicy(self.store).allows(record["capability"]["id"]):
-                raise GatewayError("CAPABILITY_DENIED", {"reason": "GATEWAY_DISABLED"})
+            # Recheck the real binding while holding the write transaction: a
+            # publication may have changed after the first parameter validation.
+            if not self.capabilities.validate(device_id, int(pairing_generation), int(grant_revision), record):
+                raise GatewayError("CAPABILITY_DENIED")
             self.store.database.execute(
                 """
                 INSERT INTO device_requests(request_id, device_id, pairing_generation, grant_revision, risk, state,
@@ -2803,7 +2824,7 @@ class DeviceRequestStore:
         with self.store.transaction():
             row = self._row(request_id)
             self._assert_binding(row, device_id, pairing_generation, grant_revision)
-            self._assert_capability_enabled(row)
+            self._assert_request_not_revoked(row)
             if self._expire_if_due(row, current):
                 expired = True
             else:
@@ -2849,7 +2870,7 @@ class DeviceRequestStore:
         with self.store.transaction():
             row = self._row(request_id)
             self._assert_binding(row, device_id, pairing_generation, grant_revision)
-            self._assert_capability_enabled(row)
+            self._assert_request_not_revoked(row)
             if self._expire_if_due(row, current):
                 expired = True
             else:
@@ -2888,7 +2909,7 @@ class DeviceRequestStore:
         with self.store.transaction():
             row = self._row(request_id)
             self._assert_binding(row, device_id, pairing_generation, grant_revision)
-            self._assert_capability_enabled(row)
+            self._assert_request_not_revoked(row)
             if self._expire_if_due(row, current):
                 return "OUTCOME_UNKNOWN"
             receipt = self.store.database.execute("SELECT * FROM claim_receipts WHERE request_id = ?", (request_id,)).fetchone()
@@ -2899,7 +2920,7 @@ class DeviceRequestStore:
 
     def read_result(self, request_id: str, claim_id: str, now: datetime | str | None = None) -> dict[str, Any] | None:
         row = self._row(request_id)
-        self._assert_capability_enabled(row)
+        self._assert_request_not_revoked(row)
         receipt = self.store.database.execute("SELECT 1 FROM claim_receipts WHERE request_id = ? AND claim_id = ?", (request_id, claim_id)).fetchone()
         if receipt is None:
             raise GatewayError("OUTCOME_UNKNOWN")
@@ -2929,7 +2950,7 @@ class DeviceRequestStore:
         with self.store.transaction():
             row = self._row(request_id)
             self._assert_binding(row, device_id, pairing_generation, grant_revision)
-            self._assert_capability_enabled(row)
+            self._assert_request_not_revoked(row)
             if self._expire_if_due(row, current):
                 return "OUTCOME_UNKNOWN"
             receipt = self.store.database.execute(
@@ -3041,13 +3062,16 @@ class DeviceRequestStore:
             raise GatewayError("OUTCOME_UNKNOWN")
         return row
 
-    def _assert_capability_enabled(self, row: sqlite3.Row) -> None:
-        from .capability_policy import DeviceCapabilityPolicy
-        revoked = self.store.database.execute("SELECT 1 FROM account_metadata WHERE key=?", (f"device-request-policy-revoked:{row['request_id']}",)).fetchone()
-        if revoked:
-            raise GatewayError("CAPABILITY_DENIED", {"reason": "REQUEST_REVOKED", "cause": "GATEWAY_DISABLED"})
-        if not DeviceCapabilityPolicy(self.store).allows(json.loads(row["capability_json"])["id"]):
-            raise GatewayError("CAPABILITY_DENIED", {"reason": "GATEWAY_DISABLED"})
+    def _assert_request_not_revoked(self, row: sqlite3.Row) -> None:
+        # Permanent request fences outlive the retired account-level policy.
+        # Removing the policy must never revive a request or a retained result.
+        for prefix, cause in (("device-request-policy-revoked:", "LEGACY_POLICY_REVOKED"),
+                              ("device-request-authority-migrated:", "AUTHORIZATION_MODEL_MIGRATED")):
+            revoked = self.store.database.execute(
+                "SELECT 1 FROM account_metadata WHERE key=?", (prefix + row["request_id"],),
+            ).fetchone()
+            if revoked:
+                raise GatewayError("CAPABILITY_DENIED", {"reason": "REQUEST_REVOKED", "cause": cause})
 
     @staticmethod
     def _assert_binding(row: sqlite3.Row, device_id: str, pairing_generation: int, grant_revision: int) -> None:
@@ -3666,6 +3690,124 @@ class GatewayAccount:
         self.approvalRequests = self.approvals
         self.masterKeyRef = self.master_key_ref
         self._closed = False
+        self._migrate_device_authority()
+
+    def _migrate_device_authority(self) -> None:
+        """Fence pre-Android-authority snapshots and requests exactly once.
+
+        A complete snapshot precedes any destructive change. The raw policy
+        and old publications remain review evidence, not new local decisions.
+        All request fences, version increments, writer guards and the marker
+        share one transaction. The original master key stays separate.
+        """
+        marker_key = AUTHORITY_MODEL_KEY
+        marker = read_authority_model(self.store.database)
+        if marker is not None:
+            if marker != AUTHORITY_MODEL:
+                raise GatewayError("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
+            if writer_guards_installed(self.store.database):
+                return
+        # Bootstrap is atomic but does not consume a business commit hook.
+        # AccountStore alone (also used by native session storage) never opts a
+        # database into the device model or installs its write guards.
+        self.store.database.execute("BEGIN IMMEDIATE")
+        try:
+            marker = read_authority_model(self.store.database)
+            if marker is not None and marker != AUTHORITY_MODEL:
+                raise GatewayError("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
+            legacy = self.store.database.execute(
+                "SELECT EXISTS (SELECT 1 FROM device_keys) "
+                "OR EXISTS (SELECT 1 FROM device_requests) "
+                "OR EXISTS (SELECT 1 FROM account_metadata WHERE key='device-capability-policy:v1' "
+                "OR key LIKE 'device-capabilities:%')",
+            ).fetchone()[0]
+            if marker is not None or not legacy:
+                if marker is None:
+                    self.store.database.execute(
+                        "INSERT INTO account_metadata(key,value) VALUES (?,?)", (marker_key, AUTHORITY_MODEL),
+                    )
+                install_authority_writer_guards(self.store.database)
+                self.store.database.execute("COMMIT")
+                return
+            self.store.database.execute("ROLLBACK")
+        except BaseException:
+            if self.store.database.in_transaction:
+                self.store.database.execute("ROLLBACK")
+            raise
+        with self.store.transaction():
+            marker = read_authority_model(self.store.database)
+            if marker is not None:
+                if marker != AUTHORITY_MODEL:
+                    raise GatewayError("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
+                install_authority_writer_guards(self.store.database)
+                return
+            if self.store.database.execute(
+                "SELECT 1 FROM account_metadata WHERE key=?", (AUTHORITY_BACKUP_KEY,),
+            ).fetchone() is not None:
+                raise GatewayError("DEVICE_AUTHORIZATION_BACKUP_CONFLICT")
+            # BEGIN IMMEDIATE excludes every other SQLite writer while the
+            # read-only source captures the last committed legacy state.
+            try:
+                backup_path = backup_legacy_device_authority(self.paths)
+            except AuthorityBackupConflict as exc:
+                raise GatewayError("DEVICE_AUTHORIZATION_BACKUP_CONFLICT", {
+                    "reason": "RETAINED_SNAPSHOT_REQUIRES_MAINTENANCE",
+                }) from exc
+            except (OSError, sqlite3.Error) as exc:
+                raise GatewayError("DEVICE_AUTHORIZATION_BACKUP_FAILED") from exc
+            self.store.database.execute(
+                "INSERT INTO account_metadata(key,value) VALUES (?,?)",
+                (AUTHORITY_BACKUP_KEY, _json({
+                    "database": backup_path, "masterKeyRef": self.master_key_ref,
+                    "requiresOriginalMasterKey": True,
+                })),
+            )
+            current = _now()
+            policy = self.store.database.execute(
+                "SELECT value FROM account_metadata WHERE key='device-capability-policy:v1'",
+            ).fetchone()
+            if policy is not None:
+                self.store.database.execute(
+                    "INSERT OR IGNORE INTO account_metadata(key,value) VALUES (?,?)",
+                    ("device-capability-policy:legacy-v1", policy[0]),
+                )
+            devices = self.store.database.execute("SELECT device_id FROM device_keys ORDER BY device_id").fetchall()
+            requests = self.store.database.execute("SELECT request_id,state FROM device_requests").fetchall()
+            for row in requests:
+                request_id, state = row["request_id"], row["state"]
+                next_state = ("cancelled" if state == "pending" else
+                              "outcome_unknown" if state in {"claimed", "cancel_requested"} else state)
+                self.store.database.execute(
+                    "INSERT OR IGNORE INTO account_metadata(key,value) VALUES (?, '1')",
+                    (f"device-request-authority-migrated:{request_id}",),
+                )
+                self.store.database.execute(
+                    "UPDATE device_requests SET state=?,parameters_json='',result_json='' WHERE request_id=?",
+                    (next_state, request_id),
+                )
+            if requests:
+                self.events.release_device_requests({row["request_id"] for row in requests})
+            for device in devices:
+                device_id = device["device_id"]
+                publication = self.store.database.execute(
+                    "SELECT value FROM account_metadata WHERE key=?", (f"device-capabilities:{device_id}",),
+                ).fetchone()
+                if publication is not None:
+                    self.store.database.execute(
+                        "INSERT OR IGNORE INTO account_metadata(key,value) VALUES (?,?)",
+                        (f"device-capabilities:legacy-v1:{device_id}", publication[0]),
+                    )
+                self.bump_grant_revision(device_id, "device-authority-migration", current)
+            if devices or requests or policy is not None:
+                self.audit.append(
+                    "device.authorization.migrated", {"accountId": self.account_id},
+                    {"model": "android-v1", "devices": len(devices), "requests": len(requests),
+                     "legacyPolicyPresent": policy is not None}, "device-authority-migration", current,
+                )
+            self.store.database.execute(
+                "INSERT INTO account_metadata(key,value) VALUES (?,?)", (marker_key, AUTHORITY_MODEL),
+            )
+            install_authority_writer_guards(self.store.database)
 
     def pairing_generation(self) -> int:
         row = self.store.database.execute(
@@ -4492,10 +4634,14 @@ class GatewayCore:
             paths, master_key_ref, self.commit_hook, aead,
             account_id=account_id, event_sink=self.deliver_event,
         )
-        account = GatewayAccount(
-            account_id, paths, store, self.contracts, self.attachment_policy,
-            self.credential_verifier,
-        )
+        try:
+            account = GatewayAccount(
+                account_id, paths, store, self.contracts, self.attachment_policy,
+                self.credential_verifier,
+            )
+        except BaseException:
+            store.close()
+            raise
         account.conversations.history_reader = self.history_reader
         return account
 
@@ -5499,9 +5645,9 @@ class GatewayCore:
                         publication = account.device_requests.capabilities.publication(context["deviceId"])
                         if not publication or publication["generation"] != context["pairingGeneration"] or publication["revision"] != context["grantRevision"]:
                             saved = None
-                        from .capability_policy import DeviceCapabilityPolicy, capability_catalog
+                        from .capability_policy import capability_catalog
                         return _success(context,{"deviceId":context["deviceId"],"pairingGeneration":context["pairingGeneration"],"grantRevision":context["grantRevision"],
-                            "capabilityPublicationVersion":2,"capabilityPolicy":DeviceCapabilityPolicy(account.store).snapshot(),
+                            "capabilityPublicationVersion":2,
                             "capabilities":[{k:v for k,v in item.items() if k != "schema"} for item in capability_catalog(account,context["deviceId"])],
                             **({"grantDigest":saved[0]} if saved else {})})
                     if method == "POST" and target_path == "/open-android-intelligence/v2/pairings/current/capabilities":
@@ -5530,7 +5676,7 @@ class GatewayCore:
                             raise GatewayError("PAIRING_GENERATION_STALE")
                         if row["grant_revision"] != int(context["grantRevision"]):
                             raise GatewayError("GRANT_STALE")
-                        account.device_requests._assert_capability_enabled(row)
+                        account.device_requests._assert_request_not_revoked(row)
                         record = account.device_requests._map(row)
                         return _success(context,{"request":record})
                     if method == "DELETE" and target_path == "/open-android-intelligence/v2/pairings/current":

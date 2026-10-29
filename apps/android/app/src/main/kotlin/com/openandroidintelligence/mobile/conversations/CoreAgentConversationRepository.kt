@@ -738,10 +738,10 @@ class CoreAgentConversationRepository(
                 GatewayLog.w("OaiLatency", "turn.failed client=${message.clientMessageId.value} " +
                     "type=${failure.javaClass.simpleName} code=${(failure as? AgentSessionException)?.code}")
                 if (turn.cancelled) { publish("CANCELLED"); flush(); cancelled() }
-                else if (failure is AgentSessionException && failure.code in setOf(
+                else if (failure is AgentSessionException && (failure.code in setOf(
                         "OUTCOME_UNKNOWN", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "STREAM_INTERRUPTED",
-                        "AGENT_UNAVAILABLE", "AGENT_STREAM_TOO_LARGE", "AGENT_STREAM_INVALID", "INVALID_AGENT_EVENT",
-                    )) {
+                        "AGENT_UNAVAILABLE", "AGENT_STREAM_TOO_LARGE", "AGENT_STREAM_INVALID", "INVALID_AGENT_EVENT", "CURSOR_EXPIRED",
+                    ) || failure.code == "AGENT_FAILED" && agent.capabilities.generationRecovery && turn.userMessageId != null)) {
                     queueUnknownBarriers.add(key)
                     turn.state = GenerationState.OUTCOME_UNKNOWN
                     recoverAfterTurn = true

@@ -130,11 +130,16 @@ work as reboot-resilient until that reviewed policy decision is made.
 
 ## Bundled device plugins
 
+> **2026-10-28 授权规则**：Android 统一决定设备能力；已安装且启用插件的前台能力默认开启，后台同步、系统权限、数据范围和敏感操作另行控制。实现已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`。当前测试结果与待真机验收项见[实施记录](../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；旧阶段静态证据见[只读修复计划](../../docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)。上方 Historical MVP modules 的旧授权描述仅记录旧模块，不定义当前规则。
+
 Full APKs can carry three official plugins under `assets/bundled-plugins/`:
 `notifications.alp`, `sms.alp` and `call-log.alp`. These are the existing
 protected WASM plugins, each installed explicitly from plugin settings through
-the normal Ed25519 verifier. Installation leaves them disabled and creates no
-pairing or collection grant. Play builds exclude the assets.
+the normal Ed25519 verifier. Installation leaves them disabled. In the target
+design, enabling the installed plugin enables its capabilities by default without
+a separate Gateway account or pairing capability grant. Android-local data scope,
+system permissions, and required confirmations remain in force. Play builds
+exclude the assets.
 
 Build the real payloads and sign the packages with a private 32-byte Ed25519
 seed file (one publisher key signs all three):

@@ -5,6 +5,8 @@ date: 2026-10-26
 
 # 用单一 OAI Core 进程统一承载设备权威与多 Agent 原生会话
 
+**2026-10-28 职责澄清**：本 ADR 的“设备权威”指设备协议、连接认证、配对绑定与请求状态机的服务端权威，不包括设备能力许可。设备能力由 Android 唯一授权，已安装且启用插件的前台能力默认开启，后台及系统授权仍单独管理。此决策见 [ADR-0059](0059-android-is-the-sole-device-capability-authority.md)，已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；分支验证见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。以下保留当时的架构背景。
+
 此前每类 Agent 宿主各自内嵌 Gateway 适配器，手机要为不同 Agent 维护不同的服务地址与凭据，
 设备授权分散在各宿主内。现在改为一个独立可安装的 `oai-core` Python 项目：`oai serve`
 以单一监听地址同时承载 Android 设备协议、设备调用面（CLI/API/MCP）与原生 Agent 会话接入，

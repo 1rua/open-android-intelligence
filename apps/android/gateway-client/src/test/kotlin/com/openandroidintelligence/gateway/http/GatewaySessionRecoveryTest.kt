@@ -21,6 +21,56 @@ class GatewaySessionRecoveryTest {
     private fun profile() = GatewayProfile("account", "device", "session_old", "https://gateway.example", accessToken = "old")
     private fun WireRequest.header(name: String) = headers.single { it.name.equals(name, true) }.value
 
+    @Test fun deviceResultIsNotReplayedWhenRenewalRevokesTheAuthorizationAgreement() = runTest {
+        val initial = profile()
+        var allowed = true
+        val wires = mutableListOf<WireRequest>()
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            allowed = false
+            it.copy(sessionId = "session_new", accessToken = "new")
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                wires += request
+                return WireResponse(401, emptyList(), byteArrayOf())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("unused")
+        }
+        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+        val devices = com.openandroidintelligence.gateway.device.HttpDeviceRequestTransport(client) { requestId ->
+            assertEquals("req_result", requestId)
+            check(allowed) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+        }
+        val failure = runCatching { devices.submitResult("req_result", mapOf("result" to "private-result")) }.exceptionOrNull()
+        assertEquals("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED", failure?.message)
+        assertEquals(1, wires.size)
+        assertEquals("Bearer old", wires.single().header("Authorization"))
+    }
+
+    @Test fun responseConsumptionRechecksItsGuardBeforeARefreshReplay() = runTest {
+        val initial = profile()
+        var allowed = true
+        var attempts = 0
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            allowed = false
+            it.copy(sessionId = "session_new", accessToken = "new")
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                attempts++
+                return WireResponse(401, emptyList(), byteArrayOf())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("unused")
+        }
+        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+        val failure = runCatching {
+            client.consumeResponse(SignedGatewayRequest("GET", "/open-android-intelligence/v2/protected",
+                beforeSend = { check(allowed) { "LOCAL_AUTHORIZATION_CHANGED" } })) { _, _, _ -> error("must not consume") }
+        }.exceptionOrNull()
+        assertEquals("LOCAL_AUTHORIZATION_CHANGED", failure?.message)
+        assertEquals(1, attempts)
+    }
+
     @Test fun signingKeepsOneSnapshotWhenAnotherRotationCompletesInsideTheSigner() = kotlinx.coroutines.runBlocking {
         val initial = profile()
         val renewal = GatewaySessionRenewal(initial, kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)) {

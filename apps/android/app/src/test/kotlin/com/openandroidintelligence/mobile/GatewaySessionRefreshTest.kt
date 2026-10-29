@@ -731,18 +731,24 @@ class GatewaySessionRefreshTest {
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
         pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, true)
+        val localDecision = pairingGrants.updatePrimitive(PairingGrantCapabilities.NOTIFICATIONS, false)
+        runtime.dismissOperationNotice()
         fun frame(id: String, device: String, revision: Int) = "id: $id\nevent: pairing.grant.changed\ndata: {\"payload\":{\"deviceId\":\"$device\",\"grantRevision\":$revision}}\n\n"
         gateway.respond(path, frame("evt_other", "dev_other", 3), contentType = "text/event-stream")
         val platformCursor = AndroidEventCursorStore(ApplicationProvider.getApplicationContext(), profileId() + ":platform")
         assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_other" })
-        assertTrue(PairingGrantCapabilities.SMS in pairingGrants.state.value!!.granted)
+        assertEquals(localDecision, pairingGrants.state.value)
+        assertNull(runtime.operationNotice.value)
         gateway.respond(path, frame("evt_current", "dev_stub", 4), contentType = "text/event-stream")
         assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_current" })
-        assertTrue(pairingGrants.state.value!!.granted.isEmpty())
-        pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, true)
+        assertEquals("远端修订变化只能触发重新同步，不能清除本机开启或关闭的决定", localDecision, pairingGrants.state.value)
+        assertTrue(runtime.operationNotice.value?.contains("本机开关保持原设置") == true)
+        val nextLocalDecision = pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, false)
+        runtime.dismissOperationNotice()
         gateway.respond(path, frame("evt_duplicate", "dev_stub", 4), contentType = "text/event-stream")
         assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_duplicate" })
-        assertTrue(PairingGrantCapabilities.SMS in pairingGrants.state.value!!.granted)
+        assertEquals(nextLocalDecision, pairingGrants.state.value)
+        assertNull("重复修订不能再次使本机连接状态失效", runtime.operationNotice.value)
         assertNull(AndroidEventCursorStore(ApplicationProvider.getApplicationContext(), profileId()).load("acc_stub"))
     }
 
@@ -931,14 +937,16 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
-    fun refusedLogoutKeepsTheSessionAndItsCredentialsForRetry() {
+    fun refusedLogoutCompletesLocallyAndRetainsPairingForExplicitLogin() {
         gateway.respond("/open-android-intelligence/v2/sessions/current", """{"error":{"code":"SERVICE_UNAVAILABLE"}}""", 503)
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
         runtime.logout(revokeRefresh = false)
         // 本地优先退出完成，远端登出未获确认但本地已退出
-        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.operationNotice.value?.contains("未获 Gateway 确认") == true || runtime.phase.value is ConnectionPhase.Disconnected })
+        assertTrue(awaitCondition(AWAIT_MILLIS) {
+            runtime.operationNotice.value?.contains("未获 Gateway 确认") == true && runtime.phase.value is ConnectionPhase.Disconnected
+        })
         assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
         assertNull(runtime.controller.value)
         assertFalse(credentialStore.hasRefresh(profileId()))
@@ -984,8 +992,13 @@ class GatewaySessionRefreshTest {
             val runtime = runtime()
             runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
             awaitConnected(runtime)
+            val localDecision = pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, false)
+            assertEquals("acc_stub", runtime.connectedAccountId)
             runtime.dismissOperationNotice()
             runtime.logout(revokeRefresh = true)
+            assertTrue("等待远端注销时本地必须已经退出", runtime.localSessionState.value is LocalSessionState.SignedOut)
+            assertNull("等待远端注销不能继续给后台设备任务提供认证账号", runtime.connectedAccountId)
+            assertEquals("本地退出只能撤销本次连接，不能改写用户的能力开关", localDecision, pairingGrants.state.value)
             assertTrue(awaitCondition(AWAIT_MILLIS) { gateway.requests.any { it.method == "DELETE" && it.target.startsWith(path) } })
             runtimeScope.cancel()
             release.countDown()
@@ -1063,14 +1076,31 @@ class GatewaySessionRefreshTest {
             )
             offline.restoreSessionIfAvailable()
             assertTrue("断网重启必须进入已保存的离线镜像", awaitCondition(AWAIT_MILLIS) { offline.phase.value is ConnectionPhase.OfflineMirror })
-            val controller = requireNotNull(offline.controller.value)
+            assertEquals("离线草稿仍需保留", requireNotNull(offline.controller.value).state.value.draft)
             offline.dismissOperationNotice()
             offline.logout(revokeRefresh = false)
-            // 离线本地退出成功，本地进入 Disconnected 且不可再恢复，本地草稿与凭据被清除/锁定
-            assertTrue(offline.phase.value is ConnectionPhase.Disconnected)
+            assertTrue("离线退出必须立即锁定工作台", offline.localSessionState.value is LocalSessionState.SignedOut)
+            assertNull(offline.connectedAccountId)
+            assertTrue("异步收尾完成后必须关闭离线工作台", awaitCondition(AWAIT_MILLIS) {
+                offline.phase.value is ConnectionPhase.Disconnected && offline.controller.value == null
+            })
             assertNull(offline.controller.value)
-            assertFalse(credentialStore.hasRefresh(profileId()))
+            assertTrue("离线退出不能伪造远端凭据已撤销", offline.operationNotice.value?.contains("未获 Gateway 确认") == true)
+            assertTrue("未通知远端时保留被退出屏障锁定的刷新凭据", credentialStore.hasRefresh(profileId()))
             assertTrue(deviceKeys.hasKey(profileId()))
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            val installId = requireNotNull(context.getSharedPreferences("open_android_intelligence_runtime", Context.MODE_PRIVATE).getString("installation_id", null))
+            val mirror = com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(
+                context,
+                com.openandroidintelligence.conversation.ports.ConversationScope(profileId(), gateway.baseUrl, "acc_stub", installId),
+                TestDocumentKeys,
+            )
+            assertEquals("退出后草稿仍须保留在加密镜像内", "离线草稿仍需保留", mirror.load()?.draft)
+            runBlocking { mirror.closeStore() }
+            val before = gateway.requests.size
+            offline.restoreSessionIfAvailable()
+            assertTrue(offline.localSessionState.value is LocalSessionState.SignedOut)
+            assertEquals("保留凭据不允许自动恢复已退出账户", before, gateway.requests.size)
         } finally {
             offlineScope.cancel()
         }

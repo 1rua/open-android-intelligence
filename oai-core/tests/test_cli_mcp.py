@@ -173,8 +173,7 @@ def test_official_mcp_client_negotiates_and_calls_stdio_process(tmp_path):
         assert received[0][1].endswith("/capabilities")
 
 
-def test_local_account_and_policy_commands_use_real_isolated_core_stores(tmp_path, monkeypatch, capsys):
-    from oai_core.gateway.capability_policy import DeviceCapabilityPolicy
+def test_local_accounts_stay_isolated_and_legacy_policy_commands_are_retired(tmp_path, monkeypatch, capsys):
     from oai_core.server import create_core, load_config
     settings = tmp_path / "core.json"
     settings.write_text(json.dumps({
@@ -188,21 +187,22 @@ def test_local_account_and_policy_commands_use_real_isolated_core_stores(tmp_pat
         assert json.loads(capsys.readouterr().out) == {"accountId": username, "created": True}
     assert main(["account", "create", "--config", str(settings), "--username", "alice"]) == 1
     assert "ACCOUNT_EXISTS" in capsys.readouterr().err
-    # By default, capabilities are enabled for all accounts (e.g. bob has not configured it, so it is True)
+    # The server command is retired; account authentication remains independent.
     assert main(["policy", "set", "--config", str(settings), "--account", "bob",
-                 "--capability", "org.openandroidintelligence.sms.query", "--disabled"]) == 0
-    capsys.readouterr()
+                 "--capability", "org.openandroidintelligence.sms.query", "--disabled"]) == 1
+    assert "DEVICE_AUTHORIZATION_MANAGED_BY_ANDROID" in capsys.readouterr().err
     core = create_core(load_config(settings))
     for username in ("alice", "bob"):
         account = core.open_gateway_account(username)
         try:
             assert account.credentials.verify_password("real-test-password")
             assert not account.credentials.verify_password("wrong-password")
-            # alice is enabled by default (and explicitly enabled); bob was explicitly disabled
-            assert DeviceCapabilityPolicy(account.store).allows("org.openandroidintelligence.sms.query") is (username == "alice")
+            assert account.store.database.execute(
+                "SELECT 1 FROM account_metadata WHERE key='device-capability-policy:v1'",
+            ).fetchone() is None
         finally:
             account.close()
     assert main(["policy", "set", "--config", str(settings), "--account", "unknown",
                  "--capability", "org.openandroidintelligence.sms.query", "--enabled"]) == 1
-    assert "ACCOUNT_NOT_FOUND" in capsys.readouterr().err
+    assert "DEVICE_AUTHORIZATION_MANAGED_BY_ANDROID" in capsys.readouterr().err
     assert not core.account_exists("unknown")

@@ -1,5 +1,7 @@
 # 原生会话适配器部署与验证
 
+**2026-10-28 后续授权修订**：本文记录会话桥迁移，设备能力规则按 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 由 Android 唯一授权。普通前台能力默认开启，后台/系统许可独立；Hermes/DSH 无需额外设备授权设置。桥 Token、宿主账号 allowlist、一对一映射及共享会话隔离继续有效。代码已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；当前测试和真机验收状态见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
+
 > 版本更新：Core 0.2.0 已将设备协议与安全状态机迁入 `oai_core.gateway`，原 Hermes 宿主代码由独立可选包 `oai-hermes-session-adapter` 提供。下文调研证据保留原来源；当前安装、账号目录、密钥、备份和回滚请按[独立部署说明](../deployment/2026-10-26-core-independent.zh-CN.md)及[Hermes 适配器说明](../../integrations/hermes-session-adapter/README.md)执行。
 
 本文件记录统一 Core 中 Hermes、DSH 与 Codex 的真实接入边界。手机只连接 `oai serve`；下面的 loopback 会话桥只供 Core 调用，不是手机连接入口，也不提供设备请求接口。各行为的代码依据见[架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。

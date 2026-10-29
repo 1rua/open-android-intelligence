@@ -38,7 +38,8 @@ internal object TestAlpPackages {
 
     /** Real compiled SMS code and its checked-in schema, signed with a fresh test key. */
     fun compiledSmsPackage(queryCapabilityId: String = "org.openandroidintelligence.sms.query", queryVersion: String = "1.0.0",
-        author: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(), version: String = "1.0.0"): ByteArray {
+        author: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(), version: String = "1.0.0",
+        capabilityDeclaration: JsonValue.JObject? = null, pluginId: String = "org.openandroidintelligence.sms"): ByteArray {
         var root = File(requireNotNull(System.getProperty("user.dir"))).absoluteFile
         while (!File(root, "plugins/sms/manifest.json").isFile) {
             root = root.parentFile ?: error("Repository root unavailable")
@@ -49,9 +50,13 @@ internal object TestAlpPackages {
             name to when (name) {
                 "author" -> Json.of(mapOf("algorithm" to "Ed25519", "publicKey" to publicKey))
                 "plugin" -> (value as JsonValue.JObject).copy(fields = value.fields.map { (key,item) ->
-                    key to if (key == "version") Json.of(version) else item
+                    key to when (key) {
+                        "id" -> Json.of(pluginId)
+                        "version" -> Json.of(version)
+                        else -> item
+                    }
                 })
-                "capabilities" -> (value as JsonValue.JObject).copy(fields = value.fields.map { (field,caps) ->
+                "capabilities" -> capabilityDeclaration ?: (value as JsonValue.JObject).copy(fields = value.fields.map { (field,caps) ->
                     field to if(field == "provides") JsonValue.JArray((caps as JsonValue.JArray).items.map { entry ->
                         val cap=entry as JsonValue.JObject
                         if ((cap.fields.toMap()["id"] as? JsonValue.JString)?.value != "org.openandroidintelligence.sms.query") cap

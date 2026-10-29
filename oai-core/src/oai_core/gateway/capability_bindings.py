@@ -118,9 +118,8 @@ class CapabilityBindings:
         return saved["bindings"] if saved and saved["generation"] == generation and saved["revision"] == revision else []
 
     def available(self, device_id: str, generation: int, revision: int) -> list[dict[str, Any]]:
-        from .capability_policy import DeviceCapabilityPolicy
-        policy = DeviceCapabilityPolicy(self.store)
-        return [binding for binding in self.list(device_id, generation, revision) if policy.allows(binding["capabilityId"])]
+        # An authenticated Android publication is the only capability decision.
+        return self.list(device_id, generation, revision)
 
     def validate(self, device_id: str, generation: int, revision: int, request: Mapping[str, Any]) -> bool:
         if not self.contracts.validate("device.request", request): return False

@@ -167,10 +167,13 @@ class GatewayRuntime(
 ) {
     private var executionDriver: com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver? = null
     private var capabilityPublisher: com.openandroidintelligence.mobile.plugins.CapabilityPublisher? = null
+    private var deviceAuthorizationAgreement: java.util.concurrent.atomic.AtomicBoolean? = null
     val deviceConfirmation = MutableStateFlow<com.openandroidintelligence.mobile.plugins.DeviceConfirmation?>(null)
     val deviceCapabilityStatuses = MutableStateFlow<Map<String,String>>(emptyMap())
     val deviceCapabilitySyncStatus = MutableStateFlow("SYNC_REQUIRED")
-    val connectedAccountId: String? get() = lastAccountId.takeIf { activeHttpClient != null }
+    val connectedAccountId: String? get() = lastAccountId.takeIf {
+        activeHttpClient != null && _localSessionState.value !is LocalSessionState.SignedOut
+    }
     val replyNotifications = ReplyNotificationSettings(context)
     private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications)
     private val sessionKeepAlive = AgentSessionKeepAlive(context)
@@ -512,7 +515,7 @@ class GatewayRuntime(
                     if (refreshCred.isNotEmpty()) {
                         runCatching {
                             credentialStore.saveRefresh(profileId, refreshCred)
-                            saveLastProfile(normalized, username, profileId, session)
+                            saveLastProfile(normalized, username, profileId, session, explicitLogin = true)
                         }.onFailure { _operationNotice.value = "自动登录凭据未能保存，下次启动需要重新登录。" }
                     }
                     establish(
@@ -523,6 +526,7 @@ class GatewayRuntime(
                         tlsSpkiSha256 = tlsPin,
                         conversationUi = negotiated.conversationUi,
                         nativeAgentSessions = negotiated.nativeAgentSessions,
+                        androidDeviceAuthorization = negotiated.androidDeviceAuthorization,
                         deviceRequests = negotiated.deviceRequests,
                         agentName = negotiated.agentName ?: negotiated.deploymentId,
                         generationCancelCapability =
@@ -550,6 +554,7 @@ class GatewayRuntime(
 
     fun logout(revokeRefresh: Boolean) {
         if (deferUntilSessionEstablished { logout(revokeRefresh) }) return
+        if (connectionJob?.isActive == true && !restoringSession) return
         val currentConnected = _phase.value as? ConnectionPhase.Connected
         val currentOffline = _phase.value as? ConnectionPhase.OfflineMirror
         val gatewayUrl = currentConnected?.gatewayUrl ?: currentOffline?.gatewayUrl ?: return
@@ -558,61 +563,105 @@ class GatewayRuntime(
 
         // 1. 本地优先：立即写入持久退出屏障，防止自动恢复
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putBoolean("signed_out_$profileId", true).commit()
+        if (!prefs.edit().putBoolean("signed_out_$profileId", true).commit()) {
+            _operationNotice.value = "本机退出状态未能保存，请检查设备存储后重试。"
+            return
+        }
 
         // 2. 本地展示状态立即切为 SignedOut
-        _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = gatewayUrl, lastUsername = username)
+        deviceAuthorizationAgreement?.set(false)
+        val signedOut = LocalSessionState.SignedOut(lastEndpoint = gatewayUrl, lastUsername = username)
+        _localSessionState.value = signedOut
         _loginStatus.value = GatewayLoginStatus.SIGNED_OUT
+        executionDriver?.cancelAll()
+        com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
+        val restoring = connectionJob?.takeIf { restoringSession }
+        cancelRestoration()
 
         // 3. 异步执行凭据清理、远端单次通知与 teardown，不阻塞本地退出完成
         _operationNotice.value = null
-        connectionJob = scope.launch {
+        lateinit var owned: Job
+        owned = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
-                flushWorkbenchBeforeLeaving()
-                _controller.value?.closeAndAwait()
-            } catch (_: Exception) {}
-
-            // 若在线则尝试通知网关注销旧 session（非阻塞本地结果）
-            if (currentConnected != null) {
-                val accountId = lastAccountId
-                val deviceId = lastDeviceId
-                if (accountId != null && deviceId != null) {
-                    try {
-                        val live = sessionRenewal?.current
-                        val token = accessTokenHolder ?: live?.accessToken
-                        val sId = lastSessionId ?: live?.sessionId
-                        if (token != null && sId != null) {
-                            authClientFor(currentConnected.gatewayUrl, setOfNotNull(currentConnected.tlsSpkiSha256)).logout(
-                                accessToken = token, accountId = accountId, deviceId = deviceId,
-                                sessionId = sId, revokeRefresh = false,
-                            )
-                        }
-                    } catch (_: Exception) {
-                        _operationNotice.value = "登出未获 Gateway 确认，请检查连接后重试。"
-                    }
-                }
-            }
-
-            sessionRenewal?.close()
-            sessionRenewal = null
-
-            val cleanup = listOf<() -> Unit>(
-                { credentialStore.clearRefresh(profileId) },
-                { refreshJournal.clear(profileId); pendingRotations.remove(profileId) },
-                { clearLastProfile() },
-            )
-            for (action in cleanup) {
+                // 旧恢复可能正在持久化已轮换凭据，等待它退出后再清理当前账号。
+                restoring?.join()
+                _localSessionState.value = signedOut
                 try {
-                    action()
+                    flushWorkbenchBeforeLeaving()
+                    _controller.value?.closeAndAwait()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
-                    _operationNotice.value = "Gateway 已登出，但本机凭据清理失败，请检查设备存储。"
+                    _operationNotice.value = "本机已退出，但本地会话保存失败，请检查设备存储。"
                 }
+
+                var confirmed = false
+                if (currentConnected != null) {
+                    try {
+                        notifyGatewayLogout(currentConnected, revokeRefresh)
+                        confirmed = true
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        _operationNotice.value = "本机已退出，登出未获 Gateway 确认，请检查连接后重试。"
+                    }
+                } else {
+                    _operationNotice.value = "本机已退出，离线登出未获 Gateway 确认；本机凭据已锁定保留，重新登录后可继续处理。"
+                }
+
+                sessionRenewal?.close()
+                sessionRenewal = null
+
+                sessionOperationMutex.withLock {
+                    val cleanup = buildList<() -> Unit> {
+                        // 离线没有发出远端请求，保留凭据和未确认轮换记录；退出屏障阻止使用它们。
+                        if (currentConnected != null) {
+                            add { credentialStore.clearRefresh(profileId) }
+                            add { refreshJournal.clear(profileId); pendingRotations.remove(profileId) }
+                        }
+                        add { clearLastProfile() }
+                    }
+                    for (action in cleanup) {
+                        try {
+                            action()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            _operationNotice.value = if (confirmed) {
+                                "Gateway 已登出，但本机凭据清理失败，请检查设备存储。"
+                            } else {
+                                "本机已退出，登出未获 Gateway 确认，且本机凭据清理失败，请检查设备存储。"
+                            }
+                        }
+                    }
+                    teardown()
+                }
+            } finally {
+                if (connectionJob === owned) connectionJob = null
             }
-            teardown()
-            _phase.value = ConnectionPhase.Disconnected
-            _controller.value = null
+        }
+        connectionJob = owned
+        owned.start()
+    }
+
+    private suspend fun notifyGatewayLogout(current: ConnectionPhase.Connected, revokeRefresh: Boolean) {
+        val renewal = sessionRenewal
+        val rejected = renewal?.current
+        val accountId = rejected?.accountId ?: checkNotNull(lastAccountId) { "LOGOUT_SESSION_UNAVAILABLE" }
+        val deviceId = rejected?.deviceId ?: checkNotNull(lastDeviceId) { "LOGOUT_SESSION_UNAVAILABLE" }
+        val auth = authClientFor(current.gatewayUrl, setOfNotNull(current.tlsSpkiSha256))
+        suspend fun notify(accessToken: String, sessionId: String) {
+            auth.logout(accessToken, accountId, deviceId, sessionId, revokeRefresh)
+        }
+        try {
+            notify(
+                rejected?.accessToken ?: checkNotNull(accessTokenHolder) { "LOGOUT_SESSION_UNAVAILABLE" },
+                rejected?.sessionId ?: checkNotNull(lastSessionId) { "LOGOUT_SESSION_UNAVAILABLE" },
+            )
+        } catch (cause: GatewayAuthException) {
+            if (cause.httpStatus != 401 || renewal == null || rejected == null) throw cause
+            val rotated = renewal.refresh(rejected)
+            notify(rotated.accessToken, rotated.sessionId)
         }
     }
 
@@ -995,26 +1044,33 @@ class GatewayRuntime(
         if (connectionJob?.isActive == true || _phase.value !is ConnectionPhase.Disconnected ||
             _loginStatus.value == GatewayLoginStatus.REAUTHENTICATION_REQUIRED) return
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val lastUrl = prefs.getString(KEY_LAST_GATEWAY, null) ?: return
-        val lastUser = prefs.getString(KEY_LAST_USER, null) ?: return
-        val profileId = prefs.getString(KEY_LAST_PROFILE, null) ?: return
-        val accountId = prefs.getString(KEY_LAST_ACCOUNT, null) ?: return
-        val deviceId = prefs.getString(KEY_LAST_DEVICE, null) ?: return
-        if (prefs.getInt(KEY_DEVICE_KEY_ENCODING, 0) != DEVICE_KEY_ENCODING_VERSION) {
-            _phase.value = ConnectionPhase.Failed("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED")
-            _loginStatus.value = GatewayLoginStatus.REAUTHENTICATION_REQUIRED
-            return
-        }
-        val endpoint = GatewayEndpoint.parse(lastUrl) ?: return
-        val hasCredential = runCatching { credentialStore.loadRefresh(profileId)?.let { it.isNotEmpty().also { _ -> it.fill(0) } } }.getOrDefault(false)
-        if (hasCredential != true) {
+        val lastUrl = prefs.getString(KEY_LAST_GATEWAY, null)
+        val lastUser = prefs.getString(KEY_LAST_USER, null)
+        val profileId = prefs.getString(KEY_LAST_PROFILE, null)
+        val accountId = prefs.getString(KEY_LAST_ACCOUNT, null)
+        val deviceId = prefs.getString(KEY_LAST_DEVICE, null)
+        if (lastUrl == null || lastUser == null || profileId == null || accountId == null || deviceId == null) {
             _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = lastUrl, lastUsername = lastUser)
             return
         }
-
-        // 检查持久退出屏障：如果已退出，严禁自动恢复
+        // 检查持久退出屏障：不读取或使用已退出账户的刷新凭据。
         if (prefs.getBoolean("signed_out_$profileId", false)) {
             _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = lastUrl, lastUsername = lastUser, reason = "EXPLICITLY_SIGNED_OUT")
+            return
+        }
+        if (prefs.getInt(KEY_DEVICE_KEY_ENCODING, 0) != DEVICE_KEY_ENCODING_VERSION) {
+            _phase.value = ConnectionPhase.Failed("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED")
+            _loginStatus.value = GatewayLoginStatus.REAUTHENTICATION_REQUIRED
+            _localSessionState.value = LocalSessionState.Locked(accountProfiles.find(profileId), "DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED")
+            return
+        }
+        val endpoint = GatewayEndpoint.parse(lastUrl) ?: run {
+            _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = lastUrl, lastUsername = lastUser)
+            return
+        }
+        val hasCredential = runCatching { credentialStore.loadRefresh(profileId)?.let { it.isNotEmpty().also { _ -> it.fill(0) } } }.getOrDefault(false)
+        if (hasCredential != true) {
+            _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = lastUrl, lastUsername = lastUser)
             return
         }
 
@@ -1064,7 +1120,8 @@ class GatewayRuntime(
                         establish(endpoint, lastUser, profileId, session, tlsPin,
                             negotiated.conversationUi, negotiated.deviceRequests, GenerationCancelCapability.fromNegotiation(negotiated), ::checkOwner,
                             agentName = negotiated.agentName ?: negotiated.deploymentId,
-                            nativeAgentSessions = negotiated.nativeAgentSessions)
+                            nativeAgentSessions = negotiated.nativeAgentSessions,
+                            androidDeviceAuthorization = negotiated.androidDeviceAuthorization)
                         return@launch
                     } catch (cancelled: CancellationException) { throw cancelled }
                       catch (cause: Exception) {
@@ -1138,6 +1195,7 @@ class GatewayRuntime(
         checkOwner: () -> Unit = {},
         agentName: String? = null,
         nativeAgentSessions: Boolean = false,
+        androidDeviceAuthorization: Boolean = false,
     ): Unit = initializePostLogin(InitializationStage.SESSION_SETUP) {
         establishingJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         checkOwner()
@@ -1151,6 +1209,10 @@ class GatewayRuntime(
             accessToken = session.accessToken,
         )
         sessionRenewal?.close()
+        deviceAuthorizationAgreement?.set(false)
+        executionDriver?.cancelAll()
+        val authorizationAgreement = java.util.concurrent.atomic.AtomicBoolean(androidDeviceAuthorization)
+        deviceAuthorizationAgreement = authorizationAgreement
         lateinit var renewal: GatewaySessionRenewal
         renewal = GatewaySessionRenewal(profile, scope) { rejected ->
             sessionOperationMutex.withLock {
@@ -1158,9 +1220,16 @@ class GatewayRuntime(
                 _isRefreshingSession.value = true
                 _credentialStatus.value = GatewayCredentialStatus.REFRESHING
                 try {
-                    val (rotated, _) = rotateStoredSession(endpoint, username, profileId,
+                    val (rotated, negotiated) = rotateStoredSession(endpoint, username, profileId,
                         rejected.accountId, rejected.deviceId, rejected.pinnedSpkiSha256)
                     check(sessionRenewal === renewal) { "SESSION_RENEWAL_CLOSED" }
+                    if (!negotiated.androidDeviceAuthorization) {
+                        authorizationAgreement.set(false)
+                        executionDriver?.cancelAll()
+                        com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
+                        deviceCapabilityStatuses.value = emptyMap()
+                        deviceCapabilitySyncStatus.value = "AUTHORIZATION_MODEL_UNSUPPORTED"
+                    }
                     accessTokenHolder = rotated.accessToken
                     lastSessionId = rotated.sessionId
                     _credentialStatus.value = GatewayCredentialStatus.AVAILABLE
@@ -1288,11 +1357,12 @@ class GatewayRuntime(
                 if (sessionJob === ownedJob && activeHttpClient === http) hasRecoveredGatewayWork.value = running
             }
         }
-        if (pluginHost != null && deviceRequests != null) {
+        if (pluginHost != null && deviceRequests != null && androidDeviceAuthorization) {
             initializePostLogin(InitializationStage.DEVICE_EXECUTION) {
                 val publisher = com.openandroidintelligence.mobile.plugins.CapabilityPublisher(context,http,binding.storageKey,session.grantRevision,
                     localRevision = { pairingGrants.state.value?.revision ?: 0L },host = pluginHost,
-                    foreignChange = { executionDriver?.cancelAll(); pairingGrants.clearCurrent(); pairingGrants.bind(binding) })
+                    foreignChange = { executionDriver?.cancelAll() },
+                    authorizationCurrent = { authorizationAgreement.get() && sessionRenewal === renewal })
                 capabilityPublisher = publisher
                 sessionScope.launch {
                     publisher.gatewayCapabilities.collect { entries ->
@@ -1304,7 +1374,9 @@ class GatewayRuntime(
                 }
                 val executor = com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver(context,sessionScope,http,pluginHost,
                     session.accountId,session.deviceId,session.pairingGeneration,binding.storageKey,{ publisher.grantRevision },
-                    isForeground = { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) })
+                    isForeground = { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) },
+                    authorizationCurrent = { authorizationAgreement.get() && sessionRenewal === renewal },
+                    localAuthorizationRevision = { pairingGrants.state.value?.revision ?: -1L })
                 executionDriver = executor
                 com.openandroidintelligence.control.ScreenHostRegistry.current?.connect(
                     session.accountId, binding.pairingId, session.pairingGeneration.toLong(),
@@ -1322,18 +1394,32 @@ class GatewayRuntime(
                     kotlinx.coroutines.flow.combine(pairingGrants.state,pluginHost.revision) { _, _ -> Unit }.collectLatest {
                         com.openandroidintelligence.control.ScreenHostRegistry.current?.refreshAuthorization()
                         while (isActive) {
+                            if (!authorizationAgreement.get()) {
+                                deviceCapabilitySyncStatus.value = "AUTHORIZATION_MODEL_UNSUPPORTED"
+                                break
+                            }
                             // OS permission changes and listener reconnects need
                             // reconciliation even when plugin/local-grant flows are unchanged.
                             try { publisher.sync(); deviceCapabilitySyncStatus.value = "SYNCED"; delay(5_000) }
                             catch (cancelled: CancellationException) { throw cancelled }
                             catch (_: Exception) {
+                                if (!authorizationAgreement.get()) {
+                                    deviceCapabilitySyncStatus.value = "AUTHORIZATION_MODEL_UNSUPPORTED"
+                                    break
+                                }
                                 deviceCapabilitySyncStatus.value = "SYNC_FAILED"
-                                _operationNotice.value = "设备能力授权同步失败，正在重试。"; delay(2_000)
+                                _operationNotice.value = "设备能力状态同步失败，正在重试。"; delay(2_000)
                             }
                         }
                     }
                 }
             }
+        } else if (pluginHost != null) {
+            executionDriver = null
+            capabilityPublisher = null
+            com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
+            deviceCapabilityStatuses.value = emptyMap()
+            deviceCapabilitySyncStatus.value = "AUTHORIZATION_MODEL_UNSUPPORTED"
         }
         val attachmentCoordinator = initializePostLogin(InitializationStage.ATTACHMENT_RECOVERY) {
             val attachmentTransport = HttpAttachmentTransport(http)
@@ -1824,6 +1910,8 @@ class GatewayRuntime(
         com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
         executionDriver = null
         capabilityPublisher = null
+        deviceAuthorizationAgreement?.set(false)
+        deviceAuthorizationAgreement = null
         deviceCapabilityStatuses.value = emptyMap()
         deviceCapabilitySyncStatus.value = "SYNC_REQUIRED"
         deviceConfirmation.value = null
@@ -1870,10 +1958,9 @@ class GatewayRuntime(
                     return true
                 }
                 executionDriver?.cancelAll()
-                pairingGrants.clearCurrent()
-                pairingGrants.bind(binding)
                 gatewayGrantRevision = revision
-                _operationNotice.value = "网关授权已变更，请重新确认本机授权。"
+                deviceCapabilitySyncStatus.value = "SYNC_REQUIRED"
+                _operationNotice.value = "设备能力状态已变化，正在重新同步；本机开关保持原设置。"
             }
         }
         return true
@@ -1925,7 +2012,7 @@ class GatewayRuntime(
         return created
     }
 
-    private fun saveLastProfile(gatewayUrl: String, username: String, profileId: String, session: SessionCredentials) {
+    private fun saveLastProfile(gatewayUrl: String, username: String, profileId: String, session: SessionCredentials, explicitLogin: Boolean = false) {
         val endpoint = checkNotNull(GatewayEndpoint.parse(gatewayUrl))
         val retained = if (endpoint.isTls) checkNotNull(identityTrust.retained(endpoint, username)) else null
         val trustId = if (endpoint.isTls) (retained?.spki ?: "ca:${retained?.deploymentId}") else ""
@@ -1946,6 +2033,8 @@ class GatewayRuntime(
             .putString(KEY_LAST_DEVICE, session.deviceId)
             .putString(KEY_LAST_SESSION, session.sessionId)
             .putInt(KEY_DEVICE_KEY_ENCODING, DEVICE_KEY_ENCODING_VERSION)
+            // 只有用户显式认证成功才允许恢复；迟到的轮换落盘不能撤销退出屏障。
+            .apply { if (explicitLogin) remove("signed_out_$profileId") }
             .commit()
         check(saved) { "PROFILE_PERSISTENCE_FAILED" }
         lastAccountId = session.accountId

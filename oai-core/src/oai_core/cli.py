@@ -24,7 +24,7 @@ def _parser() -> argparse.ArgumentParser:
     account_create = accounts.add_parser("create")
     account_create.add_argument("--config", type=Path, required=True)
     account_create.add_argument("--username", required=True)
-    policy = commands.add_parser("policy", help="Manage account device switches locally on the server")
+    policy = commands.add_parser("policy", help="Retired device policy commands; manage capabilities on Android")
     policies = policy.add_subparsers(dest="policy_command", required=True)
     policy_set = policies.add_parser("set")
     policy_set.add_argument("--config", type=Path, required=True)
@@ -83,10 +83,11 @@ def _wait(client: CoreClient, request: dict, seconds: float) -> dict:
 
 def _local_admin(args: argparse.Namespace) -> dict:
     """Local operator commands never enter the remote invocation surface."""
-    from .gateway.capability_policy import DeviceCapabilityPolicy
     from .gateway.core import GatewayError
     from .server import create_core, load_config
 
+    if args.command == "policy":
+        raise CoreClientError("DEVICE_AUTHORIZATION_MANAGED_BY_ANDROID")
     try:
         core = create_core(load_config(args.config))
         if args.command == "account":
@@ -101,15 +102,7 @@ def _local_admin(args: argparse.Namespace) -> dict:
             finally:
                 account.close()
             return {"accountId": args.username, "created": True}
-        if not core.account_exists(args.account):
-            raise CoreClientError("ACCOUNT_NOT_FOUND")
-        account = core.open_gateway_account(args.account)
-        try:
-            with account.store.transaction():
-                snapshot = DeviceCapabilityPolicy(account.store).set(args.capability, args.enabled)
-            return {"accountId": args.account, "policy": snapshot}
-        finally:
-            account.close()
+
     except GatewayError as error:
         raise CoreClientError(error.code) from error
 

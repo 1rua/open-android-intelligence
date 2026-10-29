@@ -4,7 +4,9 @@
 `oai serve`、CLI 与 MCP 属于同一个 Python 项目；设备协议、安全认证与请求状态机
 由 `oai_core.gateway` 提供唯一实现。Core 安装不拉取 Hermes Gateway，启动不需要
 Hermes SDK 或 Hermes 插件。可选 Hermes Session Adapter 依赖 Core 的公共库。
-Android Platform Kernel、`.alp` 签名、WASM 沙箱与本地确认机制保持原样。
+Android Platform Kernel、`.alp` 签名、WASM 沙箱与本地确认机制继续承担手机本地安全检查。
+
+> **2026-10-28 授权规则**：Android 客户端是设备能力授权的唯一权威。设备插件安装且启用后能力默认开启，实际执行仍受本地显式开关、Android 系统权限、数据范围和必要敏感确认约束。Core 负责连接认证、设备绑定、能力发现、协议验证及请求路由，不再通过账号能力开关决定设备能力是否可用。规则已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 和真机验收。实现与当前验证见[实施记录](../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；旧 `dev` 基线见[修复计划](../docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)。
 
 同一个进程对外提供三套接口：Android 设备协议 `/open-android-intelligence/v2`、
 设备 CLI/API/MCP `/open-android-intelligence/core/v1`、原生 Agent 会话
@@ -66,18 +68,16 @@ source .venv/bin/activate
 地址及端口登录。TLS 终止在反向代理时还须配置与手机看到的证书一致的 `tlsSpkiSha256`；
 只在受控开发环境显式使用 `allowInsecureHttp`。
 
-先在 Android 登录 Core 并配对，安装、启用和授权设备插件。
-服务端账号能力开关与手机授权同时生效，例如：
+先在 Android 登录 Core 并配对，再安装、启用设备插件。当前 feature 分支规则无需 Core 或 Agent Gateway 再授予账号级设备能力；本地关闭、系统权限不足和敏感确认未完成仍会阻止执行。调用方单独取得绑定目标设备的 Core 凭据，例如：
 
 ```sh
-oai policy set --config oai-core/examples/core.json --account alice --capability org.openandroidintelligence.notifications.query --enabled
 oai login --url https://core.example --username alice --device DEVICE_ID
 oai capabilities
 ```
 
-`account` 和 `policy` 为服务端本机管理命令。远程 CLI/API/MCP 请求不接受账号或设备身份覆盖；
-登录凭据绑定该账号下已配对设备、配对代次、授权版本和过期时间，默认有效期 86400 秒。
-撤销或授权变更立即使旧凭据失效。
+`account` 是服务端本机身份管理命令。旧 `dev` 基线中的 `policy` 账号能力开关不再参与本分支的设备授权裁决；它不是目标设计的操作步骤。出现 `GATEWAY_DISABLED` 时，应先确认客户端与 Core 是否完成新授权模型协商；不要另建服务端授权入口。
+
+远程 CLI/API/MCP 请求不接受账号或设备身份覆盖。当前登录凭据绑定该账号下已配对设备、配对代次、授权版本和过期时间，默认有效期 86400 秒；撤销或授权版本变化会使旧凭据失效。后续对授权版本与设备状态同步的调整须按计划实现和验收，认证、配对绑定及凭据撤销机制必须保留。
 客户端配置默认写入 `~/.config/oai/client.json`，以 `0600` 保存，退出使用 `oai ... logout`
 撤销凭据。上述登录和后续命令使用同一个默认客户端配置。需要自定义路径时，每条客户端命令均加
 `--client-config`。`--device` 取 `oai devices` 返回的设备 ID。在操作人的独立终端环境登录，
@@ -154,7 +154,7 @@ Codex 使用明确指定的 app-server 和实例目录：
 模型提供方的凭据通过 `envFrom` 显式引用，例如
 `"envFrom": {"OPENAI_API_KEY": "CODEX_MODEL_API_KEY"}`；不会继承 Core 的完整环境。
 部署执行身份与凭据检测见 [Codex 设备隔离边界](docs/codex-device-isolation.zh-CN.md)。
-共享 Agent 不自动获得任何 Android 设备凭据；独立 CLI/MCP 需使用当前账号明确授权的凭据。
+共享 Agent 不自动获得任何 Android 设备凭据；独立 CLI/MCP 需使用经 Core 认证并绑定目标设备的调用凭据。凭据只界定调用身份和设备范围，不替代 Android 的设备能力决定，也不构成账号级能力开关。
 共享原生 Agent 应运行在独立服务身份下，不得配置任意个人账号的常驻 OAI CLI/MCP 凭据。
 
 DSH 接入宿主的轻量 Session Adapter：
@@ -169,7 +169,7 @@ DSH 接入宿主的轻量 Session Adapter：
 宿主安装方式见 [DSH Session Adapter](../integrations/dsh-session-adapter/README.md)。
 它使用原生 `sessionQuery.listSessions/readSurface` 与 `sessionController`，不处理设备调用。
 删除与归档因尚未核实可完整读取的原生生命周期接口而不宣告，App 侧对应操作禁用。
-环境变量引用的适配器令牌用于 Core 到宿主的内部认证，不能作为 Core 账号或设备凭据。
+环境变量引用的适配器令牌用于 Core 到宿主的内部认证，不能作为 Core 账号或设备凭据。DSH 会话适配器不提供额外设备能力授权；Agent 需要设备工具时统一通过 Core CLI/MCP/API，并由 Android 裁决实际执行。
 
 Hermes 通过独立可选包 `oai-hermes-session-adapter` 保留账号映射。
 在 Hermes 自身的 Python 环境安装当前配套版本，再通过其原生插件加载器安装入口：
@@ -198,7 +198,7 @@ Core 配置条目为：
 新 Adapter 对原账号库持有独占锁，禁止新旧进程同时写入。
 Core 设备数据库另设目录，不会与 Hermes 的原账号库合并；主密钥也不自动复制或替换。
 完整步骤见[独立部署与安全切换](../docs/deployment/2026-10-26-core-independent.zh-CN.md)。
-OpenClaw 不注册到本次新 Core 装配，继续沿用旧接入方式。
+OpenClaw 不注册到本次新 Core 装配，继续沿用旧接入方式；其外部实现与旧 DSH/Hermes 独立 Gateway 未在本次修订中验证，不能据此宣称已支持新的授权规则。
 
 ## 协议、迁移与验证
 
@@ -235,6 +235,8 @@ python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native
 
 | 文档 | 内容 |
 | --- | --- |
+| [设备能力授权修复计划](../docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md) | e5 `dev` 基线的历史拒绝链路、兼容迁移与安全验收 |
+| [Android 唯一授权权威（ADR-0059）](../docs/adr/0059-android-is-the-sole-device-capability-authority.md) | 已接受的授权决策；分支实现和当前验证见[实施记录](../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) |
 | [第三方 Agent 适配器开发指南](../docs/guides/agent-adapter-development-guide.zh-CN.md) | 统一会话协议、能力声明、通用 Remote 适配器与插件模板 |
 | [架构事实基线](../docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) | 每条行为对应的代码位置，文档更新的事实来源 |
 | [独立部署与安全切换](../docs/deployment/2026-10-26-core-independent.zh-CN.md) | 干净安装、私密配置、Hermes 备份切换与回滚 |

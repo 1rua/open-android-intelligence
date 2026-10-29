@@ -11,6 +11,8 @@ version: 1.0.0
 
 本契约定义 Android 宿主可以发现、验证和安装的 `.alp` 产物。它覆盖受保护 WASM、开发者信任原生代码和 Companion APK 三种运行类型。
 
+**2026-10-28 授权规则**：Android 是设备能力授权的唯一权威，已安装且启用插件的普通前台能力默认开启；本地显式关闭、系统权限、数据范围、后台许可和必要确认仍生效。Core 与 Agent Gateway 不另发账号级设备能力许可。本规则已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；运行时状态和验证见 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 与[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。本契约的包格式、ABI、签名与版本未变。
+
 “必须”表示不满足即拒绝安装或运行；“应该”表示实现只有在记录明确理由时才能偏离；“可以”表示可选行为。
 
 ## 2. 插件身份
@@ -208,10 +210,10 @@ UTF8("OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1\n")
 `kernelPrimitives` 是请求清单，不是授权。平台内核分别计算：
 
 ```text
-有效能力 = 宿主包络 ∩ 手机级限制 ∩ 插件声明 ∩ 插件启用状态 ∩ 当前配对授权 ∩ 当前会话约束
+有效能力 = 宿主包络 ∩ 手机级限制 ∩ 已验证插件声明与身份 ∩ 插件启用状态 ∩ Android 本地有效能力状态 ∩ 当前会话约束
 ```
 
-任何一项缺失都失败关闭。
+Android 本地有效能力状态使用已启用插件能力默认开启、用户显式关闭优先的规则；系统权限、必要安全确认和独立后台许可继续检查。上述任一必要条件不满足都拒绝执行。旧 `dev@e5c7f42a` 基线仍以正向配对 grant 参与交集；该旧行为已在 `feature/android-device-authority-20261028` 分支修复，当前实现与验证见[授权实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
 
 ## 7. 网络、存储与后台
 
@@ -238,9 +240,9 @@ SHA-256(authorKey) / pluginId / gatewayAccountId / androidInstallationId
 
 插件只获得命名空间内的键值/Blob API，不获得真实文件路径。退出登录不删除该空间；移除本地账号、卸载插件和用户清除数据按总架构规定删除。
 
-后台执行必须同时满足 Manifest 请求、手机级允许、当前配对 Background Sync Grant 和 Android 系统调度约束。宿主不会以常驻进程作为可用性承诺。
+后台执行必须同时满足 Manifest 请求、手机级允许、Android 本地针对当前配对的独立 Background Sync Grant 和 Android 系统调度约束。宿主不会以常驻进程作为可用性承诺。
 
-`kernel.scheduler.set` 接收 `runAt`、`query`、`capabilityId` 和 `capabilityVersion`。目标能力必须属于调用者当前已验证的插件身份，并且已由该配对授权、选为提供者；`query` 必须符合目标能力包内签名 Schema。宿主将目标 ID、能力版本、Schema 摘要及插件/作者/账号/配对/授权版本写入加密任务记录，定时执行重新验证这些绑定，不从插件 ID 推测能力名称或版本。缺少目标信息的旧任务进入 `target_unavailable`，不会调用猜测出的目标。SMS 参考插件在内核调用中补充自己的 `org.openandroidintelligence.sms.query@1.0.0`，其公开 schedule Schema 保持 SMS 查询参数格式。
+`kernel.scheduler.set` 接收 `runAt`、`query`、`capabilityId` 和 `capabilityVersion`。目标能力必须属于调用者当前已验证且启用的插件身份，在当前已认证配对下经 Android 本地有效状态允许并选为提供者；`query` 必须符合目标能力包内签名 Schema。宿主将目标 ID、能力版本、Schema 摘要及插件/作者/账号/配对/授权版本写入加密任务记录，定时执行重新验证这些绑定，不从插件 ID 推测能力名称或版本。缺少目标信息的旧任务进入 `target_unavailable`，不会调用猜测出的目标。SMS 参考插件在内核调用中补充自己的 `org.openandroidintelligence.sms.query@1.0.0`，其公开 schedule Schema 保持 SMS 查询参数格式。
 
 ## 8. 声明式 UI
 
@@ -278,7 +280,7 @@ enabled -> rollback-available
 
 ## 10. 卸载与清理
 
-卸载立即停用插件、撤销全部配对授权和后台任务，删除该插件所有账号的私有存储，并使未完成操作进入明确终态。Companion APK 是否同时卸载由 Android 用户确认；即使保留 APK，宿主也撤销全部操作令牌和绑定。
+卸载立即停用插件、使该插件的所有本地能力绑定与后台任务失效，删除该插件所有账号的私有存储，并使未完成操作进入明确终态。Companion APK 是否同时卸载由 Android 用户确认；即使保留 APK，宿主也撤销全部操作令牌和绑定。
 
 最小审计保留卸载主体、时间、插件身份、动作和结果，不保留插件业务正文。
 

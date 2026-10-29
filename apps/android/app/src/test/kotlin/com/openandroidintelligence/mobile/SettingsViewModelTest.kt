@@ -166,15 +166,12 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun pairingGrantsUpdateAndPersist() = runBlocking {
+    fun screenSelectionRemainsIndependentOfPluginAndNotificationCollectionSettings() = runBlocking {
         val viewModel = SettingsViewModel(
             environment = environment,
             runtime = null,
             externalScope = testScope,
         )
-
-        viewModel.setSmsGrant(true)
-        assertTrue(viewModel.uiState.value.isSmsGranted)
 
         viewModel.setScreenSelectionGrant(true)
         assertTrue(viewModel.uiState.value.isScreenSelectionGranted)
@@ -183,8 +180,6 @@ class SettingsViewModelTest {
         assertFalse("没有回复通知装配时不得伪造系统通知授权", viewModel.uiState.value.isNotificationsGranted)
         assertFalse(pairingGrants.state.value!!.granted.contains(PairingGrantCapabilities.NOTIFICATIONS))
 
-        viewModel.setSmsGrant(false)
-        assertFalse(viewModel.uiState.value.isSmsGranted)
     }
 
     @Test

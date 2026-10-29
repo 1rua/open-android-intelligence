@@ -527,11 +527,15 @@ def test_uncertain_session_commit_retains_same_exclusive_connection(core):
     from oai_hermes_adapter.backend import LockedDatabase, SessionBackend
     from oai_core.gateway.account_paths import account_paths
     from oai_core.gateway.core import TransactionOutcomeUnknown
+    from oai_core.gateway.device_authority import register_authority_writer
     backend = SessionBackend(core.storage_root, ["alice"], secret_store=core.secret_store)
     backend.acquire_accounts()
     account = backend.open_gateway_account("alice")
     database = account.store.database
     competitor = sqlite3.connect(str(account_paths(core.storage_root, "alice").database), timeout=.01)
+    # This connection understands the current model. Its refusal must prove
+    # actual SQLite ownership, independently of the older-writer guard.
+    register_authority_writer(competitor)
     try:
         account.store.fail_next_commit = True
         with pytest.raises(TransactionOutcomeUnknown):
@@ -552,6 +556,10 @@ def test_uncertain_session_commit_retains_same_exclusive_connection(core):
     # replacement connection's implementation or losing the old account data.
     with sqlite3.connect(str(account_paths(core.storage_root, "alice").database), timeout=.01) as restored:
         assert restored.execute("SELECT value FROM account_metadata WHERE key='session-after-fault'").fetchone()[0] == "exclusive"
+        with pytest.raises(sqlite3.OperationalError, match="oai_device_authorization_writer"):
+            restored.execute("INSERT INTO account_metadata(key,value) VALUES ('legacy-after-close','denied')")
+        register_authority_writer(restored)
+        restored.execute("INSERT INTO account_metadata(key,value) VALUES ('current-after-close','sole-writer')")
 
 
 def test_unrecoverable_session_connection_fails_closed_and_shutdown_still_releases(core):
@@ -559,6 +567,7 @@ def test_unrecoverable_session_connection_fails_closed_and_shutdown_still_releas
     from oai_hermes_adapter.backend import SessionBackend
     from oai_core.gateway.account_paths import account_paths
     from oai_core.gateway.core import GatewayError
+    from oai_core.gateway.device_authority import register_authority_writer
     backend = SessionBackend(core.storage_root, ["alice"], secret_store=core.secret_store)
     backend.acquire_accounts()
     account = backend.open_gateway_account("alice")
@@ -571,10 +580,14 @@ def test_unrecoverable_session_connection_fails_closed_and_shutdown_still_releas
             backend.open_gateway_account("alice")
         with pytest.raises(GatewayError, match="HOST_INCOMPATIBLE"):
             account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES ('unsafe-session-writer','denied')")
-        # Once an unusable connection releases the lock, the new adapter can no
-        # longer write; an offline rollback can safely become the sole writer.
+        # A failed lease releases SQLite ownership to a current-model writer.
+        # The persistent guard still blocks an old binary after that release;
+        # the active migrated database is not a safe business rollback image.
         with sqlite3.connect(str(account_paths(core.storage_root, "alice").database), timeout=.01) as restored:
-            restored.execute("INSERT INTO account_metadata(key,value) VALUES ('legacy-after-fatal','sole-writer')")
+            with pytest.raises(sqlite3.OperationalError, match="oai_device_authorization_writer"):
+                restored.execute("INSERT INTO account_metadata(key,value) VALUES ('legacy-after-fatal','denied')")
+            register_authority_writer(restored)
+            restored.execute("INSERT INTO account_metadata(key,value) VALUES ('current-after-fatal','sole-writer')")
     finally:
         account.close()
         backend.close()

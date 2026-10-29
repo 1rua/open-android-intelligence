@@ -23,7 +23,7 @@ object PluginJobScheduler {
         maintain(context)
         val app = context.applicationContext as OpenAndroidIntelligenceApplication
         val grant = app.pairingGrants.currentKernelGrant(call.pairingId) ?: throw CapabilityDenied("kernel.background.run")
-        check(grant.backgroundSync && identityGrantKey(call.identity,"kernel.background.run") in grant.granted) { "BACKGROUND_GRANT_REQUIRED" }
+        check(grant.backgroundSync && grant.permits("kernel.background.run") && grant.permits(identityGrantKey(call.identity,"kernel.background.run"))) { "BACKGROUND_GRANT_REQUIRED" }
         val runAt = Instant.parse(JsonFields.string(args,"runAt") ?: error("SCHEMA_INVALID")).toEpochMilli()
         val delay = runAt - System.currentTimeMillis()
         val minimum=app.pluginHost.minimumBackgroundInterval(call.identity.pluginId)*1000L

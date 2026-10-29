@@ -48,6 +48,8 @@ data class SignedGatewayRequest(
     val headers: List<RawHeader> = emptyList(),
     val streamBody: GatewayRequestBody? = null,
     val requestId: String? = null,
+    /** Rechecked at every transport attempt, including a replay after login renewal. */
+    val beforeSend: () -> Unit = {},
 )
 
 data class GatewayResponse(
@@ -231,6 +233,7 @@ class GatewayHttpClient(
     private suspend fun executeOnce(request: SignedGatewayRequest, snapshot: GatewayProfile): GatewayResponse {
         val wire = signedWireRequest(request, snapshot)
         return withContext(ioDispatcher) {
+            request.beforeSend()
             val response = transport.execute(wire)
             GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
         }
@@ -247,6 +250,7 @@ class GatewayHttpClient(
         while (true) {
             val wire = signedWireRequest(replayable, snapshot)
             val result = withContext(ioDispatcher) {
+                replayable.beforeSend()
                 transport.consumeResponse(wire) { status, rawHeaders, stream ->
                     val headers = RawHeaders.validate(rawHeaders)
                     if (status == 401 && canRecover) ResponseAttempt.Rejected

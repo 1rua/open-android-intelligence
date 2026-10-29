@@ -13,6 +13,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NegotiationClientTest {
+    @Test fun androidDeviceAuthorizationRequiresAnExplicitSingletonAgreement() = runBlocking {
+        org.junit.Assert.assertFalse(clientWithVersion("2", "1").negotiate("neg_old").androidDeviceAuthorization)
+        assertTrue(clientWithVersion("2", "1", listOf(RawHeader(DEVICE_AUTHORIZATION_HEADER, ANDROID_AUTHORIZATION_MODEL)))
+            .negotiate("neg_android").androidDeviceAuthorization)
+        for (value in listOf("android-v2", "android-v1, android-v1")) {
+            org.junit.Assert.assertFalse(clientWithVersion("2", "1", listOf(RawHeader(DEVICE_AUTHORIZATION_HEADER, value)))
+                .negotiate("neg_unknown").androidDeviceAuthorization)
+        }
+        assertTrue(runCatching { clientWithVersion("2", "1", listOf(
+            RawHeader(DEVICE_AUTHORIZATION_HEADER, ANDROID_AUTHORIZATION_MODEL),
+            RawHeader(DEVICE_AUTHORIZATION_HEADER.lowercase(), ANDROID_AUTHORIZATION_MODEL)))
+            .negotiate("neg_ambiguous") }.exceptionOrNull() is IllegalArgumentException)
+    }
     @Test fun nativeAgentSessionsRequireAnUnambiguousCoreMarker() = runBlocking {
         assertTrue(!clientWithVersion("2", "1").negotiate("neg_legacy").nativeAgentSessions)
         assertTrue(clientWithVersion("2", "1", listOf(RawHeader(NATIVE_AGENT_SESSIONS_HEADER, "1")))

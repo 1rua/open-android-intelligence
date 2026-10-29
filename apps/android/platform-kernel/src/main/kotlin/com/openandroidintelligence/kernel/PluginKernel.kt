@@ -48,7 +48,7 @@ data class PluginRegistration(
  *
  * Every invocation is resolved through the same six-term intersection, so a
  * capability is reachable only when the host build owns it, the phone allows
- * it, the plugin declared it, the plugin is enabled, the pairing granted it and
+ * it, the plugin declared it, the plugin is enabled, Android-local state permits it and
  * the current session still permits it. Missing any term fails closed.
  */
 class PluginKernel(
@@ -86,6 +86,11 @@ class PluginKernel(
             registration.declaredPrimitives, registration.state.isExecutable(), grants(context.pairingId), context.session), primitive)
         requireIdentityGrant(registration, context.pairingId, primitive)
         val result = mediate(context, primitive, input.copyOf())
+        if (grants(context.pairingId)?.revision != context.grantRevision ||
+            !registration.state.isExecutable() || registrations[identity.pluginId]?.identity != identity || emergencyStopped) {
+            throw CapabilityDenied(primitive)
+        }
+        requireIdentityGrant(registration, context.pairingId, primitive)
         if (result.size > context.budget.maxOutputBytes) throw BudgetExceeded("OUTPUT")
         audit.record(identity.pluginId, context.accountId, context.pairingId, primitive, AuditOutcome.ALLOWED, context.session.correlationId)
         return result
@@ -150,7 +155,7 @@ class PluginKernel(
     fun registrationFor(pluginId: String): PluginRegistration? = registrations[pluginId]
 
     private fun requireIdentityGrant(registration: PluginRegistration, pairingId: String, capability: String) {
-        if (registration.identityScopedGrants && identityGrantKey(registration.identity, capability) !in grants(pairingId)?.granted.orEmpty()) {
+        if (registration.identityScopedGrants && grants(pairingId)?.permits(identityGrantKey(registration.identity, capability)) != true) {
             throw CapabilityDenied(capability)
         }
     }
@@ -266,9 +271,12 @@ class PluginKernel(
 
             val semaphore = semaphores[identity.pluginId]!!
             requireIdentityGrant(registration, pairingId, capability)
-            if (session.background && !EffectiveCapabilities.compute(CapabilityInputs(hostEnvelope.primitives,
-                phoneLimits.primitives, registration.declaredPrimitives, true, grants(pairingId), session)).backgroundAllowed) {
-                throw CapabilityDenied("kernel.background.run")
+            if (session.background) {
+                requireIdentityGrant(registration, pairingId, "kernel.background.run")
+                if (!EffectiveCapabilities.compute(CapabilityInputs(hostEnvelope.primitives, phoneLimits.primitives,
+                    registration.declaredPrimitives, true, grants(pairingId), session)).backgroundAllowed) {
+                    throw CapabilityDenied("kernel.background.run")
+                }
             }
             val grantRevision=grants(pairingId)?.revision ?: error("PAIRING_REQUIRED")
             if (!semaphore.tryAcquire()) throw BudgetExceeded("CONCURRENCY")

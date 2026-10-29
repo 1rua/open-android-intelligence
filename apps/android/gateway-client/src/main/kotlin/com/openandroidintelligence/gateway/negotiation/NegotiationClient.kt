@@ -15,6 +15,9 @@ const val CONVERSATION_MANAGEMENT_FEATURE = "conversation-management-v1"
 const val AGENT_NAME_HEADER = "X-Open-Android-Intelligence-Agent-Name"
 /** Explicit Core extension marker; legacy Gateways never receive discovery probes. */
 const val NATIVE_AGENT_SESSIONS_HEADER = "X-OAI-Agent-Sessions"
+/** The Core mirrors Android decisions without an additional account capability policy. */
+const val DEVICE_AUTHORIZATION_HEADER = "X-Open-Android-Intelligence-Device-Authorization"
+const val ANDROID_AUTHORIZATION_MODEL = "android-v1"
 
 /**
  * 本客户端声明实现、并随协商请求发出的对话面能力位。
@@ -48,6 +51,8 @@ data class NegotiationResult(
     val refreshReplaySupported: Boolean = false,
     val agentName: String? = null,
     val nativeAgentSessions: Boolean = false,
+    /** Missing/unknown acknowledgement disables device publication and execution, not chat. */
+    val androidDeviceAuthorization: Boolean = false,
 ) {
     /**
      * 双方都同意可用的对话面能力：客户端声明过的 ∩ 网关确实同意的。
@@ -143,6 +148,7 @@ class NegotiationClient(
                     RawHeader("Content-Type", "application/json"),
                     RawHeader("Accept", "application/json"),
                     RawHeader(REFRESH_REPLAY_HEADER, "v1"),
+                    RawHeader(DEVICE_AUTHORIZATION_HEADER, ANDROID_AUTHORIZATION_MODEL),
                 ),
                 body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
             ),
@@ -207,6 +213,9 @@ class NegotiationClient(
             nativeAgentSessions = com.openandroidintelligence.gateway.http.RawHeaders.single(
                 response.headers, NATIVE_AGENT_SESSIONS_HEADER,
             ) == "1",
+            androidDeviceAuthorization = com.openandroidintelligence.gateway.http.RawHeaders.single(
+                response.headers, DEVICE_AUTHORIZATION_HEADER,
+            ) == ANDROID_AUTHORIZATION_MODEL,
         )
     }
 

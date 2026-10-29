@@ -28,6 +28,7 @@ object RawHeaders {
         "transfer-encoding",
         "x-open-android-intelligence-media-format",
         "x-open-android-intelligence-refresh-replay",
+        "x-open-android-intelligence-device-authorization",
         "x-oai-agent-sessions",
     )
 

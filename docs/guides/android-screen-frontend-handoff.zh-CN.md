@@ -1,18 +1,28 @@
 # Android 屏幕能力：前端开发交接
 
-## 本阶段交付范围
+**2026-10-28 授权规则**：Android 是设备能力授权唯一权威，普通前台能力默认开启；Core 和 Agent Gateway 不增加账号级设备许可。屏幕本地会话、系统权限和敏感确认仍须由用户在 Android 单独完成。实现已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`；当前验证与真机验收边界见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。本文件继续交接屏幕接口，不把既有界面存在视为真机验收。
 
-本次交付 Android 服务、系统能力实现、独立受保护插件、既有 Core 调用链的接线和自动化测试。
-没有修改会话、消息气泡、设置、权限管理、首次启动引导、布局、主题或已有文案；也没有增加
-屏幕控制按钮、页面、弹窗或声明式插件 UI。三个新插件的 `ui.settings`、`ui.cards` 都为空。
+## 当前源码状态与适用范围
 
-**以下前端工作均为待接入**：屏幕会话的本地同意入口、三类权限的状态展示、无障碍设置入口、
-远程截图专用的 MediaProjection 授权回调、开始/结束/撤销入口，以及面向其他应用的本地确认体验。
-安装、启用插件或在 Core 打开能力开关均不会自动完成这些授权。当前缺少入口时安全不可用是预期结果，
-不得通过自动调用 `start`、复用附件授权结果、写系统设置或远程请求中的确认字段来变为可用。
+早期底层交付没有开发屏幕前端；这已不能描述本次 `dev@e5c7f42a59262f404888858045aa975830dafb61`。
+当前源码在 [SettingsScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/SettingsScreen.kt)
+1327–1332、1368–1408 提供“屏幕读取与控制”导航和 `ScreenCapabilitySubScreen`；
+[ScreenCapabilityController.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/screen/ScreenCapabilityController.kt)
+的 `startSession()` 100–118、`revokeSession()` 129–132 已调用真实本地授权接口；
+[MainActivity.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/MainActivity.kt)
+408–448 已连接远程截图独立系统授权回调、CAPTURE 会话复核及投影前台服务。
+`ScreenCapabilitySection` 与 `ScreenControlConfirmationDialog` 也已有源码实现。
+
+这些入口的存在不证明真机系统权限、屏幕业务或本次新授权模型已通过验收。feature 分支移除了
+新增请求对旧配对 grant 和 Core 账号策略的依赖；独立受保护屏幕插件本身的 `ui.settings`、`ui.cards`
+仍为空，设置页由 Android 宿主提供。本次只修订 Markdown，没有改上述前端或底层代码。
+
+启用插件不会自动完成本地 READ/CAPTURE/CONTROL 许可或 Android 系统授权；目标中不再设置
+Core 账号能力开关。缺少有效许可时继续拒绝，不得通过自动调用 `start`、复用附件授权结果、
+写系统设置或远程参数中的确认字段来变为可用。
 
 公开远程参数、响应和完整 CLI/API/MCP 示例见[接口说明](android-screen-interfaces.zh-CN.md)。
-本文的 Kotlin 代码仅说明将来如何调用已经实现的本地 Interface，不是已接入的界面代码。
+以下 Kotlin 片段解释本地接口的使用约束，现有接线和未来调整都应遵守这些顺序。
 
 ## 模块与公开入口
 
@@ -24,6 +34,7 @@
 | `apps/android/device-primitives` | `ScreenPrimitiveInstaller`、`RemoteScreenRuntime`、`ScreenImageStore`；在 App 启动时注册三个内核原语，并把本地许可与真实系统能力相交 |
 | `apps/android/app` 的非 UI 装配 | `GatewayRuntime` 传入当前真实账号/配对/连接事实；`ProductionPluginHost` 沿用普通插件授权；`DeviceExecutionDriver` 沿用请求日志、Claim 与本地确认，安装短期参数绑定确认 |
 | `plugins/screen-reader`、`screen-capture`、`screen-control` | 各只调用一个内核原语的签名 `.alp`，不带网络实现或 UI 贡献 |
+| `apps/android/app` 的 `SettingsScreen`、`screen/ScreenCapabilityController`、`ScreenCapabilitySection`、`ScreenControlConfirmationDialog`、`MainActivity` | 当前已有本地屏幕设置、会话开始/撤销、逐次确认与独立系统截图授权接线；旧重复插件授权文案/模型待适配 |
 | `oai-core` | 同一设备发现与请求接口供 CLI、HTTP API 和 MCP 使用；不改 Agent 原生会话 |
 
 App 对设备实现维持 `runtimeOnly(device-primitives)`；前端使用 `control-ports` 与
@@ -43,12 +54,12 @@ val state = host?.status()
 ```
 
 `status()` 是只读诊断，可能顺便清理已经过期或绑定失效的旧会话，绝不会创建许可。
-界面应同时展示系统权限、插件启用/配对授权和本地屏幕会话，避免以一个“已授权”布尔值代替三者。
+界面应分别展示插件启用与本地能力开关、系统权限和本地屏幕会话，避免以一个“已授权”布尔值代替这些条件。
 允许定期刷新或在回到前台、系统设置返回和授权结果返回时刷新；状态不是永久承诺，执行时仍会重查。
 Core 侧通过 `oai capabilities` / MCP `oai_capabilities` / `GET .../core/v1/capabilities`
 读取 Android 最近发布的库存与绑定。发布有同步间隔，手机许可撤销立即阻止执行，即使远端尚未刷新。
 
-## 无障碍系统设置入口（待前端接入）
+## 无障碍系统设置入口
 
 前台 Activity 通过标准 `Settings.ACTION_ACCESSIBILITY_SETTINGS` 打开系统无障碍设置。
 需要直达服务详情时，可在系统支持的版本使用 `Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS`
@@ -60,9 +71,9 @@ Core 侧通过 `oai capabilities` / MCP `oai_capabilities` / `GET .../core/v1/ca
 后重新查询 `host.status().accessibilityError`；系统设置页面返回成功不等于服务已连接。
 服务尚未连接、被停用或设备锁屏时必须明确显示对应状态。密码控件不会返回正文，也不能被输入或点击。
 
-## 开始本地屏幕会话（待前端接入）
+## 开始本地屏幕会话
 
-1. 用户先完成普通插件安装、启用和该配对的明确授权；Core 的账号开关另行生效。
+1. 用户先安装并启用普通插件，其能力默认开启；确认本地未显式关闭。连接认证和设备配对必须有效，不再另行配置 Core 账号开关或重复配对 grant。
 2. 从 `host.binding()` 取得当前经过认证的事实，禁止自行构造账号、配对或连接代次。
 3. 向用户分别说明 READ（读取其他应用语义树）、CAPTURE（取得像素）和 CONTROL（执行动作），
    只记录用户本次明确同意的集合。读取许可不能带出截图或控制许可。
@@ -87,7 +98,7 @@ val session = host.authorization.start(
 结束旧会话、取消旧执行、清理旧图像和投影；因此应先开始本地会话，再为该会话取得新的系统投影授权。
 不得在重新调用 `start()` 之前先开启新投影，否则旧会话清理会合理地关闭它。
 
-## MediaProjection 系统授权（待前端接入）
+## MediaProjection 系统授权
 
 远程截图使用 `RemoteScreenCaptureRegistry.source`。附件圈选持有的现有截图来源是另一实例，
 不得借用其系统票据或像素。Android 14+ 的系统结果只允许建立一个 VirtualDisplay；旋转通过

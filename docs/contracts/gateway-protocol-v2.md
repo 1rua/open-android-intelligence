@@ -11,6 +11,8 @@ version: 2.1.0
 
 本契约定义 Android 宿主与一个账号所属逻辑 Gateway 之间的应用层协议。它不定义 Hermes/OpenClaw 内部 API、插件 WASM ABI 或 Companion IPC。
 
+**2026-10-28 授权规则与协议扩展**：Android 客户端是设备能力授权的唯一权威，已安装且启用插件的普通前台能力默认开启；本地显式关闭、Android 系统权限、数据范围、后台许可与必要确认仍独立生效。Core 负责认证、设备绑定、发现、协议验证和路由，各 Agent Gateway 不追加账号级设备能力许可。规则已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`。新旧客户端通过可选单例 HTTP 头 `X-Open-Android-Intelligence-Device-Authorization: android-v1` 协商，不改变封闭 JSON Schema、Schema 哈希、生成文件或 Gateway Protocol v2 版本；缺少新模型回执的 Android 只禁用设备发布/执行，聊天仍可连接。详见 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 和[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
+
 **实现差异说明（2026-10-27）**：统一 OAI Core（`oai serve`）实现本契约中的账号、认证、
 签名、配对、设备事件与设备请求部分，并以其自有扩展承载原生 Agent 会话（第 17 节）与
 设备调用面（第 18 节）。Core **不实现第 7 节的 `/conversations` 聊天路由**，命中这些路由
@@ -267,7 +269,7 @@ TypeScript validation diagnostics 的唯一规范化算法为：每个 Ajv error
 }
 ```
 
-成功后 Gateway 创建或确认该账号下的独立设备记录，返回短期 access token、一次性展示的 refresh credential 和配对摘要。账号密码不由 Android 保存。新设备的核心对话与附件可用，但设备插件授权集合为空。
+成功后 Gateway 创建或确认该账号下的独立设备记录，返回短期 access token、一次性展示的 refresh credential 和配对摘要。账号密码不由 Android 保存。当前旧实现的新设备插件 grant 集合为空；目标中配对只建立连接信任，Android 按已安装且启用插件的默认开启值、本地限制及系统权限发布能力状态，不要求 Gateway 再签发一份插件许可。尚未收到可信当前快照时不得凭登录成功推断设备能力可用。
 
 ### 5.3 账号邀请配对
 
@@ -759,7 +761,7 @@ V2 事件类型：
 
 ## 10. 设备插件请求
 
-Agent 宿主通过 Gateway Core 创建结构化设备请求；模型不能提供账号、设备、会话、授权版本或风险级别。Gateway 从已验证能力 Schema 和宿主认证上下文补齐这些字段。
+Agent 设备工具通过 Core CLI/API/MCP 创建结构化设备请求；模型不能提供账号、设备、会话、授权版本或风险级别。Core 从当前 Android 认证发布的能力绑定、已验证 Schema 和调用凭据上下文补齐这些字段。Session Adapter 的桥 Token 或宿主账号 allowlist 不授予设备调用权限，也不要求为设备能力另设开关。旧独立 Gateway 适配器的兼容性需按迁移矩阵另行验证。
 
 `device.requested` 事件载荷：
 
@@ -852,15 +854,17 @@ type DeviceRequestEvent =
 
 Gateway 可以声明更短期限，不能超过上表。Android 可以按本地策略进一步缩短或拒绝。
 
-## 11. 配对授权
+## 11. Android 本地能力状态与配对版本
 
-每个配对的授权以单调递增 `grantRevision` 表示，键为插件身份和能力版本范围。安装或启用插件不会创建授权；新配对授权为空。
+**历史实现事实（e5 `dev` 基线）**：该版本客户端有按配对保存的正向 capability/primitive grant；Core 还读取账号级 `device-capability-policy:v1`，其中显式 `false` 可将目录状态覆盖为 `GATEWAY_DISABLED`。该状态是目录状态值，实际提交还可能返回 `CAPABILITY_DENIED`。这些额外门槛已在 `feature/android-device-authority-20261028` 分支按[授权实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)修复；本节其余历史行为均不代表该分支的当前实现。
 
-授权变更必须由 Android 本地确认。Gateway 保存签名授权摘要并发送 `pairing.grant.changed`，但不能扩大 Android 本地权威记录。请求携带旧 revision 时返回 `GRANT_STALE`，Android 不按旧授权执行。
+**目标规则**：Android 根据已安装且启用插件默认开启的能力、本地显式限制、系统权限、数据范围和必要敏感确认，形成当前配对的有效能力状态。安装本身不启用插件，启用也不代替系统权限或单次确认；新配对不再要求逐插件重复授权。Core 只验证并镜像 Android 状态，不能用账号策略否决或扩大本地许可。
 
-新发送的 `pairing.grant.changed` 载荷包含目标 `deviceId` 和该配对的 `grantRevision`。账号级事件流可由多个设备订阅；Android 仅对当前设备的新 revision 失效本机授权，忽略其他设备和重复或更旧的 revision。升级前已持久化、缺少 `deviceId` 的通知可重放，但不能据此清除本机授权；Schema 中该字段的可选性仅用于这种兼容。
+既有单调递增 `grantRevision`、Android 发布内容摘要、插件/作者/能力版本和 `pairingGeneration` 是状态新鲜度、身份绑定和撤销栅栏，不因取消账号开关而删除。当前发布接口为 `POST /pairings/current/capabilities`；请求及 Claim/Result 仍须绑定有效版本，授权 revision 陈旧返回 `GRANT_STALE`，不得按旧快照执行；配对代次不符使用 `PAIRING_GENERATION_STALE`，请求期限到达沿用各自过期/结果未知状态机，不混为授权错误。
 
-能力提供者切换产生新 revision 并要求重新授权，不把旧插件授权转移给新插件。
+`pairing.grant.changed` 的设备关联、重复/旧事件忽略和版本检查继续保留；该事件只能使旧请求或镜像失效并触发重新同步，不能命令 Android 清空或改写用户本地开关。e5 基线存在清空本地 grant 的路径；本分支行为与对应验证见[授权实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。缺少 `deviceId` 的旧事件不能据此推断本机授权变化。线协议中该字段的兼容可选性及旧回执处理保持原状，任何调整另行审核。
+
+提供者切换、作者变化或能力安全范围扩大时，Android 重新核验相应本地安全批准与必要确认，不把旧提供者的敏感授权转移给新提供者；不要求服务端另开能力开关。`gatewayEnabled`、`capabilityPolicy` 及旧状态枚举的兼容保留或退场由修复计划确定，本文不提前定义新 wire 字段或声称旧客户端已兼容。
 
 ## 12. 离线、幂等与 fencing
 
@@ -982,7 +986,7 @@ Android、Hermes 和 OpenClaw 实现必须共同通过语言无关向量：
 - Android/Gateway correlation ID 对应且审计不含正文。
 
 第 17、18 节的 OAI Core 扩展面不在本一致性套件内，由 `oai-core/tests` 覆盖
-（当前为 Python 63 项、DSH 会话桥 16 项，全部通过）。
+（主 Agent 最新报告为 OAI Core 209 项、DSH 会话桥 16 项通过）。
 
 六个 JSON 向量文件必须由版本化 meta-schema `gateway-contract/vectors/vector-set-1.0.0.schema.json` 验证，顶层结构固定为：
 
@@ -1342,12 +1346,10 @@ Hermes 原生命令输入不等待普通消息的 generation 锁；`/new` 在原
 | POST `/tokens` | 账号密码 + 已配对设备换取受限凭据 |
 | DELETE `/tokens/current` | 撤销当前凭据 |
 | GET `/devices` | 列出账号下已配对设备及在线状态 |
-| GET `/capabilities` | 返回该凭据可用的能力 schema 与授权 |
+| GET `/capabilities` | 目标：返回绑定设备的能力 Schema 与 Android 状态，目录不构成另一份许可；当前旧 policy 行为见第 11 节 |
 | POST `/device-requests` | 提交设备操作，需 `Idempotency-Key` |
 | GET `/device-requests/{id}` | 读取请求状态与已返回的结果 |
 | POST `/device-requests/{id}/cancel` | 请求取消；`cancel_requested` 表示结果仍未知 |
 | POST `/device-requests/{id}/ack` | 确认结果已消费，触发临时正文清理 |
 
-服务端本机管理命令（`oai account`、`oai policy`）不进入该远程调用面；远程请求不接受
-账号或设备身份覆盖。设备请求的排队、认领、超时、取消与结果状态机由被固定的上游
-GatewayCore 实现（ADR 0055）。
+服务端本机账号管理不进入该远程调用面；现存 `oai policy` 为待退场的旧能力策略入口，不是目标授权要求。远程请求不接受账号或设备身份覆盖。设备请求的排队、认领、超时、取消与结果状态机由仓库的唯一 `oai_core.gateway` 实现；来源记录见 ADR 0055，取消额外账号能力许可不改变其身份、安全与可靠交付要求。
