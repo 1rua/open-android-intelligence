@@ -56,4 +56,4 @@ PYTHONPATH=oai-core/src:integrations/hermes-session-adapter/src \
   tests/test_install_script.py oai-core/tests/test_core_config.py -q -rs
 ```
 
-`test_core_setup_transaction.py` 覆盖真实 Shell 保存入口、文件替换与加载故障、中断恢复、备份损坏、并发写入拒绝、畸形配置和保留语义。测试使用合成账号和隔离宿主目录。不能创建符号链接的文件系统会单独报告该 fixture 跳过；文件权限测试通过不能替代符号链接实测。
+`test_core_setup_transaction.py` 覆盖真实 Shell 保存入口、文件替换与加载故障、中断恢复、备份损坏、并发写入拒绝、畸形配置和保留语义。测试使用合成账号和隔离宿主目录。不能创建符号链接的文件系统会优先使用现有的无害解释器符号链接，并断言系统返回 `ELOOP`，证明拒绝发生在读取目标内容之前；两种真实链接均不可用时才明确报告跳过。文件权限测试通过不能替代符号链接实测。

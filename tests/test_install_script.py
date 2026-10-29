@@ -1,5 +1,6 @@
 """Portable installer regressions: no host SDK, personal paths or live accounts."""
 from contextlib import closing
+import errno
 import json
 import os
 from pathlib import Path
@@ -166,9 +167,14 @@ def test_rejects_symlink_token_file(tmp_path):
         linked.symlink_to(external)
     except (NotImplementedError, PermissionError, FileNotFoundError) as exc:
         assert external.is_file() and linked.parent.is_dir()
-        pytest.skip(f"当前文件系统无法创建符号链接 fixture: {type(exc).__name__}")
-    with pytest.raises(OSError):
+        # Some managed filesystems cannot create links. Exercise the real
+        # O_NOFOLLOW rejection against an existing harmless interpreter link.
+        linked = Path(sys.base_prefix) / "bin" / "python3"
+        if not linked.is_symlink():
+            pytest.skip(f"无法创建 fixture，且没有可用的现有符号链接: {type(exc).__name__}")
+    with pytest.raises(OSError) as failure:
         HELPER["read_tokens"](linked)
+    assert failure.value.errno == errno.ELOOP
     with pytest.raises(ValueError, match="symlink"):
         HELPER["private_write"](linked, "ignored")
 
