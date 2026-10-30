@@ -27,10 +27,12 @@ data class AgentCapabilities(
     val commands: Boolean = false, val approvals: Boolean = false, val attachments: Boolean = false,
     val generationRecovery: Boolean = false,
     val eventSync: Boolean = false,
+    val operationRecovery: Boolean = false,
 )
 data class CoreAgent(val id: String, val name: String, val kind: String, val online: Boolean,
     val sessionScope: String, val capabilities: AgentCapabilities)
 data class NativeAgentSession(val id: String, val title: String?, val updatedAt: String?, val archived: Boolean)
+data class NativeOperationResult(val state: String, val session: NativeAgentSession? = null)
 data class NativeAgentAttachment(val id: String, val filename: String, val mediaType: String,
     val sizeBytes: Long? = null, val sha256: String? = null)
 data class NativeAgentMessage(val id: String, val role: String, val text: String, val createdAt: String?,
@@ -63,7 +65,7 @@ sealed interface NativeAgentStreamEvent {
 class AgentSessionException(val code: String, val status: Int = 0) : IllegalStateException(code)
 
 /** All native session operations use the already authenticated Core connection. */
-class AgentSessionClient(private val http: GatewayHttpClient) {
+class AgentSessionClient(private val http: GatewayHttpClient, private val traceEnabled: Boolean = false) {
     suspend fun agents(): List<CoreAgent> = objects(request("GET", ROOT), "agents").map { value ->
         val caps = JsonFields.obj(JsonFields.field(value, "capabilities")) ?: error("AGENTS_INVALID")
         fun cap(name: String) = JsonFields.bool(caps, name) == true
@@ -71,7 +73,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             JsonFields.bool(value, "online") ?: false,
             required(value, "sessionScope").also { check(it in setOf("account", "deployment")) { "AGENTS_INVALID" } },
             AgentCapabilities(cap("list"), cap("history"), cap("create"), cap("send"), cap("steer"), cap("rename"),
-                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments"), cap("generationRecovery"), cap("eventSync")))
+                cap("archive"), cap("delete"), cap("cancel"), cap("stream"), cap("commands"), cap("approvals"), cap("attachments"), cap("generationRecovery"), cap("eventSync"), cap("operationRecovery")))
     }
 
     suspend fun sessions(agent: CoreAgent): List<NativeAgentSession> {
@@ -97,10 +99,27 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         }
     }
 
-    suspend fun create(agent: CoreAgent, title: String? = null): NativeAgentSession {
+    suspend fun create(agent: CoreAgent, title: String? = null, requestId: String? = null): NativeAgentSession {
         requireCapability(agent.capabilities.create && agent.online)
-        val value = request("POST", sessionsTarget(agent), title?.let { mapOf("title" to it) } ?: emptyMap())
+        val value = request("POST", sessionsTarget(agent), title?.let { mapOf("title" to it) } ?: emptyMap(), requestId, requestId?.let { "create:${agent.id}:$it" })
         return session(JsonFields.obj(JsonFields.field(value, "session")) ?: error("AGENT_SESSION_INVALID"))
+    }
+
+    /** Core 的持久操作回执；unknown/404 不构成再次创建的授权。 */
+    suspend fun operation(agent: CoreAgent, requestId: String): NativeOperationResult {
+        requireCapability(agent.capabilities.operationRecovery)
+        require(requestId.isNotBlank())
+        val value = request("GET", "$ROOT/${segment(agent.id)}/operations/${segment(requestId)}",
+            traceKey = "create:${agent.id}:$requestId")
+        val state = required(value, "state")
+        if (state !in setOf("pending", "resolved", "unknown")) throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        val receipt = JsonFields.obj(JsonFields.field(value, "receipt"))
+        if (state == "resolved") JsonFields.obj(JsonFields.field(receipt, "error"))?.let { error ->
+            throw AgentSessionException(required(error, "code"))
+        }
+        val created = JsonFields.obj(JsonFields.field(receipt, "session"))?.let(::session)
+        if (state == "resolved" && created == null) throw AgentSessionException("AGENT_RESPONSE_INVALID")
+        return NativeOperationResult(state, created)
     }
 
     suspend fun rename(agent: CoreAgent, sessionId: String, title: String) {
@@ -133,9 +152,10 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
 
     suspend fun cancel(agent: CoreAgent, sessionId: String, generationId: String? = null, requestId: String? = null): NativeGenerationResult {
         requireCapability(agent.capabilities.cancel && agent.online)
-        val exactGeneration = agent.kind == "hermes"
-        if (exactGeneration && generationId.isNullOrBlank()) throw AgentSessionException("GENERATION_ID_REQUIRED")
-        val payload = if (exactGeneration) mapOf("generationId" to generationId) else emptyMap()
+        if (generationId != null && (generationId.isBlank() || generationId.startsWith("local_")))
+            throw AgentSessionException("GENERATION_ID_REQUIRED")
+        val exactGeneration = generationId != null
+        val payload = generationId?.let { mapOf("generationId" to it) } ?: emptyMap()
         val value = request("POST", sessionTarget(agent, sessionId) + "/cancel", payload, requestId)
         val receipt = JsonFields.obj(JsonFields.field(value, "session")) ?: throw AgentSessionException("OUTCOME_UNKNOWN")
         val returnedId = JsonFields.string(receipt, "generationId")
@@ -173,7 +193,8 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             afterRevision?.let { add("afterRevision=$it") }
             if (waitMs > 0) add("waitMs=$waitMs")
         }.sorted().joinToString("&")
-        val value = request("GET", sessionTarget(agent, sessionId) + "/generation?" + query)
+        val value = request("GET", sessionTarget(agent, sessionId) + "/generation?" + query,
+            traceKey = "send:${agent.id}:$sessionId:$clientMessageId")
         val receipt = JsonFields.obj(JsonFields.field(value, "generation"))
             ?: throw AgentSessionException("OUTCOME_UNKNOWN")
         val returnedGeneration = required(receipt, "generationId")
@@ -252,6 +273,7 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
                     put("clientMessageId", clientMessageId)
                 },
                 requestId = clientMessageId,
+                traceKey = "send:${agent.id}:$sessionId:$clientMessageId",
             )
         } catch (_: IOException) {
             throw AgentSessionException("OUTCOME_UNKNOWN")
@@ -280,7 +302,8 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
         if (attachmentIds.isNotEmpty()) payload["attachmentIds"] = attachmentIds
         if (clientMessageId != null) payload["clientMessageId"] = clientMessageId
         val request = jsonRequest("POST", sessionTarget(agent, sessionId) + "/messages", payload)
-            .copy(headers = listOf(RawHeader("Content-Type", "application/json"), RawHeader("Accept", "text/event-stream")))
+            .copy(headers = listOf(RawHeader("Content-Type", "application/json"), RawHeader("Accept", "text/event-stream")) +
+                traceHeaders(clientMessageId?.let { "send:${agent.id}:$sessionId:$it" }))
         com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T1.request_started", mapOf(
             "agentId" to agent.id, "conversationId" to sessionId, "clientMessageId" to clientMessageId,
             "monotonicNs" to System.nanoTime()))
@@ -452,8 +475,13 @@ class AgentSessionClient(private val http: GatewayHttpClient) {
             revision)
     }
 
-    private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null, requestId: String? = null): JsonValue.JObject {
-        val response = http.execute(jsonRequest(method, target, body).copy(requestId = requestId))
+    private fun traceHeaders(key: String?): List<RawHeader> =
+        if (traceEnabled && key != null) listOf(RawHeader("traceparent", http.operationTraceParent(key))) else emptyList()
+
+    private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null, requestId: String? = null,
+        traceKey: String? = null): JsonValue.JObject {
+        val request = jsonRequest(method, target, body)
+        val response = http.execute(request.copy(requestId = requestId, headers = request.headers + traceHeaders(traceKey)))
         val root = responseRoot(response.body)
         if (response.status !in 200..299) {
             throw AgentSessionException(errorCode(root, "AGENT_REQUEST_FAILED"), response.status)

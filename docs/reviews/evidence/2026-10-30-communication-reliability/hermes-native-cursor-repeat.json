@@ -1,0 +1,32 @@
+{
+  "scenario": "pinned Hermes loader SessionStore lifecycle after serialized cursor operations",
+  "attempts": 5,
+  "results": [
+    {
+      "attempt": 1,
+      "passed": true,
+      "elapsed_seconds": 3.903
+    },
+    {
+      "attempt": 2,
+      "passed": true,
+      "elapsed_seconds": 3.749
+    },
+    {
+      "attempt": 3,
+      "passed": true,
+      "elapsed_seconds": 3.699
+    },
+    {
+      "attempt": 4,
+      "passed": true,
+      "elapsed_seconds": 3.712
+    },
+    {
+      "attempt": 5,
+      "passed": true,
+      "elapsed_seconds": 3.735
+    }
+  ],
+  "backend_sha256": "a2ea209d855b8a495640f8dfbc801ae5a1d4476c0c5d6b57b879d53902a01c9b"
+}

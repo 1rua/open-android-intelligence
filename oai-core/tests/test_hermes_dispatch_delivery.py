@@ -136,6 +136,8 @@ async def test_tool_observer_failure_cannot_block_authoritative_completion_or_me
     from types import SimpleNamespace
     from oai_hermes_adapter.runtime import SessionOnlyAdapter
 
+    from contextlib import nullcontext
+
     settled, dispatch_updates, cleaned, closed = [], [], [], []
     generation = {"generationId": "gen-one", "state": "running", "revision": 1}
     def settle(message_id, status):
@@ -145,7 +147,8 @@ async def test_tool_observer_failure_cannot_block_authoritative_completion_or_me
     account = SimpleNamespace(conversations=SimpleNamespace(
         dispatch_message=lambda identity: record,
         workflow=SimpleNamespace(for_message=lambda identity: generation, settle=settle),
-        update_dispatch_status=lambda *args: dispatch_updates.append(args)), close=lambda: closed.append(True))
+        update_dispatch_status=lambda *args: dispatch_updates.append(args)),
+        store=SimpleNamespace(transaction=nullcontext), close=lambda: closed.append(True))
     runtime = SessionOnlyAdapter.__new__(SessionOnlyAdapter)
     runtime.services = SimpleNamespace(core=SimpleNamespace(open_gateway_account=lambda owner: account))
     runtime._processing_media_files = {("alice", "client-one"): []}
@@ -162,6 +165,6 @@ async def test_tool_observer_failure_cannot_block_authoritative_completion_or_me
 
     assert settled == [("msg-one", "completed")]
     assert dispatch_updates[0][1] == "completed"
-    assert len(cleaned) == 2 and closed == [True]
+    assert len(cleaned) == 2 and closed == [True, True]
     assert runtime._processing_media_files == {}
     assert "private synthetic observer payload" not in caplog.text

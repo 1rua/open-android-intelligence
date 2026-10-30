@@ -1,0 +1,699 @@
+
+> test:fast
+> python3 tools/smart-test.py --level fast
+
+
+> mvp:lock:check
+> npm run lock:check
+
+
+> lock:check
+> node --experimental-strip-types tools/check-dependency-lock.ts
+
+MVP dependency lock: PASS (8 rows)
+........................................................................ [ 13%]
+........................................................................ [ 27%]
+.................................................................. [ 39%]
+........................................................................ [ 53%]
+........................................................................ [ 67%]
+...................................................s.................... [ 80%]
+........................................................................ [ 94%]
+..............................                                           [100%]
+527 passed, 1 skipped, 6 subtests passed in 38.70s
+........................................................................ [ 50%]
+.......................................................................  [100%]
+=============================== warnings summary ===============================
+tests/test_hermes.py::test_remote_mapping_is_one_to_one_and_header_identity_cannot_be_injected
+  /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030/integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py:71: NotAppKeyWarning: It is recommended to use web.RequestKey instances for keys.
+  https://docs.aiohttp.org/en/stable/web_advanced.html#request-s-storage
+    request["principal"] = SimpleNamespace(account_id=account, device_id=device,
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+143 passed, 1 warning in 27.34s
+npm warn allow-scripts .npmrc allow-scripts setting is being ignored because --allow-scripts was passed on the command line
+
+ RUN  v4.1.10 /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030
+
+
+ Test Files  2 passed (2)
+      Tests  33 passed (33)
+   Start at  02:05:06
+   Duration  634ms (transform 33ms, setup 0ms, import 85ms, tests 384ms, environment 0ms)
+
+........................                                                 [100%]
+24 passed in 4.36s
+> Task :control-ports:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-model:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :control-ports:preBuild UP-TO-DATE
+> Task :core-model:preBuild UP-TO-DATE
+> Task :control-ports:preDebugBuild UP-TO-DATE
+> Task :core-model:preDebugBuild UP-TO-DATE
+> Task :core-model:generateDebugResValues UP-TO-DATE
+> Task :control-ports:generateDebugResValues UP-TO-DATE
+> Task :core-model:generateDebugResources UP-TO-DATE
+> Task :control-ports:generateDebugResources UP-TO-DATE
+> Task :core-model:packageDebugResources UP-TO-DATE
+> Task :control-ports:packageDebugResources UP-TO-DATE
+> Task :control-ports:parseDebugLocalResources UP-TO-DATE
+> Task :core-model:parseDebugLocalResources UP-TO-DATE
+> Task :core-model:generateDebugRFile UP-TO-DATE
+> Task :control-ports:generateDebugRFile UP-TO-DATE
+> Task :control-ports:javaPreCompileDebug UP-TO-DATE
+> Task :control-ports:preDebugUnitTestBuild UP-TO-DATE
+> Task :control-ports:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :control-ports:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :capability-ports:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :capability-ports:preBuild UP-TO-DATE
+> Task :capability-ports:preDebugBuild UP-TO-DATE
+> Task :capability-ports:generateDebugResValues UP-TO-DATE
+> Task :capability-ports:generateDebugResources UP-TO-DATE
+> Task :capability-ports:packageDebugResources UP-TO-DATE
+> Task :capability-ports:parseDebugLocalResources UP-TO-DATE
+> Task :capability-ports:generateDebugRFile UP-TO-DATE
+> Task :capability-ports:javaPreCompileDebug UP-TO-DATE
+> Task :capability-ports:preDebugUnitTestBuild UP-TO-DATE
+> Task :capability-ports:writeDebugAarMetadata UP-TO-DATE
+> Task :capability-ports:compileDebugLibraryResources UP-TO-DATE
+> Task :capability-ports:generateDebugUnitTestResValues UP-TO-DATE
+> Task :core-model:compileDebugKotlin UP-TO-DATE
+> Task :core-model:javaPreCompileDebug UP-TO-DATE
+> Task :core-model:compileDebugJavaWithJavac NO-SOURCE
+> Task :core-model:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :capability-ports:mapDebugUnitTestSourceSetPaths UP-TO-DATE
+> Task :core-model:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :control-ports:compileDebugKotlin UP-TO-DATE
+> Task :control-ports:compileDebugJavaWithJavac NO-SOURCE
+> Task :control-ports:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :core-model:processDebugJavaRes UP-TO-DATE
+> Task :control-ports:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :control-ports:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :capability-ports:compileDebugKotlin UP-TO-DATE
+> Task :control-ports:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :capability-ports:compileDebugJavaWithJavac NO-SOURCE
+> Task :capability-ports:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :control-ports:processDebugJavaRes UP-TO-DATE
+> Task :capability-ports:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :core-model:writeDebugAarMetadata UP-TO-DATE
+> Task :control-ports:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :capability-ports:checkDebugUnitTestAarMetadata UP-TO-DATE
+> Task :capability-ports:generateDebugUnitTestResources UP-TO-DATE
+> Task :capability-ports:mergeDebugUnitTestResources UP-TO-DATE
+> Task :control-ports:testDebugUnitTest UP-TO-DATE
+> Task :capability-ports:extractDeepLinksDebug UP-TO-DATE
+> Task :core-model:extractDeepLinksDebug UP-TO-DATE
+> Task :capability-ports:processDebugManifest UP-TO-DATE
+> Task :core-model:processDebugManifest UP-TO-DATE
+> Task :core-model:compileDebugLibraryResources UP-TO-DATE
+> Task :capability-ports:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :core-model:mergeDebugShaders UP-TO-DATE
+> Task :core-model:compileDebugShaders NO-SOURCE
+> Task :core-model:generateDebugAssets UP-TO-DATE
+> Task :core-model:mergeDebugAssets UP-TO-DATE
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:preBuild UP-TO-DATE
+> Task :gateway-client:preDebugBuild UP-TO-DATE
+> Task :gateway-client:generateDebugResValues UP-TO-DATE
+> Task :gateway-client:generateDebugResources UP-TO-DATE
+> Task :capability-ports:processDebugUnitTestManifest UP-TO-DATE
+> Task :gateway-client:packageDebugResources UP-TO-DATE
+> Task :gateway-client:parseDebugLocalResources UP-TO-DATE
+> Task :gateway-client:generateDebugRFile UP-TO-DATE
+> Task :capability-ports:processDebugUnitTestResources UP-TO-DATE
+> Task :gateway-client:compileDebugKotlin UP-TO-DATE
+> Task :gateway-client:javaPreCompileDebug UP-TO-DATE
+> Task :gateway-client:compileDebugJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :gateway-client:processDebugJavaRes UP-TO-DATE
+> Task :gateway-client:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :screen-control:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :screen-control:preBuild UP-TO-DATE
+> Task :screen-control:preDebugBuild UP-TO-DATE
+> Task :screen-control:generateDebugResValues UP-TO-DATE
+> Task :screen-control:generateDebugResources UP-TO-DATE
+> Task :screen-control:packageDebugResources UP-TO-DATE
+> Task :screen-control:parseDebugLocalResources UP-TO-DATE
+> Task :screen-control:generateDebugRFile UP-TO-DATE
+> Task :capability-ports:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :capability-ports:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :capability-ports:generateDebugUnitTestAssets UP-TO-DATE
+> Task :capability-ports:mergeDebugShaders UP-TO-DATE
+> Task :capability-ports:compileDebugShaders NO-SOURCE
+> Task :capability-ports:generateDebugAssets UP-TO-DATE
+> Task :capability-ports:mergeDebugAssets UP-TO-DATE
+> Task :screen-control:compileDebugKotlin UP-TO-DATE
+> Task :screen-control:javaPreCompileDebug UP-TO-DATE
+> Task :screen-control:compileDebugJavaWithJavac NO-SOURCE
+> Task :screen-control:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :capability-ports:mergeDebugUnitTestAssets UP-TO-DATE
+> Task :screen-control:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :capability-ports:packageDebugUnitTestForUnitTest UP-TO-DATE
+> Task :control-ports:compileDebugLibraryResources UP-TO-DATE
+> Task :gateway-client:compileDebugLibraryResources UP-TO-DATE
+> Task :capability-ports:generateDebugUnitTestConfig UP-TO-DATE
+> Task :control-ports:writeDebugAarMetadata UP-TO-DATE
+> Task :gateway-client:writeDebugAarMetadata UP-TO-DATE
+> Task :screen-control:preDebugUnitTestBuild UP-TO-DATE
+> Task :screen-control:writeDebugAarMetadata UP-TO-DATE
+> Task :capability-ports:processDebugJavaRes UP-TO-DATE
+> Task :capability-ports:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :screen-control:checkDebugUnitTestAarMetadata UP-TO-DATE
+> Task :screen-control:compileDebugLibraryResources UP-TO-DATE
+> Task :screen-control:generateDebugUnitTestResValues UP-TO-DATE
+> Task :screen-control:mapDebugUnitTestSourceSetPaths UP-TO-DATE
+> Task :screen-control:generateDebugUnitTestResources UP-TO-DATE
+> Task :capability-ports:testDebugUnitTest UP-TO-DATE
+> Task :screen-control:mergeDebugUnitTestResources UP-TO-DATE
+> Task :gateway-client:extractDeepLinksDebug UP-TO-DATE
+> Task :control-ports:extractDeepLinksDebug UP-TO-DATE
+> Task :control-ports:processDebugManifest UP-TO-DATE
+> Task :gateway-client:processDebugManifest UP-TO-DATE
+> Task :screen-control:extractDeepLinksDebug UP-TO-DATE
+> Task :control-ports:mergeDebugShaders UP-TO-DATE
+> Task :screen-control:processDebugManifest UP-TO-DATE
+> Task :control-ports:compileDebugShaders NO-SOURCE
+> Task :control-ports:generateDebugAssets UP-TO-DATE
+> Task :control-ports:mergeDebugAssets UP-TO-DATE
+> Task :gateway-client:mergeDebugShaders UP-TO-DATE
+> Task :screen-control:processDebugUnitTestManifest UP-TO-DATE
+> Task :gateway-client:compileDebugShaders NO-SOURCE
+> Task :gateway-client:generateDebugAssets UP-TO-DATE
+> Task :gateway-client:mergeDebugAssets UP-TO-DATE
+> Task :call-log-collector:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :call-log-collector:preBuild UP-TO-DATE
+> Task :call-log-collector:preDebugBuild UP-TO-DATE
+> Task :call-log-collector:generateDebugResValues UP-TO-DATE
+> Task :call-log-collector:generateDebugResources UP-TO-DATE
+> Task :call-log-collector:packageDebugResources UP-TO-DATE
+> Task :screen-control:processDebugUnitTestResources UP-TO-DATE
+> Task :call-log-collector:parseDebugLocalResources UP-TO-DATE
+> Task :call-log-collector:generateDebugRFile UP-TO-DATE
+> Task :capability-sync-runtime:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :capability-sync-runtime:preBuild UP-TO-DATE
+> Task :capability-sync-runtime:preDebugBuild UP-TO-DATE
+> Task :capability-sync-runtime:generateDebugResValues UP-TO-DATE
+> Task :capability-sync-runtime:generateDebugResources UP-TO-DATE
+> Task :capability-sync-runtime:packageDebugResources UP-TO-DATE
+> Task :capability-sync-runtime:parseDebugLocalResources UP-TO-DATE
+> Task :capability-sync-runtime:generateDebugRFile UP-TO-DATE
+> Task :capability-sync-runtime:compileDebugKotlin UP-TO-DATE
+> Task :screen-control:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :screen-control:generateDebugUnitTestAssets UP-TO-DATE
+> Task :screen-control:mergeDebugShaders UP-TO-DATE
+> Task :screen-control:compileDebugShaders NO-SOURCE
+> Task :screen-control:generateDebugAssets UP-TO-DATE
+> Task :screen-control:mergeDebugAssets UP-TO-DATE
+> Task :screen-control:mergeDebugUnitTestAssets UP-TO-DATE
+> Task :screen-control:packageDebugUnitTestForUnitTest UP-TO-DATE
+> Task :screen-control:generateDebugUnitTestConfig UP-TO-DATE
+> Task :screen-control:processDebugJavaRes UP-TO-DATE
+> Task :capability-sync-runtime:javaPreCompileDebug UP-TO-DATE
+> Task :capability-sync-runtime:compileDebugJavaWithJavac NO-SOURCE
+> Task :capability-sync-runtime:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:preBuild UP-TO-DATE
+> Task :conversation-domain:preDebugBuild UP-TO-DATE
+> Task :conversation-domain:generateDebugResValues UP-TO-DATE
+> Task :conversation-domain:generateDebugResources UP-TO-DATE
+> Task :conversation-domain:packageDebugResources UP-TO-DATE
+> Task :conversation-domain:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-domain:generateDebugRFile UP-TO-DATE
+> Task :conversation-domain:compileDebugKotlin UP-TO-DATE
+> Task :conversation-domain:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-domain:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-domain:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :encrypted-store:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :encrypted-store:preBuild UP-TO-DATE
+> Task :encrypted-store:preDebugBuild UP-TO-DATE
+> Task :encrypted-store:generateDebugResValues UP-TO-DATE
+> Task :encrypted-store:generateDebugResources UP-TO-DATE
+> Task :encrypted-store:packageDebugResources UP-TO-DATE
+> Task :encrypted-store:parseDebugLocalResources UP-TO-DATE
+> Task :encrypted-store:generateDebugRFile UP-TO-DATE
+> Task :encrypted-store:compileDebugKotlin UP-TO-DATE
+> Task :encrypted-store:javaPreCompileDebug UP-TO-DATE
+> Task :encrypted-store:compileDebugJavaWithJavac NO-SOURCE
+> Task :encrypted-store:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :call-log-collector:compileDebugKotlin UP-TO-DATE
+> Task :call-log-collector:javaPreCompileDebug UP-TO-DATE
+> Task :call-log-collector:compileDebugJavaWithJavac NO-SOURCE
+> Task :call-log-collector:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :call-log-collector:processDebugJavaRes UP-TO-DATE
+> Task :capability-sync-runtime:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :capability-sync-runtime:processDebugJavaRes UP-TO-DATE
+> Task :conversation-domain:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-domain:processDebugJavaRes UP-TO-DATE
+> Task :call-log-collector:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :device-primitives:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :device-primitives:preBuild UP-TO-DATE
+> Task :device-primitives:preDebugBuild UP-TO-DATE
+> Task :device-primitives:generateDebugResValues UP-TO-DATE
+> Task :device-primitives:generateDebugResources UP-TO-DATE
+> Task :device-primitives:packageDebugResources UP-TO-DATE
+> Task :device-primitives:parseDebugLocalResources UP-TO-DATE
+> Task :device-primitives:generateDebugRFile UP-TO-DATE
+> Task :notification-collector:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :notification-collector:preBuild UP-TO-DATE
+> Task :notification-collector:preDebugBuild UP-TO-DATE
+> Task :notification-collector:generateDebugResValues UP-TO-DATE
+> Task :notification-collector:generateDebugResources UP-TO-DATE
+> Task :notification-collector:packageDebugResources UP-TO-DATE
+> Task :notification-collector:parseDebugLocalResources UP-TO-DATE
+> Task :notification-collector:generateDebugRFile UP-TO-DATE
+> Task :policy-engine:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :policy-engine:preBuild UP-TO-DATE
+> Task :policy-engine:preDebugBuild UP-TO-DATE
+> Task :policy-engine:generateDebugResValues UP-TO-DATE
+> Task :policy-engine:generateDebugResources UP-TO-DATE
+> Task :policy-engine:packageDebugResources UP-TO-DATE
+> Task :policy-engine:parseDebugLocalResources UP-TO-DATE
+> Task :policy-engine:generateDebugRFile UP-TO-DATE
+> Task :policy-engine:compileDebugKotlin UP-TO-DATE
+> Task :policy-engine:javaPreCompileDebug UP-TO-DATE
+> Task :policy-engine:compileDebugJavaWithJavac NO-SOURCE
+> Task :policy-engine:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :notification-collector:compileDebugKotlin UP-TO-DATE
+> Task :notification-collector:javaPreCompileDebug UP-TO-DATE
+> Task :notification-collector:compileDebugJavaWithJavac NO-SOURCE
+> Task :notification-collector:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :notification-control:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :notification-control:preBuild UP-TO-DATE
+> Task :notification-control:preDebugBuild UP-TO-DATE
+> Task :notification-control:generateDebugResValues UP-TO-DATE
+> Task :notification-control:generateDebugResources UP-TO-DATE
+> Task :notification-control:packageDebugResources UP-TO-DATE
+> Task :notification-control:parseDebugLocalResources UP-TO-DATE
+> Task :notification-control:generateDebugRFile UP-TO-DATE
+> Task :notification-control:compileDebugKotlin UP-TO-DATE
+> Task :notification-control:javaPreCompileDebug UP-TO-DATE
+> Task :notification-control:compileDebugJavaWithJavac NO-SOURCE
+> Task :notification-control:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :notification-host:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :notification-host:preBuild UP-TO-DATE
+> Task :notification-host:preDebugBuild UP-TO-DATE
+> Task :notification-host:generateDebugResValues UP-TO-DATE
+> Task :notification-host:generateDebugResources UP-TO-DATE
+> Task :notification-host:packageDebugResources UP-TO-DATE
+> Task :notification-host:parseDebugLocalResources UP-TO-DATE
+> Task :notification-host:generateDebugRFile UP-TO-DATE
+> Task :notification-host:compileDebugKotlin UP-TO-DATE
+> Task :notification-host:javaPreCompileDebug UP-TO-DATE
+> Task :notification-host:compileDebugJavaWithJavac NO-SOURCE
+> Task :notification-host:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :platform-kernel:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :platform-kernel:preBuild UP-TO-DATE
+> Task :platform-kernel:preDebugBuild UP-TO-DATE
+> Task :platform-kernel:generateDebugResValues UP-TO-DATE
+> Task :platform-kernel:generateDebugResources UP-TO-DATE
+> Task :platform-kernel:packageDebugResources UP-TO-DATE
+> Task :platform-kernel:parseDebugLocalResources UP-TO-DATE
+> Task :platform-kernel:generateDebugRFile UP-TO-DATE
+> Task :plugin-package:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-package:preBuild UP-TO-DATE
+> Task :plugin-package:preDebugBuild UP-TO-DATE
+> Task :plugin-package:generateDebugResValues UP-TO-DATE
+> Task :plugin-package:generateDebugResources UP-TO-DATE
+> Task :plugin-package:packageDebugResources UP-TO-DATE
+> Task :plugin-package:parseDebugLocalResources UP-TO-DATE
+> Task :plugin-package:generateDebugRFile UP-TO-DATE
+> Task :plugin-package:compileDebugKotlin UP-TO-DATE
+> Task :plugin-package:javaPreCompileDebug UP-TO-DATE
+> Task :plugin-package:compileDebugJavaWithJavac NO-SOURCE
+> Task :plugin-package:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :platform-kernel:compileDebugKotlin UP-TO-DATE
+> Task :platform-kernel:javaPreCompileDebug UP-TO-DATE
+> Task :platform-kernel:compileDebugJavaWithJavac NO-SOURCE
+> Task :platform-kernel:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :sms-collector:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :sms-collector:preBuild UP-TO-DATE
+> Task :sms-collector:preDebugBuild UP-TO-DATE
+> Task :sms-collector:generateDebugResValues UP-TO-DATE
+> Task :sms-collector:generateDebugResources UP-TO-DATE
+> Task :sms-collector:packageDebugResources UP-TO-DATE
+> Task :sms-collector:parseDebugLocalResources UP-TO-DATE
+> Task :sms-collector:generateDebugRFile UP-TO-DATE
+> Task :sms-collector:compileDebugKotlin UP-TO-DATE
+> Task :sms-collector:javaPreCompileDebug UP-TO-DATE
+> Task :sms-collector:compileDebugJavaWithJavac NO-SOURCE
+> Task :sms-collector:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :device-primitives:compileDebugKotlin UP-TO-DATE
+> Task :device-primitives:javaPreCompileDebug UP-TO-DATE
+> Task :device-primitives:compileDebugJavaWithJavac NO-SOURCE
+> Task :device-primitives:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :device-primitives:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :device-primitives:preDebugUnitTestBuild UP-TO-DATE
+> Task :device-primitives:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :device-primitives:compileDebugUnitTestKotlin
+> Task :device-primitives:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :device-primitives:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :device-primitives:processDebugJavaRes UP-TO-DATE
+> Task :device-primitives:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :encrypted-store:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :encrypted-store:processDebugJavaRes UP-TO-DATE
+> Task :notification-collector:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :notification-collector:processDebugJavaRes UP-TO-DATE
+> Task :notification-control:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :notification-control:processDebugJavaRes UP-TO-DATE
+> Task :notification-host:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :notification-host:processDebugJavaRes UP-TO-DATE
+> Task :platform-kernel:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :platform-kernel:processDebugJavaRes UP-TO-DATE
+> Task :plugin-package:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :plugin-package:processDebugJavaRes UP-TO-DATE
+> Task :policy-engine:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :policy-engine:processDebugJavaRes UP-TO-DATE
+> Task :sms-collector:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :sms-collector:processDebugJavaRes UP-TO-DATE
+
+> Task :screen-control:compileDebugUnitTestKotlin
+w: file:///mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030/apps/android/screen-control/src/test/kotlin/com/openandroidintelligence/screen/AndroidAccessibilityRuntimeTest.kt:154:62 'fun addResolveInfoForIntent(p0: Intent!, p1: ResolveInfo!): Unit' is deprecated. Deprecated in Java.
+
+> Task :screen-control:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :screen-control:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :device-primitives:testDebugUnitTest
+> Task :platform-kernel:preDebugUnitTestBuild UP-TO-DATE
+> Task :platform-kernel:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :platform-kernel:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :platform-kernel:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :platform-kernel:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :platform-kernel:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :platform-kernel:testDebugUnitTest UP-TO-DATE
+> Task :noVpnSurfaceCheck
+> Task :conversation-domain:preDebugUnitTestBuild UP-TO-DATE
+> Task :conversation-domain:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :conversation-domain:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :conversation-domain:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :conversation-domain:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-domain:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :conversation-domain:testDebugUnitTest UP-TO-DATE
+> Task :conversation-ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-ui:preBuild UP-TO-DATE
+> Task :conversation-ui:preDebugBuild UP-TO-DATE
+> Task :conversation-ui:generateDebugResValues UP-TO-DATE
+> Task :conversation-ui:generateDebugResources UP-TO-DATE
+> Task :conversation-ui:packageDebugResources UP-TO-DATE
+> Task :conversation-ui:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-ui:generateDebugRFile UP-TO-DATE
+> Task :conversation-ui:compileDebugKotlin UP-TO-DATE
+> Task :conversation-ui:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-ui:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-ui:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-ui:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-domain:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-domain:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-ui:preDebugUnitTestBuild UP-TO-DATE
+> Task :conversation-ui:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-ui:checkDebugUnitTestAarMetadata UP-TO-DATE
+> Task :conversation-ui:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-ui:generateDebugUnitTestResValues UP-TO-DATE
+> Task :conversation-ui:mapDebugUnitTestSourceSetPaths UP-TO-DATE
+> Task :conversation-ui:generateDebugUnitTestResources UP-TO-DATE
+> Task :conversation-ui:mergeDebugUnitTestResources UP-TO-DATE
+> Task :conversation-domain:extractDeepLinksDebug UP-TO-DATE
+> Task :conversation-domain:processDebugManifest UP-TO-DATE
+> Task :conversation-ui:extractDeepLinksDebug UP-TO-DATE
+> Task :conversation-ui:processDebugManifest UP-TO-DATE
+> Task :conversation-ui:processDebugUnitTestManifest UP-TO-DATE
+> Task :conversation-ui:processDebugUnitTestResources UP-TO-DATE
+> Task :screen-control:testDebugUnitTest
+> Task :conversation-ui:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :conversation-domain:mergeDebugShaders UP-TO-DATE
+> Task :conversation-domain:compileDebugShaders NO-SOURCE
+> Task :conversation-domain:generateDebugAssets UP-TO-DATE
+> Task :conversation-domain:mergeDebugAssets UP-TO-DATE
+> Task :conversation-ui:generateDebugUnitTestAssets UP-TO-DATE
+> Task :conversation-ui:mergeDebugShaders UP-TO-DATE
+> Task :conversation-ui:compileDebugShaders NO-SOURCE
+> Task :conversation-ui:generateDebugAssets UP-TO-DATE
+> Task :conversation-ui:mergeDebugAssets UP-TO-DATE
+> Task :conversation-ui:mergeDebugUnitTestAssets UP-TO-DATE
+> Task :conversation-ui:packageDebugUnitTestForUnitTest UP-TO-DATE
+> Task :conversation-ui:generateDebugUnitTestConfig UP-TO-DATE
+> Task :conversation-ui:processDebugJavaRes UP-TO-DATE
+> Task :gateway-client:preDebugUnitTestBuild UP-TO-DATE
+> Task :gateway-client:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :gateway-client:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :gateway-client:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :gateway-client:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :gateway-client:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :gateway-client:testDebugUnitTest
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preFullDebugBuild UP-TO-DATE
+> Task :app:generateFullDebugBuildConfig UP-TO-DATE
+> Task :assistant-holder:preBuild UP-TO-DATE
+> Task :assistant-holder:preDebugBuild UP-TO-DATE
+> Task :assistant-holder:writeDebugAarMetadata UP-TO-DATE
+> Task :call-log-collector:writeDebugAarMetadata UP-TO-DATE
+> Task :capability-sync-runtime:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-data:preBuild UP-TO-DATE
+> Task :conversation-data:preDebugBuild UP-TO-DATE
+> Task :conversation-data:writeDebugAarMetadata UP-TO-DATE
+> Task :device-primitives:writeDebugAarMetadata UP-TO-DATE
+> Task :encrypted-store:writeDebugAarMetadata UP-TO-DATE
+> Task :notification-collector:writeDebugAarMetadata UP-TO-DATE
+> Task :notification-control:writeDebugAarMetadata UP-TO-DATE
+> Task :notification-host:writeDebugAarMetadata UP-TO-DATE
+> Task :platform-kernel:writeDebugAarMetadata UP-TO-DATE
+> Task :plugin-package:writeDebugAarMetadata UP-TO-DATE
+> Task :plugin-runtime-wasm:preBuild UP-TO-DATE
+> Task :plugin-runtime-wasm:preDebugBuild UP-TO-DATE
+> Task :plugin-runtime-wasm:writeDebugAarMetadata UP-TO-DATE
+> Task :plugin-ui:preBuild UP-TO-DATE
+> Task :plugin-ui:preDebugBuild UP-TO-DATE
+> Task :plugin-ui:writeDebugAarMetadata UP-TO-DATE
+> Task :policy-engine:writeDebugAarMetadata UP-TO-DATE
+> Task :sms-collector:writeDebugAarMetadata UP-TO-DATE
+> Task :app:checkFullDebugAarMetadata UP-TO-DATE
+> Task :app:generateFullDebugResValues UP-TO-DATE
+> Task :assistant-holder:generateDebugResValues UP-TO-DATE
+> Task :assistant-holder:generateDebugResources UP-TO-DATE
+> Task :assistant-holder:packageDebugResources UP-TO-DATE
+> Task :conversation-data:generateDebugResValues UP-TO-DATE
+> Task :conversation-data:generateDebugResources UP-TO-DATE
+> Task :conversation-data:packageDebugResources UP-TO-DATE
+> Task :plugin-runtime-wasm:generateDebugResValues UP-TO-DATE
+> Task :plugin-runtime-wasm:generateDebugResources UP-TO-DATE
+> Task :plugin-runtime-wasm:packageDebugResources UP-TO-DATE
+> Task :plugin-ui:generateDebugResValues UP-TO-DATE
+> Task :plugin-ui:generateDebugResources UP-TO-DATE
+> Task :plugin-ui:packageDebugResources UP-TO-DATE
+> Task :app:mapFullDebugSourceSetPaths UP-TO-DATE
+> Task :app:generateFullDebugResources UP-TO-DATE
+> Task :app:mergeFullDebugResources UP-TO-DATE
+> Task :app:packageFullDebugResources UP-TO-DATE
+> Task :app:parseFullDebugLocalResources UP-TO-DATE
+> Task :app:createFullDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksFullDebug UP-TO-DATE
+> Task :assistant-holder:extractDeepLinksDebug UP-TO-DATE
+> Task :assistant-holder:processDebugManifest UP-TO-DATE
+> Task :call-log-collector:extractDeepLinksDebug UP-TO-DATE
+> Task :call-log-collector:processDebugManifest UP-TO-DATE
+> Task :capability-sync-runtime:extractDeepLinksDebug UP-TO-DATE
+> Task :capability-sync-runtime:processDebugManifest UP-TO-DATE
+> Task :conversation-data:extractDeepLinksDebug UP-TO-DATE
+> Task :conversation-data:processDebugManifest UP-TO-DATE
+> Task :device-primitives:extractDeepLinksDebug UP-TO-DATE
+> Task :device-primitives:processDebugManifest UP-TO-DATE
+> Task :encrypted-store:extractDeepLinksDebug UP-TO-DATE
+> Task :encrypted-store:processDebugManifest UP-TO-DATE
+> Task :notification-collector:extractDeepLinksDebug UP-TO-DATE
+> Task :notification-collector:processDebugManifest UP-TO-DATE
+> Task :notification-control:extractDeepLinksDebug UP-TO-DATE
+> Task :notification-control:processDebugManifest UP-TO-DATE
+> Task :notification-host:extractDeepLinksDebug UP-TO-DATE
+> Task :notification-host:processDebugManifest UP-TO-DATE
+> Task :platform-kernel:extractDeepLinksDebug UP-TO-DATE
+> Task :platform-kernel:processDebugManifest UP-TO-DATE
+> Task :plugin-package:extractDeepLinksDebug UP-TO-DATE
+> Task :plugin-package:processDebugManifest UP-TO-DATE
+> Task :plugin-runtime-wasm:extractDeepLinksDebug UP-TO-DATE
+> Task :plugin-runtime-wasm:processDebugManifest UP-TO-DATE
+> Task :plugin-ui:extractDeepLinksDebug UP-TO-DATE
+> Task :plugin-ui:processDebugManifest UP-TO-DATE
+> Task :policy-engine:extractDeepLinksDebug UP-TO-DATE
+> Task :policy-engine:processDebugManifest UP-TO-DATE
+> Task :sms-collector:extractDeepLinksDebug UP-TO-DATE
+> Task :sms-collector:processDebugManifest UP-TO-DATE
+> Task :app:processFullDebugMainManifest UP-TO-DATE
+> Task :app:processFullDebugManifest UP-TO-DATE
+> Task :app:processFullDebugManifestForPackage UP-TO-DATE
+> Task :assistant-holder:compileDebugLibraryResources UP-TO-DATE
+> Task :assistant-holder:parseDebugLocalResources UP-TO-DATE
+> Task :assistant-holder:generateDebugRFile UP-TO-DATE
+> Task :call-log-collector:compileDebugLibraryResources UP-TO-DATE
+> Task :capability-sync-runtime:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-data:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-data:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-data:generateDebugRFile UP-TO-DATE
+> Task :device-primitives:compileDebugLibraryResources UP-TO-DATE
+> Task :encrypted-store:compileDebugLibraryResources UP-TO-DATE
+> Task :notification-collector:compileDebugLibraryResources UP-TO-DATE
+> Task :notification-control:compileDebugLibraryResources UP-TO-DATE
+> Task :notification-host:compileDebugLibraryResources UP-TO-DATE
+> Task :platform-kernel:compileDebugLibraryResources UP-TO-DATE
+> Task :plugin-package:compileDebugLibraryResources UP-TO-DATE
+> Task :plugin-runtime-wasm:compileDebugLibraryResources UP-TO-DATE
+> Task :plugin-runtime-wasm:parseDebugLocalResources UP-TO-DATE
+> Task :plugin-runtime-wasm:generateDebugRFile UP-TO-DATE
+> Task :plugin-ui:compileDebugLibraryResources UP-TO-DATE
+> Task :plugin-ui:parseDebugLocalResources UP-TO-DATE
+> Task :plugin-ui:generateDebugRFile UP-TO-DATE
+> Task :policy-engine:compileDebugLibraryResources UP-TO-DATE
+> Task :sms-collector:compileDebugLibraryResources UP-TO-DATE
+> Task :app:processFullDebugResources UP-TO-DATE
+> Task :assistant-holder:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :assistant-holder:compileDebugKotlin UP-TO-DATE
+> Task :assistant-holder:javaPreCompileDebug UP-TO-DATE
+> Task :assistant-holder:compileDebugJavaWithJavac NO-SOURCE
+> Task :assistant-holder:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-data:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-data:compileDebugKotlin UP-TO-DATE
+> Task :conversation-data:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-data:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-data:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :plugin-runtime-wasm:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-runtime-wasm:compileDebugKotlin UP-TO-DATE
+> Task :plugin-runtime-wasm:javaPreCompileDebug UP-TO-DATE
+> Task :plugin-runtime-wasm:compileDebugJavaWithJavac NO-SOURCE
+> Task :plugin-runtime-wasm:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :plugin-ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-ui:compileDebugKotlin UP-TO-DATE
+> Task :plugin-ui:javaPreCompileDebug UP-TO-DATE
+> Task :plugin-ui:compileDebugJavaWithJavac NO-SOURCE
+> Task :plugin-ui:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :app:compileFullDebugKotlin UP-TO-DATE
+> Task :app:javaPreCompileFullDebug UP-TO-DATE
+> Task :app:compileFullDebugJavaWithJavac UP-TO-DATE
+> Task :app:bundleFullDebugClassesToRuntimeJar UP-TO-DATE
+> Task :app:bundleFullDebugClassesToCompileJar UP-TO-DATE
+> Task :app:compileFullDebugUnitTestKotlin UP-TO-DATE
+> Task :app:preFullDebugUnitTestBuild UP-TO-DATE
+> Task :app:javaPreCompileFullDebugUnitTest UP-TO-DATE
+> Task :app:compileFullDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :app:mergeFullDebugShaders UP-TO-DATE
+> Task :app:compileFullDebugShaders NO-SOURCE
+> Task :app:generateFullDebugAssets UP-TO-DATE
+> Task :app:stageBundledPlugins UP-TO-DATE
+> Task :assistant-holder:mergeDebugShaders UP-TO-DATE
+> Task :assistant-holder:compileDebugShaders NO-SOURCE
+> Task :assistant-holder:generateDebugAssets UP-TO-DATE
+> Task :assistant-holder:mergeDebugAssets UP-TO-DATE
+> Task :call-log-collector:mergeDebugShaders UP-TO-DATE
+> Task :call-log-collector:compileDebugShaders NO-SOURCE
+> Task :call-log-collector:generateDebugAssets UP-TO-DATE
+> Task :call-log-collector:mergeDebugAssets UP-TO-DATE
+> Task :capability-sync-runtime:mergeDebugShaders UP-TO-DATE
+> Task :capability-sync-runtime:compileDebugShaders NO-SOURCE
+> Task :capability-sync-runtime:generateDebugAssets UP-TO-DATE
+> Task :capability-sync-runtime:mergeDebugAssets UP-TO-DATE
+> Task :conversation-data:mergeDebugShaders UP-TO-DATE
+> Task :conversation-data:compileDebugShaders NO-SOURCE
+> Task :conversation-data:generateDebugAssets UP-TO-DATE
+> Task :conversation-data:mergeDebugAssets UP-TO-DATE
+> Task :device-primitives:mergeDebugShaders UP-TO-DATE
+> Task :device-primitives:compileDebugShaders NO-SOURCE
+> Task :device-primitives:generateDebugAssets UP-TO-DATE
+> Task :device-primitives:mergeDebugAssets UP-TO-DATE
+> Task :encrypted-store:mergeDebugShaders UP-TO-DATE
+> Task :encrypted-store:compileDebugShaders NO-SOURCE
+> Task :encrypted-store:generateDebugAssets UP-TO-DATE
+> Task :encrypted-store:mergeDebugAssets UP-TO-DATE
+> Task :notification-collector:mergeDebugShaders UP-TO-DATE
+> Task :notification-collector:compileDebugShaders NO-SOURCE
+> Task :notification-collector:generateDebugAssets UP-TO-DATE
+> Task :notification-collector:mergeDebugAssets UP-TO-DATE
+> Task :notification-control:mergeDebugShaders UP-TO-DATE
+> Task :notification-control:compileDebugShaders NO-SOURCE
+> Task :notification-control:generateDebugAssets UP-TO-DATE
+> Task :notification-control:mergeDebugAssets UP-TO-DATE
+> Task :notification-host:mergeDebugShaders UP-TO-DATE
+> Task :notification-host:compileDebugShaders NO-SOURCE
+> Task :notification-host:generateDebugAssets UP-TO-DATE
+> Task :notification-host:mergeDebugAssets UP-TO-DATE
+> Task :platform-kernel:mergeDebugShaders UP-TO-DATE
+> Task :platform-kernel:compileDebugShaders NO-SOURCE
+> Task :platform-kernel:generateDebugAssets UP-TO-DATE
+> Task :platform-kernel:mergeDebugAssets UP-TO-DATE
+> Task :plugin-package:mergeDebugShaders UP-TO-DATE
+> Task :plugin-package:compileDebugShaders NO-SOURCE
+> Task :plugin-package:generateDebugAssets UP-TO-DATE
+> Task :plugin-package:mergeDebugAssets UP-TO-DATE
+> Task :plugin-runtime-wasm:mergeDebugShaders UP-TO-DATE
+> Task :plugin-runtime-wasm:compileDebugShaders NO-SOURCE
+> Task :plugin-runtime-wasm:generateDebugAssets UP-TO-DATE
+> Task :plugin-runtime-wasm:mergeDebugAssets UP-TO-DATE
+> Task :plugin-ui:mergeDebugShaders UP-TO-DATE
+> Task :plugin-ui:compileDebugShaders NO-SOURCE
+> Task :plugin-ui:generateDebugAssets UP-TO-DATE
+> Task :plugin-ui:mergeDebugAssets UP-TO-DATE
+> Task :policy-engine:mergeDebugShaders UP-TO-DATE
+> Task :policy-engine:compileDebugShaders NO-SOURCE
+> Task :policy-engine:generateDebugAssets UP-TO-DATE
+> Task :policy-engine:mergeDebugAssets UP-TO-DATE
+> Task :sms-collector:mergeDebugShaders UP-TO-DATE
+> Task :sms-collector:compileDebugShaders NO-SOURCE
+> Task :sms-collector:generateDebugAssets UP-TO-DATE
+> Task :sms-collector:mergeDebugAssets UP-TO-DATE
+> Task :app:mergeFullDebugAssets UP-TO-DATE
+> Task :app:packageFullDebugUnitTestForUnitTest UP-TO-DATE
+> Task :app:generateFullDebugUnitTestConfig UP-TO-DATE
+> Task :app:processFullDebugJavaRes UP-TO-DATE
+> Task :app:processFullDebugUnitTestJavaRes UP-TO-DATE
+> Task :assistant-holder:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :assistant-holder:processDebugJavaRes UP-TO-DATE
+> Task :conversation-data:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-data:processDebugJavaRes UP-TO-DATE
+> Task :plugin-runtime-wasm:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :plugin-runtime-wasm:processDebugJavaRes UP-TO-DATE
+> Task :plugin-ui:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :plugin-ui:processDebugJavaRes UP-TO-DATE
+> Task :conversation-ui:compileDebugUnitTestKotlin
+> Task :conversation-ui:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-ui:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :app:testFullDebugUnitTest
+> Task :conversation-ui:testDebugUnitTest
+
+BUILD SUCCESSFUL in 2m 14s
+449 actionable tasks: 9 executed, 440 up-to-date
+检测到变更文件数量: 146
+  - .github/workflows/oai-core.yml
+  - apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/GatewayRuntime.kt
+  - apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/CoreAgentConversationRepository.kt
+  - apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/EncryptedConversationMirror.kt
+  - apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationMirror.kt
+  - apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationStore.kt
+  - apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventSynchronizer.kt
+  - apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/AuthSessionLifecycleTest.kt
+  - apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/GatewaySessionRefreshTest.kt
+  - apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/CodexNativeCancellationTest.kt
+  ... 及其余 136 个文件
+=== 智能测试验证计划 [Level: FAST] ===
+影响范围评估: {'is_full_required': True, 'affects_security_or_contract': True, 'affects_oai_core': True, 'affects_configuration': True, 'affects_measurements': True, 'affects_android_kernel': False, 'affects_hermes': True, 'affects_dsh': True, 'affects_plugins': False, 'affects_android_control': False, 'affects_android_conversation': True, 'affects_android_gateway': True, 'affects_android_app': True}
+
+--- 阶段 1: 静态安全与契约门禁 ---
+
+[EXEC] npm run mvp:lock:check (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030)
+
+--- 阶段 2: OAI Core 单元测试 ---
+
+[EXEC] python3 -m pytest oai-core/tests tests/test_install_script.py tests/test_uninstall_script.py tests/test_core_setup_transaction.py tools/test_smart_test.py -q --ignore=oai-core/tests/test_hermes.py --ignore=oai-core/tests/test_hermes_native.py --ignore=oai-core/tests/test_hermes_native_origin.py --ignore=oai-core/tests/test_hermes_interactions.py --ignore=oai-core/tests/test_hermes_approval_prompts.py --ignore=oai-core/tests/test_interaction_pipeline.py --ignore=oai-core/tests/test_structured_tool_history.py --ignore=oai-core/tests/test_native_tool_events.py --ignore=oai-core/tests/test_native_event_sync.py --ignore=oai-core/tests/test_hermes_communication_reliability.py --ignore=oai-core/tests/test_communication_process_recovery.py (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030)
+
+--- Hermes 原生会话与工具回归 ---
+
+[EXEC] python3 -m pytest -q oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py oai-core/tests/test_hermes_native_origin.py oai-core/tests/test_hermes_interactions.py oai-core/tests/test_hermes_approval_prompts.py oai-core/tests/test_hermes_dispatch_delivery.py oai-core/tests/test_hermes_communication_reliability.py oai-core/tests/test_communication_process_recovery.py oai-core/tests/test_interaction_pipeline.py oai-core/tests/test_structured_tool_history.py oai-core/tests/test_native_tool_events.py oai-core/tests/test_native_event_sync.py (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030)
+
+--- 阶段 3: DSH Session Adapter 测试 ---
+
+[EXEC] node --check integrations/dsh-session-adapter/index.js (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030)
+
+[EXEC] npx vitest run --config integrations/dsh-session-adapter/vitest.config.js (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030)
+
+--- 通信测量器统计、来源与隐私回归 ---
+
+[EXEC] python3 -m pytest -q tools/test_measure_communication.py (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030)
+
+--- 阶段 4: Android 增量测试任务 [10 项] ---
+
+[EXEC] ./gradlew --max-workers=2 :control-ports:testDebugUnitTest :capability-ports:testDebugUnitTest :screen-control:testDebugUnitTest :device-primitives:testDebugUnitTest :platform-kernel:testDebugUnitTest noVpnSurfaceCheck :conversation-domain:testDebugUnitTest :conversation-ui:testDebugUnitTest :gateway-client:testDebugUnitTest :app:testFullDebugUnitTest (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030/apps/android)
+
+✅ 所有阶段验证通过！

@@ -80,6 +80,8 @@ jobs:
             --ignore=oai-core/tests/test_hermes_native.py \
             --ignore=oai-core/tests/test_hermes_native_origin.py \
             --ignore=oai-core/tests/test_native_event_sync.py \
+            --ignore=oai-core/tests/test_hermes_communication_reliability.py \
+            --ignore=oai-core/tests/test_communication_process_recovery.py \
             --ignore=oai-core/tests/test_hermes_interactions.py \
             --ignore=oai-core/tests/test_hermes_approval_prompts.py \
             --ignore=oai-core/tests/test_structured_tool_history.py \
@@ -115,7 +117,12 @@ jobs:
           oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py
           oai-core/tests/test_hermes_approval_prompts.py
           oai-core/tests/test_structured_tool_history.py oai-core/tests/test_native_tool_events.py
-          oai-core/tests/test_hermes_dispatch_delivery.py -q
+          oai-core/tests/test_hermes_dispatch_delivery.py
+          oai-core/tests/test_hermes_communication_reliability.py
+          oai-core/tests/test_communication_process_recovery.py -q
+
+      - name: Communication measurement provenance and failure accounting
+        run: python -m pytest -q tools/test_measure_communication.py
 
   dsh:
     runs-on: ubuntu-latest
@@ -129,7 +136,7 @@ jobs:
       - name: DSH native session bridge regressions
         run: |
           npm ci
-          npx vitest run integrations/dsh-session-adapter/adapter.test.js
+          npx vitest run --config integrations/dsh-session-adapter/vitest.config.js
 
   android:
     runs-on: ubuntu-latest

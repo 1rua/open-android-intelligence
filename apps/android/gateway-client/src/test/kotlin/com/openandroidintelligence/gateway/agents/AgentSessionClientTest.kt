@@ -367,7 +367,7 @@ class AgentSessionClientTest {
         for (kind in listOf("codex", "dsh")) {
             val legacy = agent.copy(id = kind, kind = kind, capabilities = agent.capabilities.copy(cancel = true))
             val transport = RecordingTransport("""{"session":{"id":"native","action":"cancel"}}""")
-            val result = client(transport).cancel(legacy, "native", "local-correlation")
+            val result = client(transport).cancel(legacy, "native")
             assertEquals("{}", transport.requests.single().body.decodeToString())
             assertEquals("${AgentSessionClient.ROOT}/$kind/sessions/native/cancel", transport.requests.single().target)
             assertEquals("outcome_unknown", result.outcome)

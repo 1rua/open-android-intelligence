@@ -1,0 +1,1 @@
+independent Core HTTP contracts passed

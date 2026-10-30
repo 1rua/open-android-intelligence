@@ -235,14 +235,18 @@ async def test_steering_uses_the_exact_running_generation_and_does_not_dispatch_
     principal = Principal("alice", device_id="phone", pairing_generation=7, grant_revision=9)
     conversation = (await adapter.list_sessions(principal))[0]["id"]
     received = []
+    observed_generation = asyncio.Event()
 
     async def consume():
         async for event in adapter.send(principal, conversation, "run sensitive command"):
             received.append(event)
+            if event["type"] == "generation":
+                observed_generation.set()
 
     pending = asyncio.create_task(consume())
     try:
         await asyncio.wait_for(runtime.prompted.wait(), 3)
+        await asyncio.wait_for(observed_generation.wait(), 3)
         generation_id = received[0]["generationId"]
         assert await adapter.current_generation(principal, conversation) == {
             "generationId": generation_id,

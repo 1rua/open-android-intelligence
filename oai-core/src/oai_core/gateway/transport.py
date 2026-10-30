@@ -27,6 +27,9 @@ SSE_HEARTBEAT_SECONDS = 15.0
 
 SSE_QUEUE_SIZE = 100
 
+# A full subscriber must reconnect before accepting any newer durable cursor.
+_SUBSCRIBER_OVERFLOW = object()
+
 
 def _sse_frame(event: Mapping[str, Any]) -> bytes:
     """One SSE frame in the shape contract section 9 defines.
@@ -369,6 +372,7 @@ class GatewayTransport:
                 headers={
                     "Content-Type": "text/event-stream",
                     "Cache-Control": "no-store",
+                    "X-Accel-Buffering": "no",
                     "Connection": "keep-alive",
                 },
             )
@@ -404,7 +408,7 @@ class GatewayTransport:
                         break
                     await response.write(SSE_HEARTBEAT)
                     continue
-                if not self._running or not authorized():
+                if frame is _SUBSCRIBER_OVERFLOW or not self._running or not authorized():
                     break
                 eid = _extract_event_id_from_item(frame)
                 if eid is not None and eid in seen_event_ids:
@@ -509,6 +513,9 @@ class GatewayTransport:
                     except Exception:
                         break
 
+                    if item is _SUBSCRIBER_OVERFLOW:
+                        await ws.close(code=1013, message=b"resume from cursor")
+                        break
                     if not self._running or not authorized():
                         if not ws.closed:
                             try:
@@ -601,16 +608,21 @@ class GatewayTransport:
 
 
     def _enqueue_frame(self, account_id: str, frame: bytes) -> None:
-        """Hand one persisted frame to the subscribers of that account.
+        """Disconnect slow subscribers so their last delivered cursor stays safe.
 
-        A subscriber whose queue is full is skipped rather than blocking the
-        agent turn: every frame carries a durable event id, so the phone resumes
-        from its last complete frame and replays the gap instead of losing it.
+        Silently dropping one item and then sending newer events would allow a
+        client to acknowledge past the gap. The queue is only a delivery buffer;
+        all discarded frames remain in the durable, authenticated event log.
         """
-        for queue in list(self._event_subscribers.get(account_id, ())):
+        subscribers = self._event_subscribers.get(account_id)
+        for queue in list(subscribers or ()):
             try:
                 queue.put_nowait(frame)
             except asyncio.QueueFull:
-                logger.warning(
-                    "[open_android] Event subscriber queue is full; client will resume from cursor"
-                )
+                subscribers.discard(queue)
+                while not queue.empty():
+                    queue.get_nowait()
+                queue.put_nowait(_SUBSCRIBER_OVERFLOW)
+                logger.warning("[open_android] Event subscriber overflow; closing for cursor replay")
+        if subscribers is not None and not subscribers:
+            self._event_subscribers.pop(account_id, None)

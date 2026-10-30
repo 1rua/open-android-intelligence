@@ -1,0 +1,1 @@
+{"distribution": "0.2.0", "hermes_installed": false, "serve": "passed", "core_schema_hash": "sha256:032f580246eb4a214624bded717819b4d5a76191208207edc9e5a4607f5c4d23"}

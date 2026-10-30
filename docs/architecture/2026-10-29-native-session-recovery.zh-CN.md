@@ -45,3 +45,5 @@ Hermes 从原生用户 `platform_message_id` 查当前账号与会话内的受�
 固定 SDK 回归已验证工具 pre 后可在 post 发生前观察到 RUNNING 快照、完成后的持久事实与历史版本一致。真实手机画面及跨机器阶段延迟仍需单独验收。
 
 验证与已知限制见 [PR 续接记录](../reviews/2026-10-29-pr64-continuation.zh-CN.md) 和 [结构化工具回归](../reviews/2026-10-29-structured-tool-regression.zh-CN.md)。
+
+通信所有权、创建操作查询和阶段计时见[通信与观察生命周期](2026-10-30-communication-lifecycle.zh-CN.md)。

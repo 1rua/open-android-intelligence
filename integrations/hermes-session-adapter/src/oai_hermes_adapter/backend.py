@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import logging
 import sqlite3
 import threading
 from types import SimpleNamespace
@@ -18,6 +19,54 @@ from oai_core.gateway.core import (AccountStore, AgentSessionBindings, ApprovalR
     ContractRegistry, ConversationPort, DEFAULT_ATTACHMENT_POLICY, EventStore, GatewayError)
 from oai_core.gateway.local_keys import (LocalMasterKeyStore, default_master_key_path,
                                         master_key_file)
+
+
+logger = logging.getLogger(__name__)
+
+
+class LockedCursor:
+    """Fetching/iterating also steps SQLite and must use the connection lock."""
+    def __init__(self, cursor, database):
+        self._cursor, self._database = cursor, database
+
+    def _call(self, method, *args, **kwargs):
+        with self._database.lock:
+            self._database._assert_usable()
+            value = getattr(self._cursor, method)(*args, **kwargs)
+            return self if value is self._cursor else value
+
+    def fetchone(self):
+        return self._call("fetchone")
+
+    def fetchmany(self, *args):
+        return self._call("fetchmany", *args)
+
+    def fetchall(self):
+        return self._call("fetchall")
+
+    def execute(self, *args, **kwargs):
+        return self._call("execute", *args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        return self._call("executemany", *args, **kwargs)
+
+    def executescript(self, *args, **kwargs):
+        return self._call("executescript", *args, **kwargs)
+
+    def close(self):
+        with self._database.lock:
+            self._cursor.close()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self._call("__next__")
+
+    def __getattr__(self, name):
+        with self._database.lock:
+            self._database._assert_usable()
+            return getattr(self._cursor, name)
 
 
 class LockedDatabase:
@@ -43,20 +92,37 @@ class LockedDatabase:
     def execute(self, *args, **kwargs):
         with self.lock:
             self._assert_usable()
-            return self.connection.execute(*args, **kwargs)
+            return LockedCursor(self.connection.execute(*args, **kwargs), self)
 
     def executemany(self, *args, **kwargs):
         with self.lock:
             self._assert_usable()
-            return self.connection.executemany(*args, **kwargs)
+            return LockedCursor(self.connection.executemany(*args, **kwargs), self)
 
     def executescript(self, *args, **kwargs):
         with self.lock:
             self._assert_usable()
-            return self.connection.executescript(*args, **kwargs)
+            return LockedCursor(self.connection.executescript(*args, **kwargs), self)
+
+    def cursor(self, *args, **kwargs):
+        with self.lock:
+            self._assert_usable()
+            return LockedCursor(self.connection.cursor(*args, **kwargs), self)
+
+    def commit(self):
+        with self.lock:
+            self._assert_usable()
+            return self.connection.commit()
+
+    def rollback(self):
+        with self.lock:
+            self._assert_usable()
+            return self.connection.rollback()
 
     def __getattr__(self, name):
-        return getattr(self.connection, name)
+        with self.lock:
+            self._assert_usable()
+            return getattr(self.connection, name)
 
 
 class SessionStore(AccountStore):
@@ -191,7 +257,12 @@ class SessionBackend:
         with self._lock:
             sinks = tuple(self._sinks)
         for sink in sinks:
-            sink(account_id, event)
+            try:
+                sink(account_id, event)
+            except Exception as exc:
+                # The event is committed already. A detached observer cannot
+                # suppress other subscribers or leak content through its error.
+                logger.warning("Native session event observer failed errorType=%s", type(exc).__name__)
 
     def close(self):
         with self._lock:

@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -638,6 +639,7 @@ fun TimelineDisplayRow(
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
     onOpenAttachmentPreview: ((String) -> Unit)? = null,
+    evidenceOwner: Any? = null,
 ) {
     if (GatewayLog.protocolEvidenceEnabled) {
         val entry = when (item) {
@@ -652,7 +654,16 @@ fun TimelineDisplayRow(
         }
         val unknownStep = steps.filterIsInstance<ExecutionStep.ToolCall>()
             .any { it.block.executionStatus == NativeExecutionStatus.UNKNOWN }
-        var observed by rememberSaveable(item.key) { mutableIntStateOf(0) }
+        var observed by rememberSaveable(evidenceOwner, item.key, entry.clientMessageId, entry.generationId) { mutableIntStateOf(0) }
+        val view = LocalView.current
+        val frameCallbacks = remember(view, evidenceOwner, item.key, entry.clientMessageId, entry.generationId) { mutableSetOf<Runnable>() }
+        DisposableEffect(view, evidenceOwner, item.key, entry.clientMessageId, entry.generationId) {
+            val observer = view.viewTreeObserver
+            onDispose {
+                if (observer.isAlive) frameCallbacks.toList().forEach(observer::unregisterFrameCommitCallback)
+                frameCallbacks.clear()
+            }
+        }
         // SideEffect 只在本次组合成功应用后执行。首个可见内容与非流式快照
         // 各记录一次，不按 token 记录，也不把此边界冒充屏幕/GPU呈现测量。
         SideEffect {
@@ -667,6 +678,19 @@ fun TimelineDisplayRow(
                         "messageId" to entry.key, "clientMessageId" to entry.clientMessageId?.value,
                         "generationId" to entry.generationId, "phase" to phase, "stepCount" to steps.size,
                     ))
+                    // 真正的渲染帧提交回调与组合应用分别记时；软件渲染没有这个事实。
+                    if (GatewayLog.protocolEvidenceEnabled && view.isHardwareAccelerated) {
+                        val observer = view.viewTreeObserver
+                        lateinit var callback: Runnable
+                        callback = Runnable {
+                            frameCallbacks.remove(callback)
+                            GatewayLog.protocolEvidence("T10.frame_committed", mapOf(
+                                "messageId" to entry.key, "clientMessageId" to entry.clientMessageId?.value,
+                                "generationId" to entry.generationId, "phase" to phase))
+                        }
+                        frameCallbacks.add(callback)
+                        observer.registerFrameCommitCallback(callback)
+                    }
                     observed = observed or bit
                 }
             }

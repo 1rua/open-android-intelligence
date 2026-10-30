@@ -20,6 +20,7 @@ from .sessions import HermesSessionAdapter
 from .approvals import NativeApprovalMixin
 from oai_core.gateway.core import APPROVAL_CHOICES, GatewayError
 from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES, native_event_query
+from oai_core.native_diagnostics import trace_context
 
 PREFIX = "/oai/session-adapter/v1"
 IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
@@ -69,7 +70,8 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
                     return int(value)
                 request["principal"] = SimpleNamespace(account_id=account, device_id=device,
                     pairing_generation=number("X-OAI-Pairing-Generation"), grant_revision=number("X-OAI-Grant-Revision"))
-            response = await handler(request)
+            with trace_context(request.headers, request_id=request.headers.get("X-OAI-Request-Id")):
+                response = await handler(request)
             response.headers["Cache-Control"] = "no-store"
             return response
         except GatewayError as exc:
@@ -202,31 +204,41 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         principal = request["principal"]
         if not principal.device_id:
             raise AdapterError("DEVICE_CONTEXT_REQUIRED", 403)
-        with adapter._account(principal) as account:
-            result = account.attachments.create(**body, deviceId=principal.device_id,
-                pairingGeneration=principal.pairing_generation or 0, correlationId="core-attachment-upload")
-            result["state"] = account.attachments.get_record(result["attachmentId"])["state"]
+        def create():
+            with adapter._account(principal) as account:
+                result = account.attachments.create(**body, deviceId=principal.device_id,
+                    pairingGeneration=principal.pairing_generation or 0, correlationId="core-attachment-upload")
+                result["state"] = account.attachments.get_record(result["attachmentId"])["state"]
+            return result
+        result = await asyncio.to_thread(create)
         return web.json_response(result)
 
     async def attachment_content(request):
         principal, attachment_id = request["principal"], request.match_info["attachment_id"]
-        with adapter._account(principal) as account:
-            row = account.store.database.execute(
-                "SELECT owner_device_id, owner_pairing_generation FROM attachments WHERE attachment_id=?", (attachment_id,)).fetchone()
-            if (row is None or not principal.device_id or row["owner_device_id"] != principal.device_id
-                    or row["owner_pairing_generation"] != (principal.pairing_generation or 0)):
-                raise AdapterError("ATTACHMENT_ACCESS_DENIED", 403)
-            record = account.attachments.get_record(attachment_id)
-            upload = account.attachments.begin_content_upload_stream(attachment_id, record["sizeBytes"], record["sha256"])
-            try:
-                async for chunk in request.content.iter_chunked(64 * 1024):
-                    await asyncio.to_thread(upload.write, chunk)
-                staged = await asyncio.to_thread(upload.finish)
-                await asyncio.to_thread(account.attachments.accept_streamed_upload, staged)
-                result = await asyncio.to_thread(account.attachments.commit, attachment_id)
-            except BaseException:
-                upload.abort()
-                raise
+        def begin():
+            with adapter._account(principal) as account:
+                row = account.store.database.execute(
+                    "SELECT owner_device_id, owner_pairing_generation FROM attachments WHERE attachment_id=?", (attachment_id,)).fetchone()
+                if (row is None or not principal.device_id or row["owner_device_id"] != principal.device_id
+                        or row["owner_pairing_generation"] != (principal.pairing_generation or 0)):
+                    raise AdapterError("ATTACHMENT_ACCESS_DENIED", 403)
+                record = account.attachments.get_record(attachment_id)
+                return account.attachments.begin_content_upload_stream(attachment_id, record["sizeBytes"], record["sha256"])
+        upload = await asyncio.to_thread(begin)
+        try:
+            async for chunk in request.content.iter_chunked(64 * 1024):
+                await asyncio.to_thread(upload.write, chunk)
+            staged = await asyncio.to_thread(upload.finish)
+            def commit():
+                with adapter._account(principal) as account:
+                    account.attachments.accept_streamed_upload(staged)
+                    return account.attachments.commit(attachment_id)
+            result = await asyncio.to_thread(commit)
+        except BaseException as exc:
+            await asyncio.to_thread(upload.abort)
+            if isinstance(exc, GatewayError):
+                raise AdapterError(exc.code, 404 if exc.code in {"SCHEMA_INVALID", "CONVERSATION_NOT_FOUND"} else 409) from exc
+            raise
         return web.json_response(result)
 
     async def approval_decision(request):

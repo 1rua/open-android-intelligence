@@ -107,3 +107,25 @@ def test_kernel_edits_include_kernel_regressions():
     impact = runner.analyze_impact(["apps/android/platform-kernel/src/main/PairingGrantState.kt"])
     assert runner.execute_strategy("pr", impact) == 0
     assert any(":platform-kernel:testDebugUnitTest" in command for command in commands)
+
+
+def test_communication_repairs_reach_admission_and_optional_host_regressions():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["oai-core/src/oai_core/sessions.py", "integrations/hermes-session-adapter/src/oai_hermes_adapter/runtime.py", "integrations/dsh-session-adapter/index.js"])
+    assert runner.execute_strategy("pr", impact) == 0
+    host = next(command for command in commands if "oai-core/tests/test_hermes.py" in command)
+    assert "oai-core/tests/test_hermes_communication_reliability.py" in host
+    assert "oai-core/tests/test_communication_process_recovery.py" in host
+    assert any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)
+
+
+def test_measurement_only_edit_runs_its_portable_tests_without_android_or_native_suite():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["tools/measure-communication.py"])
+    assert runner.execute_strategy("fast", impact) == 0
+    assert any("tools/test_measure_communication.py" in command for command in commands)
+    assert not any("oai-core/tests" in command or "oai-core/tests/test_hermes.py" in command for command in commands)

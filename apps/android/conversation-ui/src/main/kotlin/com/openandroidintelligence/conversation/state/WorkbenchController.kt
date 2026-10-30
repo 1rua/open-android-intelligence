@@ -918,13 +918,16 @@ class WorkbenchController(
     private var folderAssignmentScope: ConversationScope? = null
     private suspend fun createGatewayConversation(folderId: String? = _state.value.selectedFolderId): com.openandroidintelligence.conversation.ports.Conversation {
         val requestedScope = scopeFactory()
+        val recoveringCreation = unconfirmedConversationCreation?.scope == requestedScope
         val attempt = unconfirmedConversationCreation?.takeIf { it.scope == requestedScope }
             ?: ConversationCreationAttempt(requestedScope, "cconv_" + UUID.randomUUID().toString().replace("-", ""),
                 folderId.takeIf { supportsConversationManagement })
                 .also { unconfirmedConversationCreation = it }
         // Retrying an uncertain creation, including after restart, uses its original identity.
         flushPendingPersistence()
-        val conversation = repository.createConversation(attempt.scope, attempt.clientId)
+        val conversation = if (recoveringCreation && repository is com.openandroidintelligence.conversation.ports.ConversationCreationRecovery)
+            repository.recoverConversationCreation(attempt.scope, attempt.clientId)
+        else repository.createConversation(attempt.scope, attempt.clientId)
         if (unconfirmedConversationCreation === attempt) unconfirmedConversationCreation = null
         if (attempt.folderId != null) {
             pendingFolderAssignments[conversation.id.value] = attempt.folderId
@@ -2679,6 +2682,7 @@ class WorkbenchController(
     }
 
     fun sendDraft(delivery: com.openandroidintelligence.conversation.ports.MessageDeliveryMode) {
+        val clickedAt = System.nanoTime()
         if (!allowSending) { update { it.copy(notice="OFFLINE_MIRROR:重新连接后可发送，草稿已保留") }; return }
         val current = _state.value
         if (!current.historyHydrated) {
@@ -2736,6 +2740,8 @@ class WorkbenchController(
         } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId,
             delivery = effectiveDelivery)
         val frozen = requireNotNull(pendingSubmission)
+        GatewayLog.protocolEvidence("send.clicked", mapOf("clientMessageId" to frozen.clientMessageId,
+            "conversationId" to frozen.conversationId, "clickedAtNs" to clickedAt))
         val localEntry = TimelineEntry(
             key = "local_${frozen.clientMessageId}", sender = "user", text = frozen.text,
             isUser = true, timestamp = activeThreadId?.let { atomsFor(it)[frozen.clientMessageId]?.timestamp }
@@ -4025,8 +4031,6 @@ class WorkbenchController(
         if ((event is VerifiedConversationEvent.TimelineUpsert && event.message.conversationId == null) ||
             (event is VerifiedConversationEvent.TimelineTombstoned && event.conversationId == null)) return
         applySendEvent(event)
-        GatewayLog.protocolEvidence("T8.event_applied", mapOf("eventId" to event.eventId,
-            "eventType" to event.javaClass.simpleName))
         val currentActiveId = activeThreadId ?: run {
             refreshThreads()
             return
@@ -4382,6 +4386,8 @@ class WorkbenchController(
                 }
             }
         }
+        GatewayLog.protocolEvidence("T8.event_applied", mapOf("eventId" to event.eventId,
+            "eventType" to event.javaClass.simpleName))
         commitHandledEvent(event.eventId)
     }
 
