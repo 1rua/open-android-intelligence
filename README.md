@@ -227,6 +227,23 @@ oai mcp  # 启动标准 FastMCP stdio 接口
 ```
 </details>
 
+#### 卸载 OAI Core
+
+卸载脚本支持 Linux/macOS，使用系统 Python 3.11+ 标准库，可直接通过 `curl | bash` 运行。两种模式都将待移除内容移动到 `/tmp/open-android-intelligence-trash/<uid>/<批次>/`，不做安全擦除：
+
+- **保留配置（默认，`--keep-config`）**：移走 `.venv`、`start-core.sh`，以及指向本次安装的 `oai` 快捷命令和开机项；保留源代码、`core.json` 和 `runtime` 全部数据。再次对同一目录运行安装器即可原地重装。
+- **整体回收（`--purge`）**：将整个安装目录移入回收目录。位于安装目录之外的 `storageRoot`、`masterKeyFile`、`codexHome` 以及 Hermes、DSH、Codex 宿主本身均保留，脚本会提示外置数据位置，不自动清理共享数据。
+
+```bash
+# 默认保留配置、数据和源代码
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash
+
+# 整体回收安装目录
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash -s -- --purge
+```
+
+默认处理 `~/.oai-core`，可用 `--dir PATH` 或 `OAI_DIR` 指定安装目录，不会自动推断当前仓库。先追加 `--dry-run` 可预览操作；在仓库中例如运行 `bash scripts/uninstall.sh --purge --dry-run --dir "$HOME/.oai-core"`。`--yes` 跳过确认，`--help` 查看参数。回收目录可能含配置、账号数据和密钥，请自行复核并处理。
+
 <details>
 <summary><b>既有部署：为 Agent 宿主安装独立网关插件（点击展开）</b></summary>
 

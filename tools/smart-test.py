@@ -92,8 +92,9 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
                 impact["is_full_required"] = True
                 break
 
-        if f in {"scripts/core_setup.py", "scripts/setup.sh", "scripts/install.sh",
-                 "tests/test_install_script.py", "tests/test_core_setup_transaction.py"}:
+        if f in {"scripts/core_setup.py", "scripts/setup.sh", "scripts/install.sh", "scripts/uninstall.sh",
+                 "tests/test_install_script.py", "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py",
+                 "tools/smart-test.py", "tools/test_smart_test.py"}:
             impact["affects_configuration"] = True
         if f.startswith("apps/android/platform-kernel/"):
             impact["affects_android_kernel"] = True
@@ -142,7 +143,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
         print("\n--- 阶段 2: OAI Core 单元测试 ---")
         ret = run_command([
             "python3", "-m", "pytest", "oai-core/tests", "tests/test_install_script.py",
-            "tests/test_core_setup_transaction.py", "-q",
+            "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tools/test_smart_test.py", "-q",
             "--ignore=oai-core/tests/test_hermes.py",
             "--ignore=oai-core/tests/test_hermes_native.py",
             "--ignore=oai-core/tests/test_hermes_native_origin.py",
@@ -157,9 +158,10 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             return ret
 
     elif impact["affects_configuration"]:
-        print("\n--- Core 配置保存与安装向导回归 ---")
-        ret = run_command(["python3", "-m", "pytest", "tests/test_install_script.py",
-                           "tests/test_core_setup_transaction.py", "oai-core/tests/test_core_config.py", "-q"])
+        print("\n--- Core 配置保存、安装卸载与测试入口回归 ---")
+        ret = run_command(["python3", "-m", "pytest", "tests/test_install_script.py", "tests/test_uninstall_script.py",
+                           "tests/test_core_setup_transaction.py", "oai-core/tests/test_core_config.py",
+                           "tools/test_smart_test.py", "-q"])
         if ret != 0:
             return ret
 
