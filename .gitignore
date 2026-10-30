@@ -116,3 +116,6 @@ oai-release.keystore
 /core.json
 /start-core.sh
 /oai-core/dist/
+
+# 通信测量器的工具校验夹具保留本地；正式 baseline/after 仍入库。
+/docs/reviews/evidence/2026-10-30-communication-reliability/measurements/validation-*/
