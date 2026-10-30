@@ -1,0 +1,124 @@
+FFFF                                                                     [100%]
+=================================== FAILURES ===================================
+_ test_sqlite_cursor_materialization_stays_under_the_shared_account_lock[fetchone] _
+oai-core/tests/test_hermes_communication_reliability.py:585: in test_sqlite_cursor_materialization_stays_under_the_shared_account_lock
+    list(executor.map(read, range(100)))
+/usr/lib/python3.14/concurrent/futures/_base.py:645: in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:312: in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:447: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:396: in __get_result
+    raise self._exception
+/usr/lib/python3.14/concurrent/futures/thread.py:86: in run
+    result = ctx.run(self.task)
+             ^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/thread.py:73: in run
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+oai-core/tests/test_hermes_communication_reliability.py:574: in read
+    values = [cursor.fetchone(), cursor.fetchone()]
+              ^^^^^^^^^^^^^^^^^
+oai-core/tests/test_hermes_communication_reliability.py:567: in row_factory
+    assert lock._is_owned(), "SQLite fetch escaped the shared connection lock"
+E   AssertionError: SQLite fetch escaped the shared connection lock
+E   assert False
+E    +  where False = <built-in method _is_owned of _thread.RLock object at 0x7fa40fec9270>()
+E    +    where <built-in method _is_owned of _thread.RLock object at 0x7fa40fec9270> = <unlocked _thread.RLock object owner=0 count=0 at 0x7fa40fec9270>._is_owned
+_ test_sqlite_cursor_materialization_stays_under_the_shared_account_lock[fetchall] _
+oai-core/tests/test_hermes_communication_reliability.py:585: in test_sqlite_cursor_materialization_stays_under_the_shared_account_lock
+    list(executor.map(read, range(100)))
+/usr/lib/python3.14/concurrent/futures/_base.py:645: in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:312: in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:447: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:396: in __get_result
+    raise self._exception
+/usr/lib/python3.14/concurrent/futures/thread.py:86: in run
+    result = ctx.run(self.task)
+             ^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/thread.py:73: in run
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+oai-core/tests/test_hermes_communication_reliability.py:576: in read
+    values = cursor.fetchall()
+             ^^^^^^^^^^^^^^^^^
+oai-core/tests/test_hermes_communication_reliability.py:567: in row_factory
+    assert lock._is_owned(), "SQLite fetch escaped the shared connection lock"
+E   AssertionError: SQLite fetch escaped the shared connection lock
+E   assert False
+E    +  where False = <built-in method _is_owned of _thread.RLock object at 0x7fa40f958190>()
+E    +    where <built-in method _is_owned of _thread.RLock object at 0x7fa40f958190> = <unlocked _thread.RLock object owner=0 count=0 at 0x7fa40f958190>._is_owned
+_ test_sqlite_cursor_materialization_stays_under_the_shared_account_lock[fetchmany] _
+oai-core/tests/test_hermes_communication_reliability.py:585: in test_sqlite_cursor_materialization_stays_under_the_shared_account_lock
+    list(executor.map(read, range(100)))
+/usr/lib/python3.14/concurrent/futures/_base.py:645: in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:312: in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:447: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:396: in __get_result
+    raise self._exception
+/usr/lib/python3.14/concurrent/futures/thread.py:86: in run
+    result = ctx.run(self.task)
+             ^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/thread.py:73: in run
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+oai-core/tests/test_hermes_communication_reliability.py:578: in read
+    values = cursor.fetchmany(2)
+             ^^^^^^^^^^^^^^^^^^^
+oai-core/tests/test_hermes_communication_reliability.py:567: in row_factory
+    assert lock._is_owned(), "SQLite fetch escaped the shared connection lock"
+E   AssertionError: SQLite fetch escaped the shared connection lock
+E   assert False
+E    +  where False = <built-in method _is_owned of _thread.RLock object at 0x7fa40f1f9db0>()
+E    +    where <built-in method _is_owned of _thread.RLock object at 0x7fa40f1f9db0> = <unlocked _thread.RLock object owner=0 count=0 at 0x7fa40f1f9db0>._is_owned
+_ test_sqlite_cursor_materialization_stays_under_the_shared_account_lock[iterate] _
+oai-core/tests/test_hermes_communication_reliability.py:585: in test_sqlite_cursor_materialization_stays_under_the_shared_account_lock
+    list(executor.map(read, range(100)))
+/usr/lib/python3.14/concurrent/futures/_base.py:645: in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:312: in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:447: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/_base.py:396: in __get_result
+    raise self._exception
+/usr/lib/python3.14/concurrent/futures/thread.py:86: in run
+    result = ctx.run(self.task)
+             ^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/concurrent/futures/thread.py:73: in run
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+oai-core/tests/test_hermes_communication_reliability.py:580: in read
+    values = list(cursor)
+             ^^^^^^^^^^^^
+oai-core/tests/test_hermes_communication_reliability.py:567: in row_factory
+    assert lock._is_owned(), "SQLite fetch escaped the shared connection lock"
+E   AssertionError: SQLite fetch escaped the shared connection lock
+E   assert False
+E    +  where False = <built-in method _is_owned of _thread.RLock object at 0x7fa40f1f9270>()
+E    +    where <built-in method _is_owned of _thread.RLock object at 0x7fa40f1f9270> = <unlocked _thread.RLock object owner=0 count=0 at 0x7fa40f1f9270>._is_owned
+=========================== short test summary info ============================
+FAILED oai-core/tests/test_hermes_communication_reliability.py::test_sqlite_cursor_materialization_stays_under_the_shared_account_lock[fetchone]
+FAILED oai-core/tests/test_hermes_communication_reliability.py::test_sqlite_cursor_materialization_stays_under_the_shared_account_lock[fetchall]
+FAILED oai-core/tests/test_hermes_communication_reliability.py::test_sqlite_cursor_materialization_stays_under_the_shared_account_lock[fetchmany]
+FAILED oai-core/tests/test_hermes_communication_reliability.py::test_sqlite_cursor_materialization_stays_under_the_shared_account_lock[iterate]
+4 failed, 16 deselected in 0.27s

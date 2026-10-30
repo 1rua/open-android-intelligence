@@ -285,12 +285,18 @@ async def test_boundary_timing_logs_public_identity_without_transcript_or_tokens
         stream.close()
     traces = [json.loads(record.getMessage().removeprefix("native_session "))
               for record in caplog.records if record.name == "oai_core.native_sessions"]
-    assert traces[0]["stage"] == "T2"
+    assert traces[0]["stage"] == "core.http.received"
     writes = [trace for trace in traces if trace["stage"] == "T5"]
     assert [trace["eventType"] for trace in writes] == ["generation", "delta", "done"]
-    assert all(trace["clientMessageId"] == "timing-client" for trace in traces)
-    assert all(trace["monotonicNs"] > 0 and trace["elapsedMs"] >= 0 for trace in traces)
-    assert all(left["monotonicNs"] <= right["monotonicNs"] for left, right in zip(traces, traces[1:]))
+    message_traces = [trace for trace in traces if "clientMessageId" in trace]
+    assert message_traces and all(trace["clientMessageId"] == "timing-client" for trace in message_traces)
+    assert all(trace["monotonicNs"] > 0 and trace.get("elapsedMs", 0) >= 0 for trace in traces)
+    core_traces = [trace for trace in traces if trace.get("requestId") == writes[0]["requestId"]]
+    assert len({trace["traceId"] for trace in core_traces}) == 1
+    assert all(trace["bootId"] for trace in traces)
+    # Worker records can arrive in a different logging order. Compare ordered
+    # phases in one observer rather than subtracting timestamps across spans.
+    assert all(left["monotonicNs"] <= right["monotonicNs"] for left, right in zip(writes, writes[1:]))
     serialized = json.dumps(traces)
     assert private_text not in serialized
     assert TOKEN not in serialized
@@ -378,9 +384,17 @@ async def test_observer_disconnect_keeps_one_accepted_host_turn_and_recovers_ter
 
     def observer_closed(sink):
         unregister(sink)
-        detached.set()
+        if boundary == "bridge":
+            detached.set()
 
     monkeypatch.setattr(p.backend, "unregister_event_sink", observer_closed)
+    from oai_core import sessions as session_routes
+    trace = session_routes.trace_native_stage
+    def observe(stage, **fields):
+        trace(stage, **fields)
+        if boundary == "phone" and stage == "core.observer.detached":
+            detached.set()
+    monkeypatch.setattr(session_routes, "trace_native_stage", observe)
     body = {"text": "disconnect", "clientMessageId": "disconnect-client"}
     if boundary == "phone":
         stream = await request(p.client, p.alice, "POST", session_path + "/messages", body)

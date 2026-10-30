@@ -1,0 +1,18 @@
+{
+  "validation_artifacts_archived_to_ignored_worktree_tmp": [
+    "validation-c766ca17af93404dbc0c25fb97aca635",
+    "validation-controlled-cli-4055e34e2d7645c4b8e3dc491b522455",
+    "validation-controlled-cli-54b5c1b9cf9c4866bdd3e1e0367e3b9c",
+    "validation-controlled-cli-e136bc8c50d246d4a9e1c06b4b7af01b",
+    "validation-e235066a9fd6427d8c1a1849b58a38d4",
+    "validation-fixtures-4d9a61743e914b0380ea3c00f2bfcbd8.tmp",
+    "validation-fixtures-64714c44c2364c54aace215b3524c312.tmp",
+    "validation-fixtures-6684e30cb55549f08442762d667e1856.tmp",
+    "validation-fixtures-dd676c35edb14bd0946930b2f8caef2b.tmp",
+    "validation-manifest-mutation-bfcc3cb48ab44647972174db3cf7912d",
+    "validation-manifest-mutation-ee5f74ba306e479884c7e4ffc1cc13e1",
+    "validation-manifest-mutation-eff5e7e6cdfa4265bc7f55e6da787a2b"
+  ],
+  "reason": "Retain only formal baseline/after evidence in PR; validation fixtures and raw intermediate artifacts remain locally reviewable.",
+  "permanent_deletions": 0
+}

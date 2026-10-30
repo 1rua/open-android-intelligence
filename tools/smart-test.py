@@ -71,6 +71,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         "affects_security_or_contract": False,
         "affects_oai_core": False,
         "affects_configuration": False,
+        "affects_measurements": False,
         "affects_android_kernel": False,
         "affects_hermes": False,
         "affects_dsh": False,
@@ -86,6 +87,8 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         return impact
 
     for f in changed_files:
+        if f in {"tools/measure-communication.py", "tools/test_measure_communication.py"}:
+            impact["affects_measurements"] = True
         for pattern in CORE_SECURITY_CONTRACT_PATTERNS:
             if pattern in f:
                 impact["affects_security_or_contract"] = True
@@ -153,6 +156,8 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "--ignore=oai-core/tests/test_structured_tool_history.py",
             "--ignore=oai-core/tests/test_native_tool_events.py",
             "--ignore=oai-core/tests/test_native_event_sync.py",
+            "--ignore=oai-core/tests/test_hermes_communication_reliability.py",
+            "--ignore=oai-core/tests/test_communication_process_recovery.py",
         ])
         if ret != 0:
             return ret
@@ -177,6 +182,8 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "oai-core/tests/test_hermes_interactions.py",
             "oai-core/tests/test_hermes_approval_prompts.py",
             "oai-core/tests/test_hermes_dispatch_delivery.py",
+            "oai-core/tests/test_hermes_communication_reliability.py",
+            "oai-core/tests/test_communication_process_recovery.py",
             "oai-core/tests/test_interaction_pipeline.py",
             "oai-core/tests/test_structured_tool_history.py",
             "oai-core/tests/test_native_tool_events.py",
@@ -191,7 +198,13 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
         ret = run_command(["node", "--check", "integrations/dsh-session-adapter/index.js"])
         if ret != 0:
             return ret
-        ret = run_command(["npx", "vitest", "run", "integrations/dsh-session-adapter/adapter.test.js"])
+        ret = run_command(["npx", "vitest", "run", "--config", "integrations/dsh-session-adapter/vitest.config.js"])
+        if ret != 0:
+            return ret
+
+    if impact["is_full_required"] or impact["affects_measurements"] or level == "full":
+        print("\n--- 通信测量器统计、来源与隐私回归 ---")
+        ret = run_command(["python3", "-m", "pytest", "-q", "tools/test_measure_communication.py"])
         if ret != 0:
             return ret
 

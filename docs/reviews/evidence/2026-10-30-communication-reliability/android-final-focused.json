@@ -1,0 +1,9 @@
+{
+  "app_tests": 143,
+  "gateway_client_tests": 45,
+  "failures": 0,
+  "skipped": 0,
+  "test_scope": "Focused repository, lifecycle, Queue/Steering, identity, transport and mirror regressions; not whole Android gate or device acceptance",
+  "result": "BUILD SUCCESSFUL",
+  "source_log": "apps/android/.gradle/communication-p2-and-general-cancel-final.log"
+}

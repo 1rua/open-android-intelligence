@@ -690,3 +690,8 @@ data class AttachmentDownloadResult(val uri: String, val filename: String, val r
 interface AttachmentDownloadPort {
     suspend fun download(conversationId: String, attachmentId: String): AttachmentDownloadResult
 }
+
+/** 已保存的未确认创建只查询回执；调用此端口不能隐式重新 POST。 */
+interface ConversationCreationRecovery {
+    suspend fun recoverConversationCreation(scope: ConversationScope, clientConversationId: String): Conversation
+}

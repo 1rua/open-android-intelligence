@@ -179,7 +179,7 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(400, response.status)
             self.assertEqual(code, (await response.json())["error"]["code"])
         self.assertEqual([], self.host.calls)
-        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+        self.assertEqual(0, await self.registry.operations.count())
 
     async def test_route_budget_is_checked_even_with_a_larger_outer_listener(self):
         # Prove route validation itself rejects UTF-8 and escaped control payloads,
@@ -195,7 +195,7 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(413, response.status)
                 self.assertEqual({"error": {"code": "MESSAGE_TOO_LARGE"}}, await response.json())
         self.assertEqual([], self.host.calls)
-        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+        self.assertEqual(0, await self.registry.operations.count())
 
     async def test_smaller_non_utf8_input_cannot_hide_an_oversized_utf8_host_request(self):
         # A permitted JSON charset can be more compact than the host's UTF-8 JSON.
@@ -209,7 +209,7 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(413, response.status)
         self.assertEqual({"error": {"code": "MESSAGE_TOO_LARGE"}}, await response.json())
         self.assertEqual([], self.host.calls)
-        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+        self.assertEqual(0, await self.registry.operations.count())
 
     async def test_native_attachments_are_explicit_and_validation_does_not_begin_a_turn(self):
         path = BASE + "/codex/sessions/terminal-1/messages"
@@ -224,7 +224,7 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, response.status)
             self.assertEqual(code, (await response.json())["error"]["code"])
         self.assertEqual([], self.host.calls)
-        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+        self.assertEqual(0, await self.registry.operations.count())
         # Correlation metadata must not break an existing text-only backend.
         response = await self.client.post(path, json={"text": "hello", "clientMessageId": "android-turn"}, headers=self.user())
         self.assertEqual(200, response.status)
@@ -242,7 +242,7 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(413, response.status)
             self.assertEqual({"error": {"code": "MESSAGE_TOO_LARGE"}}, await response.json())
         self.assertEqual([], self.host.calls)
-        self.assertEqual(0, self.registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0])
+        self.assertEqual(0, await self.registry.operations.count())
 
     async def test_revocation_denies_native_calls(self):
         self.active = False

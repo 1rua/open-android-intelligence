@@ -57,3 +57,5 @@ EventStore 沿用既有保留期，默认 24 小时。快照定位使用持久�
 Core 或 Adapter 对象重建后，事件和 ACK 从原账号存储恢复。Core 进程重启不应中断独立 Hermes 宿主的任务。Hermes 宿主进程真正退出属于另一生命周期：应保留可信的终态或 unknown，不根据连接恢复伪造完成，也不向模型重新提交原用户请求。宿主自带 delivery ledger/resume_pending 的重启行为，需要独立的宿主日志和实测证据，不能按 Recovered reply/System note 字符串过滤历史。
 
 实现与验证见[专项修复报告](../reviews/2026-10-30-dev-reliability.zh-CN.md)。
+
+通信所有权、创建操作查询和阶段计时见[通信与观察生命周期](2026-10-30-communication-lifecycle.zh-CN.md)。

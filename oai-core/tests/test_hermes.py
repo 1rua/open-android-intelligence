@@ -146,7 +146,7 @@ async def test_core_and_real_hermes_http_bridge_share_the_bounded_message_budget
                 assert response.content_type == "application/json"
                 assert await response.json() == {"error": {"code": "MESSAGE_TOO_LARGE"}}
                 assert len(received) == before
-                assert registry.operations.database.execute("SELECT COUNT(*) FROM native_operations").fetchone()[0] == before
+                assert await registry.operations.count() == before
                 retry = await client.post(path, json={"text": "retry"}, headers=headers)
                 assert retry.status == 200
                 assert '"type": "done"' in await retry.text()

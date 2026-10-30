@@ -6,6 +6,9 @@ export const name = "oai-session-adapter";
 export const inject = ["sessionQuery"];
 const PREFIX = "/oai/session-adapter/v1";
 const MAX_REQUEST_BYTES = 1024 * 1024;
+const MAX_OBSERVER_FRAMES = 128;
+const MAX_OBSERVER_BYTES = 1024 * 1024;
+const observerDefaults = { promptTimeoutMs: 30_000, observationTimeoutMs: 30 * 60 * 1000, drainTimeoutMs: 5000 };
 const methods = ["list", "history", "create", "send", "rename", "archive", "delete", "cancel", "stream"];
 const fail = (code, status = 409) => Object.assign(new Error(code), { code, status });
 const textOf = (message) => (message?.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("");
@@ -16,19 +19,30 @@ const iso = (time) => new Date(time).toISOString();
 const turnResult = (reason, text, identity = {}) => {
   if (reason === "completed") return { type: "done", text, ...identity };
   const codes = { error: "AGENT_FAILED", aborted: "CANCELLED", blocked: "AGENT_BLOCKED", "max-tokens": "AGENT_MAX_TOKENS", interrupted: "OUTCOME_UNKNOWN" };
-  return { type: "error", code: codes[reason] ?? "HOST_INCOMPATIBLE" };
+  const code = codes[reason] ?? "HOST_INCOMPATIBLE";
+  return { type: "error", code, ...(["OUTCOME_UNKNOWN", "HOST_INCOMPATIBLE"].includes(code) ? { state: "unknown" } : {}) };
 };
+
+// The pending host promise retains only this detachable slot after an observer
+// leaves, rather than retaining its response, transcript buffer and listeners.
+function observeAdmission(promise, observer) {
+  promise.then((receipt) => observer.accept?.(receipt), () => observer.fail?.());
+}
 
 export const Config = {
   "~standard": {
     version: 1,
     vendor: "oai-session-adapter",
     validate(input = {}) {
-      const value = { port: input.port ?? 8791, tokenEnv: input.tokenEnv ?? "OAI_DSH_ADAPTER_TOKEN", cwd: input.cwd, agentPreset: input.agentPreset };
+      const value = {
+        port: input.port ?? 8791, tokenEnv: input.tokenEnv ?? "OAI_DSH_ADAPTER_TOKEN", cwd: input.cwd, agentPreset: input.agentPreset,
+        ...Object.fromEntries(Object.entries(observerDefaults).map(([key, fallback]) => [key, input[key] ?? fallback])),
+      };
       if (!Number.isInteger(value.port) || value.port < 1 || value.port > 65535
           || typeof value.tokenEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value.tokenEnv)
           || (value.cwd !== undefined && typeof value.cwd !== "string")
-          || (value.agentPreset !== undefined && typeof value.agentPreset !== "string")) {
+          || (value.agentPreset !== undefined && typeof value.agentPreset !== "string")
+          || Object.keys(observerDefaults).some((key) => !Number.isSafeInteger(value[key]) || value[key] <= 0 || value[key] > 2_147_483_647)) {
         return { issues: [{ message: "Invalid OAI session adapter configuration" }] };
       }
       return { value };
@@ -60,11 +74,18 @@ async function bodyOf(req) {
 export function createSessionHandler(ctx, config, token) {
   if (typeof token !== "string" || token.length < 32) throw fail("ADAPTER_TOKEN_REQUIRED", 500);
   const expected = Buffer.from(`Bearer ${token}`);
+  const validated = Config["~standard"].validate(config);
+  if (validated.issues) throw fail("SCHEMA_INVALID", 500);
+  const budgets = validated.value;
   const busy = new Set();
   const services = () => ({ query: ctx.get("sessionQuery"), controller: ctx.get("sessionController"), registry: ctx.get("workspaceRegistry") });
   const capabilities = () => {
     const { query, controller, registry } = services();
     const value = Object.fromEntries(methods.map((method) => [method, false]));
+    // A stable native rpcId correlates input; it does not prove that the host
+    // deduplicates prompts or persists queryable execution receipts.
+    value.generationRecovery = false;
+    value.idempotentSend = false;
     value.list = typeof query?.listSessions === "function";
     value.history = typeof query?.readSurface === "function";
     value.create = value.list && typeof controller?.create === "function";
@@ -99,32 +120,58 @@ export function createSessionHandler(ctx, config, token) {
 
   async function stream(req, res, id, body) {
     if (!capabilities().send) throw fail("UNSUPPORTED_CAPABILITY");
-    if (typeof body.text !== "string" || !body.text.trim()) throw fail("SCHEMA_INVALID", 400);
+    if (typeof body.text !== "string" || !body.text.trim()
+        || (body.clientMessageId !== undefined && (typeof body.clientMessageId !== "string"
+          || !/^[A-Za-z0-9._~-]{1,128}$/.test(body.clientMessageId)))) throw fail("SCHEMA_INVALID", 400);
     if (busy.has(id)) throw fail("SESSION_BUSY");
     busy.add(id);
-    const requestId = randomUUID();
+    const requestId = body.clientMessageId ?? randomUUID();
     const disposers = [];
-    let currentTurn, ownTurn, finalText = "", finished = false;
+    const queue = [];
     const ownAttempts = new Set();
+    const admission = {};
     const identity = {};
-    let release;
-    const finishedPromise = new Promise((resolve) => { release = resolve; });
-    const write = (value) => {
-      if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify(value) + "\n");
+    let currentTurn, ownTurn, finalText = "", ending = false, stopped = false, admitted = false;
+    let queuedBytes = 0, wake, stopDrain, admissionTimer, observationTimer;
+    const notify = () => { const resolve = wake; wake = undefined; resolve?.(); };
+    const stop = () => {
+      stopped = true;
+      queue.length = 0;
+      queuedBytes = 0;
+      notify();
+      stopDrain?.();
+    };
+    const overflow = () => {
+      // Only the observation socket ends. The host inbox and turn are untouched.
+      stop();
+      res.destroy();
+    };
+    const enqueue = (value) => {
+      if (stopped) return;
+      const frame = JSON.stringify(value) + "\n";
+      const size = Buffer.byteLength(frame);
+      if (queue.length >= MAX_OBSERVER_FRAMES || queuedBytes + size > MAX_OBSERVER_BYTES) return overflow();
+      queue.push({ frame, size });
+      queuedBytes += size;
+      notify();
     };
     const finish = (value) => {
-      if (finished) return;
-      finished = true;
-      write(value);
-      release();
+      if (ending || stopped) return;
+      ending = true;
+      clearTimeout(admissionTimer);
+      clearTimeout(observationTimer);
+      enqueue(value);
     };
     // rpcId belongs to the native user message. Other terminal turns in this
     // shared session cannot prematurely complete this App submission.
     disposers.push(ctx.on("session/event", (session, event) => {
-      if (session?.id !== id || finished) return;
+      if (session?.id !== id || ending || stopped) return;
       if (event.type === "turn/start") currentTurn = event.data.turn;
       if (event.type === "user/message" && messageOf(event)?.source?.rpcId === requestId) {
         ownTurn = currentTurn;
+        admitted = true;
+        // Native persistence is admission evidence even if prompt() is delayed.
+        clearTimeout(admissionTimer);
         const message = messageOf(event);
         if (typeof message.id === "string" && message.id) identity.userMessageId = message.id;
       }
@@ -132,41 +179,75 @@ export function createSessionHandler(ctx, config, token) {
       if (event.type === "assistant/message") {
         const message = messageOf(event);
         finalText = textOf(message);
-        // Only the persisted native message identifies this answer. Stream
-        // attempts/chunks are transient and cannot stand in for history IDs.
         if (typeof message?.id === "string" && message.id) identity.messageId = message.id;
         else delete identity.messageId;
       }
-      if (event.type === "turn/end") {
-        const reason = event.data.reason?.kind;
-        finish(turnResult(reason, finalText, identity));
-      }
+      if (event.type === "turn/end") finish(turnResult(event.data.reason?.kind, finalText, identity));
     }));
     disposers.push(ctx.on("agent/assistant-stream", (payload) => {
       const frame = payload?.frame;
-      if (payload?.agent?.session?.id !== id || ownTurn === undefined) return;
-      if (frame?.type === "start" && frame.turn === ownTurn) ownAttempts.add(frame.attemptId);
+      if (ending || stopped || payload?.agent?.session?.id !== id || ownTurn === undefined) return;
+      if (frame?.type === "start" && frame.turn === ownTurn) {
+        if (ownAttempts.size >= MAX_OBSERVER_FRAMES && !ownAttempts.has(frame.attemptId)) return overflow();
+        ownAttempts.add(frame.attemptId);
+      }
       if (frame?.type === "chunk" && ownAttempts.has(frame.attemptId)
-          && frame.chunk?.type === "text-delta") write({ type: "delta", text: frame.chunk.text });
+          && frame.chunk?.type === "text-delta") enqueue({ type: "delta", text: frame.chunk.text });
       if (frame?.type === "end") ownAttempts.delete(frame.attemptId);
     }));
-    const abort = new AbortController();
-    const closed = () => { abort.abort(); release(); };
-    res.on("close", closed);
-    const timer = setTimeout(() => finish({ type: "error", code: "AGENT_TIMEOUT" }), 30 * 60 * 1000);
+    const waitForDrain = () => new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        res.off("drain", done);
+        stopDrain = undefined;
+        resolve();
+      };
+      const timer = setTimeout(overflow, budgets.drainTimeoutMs);
+      stopDrain = done;
+      res.once("drain", done);
+      if (stopped || res.destroyed) done();
+    });
+    res.on("close", stop);
+    res.on("error", overflow);
+    const unknown = () => finish({ type: "error", code: "OUTCOME_UNKNOWN", state: "unknown" });
+    admissionTimer = setTimeout(unknown, budgets.promptTimeoutMs);
+    observationTimer = setTimeout(unknown, budgets.observationTimeoutMs);
     try {
       res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
-      const receipt = await services().controller.prompt({ requestId, sessionId: id, mode: "queue", content: [{ type: "text", text: body.text }] }, abort.signal);
-      if (receipt?.accepted !== true) throw fail("AGENT_REJECTED");
-      await finishedPromise;
-      if (!res.destroyed && !res.writableEnded) res.end();
-    } catch (error) {
-      finish({ type: "error", code: error.code ?? "AGENT_UNAVAILABLE" });
+      // Do not pass a socket-owned AbortSignal to an inbox mutation. Both
+      // resolution paths are consumed, including after this observer departs.
+      admission.accept = (receipt) => {
+        if (stopped || ending) return;
+        clearTimeout(admissionTimer);
+        if (receipt?.accepted !== true && !admitted) finish({ type: "error", code: "AGENT_REJECTED" });
+      };
+      admission.fail = () => {
+        // Transport errors cannot establish whether the input reached inbox.
+        if (!admitted) unknown();
+      };
+      observeAdmission(Promise.resolve().then(() => services().controller.prompt({
+        requestId, sessionId: id, mode: "queue", content: [{ type: "text", text: body.text }],
+      })), admission);
+      while (!stopped) {
+        if (!queue.length) {
+          if (ending) break;
+          await new Promise((resolve) => { wake = resolve; });
+          continue;
+        }
+        const { frame, size } = queue.shift();
+        queuedBytes -= size;
+        if (!res.write(frame)) await waitForDrain();
+      }
       if (!res.destroyed && !res.writableEnded) res.end();
     } finally {
-      clearTimeout(timer);
-      res.off("close", closed);
+      stop();
+      clearTimeout(admissionTimer);
+      clearTimeout(observationTimer);
+      res.off("close", stop);
+      res.off("error", overflow);
+      admission.accept = admission.fail = undefined;
       for (const dispose of disposers) dispose();
+      ownAttempts.clear();
       busy.delete(id);
     }
   }
@@ -218,7 +299,7 @@ export function createSessionHandler(ctx, config, token) {
       if (req.method !== "POST") throw fail("NOT_FOUND", 404);
       const body = await bodyOf(req);
       if (action === "messages") {
-        if (Object.keys(body).some((key) => key !== "text")) throw fail("SCHEMA_INVALID", 400);
+        if (Object.keys(body).some((key) => !["text", "clientMessageId"].includes(key))) throw fail("SCHEMA_INVALID", 400);
         return await stream(req, res, id, body);
       }
       if (Object.keys(body).some((key) => key !== "value")) throw fail("SCHEMA_INVALID", 400);

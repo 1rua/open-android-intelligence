@@ -76,13 +76,19 @@ describe("DSH native Session Adapter", () => {
     expect((await (await h.request("/sessions")).json()).sessions.map((s) => s.id)).toEqual(["terminal", "later-cli"]);
     const history = await (await h.request("/sessions/terminal/history")).json();
     expect(history.messages[0].text).toBe("native history");
-    expect((await h.request("/sessions/unknown/history")).status).toBe(404);
+    const missing = await h.request("/sessions/unknown/history");
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ code: "SESSION_NOT_FOUND" });
   });
   it("requires the Core-only token before touching any native data", async () => {
     const h = await host();
-    expect((await fetch(h.origin + "/sessions")).status).toBe(401);
+    const unauthorized = await fetch(h.origin + "/sessions");
+    expect(unauthorized.status).toBe(401);
+    expect(await unauthorized.json()).toEqual({ code: "AUTHENTICATION_REQUIRED" });
     expect(h.calls).toEqual([]);
-    expect((await h.request("/sessions?accountId=other")).status).toBe(400);
+    const invalid = await h.request("/sessions?accountId=other");
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ code: "SCHEMA_INVALID" });
   });
   it("preserves compatibility with legacy wrapped user events", async () => {
     const h = await host({ legacyUserWrapper: true });
@@ -153,9 +159,13 @@ describe("DSH native Session Adapter", () => {
     expect(status.online).toBe(true);
     expect(status.capabilities.archive).toBe(false);
     expect(status.capabilities.delete).toBe(false);
-    expect((await h.request("/sessions/terminal/delete", "POST", {})).status).toBe(409);
+    const unsupported = await h.request("/sessions/terminal/delete", "POST", {});
+    expect(unsupported.status).toBe(409);
+    expect(await unsupported.json()).toEqual({ code: "UNSUPPORTED_CAPABILITY" });
     h.query.listSessions = async () => { throw new Error("backend unavailable"); };
-    expect((await h.request("/status")).status).toBe(503);
+    const offline = await h.request("/status");
+    expect(offline.status).toBe(503);
+    expect(await offline.json()).toEqual({ code: "AGENT_UNAVAILABLE" });
   });
   it.each([
     ["blocked", "AGENT_BLOCKED"], ["max-tokens", "AGENT_MAX_TOKENS"],
@@ -163,7 +173,7 @@ describe("DSH native Session Adapter", () => {
   ])("does not report a %s native turn as successful", async (terminalReason, code) => {
     const h = await host({ terminalReason });
     const events = (await (await h.request("/sessions/terminal/messages", "POST", { text: "hello" })).text()).trim().split("\n").map(JSON.parse);
-    expect(events.at(-1)).toEqual({ type: "error", code });
+    expect(events.at(-1)).toEqual({ type: "error", code, ...(code === "OUTCOME_UNKNOWN" ? { state: "unknown" } : {}) });
     expect(events.some((event) => event.type === "done")).toBe(false);
   });
   it("validates its standard plugin configuration", () => {

@@ -187,6 +187,7 @@ class GatewayRuntime(
     @Volatile private var backgroundRecoveryOnly = false
     @Volatile private var backgroundRestoreJob: Job? = null
     private var restartPlatformStream: (() -> Unit)? = null
+    private var restartNativeReads: (() -> Unit)? = null
     private val pendingRotations = mutableMapOf<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
     val loginStatus: StateFlow<GatewayLoginStatus> = _loginStatus.asStateFlow()
@@ -397,6 +398,7 @@ class GatewayRuntime(
         if (_phase.value is ConnectionPhase.Disconnected) restoreSessionIfAvailable()
         else if (!restoringSession && _phase.value is ConnectionPhase.OfflineMirror) reconnectOfflineMirror()
         else if (!restoringSession && _phase.value is ConnectionPhase.Connected) {
+            restartNativeReads?.invoke()
             restartPlatformStream?.invoke()
             resumeWorkbench()
         }
@@ -1013,11 +1015,18 @@ class GatewayRuntime(
         _controller.value?.updateDebouncePolicy(preferences.read(gateway))
     }
 
-    private suspend fun showOfflineMirror(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,cause:Throwable) {
-        if (!isTransientConnectionFailure(cause) || _phase.value is ConnectionPhase.OfflineMirror) return
+    private suspend fun showOfflineMirror(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,
+        cause:Throwable? = null, checkOwner: () -> Unit = {}) {
+        if (cause != null && !isTransientConnectionFailure(cause) || _phase.value is ConnectionPhase.OfflineMirror) return
+        checkOwner()
+        val selectedAgentId = accountProfiles.find(profileId)?.selectedAgentId
+        val nativeMirror = selectedAgentId?.let { agentId ->
+            com.openandroidintelligence.mobile.conversations.NativeConversationMirror(context,
+                ConversationScope(profileId,endpoint.baseUrl,accountId,installationId()), { agentId }, localDocumentKeyProvider)
+        }
         val mirrorScope=ConversationScope(profileId,endpoint.baseUrl,accountId,installationId())
         val mirror=kotlinx.coroutines.withContext(Dispatchers.IO) {
-            com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,mirrorScope,localDocumentKeyProvider)
+            nativeMirror?.offlineMirror() ?: com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,mirrorScope,localDocumentKeyProvider)
                 .also { it.finishBaselineRecovery() }
         }
         val media = kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -1026,12 +1035,15 @@ class GatewayRuntime(
         val downloads = com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,media,mirrorScope,keyProvider=localDocumentKeyProvider)
         val mediaReady = prepareMediaTransitions(mirror,media)
         val downloadNotice = if (mediaReady) recoverDownloads(downloads) else MEDIA_RECOVERY_NOTICE
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        checkOwner()
         val owned=SupervisorJob(scope.coroutineContext[Job]); sessionJob=owned
         _controller.value=kotlinx.coroutines.withContext(Dispatchers.IO) { WorkbenchController(CoroutineScope(owned+Dispatchers.Main.immediate),
             com.openandroidintelligence.mobile.conversations.OfflineMirrorRepository(mirror),
             object:com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository {
                 override suspend fun get(gatewayId:String,languageCode:String):com.openandroidintelligence.conversation.ports.AgentCommandCatalog=throw java.io.IOException("OFFLINE_MIRROR")
-            },{ mirrorScope },persistence=mirror,media=media,downloads=downloads,allowSending=false) }
+            },{ mirrorScope },persistence=nativeMirror ?: mirror,media=media,downloads=downloads,allowSending=false,
+            authoritativeMessageIds=nativeMirror != null, organizationStoredLocally=nativeMirror != null) }
         _phase.value=ConnectionPhase.OfflineMirror(endpoint.baseUrl,username)
         _operationNotice.value=downloadNotice ?: "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
         val mirrorAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, username, "")
@@ -1079,12 +1091,6 @@ class GatewayRuntime(
         // 立即进入 Workspace 本地镜像呈现，不闪现登录页
         val savedAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, lastUser, "")
         _localSessionState.value = LocalSessionState.Workspace(savedAccount, ConnectionPhase.Disconnected)
-        if (_controller.value == null) {
-            scope.launch {
-                showOfflineMirror(endpoint, lastUser, profileId, accountId, Exception("INITIAL_LOCAL_LOADING"))
-            }
-        }
-
         val backgroundOwner = backgroundRecoveryOnly
         restoringSession = true
         _loginStatus.value = GatewayLoginStatus.RESTORING
@@ -1102,6 +1108,12 @@ class GatewayRuntime(
         ownedRestore = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var backoff = 1_000L
             try {
+                // 本地展示由恢复任务拥有；先完成镜像加载，再等待网络，不制造网络异常。
+                if (_controller.value == null) {
+                    try { showOfflineMirror(endpoint, lastUser, profileId, accountId, checkOwner = ::checkOwner) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { _operationNotice.value = "本地镜像读取失败，正在尝试连接。" }
+                }
                 while (isActive) {
                     try {
                         checkOwner()
@@ -1139,7 +1151,7 @@ class GatewayRuntime(
                             sessionKeepAlive.stop()
                             return@launch
                         }
-                        showOfflineMirror(endpoint, lastUser, profileId, accountId, cause)
+                        showOfflineMirror(endpoint, lastUser, profileId, accountId, cause, ::checkOwner)
                         _operationNotice.value = renewalFailureNotice(cause)
                         withTimeoutOrNull(backoff) { recoveryWakeup.receive() }
                         backoff = minOf(backoff * 2, 60_000L)
@@ -1526,7 +1538,7 @@ class GatewayRuntime(
         }
         val coreAgentRepo = if (nativeAgentSessions) {
             com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
-                client = com.openandroidintelligence.gateway.agents.AgentSessionClient(http),
+                client = com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
                 currentAgent = { _nativeAgents.value?.state?.value?.agent },
                 activeConversationId = { activeThread.get() },
                 parentScope = sessionScope,
@@ -1538,11 +1550,12 @@ class GatewayRuntime(
                 storeForAgent = ::nativeStore,
             )
         } else null
+        restartNativeReads = { if (sessionJob === ownedJob) coreAgentRepo?.connectionRestored() }
         val activeRepo: ConversationRepository = coreAgentRepo ?: mirroredRepository
         val activeCatalogRepo: com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository =
             if (nativeAgentSessions) {
                 com.openandroidintelligence.mobile.conversations.CoreAgentCommandCatalogRepository(
-                    com.openandroidintelligence.gateway.agents.AgentSessionClient(http),
+                    com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
                     currentAgent = { _nativeAgents.value?.state?.value?.agent },
                     negotiated = "agent-command-catalog-v1" in conversationUi,
                 )
@@ -1601,7 +1614,7 @@ class GatewayRuntime(
         if (nativeAgentSessions) {
             val rememberedAgentId = accountProfiles.find(profileId)?.selectedAgentId
             _nativeAgents.value?.close()
-            _nativeAgents.value = NativeAgentsController(com.openandroidintelligence.gateway.agents.AgentSessionClient(http), sessionScope,
+            _nativeAgents.value = NativeAgentsController(com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG), sessionScope,
                 lastSelectedAgentId = rememberedAgentId,
                 onSelectionLost = { lost -> _operationNotice.value = "上次使用的 Agent「$lost」已不在当前列表中，请重新选择。" })
             sessionScope.launch {
@@ -1924,6 +1937,7 @@ class GatewayRuntime(
         _nativeAgents.value?.close()
         _nativeAgents.value = null
         restartPlatformStream = null
+        restartNativeReads = null
         sessionRenewal?.close()
         sessionRenewal = null
         synchronized(backgroundOwnershipLock) {

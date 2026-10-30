@@ -175,6 +175,7 @@ fun FloatingConversationPanel(
             },
         ) {
             FloatingMessageList(
+                owner = controller,
                 displayItems = visibleItems,
                 previewAttachments = entries.flatMap { it.attachments },
                 threadId = state.activeThreadId,
@@ -220,6 +221,7 @@ fun FloatingConversationPanel(
  */
 @Composable
 private fun FloatingMessageList(
+    owner: Any,
     displayItems: List<TimelineDisplayItem>,
     previewAttachments: List<com.openandroidintelligence.conversation.model.TimelineAttachment>,
     threadId: String?,
@@ -278,6 +280,7 @@ private fun FloatingMessageList(
             val fresh = item.key in freshKeys
             TimelineDisplayRow(
                 item = item,
+                evidenceOwner = owner to threadId,
                 onDecide = onDecide,
                 timing = executionTiming,
                 onDownloadAttachment = onDownloadAttachment,

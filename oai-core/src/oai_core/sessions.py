@@ -21,8 +21,8 @@ from .gateway.core import APPROVAL_CHOICES, ContractRegistry, GatewayError, iso_
 from .gateway.http import _status
 
 from .auth import Principal
-from .operations import NativeOperations, OperationConflict
-from .native_diagnostics import trace_native_stage
+from .operations import AsyncNativeOperations, OperationConflict
+from .native_diagnostics import bind_request_id, trace_context, trace_native_stage
 
 logger = logging.getLogger(__name__)
 PREFIX = "/open-android-intelligence/v2/agents"
@@ -34,6 +34,7 @@ STREAM_EVENT_TYPES = frozenset({"delta", "done", "error", "generation", "approva
 PROTOCOL_VERSIONS = ("1.0", "v1")
 # Keep one explicit boundary across aiohttp versions and both session bridges.
 SESSION_REQUEST_MAX_BYTES = 1024 * 1024
+NATIVE_OBSERVER_QUEUE_SIZE = 64
 
 
 def session_request_json(body: Any) -> str:
@@ -153,7 +154,9 @@ class AgentRegistry:
         self._adapters: dict[str, SessionAdapter] = {}
         for adapter in adapters or []:
             self.register(adapter)
-        self.operations = NativeOperations(operations_path)
+        self.operations = AsyncNativeOperations(operations_path)
+        self._operation_keys: dict[tuple[str, str], set[asyncio.Task]] = {}
+        self._operation_tasks: set[asyncio.Task] = set()
 
     @classmethod
     def register_factory(cls, kind: str, factory: AdapterFactory) -> None:
@@ -274,18 +277,42 @@ class AgentRegistry:
                 "kind": descriptor.get("kind", descriptor["id"]),
                 "sessionScope": descriptor["sessionScope"], "online": online,
                 "deviceTools": descriptor.get("deviceTools") is True,
-                "capabilities": {key: descriptor.get("capabilities", {}).get(key) is True for key in CAPABILITIES},
+                "capabilities": {key: descriptor.get("capabilities", {}).get(key) is True for key in CAPABILITIES} | {"operationRecovery": True},
             }
         return list(await asyncio.gather(*(describe(a) for a in self._adapters.values())))
 
+    def start_operation(self, operation: Awaitable[Any], *, key: tuple[str, str] | None = None) -> asyncio.Task:
+        """An authenticated HTTP observer never owns already accepted host work."""
+        task = asyncio.create_task(operation)
+        self._operation_tasks.add(task)
+        if key is not None:
+            self._operation_keys.setdefault(key, set()).add(task)
+        def finished(done: asyncio.Task) -> None:
+            self._operation_tasks.discard(done)
+            if key is not None:
+                owned = self._operation_keys.get(key)
+                if owned is not None:
+                    owned.discard(done)
+                    if not owned:
+                        self._operation_keys.pop(key, None)
+            if not done.cancelled() and done.exception() is not None:
+                logger.error("Accepted native operation failed (%s)", type(done.exception()).__name__)
+        task.add_done_callback(finished)
+        return task
+
     async def close(self) -> None:
+        # Core shutdown is a separate boundary from one phone going offline.
+        tasks = tuple(self._operation_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         for adapter in self._adapters.values():
             close = getattr(adapter, "close", None)
             if close is not None:
                 result = close()
                 if inspect.isawaitable(result):
                     await result
-        self.operations.close()
+        await self.operations.close()
 
 
 def _create_codex_adapter(entry: dict[str, Any], base_dir: Path, core: Any) -> SessionAdapter:
@@ -501,9 +528,13 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         return bool(await result) if inspect.isawaitable(result) else bool(result)
 
     async def principal_for(request: web.Request) -> Principal:
+        started_ns = time.monotonic_ns()
         principal = await authenticate(request)
         if not await active(principal):
             raise AdapterError("SESSION_REVOKED", 401)
+        if principal.context is not None:
+            bind_request_id(principal.context.request_id)
+        trace_native_stage("core.authenticated", started_ns=started_ns)
         return principal
 
     def safe_session_id(request: web.Request) -> str:
@@ -530,7 +561,7 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
             raise AdapterError("MESSAGE_TOO_LARGE", 413)
         return body
 
-    def operation(request: web.Request, principal: Principal, body: Any) -> tuple[str, dict[str, Any] | None]:
+    def operation_id(request: web.Request, principal: Principal) -> str:
         if principal.context is not None:
             request_id = principal.context.request_id
         else:
@@ -538,30 +569,50 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
             if len(keys) != 1 or re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", keys[0]) is None:
                 raise AdapterError("IDEMPOTENCY_KEY_REQUIRED")
             request_id = keys[0]
+        bind_request_id(request_id)
+        return request_id
+
+    async def begin_operation(request: web.Request, principal: Principal, body: Any, request_id: str) -> dict[str, Any] | None:
         try:
-            receipt = registry.operations.begin(principal.account_id, request_id, request.method, request.raw_path, body)
+            return await registry.operations.begin(principal.account_id, request_id, request.method,
+                request.raw_path, body, agent_id=request.match_info["agent_id"])
         except OperationConflict as exc:
             raise AdapterError(exc.code, 409) from None
+
+    async def operation(request: web.Request, principal: Principal, body: Any) -> tuple[str, dict[str, Any] | None]:
+        request_id = operation_id(request, principal)
+        receipt = await begin_operation(request, principal, body, request_id)
+        await require_operation_authority(principal, request_id, record_rejection=receipt is None)
         return request_id, receipt
+
+    async def require_operation_authority(principal: Principal, request_id: str, *, record_rejection: bool = True) -> None:
+        # Admission can wait for storage. Recheck before the first host side effect.
+        if not await active(principal):
+            if record_rejection:
+                await registry.operations.complete(principal.account_id, request_id,
+                    {"error": {"code": "SESSION_REVOKED"}})
+            raise AdapterError("SESSION_REVOKED", 401)
 
     def endpoint(handler: Callable[..., Awaitable[web.StreamResponse]]) -> Callable[..., Awaitable[web.StreamResponse]]:
         async def wrapped(request: web.Request) -> web.StreamResponse:
-            try:
-                return await handler(request)
-            except AdapterError as exc:
-                return web.json_response({"error": {"code": exc.code,
-                    **({"details": exc.details} if exc.details else {})}}, status=exc.status)
-            except GatewayError as exc:
-                body = {"error": {"code": exc.code}}
-                return web.json_response(body, status=_status(body))
-            except web.HTTPRequestEntityTooLarge:
-                # Reading may happen during signed authentication, before body_for.
-                return web.json_response({"error": {"code": "MESSAGE_TOO_LARGE"}}, status=413)
-            except web.HTTPException:
-                raise
-            except Exception:
-                logger.exception("Native Agent request failed")
-                return web.json_response({"error": {"code": "AGENT_UNAVAILABLE"}}, status=503)
+            with trace_context(request.headers):
+                trace_native_stage("core.http.received")
+                try:
+                    return await handler(request)
+                except AdapterError as exc:
+                    return web.json_response({"error": {"code": exc.code,
+                        **({"details": exc.details} if exc.details else {})}}, status=exc.status)
+                except GatewayError as exc:
+                    body = {"error": {"code": exc.code}}
+                    return web.json_response(body, status=_status(body))
+                except web.HTTPRequestEntityTooLarge:
+                    # Reading may happen during signed authentication, before body_for.
+                    return web.json_response({"error": {"code": "MESSAGE_TOO_LARGE"}}, status=413)
+                except web.HTTPException:
+                    raise
+                except Exception as failure:
+                    logger.error("Native Agent request failed (%s)", type(failure).__name__)
+                    return web.json_response({"error": {"code": "AGENT_UNAVAILABLE"}}, status=503)
         return wrapped
 
     @routes.get(PREFIX)
@@ -605,17 +656,50 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @routes.post(PREFIX + "/{agent_id}/sessions")
     @endpoint
     async def create(request: web.Request) -> web.Response:
+        started_ns = time.monotonic_ns()
         principal = await principal_for(request)
-        adapter = registry.get(request.match_info["agent_id"], "create")
+        agent_id = request.match_info["agent_id"]
+        adapter = registry.get(agent_id, "create")
         body = await body_for(request, {"title"})
         title = body.get("title")
         if title is not None and (not isinstance(title, str) or len(title) > 1000):
             raise AdapterError("INVALID_TITLE")
-        request_id, receipt = operation(request, principal, body)
+        request_id = operation_id(request, principal)
+        async def create_and_commit() -> dict[str, Any]:
+            receipt = await begin_operation(request, principal, body, request_id)
+            if receipt is not None:
+                return receipt
+            await require_operation_authority(principal, request_id)
+            trace_native_stage("core.session.create_started", request_id=request_id,
+                agent_id=agent_id, started_ns=started_ns)
+            result = {"session": await adapter.create(principal, title)}
+            await registry.operations.complete(principal.account_id, request_id, result)
+            trace_native_stage("core.session.create_committed", request_id=request_id,
+                agent_id=agent_id, conversation_id=result["session"].get("id"), started_ns=started_ns)
+            return result
+        receipt = await asyncio.shield(registry.start_operation(create_and_commit(),
+            key=(principal.account_id, request_id)))
+        if not await active(principal):
+            raise AdapterError("SESSION_REVOKED", 401)
+        return web.json_response(receipt, headers={"Cache-Control": "no-store"})
+
+    @routes.get(PREFIX + "/{agent_id}/operations/{request_id}")
+    @endpoint
+    async def operation_receipt(request: web.Request) -> web.Response:
+        principal = await principal_for(request)
+        agent_id = request.match_info["agent_id"]
+        registry.get(agent_id)
+        request_id = request.match_info["request_id"]
+        if request.query or re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", request_id) is None:
+            raise AdapterError("INVALID_REQUEST")
+        receipt = await registry.operations.lookup(principal.account_id, request_id, agent_id)
+        if not await active(principal):
+            raise AdapterError("SESSION_REVOKED", 401)
         if receipt is None:
-            receipt = {"session": await adapter.create(principal, title)}
-            registry.operations.complete(principal.account_id, request_id, receipt)
-        return web.json_response(receipt)
+            raise AdapterError("OPERATION_NOT_FOUND", 404)
+        if receipt["state"] == "unknown" and registry._operation_keys.get((principal.account_id, request_id)):
+            receipt = {"state": "pending"}
+        return web.json_response(receipt, headers={"Cache-Control": "no-store"})
 
     @routes.get(PREFIX + "/{agent_id}/sessions/{session_id}/history")
     @endpoint
@@ -750,9 +834,11 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
     @endpoint
     async def send(request: web.Request) -> web.StreamResponse:
         started_ns = time.monotonic_ns()
+        agent_id = request.match_info["agent_id"]
+        trace_native_stage("core.message.received")
         principal = await principal_for(request)
-        adapter = registry.get(request.match_info["agent_id"], "send")
-        registry.get(request.match_info["agent_id"], "stream")
+        adapter = registry.get(agent_id, "send")
+        registry.get(agent_id, "stream")
         session_id = safe_session_id(request)
         body = await body_for(request, {"text", "attachmentIds", "clientMessageId"})
         text = body.get("text", "")
@@ -768,92 +854,142 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
             raise AdapterError("INVALID_MESSAGE")
         kwargs = {}
         if attachment_ids:
-            registry.get(request.match_info["agent_id"], "attachments")
+            registry.get(agent_id, "attachments")
             kwargs["attachments"] = await asyncio.to_thread(native_attachments, core, principal, attachment_ids, lambda: active(principal))
         if client_message_id is not None and "client_message_id" in inspect.signature(adapter.send).parameters:
             kwargs["client_message_id"] = client_message_id
-        request_id, receipt = operation(request, principal, body)
-        if receipt is not None:
-            # The transcript is read from its native host, never replayed from Core.
-            raise AdapterError("REQUEST_ALREADY_EXECUTED", 409)
+        request_id = operation_id(request, principal)
+        admitted = asyncio.get_running_loop().create_future()
+        admitted.add_done_callback(lambda future: future.exception() if not future.cancelled() else None)
         trace_native_stage("T2", client_message_id=client_message_id, request_id=request_id,
-                           state="validated", event_type="request", started_ns=started_ns)
+                           state="validated", event_type="request", started_ns=started_ns,
+                           agent_id=agent_id, conversation_id=session_id)
         stream = adapter.send(principal, session_id, text, **kwargs)
-        response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
-        await response.prepare(request)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=NATIVE_OBSERVER_QUEUE_SIZE)
+        observing = True
 
-        first_delta_written = False
-        async def emit(event: dict[str, Any]) -> None:
-            nonlocal first_delta_written
-            await response.write(("event: message\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
-            if event.get("type") != "delta" or not first_delta_written:
-                trace_native_stage("T5", client_message_id=event.get("clientMessageId", client_message_id),
-                    generation_id=event.get("generationId"), message_id=event.get("messageId"),
-                    event_id=event.get("eventId"), revision=event.get("contentRevision"),
-                    state=event.get("outcome", event.get("code")), event_type=event.get("type"),
-                    request_id=request_id, started_ns=started_ns)
-            if event.get("type") == "delta":
-                first_delta_written = True
+        def publish(event: dict[str, Any] | None) -> None:
+            nonlocal observing
+            if not observing:
+                return
+            if queue.full():
+                trace_native_stage("core.observer.overflow", agent_id=agent_id,
+                    conversation_id=session_id, request_id=request_id, queue_depth=queue.qsize())
+                # Only the observer is interrupted. The native host keeps its
+                # own history and the receipt is committed by the producer.
+                observing = False
+                while not queue.empty():
+                    queue.get_nowait()
+                queue.put_nowait({"type": "error", "code": "AGENT_STREAM_INTERRUPTED"})
+                return
+            queue.put_nowait(event)
 
-        pending: asyncio.Task | None = None
-        try:
+        async def produce() -> None:
             completed = False
-            iterator = stream.__aiter__()
+            first_delta_received = False
+            try:
+                receipt = await begin_operation(request, principal, body, request_id)
+                if receipt is not None:
+                    raise AdapterError("REQUEST_ALREADY_EXECUTED", 409)
+                await require_operation_authority(principal, request_id)
+                admitted.set_result(None)
+                trace_native_stage("core.operation.committed", client_message_id=client_message_id,
+                    request_id=request_id, agent_id=agent_id, conversation_id=session_id, started_ns=started_ns)
+                trace_native_stage("core.adapter.submitted", client_message_id=client_message_id,
+                    request_id=request_id, agent_id=agent_id, conversation_id=session_id,
+                    started_ns=started_ns)
+                async for event in stream:
+                    if not isinstance(event, dict) or event.get("type") not in STREAM_EVENT_TYPES:
+                        raise AdapterError("INVALID_AGENT_EVENT", 502)
+                    if event["type"] == "generation" and (
+                            not isinstance(event.get("generationId"), str) or not event["generationId"]):
+                        raise AdapterError("INVALID_AGENT_EVENT", 502)
+                    if event["type"] in {"approval_requested", "approval_resolved"}:
+                        registry.get(agent_id, "approvals")
+                        validate_approval(event.get("approval"), resolved=event["type"] == "approval_resolved")
+                        if event["approval"]["conversationId"] != session_id or set(event) - {"type", "approval", "generationId"}:
+                            raise AdapterError("INVALID_AGENT_EVENT", 502)
+                    if event["type"] != "delta" or not first_delta_received:
+                        trace_native_stage("core.adapter.event", client_message_id=client_message_id,
+                            request_id=request_id, agent_id=agent_id, conversation_id=session_id,
+                            generation_id=event.get("generationId"), message_id=event.get("messageId"),
+                            event_type=event["type"], started_ns=started_ns)
+                    if event["type"] == "delta":
+                        first_delta_received = True
+                    if event["type"] in {"done", "error"}:
+                        await registry.operations.complete(principal.account_id, request_id, {"state": event["type"]})
+                        completed = True
+                    publish(event)
+                    if completed:
+                        break
+                    # Give the independent socket writer a scheduling turn even
+                    # when an adapter yields a burst without doing any I/O.
+                    await asyncio.sleep(0)
+                if not completed:
+                    publish({"type": "error", "code": "AGENT_STREAM_INTERRUPTED"})
+            except AdapterError as exc:
+                if not admitted.done():
+                    admitted.set_exception(exc)
+                publish({"type": "error", "code": exc.code})
+            except GatewayError as exc:
+                if not admitted.done():
+                    admitted.set_exception(exc)
+                publish({"type": "error", "code": exc.code})
+            except asyncio.CancelledError:
+                raise
+            except Exception as failure:
+                logger.error("Native Agent observer failed (%s)", type(failure).__name__)
+                publish({"type": "error", "code": "AGENT_UNAVAILABLE"})
+            finally:
+                if not admitted.done():
+                    admitted.set_exception(AdapterError("OUTCOME_UNKNOWN", 409))
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
+                publish(None)
+
+        registry.start_operation(produce(), key=(principal.account_id, request_id))
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache",
+                                               "X-Accel-Buffering": "no"})
+        first_delta_written = False
+        try:
+            await asyncio.shield(admitted)
+            await response.prepare(request)
             while True:
                 if not await active(principal):
-                    await emit({"type": "error", "code": "SESSION_REVOKED"})
-                    completed = True
+                    await response.write(b'event: message\ndata: {"type":"error","code":"SESSION_REVOKED"}\n\n')
                     break
-                if pending is None:
-                    pending = asyncio.create_task(anext(iterator))
-                done, _ = await asyncio.wait({pending}, timeout=5)
-                if not done:
-                    # Observe disconnection and revocation even while the host is idle.
+                try:
+                    async with asyncio.timeout(5):
+                        event = await queue.get()
+                except TimeoutError:
                     await response.write(b": heartbeat\n\n")
                     continue
-                try:
-                    event = pending.result()
-                except StopAsyncIteration:
-                    pending = None
+                if event is None:
                     break
-                pending = None
                 if not await active(principal):
-                    await emit({"type": "error", "code": "SESSION_REVOKED"})
-                    completed = True
+                    await response.write(b'event: message\ndata: {"type":"error","code":"SESSION_REVOKED"}\n\n')
                     break
-                if not isinstance(event, dict) or event.get("type") not in STREAM_EVENT_TYPES:
-                    raise AdapterError("INVALID_AGENT_EVENT", 502)
-                if event["type"] == "generation" and (
-                        not isinstance(event.get("generationId"), str) or not event["generationId"]):
-                    raise AdapterError("INVALID_AGENT_EVENT", 502)
-                if event["type"] in {"approval_requested", "approval_resolved"}:
-                    registry.get(request.match_info["agent_id"], "approvals")
-                    validate_approval(event.get("approval"), resolved=event["type"] == "approval_resolved")
-                    if event["approval"]["conversationId"] != session_id or set(event) - {"type", "approval", "generationId"}:
-                        raise AdapterError("INVALID_AGENT_EVENT", 502)
-                await emit(event)
+                await response.write(("event: message\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
+                if event.get("type") != "delta" or not first_delta_written:
+                    trace_native_stage("T5", client_message_id=event.get("clientMessageId", client_message_id),
+                        generation_id=event.get("generationId"), message_id=event.get("messageId"),
+                        event_id=event.get("eventId"), revision=event.get("contentRevision"),
+                        state=event.get("outcome", event.get("code")), event_type=event.get("type"),
+                        request_id=request_id, started_ns=started_ns,
+                        agent_id=agent_id, conversation_id=session_id)
+                if event.get("type") == "delta":
+                    first_delta_written = True
                 if event["type"] in {"done", "error"}:
-                    registry.operations.complete(principal.account_id, request_id, {"state": event["type"]})
-                    completed = True
                     break
-            if not completed:
-                await emit({"type": "error", "code": "AGENT_STREAM_INTERRUPTED"})
-        except AdapterError as exc:
-            await emit({"type": "error", "code": exc.code})
-        except GatewayError as exc:
-            await emit({"type": "error", "code": exc.code})
-        except (ConnectionError, asyncio.CancelledError):
-            raise
-        except Exception:
-            logger.exception("Native Agent stream failed")
-            await emit({"type": "error", "code": "AGENT_UNAVAILABLE"})
         finally:
-            if pending is not None:
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
-            close = getattr(stream, "aclose", None)
-            if close is not None:
-                await close()
+            # Releasing this subscription must not cancel the producer's next
+            # event, close its host HTTP connection, or submit another message.
+            observing = False
+            while not queue.empty():
+                queue.get_nowait()
+            trace_native_stage("core.observer.detached", client_message_id=client_message_id,
+                request_id=request_id, agent_id=agent_id, conversation_id=session_id, started_ns=started_ns)
         await response.write_eof()
         return response
 
@@ -879,16 +1015,17 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         steer_fn = getattr(adapter, "steer", None)
         if not callable(steer_fn):
             raise AdapterError("HOST_INCOMPATIBLE", 502)
-        request_id, receipt = operation(request, principal, body)
+        request_id, receipt = await operation(request, principal, body)
         if receipt is None:
             if generation_id is None:
                 current = getattr(adapter, "current_generation", None)
                 if not callable(current):
                     raise AdapterError("HOST_INCOMPATIBLE", 502)
                 generation = await current(principal, session_id)
+                await require_operation_authority(principal, request_id)
                 if generation is None:
                     receipt = {"error": {"code": "STEER_UNAVAILABLE"}}
-                    registry.operations.complete(principal.account_id, request_id, receipt)
+                    await registry.operations.complete(principal.account_id, request_id, receipt)
                     return web.json_response(receipt, status=409, headers={"Cache-Control": "no-store"})
                 if (not isinstance(generation, dict)
                         or generation.get("conversationId") != session_id
@@ -897,13 +1034,14 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                         or generation.get("state") not in {"queued", "running", "unknown"}):
                     raise AdapterError("HOST_INCOMPATIBLE", 502)
                 generation_id = generation["generationId"]
+            await require_operation_authority(principal, request_id)
             try:
                 steering = await steer_fn(principal, session_id, text, generation_id, client_message_id)
             except AdapterError as exc:
                 if exc.code != "STEER_UNAVAILABLE":
                     raise
                 receipt = {"error": {"code": exc.code}}
-                registry.operations.complete(principal.account_id, request_id, receipt)
+                await registry.operations.complete(principal.account_id, request_id, receipt)
                 return web.json_response(receipt, status=409, headers={"Cache-Control": "no-store"})
             if (not isinstance(steering, dict)
                     or set(steering) != {"generationId", "outcome"}
@@ -911,17 +1049,17 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                     or steering.get("outcome") not in {"accepted"}):
                 raise AdapterError("HOST_INCOMPATIBLE", 502)
             receipt = {"steering": steering}
-            registry.operations.complete(principal.account_id, request_id, receipt)
+            await registry.operations.complete(principal.account_id, request_id, receipt)
         status = 409 if receipt.get("error", {}).get("code") == "STEER_UNAVAILABLE" else 200
         return web.json_response(receipt, status=status, headers={"Cache-Control": "no-store"})
 
     async def manage(request: web.Request, principal: Principal, action: str, value: Any = None) -> web.Response:
         adapter = registry.get(request.match_info["agent_id"], action)
         session_id = safe_session_id(request)
-        request_id, receipt = operation(request, principal, {"action": action, "value": value})
+        request_id, receipt = await operation(request, principal, {"action": action, "value": value})
         if receipt is None:
             receipt = {"session": await adapter.manage(principal, session_id, action, value)}
-            registry.operations.complete(principal.account_id, request_id, receipt)
+            await registry.operations.complete(principal.account_id, request_id, receipt)
         return web.json_response(receipt)
 
     @routes.patch(PREFIX + "/{agent_id}/sessions/{session_id}")
@@ -971,7 +1109,7 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         resolver = getattr(adapter, "resolve_approval", None)
         if not callable(resolver):
             raise AdapterError("HOST_INCOMPATIBLE", 502)
-        request_id, receipt = operation(request, principal, body)
+        request_id, receipt = await operation(request, principal, body)
         terminal_errors = {"APPROVAL_ALREADY_RESOLVED": 409, "APPROVAL_EXPIRED": 409,
                            "APPROVAL_NOT_FOUND": 404, "APPROVAL_DECISION_INVALID": 400}
         if receipt is None:
@@ -986,7 +1124,7 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                 if exc.code not in terminal_errors:
                     raise
                 receipt = {"error": {"code": exc.code, **({"details": exc.details} if exc.details else {})}}
-                registry.operations.complete(principal.account_id, request_id, receipt)
+                await registry.operations.complete(principal.account_id, request_id, receipt)
                 return web.json_response(receipt, status=terminal_errors[exc.code], headers={"Cache-Control": "no-store"})
             if not isinstance(receipt, dict) or set(receipt) != {"approval"}:
                 raise AdapterError("HOST_INCOMPATIBLE", 502)
@@ -995,7 +1133,7 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                     or receipt["approval"]["conversationId"] != session_id
                     or receipt["approval"]["decision"] != decision):
                 raise AdapterError("HOST_INCOMPATIBLE", 502)
-            registry.operations.complete(principal.account_id, request_id, receipt)
+            await registry.operations.complete(principal.account_id, request_id, receipt)
         status = terminal_errors.get(receipt.get("error", {}).get("code"), 200)
         return web.json_response(receipt, status=status, headers={"Cache-Control": "no-store"})
 

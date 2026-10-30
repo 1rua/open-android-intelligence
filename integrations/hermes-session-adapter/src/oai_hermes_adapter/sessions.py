@@ -327,10 +327,26 @@ class HermesSessionAdapter:
                 generation = account.conversations.workflow.for_message(accepted["messageId"])
                 if generation is None or generation["generationId"] != accepted.get("generationId"):
                     raise AdapterError("HOST_INCOMPATIBLE", 502)
+                remember_trace = getattr(self.runtime, "remember_generation_trace", None)
+                if callable(remember_trace):
+                    remember_trace(principal.account_id, session_id, generation["generationId"])
                 return accepted, cursor[0] if cursor else None, {
                     "state": generation["state"], "revision": int(generation.get("revision", 0)),
                 }
-        accepted, cursor, initial_generation = await asyncio.to_thread(accept)
+        async def admit_and_register():
+            # The host owns the whole commit-to-dispatch boundary. Cancelling
+            # an HTTP observer cannot strand a transaction already in a worker.
+            accepted, cursor, initial_generation = await asyncio.to_thread(accept)
+            body = {"clientMessageId": client_id, "text": text, "attachmentIds": attachment_ids}
+            task = asyncio.create_task(self.runtime._notify_agent_inbound(
+                f"/open-android-intelligence/v2/conversations/{session_id}/messages",
+                json.dumps(body).encode(), {"data": accepted}, principal.account_id))
+            self.runtime._track_background_task(task, "core-session-message")
+            return accepted, cursor, initial_generation, task
+
+        admission = asyncio.create_task(admit_and_register())
+        self.runtime._track_background_task(admission, "core-session-admission")
+        accepted, cursor, initial_generation, task = await asyncio.shield(admission)
         generation_id = accepted.get("generationId")
         changed = asyncio.Event()
         from .tool_events import NOTICE_CODE
@@ -354,11 +370,6 @@ class HermesSessionAdapter:
             return is_execution_notice(event) or (payload.get("conversationId") == session_id
                     and payload.get("generationId") in {None, generation_id})
         self.core.register_event_sink(sink)
-        body = {"clientMessageId": client_id, "text": text, "attachmentIds": attachment_ids}
-        task = asyncio.create_task(self.runtime._notify_agent_inbound(
-            f"/open-android-intelligence/v2/conversations/{session_id}/messages",
-            json.dumps(body).encode(), {"data": accepted}, principal.account_id))
-        self.runtime._track_background_task(task, "core-session-message")
         task.add_done_callback(lambda _task: changed.set())
         pending_events = deque()
         previous = ""
