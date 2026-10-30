@@ -164,3 +164,9 @@ Node 桥补充了默认关闭的单调时钟与进程标识日志；真实 HTTP 
 `:app:assembleFullDebug` 已通过（约67秒），生成 `apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk`，约65MiB。ZIP完整性和APK v3签名验证通过，BuildConfig中的GIT_COMMIT为`dda2a4dc8ece02289b3e4f54dab11f8515249707`；摘要和实际versionCode/versionName见`apk-debug-verification.json`。这是本地测试包，未安装到设备，不表示正式发行升级验证。
 
 最后只读设备清单仍无在线手机，见`device-readiness-final.json`；设备身份未写证据，未发设备请求。现网Core/Adapter未升级，真实手机的息屏、Doze、网络切换、真实模型和实际部署契约一致性仍未完成。代码及隔离链路验收已具备可复核结果，不能据此把物理端到端目标标记完成。
+
+## PR 交付
+
+PR #68 已创建，目标 dev，保持开放；未合并或发布。业务实现、最终门禁、正式测量与测试APK共同绑定 `dda2a4dc`，后续提交仅补充文档和证据。远端CI在推送/PR事件后触发，只做单次状态读取，不前台等待。原dev与已有worktree保留。
+
+后续入口为本报告、`measurements/final-comparison.json`及`harness-tasks.json`。本地/隔离验证与PR交付已完成；最后物理端到端验收需要在线的专用测试手机及可验证的测试部署，不能把任务标记为已在真实手机上解决。
