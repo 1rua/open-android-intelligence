@@ -141,6 +141,18 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
     def requests(self):
         return [json.loads(line) for line in (self.root / 'requests.jsonl').read_text().splitlines()]
 
+    async def test_native_rpc_stages_keep_request_trace_and_omit_transcript(self):
+        from oai_core.native_diagnostics import trace_context
+        with self.assertLogs("oai_core.native_sessions", level="DEBUG") as capture:
+            with trace_context({"traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-00"}, request_id="native-original"):
+                events = [event async for event in self.adapter.send(self.alice, "terminal", "PRIVATE-CODEX-INPUT", client_message_id="native-client")]
+        records = [json.loads(record.getMessage().removeprefix("native_session ")) for record in capture.records]
+        self.assertTrue(all(row["traceId"] == "a" * 32 and row["requestId"] == "native-original" for row in records))
+        admission = next(row for row in records if row["stage"] == "adapter.codex.host_admitted")
+        self.assertEqual(admission["generationId"], events[0]["generationId"])
+        self.assertTrue(any(row.get("operation") == "turn/start" and row["stage"] == "adapter.codex.rpc_returned" for row in records))
+        self.assertNotIn("PRIVATE-CODEX-INPUT", "".join(capture.output))
+
     async def test_explicit_native_home_and_shared_discovery_include_terminal_and_new_threads(self):
         self.assertTrue(await self.adapter.status())
         before = await self.adapter.list_sessions(self.alice)

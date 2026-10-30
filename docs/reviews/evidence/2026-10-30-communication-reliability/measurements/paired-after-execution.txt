@@ -1,0 +1,14 @@
+{"workload_finished": "direct/create", "attempts": 1000, "failures": 0}
+{"workload_finished": "direct/send", "attempts": 1000, "failures": 0}
+{"workload_finished": "direct/create_disconnect", "attempts": 1000, "failures": 0}
+{"workload_finished": "direct/send_disconnect", "attempts": 1000, "failures": 0}
+{"workload_finished": "direct/concurrent_send", "attempts": 1000, "failures": 0}
+{"workload_finished": "direct/slow_adapter_isolation", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/create", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/send", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/create_disconnect", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/send_disconnect", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/bridge_disconnect", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/concurrent_send", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/slow_adapter_isolation", "attempts": 1000, "failures": 0}
+{"output": "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/paired-after-ef0c90d4", "source_head": "ef0c90d41c00731115affdc5d3483e23c2a85a97", "source_sha256": "db39e68dce87a18c4b8a545215376ddc139a5c7af8addf189539f18796c52bf8", "attempts": 13000, "failures": 0}

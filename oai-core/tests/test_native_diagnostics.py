@@ -43,3 +43,12 @@ def test_request_identity_never_accepts_authorization_text(caplog):
         assert "X-OAI-Request-Id" not in current_trace_headers()
         trace_native_stage("core.boundary", request_id="Bearer SYNTHETIC_PRIVATE")
     assert "SYNTHETIC_PRIVATE" not in caplog.text
+
+
+def test_a_custom_logging_sink_failure_does_not_fail_the_business_operation(monkeypatch):
+    import oai_core.native_diagnostics as diagnostics
+    monkeypatch.setattr(diagnostics.logger, "isEnabledFor", lambda _: True)
+    def broken(*args, **kwargs):
+        raise RuntimeError("closed diagnostic sink")
+    monkeypatch.setattr(diagnostics.logger, "debug", broken)
+    diagnostics.trace_native_stage("core.operation.storage", request_id="original-request")

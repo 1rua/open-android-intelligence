@@ -1,0 +1,7 @@
+{"workload_finished": "direct/create", "attempts": 1000, "failures": 0}
+{"workload_finished": "direct/send", "attempts": 1000, "failures": 0}
+{"workload_finished": "direct/concurrent_send", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/create", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/send", "attempts": 1000, "failures": 0}
+{"workload_finished": "bridge/concurrent_send", "attempts": 1000, "failures": 0}
+{"output": "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/disk-baseline-normal", "source_head": "33ab7a2a159b095e0d6408edc8888625011b3e84", "source_sha256": "d9e9b3d4e51d1e1c544d56efea1aab8f6963f66ae48a72147fef9e35562978d5", "attempts": 6000, "failures": 0}
