@@ -6,9 +6,11 @@ on:
     paths:
       - 'oai-core/**'
       - 'scripts/install.sh'
+      - 'scripts/uninstall.sh'
       - 'scripts/setup.sh'
       - 'scripts/core_setup.py'
       - 'tests/test_install_script.py'
+      - 'tests/test_uninstall_script.py'
       - 'tests/test_core_setup_transaction.py'
       - 'tools/smart-test.py'
       - 'tools/test_smart_test.py'
@@ -23,9 +25,11 @@ on:
     paths:
       - 'oai-core/**'
       - 'scripts/install.sh'
+      - 'scripts/uninstall.sh'
       - 'scripts/setup.sh'
       - 'scripts/core_setup.py'
       - 'tests/test_install_script.py'
+      - 'tests/test_uninstall_script.py'
       - 'tests/test_core_setup_transaction.py'
       - 'tools/smart-test.py'
       - 'tools/test_smart_test.py'
@@ -71,7 +75,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio PyYAML==6.0.3
           env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
-            oai-core/tests tests/test_install_script.py tests/test_core_setup_transaction.py tools/test_smart_test.py -q \
+            oai-core/tests tests/test_install_script.py tests/test_uninstall_script.py tests/test_core_setup_transaction.py tools/test_smart_test.py -q \
             --ignore=oai-core/tests/test_hermes.py \
             --ignore=oai-core/tests/test_hermes_native.py \
             --ignore=oai-core/tests/test_hermes_native_origin.py \
@@ -82,6 +86,7 @@ jobs:
             --ignore=oai-core/tests/test_native_tool_events.py \
             --ignore=oai-core/tests/test_interaction_pipeline.py
           bash -n scripts/install.sh
+          bash -n scripts/uninstall.sh
           bash -n scripts/setup.sh
 
   hermes-native:
