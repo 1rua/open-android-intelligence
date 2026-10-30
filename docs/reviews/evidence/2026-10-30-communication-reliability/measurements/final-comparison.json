@@ -1,0 +1,240 @@
+{
+  "source_commit": "dda2a4dc8ece02289b3e4f54dab11f8515249707",
+  "baseline_commit": "33ab7a2a159b095e0d6408edc8888625011b3e84",
+  "same_script_environment_and_load": true,
+  "baseline_attempts": 13000,
+  "baseline_failures": 3000,
+  "after_attempts": 13000,
+  "after_failures": 0,
+  "scope": "isolated real Core routes and HTTP bridge with synthetic host, disk Core ledger, default-off diagnostics; no device/model or cross-machine proof",
+  "metrics": [
+    {
+      "label": "直接创建",
+      "scenario": "direct/create",
+      "metric": "submit_to_final",
+      "baseline": {
+        "n": 1000,
+        "p50": 10.187967,
+        "p95": 10.725872,
+        "p99": 13.658193,
+        "max": 17.271187,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 7.162753,
+        "p95": 8.102615,
+        "p99": 9.715579,
+        "max": 14.205024,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    },
+    {
+      "label": "桥接创建",
+      "scenario": "bridge/create",
+      "metric": "submit_to_final",
+      "baseline": {
+        "n": 1000,
+        "p50": 10.898047,
+        "p95": 11.336216,
+        "p99": 14.340044,
+        "max": 60.307111,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 8.232913,
+        "p95": 9.390843,
+        "p99": 10.429043,
+        "max": 25.192757,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    },
+    {
+      "label": "直接首事件",
+      "scenario": "direct/send",
+      "metric": "submit_to_first_event",
+      "baseline": {
+        "n": 1000,
+        "p50": 2.886979,
+        "p95": 3.275482,
+        "p99": 3.735088,
+        "max": 8.340736,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 1.795338,
+        "p95": 2.726625,
+        "p99": 3.750841,
+        "max": 31.456827,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    },
+    {
+      "label": "桥接首事件",
+      "scenario": "bridge/send",
+      "metric": "submit_to_first_event",
+      "baseline": {
+        "n": 1000,
+        "p50": 3.542141,
+        "p95": 3.966189,
+        "p99": 4.465221,
+        "max": 8.632726,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 2.51719,
+        "p95": 3.915034,
+        "p99": 6.580869,
+        "max": 13.301635,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    },
+    {
+      "label": "直接首内容",
+      "scenario": "direct/send",
+      "metric": "submit_to_first_content",
+      "baseline": {
+        "n": 1000,
+        "p50": 8.184058,
+        "p95": 8.613814,
+        "p99": 9.24842,
+        "max": 13.637308,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 7.185149,
+        "p95": 8.128276,
+        "p99": 9.276345,
+        "max": 36.863387,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    },
+    {
+      "label": "桥接首内容",
+      "scenario": "bridge/send",
+      "metric": "submit_to_first_content",
+      "baseline": {
+        "n": 1000,
+        "p50": 8.990557,
+        "p95": 9.448431,
+        "p99": 10.128859,
+        "max": 14.266356,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 8.0068,
+        "p95": 9.48939,
+        "p99": 12.094334,
+        "max": 18.7939,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    },
+    {
+      "label": "直接并发完成",
+      "scenario": "direct/concurrent_send",
+      "metric": "submit_to_final",
+      "baseline": {
+        "n": 1000,
+        "p50": 776.999876,
+        "p95": 881.191748,
+        "p99": 1030.098405,
+        "max": 1070.431551,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 11.84187,
+        "p95": 13.551725,
+        "p99": 17.391628,
+        "max": 29.977781,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    },
+    {
+      "label": "桥接并发完成",
+      "scenario": "bridge/concurrent_send",
+      "metric": "submit_to_final",
+      "baseline": {
+        "n": 1000,
+        "p50": 1337.088035,
+        "p95": 1514.111744,
+        "p99": 1566.065595,
+        "max": 1645.334756,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 15.922042,
+        "p95": 23.928675,
+        "p99": 67.461294,
+        "max": 70.664598,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    },
+    {
+      "label": "断开观察后恢复",
+      "scenario": "bridge/send_disconnect",
+      "metric": "disconnect_to_reconnected",
+      "baseline": {
+        "n": 1000,
+        "p50": 7.255577,
+        "p95": 7.52056,
+        "p99": 7.816631,
+        "max": 8.897287,
+        "p99_unavailable_reason": null
+      },
+      "after": {
+        "n": 1000,
+        "p50": 7.552882,
+        "p95": 7.973504,
+        "p99": 8.284918,
+        "max": 34.442588,
+        "p99_unavailable_reason": null
+      },
+      "baseline_successes": 1000,
+      "after_successes": 1000,
+      "attempts_each": 1000
+    }
+  ],
+  "raw_files_sha256": {
+    "final-baseline-33ab7a2a/manifest.json": "b9f1102b3e49805ec86fc61f6768262c0f1d31c22ff6da33def777e40728586c",
+    "final-baseline-33ab7a2a/resources.jsonl.gz": "24bf441a8e32bc2d7340dbb665d02b0d82d87991b0571eec0866f7fb2b98fa73",
+    "final-baseline-33ab7a2a/samples.jsonl.gz": "cdf12368e8c07a2f03559a3c4bc5ba75093bfd065249857749afce1af3451067",
+    "final-baseline-33ab7a2a/summary.json": "156d5049bc491c3f4372dfa0994ef82bd0fce94afed17f32a885ed8bf218bee7",
+    "final-baseline-33ab7a2a/trace.jsonl.gz": "fd4c99b481caaa7b40d41a8e043c2e93628a0b3cd96c957a0fe8b0984028d57a",
+    "final-after-dda2a4dc/manifest.json": "1d7e48d661b2f2a1c4376904225ec775492cf2c7b1f44c0a5ee0ebe827131280",
+    "final-after-dda2a4dc/resources.jsonl.gz": "032aa368fa9c964cfcdda2f7a3d2f1d8f7d06c49a6e5c4fd87cdc5d94453223c",
+    "final-after-dda2a4dc/samples.jsonl.gz": "a29333427dc964661f732347664591dd2e3c38707ddea539832c4df7d4b8dc57",
+    "final-after-dda2a4dc/summary.json": "fa87f6422559897654cb833423f40cc0ff561bfe0144def8d1ee3f1990d87e18",
+    "final-after-dda2a4dc/trace.jsonl.gz": "348ce6ea8c451fa54cce26b4236975dacbba99a2822a366453a6ff24da86f206"
+  }
+}
