@@ -81,7 +81,8 @@ apps/android/tailnet-core/libs/tsnet-android-1.98.10.sbom.json
 apps/android/tailnet-core/libs/tsnet-android-1.98.10.provenance.json
 apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar.sha256
 apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.sbom.json
+docs/mvp/evidence/
+
 
 # Rust 插件工具链构建产物
 plugins/target/

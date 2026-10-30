@@ -1,0 +1,23 @@
+{
+  "artifact": "apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk",
+  "size_bytes": 68093496,
+  "sha256": "1afbb55747cd0d38e147dd50e3b6efc1fa129762fae1532feffa497729972a99",
+  "git_commit": "dda2a4dc8ece02289b3e4f54dab11f8515249707",
+  "applicationId": "com.openandroidintelligence.mobile",
+  "variant": "fullDebug",
+  "versionCode": 1,
+  "versionName": "2.2.1",
+  "minSdk": 31,
+  "zip_integrity": "passed",
+  "signature_verification": [
+    "Verifies",
+    "Verified using v1 scheme (JAR signing): false",
+    "Verified using v2 scheme (APK Signature Scheme v2): false",
+    "Verified using v3 scheme (APK Signature Scheme v3): true",
+    "Verified using v3.1 scheme (APK Signature Scheme v3.1): false",
+    "Verified using v4 scheme (APK Signature Scheme v4): false",
+    "Verified for SourceStamp: false",
+    "Number of signers: 1"
+  ],
+  "installed_on_device": false
+}
