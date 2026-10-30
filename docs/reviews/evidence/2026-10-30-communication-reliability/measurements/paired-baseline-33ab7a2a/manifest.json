@@ -1,0 +1,190 @@
+{
+  "format": "oai-isolated-loopback-communication-v3",
+  "run_id": "c9beca07e0e942869a268639bf8f0cbf",
+  "label": "paired-baseline",
+  "started_wall_time_ns": 1793384013681611952,
+  "source": {
+    "head": "33ab7a2a159b095e0d6408edc8888625011b3e84",
+    "source_root_relative_to_meter": "../..",
+    "source_sha256": "d9e9b3d4e51d1e1c544d56efea1aab8f6963f66ae48a72147fef9e35562978d5",
+    "files_sha256": {
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/__init__.py": "47fb1cac68d232ed0e5a5980bdf2b4fe6dc90be8018d016c6ae5b1f189935e89",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/approvals.py": "cf721da05816914f756a8be5dab6a33cce1e26885f4dd051a41822bb08df600b",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/backend.py": "47ccadbbd418249ab0137be651e430b143940d4198bcdd0bbf0febb1845e26e4",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py": "2fd39108b226eb9e289fadf80dadc28366fdb0f0b19296f447d964c8f2bd071c",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/context.py": "5df39f5d9851bf777795c1d3afde9237600f12b7fb779bb6e7020be333a32a8b",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/event_sync.py": "ec5153d2bdeb590380b1d4d563d265172167dbb8119ae5b55b8926e693ec95c6",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/history_media.py": "c690b49acafd88e9e6478d68716e7ba575d7cf1e519f0d13209aaf1e650a0761",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/host_commands.py": "c948a9475825bc32603a1dc507c9b205a110db235d96bbfe78f50d5bf2b4d399",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/host_history.py": "86b9d443f092ed3004186b8e94abb6a29ba8f70cbdf6b4ebee3dee23fbd5a9e0",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/platform_identity.py": "76fc33140fb6bb4951412135fd4997c8e13614f5edb8060da11b36e11b30a17d",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/runtime.py": "8251c21781be51270b206695c1e307c99c480f597865631c792fef54a7438ec7",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/sessions.py": "f566b731f762c8811a7bc623687945e73ef87699e4bbe736722149d8d85daf01",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_events.py": "f2a6cfc48238d889b3a79783ff2b219eb0d56f5838d77975513164937417dc14",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_history.py": "9f4c0bab4f720f01af9495bce7a67cf7d986295594e5e4c3280ce38f3f0211d9",
+      "oai-core/src/oai_core/__init__.py": "2a790e4dffa663c81b7d06b2b60c187368aee700de8c1643abdf8905b93fba53",
+      "oai-core/src/oai_core/adapters/codex.py": "3565c17a2d78b05cfc10a6330ffa2f7bd14aba619cf23d0b47938b2c075254ee",
+      "oai-core/src/oai_core/adapters/dsh.py": "dbaf4b67f232e562d7c3401596fa32471fd2cefb29ddf64f79b712961ad1fc1a",
+      "oai-core/src/oai_core/adapters/hermes.py": "31189f2c7161974dc3df4c90eb5c825ab1bff19ca38d3c5067a07923126165fb",
+      "oai-core/src/oai_core/adapters/remote.py": "440da5afb404ad2f79ee8441fbb202a67398f452f951f8fa8260e05abfebd389",
+      "oai-core/src/oai_core/auth.py": "7e40385d79ea95d9a3c378d161193e033560a43475f38d3ecb83771e9df3e2e7",
+      "oai-core/src/oai_core/cli.py": "0b1ca03cd5a534f2d8f8b99cd811ecc6f0dabeaebd98540d4123c0641b5f57c5",
+      "oai-core/src/oai_core/client.py": "b74d9d5429d2c43d1f9676071ed56cb4eeb3c26cf61b73a3e5901d8b27adce3c",
+      "oai-core/src/oai_core/device_service.py": "c38b951b261dd9f60325ec55a03910c806be086d9a8d7e1ea81b3cdce482d784",
+      "oai-core/src/oai_core/gateway/__init__.py": "e24d42ebd0224c2d8d4f97d3e13456557ebf0ab3e4ce4218888911e0c4779f3e",
+      "oai-core/src/oai_core/gateway/account_paths.py": "eaaadfa9227c1b8b366f4d01badb9643b898a0175dc7e27fa5c173055fd401a3",
+      "oai-core/src/oai_core/gateway/admin.py": "6e6f1c8dd58508f6eb0cc0ce956b12542f752da8f1ebb98b1115fa1862b95bf3",
+      "oai-core/src/oai_core/gateway/audit.py": "11f611ad85a88c56d27948935303487e921d7bc0df4965207a446ce6aefa83f6",
+      "oai-core/src/oai_core/gateway/backup.py": "c4ed80e782823a293d2dc80800ad370e1e51fa46c6da30756367f169644d3841",
+      "oai-core/src/oai_core/gateway/capability_bindings.py": "267bc305b1212b75c6a87484aa0ed04a092b6ca5692e11aac3b0319cfe100df5",
+      "oai-core/src/oai_core/gateway/capability_policy.py": "3579b8874effc8c9a8a8e2e97a768a2d1674c995dce5c063e0b8932a05cef725",
+      "oai-core/src/oai_core/gateway/contract_assets.py": "5c85496de6b4a9591856780e216506396ab43d76718f8ff151d529e4ea1e814a",
+      "oai-core/src/oai_core/gateway/conversation_management.py": "f9b87580895ecd8ce65b9c8bc71ffdc984b629e3446f2f75c7e1fb1da757b63a",
+      "oai-core/src/oai_core/gateway/conversation_workflow.py": "ff892f6a1ea1a4629e08177ec8a30efe7090273a3dc7ceb4cfb570008570168b",
+      "oai-core/src/oai_core/gateway/core.py": "bfc6ff2069b5c0fb7caa24d51e3ba6351bc348e9c48ebf85cd2763cd34d5daf0",
+      "oai-core/src/oai_core/gateway/credentials.py": "004f891448c62744b83ffd2b27efcf2d5326e13d56a8beb155bb36cffacb79b7",
+      "oai-core/src/oai_core/gateway/device_authority.py": "b4540828826df23028b23305c304c0948d554425137da773f4003a378653fc6f",
+      "oai-core/src/oai_core/gateway/history.py": "dfc4ba06cec66fd631773b39bc08bf8e1672ebf5694a5cfef60485e8c6de0b17",
+      "oai-core/src/oai_core/gateway/history_media.py": "bb97de0c76ab496da83e3656a00539a16fa3cc60cf65e727ae87a969ae66069d",
+      "oai-core/src/oai_core/gateway/http.py": "0b17483c6903118bcf39052cf04cac321ac02e06355a5d0fafb1af591c3febb9",
+      "oai-core/src/oai_core/gateway/identity_rotation.py": "e61009c5ee4a6060396cceb020f186a863c3e77a0533d1e0b05873eed57fc451",
+      "oai-core/src/oai_core/gateway/local_keys.py": "9afa4a68b785f5290e40998527d468d19a5b43c7bd988b3b835a6d11f0969707",
+      "oai-core/src/oai_core/gateway/pairing_invites.py": "020fb010d57fe07ab0c38b74830319bebefbda45d4dd2e6890b7ed19b242ea4c",
+      "oai-core/src/oai_core/gateway/transport.py": "113a675bc5d29cad799d7ad6a1fc3c0facf7bf5ad2990cfe455fdda700981127",
+      "oai-core/src/oai_core/gateway/verifier.py": "0590320583e76653c4c47357ddb83fb8ed4b277a7b39e8dc1b5ef3f4bac9617b",
+      "oai-core/src/oai_core/hermes_host.py": "88c6be3aad6162491b010ba91c4b2014c80e6dabfac3ec85485e1797a9335bd5",
+      "oai-core/src/oai_core/mcp.py": "e72809d0a9f4d874c2e85513aecebff0bebbeb25cce9d3ae2b37bbbe615923da",
+      "oai-core/src/oai_core/native_diagnostics.py": "4858a5462eb52b1960ceffbbfa653b6dabf59ec90e957313bcb47115fcfc5fe1",
+      "oai-core/src/oai_core/operations.py": "c7e220afb8c2da863e7d5f9a6684b8e1fed0f29f4533107c9d7e8f33500d6582",
+      "oai-core/src/oai_core/server.py": "c80c5a44f8ad5ddd28de03427ae8a07fa001c586a958fbb093aa41bd99ce57d5",
+      "oai-core/src/oai_core/sessions.py": "7c432ab77276f960e9d863e686903b5b2d6965f9a1a0ef152b22964bcc64311e",
+      "oai-core/src/oai_core/skills_installer.py": "e9e6ffb083b1217b9408fbf62b6670148d6fcbf6187d4f5eb9e6d7218626422f"
+    },
+    "dirty_files_sha256": {},
+    "dirty_source_files": [],
+    "dirty_hash_exclusions": [
+      "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/**"
+    ]
+  },
+  "measurement_script_sha256": "00d9b34a56fe47c94c7e816bbd6cd8cd86de79d1d6af299ceef8331e4920a3f0",
+  "test_script_sha256": "075da27d13977b5473902abe88675c2b2b031ae8d698b4dfe34289401580eb1f",
+  "environment": {
+    "python": "3.11.15",
+    "implementation": "CPython",
+    "python_compiler": "Clang 22.1.3 ",
+    "interpreter_sha256": "0253b01a7f5d96a042a2b9f5e0f5ff5062707a1c75be2b089098e3111cd186d2",
+    "system": "Linux",
+    "release": "7.1.6-1-cachyos",
+    "machine": "x86_64",
+    "host_fingerprint_sha256": "4995839521fc8093212f7e29f4b4995f3d9f227e54ddc4cb382d834e897bfffd",
+    "cpu_count": 12,
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "packages": {
+      "aiohttp": "3.14.4",
+      "jsonschema": "4.26.0",
+      "cryptography": "50.0.2",
+      "yarl": "1.25.1",
+      "pytest": "9.1.1",
+      "pytest-asyncio": "1.4.1"
+    },
+    "event_loop_policy": "_UnixDefaultEventLoopPolicy",
+    "monotonic_resolution_seconds": 1e-09
+  },
+  "parameters": {
+    "attempts_per_mode_scenario": 1000,
+    "synthetic_delay_ms": 5,
+    "synthetic_slow_delay_ms": 80,
+    "modes": [
+      "direct",
+      "bridge"
+    ],
+    "scenarios": [
+      "create",
+      "send",
+      "create_disconnect",
+      "send_disconnect",
+      "bridge_disconnect",
+      "concurrent_send",
+      "slow_adapter_isolation"
+    ],
+    "timeout_seconds": 3,
+    "concurrency_burst_size": 8,
+    "arrival_interval_ms": 25,
+    "warmup_attempts_per_mode_scenario": 10,
+    "resource_sample_interval_ms": 5,
+    "database": "in_memory_operation_ledger",
+    "diagnostic_trace": "enabled_numeric_enum_allowlist"
+  },
+  "host_load_before": {
+    "load_average_1_5_15": [
+      2.9580078125,
+      3.70166015625,
+      3.8837890625
+    ],
+    "worker_context_switches": {
+      "voluntary": 76,
+      "involuntary": 4
+    },
+    "scope": "Host load is observed, not controlled; other jobs may affect tail latency."
+  },
+  "reproduction": {
+    "argv": [
+      "--source-root",
+      "../..",
+      "--samples",
+      "1000",
+      "--output",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/paired-baseline-33ab7a2a",
+      "--label",
+      "paired-baseline",
+      "--expected-head",
+      "33ab7a2a159b095e0d6408edc8888625011b3e84",
+      "--require-clean-source"
+    ],
+    "cwd_relative_to_meter": ".",
+    "isolation_flags": [
+      "-I",
+      "-B"
+    ],
+    "source_root_relative_to_meter": "../..",
+    "pairing_rule": "Same interpreter, script, environment and load arguments; change source-root/output/label only; after also supplies compare.",
+    "environment_policy": "Child inherits only PATH, locale and TZ; no HOME, PYTHONPATH, OAI/Hermes credentials or configuration variables."
+  },
+  "limitations": {
+    "experiment": "Isolated loopback + real Core/bridge routing + synthetic host; not production performance.",
+    "authentication": "Synthetic local principal; random in-memory bridge token, never persisted.",
+    "persistence": "In-memory host facts and operation ledger; no process restart/disk durability claim.",
+    "percentiles": "Empirical nearest rank; P99 null below 1000 observations; no sample size establishes production P99 here.",
+    "denominator": "Every attempted request stays in success/failure denominator; fault injection is separate from semantic success.",
+    "timeout": "Failures retain observed submit_to_finished; unobserved final latency is null, never zero or a successful latency.",
+    "resources": "Core, bridges, synthetic hosts and load client share worker process; resource usage is combined.",
+    "clock": "One process monotonic clock only; wall time is provenance, not cross-machine latency.",
+    "unsupported_metrics": {
+      "android_click_ms": "No Android device or input instrumentation.",
+      "android_request_start_ms": "Loopback submission is not Android T1.",
+      "android_sse_read_ms": "Loopback SSE read is not Android T6.",
+      "android_event_emitted_ms": "No Android repository T7 instrumentation.",
+      "android_event_applied_ms": "No Android reducer T8 instrumentation.",
+      "android_reconciled_ms": "No Android recovery T11 instrumentation.",
+      "android_render_ms": "No Android device or frame/render instrumentation.",
+      "cross_machine_network_ms": "Only loopback in one process; no synchronized cross-machine tracing.",
+      "db_queue_wait_ms": "No comparable database admission/queue boundary in both sources; in-memory operation ledger only.",
+      "db_queue_depth": "No comparable database queue-depth instrumentation.",
+      "agent_started_ms": "Synthetic handler entry is not real Agent execution.",
+      "agent_compute_ms": "Injected synthetic delay is not model compute time."
+    }
+  }
+}

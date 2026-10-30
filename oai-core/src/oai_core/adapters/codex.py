@@ -13,12 +13,14 @@ import json
 import os
 import re
 import tomllib
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from ..sessions import AdapterError, Principal
+from ..native_diagnostics import trace_native_stage
 
 
 SOURCE_KINDS = [
@@ -213,6 +215,9 @@ class CodexSessionAdapter:
     async def _rpc_raw(
         self, method: str, params: dict[str, Any], *, wait_for_response: bool = False,
     ) -> dict[str, Any]:
+        started_ns = time.monotonic_ns()
+        trace_native_stage("adapter.codex.rpc_submitted", agent_id=self.adapter_id,
+            conversation_id=params.get("threadId"), operation=method)
         self._sequence += 1
         identifier = self._sequence
         future = asyncio.get_running_loop().create_future()
@@ -233,6 +238,8 @@ class CodexSessionAdapter:
             result = message.get("result")
             if not isinstance(result, dict):
                 raise AdapterError("INVALID_AGENT_RESPONSE", 502)
+            trace_native_stage("adapter.codex.rpc_returned", agent_id=self.adapter_id,
+                conversation_id=params.get("threadId"), operation=method, started_ns=started_ns)
             return result
         finally:
             self._pending.pop(identifier, None)
@@ -389,6 +396,8 @@ class CodexSessionAdapter:
                 # transport loss. Never replay or cancel an arbitrary turn.
                 await execution.terminal
                 return
+            trace_native_stage("adapter.codex.host_admitted", agent_id=self.adapter_id,
+                conversation_id=session_id, generation_id=turn_id, operation="turn/start")
             execution.turn_id = turn_id
             self._turns[session_id] = turn_id
             execution.started.set_result(turn_id)

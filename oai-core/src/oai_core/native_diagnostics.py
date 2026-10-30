@@ -70,6 +70,7 @@ def trace_native_stage(
     trace_id: str | None = None, agent_id: str | None = None,
     conversation_id: str | None = None, operation: str | None = None,
     queue_depth: int | None = None, pending_operations: int | None = None,
+    queue_wait_ms: float | None = None,
 ) -> None:
     if not logger.isEnabledFor(logging.DEBUG):
         return
@@ -83,7 +84,7 @@ def trace_native_stage(
         "clientMessageId": client_message_id, "generationId": generation_id,
         "messageId": message_id, "eventId": event_id, "revision": revision,
         "state": state, "eventType": event_type,
-        "queueDepth": queue_depth, "pendingOperations": pending_operations,
+        "queueDepth": queue_depth, "pendingOperations": pending_operations, "queueWaitMs": queue_wait_ms,
         "requestId": request_id or (context.request_id if context else None),
         "elapsedMs": round((now - started_ns) / 1_000_000, 3) if started_ns is not None else None,
     }
@@ -93,4 +94,8 @@ def trace_native_stage(
               or (type(value) is float and math.isfinite(value))}
     if "requestId" in public and not _REQUEST_ID.fullmatch(str(public["requestId"])):
         public.pop("requestId")
-    logger.debug("native_session %s", json.dumps(public, separators=(",", ":")))
+    try:
+        logger.debug("native_session %s", json.dumps(public, separators=(",", ":")))
+    except Exception:
+        # A custom diagnostic sink must never change an accepted operation.
+        pass

@@ -1,6 +1,7 @@
 """Operation receipts are scoped facts; HTTP cancellation is not execution cancellation."""
 import asyncio
-from contextlib import suppress
+import json
+from contextlib import contextmanager, suppress
 import sqlite3
 import threading
 
@@ -77,13 +78,15 @@ async def test_real_sqlite_write_lock_keeps_unrelated_event_loop_work_runnable(t
     lock.execute("BEGIN IMMEDIATE")
     entered = asyncio.Event()
     loop = asyncio.get_running_loop()
-    original = NativeOperations.begin
+    original = NativeOperations.batch
     worker_threads = set()
-    def begin(self, *args, **kwargs):
+    @contextmanager
+    def batch(self):
         worker_threads.add(threading.get_ident())
         loop.call_soon_threadsafe(entered.set)
-        return original(self, *args, **kwargs)
-    monkeypatch.setattr(NativeOperations, "begin", begin)
+        with original(self):
+            yield
+    monkeypatch.setattr(NativeOperations, "batch", batch)
     pending = asyncio.create_task(ledger.begin("alice", "locked", "POST", "/synthetic", {}, agent_id="probe"))
     try:
         await asyncio.wait_for(entered.wait(), 1)
@@ -259,3 +262,161 @@ async def test_unauthenticated_message_headers_never_enter_diagnostic_records(ca
     await registry.close()
     for sensitive in ("SYNTHETIC-CREDENTIAL", "PRIVATE-KEY", "PRIVATE-AUTH", "PRIVATE-MESSAGE"):
         assert sensitive not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_already_queued_ledger_jobs_share_commit_without_rolling_back_an_unrelated_operation(monkeypatch):
+    from oai_core.operations import OperationConflict
+    ledger = AsyncNativeOperations(capacity=8)
+    await ledger.count()
+    entered, release = threading.Event(), threading.Event()
+    sql = []
+    original = NativeOperations.batch
+    first = True
+    @contextmanager
+    def batch(self):
+        nonlocal first
+        if first:
+            first = False
+            self.database.set_trace_callback(sql.append)
+            entered.set()
+            assert release.wait(3)
+        with original(self):
+            yield
+    monkeypatch.setattr(NativeOperations, "batch", batch)
+    seed = asyncio.create_task(ledger.begin("alice", "stable", "POST", "/create", {}, agent_id="probe"))
+    tasks = []
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        tasks = [asyncio.create_task(ledger.complete("alice", "stable", {"session": {"id": "real"}})),
+                 asyncio.create_task(ledger.begin("alice", "stable", "POST", "/create", {"changed": True}, agent_id="probe")),
+                 asyncio.create_task(ledger.begin("alice", "independent", "POST", "/create", {}, agent_id="probe"))]
+        await asyncio.sleep(0)  # Schedule the three queued jobs, without a timed batching delay.
+        assert ledger._pending == 4
+        release.set()
+        assert await seed is None
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        assert outcomes[0] is None and isinstance(outcomes[1], OperationConflict) and outcomes[2] is None
+        assert sum(statement == "COMMIT" for statement in sql) == 2
+        assert await ledger.lookup("alice", "stable", "probe") == {"state": "resolved", "receipt": {"session": {"id": "real"}}}
+        assert await ledger.lookup("alice", "independent", "probe") == {"state": "unknown"}
+        assert await ledger.count() == 2
+    finally:
+        release.set()
+        await asyncio.gather(seed, *tasks, return_exceptions=True)
+        await ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_group_commit_never_publishes_reliable_admission(monkeypatch):
+    ledger = AsyncNativeOperations(capacity=8)
+    await ledger.count()
+    entered, release = threading.Event(), threading.Event()
+    original = NativeOperations.batch
+    groups = 0
+    @contextmanager
+    def batch(self):
+        nonlocal groups
+        groups += 1
+        current = groups
+        if current == 1:
+            entered.set()
+            assert release.wait(3)
+        with original(self):
+            yield
+            if current == 2:
+                raise sqlite3.OperationalError("synthetic failure before group commit")
+    monkeypatch.setattr(NativeOperations, "batch", batch)
+    seed = asyncio.create_task(ledger.begin("alice", "prior", "POST", "/create", {}, agent_id="probe"))
+    tasks = []
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        tasks = [asyncio.create_task(ledger.begin("alice", key, "POST", "/create", {}, agent_id="probe")) for key in ("one", "two")]
+        await asyncio.sleep(0)
+        assert ledger._pending == 3
+        release.set()
+        await seed
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert all(isinstance(value, sqlite3.OperationalError) for value in results)
+        assert await ledger.lookup("alice", "one", "probe") is None
+        assert await ledger.lookup("alice", "two", "probe") is None
+        assert await ledger.lookup("alice", "prior", "probe") == {"state": "unknown"}
+    finally:
+        release.set()
+        await asyncio.gather(seed, *tasks, return_exceptions=True)
+        await ledger.close()
+
+
+def test_on_disk_operation_ledger_retains_full_commit_sync_and_legacy_reopen(tmp_path):
+    path = tmp_path / "ledger.sqlite"
+    ledger = NativeOperations(path)
+    try:
+        from oai_core.operations import _wal_reset_fix_available
+        expected = "wal" if _wal_reset_fix_available(sqlite3.sqlite_version_info) else "delete"
+        assert ledger.database.execute("PRAGMA journal_mode").fetchone()[0].lower() == expected
+        assert ledger.database.execute("PRAGMA synchronous").fetchone()[0] == 2
+        ledger.begin("alice", "original", "POST", "/sessions", {}, agent_id="probe")
+        ledger.complete("alice", "original", {"session": {"id": "native"}})
+        assert path.stat().st_mode & 0o777 == 0o600
+        # An older SQLite client opens the same ledger and sees only committed facts.
+        connection = sqlite3.connect(path)
+        try:
+            assert json.loads(connection.execute("SELECT receipt FROM native_operations WHERE request_id='original'").fetchone()[0]) == {"session": {"id": "native"}}
+        finally: connection.close()
+    finally: ledger.close()
+
+
+@pytest.mark.parametrize("version,expected", [((3,40,1), False), ((3,44,5),False), ((3,44,6),True), ((3,45,0),False), ((3,50,6),False), ((3,50,7),True), ((3,51,2),False), ((3,51,3),True), ((3,53,1),True)])
+def test_operation_wal_requires_the_sqlite_reset_fix(version, expected):
+    from oai_core.operations import _wal_reset_fix_available
+    assert _wal_reset_fix_available(version) == expected
+
+
+def test_older_sqlite_reopens_ledger_with_full_sync_rollback_journal(tmp_path, monkeypatch):
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 40, 1))
+    ledger = NativeOperations(tmp_path / "old-runtime.sqlite")
+    try:
+        assert ledger.database.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+        assert ledger.database.execute("PRAGMA synchronous").fetchone()[0] == 2
+    finally: ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_full_automatic_rollback_never_returns_admission_for_a_lost_record(monkeypatch):
+    ledger = AsyncNativeOperations(capacity=8)
+    await ledger.begin("alice", "seed", "POST", "/create", {}, agent_id="probe")
+    entered, release = threading.Event(), threading.Event()
+    original = NativeOperations.batch
+    first = True
+    @contextmanager
+    def batch(self):
+        nonlocal first
+        if first:
+            first = False
+            count = self.database.execute("PRAGMA page_count").fetchone()[0]
+            self.database.execute("PRAGMA max_page_count=" + str(count + 1))
+            entered.set()
+            assert release.wait(3)
+        with original(self):
+            yield
+    monkeypatch.setattr(NativeOperations, "batch", batch)
+    gate = asyncio.create_task(ledger.count())
+    tasks = []
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        tasks = [asyncio.create_task(ledger.begin("alice", "first", "POST", "/create", {}, agent_id="probe")),
+                 asyncio.create_task(ledger.complete("alice", "seed", {"session": {"id": "large" * 262144}})),
+                 asyncio.create_task(ledger.begin("alice", "last", "POST", "/create", {}, agent_id="probe"))]
+        await asyncio.sleep(0)
+        assert ledger._pending == 4
+        release.set()
+        await gate
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert all(isinstance(value, Exception) for value in results), "A rolled-back batch returned reliable admission"
+        assert await ledger.lookup("alice", "first", "probe") is None
+        assert await ledger.lookup("alice", "last", "probe") is None
+        assert await ledger.lookup("alice", "seed", "probe") == {"state": "unknown"}
+    finally:
+        release.set()
+        await asyncio.gather(gate, *tasks, return_exceptions=True)
+        await ledger.close()

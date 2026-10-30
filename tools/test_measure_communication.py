@@ -402,3 +402,31 @@ raise SystemExit(m.main(['--worker','--source-root',sys.argv[1],'--output',sys.a
     assert before["dirty_files_sha256"] == {}
     assert after["dirty_files_sha256"] == {
         "docs/fixture-note.md": hashlib.sha256(b"controlled mid-run change\n").hexdigest()}
+
+
+def test_disk_ledger_and_default_off_diagnostics_are_real_independent_controls(runtime_repository):
+    script = """
+import asyncio, importlib.util, json, pathlib, sqlite3, sys
+s=importlib.util.spec_from_file_location('meter', pathlib.Path('tools/measure-communication.py'))
+m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+source=pathlib.Path(sys.argv[1]);api=m.load_source_api(source, m.source_identity(source))
+ledger=source/'isolated-ledger.sqlite'
+async def main():
+    async with m.Harness(api, 'direct', 2, ledger_path=ledger, diagnostics=False) as h:
+        o=m.Observation('create','direct',1,.001)
+        row=await m.measure_one(o,h)
+        assert row['success'] and not h.trace.records
+    connection=sqlite3.connect(ledger)
+    try:
+        columns=[r[1] for r in connection.execute('PRAGMA table_info(native_operations)')]
+        assert columns==['account','request_id','digest','receipt']
+        assert connection.execute('SELECT COUNT(*) FROM native_operations').fetchone()[0]==1
+    finally: connection.close()
+    print(json.dumps({'disk_ledger':ledger.is_file(),'no_diagnostic_records':True}))
+asyncio.run(main())
+"""
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(runtime_repository.root)],
+        cwd=probe.ROOT, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    import json
+    assert json.loads(result.stdout) == {"disk_ledger": True, "no_diagnostic_records": True}

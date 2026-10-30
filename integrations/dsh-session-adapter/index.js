@@ -1,6 +1,7 @@
 /** DSH native session adapter. Android auth and all device work stay in Core. */
 import { createServer } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { diagnosticTrace } from "./diagnostics.js";
 
 export const name = "oai-session-adapter";
 export const inject = ["sessionQuery"];
@@ -91,6 +92,7 @@ export function createSessionHandler(ctx, config, token) {
     value.create = value.list && typeof controller?.create === "function";
     value.send = value.list && typeof controller?.prompt === "function" && typeof ctx.on === "function";
     value.stream = value.send;
+    value.clientMessageIdentity = value.send;
     value.rename = value.list && typeof controller?.rename === "function";
     value.cancel = value.list && typeof controller?.cancel === "function";
     // The verified public query has no archive-state projection. Do not
@@ -119,6 +121,9 @@ export function createSessionHandler(ctx, config, token) {
   };
 
   async function stream(req, res, id, body) {
+    const trace = diagnosticTrace(req.headers);
+    trace("adapter.dsh.message_received", { conversationId: id, clientMessageId: body.clientMessageId });
+    let firstContent = false;
     if (!capabilities().send) throw fail("UNSUPPORTED_CAPABILITY");
     if (typeof body.text !== "string" || !body.text.trim()
         || (body.clientMessageId !== undefined && (typeof body.clientMessageId !== "string"
@@ -174,6 +179,8 @@ export function createSessionHandler(ctx, config, token) {
         clearTimeout(admissionTimer);
         const message = messageOf(event);
         if (typeof message.id === "string" && message.id) identity.userMessageId = message.id;
+        trace("adapter.dsh.native_user_event", { conversationId: id, clientMessageId: body.clientMessageId,
+          userMessageId: identity.userMessageId });
       }
       if (ownTurn === undefined || (event.data.turn !== undefined && event.data.turn !== ownTurn)) return;
       if (event.type === "assistant/message") {
@@ -182,7 +189,13 @@ export function createSessionHandler(ctx, config, token) {
         if (typeof message?.id === "string" && message.id) identity.messageId = message.id;
         else delete identity.messageId;
       }
-      if (event.type === "turn/end") finish(turnResult(event.data.reason?.kind, finalText, identity));
+      if (event.type === "turn/end") {
+        const reason = event.data.reason?.kind;
+        trace("adapter.dsh.native_terminal", { conversationId: id, clientMessageId: body.clientMessageId,
+          messageId: identity.messageId,
+          state: ({ completed: "completed", error: "failed", aborted: "cancelled" })[reason] ?? "unknown" });
+        finish(turnResult(reason, finalText, identity));
+      }
     }));
     disposers.push(ctx.on("agent/assistant-stream", (payload) => {
       const frame = payload?.frame;
@@ -192,7 +205,13 @@ export function createSessionHandler(ctx, config, token) {
         ownAttempts.add(frame.attemptId);
       }
       if (frame?.type === "chunk" && ownAttempts.has(frame.attemptId)
-          && frame.chunk?.type === "text-delta") enqueue({ type: "delta", text: frame.chunk.text });
+          && frame.chunk?.type === "text-delta") {
+        if (!firstContent) {
+          firstContent = true;
+          trace("adapter.dsh.first_content_event", { conversationId: id, clientMessageId: body.clientMessageId });
+        }
+        enqueue({ type: "delta", text: frame.chunk.text });
+      }
       if (frame?.type === "end") ownAttempts.delete(frame.attemptId);
     }));
     const waitForDrain = () => new Promise((resolve) => {
@@ -225,6 +244,7 @@ export function createSessionHandler(ctx, config, token) {
         // Transport errors cannot establish whether the input reached inbox.
         if (!admitted) unknown();
       };
+      trace("adapter.dsh.host_submitted", { conversationId: id, clientMessageId: body.clientMessageId });
       observeAdmission(Promise.resolve().then(() => services().controller.prompt({
         requestId, sessionId: id, mode: "queue", content: [{ type: "text", text: body.text }],
       })), admission);
@@ -240,6 +260,7 @@ export function createSessionHandler(ctx, config, token) {
       }
       if (!res.destroyed && !res.writableEnded) res.end();
     } finally {
+      trace("adapter.dsh.observer_closed", { conversationId: id, clientMessageId: body.clientMessageId });
       stop();
       clearTimeout(admissionTimer);
       clearTimeout(observationTimer);
@@ -274,7 +295,10 @@ export function createSessionHandler(ctx, config, token) {
           if (Object.keys(body).some((key) => key !== "title")) throw fail("SCHEMA_INVALID", 400);
           if (body.title != null && (typeof body.title !== "string" || !body.title.trim())) throw fail("SCHEMA_INVALID", 400);
           if (body.title && !capabilities().rename) throw fail("UNSUPPORTED_CAPABILITY");
+          const trace = diagnosticTrace(req.headers);
+          trace("adapter.dsh.create_submitted");
           const created = await services().controller.create({ sessionId: randomUUID(), cwd: config.cwd, agentPreset: config.agentPreset });
+          trace("adapter.dsh.create_returned", { conversationId: created.sessionId });
           if (body.title) await services().controller.rename({ sessionId: created.sessionId, title: body.title });
           return json(res, { session: await summary(await requireSession(created.sessionId)) });
         }

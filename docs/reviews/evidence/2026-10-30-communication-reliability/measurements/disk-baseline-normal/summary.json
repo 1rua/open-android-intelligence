@@ -1,0 +1,2871 @@
+{
+  "format": "oai-isolated-loopback-communication-v4",
+  "run_id": "5e6c761e0b6c4af8a377345bc995bfcb",
+  "label": "disk-baseline-normal",
+  "started_wall_time_ns": 1793384952925818172,
+  "source": {
+    "head": "33ab7a2a159b095e0d6408edc8888625011b3e84",
+    "source_root_relative_to_meter": "../..",
+    "source_sha256": "d9e9b3d4e51d1e1c544d56efea1aab8f6963f66ae48a72147fef9e35562978d5",
+    "files_sha256": {
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/__init__.py": "47fb1cac68d232ed0e5a5980bdf2b4fe6dc90be8018d016c6ae5b1f189935e89",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/approvals.py": "cf721da05816914f756a8be5dab6a33cce1e26885f4dd051a41822bb08df600b",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/backend.py": "47ccadbbd418249ab0137be651e430b143940d4198bcdd0bbf0febb1845e26e4",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py": "2fd39108b226eb9e289fadf80dadc28366fdb0f0b19296f447d964c8f2bd071c",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/context.py": "5df39f5d9851bf777795c1d3afde9237600f12b7fb779bb6e7020be333a32a8b",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/event_sync.py": "ec5153d2bdeb590380b1d4d563d265172167dbb8119ae5b55b8926e693ec95c6",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/history_media.py": "c690b49acafd88e9e6478d68716e7ba575d7cf1e519f0d13209aaf1e650a0761",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/host_commands.py": "c948a9475825bc32603a1dc507c9b205a110db235d96bbfe78f50d5bf2b4d399",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/host_history.py": "86b9d443f092ed3004186b8e94abb6a29ba8f70cbdf6b4ebee3dee23fbd5a9e0",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/platform_identity.py": "76fc33140fb6bb4951412135fd4997c8e13614f5edb8060da11b36e11b30a17d",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/runtime.py": "8251c21781be51270b206695c1e307c99c480f597865631c792fef54a7438ec7",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/sessions.py": "f566b731f762c8811a7bc623687945e73ef87699e4bbe736722149d8d85daf01",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_events.py": "f2a6cfc48238d889b3a79783ff2b219eb0d56f5838d77975513164937417dc14",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_history.py": "9f4c0bab4f720f01af9495bce7a67cf7d986295594e5e4c3280ce38f3f0211d9",
+      "oai-core/src/oai_core/__init__.py": "2a790e4dffa663c81b7d06b2b60c187368aee700de8c1643abdf8905b93fba53",
+      "oai-core/src/oai_core/adapters/codex.py": "3565c17a2d78b05cfc10a6330ffa2f7bd14aba619cf23d0b47938b2c075254ee",
+      "oai-core/src/oai_core/adapters/dsh.py": "dbaf4b67f232e562d7c3401596fa32471fd2cefb29ddf64f79b712961ad1fc1a",
+      "oai-core/src/oai_core/adapters/hermes.py": "31189f2c7161974dc3df4c90eb5c825ab1bff19ca38d3c5067a07923126165fb",
+      "oai-core/src/oai_core/adapters/remote.py": "440da5afb404ad2f79ee8441fbb202a67398f452f951f8fa8260e05abfebd389",
+      "oai-core/src/oai_core/auth.py": "7e40385d79ea95d9a3c378d161193e033560a43475f38d3ecb83771e9df3e2e7",
+      "oai-core/src/oai_core/cli.py": "0b1ca03cd5a534f2d8f8b99cd811ecc6f0dabeaebd98540d4123c0641b5f57c5",
+      "oai-core/src/oai_core/client.py": "b74d9d5429d2c43d1f9676071ed56cb4eeb3c26cf61b73a3e5901d8b27adce3c",
+      "oai-core/src/oai_core/device_service.py": "c38b951b261dd9f60325ec55a03910c806be086d9a8d7e1ea81b3cdce482d784",
+      "oai-core/src/oai_core/gateway/__init__.py": "e24d42ebd0224c2d8d4f97d3e13456557ebf0ab3e4ce4218888911e0c4779f3e",
+      "oai-core/src/oai_core/gateway/account_paths.py": "eaaadfa9227c1b8b366f4d01badb9643b898a0175dc7e27fa5c173055fd401a3",
+      "oai-core/src/oai_core/gateway/admin.py": "6e6f1c8dd58508f6eb0cc0ce956b12542f752da8f1ebb98b1115fa1862b95bf3",
+      "oai-core/src/oai_core/gateway/audit.py": "11f611ad85a88c56d27948935303487e921d7bc0df4965207a446ce6aefa83f6",
+      "oai-core/src/oai_core/gateway/backup.py": "c4ed80e782823a293d2dc80800ad370e1e51fa46c6da30756367f169644d3841",
+      "oai-core/src/oai_core/gateway/capability_bindings.py": "267bc305b1212b75c6a87484aa0ed04a092b6ca5692e11aac3b0319cfe100df5",
+      "oai-core/src/oai_core/gateway/capability_policy.py": "3579b8874effc8c9a8a8e2e97a768a2d1674c995dce5c063e0b8932a05cef725",
+      "oai-core/src/oai_core/gateway/contract_assets.py": "5c85496de6b4a9591856780e216506396ab43d76718f8ff151d529e4ea1e814a",
+      "oai-core/src/oai_core/gateway/conversation_management.py": "f9b87580895ecd8ce65b9c8bc71ffdc984b629e3446f2f75c7e1fb1da757b63a",
+      "oai-core/src/oai_core/gateway/conversation_workflow.py": "ff892f6a1ea1a4629e08177ec8a30efe7090273a3dc7ceb4cfb570008570168b",
+      "oai-core/src/oai_core/gateway/core.py": "bfc6ff2069b5c0fb7caa24d51e3ba6351bc348e9c48ebf85cd2763cd34d5daf0",
+      "oai-core/src/oai_core/gateway/credentials.py": "004f891448c62744b83ffd2b27efcf2d5326e13d56a8beb155bb36cffacb79b7",
+      "oai-core/src/oai_core/gateway/device_authority.py": "b4540828826df23028b23305c304c0948d554425137da773f4003a378653fc6f",
+      "oai-core/src/oai_core/gateway/history.py": "dfc4ba06cec66fd631773b39bc08bf8e1672ebf5694a5cfef60485e8c6de0b17",
+      "oai-core/src/oai_core/gateway/history_media.py": "bb97de0c76ab496da83e3656a00539a16fa3cc60cf65e727ae87a969ae66069d",
+      "oai-core/src/oai_core/gateway/http.py": "0b17483c6903118bcf39052cf04cac321ac02e06355a5d0fafb1af591c3febb9",
+      "oai-core/src/oai_core/gateway/identity_rotation.py": "e61009c5ee4a6060396cceb020f186a863c3e77a0533d1e0b05873eed57fc451",
+      "oai-core/src/oai_core/gateway/local_keys.py": "9afa4a68b785f5290e40998527d468d19a5b43c7bd988b3b835a6d11f0969707",
+      "oai-core/src/oai_core/gateway/pairing_invites.py": "020fb010d57fe07ab0c38b74830319bebefbda45d4dd2e6890b7ed19b242ea4c",
+      "oai-core/src/oai_core/gateway/transport.py": "113a675bc5d29cad799d7ad6a1fc3c0facf7bf5ad2990cfe455fdda700981127",
+      "oai-core/src/oai_core/gateway/verifier.py": "0590320583e76653c4c47357ddb83fb8ed4b277a7b39e8dc1b5ef3f4bac9617b",
+      "oai-core/src/oai_core/hermes_host.py": "88c6be3aad6162491b010ba91c4b2014c80e6dabfac3ec85485e1797a9335bd5",
+      "oai-core/src/oai_core/mcp.py": "e72809d0a9f4d874c2e85513aecebff0bebbeb25cce9d3ae2b37bbbe615923da",
+      "oai-core/src/oai_core/native_diagnostics.py": "4858a5462eb52b1960ceffbbfa653b6dabf59ec90e957313bcb47115fcfc5fe1",
+      "oai-core/src/oai_core/operations.py": "c7e220afb8c2da863e7d5f9a6684b8e1fed0f29f4533107c9d7e8f33500d6582",
+      "oai-core/src/oai_core/server.py": "c80c5a44f8ad5ddd28de03427ae8a07fa001c586a958fbb093aa41bd99ce57d5",
+      "oai-core/src/oai_core/sessions.py": "7c432ab77276f960e9d863e686903b5b2d6965f9a1a0ef152b22964bcc64311e",
+      "oai-core/src/oai_core/skills_installer.py": "e9e6ffb083b1217b9408fbf62b6670148d6fcbf6187d4f5eb9e6d7218626422f"
+    },
+    "dirty_files_sha256": {},
+    "dirty_source_files": [],
+    "dirty_hash_exclusions": [
+      "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/**"
+    ]
+  },
+  "measurement_script_sha256": "fbca60a280fd45e2de2230ec0e29a65848866f11e1c0d8ed21fca490a5aa9ba2",
+  "test_script_sha256": "be588d3bd13291e6d9e2aabce26d70517b5c98c5ff1ef7b2921f514e3c44b764",
+  "environment": {
+    "python": "3.11.15",
+    "implementation": "CPython",
+    "python_compiler": "Clang 22.1.3 ",
+    "interpreter_sha256": "0253b01a7f5d96a042a2b9f5e0f5ff5062707a1c75be2b089098e3111cd186d2",
+    "system": "Linux",
+    "release": "7.1.6-1-cachyos",
+    "machine": "x86_64",
+    "host_fingerprint_sha256": "4995839521fc8093212f7e29f4b4995f3d9f227e54ddc4cb382d834e897bfffd",
+    "cpu_count": 12,
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "packages": {
+      "aiohttp": "3.14.4",
+      "jsonschema": "4.26.0",
+      "cryptography": "50.0.2",
+      "yarl": "1.25.1",
+      "pytest": "9.1.1",
+      "pytest-asyncio": "1.4.1"
+    },
+    "event_loop_policy": "_UnixDefaultEventLoopPolicy",
+    "monotonic_resolution_seconds": 1e-09
+  },
+  "parameters": {
+    "attempts_per_mode_scenario": 1000,
+    "synthetic_delay_ms": 5,
+    "synthetic_slow_delay_ms": 80,
+    "modes": [
+      "direct",
+      "bridge"
+    ],
+    "scenarios": [
+      "create",
+      "send",
+      "concurrent_send"
+    ],
+    "timeout_seconds": 3,
+    "concurrency_burst_size": 8,
+    "arrival_interval_ms": 25,
+    "warmup_attempts_per_mode_scenario": 10,
+    "resource_sample_interval_ms": 5,
+    "database": "disk",
+    "diagnostic_trace": "disabled"
+  },
+  "host_load_before": {
+    "load_average_1_5_15": [
+      2.1728515625,
+      2.3505859375,
+      2.892578125
+    ],
+    "worker_context_switches": {
+      "voluntary": 10,
+      "involuntary": 38
+    },
+    "scope": "Host load is observed, not controlled; other jobs may affect tail latency."
+  },
+  "reproduction": {
+    "argv": [
+      "--source-root",
+      "../..",
+      "--samples",
+      "1000",
+      "--scenarios",
+      "create",
+      "send",
+      "concurrent_send",
+      "--ledger",
+      "disk",
+      "--diagnostics",
+      "disabled",
+      "--output",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/disk-baseline-normal",
+      "--label",
+      "disk-baseline-normal",
+      "--require-clean-source"
+    ],
+    "cwd_relative_to_meter": ".",
+    "isolation_flags": [
+      "-I",
+      "-B"
+    ],
+    "source_root_relative_to_meter": "../..",
+    "pairing_rule": "Same interpreter, script, environment and load arguments; change source-root/output/label only; after also supplies compare.",
+    "environment_policy": "Child inherits only PATH, locale and TZ; no HOME, PYTHONPATH, OAI/Hermes credentials or configuration variables."
+  },
+  "limitations": {
+    "experiment": "Isolated loopback + real Core/bridge routing + synthetic host; not production performance.",
+    "authentication": "Synthetic local principal; random in-memory bridge token, never persisted.",
+    "persistence": "Synthetic host facts stay in memory. Core operation ledger is selected as memory or an isolated on-disk SQLite file; no native host process-restart claim.",
+    "percentiles": "Empirical nearest rank; P99 null below 1000 observations; no sample size establishes production P99 here.",
+    "denominator": "Every attempted request stays in success/failure denominator; fault injection is separate from semantic success.",
+    "timeout": "Failures retain observed submit_to_finished; unobserved final latency is null, never zero or a successful latency.",
+    "resources": "Core, bridges, synthetic hosts and load client share worker process; resource usage is combined.",
+    "clock": "One process monotonic clock only; wall time is provenance, not cross-machine latency.",
+    "unsupported_metrics": {
+      "android_click_ms": "No Android device or input instrumentation.",
+      "android_request_start_ms": "Loopback submission is not Android T1.",
+      "android_sse_read_ms": "Loopback SSE read is not Android T6.",
+      "android_event_emitted_ms": "No Android repository T7 instrumentation.",
+      "android_event_applied_ms": "No Android reducer T8 instrumentation.",
+      "android_reconciled_ms": "No Android recovery T11 instrumentation.",
+      "android_render_ms": "No Android device or frame/render instrumentation.",
+      "cross_machine_network_ms": "Only loopback in one process; no synchronized cross-machine tracing.",
+      "db_queue_wait_ms": "No comparable database admission/queue boundary in both sources; ledger mode is recorded separately.",
+      "db_queue_depth": "No comparable database queue-depth instrumentation.",
+      "agent_started_ms": "Synthetic handler entry is not real Agent execution.",
+      "agent_compute_ms": "Injected synthetic delay is not model compute time."
+    }
+  },
+  "workloads": {
+    "direct/create": {
+      "shape": "serial_closed_loop_fault_or_functional_probe",
+      "max_in_flight": 1,
+      "requested_attempts": 1000,
+      "achieved_attempts_per_second": 95.6971045682408
+    },
+    "direct/send": {
+      "shape": "serial_closed_loop_fault_or_functional_probe",
+      "max_in_flight": 1,
+      "requested_attempts": 1000,
+      "achieved_attempts_per_second": 94.69400209813766
+    },
+    "direct/concurrent_send": {
+      "shape": "fixed_schedule_concurrent_bursts_independent_of_completions",
+      "requested_attempts": 1000,
+      "burst_size": 8,
+      "burst_count": 125,
+      "burst_interval_ms": 25,
+      "nominal_offered_attempts_per_second": 320.0,
+      "max_in_flight": 184,
+      "slow_adapter_count": 0,
+      "slow_attempts_per_burst": 0,
+      "coordinated_omission_note": "Fixed scheduling plus arrival_to_submit and arrival_to_finished; scheduler lateness is retained. No serial request-response pacing.",
+      "achieved_attempts_per_second": 197.40508473537855
+    },
+    "bridge/create": {
+      "shape": "serial_closed_loop_fault_or_functional_probe",
+      "max_in_flight": 1,
+      "requested_attempts": 1000,
+      "achieved_attempts_per_second": 91.39739204495314
+    },
+    "bridge/send": {
+      "shape": "serial_closed_loop_fault_or_functional_probe",
+      "max_in_flight": 1,
+      "requested_attempts": 1000,
+      "achieved_attempts_per_second": 87.34336877773443
+    },
+    "bridge/concurrent_send": {
+      "shape": "fixed_schedule_concurrent_bursts_independent_of_completions",
+      "requested_attempts": 1000,
+      "burst_size": 8,
+      "burst_count": 125,
+      "burst_interval_ms": 25,
+      "nominal_offered_attempts_per_second": 320.0,
+      "max_in_flight": 262,
+      "slow_adapter_count": 0,
+      "slow_attempts_per_burst": 0,
+      "coordinated_omission_note": "Fixed scheduling plus arrival_to_submit and arrival_to_finished; scheduler lateness is retained. No serial request-response pacing.",
+      "achieved_attempts_per_second": 173.17035233838018
+    }
+  },
+  "resources": {
+    "direct/create": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 1526,
+      "wall_seconds": 10.449636951,
+      "process_cpu_seconds": 1.033834329,
+      "process_cpu_percent_one_core": 9.893495188855006,
+      "event_loop_lag_ms": {
+        "n": 1526,
+        "p50": 2.172018008423038,
+        "p95": 2.6910439992207102,
+        "p99": 2.9092830009176396,
+        "max": 46.53795800550142,
+        "p99_unavailable_reason": null
+      },
+      "rss_bytes": {
+        "n": 1528,
+        "p50": 67735552,
+        "p95": 68661248,
+        "p99": 68833280,
+        "max": 68874240,
+        "p99_unavailable_reason": null
+      },
+      "fd_count": {
+        "n": 1528,
+        "p50": 14,
+        "p95": 14,
+        "p99": 14,
+        "max": 14,
+        "p99_unavailable_reason": null
+      },
+      "before": {
+        "cpu_seconds": 0.234622329,
+        "rss_bytes": 67145728,
+        "fd_count": 14,
+        "max_rss_bytes": 66727936,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 1.268456658,
+        "rss_bytes": 68874240,
+        "fd_count": 14,
+        "max_rss_bytes": 68300800,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "direct/send": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 1993,
+      "wall_seconds": 10.560330938,
+      "process_cpu_seconds": 1.342705066,
+      "process_cpu_percent_one_core": 12.714611633698405,
+      "event_loop_lag_ms": {
+        "n": 1993,
+        "p50": 0.25503800861770287,
+        "p95": 0.5784800086985342,
+        "p99": 2.2652210027445108,
+        "max": 5.050368999945931,
+        "p99_unavailable_reason": null
+      },
+      "rss_bytes": {
+        "n": 1995,
+        "p50": 71229440,
+        "p95": 73555968,
+        "p99": 73764864,
+        "max": 73805824,
+        "p99_unavailable_reason": null
+      },
+      "fd_count": {
+        "n": 1995,
+        "p50": 14,
+        "p95": 14,
+        "p99": 14,
+        "max": 14,
+        "p99_unavailable_reason": null
+      },
+      "before": {
+        "cpu_seconds": 1.320081243,
+        "rss_bytes": 69177344,
+        "fd_count": 14,
+        "max_rss_bytes": 68562944,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 2.662786309,
+        "rss_bytes": 73805824,
+        "fd_count": 14,
+        "max_rss_bytes": 73150464,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "direct/concurrent_send": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 35,
+      "wall_seconds": 5.065725644,
+      "process_cpu_seconds": 0.8867780860000001,
+      "process_cpu_percent_one_core": 17.505450320830683,
+      "event_loop_lag_ms": {
+        "n": 35,
+        "p50": 185.08592499711085,
+        "p95": 235.0949860046967,
+        "p99": null,
+        "max": 253.8064980035415,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "rss_bytes": {
+        "n": 37,
+        "p50": 80191488,
+        "p95": 80650240,
+        "p99": null,
+        "max": 80650240,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "fd_count": {
+        "n": 37,
+        "p50": 348,
+        "p95": 348,
+        "p99": null,
+        "max": 348,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "before": {
+        "cpu_seconds": 2.721413123,
+        "rss_bytes": 74395648,
+        "fd_count": 32,
+        "max_rss_bytes": 73805824,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 3.608191209,
+        "rss_bytes": 80650240,
+        "fd_count": 348,
+        "max_rss_bytes": 79704064,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "bridge/create": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 1999,
+      "wall_seconds": 10.941231228,
+      "process_cpu_seconds": 1.6987949440000003,
+      "process_cpu_percent_one_core": 15.526542750075222,
+      "event_loop_lag_ms": {
+        "n": 1999,
+        "p50": 0.4604230052791536,
+        "p95": 0.7078880007611588,
+        "p99": 2.2332260050461628,
+        "max": 5.182381006306969,
+        "p99_unavailable_reason": null
+      },
+      "rss_bytes": {
+        "n": 2001,
+        "p50": 80683008,
+        "p95": 80683008,
+        "p99": 80683008,
+        "max": 80683008,
+        "p99_unavailable_reason": null
+      },
+      "fd_count": {
+        "n": 2001,
+        "p50": 18,
+        "p95": 18,
+        "p99": 18,
+        "max": 18,
+        "p99_unavailable_reason": null
+      },
+      "before": {
+        "cpu_seconds": 3.666070767,
+        "rss_bytes": 80650240,
+        "fd_count": 16,
+        "max_rss_bytes": 79704064,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 5.364865711,
+        "rss_bytes": 80683008,
+        "fd_count": 16,
+        "max_rss_bytes": 79835136,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "bridge/send": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 2002,
+      "wall_seconds": 11.449066071,
+      "process_cpu_seconds": 2.1189629850000005,
+      "process_cpu_percent_one_core": 18.507736542522398,
+      "event_loop_lag_ms": {
+        "n": 2002,
+        "p50": 0.6102690022089519,
+        "p95": 1.0734600073192269,
+        "p99": 1.914912005304359,
+        "max": 50.514924005256034,
+        "p99_unavailable_reason": null
+      },
+      "rss_bytes": {
+        "n": 2004,
+        "p50": 81235968,
+        "p95": 82104320,
+        "p99": 82223104,
+        "max": 82255872,
+        "p99_unavailable_reason": null
+      },
+      "fd_count": {
+        "n": 2004,
+        "p50": 18,
+        "p95": 18,
+        "p99": 18,
+        "max": 18,
+        "p99_unavailable_reason": null
+      },
+      "before": {
+        "cpu_seconds": 5.429267919,
+        "rss_bytes": 80703488,
+        "fd_count": 18,
+        "max_rss_bytes": 79835136,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 7.548230904,
+        "rss_bytes": 82255872,
+        "fd_count": 16,
+        "max_rss_bytes": 81408000,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "bridge/concurrent_send": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 39,
+      "wall_seconds": 5.774660538,
+      "process_cpu_seconds": 1.5858894349999995,
+      "process_cpu_percent_one_core": 27.46290322286646,
+      "event_loop_lag_ms": {
+        "n": 39,
+        "p50": 160.2361860059318,
+        "p95": 263.83751800312893,
+        "p99": null,
+        "max": 317.2352769979625,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "rss_bytes": {
+        "n": 41,
+        "p50": 97546240,
+        "p95": 103387136,
+        "p99": null,
+        "max": 103387136,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "fd_count": {
+        "n": 41,
+        "p50": 682,
+        "p95": 900,
+        "p99": null,
+        "max": 912,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "before": {
+        "cpu_seconds": 7.613106606,
+        "rss_bytes": 82620416,
+        "fd_count": 36,
+        "max_rss_bytes": 81670144,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 9.198996041,
+        "rss_bytes": 103387136,
+        "fd_count": 506,
+        "max_rss_bytes": 102379520,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    }
+  },
+  "warmup": {
+    "direct/create": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "direct/send": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "direct/concurrent_send": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "bridge/create": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "bridge/send": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "bridge/concurrent_send": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    }
+  },
+  "imports": {
+    "oai_core": {
+      "source_path": "oai-core/src/oai_core/__init__.py",
+      "sha256": "2a790e4dffa663c81b7d06b2b60c187368aee700de8c1643abdf8905b93fba53"
+    },
+    "oai_core.adapters": {
+      "source_path": "oai-core/src/oai_core/adapters",
+      "sha256": null,
+      "namespace_package": true
+    },
+    "oai_core.adapters.remote": {
+      "source_path": "oai-core/src/oai_core/adapters/remote.py",
+      "sha256": "440da5afb404ad2f79ee8441fbb202a67398f452f951f8fa8260e05abfebd389"
+    },
+    "oai_core.auth": {
+      "source_path": "oai-core/src/oai_core/auth.py",
+      "sha256": "7e40385d79ea95d9a3c378d161193e033560a43475f38d3ecb83771e9df3e2e7"
+    },
+    "oai_core.gateway": {
+      "source_path": "oai-core/src/oai_core/gateway/__init__.py",
+      "sha256": "e24d42ebd0224c2d8d4f97d3e13456557ebf0ab3e4ce4218888911e0c4779f3e"
+    },
+    "oai_core.gateway.account_paths": {
+      "source_path": "oai-core/src/oai_core/gateway/account_paths.py",
+      "sha256": "eaaadfa9227c1b8b366f4d01badb9643b898a0175dc7e27fa5c173055fd401a3"
+    },
+    "oai_core.gateway.admin": {
+      "source_path": "oai-core/src/oai_core/gateway/admin.py",
+      "sha256": "6e6f1c8dd58508f6eb0cc0ce956b12542f752da8f1ebb98b1115fa1862b95bf3"
+    },
+    "oai_core.gateway.audit": {
+      "source_path": "oai-core/src/oai_core/gateway/audit.py",
+      "sha256": "11f611ad85a88c56d27948935303487e921d7bc0df4965207a446ce6aefa83f6"
+    },
+    "oai_core.gateway.contract_assets": {
+      "source_path": "oai-core/src/oai_core/gateway/contract_assets.py",
+      "sha256": "5c85496de6b4a9591856780e216506396ab43d76718f8ff151d529e4ea1e814a"
+    },
+    "oai_core.gateway.core": {
+      "source_path": "oai-core/src/oai_core/gateway/core.py",
+      "sha256": "bfc6ff2069b5c0fb7caa24d51e3ba6351bc348e9c48ebf85cd2763cd34d5daf0"
+    },
+    "oai_core.gateway.credentials": {
+      "source_path": "oai-core/src/oai_core/gateway/credentials.py",
+      "sha256": "004f891448c62744b83ffd2b27efcf2d5326e13d56a8beb155bb36cffacb79b7"
+    },
+    "oai_core.gateway.device_authority": {
+      "source_path": "oai-core/src/oai_core/gateway/device_authority.py",
+      "sha256": "b4540828826df23028b23305c304c0948d554425137da773f4003a378653fc6f"
+    },
+    "oai_core.gateway.http": {
+      "source_path": "oai-core/src/oai_core/gateway/http.py",
+      "sha256": "0b17483c6903118bcf39052cf04cac321ac02e06355a5d0fafb1af591c3febb9"
+    },
+    "oai_core.gateway.verifier": {
+      "source_path": "oai-core/src/oai_core/gateway/verifier.py",
+      "sha256": "0590320583e76653c4c47357ddb83fb8ed4b277a7b39e8dc1b5ef3f4bac9617b"
+    },
+    "oai_core.native_diagnostics": {
+      "source_path": "oai-core/src/oai_core/native_diagnostics.py",
+      "sha256": "4858a5462eb52b1960ceffbbfa653b6dabf59ec90e957313bcb47115fcfc5fe1"
+    },
+    "oai_core.operations": {
+      "source_path": "oai-core/src/oai_core/operations.py",
+      "sha256": "c7e220afb8c2da863e7d5f9a6684b8e1fed0f29f4533107c9d7e8f33500d6582"
+    },
+    "oai_core.sessions": {
+      "source_path": "oai-core/src/oai_core/sessions.py",
+      "sha256": "7c432ab77276f960e9d863e686903b5b2d6965f9a1a0ef152b22964bcc64311e"
+    },
+    "oai_hermes_adapter": {
+      "source_path": "integrations/hermes-session-adapter/src/oai_hermes_adapter/__init__.py",
+      "sha256": "47fb1cac68d232ed0e5a5980bdf2b4fe6dc90be8018d016c6ae5b1f189935e89"
+    },
+    "oai_hermes_adapter.approvals": {
+      "source_path": "integrations/hermes-session-adapter/src/oai_hermes_adapter/approvals.py",
+      "sha256": "cf721da05816914f756a8be5dab6a33cce1e26885f4dd051a41822bb08df600b"
+    },
+    "oai_hermes_adapter.bridge": {
+      "source_path": "integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py",
+      "sha256": "2fd39108b226eb9e289fadf80dadc28366fdb0f0b19296f447d964c8f2bd071c"
+    },
+    "oai_hermes_adapter.sessions": {
+      "source_path": "integrations/hermes-session-adapter/src/oai_hermes_adapter/sessions.py",
+      "sha256": "f566b731f762c8811a7bc623687945e73ef87699e4bbe736722149d8d85daf01"
+    }
+  },
+  "source_verified_unchanged": true,
+  "finished_wall_time_ns": 1793385008162570776,
+  "host_load_after": {
+    "load_average_1_5_15": [
+      2.83447265625,
+      2.494140625,
+      2.912109375
+    ],
+    "worker_context_switches": {
+      "voluntary": 280343,
+      "involuntary": 43200
+    },
+    "scope": "Host load is observed, not controlled; other jobs may affect tail latency."
+  },
+  "summary": {
+    "bridge/concurrent_send": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 431.368449,
+          "p95": 566.98281,
+          "p99": 708.987339,
+          "max": 744.931552,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 960.381487,
+          "p95": 1148.012038,
+          "p99": 1251.628003,
+          "max": 1275.160555,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 1188.12807,
+          "p95": 1356.187361,
+          "p99": 1454.96368,
+          "max": 1485.839862,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 1324.024232,
+          "p95": 1527.451727,
+          "p99": 1600.512079,
+          "max": 1633.400131,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 1324.026969,
+          "p95": 1527.456418,
+          "p99": 1600.514948,
+          "max": 1633.402687,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 821.390736,
+          "p95": 951.38997,
+          "p99": 1097.352855,
+          "max": 1103.800052,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 1000,
+          "p50": 551.734262,
+          "p95": 1831.514204,
+          "p99": 1935.242468,
+          "max": 1957.430021,
+          "p99_unavailable_reason": null
+        },
+        "arrival_to_finished": {
+          "n": 1000,
+          "p50": 1975.906078,
+          "p95": 2786.900639,
+          "p99": 2790.0791,
+          "max": 2790.684344,
+          "p99_unavailable_reason": null
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 431.368449,
+          "p95": 566.98281,
+          "p99": 708.987339,
+          "max": 744.931552,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 960.381487,
+          "p95": 1148.012038,
+          "p99": 1251.628003,
+          "max": 1275.160555,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 1188.12807,
+          "p95": 1356.187361,
+          "p99": 1454.96368,
+          "max": 1485.839862,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 1324.024232,
+          "p95": 1527.451727,
+          "p99": 1600.512079,
+          "max": 1633.400131,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 1324.026969,
+          "p95": 1527.456418,
+          "p99": 1600.514948,
+          "max": 1633.402687,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 821.390736,
+          "p95": 951.38997,
+          "p99": 1097.352855,
+          "max": 1103.800052,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 1000,
+          "p50": 551.734262,
+          "p95": 1831.514204,
+          "p99": 1935.242468,
+          "max": 1957.430021,
+          "p99_unavailable_reason": null
+        },
+        "arrival_to_finished": {
+          "n": 1000,
+          "p50": 1975.906078,
+          "p95": 2786.900639,
+          "p99": 2790.0791,
+          "max": 2790.684344,
+          "p99_unavailable_reason": null
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "bridge/create": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 10.789512,
+          "p95": 11.294301,
+          "p99": 14.341989,
+          "max": 16.554797,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_first_content": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.811624,
+          "p95": 11.324486,
+          "p99": 14.365476,
+          "max": 16.579285,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.81884,
+          "p95": 11.333602,
+          "p99": 14.372233,
+          "max": 16.586253,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.121773,
+          "p95": 8.479134,
+          "p99": 8.901717,
+          "max": 12.923192,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 10.789512,
+          "p95": 11.294301,
+          "p99": 14.341989,
+          "max": 16.554797,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_first_content": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.811624,
+          "p95": 11.324486,
+          "p99": 14.365476,
+          "max": 16.579285,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.81884,
+          "p95": 11.333602,
+          "p99": 14.372233,
+          "max": 16.586253,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.121773,
+          "p95": 8.479134,
+          "p99": 8.901717,
+          "max": 12.923192,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "bridge/send": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 3.084319,
+          "p95": 3.40638,
+          "p99": 3.647842,
+          "max": 52.649236,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 3.460455,
+          "p95": 3.818883,
+          "p99": 4.332221,
+          "max": 53.210151,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 8.911043,
+          "p95": 9.318135,
+          "p99": 9.952487,
+          "max": 58.594698,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 11.246947,
+          "p95": 11.795161,
+          "p99": 15.385952,
+          "max": 60.945206,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 11.2524,
+          "p95": 11.800731,
+          "p99": 15.392109,
+          "max": 60.950812,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.708835,
+          "p95": 9.093934,
+          "p99": 9.698219,
+          "max": 58.300324,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 3.084319,
+          "p95": 3.40638,
+          "p99": 3.647842,
+          "max": 52.649236,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 3.460455,
+          "p95": 3.818883,
+          "p99": 4.332221,
+          "max": 53.210151,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 8.911043,
+          "p95": 9.318135,
+          "p99": 9.952487,
+          "max": 58.594698,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 11.246947,
+          "p95": 11.795161,
+          "p99": 15.385952,
+          "max": 60.945206,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 11.2524,
+          "p95": 11.800731,
+          "p99": 15.392109,
+          "max": 60.950812,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.708835,
+          "p95": 9.093934,
+          "p99": 9.698219,
+          "max": 58.300324,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "direct/concurrent_send": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 362.863475,
+          "p95": 446.113939,
+          "p99": 562.479811,
+          "max": 616.105665,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 443.564397,
+          "p95": 548.715379,
+          "p99": 659.397097,
+          "max": 713.404163,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 643.008702,
+          "p95": 728.099124,
+          "p99": 863.813922,
+          "max": 896.801275,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 764.134148,
+          "p95": 866.060924,
+          "p99": 996.390029,
+          "max": 1032.525578,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 764.136985,
+          "p95": 866.063425,
+          "p99": 996.392787,
+          "max": 1032.52784,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 482.576706,
+          "p95": 587.000439,
+          "p99": 714.812537,
+          "max": 733.474084,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 1000,
+          "p50": 546.857585,
+          "p95": 1425.133099,
+          "p99": 1497.142007,
+          "max": 1519.966877,
+          "p99_unavailable_reason": null
+        },
+        "arrival_to_finished": {
+          "n": 1000,
+          "p50": 1337.721259,
+          "p95": 2054.264049,
+          "p99": 2079.7127,
+          "max": 2085.403625,
+          "p99_unavailable_reason": null
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 362.863475,
+          "p95": 446.113939,
+          "p99": 562.479811,
+          "max": 616.105665,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 443.564397,
+          "p95": 548.715379,
+          "p99": 659.397097,
+          "max": 713.404163,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 643.008702,
+          "p95": 728.099124,
+          "p99": 863.813922,
+          "max": 896.801275,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 764.134148,
+          "p95": 866.060924,
+          "p99": 996.390029,
+          "max": 1032.525578,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 764.136985,
+          "p95": 866.063425,
+          "p99": 996.392787,
+          "max": 1032.52784,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 482.576706,
+          "p95": 587.000439,
+          "p99": 714.812537,
+          "max": 733.474084,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 1000,
+          "p50": 546.857585,
+          "p95": 1425.133099,
+          "p99": 1497.142007,
+          "max": 1519.966877,
+          "p99_unavailable_reason": null
+        },
+        "arrival_to_finished": {
+          "n": 1000,
+          "p50": 1337.721259,
+          "p95": 2054.264049,
+          "p99": 2079.7127,
+          "max": 2085.403625,
+          "p99_unavailable_reason": null
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "direct/create": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 10.257497,
+          "p95": 10.752815,
+          "p99": 13.77275,
+          "max": 59.2868,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_first_content": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.282722,
+          "p95": 10.785914,
+          "p99": 13.798864,
+          "max": 59.316229,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.290721,
+          "p95": 10.792151,
+          "p99": 13.807168,
+          "max": 59.324227,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 7.828731,
+          "p95": 8.194939,
+          "p99": 8.519312,
+          "max": 56.629805,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 10.257497,
+          "p95": 10.752815,
+          "p99": 13.77275,
+          "max": 59.2868,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_first_content": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.282722,
+          "p95": 10.785914,
+          "p99": 13.798864,
+          "max": 59.316229,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.290721,
+          "p95": 10.792151,
+          "p99": 13.807168,
+          "max": 59.324227,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 7.828731,
+          "p95": 8.194939,
+          "p99": 8.519312,
+          "max": 56.629805,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "direct/send": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 2.695846,
+          "p95": 3.037346,
+          "p99": 3.656018,
+          "max": 7.589352,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 2.832478,
+          "p95": 3.190398,
+          "p99": 3.928302,
+          "max": 7.756071,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 8.133491,
+          "p95": 8.503197,
+          "p99": 9.479963,
+          "max": 13.030642,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.416743,
+          "p95": 10.8848,
+          "p99": 14.264589,
+          "max": 15.683833,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.423194,
+          "p95": 10.893187,
+          "p99": 14.272263,
+          "max": 15.692705,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 7.941633,
+          "p95": 8.29179,
+          "p99": 9.098972,
+          "max": 12.849583,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 2.695846,
+          "p95": 3.037346,
+          "p99": 3.656018,
+          "max": 7.589352,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 2.832478,
+          "p95": 3.190398,
+          "p99": 3.928302,
+          "max": 7.756071,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 8.133491,
+          "p95": 8.503197,
+          "p99": 9.479963,
+          "max": 13.030642,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.416743,
+          "p95": 10.8848,
+          "p99": 14.264589,
+          "max": 15.683833,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.423194,
+          "p95": 10.893187,
+          "p99": 14.272263,
+          "max": 15.692705,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 7.941633,
+          "p95": 8.29179,
+          "p99": 9.098972,
+          "max": 12.849583,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    }
+  }
+}

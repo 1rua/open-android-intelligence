@@ -46,6 +46,33 @@ class TestDshAdapter(unittest.IsolatedAsyncioTestCase):
                 _ = [event async for event in adapter.send(Principal("alice"), "terminal-session", "hi")]
             self.assertEqual(error.exception.code, "STREAM_INTERRUPTED")
 
+    async def test_optional_client_identity_reaches_new_bridges_and_downgrades_without_guessing(self):
+        from oai_core.native_diagnostics import trace_context
+        received = []
+        identity_supported = True
+        async def host(request):
+            if request.path.endswith("/status"):
+                return web.json_response({"online": True, "capabilities": {
+                    "send": True, "stream": True, "clientMessageIdentity": identity_supported}})
+            self.assertEqual(request.headers.get("X-OAI-Request-Id"), "core-original")
+            self.assertEqual(request.headers.get("traceparent", "").split("-")[1], "a" * 32)
+            self.assertIsNone(request.headers.get("X-OAI-Account"))
+            received.append(await request.json())
+            return web.Response(body=b'{"type":"done"}\n', content_type="application/x-ndjson")
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", host)
+        async with TestClient(TestServer(app)) as client:
+            adapter = DshSessionAdapter(str(client.make_url("/")).rstrip("/"), "test-only-session-token-1234567890123456789")
+            with trace_context({"traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-00"}, request_id="core-original"):
+                self.assertTrue(await adapter.status())
+                _ = [event async for event in adapter.send(Principal("alice"), "native", "hi", client_message_id="stable-client")]
+                self.assertEqual(received[-1], {"text": "hi", "clientMessageId": "stable-client"})
+                identity_supported = False
+                self.assertTrue(await adapter.status())
+                _ = [event async for event in adapter.send(Principal("alice"), "native", "hi", client_message_id="stable-client")]
+                self.assertEqual(received[-1], {"text": "hi"})
+                self.assertFalse(adapter.descriptor()["capabilities"].get("generationRecovery", False))
+
     def test_dsh_requires_an_explicit_secure_origin_and_token(self):
         for url in ("http://remote.invalid", "http://user:pass@localhost", "http://localhost/other", "file:///tmp"):
             with self.assertRaises(ValueError):
