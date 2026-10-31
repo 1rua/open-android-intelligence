@@ -1,0 +1,65 @@
+{
+  "control-ports": {
+    "suites": 1,
+    "tests": 14,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "capability-ports": {
+    "suites": 7,
+    "tests": 51,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "screen-control": {
+    "suites": 3,
+    "tests": 21,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "device-primitives": {
+    "suites": 3,
+    "tests": 22,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "platform-kernel": {
+    "suites": 7,
+    "tests": 69,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "conversation-domain": {
+    "suites": 8,
+    "tests": 32,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "conversation-ui": {
+    "suites": 72,
+    "tests": 667,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "gateway-client": {
+    "suites": 35,
+    "tests": 318,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "app": {
+    "suites": 97,
+    "tests": 1198,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

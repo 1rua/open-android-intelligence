@@ -1,0 +1,8 @@
+{
+  "checked": [
+    "docs/reviews/2026-10-30-communication-reliability.zh-CN.md",
+    "docs/architecture/2026-10-30-communication-lifecycle.zh-CN.md",
+    "docs/guides/agent-adapter-development-guide.zh-CN.md"
+  ],
+  "missing": []
+}

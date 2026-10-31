@@ -1,0 +1,13 @@
+{
+  "observed_at": "2026-10-30T16:04:41.862559+00:00",
+  "operation": "authenticated device inventory GET only",
+  "paired_device_count": 19,
+  "online_device_count": 0,
+  "offline_device_count": 19,
+  "unknown_device_count": 0,
+  "device_identities_omitted": true,
+  "live_device_operations_submitted": 0,
+  "adb_server_existing_connection": "unavailable",
+  "adb_server_started": false,
+  "physical_device_presence": "not_determined"
+}

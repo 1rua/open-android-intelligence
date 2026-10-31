@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/mnt/data/projects/open-android-intelligence/.toolchains/pr64-core-only-python/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-p",
+    "no:cacheprovider",
+    "oai-core/tests/test_codex.py",
+    "-q"
+  ],
+  "exitCode": 0,
+  "stdout": "..............................                                     [100%]\n30 passed, 6 subtests passed in 0.91s\n",
+  "stderr": ""
+}

@@ -1,0 +1,3 @@
+Processing ./tmp/communication-wheel-dist/open_android_intelligence_core-0.2.0-py3-none-any.whl
+Installing collected packages: open-android-intelligence-core
+Successfully installed open-android-intelligence-core-0.2.0

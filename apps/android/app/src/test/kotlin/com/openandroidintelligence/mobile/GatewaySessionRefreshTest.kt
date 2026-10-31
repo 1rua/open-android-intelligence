@@ -216,43 +216,6 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
-    fun aColdRestoreClearsOnlyTheObsoleteOfflineMirrorNotice() {
-        saveLoginBeforeProcessDeath()
-        val release = gateway.holdResponse(NEGOTIATE_PATH, NEGOTIATE_BODY)
-        val restored = runtime()
-        try {
-            restored.restoreSessionIfAvailable()
-            assertTrue("先呈现本地镜像再等待远端", awaitCondition(AWAIT_MILLIS) {
-                restored.phase.value is ConnectionPhase.OfflineMirror &&
-                    restored.operationNotice.value == "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
-            })
-            release.countDown()
-            awaitConnected(restored)
-            assertNull("恢复成功后不能继续提示只能离线阅读", restored.operationNotice.value)
-        } finally { release.countDown() }
-    }
-
-    @Test
-    fun aColdRestorePreservesANewerLocalRecoveryNotice() {
-        saveLoginBeforeProcessDeath()
-        val release = gateway.holdResponse(NEGOTIATE_PATH, NEGOTIATE_BODY)
-        val restored = runtime()
-        try {
-            restored.restoreSessionIfAvailable()
-            assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value is ConnectionPhase.OfflineMirror })
-            // 模拟另一条本地恢复路径在协商等待期间发布的新通知；不能用清空所有通知掩盖它。
-            val field = GatewayRuntime::class.java.getDeclaredField("_operationNotice").apply { isAccessible = true }
-            @Suppress("UNCHECKED_CAST")
-            val notices = field.get(restored) as kotlinx.coroutines.flow.MutableStateFlow<String?>
-            val mediaNotice = "本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。"
-            notices.value = mediaNotice
-            release.countDown()
-            awaitConnected(restored)
-            assertEquals("在线恢复不能吞掉更新的本地附件告警", mediaNotice, restored.operationNotice.value)
-        } finally { release.countDown() }
-    }
-
-    @Test
     fun aColdProcessAutomaticallyRecoversWhenTheGatewayReturns() {
         val originalScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val original = GatewayRuntime(

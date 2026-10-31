@@ -1045,7 +1045,7 @@ class GatewayRuntime(
             },{ mirrorScope },persistence=nativeMirror ?: mirror,media=media,downloads=downloads,allowSending=false,
             authoritativeMessageIds=nativeMirror != null, organizationStoredLocally=nativeMirror != null) }
         _phase.value=ConnectionPhase.OfflineMirror(endpoint.baseUrl,username)
-        _operationNotice.value=downloadNotice ?: OFFLINE_MIRROR_NOTICE
+        _operationNotice.value=downloadNotice ?: "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
         val mirrorAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, username, "")
         _localSessionState.value = LocalSessionState.Workspace(mirrorAccount, _phase.value)
     }
@@ -1720,8 +1720,6 @@ class GatewayRuntime(
                 deviceRequests = deviceRequests,
                 agentName = effectiveAgentName,
             )
-            // 仅撤回本次恢复阶段的离线提示，不覆盖附件恢复或其他并发操作的新告警。
-            _operationNotice.compareAndSet(OFFLINE_MIRROR_NOTICE, null)
             _loginStatus.value = GatewayLoginStatus.SIGNED_IN
             val activeAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, username, "")
             _localSessionState.value = LocalSessionState.Workspace(activeAccount, _phase.value)
@@ -2158,7 +2156,6 @@ class GatewayRuntime(
     }
 
     private companion object {
-        const val OFFLINE_MIRROR_NOTICE = "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
         const val MEDIA_RECOVERY_NOTICE = "本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。"
         val PLATFORM_EVENTS = setOf("session.revoked", "pairing.grant.changed", "device.requested", "device.request.cancel.requested")
         const val PREFS_NAME = "open_android_intelligence_runtime"

@@ -1,0 +1,32 @@
+{
+  "observed_at": "2026-10-30T18:10:25.006001+00:00",
+  "clock_ticks_per_second": 100,
+  "core": {
+    "process_present": true,
+    "command_name": "oai",
+    "user_ticks": 9749,
+    "system_ticks": 3552,
+    "process_start_ticks": 1050,
+    "rss_kib": 38132,
+    "open_fd_count": 9,
+    "local_service_port_tcp_states": {
+      "LISTEN": 1
+    }
+  },
+  "hermes": {
+    "process_present": true,
+    "command_name": "hermes",
+    "user_ticks": 14194,
+    "system_ticks": 1572,
+    "process_start_ticks": 1050,
+    "rss_kib": 310460,
+    "open_fd_count": 46,
+    "local_service_port_tcp_states": {
+      "LISTEN": 1
+    }
+  },
+  "service_manager": "user session bus unavailable in execution environment; system units are not these verified processes",
+  "scope": "one passive process and local-port snapshot; no peak, request queue, loop lag or database wait inference",
+  "service_changes": 0,
+  "peer_addresses_and_secrets_omitted": true
+}

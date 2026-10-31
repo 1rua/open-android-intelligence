@@ -1,0 +1,21 @@
+{
+  "commit": "ef0c90d41c00731115affdc5d3483e23c2a85a97",
+  "gates": {
+    "test-fast-verified": {
+      "exit_code": 0,
+      "tested_source_files": 941,
+      "changed_implementation_files": [],
+      "source_changed_during_gate": [],
+      "matches_committed_implementation": true
+    },
+    "test-pr-verified": {
+      "exit_code": 0,
+      "tested_source_files": 941,
+      "changed_implementation_files": [],
+      "source_changed_during_gate": [],
+      "matches_committed_implementation": true
+    }
+  },
+  "post_gate_changes": "documentation and ignore rule for generated measurement validation artifacts only",
+  "scope": "matches implementation content, not a claim of device or deployment acceptance"
+}

@@ -1,0 +1,143 @@
+{
+  "version": 2,
+  "created": "2026-10-30T15:10:22.851815+00:00",
+  "session_count": 1,
+  "base": "33ab7a2a159b095e0d6408edc8888625011b3e84",
+  "session_config": {
+    "concurrency_mode": "exclusive",
+    "state_owner": "main",
+    "source_workers": "disjoint write sets; no reset or clean"
+  },
+  "tasks": [
+    {
+      "id": "core",
+      "title": "Core reliable admission and operation recovery",
+      "owner": "main",
+      "status": "completed",
+      "depends_on": [],
+      "attempts": 1,
+      "checkpoints": [
+        {
+          "step": "admission observer isolation, async owned ledger and operation recovery API",
+          "validation": "55 focused + 33 integration passed; 31 admission/auth targeted passed after reauthorization check"
+        },
+        {
+          "validation": "Core/HTTP/eventSync/OS-process 65 passed; review found control reauthorization and preauth log taint, fixed with15 focused tests; installed wheel outside checkout no-Hermes CLI+HTTP passed"
+        },
+        {
+          "validation": "Core review18 passed including strict trace request id; wheel rebuilt after diagnostic change pending final source hash validation"
+        }
+      ],
+      "error_log": []
+    },
+    {
+      "id": "hermes",
+      "title": "Hermes admission dispatch and storage isolation",
+      "owner": "Lorentz",
+      "status": "completed",
+      "depends_on": [],
+      "attempts": 1,
+      "checkpoints": [
+        {
+          "validation": "Hermes 126 passed including 16 new pinned SDK cases"
+        },
+        {
+          "validation": "45 Hermes tests pass after LockedCursor fix; 5/5 independent native contracts; 21 pass after event-driven dispatch wakeup"
+        }
+      ],
+      "error_log": []
+    },
+    {
+      "id": "android",
+      "title": "Android lifecycle receipt and create recovery",
+      "owner": "Schrodinger",
+      "status": "completed",
+      "depends_on": [],
+      "attempts": 1,
+      "checkpoints": [],
+      "error_log": []
+    },
+    {
+      "id": "adapters",
+      "title": "DSH and Codex observer isolation",
+      "owner": "Hilbert",
+      "status": "completed",
+      "depends_on": [],
+      "attempts": 1,
+      "checkpoints": [
+        {
+          "validation": "Codex+DSH Python29 passed; DSH JS33 passed; approval fixture100 repeats passed"
+        }
+      ],
+      "error_log": []
+    },
+    {
+      "id": "measurements",
+      "title": "Fixed-source baseline and after measurements",
+      "owner": "Plato",
+      "status": "completed",
+      "depends_on": [],
+      "attempts": 1,
+      "checkpoints": [
+        {
+          "commit": "dda2a4dc8ece02289b3e4f54dab11f8515249707",
+          "baseline_attempts": 13000,
+          "baseline_failures": 3000,
+          "after_attempts": 13000,
+          "after_failures": 0,
+          "sqlite_runtime": "3.53.1",
+          "diagnostics": "disabled",
+          "ledger": "disk"
+        }
+      ],
+      "error_log": []
+    },
+    {
+      "id": "verification",
+      "title": "Cross-layer focused and PR validation",
+      "owner": "main",
+      "status": "completed",
+      "depends_on": [
+        "core",
+        "hermes",
+        "android",
+        "adapters",
+        "measurements"
+      ],
+      "attempts": 1,
+      "checkpoints": [],
+      "error_log": [
+        "FAST initial: Core/Hermes/DSH pass; Android gateway318 with3fail, app1181 with6fail. Active Android follow-up implements new regression cases and test isolation; do not claim PR gate green."
+      ]
+    },
+    {
+      "id": "delivery",
+      "title": "Documentation Chinese commits and dev PR",
+      "owner": "main",
+      "status": "completed",
+      "depends_on": [
+        "verification"
+      ],
+      "attempts": 1,
+      "checkpoints": [
+        {
+          "pr": 68,
+          "base": "dev",
+          "state": "OPEN",
+          "implementation_commit": "dda2a4dc8ece02289b3e4f54dab11f8515249707",
+          "source_and_apk_verified": true
+        }
+      ],
+      "error_log": []
+    },
+    {
+      "id": "physical-device-acceptance",
+      "title": "Verify phone and actual Agent after installing approved test builds",
+      "status": "pending",
+      "depends_on": [
+        "delivery"
+      ],
+      "blocker": "No online test phone; production retained read-only; no real model/device acceptance claimed"
+    }
+  ]
+}

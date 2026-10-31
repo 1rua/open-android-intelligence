@@ -1,0 +1,5097 @@
+{
+  "format": "oai-isolated-loopback-communication-v4",
+  "run_id": "648bf61c80c54984a3db4e52e9b1c5d5",
+  "label": "disk-after-batched",
+  "started_wall_time_ns": 1793385610478197059,
+  "source": {
+    "head": "ef0c90d41c00731115affdc5d3483e23c2a85a97",
+    "source_root_relative_to_meter": ".",
+    "source_sha256": "f762ab2a74850ac55d4f5063c89f0b45014e9d68b8b99f26945a493d170f1a77",
+    "files_sha256": {
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/__init__.py": "47fb1cac68d232ed0e5a5980bdf2b4fe6dc90be8018d016c6ae5b1f189935e89",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/approvals.py": "1f3fbabfbf2f514cb5cdf37952ebcafa4fb435ede42d673f95b77ea36ea359c9",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/backend.py": "a2ea209d855b8a495640f8dfbc801ae5a1d4476c0c5d6b57b879d53902a01c9b",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py": "2e5f52f7648e97dde398dd129029a63837ee76d9ff1632981c04639391601a7c",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/context.py": "5df39f5d9851bf777795c1d3afde9237600f12b7fb779bb6e7020be333a32a8b",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/event_sync.py": "ec5153d2bdeb590380b1d4d563d265172167dbb8119ae5b55b8926e693ec95c6",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/history_media.py": "c690b49acafd88e9e6478d68716e7ba575d7cf1e519f0d13209aaf1e650a0761",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/host_commands.py": "c948a9475825bc32603a1dc507c9b205a110db235d96bbfe78f50d5bf2b4d399",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/host_history.py": "86b9d443f092ed3004186b8e94abb6a29ba8f70cbdf6b4ebee3dee23fbd5a9e0",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/platform_identity.py": "76fc33140fb6bb4951412135fd4997c8e13614f5edb8060da11b36e11b30a17d",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/runtime.py": "b953290f1c8e2b0b1d403ba62126e7043f73f95fbb8c97c66bcf2cd89d53835b",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/sessions.py": "8ce37345f6c913886ab4903b1f10cdd3b83a8672fb5d4ac1c76b3e3f0a823039",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_events.py": "f2a6cfc48238d889b3a79783ff2b219eb0d56f5838d77975513164937417dc14",
+      "integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_history.py": "9f4c0bab4f720f01af9495bce7a67cf7d986295594e5e4c3280ce38f3f0211d9",
+      "oai-core/src/oai_core/__init__.py": "2a790e4dffa663c81b7d06b2b60c187368aee700de8c1643abdf8905b93fba53",
+      "oai-core/src/oai_core/adapters/codex.py": "5b49d10cf92673bc372187d37f5d592906e48fdda7865377a3a75a120460ae26",
+      "oai-core/src/oai_core/adapters/dsh.py": "dbaf4b67f232e562d7c3401596fa32471fd2cefb29ddf64f79b712961ad1fc1a",
+      "oai-core/src/oai_core/adapters/hermes.py": "31189f2c7161974dc3df4c90eb5c825ab1bff19ca38d3c5067a07923126165fb",
+      "oai-core/src/oai_core/adapters/remote.py": "c9aecc1863238a21b927fabfc95df3bdf356c14e3b31e01f3059c678572e816e",
+      "oai-core/src/oai_core/auth.py": "7e40385d79ea95d9a3c378d161193e033560a43475f38d3ecb83771e9df3e2e7",
+      "oai-core/src/oai_core/cli.py": "0b1ca03cd5a534f2d8f8b99cd811ecc6f0dabeaebd98540d4123c0641b5f57c5",
+      "oai-core/src/oai_core/client.py": "b74d9d5429d2c43d1f9676071ed56cb4eeb3c26cf61b73a3e5901d8b27adce3c",
+      "oai-core/src/oai_core/device_service.py": "c38b951b261dd9f60325ec55a03910c806be086d9a8d7e1ea81b3cdce482d784",
+      "oai-core/src/oai_core/gateway/__init__.py": "e24d42ebd0224c2d8d4f97d3e13456557ebf0ab3e4ce4218888911e0c4779f3e",
+      "oai-core/src/oai_core/gateway/account_paths.py": "eaaadfa9227c1b8b366f4d01badb9643b898a0175dc7e27fa5c173055fd401a3",
+      "oai-core/src/oai_core/gateway/admin.py": "6e6f1c8dd58508f6eb0cc0ce956b12542f752da8f1ebb98b1115fa1862b95bf3",
+      "oai-core/src/oai_core/gateway/audit.py": "11f611ad85a88c56d27948935303487e921d7bc0df4965207a446ce6aefa83f6",
+      "oai-core/src/oai_core/gateway/backup.py": "c4ed80e782823a293d2dc80800ad370e1e51fa46c6da30756367f169644d3841",
+      "oai-core/src/oai_core/gateway/capability_bindings.py": "267bc305b1212b75c6a87484aa0ed04a092b6ca5692e11aac3b0319cfe100df5",
+      "oai-core/src/oai_core/gateway/capability_policy.py": "3579b8874effc8c9a8a8e2e97a768a2d1674c995dce5c063e0b8932a05cef725",
+      "oai-core/src/oai_core/gateway/contract_assets.py": "5c85496de6b4a9591856780e216506396ab43d76718f8ff151d529e4ea1e814a",
+      "oai-core/src/oai_core/gateway/conversation_management.py": "f9b87580895ecd8ce65b9c8bc71ffdc984b629e3446f2f75c7e1fb1da757b63a",
+      "oai-core/src/oai_core/gateway/conversation_workflow.py": "ff892f6a1ea1a4629e08177ec8a30efe7090273a3dc7ceb4cfb570008570168b",
+      "oai-core/src/oai_core/gateway/core.py": "bfc6ff2069b5c0fb7caa24d51e3ba6351bc348e9c48ebf85cd2763cd34d5daf0",
+      "oai-core/src/oai_core/gateway/credentials.py": "004f891448c62744b83ffd2b27efcf2d5326e13d56a8beb155bb36cffacb79b7",
+      "oai-core/src/oai_core/gateway/device_authority.py": "b4540828826df23028b23305c304c0948d554425137da773f4003a378653fc6f",
+      "oai-core/src/oai_core/gateway/history.py": "dfc4ba06cec66fd631773b39bc08bf8e1672ebf5694a5cfef60485e8c6de0b17",
+      "oai-core/src/oai_core/gateway/history_media.py": "bb97de0c76ab496da83e3656a00539a16fa3cc60cf65e727ae87a969ae66069d",
+      "oai-core/src/oai_core/gateway/http.py": "0b17483c6903118bcf39052cf04cac321ac02e06355a5d0fafb1af591c3febb9",
+      "oai-core/src/oai_core/gateway/identity_rotation.py": "e61009c5ee4a6060396cceb020f186a863c3e77a0533d1e0b05873eed57fc451",
+      "oai-core/src/oai_core/gateway/local_keys.py": "9afa4a68b785f5290e40998527d468d19a5b43c7bd988b3b835a6d11f0969707",
+      "oai-core/src/oai_core/gateway/pairing_invites.py": "020fb010d57fe07ab0c38b74830319bebefbda45d4dd2e6890b7ed19b242ea4c",
+      "oai-core/src/oai_core/gateway/transport.py": "f1bde3a7a72560e616f1bae76fbf09cd8251bafe1df1a3f2a6af41015e50d4ca",
+      "oai-core/src/oai_core/gateway/verifier.py": "0590320583e76653c4c47357ddb83fb8ed4b277a7b39e8dc1b5ef3f4bac9617b",
+      "oai-core/src/oai_core/hermes_host.py": "88c6be3aad6162491b010ba91c4b2014c80e6dabfac3ec85485e1797a9335bd5",
+      "oai-core/src/oai_core/mcp.py": "e72809d0a9f4d874c2e85513aecebff0bebbeb25cce9d3ae2b37bbbe615923da",
+      "oai-core/src/oai_core/native_diagnostics.py": "51944e47b2a76b44b7f309c58cac0833d6d0d5d412aa18212a81b769d11c62f4",
+      "oai-core/src/oai_core/operations.py": "4ff024b48c9a50c3aaa116399dbf7de3521168f0937bac12a6520da4fd36666a",
+      "oai-core/src/oai_core/server.py": "c80c5a44f8ad5ddd28de03427ae8a07fa001c586a958fbb093aa41bd99ce57d5",
+      "oai-core/src/oai_core/sessions.py": "e31fdea89c7c99e84af0a86131b427fadbc9138a9e2d6acb3a1af449802e7f4e",
+      "oai-core/src/oai_core/skills_installer.py": "e9e6ffb083b1217b9408fbf62b6670148d6fcbf6187d4f5eb9e6d7218626422f"
+    },
+    "dirty_files_sha256": {
+      "docs/architecture/2026-10-30-communication-lifecycle.zh-CN.md": "9e8644f9d0f7198f20a35b2dc9d9f9c9b1d3cdd55185ba39a4f6e7315825c5e7",
+      "docs/reviews/2026-10-30-communication-reliability.zh-CN.md": "de9de028f56c966b10c89148550f70cbcef625280cb8543fbd2613af008fac6e",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/codex-diagnostics-focused.txt": "df2b20621a822ec08ca976f81fc911a0092cde1a3e9ad79e527dd960c000b4cb",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/dsh-diagnostics-focused.txt": "c6714bc524c4b1218abdc8e3529d5838642cb3d5c69e01634b2e60978787ff29",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/dsh-identity-bridge.txt": "73568766c79d2428c7ba8911cc82a9588294497573ed2f582ac5bb56fe219d06",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/ledger-batch-focused.txt": "e4a52cd470d8b7dbbb659e27508816fafa9297c861eed3e52412793d1fb62823",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/ledger-overhead-focused.txt": "365545766d35cccbff1d7bb98b23d9f4ad4b4a5ffa2e299be8335a85d279f9e3",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/meter-v4-focused.txt": "582c21df21a9656ce6b9f99adab8a1902168cbbb1539f792f6cdb24d0b50afa6",
+      "integrations/dsh-session-adapter/README.md": "37de94fbc98211ef5a9e87faf8af96a7f58ca3da2b3bba5ecbc847b9db3f5b8b",
+      "integrations/dsh-session-adapter/diagnostics.js": "f6b3e17b9d9fc539b10ef94ae53728b87318ae4e9b39a3f88aef8f55356a1c8f",
+      "integrations/dsh-session-adapter/diagnostics.test.js": "9e7b07e94a36b4a966f944a33f278b15fb2dbb548a2acf8af9daf1fb2919b53b",
+      "integrations/dsh-session-adapter/index.js": "03688d088d5a2ab2c8f5895cb55f1ff1a23543c862f1e158fa988cd3811a9dd1",
+      "integrations/dsh-session-adapter/reliability.test.js": "b41b5d2e394942212ff0ea5eb31e6323b9623658c884ebc1b6de05ce5abb026b",
+      "oai-core/src/oai_core/adapters/codex.py": "5b49d10cf92673bc372187d37f5d592906e48fdda7865377a3a75a120460ae26",
+      "oai-core/src/oai_core/adapters/remote.py": "c9aecc1863238a21b927fabfc95df3bdf356c14e3b31e01f3059c678572e816e",
+      "oai-core/src/oai_core/native_diagnostics.py": "51944e47b2a76b44b7f309c58cac0833d6d0d5d412aa18212a81b769d11c62f4",
+      "oai-core/src/oai_core/operations.py": "4ff024b48c9a50c3aaa116399dbf7de3521168f0937bac12a6520da4fd36666a",
+      "oai-core/tests/test_codex.py": "3d2e92e04cc2f16008b0031f7b479256209640b7a4269e997711a56e066975a8",
+      "oai-core/tests/test_dsh.py": "c34e7f3993116f7fb685e3d1831e9b67d5c72854925128388b2122ac4a9487c2",
+      "oai-core/tests/test_native_diagnostics.py": "6492e52f1456f94e72a58e31f3ae7f357733a7151755a8f94eab1ad376f6e5ac",
+      "oai-core/tests/test_native_operation_recovery.py": "be1f7ea8e1a769b90d003e6b70fd0d45d74067a7cd5bbc746ec392fb87bb65d5",
+      "tools/measure-communication.py": "fbca60a280fd45e2de2230ec0e29a65848866f11e1c0d8ed21fca490a5aa9ba2",
+      "tools/test_measure_communication.py": "be588d3bd13291e6d9e2aabce26d70517b5c98c5ff1ef7b2921f514e3c44b764"
+    },
+    "dirty_source_files": [
+      "oai-core/src/oai_core/adapters/codex.py",
+      "oai-core/src/oai_core/adapters/remote.py",
+      "oai-core/src/oai_core/native_diagnostics.py",
+      "oai-core/src/oai_core/operations.py"
+    ],
+    "dirty_hash_exclusions": [
+      "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/**"
+    ]
+  },
+  "measurement_script_sha256": "fbca60a280fd45e2de2230ec0e29a65848866f11e1c0d8ed21fca490a5aa9ba2",
+  "test_script_sha256": "be588d3bd13291e6d9e2aabce26d70517b5c98c5ff1ef7b2921f514e3c44b764",
+  "environment": {
+    "python": "3.11.15",
+    "implementation": "CPython",
+    "python_compiler": "Clang 22.1.3 ",
+    "interpreter_sha256": "0253b01a7f5d96a042a2b9f5e0f5ff5062707a1c75be2b089098e3111cd186d2",
+    "system": "Linux",
+    "release": "7.1.6-1-cachyos",
+    "machine": "x86_64",
+    "host_fingerprint_sha256": "4995839521fc8093212f7e29f4b4995f3d9f227e54ddc4cb382d834e897bfffd",
+    "cpu_count": 12,
+    "cpu_affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "packages": {
+      "aiohttp": "3.14.4",
+      "jsonschema": "4.26.0",
+      "cryptography": "50.0.2",
+      "yarl": "1.25.1",
+      "pytest": "9.1.1",
+      "pytest-asyncio": "1.4.1"
+    },
+    "event_loop_policy": "_UnixDefaultEventLoopPolicy",
+    "monotonic_resolution_seconds": 1e-09
+  },
+  "parameters": {
+    "attempts_per_mode_scenario": 1000,
+    "synthetic_delay_ms": 5,
+    "synthetic_slow_delay_ms": 80,
+    "modes": [
+      "direct",
+      "bridge"
+    ],
+    "scenarios": [
+      "create",
+      "send",
+      "concurrent_send"
+    ],
+    "timeout_seconds": 3,
+    "concurrency_burst_size": 8,
+    "arrival_interval_ms": 25,
+    "warmup_attempts_per_mode_scenario": 10,
+    "resource_sample_interval_ms": 5,
+    "database": "disk",
+    "diagnostic_trace": "disabled"
+  },
+  "host_load_before": {
+    "load_average_1_5_15": [
+      4.1318359375,
+      4.06640625,
+      3.47216796875
+    ],
+    "worker_context_switches": {
+      "voluntary": 12,
+      "involuntary": 9
+    },
+    "scope": "Host load is observed, not controlled; other jobs may affect tail latency."
+  },
+  "reproduction": {
+    "argv": [
+      "--source-root",
+      ".",
+      "--samples",
+      "1000",
+      "--scenarios",
+      "create",
+      "send",
+      "concurrent_send",
+      "--ledger",
+      "disk",
+      "--diagnostics",
+      "disabled",
+      "--output",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/disk-after-batched",
+      "--label",
+      "disk-after-batched",
+      "--require-success",
+      "--compare",
+      "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/disk-baseline-normal/summary.json"
+    ],
+    "cwd_relative_to_meter": ".",
+    "isolation_flags": [
+      "-I",
+      "-B"
+    ],
+    "source_root_relative_to_meter": ".",
+    "pairing_rule": "Same interpreter, script, environment and load arguments; change source-root/output/label only; after also supplies compare.",
+    "environment_policy": "Child inherits only PATH, locale and TZ; no HOME, PYTHONPATH, OAI/Hermes credentials or configuration variables."
+  },
+  "limitations": {
+    "experiment": "Isolated loopback + real Core/bridge routing + synthetic host; not production performance.",
+    "authentication": "Synthetic local principal; random in-memory bridge token, never persisted.",
+    "persistence": "Synthetic host facts stay in memory. Core operation ledger is selected as memory or an isolated on-disk SQLite file; no native host process-restart claim.",
+    "percentiles": "Empirical nearest rank; P99 null below 1000 observations; no sample size establishes production P99 here.",
+    "denominator": "Every attempted request stays in success/failure denominator; fault injection is separate from semantic success.",
+    "timeout": "Failures retain observed submit_to_finished; unobserved final latency is null, never zero or a successful latency.",
+    "resources": "Core, bridges, synthetic hosts and load client share worker process; resource usage is combined.",
+    "clock": "One process monotonic clock only; wall time is provenance, not cross-machine latency.",
+    "unsupported_metrics": {
+      "android_click_ms": "No Android device or input instrumentation.",
+      "android_request_start_ms": "Loopback submission is not Android T1.",
+      "android_sse_read_ms": "Loopback SSE read is not Android T6.",
+      "android_event_emitted_ms": "No Android repository T7 instrumentation.",
+      "android_event_applied_ms": "No Android reducer T8 instrumentation.",
+      "android_reconciled_ms": "No Android recovery T11 instrumentation.",
+      "android_render_ms": "No Android device or frame/render instrumentation.",
+      "cross_machine_network_ms": "Only loopback in one process; no synchronized cross-machine tracing.",
+      "db_queue_wait_ms": "No comparable database admission/queue boundary in both sources; ledger mode is recorded separately.",
+      "db_queue_depth": "No comparable database queue-depth instrumentation.",
+      "agent_started_ms": "Synthetic handler entry is not real Agent execution.",
+      "agent_compute_ms": "Injected synthetic delay is not model compute time."
+    }
+  },
+  "workloads": {
+    "direct/create": {
+      "shape": "serial_closed_loop_fault_or_functional_probe",
+      "max_in_flight": 1,
+      "requested_attempts": 1000,
+      "achieved_attempts_per_second": 93.29737124955443
+    },
+    "direct/send": {
+      "shape": "serial_closed_loop_fault_or_functional_probe",
+      "max_in_flight": 1,
+      "requested_attempts": 1000,
+      "achieved_attempts_per_second": 91.76829096308275
+    },
+    "direct/concurrent_send": {
+      "shape": "fixed_schedule_concurrent_bursts_independent_of_completions",
+      "requested_attempts": 1000,
+      "burst_size": 8,
+      "burst_count": 125,
+      "burst_interval_ms": 25,
+      "nominal_offered_attempts_per_second": 320.0,
+      "max_in_flight": 16,
+      "slow_adapter_count": 0,
+      "slow_attempts_per_burst": 0,
+      "coordinated_omission_note": "Fixed scheduling plus arrival_to_submit and arrival_to_finished; scheduler lateness is retained. No serial request-response pacing.",
+      "achieved_attempts_per_second": 320.4706872455047
+    },
+    "bridge/create": {
+      "shape": "serial_closed_loop_fault_or_functional_probe",
+      "max_in_flight": 1,
+      "requested_attempts": 1000,
+      "achieved_attempts_per_second": 87.26686971226103
+    },
+    "bridge/send": {
+      "shape": "serial_closed_loop_fault_or_functional_probe",
+      "max_in_flight": 1,
+      "requested_attempts": 1000,
+      "achieved_attempts_per_second": 84.18420216743817
+    },
+    "bridge/concurrent_send": {
+      "shape": "fixed_schedule_concurrent_bursts_independent_of_completions",
+      "requested_attempts": 1000,
+      "burst_size": 8,
+      "burst_count": 125,
+      "burst_interval_ms": 25,
+      "nominal_offered_attempts_per_second": 320.0,
+      "max_in_flight": 16,
+      "slow_adapter_count": 0,
+      "slow_attempts_per_burst": 0,
+      "coordinated_omission_note": "Fixed scheduling plus arrival_to_submit and arrival_to_finished; scheduler lateness is retained. No serial request-response pacing.",
+      "achieved_attempts_per_second": 319.56981720075015
+    }
+  },
+  "resources": {
+    "direct/create": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 2018,
+      "wall_seconds": 10.718415606,
+      "process_cpu_seconds": 1.3828550350000002,
+      "process_cpu_percent_one_core": 12.901673958471061,
+      "event_loop_lag_ms": {
+        "n": 2018,
+        "p50": 0.2510920021450147,
+        "p95": 0.777881003159564,
+        "p99": 1.008077997539658,
+        "max": 1.5486910051549785,
+        "p99_unavailable_reason": null
+      },
+      "rss_bytes": {
+        "n": 2020,
+        "p50": 68059136,
+        "p95": 69648384,
+        "p99": 69885952,
+        "max": 69926912,
+        "p99_unavailable_reason": null
+      },
+      "fd_count": {
+        "n": 2020,
+        "p50": 14,
+        "p95": 15,
+        "p99": 15,
+        "max": 16,
+        "p99_unavailable_reason": null
+      },
+      "before": {
+        "cpu_seconds": 0.225073371,
+        "rss_bytes": 67461120,
+        "fd_count": 14,
+        "max_rss_bytes": 67088384,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 1.607928406,
+        "rss_bytes": 69926912,
+        "fd_count": 14,
+        "max_rss_bytes": 69185536,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "direct/send": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 2015,
+      "wall_seconds": 10.897010171,
+      "process_cpu_seconds": 1.612941796,
+      "process_cpu_percent_one_core": 14.801691204184525,
+      "event_loop_lag_ms": {
+        "n": 2015,
+        "p50": 0.3657340057543479,
+        "p95": 0.8306610034196638,
+        "p99": 1.0350910015404224,
+        "max": 1.3758839995716698,
+        "p99_unavailable_reason": null
+      },
+      "rss_bytes": {
+        "n": 2017,
+        "p50": 72159232,
+        "p95": 74391552,
+        "p99": 74592256,
+        "max": 74653696,
+        "p99_unavailable_reason": null
+      },
+      "fd_count": {
+        "n": 2017,
+        "p50": 14,
+        "p95": 15,
+        "p99": 15,
+        "max": 16,
+        "p99_unavailable_reason": null
+      },
+      "before": {
+        "cpu_seconds": 1.668010718,
+        "rss_bytes": 70254592,
+        "fd_count": 14,
+        "max_rss_bytes": 69578752,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 3.280952514,
+        "rss_bytes": 74653696,
+        "fd_count": 14,
+        "max_rss_bytes": 73773056,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "direct/concurrent_send": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 553,
+      "wall_seconds": 3.120410196,
+      "process_cpu_seconds": 0.7072920650000003,
+      "process_cpu_percent_one_core": 22.666637415384226,
+      "event_loop_lag_ms": {
+        "n": 553,
+        "p50": 0.7060839998302981,
+        "p95": 1.098786000511609,
+        "p99": null,
+        "max": 14.39028000459075,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "rss_bytes": {
+        "n": 555,
+        "p50": 76992512,
+        "p95": 77066240,
+        "p99": null,
+        "max": 77070336,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "fd_count": {
+        "n": 555,
+        "p50": 44,
+        "p95": 45,
+        "p99": null,
+        "max": 46,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "before": {
+        "cpu_seconds": 3.340468632,
+        "rss_bytes": 75206656,
+        "fd_count": 28,
+        "max_rss_bytes": 74297344,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 4.047760697,
+        "rss_bytes": 77070336,
+        "fd_count": 44,
+        "max_rss_bytes": 76132352,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "bridge/create": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 2046,
+      "wall_seconds": 11.459102444,
+      "process_cpu_seconds": 2.069162286,
+      "process_cpu_percent_one_core": 18.05693156258862,
+      "event_loop_lag_ms": {
+        "n": 2046,
+        "p50": 0.6042700042598881,
+        "p95": 1.0145650012418628,
+        "p99": 1.2382870045257732,
+        "max": 1.507299006334506,
+        "p99_unavailable_reason": null
+      },
+      "rss_bytes": {
+        "n": 2048,
+        "p50": 77099008,
+        "p95": 78721024,
+        "p99": 78901248,
+        "max": 78946304,
+        "p99_unavailable_reason": null
+      },
+      "fd_count": {
+        "n": 2048,
+        "p50": 18,
+        "p95": 18,
+        "p99": 18,
+        "max": 18,
+        "p99_unavailable_reason": null
+      },
+      "before": {
+        "cpu_seconds": 4.107371371,
+        "rss_bytes": 77070336,
+        "fd_count": 16,
+        "max_rss_bytes": 76132352,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 6.176533657,
+        "rss_bytes": 78946304,
+        "fd_count": 16,
+        "max_rss_bytes": 77967360,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "bridge/send": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 2190,
+      "wall_seconds": 11.878713277,
+      "process_cpu_seconds": 2.4746457480000004,
+      "process_cpu_percent_one_core": 20.832607794242332,
+      "event_loop_lag_ms": {
+        "n": 2190,
+        "p50": 0.3726310023921542,
+        "p95": 1.00746400130447,
+        "p99": 1.0730450085247867,
+        "max": 1.255153001693543,
+        "p99_unavailable_reason": null
+      },
+      "rss_bytes": {
+        "n": 2192,
+        "p50": 79200256,
+        "p95": 82227200,
+        "p99": 82526208,
+        "max": 82608128,
+        "p99_unavailable_reason": null
+      },
+      "fd_count": {
+        "n": 2192,
+        "p50": 18,
+        "p95": 19,
+        "p99": 19,
+        "max": 19,
+        "p99_unavailable_reason": null
+      },
+      "before": {
+        "cpu_seconds": 6.257978925,
+        "rss_bytes": 79155200,
+        "fd_count": 17,
+        "max_rss_bytes": 78098432,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 8.732624673,
+        "rss_bytes": 82608128,
+        "fd_count": 16,
+        "max_rss_bytes": 81899520,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    },
+    "bridge/concurrent_send": {
+      "sample_interval_ms": 5.0,
+      "sample_count": 534,
+      "wall_seconds": 3.129206659,
+      "process_cpu_seconds": 1.2383264769999993,
+      "process_cpu_percent_one_core": 39.573176588973865,
+      "event_loop_lag_ms": {
+        "n": 534,
+        "p50": 0.6365420049405657,
+        "p95": 1.9093740047537722,
+        "p99": null,
+        "max": 22.30013400549069,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "rss_bytes": {
+        "n": 536,
+        "p50": 86384640,
+        "p95": 90427392,
+        "p99": null,
+        "max": 91025408,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "fd_count": {
+        "n": 536,
+        "p50": 61,
+        "p95": 63,
+        "p99": null,
+        "max": 79,
+        "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+      },
+      "before": {
+        "cpu_seconds": 8.799628153,
+        "rss_bytes": 83378176,
+        "fd_count": 31,
+        "max_rss_bytes": 82685952,
+        "missing_reasons": {}
+      },
+      "after": {
+        "cpu_seconds": 10.03795463,
+        "rss_bytes": 91025408,
+        "fd_count": 46,
+        "max_rss_bytes": 90157056,
+        "missing_reasons": {}
+      },
+      "scope": "Whole worker: Core, loopback client, synthetic adapters, tracing and sampler share one process; CPU/RSS are not Core-only.",
+      "peak_rss_scope": "OS high-water mark since worker start, not a scenario-local peak."
+    }
+  },
+  "warmup": {
+    "direct/create": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "direct/send": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "direct/concurrent_send": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "bridge/create": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "bridge/send": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    },
+    "bridge/concurrent_send": {
+      "attempts": 10,
+      "failures": 0,
+      "excluded_from_measured_population": true,
+      "failure_classes": {}
+    }
+  },
+  "imports": {
+    "oai_core": {
+      "source_path": "oai-core/src/oai_core/__init__.py",
+      "sha256": "2a790e4dffa663c81b7d06b2b60c187368aee700de8c1643abdf8905b93fba53"
+    },
+    "oai_core.adapters": {
+      "source_path": "oai-core/src/oai_core/adapters",
+      "sha256": null,
+      "namespace_package": true
+    },
+    "oai_core.adapters.remote": {
+      "source_path": "oai-core/src/oai_core/adapters/remote.py",
+      "sha256": "c9aecc1863238a21b927fabfc95df3bdf356c14e3b31e01f3059c678572e816e"
+    },
+    "oai_core.auth": {
+      "source_path": "oai-core/src/oai_core/auth.py",
+      "sha256": "7e40385d79ea95d9a3c378d161193e033560a43475f38d3ecb83771e9df3e2e7"
+    },
+    "oai_core.gateway": {
+      "source_path": "oai-core/src/oai_core/gateway/__init__.py",
+      "sha256": "e24d42ebd0224c2d8d4f97d3e13456557ebf0ab3e4ce4218888911e0c4779f3e"
+    },
+    "oai_core.gateway.account_paths": {
+      "source_path": "oai-core/src/oai_core/gateway/account_paths.py",
+      "sha256": "eaaadfa9227c1b8b366f4d01badb9643b898a0175dc7e27fa5c173055fd401a3"
+    },
+    "oai_core.gateway.admin": {
+      "source_path": "oai-core/src/oai_core/gateway/admin.py",
+      "sha256": "6e6f1c8dd58508f6eb0cc0ce956b12542f752da8f1ebb98b1115fa1862b95bf3"
+    },
+    "oai_core.gateway.audit": {
+      "source_path": "oai-core/src/oai_core/gateway/audit.py",
+      "sha256": "11f611ad85a88c56d27948935303487e921d7bc0df4965207a446ce6aefa83f6"
+    },
+    "oai_core.gateway.contract_assets": {
+      "source_path": "oai-core/src/oai_core/gateway/contract_assets.py",
+      "sha256": "5c85496de6b4a9591856780e216506396ab43d76718f8ff151d529e4ea1e814a"
+    },
+    "oai_core.gateway.core": {
+      "source_path": "oai-core/src/oai_core/gateway/core.py",
+      "sha256": "bfc6ff2069b5c0fb7caa24d51e3ba6351bc348e9c48ebf85cd2763cd34d5daf0"
+    },
+    "oai_core.gateway.credentials": {
+      "source_path": "oai-core/src/oai_core/gateway/credentials.py",
+      "sha256": "004f891448c62744b83ffd2b27efcf2d5326e13d56a8beb155bb36cffacb79b7"
+    },
+    "oai_core.gateway.device_authority": {
+      "source_path": "oai-core/src/oai_core/gateway/device_authority.py",
+      "sha256": "b4540828826df23028b23305c304c0948d554425137da773f4003a378653fc6f"
+    },
+    "oai_core.gateway.http": {
+      "source_path": "oai-core/src/oai_core/gateway/http.py",
+      "sha256": "0b17483c6903118bcf39052cf04cac321ac02e06355a5d0fafb1af591c3febb9"
+    },
+    "oai_core.gateway.verifier": {
+      "source_path": "oai-core/src/oai_core/gateway/verifier.py",
+      "sha256": "0590320583e76653c4c47357ddb83fb8ed4b277a7b39e8dc1b5ef3f4bac9617b"
+    },
+    "oai_core.native_diagnostics": {
+      "source_path": "oai-core/src/oai_core/native_diagnostics.py",
+      "sha256": "51944e47b2a76b44b7f309c58cac0833d6d0d5d412aa18212a81b769d11c62f4"
+    },
+    "oai_core.operations": {
+      "source_path": "oai-core/src/oai_core/operations.py",
+      "sha256": "4ff024b48c9a50c3aaa116399dbf7de3521168f0937bac12a6520da4fd36666a"
+    },
+    "oai_core.sessions": {
+      "source_path": "oai-core/src/oai_core/sessions.py",
+      "sha256": "e31fdea89c7c99e84af0a86131b427fadbc9138a9e2d6acb3a1af449802e7f4e"
+    },
+    "oai_hermes_adapter": {
+      "source_path": "integrations/hermes-session-adapter/src/oai_hermes_adapter/__init__.py",
+      "sha256": "47fb1cac68d232ed0e5a5980bdf2b4fe6dc90be8018d016c6ae5b1f189935e89"
+    },
+    "oai_hermes_adapter.approvals": {
+      "source_path": "integrations/hermes-session-adapter/src/oai_hermes_adapter/approvals.py",
+      "sha256": "1f3fbabfbf2f514cb5cdf37952ebcafa4fb435ede42d673f95b77ea36ea359c9"
+    },
+    "oai_hermes_adapter.bridge": {
+      "source_path": "integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py",
+      "sha256": "2e5f52f7648e97dde398dd129029a63837ee76d9ff1632981c04639391601a7c"
+    },
+    "oai_hermes_adapter.sessions": {
+      "source_path": "integrations/hermes-session-adapter/src/oai_hermes_adapter/sessions.py",
+      "sha256": "8ce37345f6c913886ab4903b1f10cdd3b83a8672fb5d4ac1c76b3e3f0a823039"
+    }
+  },
+  "source_verified_unchanged": true,
+  "finished_wall_time_ns": 1793385662683473896,
+  "host_load_after": {
+    "load_average_1_5_15": [
+      4.46826171875,
+      4.16455078125,
+      3.5380859375
+    ],
+    "worker_context_switches": {
+      "voluntary": 281900,
+      "involuntary": 31799
+    },
+    "scope": "Host load is observed, not controlled; other jobs may affect tail latency."
+  },
+  "summary": {
+    "bridge/concurrent_send": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 7.219968,
+          "p95": 9.727746,
+          "p99": 27.382793,
+          "max": 29.477859,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 8.661375,
+          "p95": 12.072122,
+          "p99": 29.90196,
+          "max": 31.978744,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 14.888888,
+          "p95": 17.348684,
+          "p99": 37.409969,
+          "max": 39.288756,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 20.176851,
+          "p95": 24.904789,
+          "p99": 43.047406,
+          "max": 43.720936,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 20.180058,
+          "p95": 24.908033,
+          "p99": 43.050483,
+          "max": 43.723547,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 13.992174,
+          "p95": 16.441243,
+          "p99": 34.870278,
+          "max": 36.925175,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 1000,
+          "p50": 0.706376,
+          "p95": 1.165351,
+          "p99": 2.459253,
+          "max": 3.565913,
+          "p99_unavailable_reason": null
+        },
+        "arrival_to_finished": {
+          "n": 1000,
+          "p50": 20.791417,
+          "p95": 26.606342,
+          "p99": 43.83235,
+          "max": 44.09571,
+          "p99_unavailable_reason": null
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 7.219968,
+          "p95": 9.727746,
+          "p99": 27.382793,
+          "max": 29.477859,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 8.661375,
+          "p95": 12.072122,
+          "p99": 29.90196,
+          "max": 31.978744,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 14.888888,
+          "p95": 17.348684,
+          "p99": 37.409969,
+          "max": 39.288756,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 20.176851,
+          "p95": 24.904789,
+          "p99": 43.047406,
+          "max": 43.720936,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 20.180058,
+          "p95": 24.908033,
+          "p99": 43.050483,
+          "max": 43.723547,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 13.992174,
+          "p95": 16.441243,
+          "p99": 34.870278,
+          "max": 36.925175,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 1000,
+          "p50": 0.706376,
+          "p95": 1.165351,
+          "p99": 2.459253,
+          "max": 3.565913,
+          "p99_unavailable_reason": null
+        },
+        "arrival_to_finished": {
+          "n": 1000,
+          "p50": 20.791417,
+          "p95": 26.606342,
+          "p99": 43.83235,
+          "max": 44.09571,
+          "p99_unavailable_reason": null
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "bridge/create": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 11.235795,
+          "p95": 12.167438,
+          "p99": 14.829328,
+          "max": 16.986612,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_first_content": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 11.256768,
+          "p95": 12.196961,
+          "p99": 14.853297,
+          "max": 17.013682,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 11.263376,
+          "p95": 12.204349,
+          "p99": 14.860504,
+          "max": 17.02253,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.497313,
+          "p95": 9.175345,
+          "p99": 9.991524,
+          "max": 13.681141,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 11.235795,
+          "p95": 12.167438,
+          "p99": 14.829328,
+          "max": 16.986612,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_first_content": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 11.256768,
+          "p95": 12.196961,
+          "p99": 14.853297,
+          "max": 17.013682,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 11.263376,
+          "p95": 12.204349,
+          "p99": 14.860504,
+          "max": 17.02253,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.497313,
+          "p95": 9.175345,
+          "p99": 9.991524,
+          "max": 13.681141,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "bridge/send": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 3.386204,
+          "p95": 4.101824,
+          "p99": 5.208159,
+          "max": 52.28414,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 3.674258,
+          "p95": 4.401254,
+          "p99": 5.693537,
+          "max": 52.625653,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 9.172794,
+          "p95": 9.908018,
+          "p99": 11.488171,
+          "max": 58.149457,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 11.626887,
+          "p95": 12.50282,
+          "p99": 15.760786,
+          "max": 60.58883,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 11.631555,
+          "p95": 12.509143,
+          "p99": 15.765959,
+          "max": 60.593916,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.937379,
+          "p95": 9.636848,
+          "p99": 11.057201,
+          "max": 57.91616,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 3.386204,
+          "p95": 4.101824,
+          "p99": 5.208159,
+          "max": 52.28414,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 3.674258,
+          "p95": 4.401254,
+          "p99": 5.693537,
+          "max": 52.625653,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 9.172794,
+          "p95": 9.908018,
+          "p99": 11.488171,
+          "max": 58.149457,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 11.626887,
+          "p95": 12.50282,
+          "p99": 15.760786,
+          "max": 60.58883,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 11.631555,
+          "p95": 12.509143,
+          "p99": 15.765959,
+          "max": 60.593916,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.937379,
+          "p95": 9.636848,
+          "p99": 11.057201,
+          "max": 57.91616,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "direct/concurrent_send": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 5.684637,
+          "p95": 6.80443,
+          "p99": 11.220847,
+          "max": 20.345767,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 5.692192,
+          "p95": 6.81164,
+          "p99": 11.226555,
+          "max": 20.367333,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 11.427393,
+          "p95": 12.160791,
+          "p99": 16.962444,
+          "max": 27.286099,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 16.25273,
+          "p95": 17.810593,
+          "p99": 21.800675,
+          "max": 32.076259,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 16.255483,
+          "p95": 17.814781,
+          "p99": 21.80333,
+          "max": 32.078885,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 10.973991,
+          "p95": 11.596329,
+          "p99": 16.583567,
+          "max": 25.817741,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 1000,
+          "p50": 0.6889,
+          "p95": 1.159422,
+          "p99": 1.259918,
+          "max": 2.100658,
+          "p99_unavailable_reason": null
+        },
+        "arrival_to_finished": {
+          "n": 1000,
+          "p50": 16.790948,
+          "p95": 18.90387,
+          "p99": 22.661972,
+          "max": 32.498866,
+          "p99_unavailable_reason": null
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 5.684637,
+          "p95": 6.80443,
+          "p99": 11.220847,
+          "max": 20.345767,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 5.692192,
+          "p95": 6.81164,
+          "p99": 11.226555,
+          "max": 20.367333,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 11.427393,
+          "p95": 12.160791,
+          "p99": 16.962444,
+          "max": 27.286099,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 16.25273,
+          "p95": 17.810593,
+          "p99": 21.800675,
+          "max": 32.076259,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 16.255483,
+          "p95": 17.814781,
+          "p99": 21.80333,
+          "max": 32.078885,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 10.973991,
+          "p95": 11.596329,
+          "p99": 16.583567,
+          "max": 25.817741,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 1000,
+          "p50": 0.6889,
+          "p95": 1.159422,
+          "p99": 1.259918,
+          "max": 2.100658,
+          "p99_unavailable_reason": null
+        },
+        "arrival_to_finished": {
+          "n": 1000,
+          "p50": 16.790948,
+          "p95": 18.90387,
+          "p99": 22.661972,
+          "max": 32.498866,
+          "p99_unavailable_reason": null
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "direct/create": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 10.46151,
+          "p95": 11.253108,
+          "p99": 14.702539,
+          "max": 59.620372,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_first_content": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.486762,
+          "p95": 11.282067,
+          "p99": 14.733887,
+          "max": 59.651528,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.493721,
+          "p95": 11.290801,
+          "p99": 14.743566,
+          "max": 59.660543,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.011515,
+          "p95": 8.615264,
+          "p99": 8.999394,
+          "max": 12.605203,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 10.46151,
+          "p95": 11.253108,
+          "p99": 14.702539,
+          "max": 59.620372,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_first_content": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.486762,
+          "p95": 11.282067,
+          "p99": 14.733887,
+          "max": 59.651528,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.493721,
+          "p95": 11.290801,
+          "p99": 14.743566,
+          "max": 59.660543,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.011515,
+          "p95": 8.615264,
+          "p99": 8.999394,
+          "max": 12.605203,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    },
+    "direct/send": {
+      "attempts": 1000,
+      "successes": 1000,
+      "failures": 0,
+      "success_rate": 1.0,
+      "failure_rate": 0.0,
+      "completion_rate": 1.0,
+      "consistency_rate": 1.0,
+      "injected_disconnects": 0,
+      "failure_classes": {},
+      "latency_all_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 3.048351,
+          "p95": 3.648899,
+          "p99": 3.92224,
+          "max": 8.145471,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 3.06309,
+          "p95": 3.663408,
+          "p99": 3.942956,
+          "max": 8.162946,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 8.407448,
+          "p95": 9.07845,
+          "p99": 9.551143,
+          "max": 13.608219,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.711044,
+          "p95": 11.553634,
+          "p99": 14.653031,
+          "max": 16.103928,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.716576,
+          "p95": 11.559848,
+          "p99": 14.658021,
+          "max": 16.109669,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.234318,
+          "p95": 8.868901,
+          "p99": 9.290918,
+          "max": 13.424145,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      },
+      "latency_successful_attempts_ms": {
+        "submit_to_http_headers": {
+          "n": 1000,
+          "p50": 3.048351,
+          "p95": 3.648899,
+          "p99": 3.92224,
+          "max": 8.145471,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_event": {
+          "n": 1000,
+          "p50": 3.06309,
+          "p95": 3.663408,
+          "p99": 3.942956,
+          "max": 8.162946,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_first_content": {
+          "n": 1000,
+          "p50": 8.407448,
+          "p95": 9.07845,
+          "p99": 9.551143,
+          "max": 13.608219,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_final": {
+          "n": 1000,
+          "p50": 10.711044,
+          "p95": 11.553634,
+          "p99": 14.653031,
+          "max": 16.103928,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_finished": {
+          "n": 1000,
+          "p50": 10.716576,
+          "p95": 11.559848,
+          "p99": 14.658021,
+          "max": 16.109669,
+          "p99_unavailable_reason": null
+        },
+        "submit_to_synthetic_completion": {
+          "n": 1000,
+          "p50": 8.234318,
+          "p95": 8.868901,
+          "p99": 9.290918,
+          "max": 13.424145,
+          "p99_unavailable_reason": null
+        },
+        "disconnect_to_completion": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "disconnect_to_reconnected": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_submit": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "arrival_to_finished": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_click_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_request_start_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_sse_read_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_emitted_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_event_applied_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_reconciled_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "android_render_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "cross_machine_network_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_wait_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "db_queue_depth": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_started_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        },
+        "agent_compute_ms": {
+          "n": 0,
+          "p50": null,
+          "p95": null,
+          "p99": null,
+          "max": null,
+          "p99_unavailable_reason": "Fewer than 1000 observations; maximum is not a production P99."
+        }
+      }
+    }
+  },
+  "comparison": {
+    "baseline_run_id": "5e6c761e0b6c4af8a377345bc995bfcb",
+    "scenarios": {
+      "bridge/concurrent_send": {
+        "baseline_attempts": 1000,
+        "candidate_attempts": 1000,
+        "baseline_failure_rate": 0.0,
+        "candidate_failure_rate": 0.0,
+        "failure_rate_delta": 0.0,
+        "baseline_failure_classes": {},
+        "candidate_failure_classes": {},
+        "latency_all_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -424.148481,
+            "p95_delta": -557.255064,
+            "p99_delta": -681.604546,
+            "max_delta": -715.453693
+          },
+          "submit_to_first_event": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -951.720112,
+            "p95_delta": -1135.939916,
+            "p99_delta": -1221.7260430000001,
+            "max_delta": -1243.181811
+          },
+          "submit_to_first_content": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1173.239182,
+            "p95_delta": -1338.838677,
+            "p99_delta": -1417.553711,
+            "max_delta": -1446.5511060000001
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1303.847381,
+            "p95_delta": -1502.546938,
+            "p99_delta": -1557.4646730000002,
+            "max_delta": -1589.6791950000002
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1303.846911,
+            "p95_delta": -1502.548385,
+            "p99_delta": -1557.464465,
+            "max_delta": -1589.67914
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -807.398562,
+            "p95_delta": -934.948727,
+            "p99_delta": -1062.482577,
+            "max_delta": -1066.874877
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -551.027886,
+            "p95_delta": -1830.348853,
+            "p99_delta": -1932.783215,
+            "max_delta": -1953.864108
+          },
+          "arrival_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1955.114661,
+            "p95_delta": -2760.294297,
+            "p99_delta": -2746.24675,
+            "max_delta": -2746.5886339999997
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        },
+        "latency_successful_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -424.148481,
+            "p95_delta": -557.255064,
+            "p99_delta": -681.604546,
+            "max_delta": -715.453693
+          },
+          "submit_to_first_event": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -951.720112,
+            "p95_delta": -1135.939916,
+            "p99_delta": -1221.7260430000001,
+            "max_delta": -1243.181811
+          },
+          "submit_to_first_content": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1173.239182,
+            "p95_delta": -1338.838677,
+            "p99_delta": -1417.553711,
+            "max_delta": -1446.5511060000001
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1303.847381,
+            "p95_delta": -1502.546938,
+            "p99_delta": -1557.4646730000002,
+            "max_delta": -1589.6791950000002
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1303.846911,
+            "p95_delta": -1502.548385,
+            "p99_delta": -1557.464465,
+            "max_delta": -1589.67914
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -807.398562,
+            "p95_delta": -934.948727,
+            "p99_delta": -1062.482577,
+            "max_delta": -1066.874877
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -551.027886,
+            "p95_delta": -1830.348853,
+            "p99_delta": -1932.783215,
+            "max_delta": -1953.864108
+          },
+          "arrival_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1955.114661,
+            "p95_delta": -2760.294297,
+            "p99_delta": -2746.24675,
+            "max_delta": -2746.5886339999997
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        }
+      },
+      "bridge/create": {
+        "baseline_attempts": 1000,
+        "candidate_attempts": 1000,
+        "baseline_failure_rate": 0.0,
+        "candidate_failure_rate": 0.0,
+        "failure_rate_delta": 0.0,
+        "baseline_failure_classes": {},
+        "candidate_failure_classes": {},
+        "latency_all_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.4462829999999993,
+            "p95_delta": 0.8731369999999998,
+            "p99_delta": 0.4873390000000004,
+            "max_delta": 0.4318150000000003
+          },
+          "submit_to_first_event": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "submit_to_first_content": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.4451439999999991,
+            "p95_delta": 0.8724749999999997,
+            "p99_delta": 0.4878210000000003,
+            "max_delta": 0.4343970000000006
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.4445359999999994,
+            "p95_delta": 0.8707469999999997,
+            "p99_delta": 0.488271000000001,
+            "max_delta": 0.43627700000000047
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.3755400000000009,
+            "p95_delta": 0.6962109999999999,
+            "p99_delta": 1.0898070000000004,
+            "max_delta": 0.757949
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_finished": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        },
+        "latency_successful_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.4462829999999993,
+            "p95_delta": 0.8731369999999998,
+            "p99_delta": 0.4873390000000004,
+            "max_delta": 0.4318150000000003
+          },
+          "submit_to_first_event": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "submit_to_first_content": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.4451439999999991,
+            "p95_delta": 0.8724749999999997,
+            "p99_delta": 0.4878210000000003,
+            "max_delta": 0.4343970000000006
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.4445359999999994,
+            "p95_delta": 0.8707469999999997,
+            "p99_delta": 0.488271000000001,
+            "max_delta": 0.43627700000000047
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.3755400000000009,
+            "p95_delta": 0.6962109999999999,
+            "p99_delta": 1.0898070000000004,
+            "max_delta": 0.757949
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_finished": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        }
+      },
+      "bridge/send": {
+        "baseline_attempts": 1000,
+        "candidate_attempts": 1000,
+        "baseline_failure_rate": 0.0,
+        "candidate_failure_rate": 0.0,
+        "failure_rate_delta": 0.0,
+        "baseline_failure_classes": {},
+        "candidate_failure_classes": {},
+        "latency_all_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.3018850000000004,
+            "p95_delta": 0.6954439999999997,
+            "p99_delta": 1.5603170000000004,
+            "max_delta": -0.3650960000000012
+          },
+          "submit_to_first_event": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.21380299999999997,
+            "p95_delta": 0.5823709999999997,
+            "p99_delta": 1.3613160000000004,
+            "max_delta": -0.5844980000000035
+          },
+          "submit_to_first_content": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.2617510000000003,
+            "p95_delta": 0.5898830000000004,
+            "p99_delta": 1.5356839999999998,
+            "max_delta": -0.4452410000000029
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.3799399999999995,
+            "p95_delta": 0.7076589999999996,
+            "p99_delta": 0.3748339999999999,
+            "max_delta": -0.35637599999999736
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.3791550000000008,
+            "p95_delta": 0.7084119999999992,
+            "p99_delta": 0.3738500000000009,
+            "max_delta": -0.356895999999999
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.22854399999999941,
+            "p95_delta": 0.5429139999999997,
+            "p99_delta": 1.3589819999999992,
+            "max_delta": -0.3841640000000055
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_finished": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        },
+        "latency_successful_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.3018850000000004,
+            "p95_delta": 0.6954439999999997,
+            "p99_delta": 1.5603170000000004,
+            "max_delta": -0.3650960000000012
+          },
+          "submit_to_first_event": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.21380299999999997,
+            "p95_delta": 0.5823709999999997,
+            "p99_delta": 1.3613160000000004,
+            "max_delta": -0.5844980000000035
+          },
+          "submit_to_first_content": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.2617510000000003,
+            "p95_delta": 0.5898830000000004,
+            "p99_delta": 1.5356839999999998,
+            "max_delta": -0.4452410000000029
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.3799399999999995,
+            "p95_delta": 0.7076589999999996,
+            "p99_delta": 0.3748339999999999,
+            "max_delta": -0.35637599999999736
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.3791550000000008,
+            "p95_delta": 0.7084119999999992,
+            "p99_delta": 0.3738500000000009,
+            "max_delta": -0.356895999999999
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.22854399999999941,
+            "p95_delta": 0.5429139999999997,
+            "p99_delta": 1.3589819999999992,
+            "max_delta": -0.3841640000000055
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_finished": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        }
+      },
+      "direct/concurrent_send": {
+        "baseline_attempts": 1000,
+        "candidate_attempts": 1000,
+        "baseline_failure_rate": 0.0,
+        "candidate_failure_rate": 0.0,
+        "failure_rate_delta": 0.0,
+        "baseline_failure_classes": {},
+        "candidate_failure_classes": {},
+        "latency_all_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -357.178838,
+            "p95_delta": -439.309509,
+            "p99_delta": -551.258964,
+            "max_delta": -595.759898
+          },
+          "submit_to_first_event": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -437.872205,
+            "p95_delta": -541.903739,
+            "p99_delta": -648.1705420000001,
+            "max_delta": -693.03683
+          },
+          "submit_to_first_content": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -631.5813089999999,
+            "p95_delta": -715.938333,
+            "p99_delta": -846.851478,
+            "max_delta": -869.515176
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -747.8814179999999,
+            "p95_delta": -848.250331,
+            "p99_delta": -974.5893540000001,
+            "max_delta": -1000.449319
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -747.881502,
+            "p95_delta": -848.248644,
+            "p99_delta": -974.589457,
+            "max_delta": -1000.448955
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -471.602715,
+            "p95_delta": -575.4041100000001,
+            "p99_delta": -698.22897,
+            "max_delta": -707.656343
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -546.168685,
+            "p95_delta": -1423.973677,
+            "p99_delta": -1495.882089,
+            "max_delta": -1517.866219
+          },
+          "arrival_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1320.9303109999998,
+            "p95_delta": -2035.3601789999998,
+            "p99_delta": -2057.050728,
+            "max_delta": -2052.904759
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        },
+        "latency_successful_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -357.178838,
+            "p95_delta": -439.309509,
+            "p99_delta": -551.258964,
+            "max_delta": -595.759898
+          },
+          "submit_to_first_event": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -437.872205,
+            "p95_delta": -541.903739,
+            "p99_delta": -648.1705420000001,
+            "max_delta": -693.03683
+          },
+          "submit_to_first_content": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -631.5813089999999,
+            "p95_delta": -715.938333,
+            "p99_delta": -846.851478,
+            "max_delta": -869.515176
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -747.8814179999999,
+            "p95_delta": -848.250331,
+            "p99_delta": -974.5893540000001,
+            "max_delta": -1000.449319
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -747.881502,
+            "p95_delta": -848.248644,
+            "p99_delta": -974.589457,
+            "max_delta": -1000.448955
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -471.602715,
+            "p95_delta": -575.4041100000001,
+            "p99_delta": -698.22897,
+            "max_delta": -707.656343
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -546.168685,
+            "p95_delta": -1423.973677,
+            "p99_delta": -1495.882089,
+            "max_delta": -1517.866219
+          },
+          "arrival_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": -1320.9303109999998,
+            "p95_delta": -2035.3601789999998,
+            "p99_delta": -2057.050728,
+            "max_delta": -2052.904759
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        }
+      },
+      "direct/create": {
+        "baseline_attempts": 1000,
+        "candidate_attempts": 1000,
+        "baseline_failure_rate": 0.0,
+        "candidate_failure_rate": 0.0,
+        "failure_rate_delta": 0.0,
+        "baseline_failure_classes": {},
+        "candidate_failure_classes": {},
+        "latency_all_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.20401299999999978,
+            "p95_delta": 0.5002929999999992,
+            "p99_delta": 0.9297889999999995,
+            "max_delta": 0.33357200000000375
+          },
+          "submit_to_first_event": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "submit_to_first_content": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.2040400000000009,
+            "p95_delta": 0.4961529999999996,
+            "p99_delta": 0.9350229999999993,
+            "max_delta": 0.3352989999999991
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.20300000000000118,
+            "p95_delta": 0.4986499999999996,
+            "p99_delta": 0.9363979999999987,
+            "max_delta": 0.3363159999999965
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.18278399999999895,
+            "p95_delta": 0.42032500000000006,
+            "p99_delta": 0.48008200000000123,
+            "max_delta": -44.024602
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_finished": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        },
+        "latency_successful_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.20401299999999978,
+            "p95_delta": 0.5002929999999992,
+            "p99_delta": 0.9297889999999995,
+            "max_delta": 0.33357200000000375
+          },
+          "submit_to_first_event": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "submit_to_first_content": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.2040400000000009,
+            "p95_delta": 0.4961529999999996,
+            "p99_delta": 0.9350229999999993,
+            "max_delta": 0.3352989999999991
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.20300000000000118,
+            "p95_delta": 0.4986499999999996,
+            "p99_delta": 0.9363979999999987,
+            "max_delta": 0.3363159999999965
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.18278399999999895,
+            "p95_delta": 0.42032500000000006,
+            "p99_delta": 0.48008200000000123,
+            "max_delta": -44.024602
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_finished": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        }
+      },
+      "direct/send": {
+        "baseline_attempts": 1000,
+        "candidate_attempts": 1000,
+        "baseline_failure_rate": 0.0,
+        "candidate_failure_rate": 0.0,
+        "failure_rate_delta": 0.0,
+        "baseline_failure_classes": {},
+        "candidate_failure_classes": {},
+        "latency_all_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.35250499999999985,
+            "p95_delta": 0.6115530000000002,
+            "p99_delta": 0.26622199999999996,
+            "max_delta": 0.5561190000000007
+          },
+          "submit_to_first_event": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.23061199999999982,
+            "p95_delta": 0.47300999999999993,
+            "p99_delta": 0.014654000000000167,
+            "max_delta": 0.40687499999999943
+          },
+          "submit_to_first_content": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.2739570000000011,
+            "p95_delta": 0.575253,
+            "p99_delta": 0.07118000000000002,
+            "max_delta": 0.5775769999999998
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.29430099999999904,
+            "p95_delta": 0.6688340000000004,
+            "p99_delta": 0.3884419999999995,
+            "max_delta": 0.4200949999999999
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.29338199999999937,
+            "p95_delta": 0.6666610000000013,
+            "p99_delta": 0.38575799999999916,
+            "max_delta": 0.4169640000000001
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.29268499999999964,
+            "p95_delta": 0.5771109999999986,
+            "p99_delta": 0.19194599999999973,
+            "max_delta": 0.5745619999999985
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_finished": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        },
+        "latency_successful_attempts_ms": {
+          "submit_to_http_headers": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.35250499999999985,
+            "p95_delta": 0.6115530000000002,
+            "p99_delta": 0.26622199999999996,
+            "max_delta": 0.5561190000000007
+          },
+          "submit_to_first_event": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.23061199999999982,
+            "p95_delta": 0.47300999999999993,
+            "p99_delta": 0.014654000000000167,
+            "max_delta": 0.40687499999999943
+          },
+          "submit_to_first_content": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.2739570000000011,
+            "p95_delta": 0.575253,
+            "p99_delta": 0.07118000000000002,
+            "max_delta": 0.5775769999999998
+          },
+          "submit_to_final": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.29430099999999904,
+            "p95_delta": 0.6688340000000004,
+            "p99_delta": 0.3884419999999995,
+            "max_delta": 0.4200949999999999
+          },
+          "submit_to_finished": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.29338199999999937,
+            "p95_delta": 0.6666610000000013,
+            "p99_delta": 0.38575799999999916,
+            "max_delta": 0.4169640000000001
+          },
+          "submit_to_synthetic_completion": {
+            "baseline_n": 1000,
+            "candidate_n": 1000,
+            "p50_delta": 0.29268499999999964,
+            "p95_delta": 0.5771109999999986,
+            "p99_delta": 0.19194599999999973,
+            "max_delta": 0.5745619999999985
+          },
+          "disconnect_to_completion": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "disconnect_to_reconnected": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_submit": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "arrival_to_finished": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_click_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_request_start_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_sse_read_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_emitted_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_event_applied_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_reconciled_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "android_render_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "cross_machine_network_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_wait_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "db_queue_depth": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_started_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          },
+          "agent_compute_ms": {
+            "baseline_n": 0,
+            "candidate_n": 0,
+            "p50_delta": null,
+            "p95_delta": null,
+            "p99_delta": null,
+            "max_delta": null
+          }
+        }
+      }
+    }
+  }
+}

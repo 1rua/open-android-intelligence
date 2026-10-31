@@ -1,0 +1,55 @@
+{
+  "sequence": "baseline then after; no task build or dependency install during measurements",
+  "source_commit": "dda2a4dc8ece02289b3e4f54dab11f8515249707",
+  "runs": [
+    {
+      "label": "final-baseline-33ab7a2a",
+      "argv": [
+        "tools/measure-communication.py",
+        "--source-root",
+        "../..",
+        "--samples",
+        "1000",
+        "--ledger",
+        "disk",
+        "--diagnostics",
+        "disabled",
+        "--output",
+        "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/final-baseline-33ab7a2a",
+        "--label",
+        "final-baseline-33ab7a2a",
+        "--expected-head",
+        "33ab7a2a159b095e0d6408edc8888625011b3e84",
+        "--require-clean-source"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 101.164
+    },
+    {
+      "label": "final-after-dda2a4dc",
+      "argv": [
+        "tools/measure-communication.py",
+        "--source-root",
+        ".",
+        "--samples",
+        "1000",
+        "--ledger",
+        "disk",
+        "--diagnostics",
+        "disabled",
+        "--output",
+        "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/final-after-dda2a4dc",
+        "--label",
+        "final-after-dda2a4dc",
+        "--expected-head",
+        "dda2a4dc8ece02289b3e4f54dab11f8515249707",
+        "--require-clean-source",
+        "--require-success",
+        "--compare",
+        "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/final-baseline-33ab7a2a/summary.json"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 94.79
+    }
+  ]
+}

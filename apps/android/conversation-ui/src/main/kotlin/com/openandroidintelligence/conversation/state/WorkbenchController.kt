@@ -924,10 +924,7 @@ class WorkbenchController(
                 folderId.takeIf { supportsConversationManagement })
                 .also { unconfirmedConversationCreation = it }
         // Retrying an uncertain creation, including after restart, uses its original identity.
-        GatewayLog.protocolEvidence("create.persistence_started", mapOf("requestId" to attempt.clientId,
-            "recoveryOnly" to recoveringCreation))
         flushPendingPersistence()
-        GatewayLog.protocolEvidence("create.persistence_completed", mapOf("requestId" to attempt.clientId))
         val conversation = if (recoveringCreation && repository is com.openandroidintelligence.conversation.ports.ConversationCreationRecovery)
             repository.recoverConversationCreation(attempt.scope, attempt.clientId)
         else repository.createConversation(attempt.scope, attempt.clientId)
@@ -1738,9 +1735,6 @@ class WorkbenchController(
 
     /** Creates a Gateway-owned conversation without sending a slash command. */
     fun createThread() {
-        GatewayLog.protocolEvidence("create.clicked", mapOf("closed" to closed,
-            "controllerActive" to controllerJob.isActive, "managingThreads" to _state.value.managingThreads,
-            "creatingThread" to _state.value.creatingThread, "bootstrapping" to (bootstrapJob?.isActive == true)))
         if (closed || _state.value.managingThreads || _state.value.creatingThread || bootstrapJob?.isActive == true) return
         attachmentTargetRevision++
         val sourceThreadId = activeThreadId
@@ -1758,7 +1752,6 @@ class WorkbenchController(
                 if (threadEpoch == sourceEpoch && activeThreadId == sourceThreadId) {
                     openThread(conversation.id.value)
                     update { it.copy(activeThreadTitle=conversation.title) }
-                    GatewayLog.protocolEvidence("create.ui_applied", mapOf("conversationId" to conversation.id.value))
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (cause: Exception) {

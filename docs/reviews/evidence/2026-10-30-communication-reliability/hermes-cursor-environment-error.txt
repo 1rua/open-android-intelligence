@@ -1,0 +1,91 @@
+EEEEEEEEEEEEEEEE.............................                            [100%]
+==================================== ERRORS ====================================
+_ ERROR at setup of test_cancel_during_threaded_accept_still_registers_exactly_one_native_dispatch _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_reversed_notifications_drain_the_durable_queue_once_in_acceptance_order _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_running_or_unknown_turn_fences_later_queued_work_without_redelivery[running] _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_running_or_unknown_turn_fences_later_queued_work_without_redelivery[unknown] _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_restart_preserves_unknown_handoff_and_resumes_only_never_claimed_queue[claimed] _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_restart_preserves_unknown_handoff_and_resumes_only_never_claimed_queue[delivered] _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_restart_preserves_unknown_handoff_and_resumes_only_never_claimed_queue[unknown] _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_slow_global_history_storage_does_not_block_other_session_or_loop _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_bad_event_observer_does_not_hide_durable_status_from_other_observers _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_real_http_observer_disconnect_keeps_native_turn_and_trace_alive _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_attachment_decrypt_and_fsync_run_off_loop_with_original_bytes_and_one_dispatch _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_concurrent_event_commits_keep_order_without_blocking_another_session _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_trace_uses_real_generation_after_native_callback_loses_context _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_concurrent_admission_return_order_cannot_change_dispatch_or_trace_order _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_cancelled_reply_writer_retains_order_until_thread_commit_finishes _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+_ ERROR at setup of test_storage_errors_cannot_echo_private_content_or_credentials_into_logs _
+oai-core/tests/test_hermes_communication_reliability.py:22: in host
+    from gateway.config import GatewayConfig, PlatformConfig
+E   ModuleNotFoundError: No module named 'gateway'
+=============================== warnings summary ===============================
+tests/test_hermes.py::test_remote_mapping_is_one_to_one_and_header_identity_cannot_be_injected
+  /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030/integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py:71: NotAppKeyWarning: It is recommended to use web.RequestKey instances for keys.
+  https://docs.aiohttp.org/en/stable/web_advanced.html#request-s-storage
+    request["principal"] = SimpleNamespace(account_id=account, device_id=device,
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_cancel_during_threaded_accept_still_registers_exactly_one_native_dispatch
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_reversed_notifications_drain_the_durable_queue_once_in_acceptance_order
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_running_or_unknown_turn_fences_later_queued_work_without_redelivery[running]
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_running_or_unknown_turn_fences_later_queued_work_without_redelivery[unknown]
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_restart_preserves_unknown_handoff_and_resumes_only_never_claimed_queue[claimed]
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_restart_preserves_unknown_handoff_and_resumes_only_never_claimed_queue[delivered]
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_restart_preserves_unknown_handoff_and_resumes_only_never_claimed_queue[unknown]
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_slow_global_history_storage_does_not_block_other_session_or_loop
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_bad_event_observer_does_not_hide_durable_status_from_other_observers
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_real_http_observer_disconnect_keeps_native_turn_and_trace_alive
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_attachment_decrypt_and_fsync_run_off_loop_with_original_bytes_and_one_dispatch
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_concurrent_event_commits_keep_order_without_blocking_another_session
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_trace_uses_real_generation_after_native_callback_loses_context
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_concurrent_admission_return_order_cannot_change_dispatch_or_trace_order
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_cancelled_reply_writer_retains_order_until_thread_commit_finishes
+ERROR oai-core/tests/test_hermes_communication_reliability.py::test_storage_errors_cannot_echo_private_content_or_credentials_into_logs
+29 passed, 1 warning, 16 errors in 5.87s
