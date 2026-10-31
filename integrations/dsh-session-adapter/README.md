@@ -17,5 +17,3 @@ Agent 如需设备能力，应使用 Core CLI/MCP/API 的已认证且绑定目�
 本轮调用回归、复跑命令和能力边界见[通信可靠性验证](communication-reliability.zh-CN.md)。
 
 架构细节与代码出处见[架构事实基线](../../docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)，完整配置、实际 API 证据、设备凭据隔离、测试与回滚步骤见[原生会话适配器部署文档](../../docs/plans/2026-10-25-native-session-adapters.zh-CN.md)。
-
-诊断日志默认关闭。测试部署可设置 `OAI_DSH_ADAPTER_DIAGNOSTICS=1`，按 Core 传入的 traceparent/requestId 关联桥提交、原生输入事件、首内容、原生终态和观察关闭。日志仅输出固定阶段、公开身份及单调耗时，不含消息正文或凭据；Native 输入事件不等同模型首输出。详情见[通信生命周期](../../docs/architecture/2026-10-30-communication-lifecycle.zh-CN.md)。

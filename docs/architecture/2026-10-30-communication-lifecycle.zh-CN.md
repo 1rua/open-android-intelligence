@@ -67,11 +67,3 @@ Android 创建响应丢失后先查询原操作。resolved 直接使用原权威
 诊断只记录允许的身份、数量、耗时、状态、修订和错误码。禁止正文、工具输入输出、凭据、签名和原始游标；拒绝控制字符和超长字段。日志缺失不证明执行未发生。
 
 部署验收应记录代码 SHA/文件摘要、进程启动时间、实际加载来源、宿主 SDK 与运行时能力。磁盘文件相同、包版本相同或界面显示已连接，均不能单独证明当前进程使用了对应契约。
-
-DSH Node 桥可通过服务环境变量 `OAI_DSH_ADAPTER_DIAGNOSTICS=1` 显式打开脱敏阶段日志，默认关闭。它沿 Core 的 traceparent/requestId 记录桥请求、原生 user/message、首内容事件、原生终态与观察关闭；不会把 prompt() 调用当作 Agent 已开始计算。Node 使用 `process.hrtime.bigint()`，monotonicNs 以十进制字符串保留精度，并带独立 bootId；跨语言汇总先按进程分别解析，不跨机器直接相减。Codex 记录原生 RPC 提交、响应和真实 turn 受理，不记录 RPC 参数、模型输入或认证头。
-
-通用 Remote 桥可在 `/status` 的 capabilities 中声明可选 `clientMessageIdentity=true`。Core 仅在桥声明后转发原 clientMessageId；旧桥和声明撤回后的桥仍只收到原有请求体。该扩展只关联输入，不表示宿主幂等、generationRecovery 或 eventSync，也不转发账号和设备授权。Hermes 原有显式身份配置继续保留。
-
-操作账本由同一线程按已排队顺序批量提交，单批最多 64 项，不额外等待凑批。每项使用 SQLite savepoint 保留独立幂等冲突和错误；整批 commit 失败时没有任何一项获得成功受理回执。成功结果仅在实际 commit 后交还事件循环，一次唤醒交付整批结果。此批处理仅作用于原操作摘要账本，不合并用户消息或宿主执行。
-
-本地磁盘账本仅在 SQLite 已包含 WAL-reset 修复时使用 WAL＋`synchronous=FULL`；已修版本为 3.51.3 及以后，或 3.50.7/3.44.6 对应回补线。旧运行时保持 DELETE＋FULL，不默认开启存在已知竞态的 WAL。不能用 NORMAL 降低可靠受理的掉电持久性；自动 checkpoint 保留 SQLite 默认行为。WAL 依赖同机共享存储原语，正式性能数据必须记录实际运行时及 journal 模式。依据：[SQLite WAL](https://sqlite.org/wal.html)，其中“WAL-reset bug”和性能、持久性章节。

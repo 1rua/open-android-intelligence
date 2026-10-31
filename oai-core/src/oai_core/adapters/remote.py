@@ -81,7 +81,6 @@ class RemoteSessionAdapter:
         self.stream_timeout_seconds = stream_timeout_seconds
         self.headers_builder = headers_builder
         self.attachment_core = attachment_core
-        self._configured_client_message_ids = forward_client_message_ids
         self.forward_client_message_ids = forward_client_message_ids
         self.capabilities = (
             dict(capabilities) if capabilities is not None else dict.fromkeys(CAPABILITIES, False)
@@ -142,16 +141,11 @@ class RemoteSessionAdapter:
     async def status(self) -> bool:
         try:
             result = await self._request("GET", "/status")
-            # Bridge-only input correlation extension. Old bridges continue to
-            # receive their existing strict body; this does not imply recovery.
-            self.forward_client_message_ids = (self._configured_client_message_ids
-                or result.get("capabilities", {}).get("clientMessageIdentity") is True)
             self.capabilities = {
                 key: result.get("capabilities", {}).get(key) is True for key in CAPABILITIES
             }
             return result.get("online") is True
         except AdapterError:
-            self.forward_client_message_ids = self._configured_client_message_ids
             self.capabilities = dict.fromkeys(CAPABILITIES, False)
             return False
 

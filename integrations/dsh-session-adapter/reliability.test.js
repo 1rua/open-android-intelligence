@@ -231,33 +231,3 @@ describe("DSH execution and observer lifetimes", () => {
     }
   });
 });
-
-it("correlates real HTTP native callbacks without transcript or credential diagnostics", async () => {
-  const old = process.env.OAI_DSH_ADAPTER_DIAGNOSTICS;
-  process.env.OAI_DSH_ADAPTER_DIAGNOSTICS = "1";
-  const lines = [];
-  const write = vi.spyOn(process.stderr, "write").mockImplementation((line) => { lines.push(String(line)); return true; });
-  try {
-    const h = fixture(async (input) => { h.start(input); h.delta(input.sessionId, "PRIVATE-OUTPUT"); h.end(input.sessionId); return { accepted: true }; });
-    const send = await serve(h);
-    const response = await send("one", { text: "PRIVATE-PROMPT", clientMessageId: "stable-client" }, {
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json",
-        traceparent: `00-${"c".repeat(32)}-${"d".repeat(16)}-00`, "X-OAI-Request-Id": "core-request" },
-    });
-    expect(response.status).toBe(200);
-    await response.text();
-    const records = lines.filter((line) => line.startsWith("oai_native ")).map((line) => JSON.parse(line.slice(11)));
-    expect(records.map((record) => record.stage)).toEqual([
-      "adapter.dsh.message_received", "adapter.dsh.host_submitted", "adapter.dsh.native_user_event",
-      "adapter.dsh.first_content_event", "adapter.dsh.native_terminal", "adapter.dsh.observer_closed",
-    ]);
-    expect(records.every((record) => record.traceId === "c".repeat(32) && record.requestId === "core-request")).toBe(true);
-    expect(records[2].userMessageId).toBe("native-user");
-    expect(lines.join("")).not.toContain("PRIVATE");
-    expect(lines.join("")).not.toContain(token);
-  } finally {
-    write.mockRestore();
-    if (old === undefined) Reflect.deleteProperty(process.env, "OAI_DSH_ADAPTER_DIAGNOSTICS");
-    else process.env.OAI_DSH_ADAPTER_DIAGNOSTICS = old;
-  }
-});

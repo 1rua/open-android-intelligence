@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import Counter
-from contextlib import AsyncExitStack, closing, suppress
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 import gzip
 import hashlib
@@ -29,7 +29,6 @@ import re
 import resource
 import secrets
 import socket
-import sqlite3
 import subprocess
 import sys
 import time
@@ -42,7 +41,7 @@ EVIDENCE = ROOT / "docs/reviews/evidence/2026-10-30-communication-reliability/me
 LOADED_SOURCE_DIGESTS = {}
 SOURCE_DIRS = {"oai_core": Path("oai-core/src"),
                "oai_hermes_adapter": Path("integrations/hermes-session-adapter/src")}
-FORMAT = "oai-isolated-loopback-communication-v4"
+FORMAT = "oai-isolated-loopback-communication-v3"
 SCENARIOS = ("create", "send", "create_disconnect", "send_disconnect", "bridge_disconnect",
              "concurrent_send", "slow_adapter_isolation")
 MISSING = {
@@ -54,7 +53,7 @@ MISSING = {
     "android_reconciled_ms": "No Android recovery T11 instrumentation.",
     "android_render_ms": "No Android device or frame/render instrumentation.",
     "cross_machine_network_ms": "Only loopback in one process; no synchronized cross-machine tracing.",
-    "db_queue_wait_ms": "No comparable database admission/queue boundary in both sources; ledger mode is recorded separately.",
+    "db_queue_wait_ms": "No comparable database admission/queue boundary in both sources; in-memory operation ledger only.",
     "db_queue_depth": "No comparable database queue-depth instrumentation.",
     "agent_started_ms": "Synthetic handler entry is not real Agent execution.",
     "agent_compute_ms": "Injected synthetic delay is not model compute time.",
@@ -447,9 +446,8 @@ async def close_maybe_async(value):
 
 
 class Harness:
-    def __init__(self, api, mode, timeout, *, ledger_path=None, diagnostics=True):
+    def __init__(self, api, mode, timeout):
         self.api, self.mode, self.timeout = api, mode, timeout
-        self.ledger_path, self.diagnostics = ledger_path, diagnostics
         self.observations = {}
         self.trace = NativeTraceHandler(self.observations)
         self.stack = AsyncExitStack()
@@ -483,7 +481,7 @@ class Harness:
                 else:
                     adapter = host
                 adapters.append(adapter)
-            registry = self.api.sessions.AgentRegistry(adapters, operations_path=self.ledger_path)
+            registry = self.api.sessions.AgentRegistry(adapters)
             self.stack.push_async_callback(close_maybe_async, registry)
             async def authenticate(request):
                 o = self.observations.get(request.headers.get("Idempotency-Key"))
@@ -498,7 +496,7 @@ class Harness:
             logger = logging.getLogger("oai_core.native_sessions")
             logger.handlers = [self.trace]
             logger.propagate = False
-            logger.setLevel(logging.DEBUG if self.diagnostics else logging.WARNING)
+            logger.setLevel(logging.DEBUG)
             logging.disable(logging.NOTSET)
             # 其余 logger 即使报告异常也不能输出 request/body 或 traceback。
             logging.getLogger().handlers = [logging.NullHandler()]
@@ -786,7 +784,7 @@ def environment_identity():
             "system": platform.system(), "release": platform.release(), "machine": platform.machine(),
             "host_fingerprint_sha256": digest_bytes(platform.node().encode()),
             "cpu_count": os.cpu_count(), "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
-            "packages": packages, "sqlite_runtime": sqlite3.sqlite_version, "event_loop_policy": type(asyncio.get_event_loop_policy()).__name__,
+            "packages": packages, "event_loop_policy": type(asyncio.get_event_loop_policy()).__name__,
             "monotonic_resolution_seconds": time.get_clock_info("monotonic").resolution}
 
 
@@ -843,7 +841,7 @@ def parameters(args):
             "timeout_seconds": args.timeout, "concurrency_burst_size": args.concurrency,
             "arrival_interval_ms": args.arrival_interval_ms, "warmup_attempts_per_mode_scenario": args.warmup,
             "resource_sample_interval_ms": args.resource_interval_ms,
-            "database": args.ledger, "diagnostic_trace": args.diagnostics}
+            "database": "in_memory_operation_ledger", "diagnostic_trace": "enabled_numeric_enum_allowlist"}
 
 
 def write_json(path, value):
@@ -886,7 +884,7 @@ async def worker(args):
                   "environment_policy": "Child inherits only PATH, locale and TZ; no HOME, PYTHONPATH, OAI/Hermes credentials or configuration variables."},
               "limitations": {"experiment": "Isolated loopback + real Core/bridge routing + synthetic host; not production performance.",
                   "authentication": "Synthetic local principal; random in-memory bridge token, never persisted.",
-                  "persistence": "Synthetic host facts stay in memory. Core operation ledger is selected as memory or an isolated on-disk SQLite file; no native host process-restart claim.",
+                  "persistence": "In-memory host facts and operation ledger; no process restart/disk durability claim.",
                   "percentiles": "Empirical nearest rank; P99 null below 1000 observations; no sample size establishes production P99 here.",
                   "denominator": "Every attempted request stays in success/failure denominator; fault injection is separate from semantic success.",
                   "timeout": "Failures retain observed submit_to_finished; unobserved final latency is null, never zero or a successful latency.",
@@ -913,9 +911,7 @@ async def worker(args):
                 if scenario == "bridge_disconnect" and mode != "bridge":
                     continue
                 key = mode + "/" + scenario
-                ledger_path = (ROOT / "tmp/communication-measurement-state" / report["run_id"] / mode / (scenario + ".sqlite")) if args.ledger == "disk" else None
-                async with Harness(api, mode, args.timeout, ledger_path=ledger_path,
-                                   diagnostics=args.diagnostics == "enabled") as h:
+                async with Harness(api, mode, args.timeout) as h:
                     warm, _ = await execute_scenario(h, scenario, args, args.warmup, start_index=-args.warmup)
                     report["warmup"][key] = {"attempts": len(warm), "failures": sum(not r["success"] for r in warm),
                         "excluded_from_measured_population": True,
@@ -938,11 +934,6 @@ async def worker(args):
                     samples_file.flush()
                     print(json.dumps({"workload_finished": key, "attempts": len(rows),
                                       "failures": sum(not r["success"] for r in rows)}, separators=(",", ":")), flush=True)
-                if ledger_path is not None:
-                    with closing(sqlite3.connect(ledger_path.resolve().as_uri() + "?mode=ro", uri=True)) as ledger:
-                        report["workloads"][key]["core_ledger_journal_mode"] = ledger.execute("PRAGMA journal_mode").fetchone()[0]
-                else:
-                    report["workloads"][key]["core_ledger_journal_mode"] = "memory"
     report["imports"] = verify_imports(source, identity)
     final_identity = source_identity(source)
     if final_identity != identity or script_hash != digest_bytes(Path(__file__).read_bytes()):
@@ -978,10 +969,6 @@ def parser():
     p.add_argument("--arrival-interval-ms", type=float, default=25)
     p.add_argument("--resource-interval-ms", type=float, default=5)
     p.add_argument("--warmup", type=int, default=10)
-    p.add_argument("--ledger", choices=["memory", "disk"], default="memory",
-                   help="Core operation ledger only; disk uses a retained isolated SQLite file in worktree tmp.")
-    p.add_argument("--diagnostics", choices=["enabled", "disabled"], default="enabled",
-                   help="Keep both sources identical; disabled measures the production default logger level.")
     p.add_argument("--compare", type=Path)
     p.add_argument("--expected-head")
     p.add_argument("--require-clean-source", action="store_true")
