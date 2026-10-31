@@ -227,7 +227,7 @@ publish successfully.
 源码提交、分发类型和渠道；发布前核对 APK 输出信息并验证实际签名。
 包版本提取器支持 Node/RN/Electron、Flutter、Android、iOS 和 Rust/Tauri 配置。
 相同源码的开发预览运行有不同 Tag，但安装版本代码保持不变，不会被更新检测当作新安装版本。
-正式版与开发预览版使用不同签名，不能直接互相覆盖安装。手动 `Android APK Artifact` 工作流只上传 Actions 构建产物，不发布 GitHub Release。
+正式版与开发预览版支持统一签名（通过 CI 配置 `OAI_RELEASE_KEYSTORE_BASE64` 等环境变量），以便无缝覆盖安装。`Android APK Artifact` 工作流在任意分支推送时自动触发并上传 Actions 构建产物，不发布 GitHub Release。
 
 完整字段定义、版本顺序和最小验证命令见
 [`App 更新发布元数据 v1`](../../docs/contracts/app-update-release-v1.md)。
