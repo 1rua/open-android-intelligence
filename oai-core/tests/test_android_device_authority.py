@@ -143,7 +143,7 @@ async def test_upgrade_fences_legacy_calls_and_snapshots_without_recreating_iden
             # A historical binary had no authorization-model write guards.
             # Keep this fixture a real old database, including its old schema.
             for trigger in account.store.database.execute(
-                "SELECT name FROM sqlite_schema WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
             ).fetchall():
                 account.store.database.execute('DROP TRIGGER "' + trigger[0].replace('"', '""') + '"')
             account.store.database.execute("DELETE FROM account_metadata WHERE key=?", (MODEL_MARKER,))
@@ -361,7 +361,7 @@ def test_database_rejects_old_writers_including_cached_pre_upgrade_statements(tm
         # Seed the schema that an actual pre-model database had.
         with account.store.transaction():
             for trigger in account.store.database.execute(
-                "SELECT name FROM sqlite_schema WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
             ).fetchall():
                 account.store.database.execute('DROP TRIGGER "' + trigger[0].replace('"', '""') + '"')
             account.store.database.execute("DELETE FROM account_metadata WHERE key=?", (MODEL_MARKER,))
@@ -380,7 +380,7 @@ def test_database_rejects_old_writers_including_cached_pre_upgrade_statements(tm
             with closing(sqlite3.connect(path, isolation_level=None)) as newly_opened:
                 for legacy in (already_open, newly_opened):
                     tables = legacy.execute(
-                        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'",
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'",
                     ).fetchall()
                     for table in tables:
                         quoted = '"' + table[0].replace('"', '""') + '"'
@@ -459,7 +459,7 @@ async def test_backup_failure_leaves_legacy_requests_and_identity_untouched_and_
         path = account.paths.database
         with account.store.transaction():
             for trigger in account.store.database.execute(
-                "SELECT name FROM sqlite_schema WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
             ).fetchall():
                 account.store.database.execute('DROP TRIGGER "' + trigger[0].replace('"', '""') + '"')
             account.store.database.execute("DELETE FROM account_metadata WHERE key=?", (MODEL_MARKER,))
@@ -511,7 +511,7 @@ def test_empty_model_marker_and_writer_guards_roll_back_together(tmp_path, monke
     path = account_paths(tmp_path, "alice").database
     with closing(original_connect(path, isolation_level=None)) as legacy:
         assert legacy.execute("SELECT value FROM account_metadata WHERE key=?", (MODEL_MARKER,)).fetchone() is None
-        assert legacy.execute("SELECT name FROM sqlite_schema WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'").fetchall() == []
+        assert legacy.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'").fetchall() == []
         legacy.execute("INSERT INTO account_metadata(key,value) VALUES ('initialization-probe','legacy-writable')")
     account = core.open_gateway_account("alice")
     try:
@@ -538,7 +538,7 @@ def test_legacy_backup_excludes_competing_writer_until_persistent_fences_commit(
     try:
         with account.store.transaction():
             for trigger in account.store.database.execute(
-                "SELECT name FROM sqlite_schema WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
             ).fetchall():
                 account.store.database.execute('DROP TRIGGER "' + trigger[0].replace('"', '""') + '"')
             account.store.database.execute("DELETE FROM account_metadata WHERE key=?", (MODEL_MARKER,))
@@ -581,7 +581,7 @@ def test_retained_snapshot_refuses_changed_database_without_growing_backups(tmp_
     backup_directory = account.paths.root / "backups"
     try:
         for trigger in account.store.database.execute(
-            "SELECT name FROM sqlite_schema WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%oai_device_authorization_writer%'",
         ).fetchall():
             account.store.database.execute('DROP TRIGGER "' + trigger[0].replace('"', '""') + '"')
         account.store.database.execute("DELETE FROM account_metadata WHERE key=?", (MODEL_MARKER,))

@@ -22,7 +22,7 @@ class AuthorityBackupConflict(RuntimeError):
 
 def read_authority_model(database: sqlite3.Connection) -> str | None:
     if database.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='account_metadata'",
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_metadata'",
     ).fetchone() is None:
         return None
     row = database.execute(
@@ -39,7 +39,7 @@ def register_authority_writer(database: sqlite3.Connection) -> None:
 
 def _writer_guards(database: sqlite3.Connection):
     tables = database.execute(
-        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
     ).fetchall()
     for row in tables:
         for operation in ("INSERT", "UPDATE", "DELETE"):
@@ -47,7 +47,7 @@ def _writer_guards(database: sqlite3.Connection):
 
 
 def writer_guards_installed(database: sqlite3.Connection) -> bool:
-    existing = {row[0] for row in database.execute("SELECT name FROM sqlite_schema WHERE type='trigger'")}
+    existing = {row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
     return all(name in existing for _, _, name in _writer_guards(database))
 
 
