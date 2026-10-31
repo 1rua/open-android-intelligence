@@ -107,9 +107,6 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
             errorCode = atom.errorCode?.wireValue,
             batchId = atom.batchId ?: matching?.batchId,
             clientMessageId = atom.clientMessageId,
-            // 本地投递终态不等于取得权威消息 ID；保留来源，避免占位行被当成另一条原生输入。
-            localPlaceholder = matching?.localPlaceholder ?: (atom.messageId == null || atom.messageId == atom.clientMessageId.value),
-            generationId = matching?.generationId,
             localSubmissionFailure = atom.submissionErrorCode.takeIf { atom.submissionState == LocalSubmissionState.FAILED },
             contentRevision = atom.contentRevision.takeIf { it >= 0L } ?: matching?.contentRevision,
         )

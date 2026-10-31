@@ -53,25 +53,6 @@ class LocalSendAtomIdentityTest {
     }
 
     @Test
-    fun completedAtomWithoutServerIdentityStillProducesAnExplicitLocalPlaceholder() {
-        val completed = atom(null).copy(status = AgentMessageStatus.COMPLETED)
-        val row = mergeLocalSendAtoms(emptyList(), listOf(completed)).single()
-        org.junit.Assert.assertTrue(row.localPlaceholder)
-        assertEquals("local_client_1", row.id)
-    }
-
-    @Test
-    fun aRealMessageWithALocalLookingIdKeepsItsAuthorityAndGeneration() {
-        val remote = com.openandroidintelligence.conversation.ports.TimelineMessage(
-            "local_native_id", "user", listOf(MessagePart.Text("原稿")), 1_000L,
-            clientMessageId = ClientMessageId("client_1"), generationId = "generation_1")
-        val row = mergeLocalSendAtoms(listOf(remote), listOf(atom("local_native_id"))).single()
-        org.junit.Assert.assertFalse(row.localPlaceholder)
-        assertEquals("local_native_id", row.id)
-        assertEquals("generation_1", row.generationId)
-    }
-
-    @Test
     fun strictAcceptedStillRejectsSilentIdentityRewrites() {
         try {
             atom("server_1").accepted("server_2")

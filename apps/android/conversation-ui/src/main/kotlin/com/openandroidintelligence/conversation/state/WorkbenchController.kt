@@ -4973,7 +4973,7 @@ class WorkbenchController(
                                 Math.abs(entry.timestamp - lastEntry.timestamp) <= 10_000L)
                     }
                 if (isDuplicateUser) {
-                    if (preferUserRow(entry, requireNotNull(lastEntry))) {
+                    if (lastEntry!!.pendingAcceptance && !entry.pendingAcceptance) {
                         result[result.size - 1] = entry
                     }
                 } else {
@@ -5038,7 +5038,6 @@ class WorkbenchController(
 
     /** 保留"已确认、有真实时间戳、内容更完整"的那一行。 */
     private fun preferUserRow(candidate: TimelineEntry, current: TimelineEntry): Boolean {
-        if (candidate.localPlaceholder != current.localPlaceholder) return current.localPlaceholder
         if (current.pendingAcceptance != candidate.pendingAcceptance) return current.pendingAcceptance
         val candidateTimed = candidate.timestamp > 0L
         val currentTimed = current.timestamp > 0L

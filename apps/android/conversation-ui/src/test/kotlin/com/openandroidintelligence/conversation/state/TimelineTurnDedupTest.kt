@@ -67,18 +67,6 @@ class TimelineTurnDedupTest {
     }
 
     @Test
-    fun completedLocalAtomRemainsProvisionalUntilItsAuthoritativeUserRowArrives() = runTest {
-        val client = com.openandroidintelligence.conversation.model.ClientMessageId("cm_late_identity")
-        val atom = com.openandroidintelligence.conversation.model.LocalSendAtom(
-            com.openandroidintelligence.conversation.model.ConversationId("conv_test"), client,
-            listOf(MessagePart.Text("同一次提交")), 1_000L,
-            status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED)
-        val local = com.openandroidintelligence.conversation.model.mergeLocalSendAtoms(emptyList(), listOf(atom)).single()
-        val confirmed = user("同一次提交", 1_100L).copy(id = "native-late-user", clientMessageId = client)
-        assertEquals(listOf(confirmed.id), rendered(local, confirmed, authoritativeMessageIds = true).map { it.key })
-    }
-
-    @Test
     fun twoRecordedNativeUserIdsCannotBeHiddenByASharedClientIdentity() = runTest {
         val client = com.openandroidintelligence.conversation.model.ClientMessageId("cm_native")
         val first = user("已写入的第一条", 1_000L).copy(id = "native-one", clientMessageId = client)
