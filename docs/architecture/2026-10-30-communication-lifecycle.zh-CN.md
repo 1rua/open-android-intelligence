@@ -77,3 +77,5 @@ DSH Node 桥可通过服务环境变量 `OAI_DSH_ADAPTER_DIAGNOSTICS=1` 显式�
 操作账本由同一线程按已排队顺序批量提交，单批最多 64 项，不额外等待凑批。每项使用 SQLite savepoint 保留独立幂等冲突和错误；整批 commit 失败时没有任何一项获得成功受理回执。成功结果仅在实际 commit 后交还事件循环，一次唤醒交付整批结果。此批处理仅作用于原操作摘要账本，不合并用户消息或宿主执行。
 
 本地磁盘账本仅在 SQLite 已包含 WAL-reset 修复时使用 WAL＋`synchronous=FULL`；已修版本为 3.51.3 及以后，或 3.50.7/3.44.6 对应回补线。旧运行时保持 DELETE＋FULL，不默认开启存在已知竞态的 WAL。不能用 NORMAL 降低可靠受理的掉电持久性；自动 checkpoint 保留 SQLite 默认行为。WAL 依赖同机共享存储原语，正式性能数据必须记录实际运行时及 journal 模式。依据：[SQLite WAL](https://sqlite.org/wal.html)，其中“WAL-reset bug”和性能、持久性章节。
+
+Android 的本地原稿来源与服务端消息身份分别保存。投递状态 completed 不代表已获得权威消息 ID；合并原稿时保留 localPlaceholder 和已有 generationId。同一明确输入存在占位与权威行时优先权威行，多个不同真实原生 ID 继续保留，不按正文或 ID 前缀猜身份。列表可沿用同一次输入首次出现的展示键，协议和存储中的真实消息 ID 不改变；这避免身份升级触发多余的移除/插入图层，不能用关闭动画替代正确去重。
