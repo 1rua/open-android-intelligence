@@ -54,6 +54,8 @@ import com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.conversation.model.StreamHealth
+import com.openandroidintelligence.gateway.events.EventStreamStatus
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
@@ -548,7 +550,8 @@ class MainActivity : ComponentActivity() {
                 ) {
                     // 登录页 ↔ 工作台：统一走标准淡入滑移转场，禁止生硬替换。
                     val localSessionState by runtime.localSessionState.collectAsState()
-                    val enterWorkbench = localSessionState is LocalSessionState.Workspace ||
+                    val enterWorkbench = localSessionState is LocalSessionState.LoadingLocal ||
+                        localSessionState is LocalSessionState.Workspace ||
                         ((phase is ConnectionPhase.Connected || phase is ConnectionPhase.OfflineMirror) && controller != null)
                     val pluginRevision by app.pluginHost.revision.collectAsState()
                     val nativeUi = remember(pluginRevision) { app.pluginHost.nativeUiProvider() }
@@ -613,7 +616,17 @@ class MainActivity : ComponentActivity() {
                                 val activeController = controller
                                 if (activeController == null) {
                                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        CircularProgressIndicator(strokeWidth = 2.dp)
+                                        if (operationNotice != null || phase is ConnectionPhase.Failed) {
+                                            Column(
+                                                modifier = Modifier.padding(Dimensions.SpaceMedium),
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                                            ) {
+                                                Text(operationNotice ?: "本地会话暂时不可用，资料已保留。")
+                                                TextButton(onClick = runtime::retryConnection) { Text("重试连接") }
+                                                TextButton(onClick = { showSettingsSheet = true }) { Text("设置") }
+                                            }
+                                        } else CircularProgressIndicator(strokeWidth = 2.dp)
                                     }
                                     return@AnimatedContent
                                 }
@@ -623,7 +636,8 @@ class MainActivity : ComponentActivity() {
                                     runtime = runtime,
                                     controller = activeController,
                                     gatewayLabel = (phase as? ConnectionPhase.Connected)?.gatewayUrl
-                                        ?: (phase as? ConnectionPhase.OfflineMirror)?.gatewayUrl.orEmpty(),
+                                        ?: (phase as? ConnectionPhase.OfflineMirror)?.gatewayUrl
+                                        ?: (localSessionState as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl.orEmpty(),
                                     onOpenSettings = { showSettingsSheet = true },
                                     onOpenAssistant = { showAssistant = true },
                                     onPickCamera = attachmentPickers.camera,
@@ -773,11 +787,13 @@ internal fun GatewayWorkbenchScreen(
 ) {
     val operationNotice by runtime.operationNotice.collectAsState()
     val phase by runtime.phase.collectAsState()
+    val connectionStatus by runtime.connectionStatus.collectAsState()
+    val localSession by runtime.localSessionState.collectAsState()
     val profiles by runtime.savedProfiles.collectAsState()
     val username = when (val current = phase) {
         is ConnectionPhase.Connected -> current.username
         is ConnectionPhase.OfflineMirror -> current.username
-        else -> ""
+        else -> (localSession as? LocalSessionState.Workspace)?.account?.username.orEmpty()
     }
     val profile = profiles.firstOrNull { it.gatewayBaseUrl == gatewayLabel && it.username == username }
     val avatar = rememberAccountAvatarPicker(runtime, profile)
@@ -787,6 +803,7 @@ internal fun GatewayWorkbenchScreen(
             agentName = (phase as? ConnectionPhase.Connected)?.agentName ?: profile?.agentName,
             accountAvatar = avatar.image,
             onChangeAvatar = avatar.pick,
+            connectionHealth = workbenchConnectionHealth(phase, connectionStatus),
             onPasteImages = onPasteImages,
             controller = controller,
             gatewayLabel = gatewayLabel,
@@ -815,6 +832,7 @@ internal fun GatewayWorkbenchScreen(
                         OperationNoticeBanner(
                             text = notice,
                             onDismiss = runtime::dismissOperationNotice,
+                            onRetry = if (runtime.canRetryWorkbenchInitialization || phase is ConnectionPhase.Failed) runtime::retryConnection else null,
                             modifier = Modifier.padding(horizontal = Dimensions.TimelineHorizontal),
                         )
                     }
@@ -822,5 +840,27 @@ internal fun GatewayWorkbenchScreen(
                 header()
             },
         )
+    }
+}
+
+internal fun workbenchConnectionHealth(
+    phase: ConnectionPhase,
+    status: EventStreamStatus,
+): StreamHealth? {
+    return when (phase) {
+        ConnectionPhase.Initializing, ConnectionPhase.Negotiating, ConnectionPhase.Authenticating ->
+            StreamHealth.CONNECTING
+        ConnectionPhase.Reconnecting -> StreamHealth.RECONNECTING
+        is ConnectionPhase.OfflineMirror -> StreamHealth.FAILED
+        is ConnectionPhase.Connected -> when (status) {
+            EventStreamStatus.CONNECTING ->
+                StreamHealth.CONNECTING
+            EventStreamStatus.RECONNECTING ->
+                StreamHealth.RECONNECTING
+            EventStreamStatus.FAILED ->
+                StreamHealth.FAILED
+            else -> null
+        }
+        else -> null
     }
 }

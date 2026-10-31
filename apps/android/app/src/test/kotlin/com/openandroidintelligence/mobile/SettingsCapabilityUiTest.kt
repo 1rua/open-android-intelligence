@@ -52,6 +52,21 @@ class SettingsCapabilityUiTest {
     }
 
     @Test
+    fun aRecoveryNoticeOffersRetryWithoutDismissingTheFailure() {
+        var retries = 0
+        var dismissed = false
+        setContent {
+            OperationNoticeBanner("本地会话读取失败", onDismiss = { dismissed = true }, onRetry = { retries++ })
+        }
+        compose.onNodeWithText("重试").performClick()
+        compose.runOnIdle {
+            assertEquals(1, retries)
+            assertFalse(dismissed)
+        }
+        compose.onNodeWithText("本地会话读取失败").assertExists()
+    }
+
+    @Test
     fun bubbleSettingsEntryOpensTheSystemBubbleControlsForThisApp() {
         setContent { ConversationBubbleSettingsItem() }
         compose.onNodeWithText("原生会话气泡").performClick()

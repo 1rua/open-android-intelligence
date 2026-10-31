@@ -96,7 +96,7 @@ class AuthSessionLifecycleTest {
     }
 
     @Test
-    fun nativeMirrorRestoresSelectedThreadAndDraftBeforeNetworkIsReleased() {
+    fun nativeMirrorKeepsColdStartBlankAndRetainsHistoryForManualOpen() {
         val original = runtime()
         original.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(original)
@@ -123,12 +123,16 @@ class AuthSessionLifecycleTest {
         try {
             val restarted = runtime(resumedScope)
             restarted.restoreSessionIfAvailable()
-            assertTrue("网络恢复尚未放行时必须可读 native 镜像", awaitCondition(AWAIT_MILLIS) {
-                restarted.controller.value?.state?.value?.activeThreadId == "native-chat"
+            assertTrue("网络恢复尚未放行时必须有空白工作台", awaitCondition(AWAIT_MILLIS) {
+                restarted.controller.value != null
             })
-            assertEquals("saved native draft", restarted.controller.value!!.state.value.draft)
+            assertNull(restarted.controller.value!!.state.value.activeThreadId)
+            assertEquals("", restarted.controller.value!!.state.value.draft)
             assertEquals("native-agent", profiles.find(nativeProfileId)!!.selectedAgentId)
-            assertTrue(restarted.phase.value is ConnectionPhase.OfflineMirror)
+            assertTrue(restarted.phase.value is ConnectionPhase.Initializing)
+            assertNull(restarted.operationNotice.value)
+            restarted.controller.value!!.openThread("native-chat")
+            assertEquals("saved native draft", restarted.controller.value!!.state.value.draft)
             val before = gateway.requests.size
             restarted.onAppForegrounded(); restarted.onNetworkAvailable()
             assertEquals("saved native draft", restarted.controller.value!!.state.value.draft)

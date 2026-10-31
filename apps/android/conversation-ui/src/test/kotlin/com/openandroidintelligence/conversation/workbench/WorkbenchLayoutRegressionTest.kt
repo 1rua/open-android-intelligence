@@ -48,6 +48,23 @@ class WorkbenchLayoutRegressionTest {
         compose.onNodeWithContentDescription("发送").assertIsEnabled()
     }
 
+    @Test fun initializingBlankPageDoesNotClaimThatApprovalCardsAreUnsupported() {
+        val controller = WorkbenchController(scope, EmptyGateway(), object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) =
+                AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+        }, { ConversationScope("p", "g", "a", "i") }, allowSending = false, restoreLastThread = false)
+        compose.setContent {
+            MaterialTheme {
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {}, onLogout = {},
+                    connectionHealth = StreamHealth.CONNECTING)
+            }
+        }
+        compose.onNodeWithText("从一个想法开始").assertIsDisplayed()
+        compose.onNodeWithText("正在连接…", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("该网关不支持审批卡片，请用 /approve 文本命令回复。").assertDoesNotExist()
+        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+    }
+
     @Test fun searchFieldGrowsWithFontScaleInsteadOfClippingItsPlaceholder() {
         compose.setContent {
             val density = LocalDensity.current

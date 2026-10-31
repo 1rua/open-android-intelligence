@@ -216,16 +216,16 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
-    fun aColdRestoreClearsOnlyTheObsoleteOfflineMirrorNotice() {
+    fun aColdRestoreDoesNotInventAnOfflineNoticeWhileNegotiating() {
         saveLoginBeforeProcessDeath()
         val release = gateway.holdResponse(NEGOTIATE_PATH, NEGOTIATE_BODY)
         val restored = runtime()
         try {
             restored.restoreSessionIfAvailable()
-            assertTrue("先呈现本地镜像再等待远端", awaitCondition(AWAIT_MILLIS) {
-                restored.phase.value is ConnectionPhase.OfflineMirror &&
-                    restored.operationNotice.value == "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
+            assertTrue("本地工作台就绪后只等待远端，不宣称离线", awaitCondition(AWAIT_MILLIS) {
+                restored.phase.value is ConnectionPhase.Initializing && restored.controller.value != null
             })
+            assertNull("尚无失败事实不能显示离线提示", restored.operationNotice.value)
             release.countDown()
             awaitConnected(restored)
             assertNull("恢复成功后不能继续提示只能离线阅读", restored.operationNotice.value)
@@ -239,7 +239,9 @@ class GatewaySessionRefreshTest {
         val restored = runtime()
         try {
             restored.restoreSessionIfAvailable()
-            assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value is ConnectionPhase.OfflineMirror })
+            assertTrue(awaitCondition(AWAIT_MILLIS) {
+                restored.phase.value is ConnectionPhase.Initializing && restored.controller.value != null
+            })
             // 模拟另一条本地恢复路径在协商等待期间发布的新通知；不能用清空所有通知掩盖它。
             val field = GatewayRuntime::class.java.getDeclaredField("_operationNotice").apply { isAccessible = true }
             @Suppress("UNCHECKED_CAST")

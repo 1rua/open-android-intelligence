@@ -290,7 +290,8 @@ class CoreAgentConversationRepository(
                         val retryable = transient && failures < 6
                         if (currentAgent()?.id == agent.id && activeConversationId() == conversationId) {
                             _streamHealth.value = if (retryable) StreamHealth.RECONNECTING else StreamHealth.FAILED
-                            _streamFailure.value = "NATIVE_EVENT_SYNC_FAILED:${(failure as? NativeEventSyncFailure)?.stage ?: "READ_FAILED"}:$code"
+                            _streamFailure.value = if (retryable) null else
+                                "NATIVE_EVENT_SYNC_FAILED:${(failure as? NativeEventSyncFailure)?.stage ?: "READ_FAILED"}:$code"
                         }
                         GatewayLog.w("OaiNativeEvents", "sync failed code=$code attempt=$failures")
                         if (!retryable) return@launch

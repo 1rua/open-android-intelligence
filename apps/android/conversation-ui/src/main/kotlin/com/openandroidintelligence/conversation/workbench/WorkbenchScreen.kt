@@ -83,6 +83,7 @@ fun WorkbenchScreen(
     agentName: String? = null,
     accountAvatar: androidx.compose.ui.graphics.ImageBitmap? = null,
     onChangeAvatar: (() -> Unit)? = null,
+    connectionHealth: StreamHealth? = null,
 ) {
     val state by controller.state.collectAsState()
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -244,7 +245,7 @@ fun WorkbenchScreen(
                 agentName = agentName,
                 avatar = accountAvatar,
                 onChangeAvatar = onChangeAvatar,
-                streamHealth = state.streamHealth,
+                streamHealth = connectionHealth ?: state.streamHealth,
                 gatewayLabel = gatewayLabel,
                 threads = state.threads,
                 activeThreadId = state.activeThreadId,
@@ -337,7 +338,7 @@ fun WorkbenchScreen(
                         WorkbenchTopBar(
                             threadTitle = state.activeThreadTitle,
                             gatewayLabel = gatewayLabel,
-                            streamHealth = state.streamHealth,
+                            streamHealth = connectionHealth ?: state.streamHealth,
                             expanded = expanded,
                             canRename = state.activeThreadId != null,
                             creatingThread = state.creatingThread,
@@ -358,7 +359,7 @@ fun WorkbenchScreen(
                         if (stackedContext) {
                             WorkbenchContextLine(
                                 gatewayLabel = gatewayLabel,
-                                streamHealth = state.streamHealth,
+                                streamHealth = connectionHealth ?: state.streamHealth,
                                 modifier = Modifier.padding(
                                     start = Dimensions.SpaceMedium,
                                     end = Dimensions.SpaceMedium,
@@ -567,7 +568,7 @@ fun WorkbenchScreen(
                                 // Honest degradation: a Gateway that cannot take
                                 // a decision gets no card at all, and the user is
                                 // told the text command is the way to answer.
-                                if (!state.approvalCardsSupported && !approvalHintDismissed) {
+                                if (state.isOnline && !state.approvalCardsSupported && !approvalHintDismissed) {
                                     ApprovalUnsupportedHint(onDismiss = { approvalHintDismissed = true })
                                 }
                                 ComposerBar(

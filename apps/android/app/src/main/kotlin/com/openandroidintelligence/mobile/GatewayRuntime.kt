@@ -43,8 +43,8 @@ import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.mobile.plugins.DeviceCapabilitySyncState
 import com.openandroidintelligence.mobile.plugins.capabilitySyncErrorCode
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import com.openandroidintelligence.conversation.ports.ConversationRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -110,6 +110,12 @@ val CLIENT_CONVERSATION_UI_OFFER: Set<String> = setOf(
 sealed interface ConnectionPhase {
     data object Disconnected : ConnectionPhase
 
+    /** 本地登录已恢复，首次连接尚未得到明确结果。 */
+    data object Initializing : ConnectionPhase
+
+    /** 保留本地工作台时恢复远端会话。 */
+    data object Reconnecting : ConnectionPhase
+
     data object Negotiating : ConnectionPhase
 
     data object Authenticating : ConnectionPhase
@@ -166,6 +172,7 @@ class GatewayRuntime(
     private val accountProfiles: AndroidAccountProfileStore = AndroidAccountProfileStore(context),
     private val pluginHost: com.openandroidintelligence.mobile.plugins.ProductionPluginHost? = null,
     private val localDocumentKeyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null,
+    private val initialConnectionGraceMillis: Long = 8_000L,
 ) {
     private var executionDriver: com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver? = null
     private var capabilityPublisher: com.openandroidintelligence.mobile.plugins.CapabilityPublisher? = null
@@ -323,6 +330,7 @@ class GatewayRuntime(
     val isManagingProfiles: StateFlow<Boolean> = _isManagingProfiles.asStateFlow()
 
     private val _controller = MutableStateFlow<WorkbenchController?>(null)
+    private var workspacePresented = false
     val controller: StateFlow<WorkbenchController?> = _controller.asStateFlow()
     private val _nativeAgents = MutableStateFlow<NativeAgentsController?>(null)
     val nativeAgents: StateFlow<NativeAgentsController?> = _nativeAgents.asStateFlow()
@@ -330,6 +338,8 @@ class GatewayRuntime(
     private val _operationNotice = MutableStateFlow<String?>(null)
     val operationNotice: StateFlow<String?> = _operationNotice.asStateFlow()
     fun dismissOperationNotice() { _operationNotice.value = null }
+    internal val canRetryWorkbenchInitialization: Boolean
+        get() = _operationNotice.value == WORKBENCH_RECOVERY_NOTICE
 
     suspend fun setAccountAvatar(profileId: String, bytes: ByteArray) = withContext(Dispatchers.IO) {
         require(bytes.isNotEmpty() && bytes.size <= ACCOUNT_AVATAR_MAX_BYTES)
@@ -402,6 +412,45 @@ class GatewayRuntime(
             restartPlatformStream?.invoke()
             resumeWorkbench()
         }
+    }
+
+    /** 明确故障后的用户重试复用原工作台和恢复所有者。 */
+    fun retryConnection() {
+        if (_phase.value is ConnectionPhase.Failed &&
+            _localSessionState.value is LocalSessionState.Workspace &&
+            _loginStatus.value != GatewayLoginStatus.REAUTHENTICATION_REQUIRED) {
+            connectionJob?.cancel()
+            connectionJob = null
+            restoringSession = false
+            _phase.value = ConnectionPhase.Disconnected
+            _operationNotice.value = null
+            restoreSessionIfAvailable()
+        } else onNetworkAvailable()
+    }
+
+    private fun redirectRetiringWorkbench(
+        previous: WorkbenchController,
+        ownerScope: CoroutineScope,
+        isCurrent: () -> Boolean,
+    ) {
+        var queuedAction: Job? = null
+        var editorThread = previous.state.value.activeThreadId
+        fun forward(action: (WorkbenchController) -> Unit) {
+            val preceding = queuedAction
+            queuedAction = ownerScope.launch {
+                preceding?.join()
+                if (!isCurrent()) return@launch
+                val replacement = controller.filterNotNull().first { it !== previous }
+                if (isActive && _controller.value === replacement && isCurrent()) action(replacement)
+            }
+        }
+        previous.redirectRetiredNavigation(
+            openThread = { id -> editorThread = id; forward { it.openThread(id) } },
+            editDraft = { text ->
+                val expectedThread = editorThread
+                forward { if (it.state.value.activeThreadId == expectedThread) it.editDraft(text) }
+            },
+        )
     }
 
     private fun resumeWorkbench() {
@@ -560,8 +609,9 @@ class GatewayRuntime(
         if (connectionJob?.isActive == true && !restoringSession) return
         val currentConnected = _phase.value as? ConnectionPhase.Connected
         val currentOffline = _phase.value as? ConnectionPhase.OfflineMirror
-        val gatewayUrl = currentConnected?.gatewayUrl ?: currentOffline?.gatewayUrl ?: return
-        val username = currentConnected?.username ?: currentOffline?.username ?: return
+        val localAccount = (_localSessionState.value as? LocalSessionState.Workspace)?.account
+        val gatewayUrl = currentConnected?.gatewayUrl ?: currentOffline?.gatewayUrl ?: localAccount?.gatewayBaseUrl ?: return
+        val username = currentConnected?.username ?: currentOffline?.username ?: localAccount?.username ?: return
         val profileId = profileIdFor(gatewayUrl, username)
 
         // 1. 本地优先：立即写入持久退出屏障，防止自动恢复
@@ -1015,37 +1065,46 @@ class GatewayRuntime(
         _controller.value?.updateDebouncePolicy(preferences.read(gateway))
     }
 
-    private suspend fun showOfflineMirror(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,
-        cause:Throwable? = null, checkOwner: () -> Unit = {}) {
+    private suspend fun showLocalWorkspace(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,
+        cause:Throwable? = null, checkOwner: () -> Unit = {},
+        initializing: Boolean = false, restoreLastThread: Boolean = true, sessionOwner: Job? = null) {
         if (cause != null && !isTransientConnectionFailure(cause) || _phase.value is ConnectionPhase.OfflineMirror) return
         checkOwner()
-        val selectedAgentId = accountProfiles.find(profileId)?.selectedAgentId
-        val nativeMirror = selectedAgentId?.let { agentId ->
-            com.openandroidintelligence.mobile.conversations.NativeConversationMirror(context,
-                ConversationScope(profileId,endpoint.baseUrl,accountId,installationId()), { agentId }, localDocumentKeyProvider)
+        if (_controller.value == null) {
+            val selectedAgentId = accountProfiles.find(profileId)?.selectedAgentId
+            val nativeMirror = selectedAgentId?.let { agentId ->
+                com.openandroidintelligence.mobile.conversations.NativeConversationMirror(context,
+                    ConversationScope(profileId,endpoint.baseUrl,accountId,installationId()), { agentId }, localDocumentKeyProvider)
+            }
+            val mirrorScope=ConversationScope(profileId,endpoint.baseUrl,accountId,installationId())
+            val mirror=kotlinx.coroutines.withContext(Dispatchers.IO) {
+                nativeMirror?.offlineMirror() ?: com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,mirrorScope,localDocumentKeyProvider)
+                    .also { it.finishBaselineRecovery() }
+            }
+            val media = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,mirrorScope,keyProvider=localDocumentKeyProvider)
+            }
+            val downloads = com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,media,mirrorScope,keyProvider=localDocumentKeyProvider)
+            val mediaReady = prepareMediaTransitions(mirror,media)
+            val downloadNotice = if (mediaReady) recoverDownloads(downloads) else MEDIA_RECOVERY_NOTICE
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            checkOwner()
+            val owned = sessionOwner ?: SupervisorJob(scope.coroutineContext[Job]).also { sessionJob = it }
+            _controller.value=kotlinx.coroutines.withContext(Dispatchers.IO) { WorkbenchController(CoroutineScope(owned+Dispatchers.Main.immediate),
+                com.openandroidintelligence.mobile.conversations.OfflineMirrorRepository(mirror),
+                object:com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository {
+                    override suspend fun get(gatewayId:String,languageCode:String):com.openandroidintelligence.conversation.ports.AgentCommandCatalog=throw java.io.IOException("OFFLINE_MIRROR")
+                },{ mirrorScope },persistence=nativeMirror ?: mirror,media=media,downloads=downloads,allowSending=false,
+                authoritativeMessageIds=nativeMirror != null, organizationStoredLocally=nativeMirror != null,
+                restoreLastThread=restoreLastThread) }
+            workspacePresented = true
+            if (downloadNotice != null) _operationNotice.value = downloadNotice
         }
-        val mirrorScope=ConversationScope(profileId,endpoint.baseUrl,accountId,installationId())
-        val mirror=kotlinx.coroutines.withContext(Dispatchers.IO) {
-            nativeMirror?.offlineMirror() ?: com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,mirrorScope,localDocumentKeyProvider)
-                .also { it.finishBaselineRecovery() }
-        }
-        val media = kotlinx.coroutines.withContext(Dispatchers.IO) {
-            com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,mirrorScope,keyProvider=localDocumentKeyProvider)
-        }
-        val downloads = com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,media,mirrorScope,keyProvider=localDocumentKeyProvider)
-        val mediaReady = prepareMediaTransitions(mirror,media)
-        val downloadNotice = if (mediaReady) recoverDownloads(downloads) else MEDIA_RECOVERY_NOTICE
-        kotlinx.coroutines.currentCoroutineContext().ensureActive()
         checkOwner()
-        val owned=SupervisorJob(scope.coroutineContext[Job]); sessionJob=owned
-        _controller.value=kotlinx.coroutines.withContext(Dispatchers.IO) { WorkbenchController(CoroutineScope(owned+Dispatchers.Main.immediate),
-            com.openandroidintelligence.mobile.conversations.OfflineMirrorRepository(mirror),
-            object:com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository {
-                override suspend fun get(gatewayId:String,languageCode:String):com.openandroidintelligence.conversation.ports.AgentCommandCatalog=throw java.io.IOException("OFFLINE_MIRROR")
-            },{ mirrorScope },persistence=nativeMirror ?: mirror,media=media,downloads=downloads,allowSending=false,
-            authoritativeMessageIds=nativeMirror != null, organizationStoredLocally=nativeMirror != null) }
-        _phase.value=ConnectionPhase.OfflineMirror(endpoint.baseUrl,username)
-        _operationNotice.value=downloadNotice ?: OFFLINE_MIRROR_NOTICE
+        _phase.value=if (initializing) {
+            if (restoreLastThread) ConnectionPhase.Reconnecting else ConnectionPhase.Initializing
+        } else ConnectionPhase.OfflineMirror(endpoint.baseUrl,username)
+        if (!initializing && _operationNotice.value == null) _operationNotice.value=OFFLINE_MIRROR_NOTICE
         val mirrorAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, username, "")
         _localSessionState.value = LocalSessionState.Workspace(mirrorAccount, _phase.value)
     }
@@ -1087,18 +1146,21 @@ class GatewayRuntime(
             return
         }
 
-        // 【冷启动优化：先本地，后远端恢复】
-        // 立即进入 Workspace 本地镜像呈现，不闪现登录页
+        // 本地账号决定首屏，网络结果只决定连接提示。进程首次呈现不恢复会话导航。
+        val startOnBlank = !workspacePresented
         val savedAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, lastUser, "")
-        _localSessionState.value = LocalSessionState.Workspace(savedAccount, ConnectionPhase.Disconnected)
+        _localSessionState.value = LocalSessionState.Workspace(savedAccount,
+            if (startOnBlank) ConnectionPhase.Initializing else ConnectionPhase.Reconnecting)
         val backgroundOwner = backgroundRecoveryOnly
         restoringSession = true
         _loginStatus.value = GatewayLoginStatus.RESTORING
         _credentialStatus.value = GatewayCredentialStatus.AVAILABLE
-        _phase.value = ConnectionPhase.Negotiating
+        _phase.value = if (startOnBlank) ConnectionPhase.Initializing else ConnectionPhase.Reconnecting
+        _connectionStatus.value = if (startOnBlank) EventStreamStatus.CONNECTING else EventStreamStatus.RECONNECTING
         lateinit var ownedRestore: Job
         fun checkOwner() {
             ownedRestore.ensureActive()
+            if (connectionJob !== ownedRestore) throw CancellationException("RESTORE_OWNER_CHANGED")
             synchronized(backgroundOwnershipLock) {
                 if (backgroundOwner && backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease) {
                     throw CancellationException("BACKGROUND_RECOVERY_STOPPED")
@@ -1107,14 +1169,24 @@ class GatewayRuntime(
         }
         ownedRestore = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var backoff = 1_000L
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            var lastTransientFailure: Exception? = null
+            fun graceRemaining() = (initialConnectionGraceMillis -
+                (android.os.SystemClock.elapsedRealtime() - startedAt)).coerceAtLeast(0L)
+            suspend fun showConfirmedFailure(cause: Exception) {
+                checkOwner()
+                showLocalWorkspace(endpoint, lastUser, profileId, accountId, cause, ::checkOwner)
+            }
             try {
-                // 本地展示由恢复任务拥有；先完成镜像加载，再等待网络，不制造网络异常。
+                // 本地数据可读并不等于离线；首次握手期间只呈现新对话。
                 if (_controller.value == null) {
-                    try { showOfflineMirror(endpoint, lastUser, profileId, accountId, checkOwner = ::checkOwner) }
+                    try { showLocalWorkspace(endpoint, lastUser, profileId, accountId, checkOwner = ::checkOwner,
+                        initializing = true, restoreLastThread = !startOnBlank) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { _operationNotice.value = "本地镜像读取失败，正在尝试连接。" }
                 }
                 while (isActive) {
+                    if (graceRemaining() == 0L) lastTransientFailure?.let { showConfirmedFailure(it) }
                     try {
                         checkOwner()
                         val pins = identityTrust.pinsBeforeConnect(endpoint, lastUser, restoring = true)
@@ -1124,17 +1196,24 @@ class GatewayRuntime(
                         }
                         checkOwner()
                         val tlsPin = identityTrust.verifyNegotiation(endpoint, lastUser, negotiated)
-                        if (_phase.value is ConnectionPhase.OfflineMirror) {
+                        // 在同一页面交接本地与在线控制器，不发布 controller=null 的中间帧。
+                        val restoreSelection = _controller.value?.state?.value?.activeThreadId != null
+                        if (_controller.value != null && activeHttpClient == null) {
                             if (!flushWorkbenchBeforeLeaving()) return@launch
-                            _controller.value?.closeAndAwait()
-                            sessionJob?.cancel()
-                            _controller.value = null
+                            if (!negotiated.nativeAgentSessions) {
+                                _controller.value?.let { previous ->
+                                    redirectRetiringWorkbench(previous, scope) { connectionJob === ownedRestore }
+                                }
+                                _controller.value?.closeAndAwait()
+                                sessionJob?.cancel()
+                            }
                         }
                         establish(endpoint, lastUser, profileId, session, tlsPin,
                             negotiated.conversationUi, negotiated.deviceRequests, GenerationCancelCapability.fromNegotiation(negotiated), ::checkOwner,
                             agentName = negotiated.agentName ?: negotiated.deploymentId,
                             nativeAgentSessions = negotiated.nativeAgentSessions,
-                            androidDeviceAuthorization = negotiated.androidDeviceAuthorization)
+                            androidDeviceAuthorization = negotiated.androidDeviceAuthorization,
+                            restoreLastThread = restoreSelection)
                         return@launch
                     } catch (cancelled: CancellationException) { throw cancelled }
                       catch (cause: Exception) {
@@ -1147,13 +1226,15 @@ class GatewayRuntime(
                         _connectionStatus.value = EventStreamStatus.RECONNECTING
                         if (!isTransientConnectionFailure(cause)) {
                             _phase.value = ConnectionPhase.Failed(errorCode(cause))
-                            _operationNotice.value = renewalFailureNotice(cause)
+                            _operationNotice.value = com.openandroidintelligence.conversation.components.readableFailure(errorCode(cause))
                             sessionKeepAlive.stop()
                             return@launch
                         }
-                        showOfflineMirror(endpoint, lastUser, profileId, accountId, cause, ::checkOwner)
-                        _operationNotice.value = renewalFailureNotice(cause)
-                        withTimeoutOrNull(backoff) { recoveryWakeup.receive() }
+                        lastTransientFailure = cause
+                        val remaining = graceRemaining()
+                        if (remaining == 0L) showConfirmedFailure(cause)
+                        // 在宽限边界再次判定已发生的失败，无需额外计时状态或订阅。
+                        withTimeoutOrNull(if (remaining > 0) minOf(backoff, remaining) else backoff) { recoveryWakeup.receive() }
                         backoff = minOf(backoff * 2, 60_000L)
                     }
                 }
@@ -1209,9 +1290,12 @@ class GatewayRuntime(
         agentName: String? = null,
         nativeAgentSessions: Boolean = false,
         androidDeviceAuthorization: Boolean = false,
+        restoreLastThread: Boolean = true,
     ): Unit = initializePostLogin(InitializationStage.SESSION_SETUP) {
         establishingJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         checkOwner()
+        val retainedLocalController = _controller.value?.takeIf { nativeAgentSessions && activeHttpClient == null }
+        val retainedLocalOwner = sessionJob.takeIf { retainedLocalController != null }
         val pins = setOfNotNull(tlsSpkiSha256)
         val profile = GatewayProfile(
             accountId = session.accountId,
@@ -1350,8 +1434,12 @@ class GatewayRuntime(
             "accountId" to session.accountId, "deviceId" to session.deviceId, "sessionId" to session.sessionId,
         ))
 
-        sessionJob?.cancel()
+        if (sessionJob !== retainedLocalOwner) sessionJob?.cancel()
         val ownedJob = SupervisorJob(scope.coroutineContext[Job])
+        ownedJob.invokeOnCompletion {
+            retainedLocalController?.close()
+            retainedLocalOwner?.cancel()
+        }
         sessionJob = ownedJob
         val sessionScope = CoroutineScope(ownedJob + Dispatchers.Main.immediate)
         _nativeAgents.value?.close()
@@ -1562,13 +1650,14 @@ class GatewayRuntime(
             } else catalogRepository
 
         var workbenchAgentId: String? = null
-        fun buildWorkbenchController(currentAgentName: String? = null): WorkbenchController {
+        fun buildWorkbenchController(currentAgentName: String? = null, restoreSelection: Boolean = restoreLastThread): WorkbenchController {
             val ownerAgentId = _nativeAgents.value?.state?.value?.agent?.id
-            workbenchAgentId = ownerAgentId
             return WorkbenchController(
                 scope = sessionScope,
                 repository = activeRepo,
                 catalogRepository = activeCatalogRepo,
+                restoreLastThread = restoreSelection,
+                canReadConversations = { !nativeAgentSessions || _nativeAgents.value?.state?.value?.agent != null },
                 languageCode = java.util.Locale.getDefault().toLanguageTag(),
                 scopeFactory = { conversationScope },
                 attachmentCoordinator = attachmentCoordinator,
@@ -1601,67 +1690,125 @@ class GatewayRuntime(
                 } else mirror,
                 media = mediaCache,
                 downloads = downloads,
-            )
+            ).also { workbenchAgentId = ownerAgentId }
         }
 
-        _controller.value = initializePostLogin(InitializationStage.WORKBENCH) {
-            kotlinx.coroutines.withContext(Dispatchers.IO) {
-                checkOwner()
-                buildWorkbenchController()
+        // 原生 Agent 发现完成后再创建其在线工作台；等待期间保留本地页面。
+        if (nativeAgentSessions && _controller.value == null) {
+            initializePostLogin(InitializationStage.WORKBENCH) {
+                showLocalWorkspace(endpoint, username, profileId, session.accountId, checkOwner = checkOwner,
+                    initializing = true, restoreLastThread = restoreLastThread, sessionOwner = ownedJob)
+            }
+        }
+        if (!nativeAgentSessions) {
+            _controller.value = initializePostLogin(InitializationStage.WORKBENCH) {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    checkOwner()
+                    buildWorkbenchController()
+                }
             }
         }
 
+        workspacePresented = true
         if (nativeAgentSessions) {
             val rememberedAgentId = accountProfiles.find(profileId)?.selectedAgentId
             _nativeAgents.value?.close()
-            _nativeAgents.value = NativeAgentsController(com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG), sessionScope,
+            val nativeController = NativeAgentsController(com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG), sessionScope,
                 lastSelectedAgentId = rememberedAgentId,
                 onSelectionLost = { lost -> _operationNotice.value = "上次使用的 Agent「$lost」已不在当前列表中，请重新选择。" })
-            sessionScope.launch {
-                var previousAgent: Pair<String, com.openandroidintelligence.gateway.agents.AgentCapabilities>? = null
-                _nativeAgents.filterNotNull().flatMapLatest { it.state }.collect { nState: NativeAgentsState ->
-                    val selected = nState.selectedAgentId
-                    val descriptor = nState.agent?.let { it.id to it.capabilities }
-                    if (selected != null && descriptor != previousAgent) {
-                        val isFirstObservation = previousAgent == null
-                        previousAgent = descriptor
-                        // 用户实际切换（或恢复的选择被服务端确认）才持久化与重建工作台，
-                        // 首帧观察不重建，避免每次重连都无谓地清空界面状态。
-                        if (!isFirstObservation || nState.selectionConfirmed) {
-                            synchronized(accountProfiles) {
-                                accountProfiles.find(profileId)?.let { profile ->
-                                    if (profile.selectedAgentId != selected) {
-                                        accountProfiles.saveSelectedAgent(profileId, selected)
-                                        _savedProfiles.value = accountProfiles.list()
-                                    }
+            _nativeAgents.value = nativeController
+            var previousAgent: Pair<String, com.openandroidintelligence.gateway.agents.AgentCapabilities>? = null
+            val workbenchHandoff = Mutex()
+            suspend fun updateNativeWorkbench(nState: NativeAgentsState) = workbenchHandoff.withLock {
+                if (sessionJob !== ownedJob || _nativeAgents.value !== nativeController) return@withLock
+                val selected = nState.agent?.id
+                val descriptor = nState.agent?.let { it.id to it.capabilities }
+                if (selected != null && descriptor != previousAgent) {
+                    val isFirstObservation = previousAgent == null
+                    val agentChanged = previousAgent?.first != selected
+                    previousAgent = descriptor
+                    // 用户实际切换（或恢复的选择被服务端确认）才持久化与重建工作台，
+                    // 首帧观察不重建，避免每次重连都无谓地清空界面状态。
+                    if (!isFirstObservation || nState.selectionConfirmed) {
+                        synchronized(accountProfiles) {
+                            accountProfiles.find(profileId)?.let { profile ->
+                                if (profile.selectedAgentId != selected) {
+                                    accountProfiles.saveSelectedAgent(profileId, selected)
+                                    _savedProfiles.value = accountProfiles.list()
                                 }
                             }
                         }
-                        val newAgent = nState.agent
-                        val newAgentName: String = newAgent?.name ?: selected
-                        val currentPhase = _phase.value
-                        if (currentPhase is ConnectionPhase.Connected && currentPhase.agentName != newAgentName) {
-                            _phase.value = currentPhase.copy(agentName = newAgentName)
-                        }
-                        val capabilityState = _controller.value?.state?.value
-                        val capabilitiesChanged = capabilityState?.conversationDeleteSupported != (newAgent?.capabilities?.delete == true) ||
-                            capabilityState?.conversationArchiveSupported != (newAgent?.capabilities?.archive == true) ||
-                            capabilityState?.conversationRenameSupported != (newAgent?.capabilities?.rename == true)
-                        if (!isFirstObservation || capabilitiesChanged || workbenchAgentId != selected) {
-                            // 等待旧分区 IO 收尾后，才创建固定绑定新 Agent 的工作台。
-                            _controller.value?.closeAndAwait()
-                            _controller.value = withContext(Dispatchers.IO) { buildWorkbenchController(newAgentName) }
-                        } else {
-                            // Initial requests may have run before Agent discovery completed.
-                            // Agent discovery now supplies the subscription identity.
-                            // Rebind the event consumer without discarding its draft.
-                            _controller.value?.onForegrounded()
-                            _controller.value?.loadCatalog()
-                        }
                     }
-                    _controller.value?.setRemoteConversationOnline(nState.agent?.online == true)
+                    val newAgent = nState.agent
+                    val newAgentName: String = newAgent?.name ?: selected
+                    val currentPhase = _phase.value
+                    if (currentPhase is ConnectionPhase.Connected && currentPhase.agentName != newAgentName) {
+                        _phase.value = currentPhase.copy(agentName = newAgentName)
+                    }
+                    val capabilityState = _controller.value?.state?.value
+                    val capabilitiesChanged = capabilityState?.conversationDeleteSupported != (newAgent?.capabilities?.delete == true) ||
+                        capabilityState?.conversationArchiveSupported != (newAgent?.capabilities?.archive == true) ||
+                        capabilityState?.conversationRenameSupported != (newAgent?.capabilities?.rename == true)
+                    if (!isFirstObservation || capabilitiesChanged || workbenchAgentId != selected) {
+                        var restoreSelection = when {
+                            isFirstObservation -> if (retainedLocalController != null)
+                                _controller.value?.state?.value?.activeThreadId != null else restoreLastThread
+                            agentChanged -> true
+                            else -> _controller.value?.state?.value?.activeThreadId != null
+                        }
+                        try {
+                            // 交接期间到达旧界面的选择与输入，等新 owner 发布后执行。
+                            _controller.value?.let { previous ->
+                                val sourceAgent = workbenchAgentId ?: rememberedAgentId
+                                if (sourceAgent == selected || isFirstObservation && sourceAgent == null &&
+                                    previous.state.value.activeThreadId == null) {
+                                    redirectRetiringWorkbench(previous, sessionScope) {
+                                        sessionJob === ownedJob && _nativeAgents.value === nativeController &&
+                                            nativeController.state.value.agent?.id == selected
+                                    }
+                                }
+                            }
+                            // 旧分区 IO 收尾后才交接，新 owner 再次核对后才发布。
+                            _controller.value?.closeAndAwait()
+                            if (isFirstObservation && retainedLocalController != null) {
+                                restoreSelection = _controller.value?.state?.value?.activeThreadId != null
+                            }
+                            retainedLocalOwner?.cancel()
+                            val replacement = withContext(Dispatchers.IO) {
+                                buildWorkbenchController(newAgentName, restoreSelection)
+                            }
+                            if (sessionJob !== ownedJob || _nativeAgents.value !== nativeController) {
+                                replacement.close()
+                                return@withLock
+                            }
+                            _controller.value = replacement
+                            _operationNotice.compareAndSet(WORKBENCH_RECOVERY_NOTICE, null)
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (cause: Exception) {
+                            logConnectionFailure(InitializationStage.WORKBENCH.name, "WORKBENCH_RECOVERY_FAILED", cause)
+                            previousAgent = null
+                            _operationNotice.value = WORKBENCH_RECOVERY_NOTICE
+                        }
+                    } else {
+                        // Initial requests may have run before Agent discovery completed.
+                        // Agent discovery now supplies the subscription identity.
+                        // Rebind the event consumer without discarding its draft.
+                        _controller.value?.onForegrounded()
+                        _controller.value?.loadCatalog()
+                    }
+                }
+                _controller.value?.setRemoteConversationOnline(nState.agent?.online == true)
+            }
+            restartNativeReads = {
+                if (sessionJob === ownedJob && _nativeAgents.value === nativeController) {
+                    coreAgentRepo?.connectionRestored()
+                    nativeController.refresh()
+                    if (canRetryWorkbenchInitialization) sessionScope.launch {
+                        updateNativeWorkbench(nativeController.state.value)
+                    }
                 }
             }
+            sessionScope.launch { nativeController.state.collect { updateNativeWorkbench(it) } }
         }
         clearBubbleWorkTracking()
         bubbleWorkspace?.close()
@@ -2158,6 +2305,7 @@ class GatewayRuntime(
     }
 
     private companion object {
+        const val WORKBENCH_RECOVERY_NOTICE = "读取本地会话失败，历史记录已保留，请重新连接后重试。"
         const val OFFLINE_MIRROR_NOTICE = "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
         const val MEDIA_RECOVERY_NOTICE = "本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。"
         val PLATFORM_EVENTS = setOf("session.revoked", "pairing.grant.changed", "device.requested", "device.request.cancel.requested")

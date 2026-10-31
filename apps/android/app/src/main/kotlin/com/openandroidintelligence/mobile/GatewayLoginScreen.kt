@@ -112,7 +112,8 @@ fun GatewayLoginScreen(
     val urlIsValid = endpoint != null
     val showUrlError = url.isNotBlank() && !urlIsValid
     val plaintextAddress = endpoint?.isTls == false
-    val isBusy = phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating || isManagingProfiles
+    val isBusy = phase is ConnectionPhase.Initializing || phase is ConnectionPhase.Reconnecting ||
+        phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating || isManagingProfiles
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
     Box(
@@ -493,6 +494,10 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        ConnectionPhase.Initializing -> PhaseProgressRow(text = "正在连接 OAI Core…")
+
+        ConnectionPhase.Reconnecting -> PhaseProgressRow(text = "正在重新连接 OAI Core…")
 
         ConnectionPhase.Negotiating -> PhaseProgressRow(text = "正在协商协议版本…")
 
