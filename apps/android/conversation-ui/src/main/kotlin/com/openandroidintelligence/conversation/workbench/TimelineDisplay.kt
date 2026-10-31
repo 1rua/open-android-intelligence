@@ -20,11 +20,10 @@ sealed interface TimelineDisplayItem {
      */
     val contentType: String
 
-    data class Single(
-        val entry: TimelineEntry,
-        /** 仅用于列表复用；用户行升级服务端身份时，entry.key 仍保留真实消息 ID。 */
-        override val key: String = entry.key,
-    ) : TimelineDisplayItem {
+    data class Single(val entry: TimelineEntry) : TimelineDisplayItem {
+        /** 单条消息沿用消息自身的 key，宿主的滚动/新鲜项跟踪语义不变。 */
+        override val key: String get() = entry.key
+
         override val contentType: String get() = "single"
     }
 
@@ -135,9 +134,6 @@ class TimelineDisplayModel(
      */
     private val parsedCache = LinkedHashMap<String, List<TimelineBlock>>(16, 0.75f, true)
 
-    /** 当前会话中无身份冲突的用户行，沿用首次出现的展示键。 */
-    private val userItemKeys = mutableMapOf<String, String>()
-
     /**
      * 当前仍在增量的执行段里，是否已经出现过最终正文。
      *
@@ -149,15 +145,12 @@ class TimelineDisplayModel(
     /** 当前缓存条数（测试用于验证上限）。 */
     internal val cachedEntryCount: Int get() = parsedCache.size
 
-    /** 不依赖 Compose，测试可直接驱动展示身份与折叠矩阵。 */
+    /** 纯函数入口：不依赖 Compose，测试可直接驱动折叠矩阵。 */
     fun build(
         entries: List<TimelineEntry>,
         generation: GenerationState? = null,
     ): List<TimelineDisplayItem> {
-        if (entries.isEmpty()) {
-            userItemKeys.clear()
-            return emptyList()
-        }
+        if (entries.isEmpty()) return emptyList()
 
         val items = mutableListOf<TimelineDisplayItem>()
         val segment = mutableListOf<EntryAnalysis>()
@@ -200,28 +193,7 @@ class TimelineDisplayModel(
             }
         }
         flushSegment()
-        return retainUserItemKeys(items)
-    }
-
-    private fun retainUserItemKeys(items: List<TimelineDisplayItem>): List<TimelineDisplayItem> {
-        val singleUsersByClient = items.filterIsInstance<TimelineDisplayItem.Single>()
-            .filter { it.entry.isUser && it.entry.clientMessageId != null }
-            .groupBy { requireNotNull(it.entry.clientMessageId).value }
-            .filterValues { it.size == 1 }
-        // 不跨缺失行或身份冲突保留别名，也不随历史会话无限积累。
-        userItemKeys.keys.retainAll(singleUsersByClient.keys)
-        val reservedKeys = items.mapTo(hashSetOf()) { it.key }
-        return items.map { item ->
-            if (item !is TimelineDisplayItem.Single || !item.entry.isUser) return@map item
-            val clientId = item.entry.clientMessageId?.value ?: return@map item
-            // 同一 client 对应多行时逐条保留真实键，不能把合法消息交给列表误合并。
-            if (clientId !in singleUsersByClient) return@map item
-            val firstKey = userItemKeys.getOrPut(clientId) { item.key }
-            val key = if (firstKey == item.key || reservedKeys.add(firstKey)) firstKey else item.key
-            // 旧别名若与另一条消息或执行段撞键，退回本行真实键并保持后续帧稳定。
-            userItemKeys[clientId] = key
-            item.copy(key = key)
-        }
+        return items
     }
 
     private fun buildNativeRun(generationId: String, entries: List<TimelineEntry>): AssistantExecutionRun {
@@ -464,7 +436,7 @@ fun rememberTimelineDisplayItems(
 ): List<TimelineDisplayItem> {
     // 缓存与粘滞状态都属于一段会话：换会话必须重建，避免跨会话 id 命中/误折叠。
     val model = remember(threadId) { TimelineDisplayModel() }
-    return remember(model, entries, generation) { model.build(entries, generation) }
+    return remember(entries, generation) { model.build(entries, generation) }
 }
 
 /** 只有明确终态才强制折叠；OUTCOME_UNKNOWN/UNSUPPORTED 仍可能继续输出。 */
