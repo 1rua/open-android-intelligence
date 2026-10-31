@@ -662,6 +662,8 @@ private fun SettingsOverviewScreen(
                         is ConnectionPhase.Connected -> "已连接 · " + phase.username
                         is ConnectionPhase.OfflineMirror -> "离线镜像 · " + phase.username
                         ConnectionPhase.Disconnected -> "未连接 Gateway"
+                        ConnectionPhase.Initializing -> "正在连接 OAI Core…"
+                        ConnectionPhase.Reconnecting -> "正在重新连接 OAI Core…"
                         ConnectionPhase.Negotiating -> "正在协商协议…"
                         ConnectionPhase.Authenticating -> "正在验证凭据…"
                         // 这里绝不直接打印 `phase.code`：它是异常的 message，可能带地址与对端正文，

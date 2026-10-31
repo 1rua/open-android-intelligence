@@ -258,6 +258,10 @@ class WorkbenchController(
      */
     private val originalImageCompressor: (ByteArray) -> ByteArray? =
         { bytes -> compressOriginalImageForViewer(bytes) },
+    /** 冷启动可保留历史缓存，同时让用户从空白页开始。 */
+    private val restoreLastThread: Boolean = true,
+    /** 只读取宿主现有的 Agent 就绪状态；等待发现时不发起远端读取。 */
+    private val canReadConversations: () -> Boolean = { true },
 ) : AutoCloseable {
     private val controllerJob=SupervisorJob(scope.coroutineContext[Job])
     // 控制器协程里的未捕获异常只应结束这一条订阅，而不是带走整个进程：
@@ -831,6 +835,10 @@ class WorkbenchController(
     )
     private var awaitingReply: ReplyWatchdogTarget? = null
     private var activeThreadId: String? = null
+    /** 单份旧草稿暂不展示；初始化刷新不能用空白页把它覆盖。 */
+    private var deferredThreadCheckpoint: WorkbenchCheckpoint? = null
+    private var retiredThreadSelection: ((String) -> Unit)? = null
+    private var retiredDraftEditing: ((String) -> Unit)? = null
     private var threadRequestEpoch = 0L
     private var organizationMutationEpoch = 0L
     private var threadsSnapshotRevision: Long? = null
@@ -1380,6 +1388,8 @@ class WorkbenchController(
 
     init {
         persistence?.load()?.let { saved ->
+            val restoreComposer = restoreLastThread || saved.threadId == null
+            if (!restoreLastThread && saved.threadId != null) deferredThreadCheckpoint = saved
             saved.cancellations.forEach { rememberCancelledGeneration(it.conversationId, it.generationId) }
             saved.messageGenerations.forEach { messageGenerations[it.conversationId to it.messageId] = MessageGeneration(it.generationId, it.revision) }
             saved.pendingFolderAssignments.forEach { pendingFolderAssignments[it.conversationId] = it.folderId }
@@ -1393,23 +1403,29 @@ class WorkbenchController(
                 saved.batches.forEach { add(it.conversationId) }
             })
             saved.batches.forEach { b -> if (b.sealed) frozenBatches[b.batchId]=b else b.messages.forEach { collectingUnits[it.clientMessageId.value]=b.conversationId to it } }
-            activeThreadId = saved.threadId
-            mirrored.putAll(saved.messages.map(::withLatestMessageStatus).associateBy { it.id })
-            mirroredRevisions.putAll(saved.revisions)
+            activeThreadId = saved.threadId.takeIf { restoreLastThread }
+            if (restoreLastThread) {
+                mirrored.putAll(saved.messages.map(::withLatestMessageStatus).associateBy { it.id })
+                mirroredRevisions.putAll(saved.revisions)
+            }
             handledEventIds.addAll(saved.eventIds)
             userRenamedThreads.addAll(saved.renamedThreads)
-            draftRevision = saved.draftRevision
+            draftRevision = if (restoreComposer) saved.draftRevision else 0
             failedSubmission = saved.submission?.let { DraftSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) }
             saved.threadId?.let(::reconcileDeletedRecoveryUnits)
+            val displayedSubmission = failedSubmission?.takeIf { it.conversationId == activeThreadId }
             val restoredRows = renderTimeline()
             _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(saved.threads)),
                 organization=saved.organization, pendingFolderAssignments=pendingFolderAssignments.toMap(),
-                activeThreadId = saved.threadId, activeThreadTitle = saved.title, draft = saved.draft.ifBlank { failedSubmission?.text.orEmpty() },
-                attachments = attachmentCoordinator?.restoredDrafts() ?: saved.attachments, pendingBatch=saved.batches.filter { it.conversationId==saved.threadId }.flatMap { b -> b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } }, timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
-                composer = if (failedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
-                hasRecoverableSubmissions = frozenBatches.values.any { it.conversationId == saved.threadId } || collectingUnits.values.any { it.first == saved.threadId } ||
-                    saved.threadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true,
-                notice = if (failedSubmission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (frozenBatches.isNotEmpty() || collectingUnits.isNotEmpty()) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
+                activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) saved.title else "",
+                draft = if (restoreComposer) saved.draft.ifBlank { displayedSubmission?.text.orEmpty() } else "",
+                attachments = if (restoreComposer) attachmentCoordinator?.restoredDrafts() ?: saved.attachments else emptyList(),
+                pendingBatch=saved.batches.filter { it.conversationId==activeThreadId }.flatMap { b -> b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } },
+                timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
+                composer = if (restoreComposer && displayedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
+                hasRecoverableSubmissions = frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId } ||
+                    activeThreadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true,
+                notice = if (!restoreComposer) null else if (displayedSubmission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId }) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
             attachmentCoordinator?.let { coordinator ->
                 _state.value.attachments.forEach { observeAttachment(coordinator,it.id.value) }
             }
@@ -1573,7 +1589,7 @@ class WorkbenchController(
     }
 
     fun refreshThreads() {
-        if (closed || _state.value.managingThreads) return
+        if (closed || _state.value.managingThreads || !canReadConversations()) return
         retryFolderAssignments()
         val epoch=++threadRequestEpoch
         val mutationEpoch=organizationMutationEpoch
@@ -1583,6 +1599,7 @@ class WorkbenchController(
         update { if (it.threads is Loadable.Ready || it.threads is Loadable.Empty) it else it.copy(threads = Loadable.Loading) }
         workScope.launch {
             try {
+                if (!canReadConversations()) return@launch
                 val page=repository.completeConversations(requestedScope)
                 val organization=if (supportsConversationManagement) repository.readOrganization() else _state.value.organization
                 if (closed || epoch != threadRequestEpoch || mutationEpoch != organizationMutationEpoch || requestedScope != scopeFactory()) return@launch
@@ -1603,7 +1620,7 @@ class WorkbenchController(
                     threads.none { it.id.value == active }) {
                     leaveManagedThread(active)
                 }
-                if (activeThreadId == null && bootstrapJob?.isActive != true && _state.value.draft.isBlank() &&
+                if (restoreLastThread && activeThreadId == null && bootstrapJob?.isActive != true && _state.value.draft.isBlank() &&
                     _state.value.attachments.isEmpty() && pendingSubmission == null && failedSubmission == null) {
                     threads.firstOrNull { !it.archived }?.let { openThread(it.id.value) }
                 }
@@ -1620,11 +1637,12 @@ class WorkbenchController(
 
     private var catalogRequestEpoch = 0L
     fun loadCatalog() {
-        if (closed) return
+        if (closed || !canReadConversations()) return
         val epoch = ++catalogRequestEpoch
         val requestedScope = scopeFactory()
         update { it.copy(catalog = Loadable.Loading) }
         workScope.launch {
+            if (!canReadConversations()) return@launch
             val result = try {
                 Result.success(catalogRepository.get(gatewayId=requestedScope.gatewayId,languageCode=languageCode))
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -1634,9 +1652,18 @@ class WorkbenchController(
         }
     }
 
+    /** 宿主交接期间，旧界面已到达的导航和输入仍交给同一会话上下文的新控制器。 */
+    fun redirectRetiredNavigation(openThread: (String) -> Unit, editDraft: (String) -> Unit) {
+        retiredThreadSelection = openThread
+        retiredDraftEditing = editDraft
+    }
+
     fun openThread(threadId: String) {
-        if (closed || threadId in deletedThreads) return
+        if (closed) { retiredThreadSelection?.invoke(threadId); return }
+        if (threadId in deletedThreads) return
         if (activeThreadId == threadId) return
+        val restored = deferredThreadCheckpoint?.takeIf { it.threadId == threadId }
+        deferredThreadCheckpoint = null
         attachmentTargetRevision++
         cancelPendingSubmission()
         threadEpoch++
@@ -1655,12 +1682,19 @@ class WorkbenchController(
         // with the countdown it had, never a fresh one — and a card the Gateway
         // already settled must not come back as a question.
         // (mirrored/mirroredRevisions are message state and are cleared above.)
+        restored?.let { saved ->
+            draftRevision = saved.draftRevision
+            mirrored.putAll(saved.messages.map(::withLatestMessageStatus).associateBy { it.id })
+            mirroredRevisions.putAll(saved.revisions)
+        }
         timelineJob?.cancel()
         disarmReplyWatchdog()
         update {
             it.copy(
                 activeThreadId = threadId,
                 activeThreadTitle = threadTitleOf(threadId),
+                draft = restored?.draft?.ifBlank { failedSubmission?.takeIf { it.conversationId == threadId }?.text.orEmpty() } ?: it.draft,
+                attachments = restored?.let { saved -> attachmentCoordinator?.restoredDrafts() ?: saved.attachments } ?: it.attachments,
                 historyHydrated = persistence==null,
                 timeline = Loadable.Loading,
                 pendingBatch = emptyList(),
@@ -1674,8 +1708,11 @@ class WorkbenchController(
             )
         }
 
+        if (restored != null) attachmentCoordinator?.let { coordinator ->
+            _state.value.attachments.forEach { observeAttachment(coordinator, it.id.value) }
+        }
         timelineJob = workScope.launch {
-            if (!restoreLocalTimeline(threadId)) return@launch
+            if (!restoreLocalTimeline(threadId) || !canReadConversations()) return@launch
             loadPendingDeliveries(threadId)
             try {
                 repository.pendingApprovalFallbacks(threadId).forEach { fallback ->
@@ -1687,6 +1724,7 @@ class WorkbenchController(
                 // The live event stream may still deliver the fallback. A failed
                 // read must not replace the conversation with an error page.
             }
+            if (!canReadConversations()) return@launch
             val result = Result.runCatching { repository.completeTimeline(threadId) }
             if (!isActive || activeThreadId != threadId) return@launch
             result.fold(
@@ -2317,6 +2355,7 @@ class WorkbenchController(
     }
 
     fun editDraft(text: String) {
+        if (closed) { retiredDraftEditing?.invoke(text); return }
         val opensCommands = text.startsWith("/") && !_state.value.draft.startsWith("/")
         // A frozen message belongs to its own pending send. Editing the next
         // draft must not withdraw it while its attachments are still uploading.
@@ -3483,6 +3522,7 @@ class WorkbenchController(
     }
 
     private suspend fun loadPendingDeliveries(threadId: String) {
+        if (!canReadConversations()) return
         try {
             val deliveries = repository.pendingDeliveries(threadId)
             if (activeThreadId == threadId) {
@@ -4399,10 +4439,10 @@ class WorkbenchController(
     }
 
     private fun reloadTimeline(threadId: String) {
-        if (closed) return
+        if (closed || !canReadConversations()) return
         timelineJob?.cancel()
         timelineJob = workScope.launch {
-            if (!restoreLocalTimeline(threadId)) return@launch
+            if (!restoreLocalTimeline(threadId) || !canReadConversations()) return@launch
             val result = Result.runCatching { repository.completeTimeline(threadId) }
             if (!isActive || activeThreadId != threadId) return@launch
             result.onSuccess { page ->
@@ -5165,10 +5205,16 @@ class WorkbenchController(
         if (closed) return
         val ui = _state.value
         val pending = pendingSubmission ?: failedSubmission
+        // 只保留尚未被用户替换的单份旧草稿；明确编辑或选择会话后沿用原保存语义。
+        val deferred = deferredThreadCheckpoint?.takeIf {
+            activeThreadId == null && ui.draft.isEmpty() && ui.attachments.isEmpty() && it.threadId !in deletedThreads
+        }
+        if (deferred == null) deferredThreadCheckpoint = null
         val checkpoint = WorkbenchCheckpoint(
-            (ui.threads as? Loadable.Ready)?.value.orEmpty(), activeThreadId, ui.activeThreadTitle,
-            mirrored.values.toList(), mirroredRevisions.toMap(), ui.draft, draftRevision,
-            ui.attachments.filterNot { draft -> pending?.voiceAttempt != null && draft.id.value in pending.attachmentIds },
+            (ui.threads as? Loadable.Ready)?.value.orEmpty(), deferred?.threadId ?: activeThreadId, deferred?.title ?: ui.activeThreadTitle,
+            deferred?.messages ?: mirrored.values.toList(), deferred?.revisions ?: mirroredRevisions.toMap(),
+            deferred?.draft ?: ui.draft, deferred?.draftRevision ?: draftRevision,
+            (deferred?.attachments ?: ui.attachments).filterNot { draft -> pending?.voiceAttempt != null && draft.id.value in pending.attachmentIds },
             pending?.let { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) },
             userRenamedThreads.toSet(), handledEventIds + committingEventIds, frozenBatches.values.toList()+collectingUnits.values.groupBy { it.first }.map { (id,units) -> SavedBatch("collecting",id,units.map { it.second },false) },
             organization=ui.organization, threadsHydrated=ui.threads is Loadable.Ready || ui.threads is Loadable.Empty,

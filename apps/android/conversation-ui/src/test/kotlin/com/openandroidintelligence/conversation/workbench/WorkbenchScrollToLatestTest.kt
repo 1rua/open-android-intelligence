@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
@@ -20,6 +21,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import org.junit.After
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -104,6 +106,21 @@ class WorkbenchScrollToLatestTest {
         compose.onNodeWithText("回到最新").assertDoesNotExist()
     }
 
+    @Test fun foregroundResynchronizationKeepsTheReadingPosition() {
+        val controller = openConversation()
+        browseEarlierMessages()
+        compose.onNodeWithTag("message-bubble:latest").assertDoesNotExist()
+        val before = timeline().fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+
+        compose.runOnIdle { controller.onForegrounded() }
+        compose.waitForIdle()
+
+        assertEquals("补同步不能把用户拉回底部", before,
+            timeline().fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value(), 0.001f)
+        compose.onNodeWithTag("message-bubble:latest").assertDoesNotExist()
+        compose.onNodeWithText("回到最新").assertIsDisplayed()
+    }
+
     private fun timeline() = compose.onNode(hasScrollToIndexAction() and !hasTestTag("conversation-browser"))
 
     private fun browseEarlierMessages() {
@@ -111,7 +128,7 @@ class WorkbenchScrollToLatestTest {
         timeline().performTouchInput { swipeUp(durationMillis = 500) }
     }
 
-    private fun openConversation() {
+    private fun openConversation(): WorkbenchController {
         val history = (1..HistoryCount).map { index ->
             TimelineMessage(
                 id = "history-$index",
@@ -160,6 +177,7 @@ class WorkbenchScrollToLatestTest {
         }
         compose.runOnIdle { controller.openThread("thread") }
         compose.onNodeWithText("最新回复开头").assertIsDisplayed()
+        return controller
     }
 
     private companion object {
