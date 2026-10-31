@@ -114,20 +114,12 @@
       "id": "delivery",
       "title": "Documentation Chinese commits and dev PR",
       "owner": "main",
-      "status": "completed",
+      "status": "pending",
       "depends_on": [
         "verification"
       ],
       "attempts": 1,
-      "checkpoints": [
-        {
-          "pr": 68,
-          "base": "dev",
-          "state": "OPEN",
-          "implementation_commit": "dda2a4dc8ece02289b3e4f54dab11f8515249707",
-          "source_and_apk_verified": true
-        }
-      ],
+      "checkpoints": [],
       "error_log": []
     },
     {
