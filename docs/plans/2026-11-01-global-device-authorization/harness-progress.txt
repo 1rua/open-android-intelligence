@@ -1,0 +1,2 @@
+[2026-11-01T05:13:12.912471+08:00] [SESSION-1] INIT 基线核对、完整任务规格、CONTEXT和ADR已写入，goal已创建
+[2026-11-01T05:13:12.912471+08:00] [SESSION-1] Starting [task-001] Android/Core只读审计并行，Terra环境预检并行

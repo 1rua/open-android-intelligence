@@ -5,6 +5,8 @@ description: Read and control paired Android devices through OAI Core (via CLI o
 
 # OAI Core 客户端操控指南 (OAI Client Control)
 
+> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../../../docs/superpowers/specs/2026-11-01-global-device-authorization.md)。
+
 本 Skill 指导任何智能体（无论是否接入 OAI Core 会话通道）通过统一的 OAI Core CLI 工具链（`oai`）或 MCP 工具读取并操控已连接的 Android 客户端。
 
 ---

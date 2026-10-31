@@ -1,8 +1,9 @@
 # OAI Core 第三方 Agent 适配器开发指南
 
+> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../superpowers/specs/2026-11-01-global-device-authorization.md)。
+
 本指南面向希望将自己的 AI Agent（或已有商业/开源 Agent 系统）接入 Open Android Intelligence (OAI) 体系的开发者。
 
-> **2026-10-28 设备授权规则**：Android 是设备能力授权的唯一权威；已安装且启用的普通前台能力默认开启，受本地显式开关、系统权限、数据范围和必要敏感确认约束。后台同步保留为 Android 本地独立许可。Core 与 Agent Gateway 均不追加账号级设备能力授权。规则已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；当前测试和真机验收边界见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
 
 通过实现标准的 **OAI Core Session Adapter**，您的 Agent 可以直接被 OAI Core 统一纳管，并通过 Android 手机客户端进行双向原生会话与设备能力互通，**不需要修改 OAI Core 核心代码，也不需要在 Android 端编写专属适配分支**。
 

@@ -1,5 +1,7 @@
 # 设置界面信息架构与文案优化
 
+> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](2026-11-01-global-device-authorization.md)。
+
 - 状态：已实施
 - 日期：2026-10-24
 - 范围：`apps/android/app` 设置主览与子页（`SettingsScreen.kt`、`SettingsCapabilityUi.kt`、`ConversationUiCapabilities.kt`、`NotificationCollectionScreen.kt`、`NotificationAppPicker.kt`、`PluginManagementScreen.kt`）

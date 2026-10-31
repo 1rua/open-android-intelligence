@@ -1,0 +1,183 @@
+{
+  "version": 2,
+  "created": "2026-11-01T05:13:12.912471+08:00",
+  "session_count": 1,
+  "last_session": "2026-11-01T05:13:12.912471+08:00",
+  "session_config": {
+    "concurrency_mode": "concurrent",
+    "max_tasks_per_session": 50,
+    "max_sessions": 50
+  },
+  "policy": {
+    "rollback": "保留工作和证据；按用户要求移动到临时回收目录，不使用永久删除或reset/clean",
+    "state_root": "docs/plans/2026-11-01-global-device-authorization",
+    "runtime_acceptance": "检查报告存在只是证据索引门禁，只有全部必需矩阵实际PASS才可完成task-008"
+  },
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "源码审计与最小方案",
+      "status": "in_progress",
+      "priority": "P0",
+      "depends_on": [],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "git diff --check",
+        "timeout_seconds": 30
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": "3c9b82d1ef18062fc7dd09546efe6136803079cc"
+    },
+    {
+      "id": "task-002",
+      "title": "全局策略与旧许可迁移",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-001"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": null
+    },
+    {
+      "id": "task-003",
+      "title": "Core、CLI/MCP和稳定接收端点",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-001"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": null
+    },
+    {
+      "id": "task-004",
+      "title": "三级授权、确认及临时许可",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-002"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": null
+    },
+    {
+      "id": "task-005",
+      "title": "独立主动推送与加密ACK队列",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-002",
+        "task-003"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": null
+    },
+    {
+      "id": "task-006",
+      "title": "屏幕FIFO租约与生命周期",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-004"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": null
+    },
+    {
+      "id": "task-007",
+      "title": "自动化PR门禁与文档核对",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-003",
+        "task-004",
+        "task-005",
+        "task-006"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:pr",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": null
+    },
+    {
+      "id": "task-008",
+      "title": "Terra Android实际验收",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-007"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "test -s docs/reviews/2026-11-01-global-device-authorization-terra.zh-CN.md",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": null
+    },
+    {
+      "id": "task-009",
+      "title": "提交dev PR并保持Review",
+      "status": "pending",
+      "priority": "P0",
+      "depends_on": [
+        "task-007",
+        "task-008"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "git diff --check",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [],
+      "started_at_commit": null
+    }
+  ]
+}

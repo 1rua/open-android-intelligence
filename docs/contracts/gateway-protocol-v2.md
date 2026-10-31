@@ -7,6 +7,8 @@ version: 2.1.0
 
 # open-android-intelligence Gateway Protocol v2 契约
 
+> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../superpowers/specs/2026-11-01-global-device-authorization.md)。
+
 ## 1. 适用范围
 
 本契约定义 Android 宿主与一个账号所属逻辑 Gateway 之间的应用层协议。它不定义 Hermes/OpenClaw 内部 API、插件 WASM ABI 或 Companion IPC。
