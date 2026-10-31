@@ -96,6 +96,30 @@ fun WorkbenchScreen(
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
+    LaunchedEffect(state.activeThreadId, displayItems, listState) {
+        if (!com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidenceEnabled) return@LaunchedEffect
+        val userRows = displayItems.filterIsInstance<TimelineDisplayItem.Single>()
+            .filter { it.entry.isUser }.takeLast(64).map { item ->
+                mapOf("uiKey" to item.key, "messageId" to item.entry.key,
+                    "clientMessageId" to item.entry.clientMessageId?.value,
+                    "generationId" to item.entry.generationId,
+                    "state" to item.entry.messageStatus?.name,
+                    "pendingAcceptance" to item.entry.pendingAcceptance)
+            }
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            Triple(layout.viewportStartOffset, layout.viewportEndOffset,
+                layout.visibleItemsInfo.take(64).map { item ->
+                    mapOf("uiKey" to item.key.toString(), "index" to item.index,
+                        "offset" to item.offset, "size" to item.size)
+                })
+        }.distinctUntilChanged().collect { (start, end, visible) ->
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T9.list_layout", mapOf(
+                "conversationId" to state.activeThreadId, "itemCount" to displayItems.size,
+                "viewportStart" to start, "viewportEnd" to end, "userRows" to userRows,
+                "visibleItems" to visible))
+        }
+    }
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     var showAttachmentLibrary by remember { mutableStateOf(false) }
     var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
