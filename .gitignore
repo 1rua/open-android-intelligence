@@ -58,6 +58,7 @@ Thumbs.db
 /tmp/
 /docs/test-evidence
 .mimosa/
+/docs/reviews/evidence
 
 # Temp
 *.tmp
@@ -118,5 +119,4 @@ oai-release.keystore
 /start-core.sh
 /oai-core/dist/
 
-# 通信测量器的工具校验夹具保留本地；正式 baseline/after 仍入库。
-/docs/reviews/evidence/2026-10-30-communication-reliability/measurements/validation-*/
+# 通信原始证据保留本地；仅按需显式提交 Markdown 结论文档。

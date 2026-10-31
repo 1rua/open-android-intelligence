@@ -1,9 +1,0 @@
-.............................................                            [100%]
-=============================== warnings summary ===============================
-tests/test_hermes_communication_reliability.py::test_real_http_observer_disconnect_keeps_native_turn_and_trace_alive
-  /mnt/data/projects/open-android-intelligence/.worktrees/communication-reliability-20261030/integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py:71: NotAppKeyWarning: It is recommended to use web.RequestKey instances for keys.
-  https://docs.aiohttp.org/en/stable/web_advanced.html#request-s-storage
-    request["principal"] = SimpleNamespace(account_id=account, device_id=device,
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-45 passed, 1 warning in 10.22s

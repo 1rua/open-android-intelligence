@@ -1,7 +1,0 @@
-{"workload_finished": "direct/create", "attempts": 1000, "failures": 0}
-{"workload_finished": "direct/send", "attempts": 1000, "failures": 0}
-{"workload_finished": "direct/concurrent_send", "attempts": 1000, "failures": 0}
-{"workload_finished": "bridge/create", "attempts": 1000, "failures": 0}
-{"workload_finished": "bridge/send", "attempts": 1000, "failures": 0}
-{"workload_finished": "bridge/concurrent_send", "attempts": 1000, "failures": 0}
-{"output": "docs/reviews/evidence/2026-10-30-communication-reliability/measurements/disk-after-batched", "source_head": "ef0c90d41c00731115affdc5d3483e23c2a85a97", "source_sha256": "f762ab2a74850ac55d4f5063c89f0b45014e9d68b8b99f26945a493d170f1a77", "attempts": 6000, "failures": 0}

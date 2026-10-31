@@ -301,9 +301,11 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
 
     suspend fun saveNativeConversations(page: ConversationPage) = withContext(ioDispatcher) {
         check(page.authoritative && page.nextCursor == null) { "NATIVE_HISTORY_INCOMPLETE" }
-        documents.transaction {
-            saveThreads(page.conversations, page.snapshotRevision)
-            documents.write("native-threads-authority", encode(mapOf("version" to 1)))
+        synchronized(this@EncryptedConversationMirror) {
+            documents.transaction {
+                saveThreads(page.conversations, page.snapshotRevision)
+                documents.write("native-threads-authority", encode(mapOf("version" to 1)))
+            }
         }
         documents.flush()
     }
