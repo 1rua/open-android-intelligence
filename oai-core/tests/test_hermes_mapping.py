@@ -9,7 +9,6 @@ def adapter(name, accounts, url="http://127.0.0.1:8792", token="a" * 32):
     return HermesRemoteSessionAdapter(url, token, accounts, agent_id=name)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("first,second", [
     ("http://127.0.0.1:8792", "http://localhost:8792/"),
     ("http://localhost:8792", "http://[::1]:8792"),
@@ -19,23 +18,22 @@ def adapter(name, accounts, url="http://127.0.0.1:8792", token="a" * 32):
     ("https://faß.example", "https://xn--fa-hia.example"),
     ("https://[::1]:8792", "https://[0:0:0:0:0:0:0:1]:8792"),
 ])
-async def test_aliases_cannot_map_different_core_accounts_to_one_native_account(first, second):
+def test_aliases_cannot_map_different_core_accounts_to_one_native_account(first, second):
     registry = AgentRegistry([adapter("first", {"alice": "native"}, first)])
     try:
         with pytest.raises(ValueError, match="one-to-one across"):
             registry.register(adapter("second", {"bob": "native"}, second, token="b" * 32))
     finally:
-        await registry.close()
+        registry.operations.close()
 
 
-@pytest.mark.asyncio
-async def test_aliases_cannot_map_one_core_account_to_different_native_accounts():
+def test_aliases_cannot_map_one_core_account_to_different_native_accounts():
     registry = AgentRegistry([adapter("first", {"alice": "native-a"})])
     try:
         with pytest.raises(ValueError, match="one-to-one across"):
             registry.register(adapter("second", {"alice": "native-b"}))
     finally:
-        await registry.close()
+        registry.operations.close()
 
 
 @pytest.mark.asyncio

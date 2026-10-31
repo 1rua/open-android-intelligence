@@ -27,14 +27,10 @@ internal class NativeEventSynchronizer(
     private val refresh: suspend (NativeEventPage) -> List<VerifiedConversationEvent>,
     private val publish: suspend (VerifiedConversationEvent) -> Unit,
     private val publishApproval: suspend (NativeEventApproval) -> Unit,
-    private val committed: suspend () -> Unit = {},
-    private val checkOwner: () -> Unit = {},
 ) {
     private val mutex = Mutex()
-    private var needsRefresh = true
 
     suspend fun synchronize(waitMs: Int = 0): Boolean = mutex.withLock {
-        checkOwner()
         // 上次 ACK 响应丢失或本机确认失败：同一 cursor 重试，不能先跳到下一页。
         store.pendingAck(conversationId)?.let { pending ->
             acknowledge(pending)
@@ -43,7 +39,7 @@ internal class NativeEventSynchronizer(
         val cursor = store.eventCursor(conversationId)
         var snapshot = cursor == null
         val page = try {
-            client.events(agent, conversationId, cursor, waitMs = if (snapshot || needsRefresh) 0 else waitMs, snapshot = snapshot)
+            client.events(agent, conversationId, cursor, waitMs = if (snapshot) 0 else waitMs, snapshot = snapshot)
         } catch (failure: AgentSessionException) {
             if (failure.code != "CURSOR_EXPIRED") throw failure
             snapshot = true
@@ -74,20 +70,14 @@ internal class NativeEventSynchronizer(
         }
         // 所有审批先验证，畸形关键事件绝不能被 history 刷新掩盖后 ACK。
         approvals.forEach { approvalEvent(it, conversationId) }
-        val facts = (if (needsRefresh || snapshot || page.events.isNotEmpty()) refresh(page) else emptyList()) + lifecycle
+        val facts = (if (snapshot || page.events.isNotEmpty()) refresh(page) else emptyList()) + lifecycle
         currentCoroutineContext().ensureActive()
-        checkOwner()
         try { store.commitPage(conversationId, facts, approvals, page.cursor) }
         catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (failure: Exception) { throw NativeEventSyncFailure("LOCAL_SAVE_FAILED", failure) }
-        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("native.page_saved", mapOf(
-            "agentId" to agent.id, "conversationId" to conversationId, "eventCount" to facts.size))
         // 进程在这一行之后中断，下一次仍能从持久 pending ACK 与审批恢复。
         currentCoroutineContext().ensureActive()
-        checkOwner()
-        committed()
-        needsRefresh = false
-        facts.forEach { checkOwner(); publish(it) }
+        facts.forEach { publish(it) }
         store.loadApprovals(conversationId).forEach { publishApproval(it) }
         currentCoroutineContext().ensureActive()
         acknowledge(page.cursor)
@@ -96,7 +86,6 @@ internal class NativeEventSynchronizer(
     }
 
     private suspend fun acknowledge(cursor: String) {
-        checkOwner()
         try { client.ackEvents(agent, conversationId, cursor) }
         catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (failure: Exception) { throw NativeEventSyncFailure("ACK_FAILED", failure) }

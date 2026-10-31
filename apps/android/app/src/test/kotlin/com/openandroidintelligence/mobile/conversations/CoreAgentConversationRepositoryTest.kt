@@ -905,7 +905,7 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         assertEquals("首轮结束后应自动发出排队的第二条", 2, posts.size)
     }
 
-    @Test fun aSlashCommandCannotSteerAnUnconfirmedGeneration() = runTest {
+    @Test fun aSlashCommandSkipsTheQueueSoAnApprovalCanBeAnswered() = runTest {
         val bodies = mutableListOf<String>()
         val releaseFirst = CompletableDeferred<Unit>()
         val transport = object : GatewayByteTransport {
@@ -934,17 +934,18 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         runCurrent()
         assertEquals(1, bodies.size)
 
-        // HTTP 请求已发出不代表收到真实 generation，审批命令也不能盲引导后来的任务。
-        assertTrue(runCatching { repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_approve"), "/approve once")) }.isFailure)
+        // 生成中回复 /approve：必须立刻发出，否则原轮次一直卡在审批上。
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_approve"), "/approve once"))
         runCurrent()
-        assertEquals("缺乏真实轮次时不能发引导或暗中排队", 1, bodies.size)
-        assertTrue(repo.pendingDeliveries("s_1").isEmpty())
+        assertEquals("命令应插队直发", 2, bodies.size)
+        assertTrue("插队发送的应是命令本身", bodies[1].contains("/approve"))
+
         releaseFirst.complete(Unit)
         runCurrent()
-        assertEquals(1, bodies.size)
+        assertEquals(2, bodies.size)
     }
 
-    @Test fun steeringWithoutAnObservedTurnAndCapabilityCannotReachTheHost() = runTest {
+    @Test fun steeringReachesTheHostWithoutALocalTurnOrAdvertisedCapability() = runTest {
         val requests = mutableListOf<WireRequest>()
         val transport = object : GatewayByteTransport {
             override suspend fun execute(request: WireRequest): WireResponse {
@@ -958,13 +959,19 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
             { sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(steer = false)) },
             { "s_1" }, backgroundScope, StandardTestDispatcher(testScheduler))
         val text = " \t/steer 保留原文\n'quoted'  "
-        assertTrue(runCatching { repo.steerMessage("s_1", OutgoingMessage(ClientMessageId("cm_immediate"), text,
-            delivery = MessageDeliveryMode.STEER)) }.isFailure)
-        assertTrue("未确认轮次不能向宿主提交 null generation 的引导", requests.isEmpty())
+        val accepted = repo.steerMessage("s_1", OutgoingMessage(ClientMessageId("cm_immediate"), text,
+            delivery = MessageDeliveryMode.STEER))
+        assertEquals(MessageDeliveryMode.STEER, accepted.delivery)
+        assertEquals("host_current", accepted.generationId)
+        assertEquals("/open-android-intelligence/v2/agents/hermes/sessions/s_1/steer", requests.single().target)
+        val json = com.openandroidintelligence.gateway.schema.JsonFields.obj(
+            com.openandroidintelligence.gateway.schema.Json.parse(requests.single().body.decodeToString()))
+        assertEquals(text, com.openandroidintelligence.gateway.schema.JsonFields.string(json, "text"))
+        assertEquals(null, com.openandroidintelligence.gateway.schema.JsonFields.field(json, "generationId"))
         assertTrue(repo.pendingDeliveries("s_1").isEmpty())
     }
 
-    @Test fun queueKeepsItsOrderWhileUnconfirmedSteeringCannotBeRetargeted() = runTest {
+    @Test fun queueAndSteeringUseDifferentHostPathsAndKeepTheirOrder() = runTest {
         val messageBodies = mutableListOf<String>()
         val steerBodies = mutableListOf<String>()
         val releaseFirst = CompletableDeferred<Unit>()
@@ -1029,10 +1036,16 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         )
         assertEquals("queue must not post a second turn", 1, messageBodies.size)
 
-        assertTrue(runCatching { repo.steerMessage(
-            "s_1", OutgoingMessage(ClientMessageId("cm_steer"), "check the failing test first", delivery = MessageDeliveryMode.STEER)) }.isFailure)
-        assertEquals("拒绝引导不能新增普通发送", 1, messageBodies.size)
-        assertTrue("不能用 null generation 委托宿主选择另一轮", steerBodies.isEmpty())
+        val steered = repo.steerMessage(
+            "s_1",
+            OutgoingMessage(ClientMessageId("cm_steer"), "check the failing test first", delivery = MessageDeliveryMode.STEER),
+        )
+        assertEquals(MessageDeliveryMode.STEER, steered.delivery)
+        assertEquals("host_current", steered.generationId)
+        assertEquals("steering must not create a message turn", 1, messageBodies.size)
+        assertEquals(1, steerBodies.size)
+        assertTrue(steerBodies.single().contains("check the failing test first"))
+        assertFalse("the server resolves a round the client has not observed", steerBodies.single().contains("generationId"))
 
         releaseFirst.complete(Unit)
         runCurrent()
@@ -1040,7 +1053,7 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         assertTrue(messageBodies[1].contains("queued follow-up"))
         assertTrue(messageBodies[2].contains("second queued follow-up"))
         assertTrue(repo.pendingDeliveries("s_1").isEmpty())
-        assertEquals("被拒绝的引导不能作为排队消息重放", 0, steerBodies.size)
+        assertEquals("steering must never be replayed as a queued message", 1, steerBodies.size)
     }
 
     @Test fun reconnectDoesNotDrainQueueUntilTheHostGenerationSnapshotIsIdle() = runTest {

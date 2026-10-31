@@ -11,7 +11,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -95,50 +94,6 @@ class AuthSessionLifecycleTest {
         }
     }
 
-    @Test
-    fun nativeMirrorRestoresSelectedThreadAndDraftBeforeNetworkIsReleased() {
-        val original = runtime()
-        original.login(gateway.baseUrl, "operator", "secret".toCharArray())
-        awaitConnected(original)
-        val flushed = runtimeScope.launch(Dispatchers.IO) { original.controller.value?.closeAndAwait() }
-        assertTrue(awaitCondition(AWAIT_MILLIS) { flushed.isCompleted })
-        runtimeScope.cancel()
-        val context = ApplicationProvider.getApplicationContext<Application>()
-        val profiles = AndroidAccountProfileStore(context)
-        val nativeProfileId = profiles.list().single { it.gatewayBaseUrl == gateway.baseUrl && it.username == "operator" }.localProfileId
-        profiles.saveSelectedAgent(nativeProfileId, "native-agent")
-        val install = context.getSharedPreferences("open_android_intelligence_runtime", 0)
-            .getString("installation_id", null)!!
-        val mirrorScope = com.openandroidintelligence.conversation.ports.ConversationScope(nativeProfileId, gateway.baseUrl, "acc_stub", install)
-        val mirror = com.openandroidintelligence.mobile.conversations.NativeConversationMirror(context, mirrorScope, { "native-agent" }, TestDocumentKeys)
-        mirror.save(com.openandroidintelligence.conversation.state.WorkbenchCheckpoint(
-            threads = listOf(com.openandroidintelligence.conversation.ports.ConversationSummary(
-                com.openandroidintelligence.conversation.model.ConversationId("native-chat"), "native title", 1)),
-            threadId = "native-chat", title = "native title", messages = emptyList(), revisions = emptyMap(),
-            draft = "saved native draft", draftRevision = 3, attachments = emptyList(), submission = null,
-            renamedThreads = emptySet(), eventIds = emptySet()))
-        mirror.close()
-        val release = gateway.holdResponse(REFRESH_PATH, REFRESH_BODY)
-        val resumedScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-        try {
-            val restarted = runtime(resumedScope)
-            restarted.restoreSessionIfAvailable()
-            assertTrue("网络恢复尚未放行时必须可读 native 镜像", awaitCondition(AWAIT_MILLIS) {
-                restarted.controller.value?.state?.value?.activeThreadId == "native-chat"
-            })
-            assertEquals("saved native draft", restarted.controller.value!!.state.value.draft)
-            assertEquals("native-agent", profiles.find(nativeProfileId)!!.selectedAgentId)
-            assertTrue(restarted.phase.value is ConnectionPhase.OfflineMirror)
-            val before = gateway.requests.size
-            restarted.onAppForegrounded(); restarted.onNetworkAvailable()
-            assertEquals("saved native draft", restarted.controller.value!!.state.value.draft)
-            assertTrue(gateway.requests.drop(before).none { it.target.endsWith("/messages") || it.target.endsWith("/sessions") })
-        } finally {
-            resumedScope.cancel()
-            release.countDown()
-        }
-    }
-
     /**
      * T09 & T10: 离线退出能够立即在本地完成，持久化已退出标记，且断网重启或网络恢复后不能复活。
      */
@@ -192,8 +147,8 @@ class AuthSessionLifecycleTest {
     }
 
     private fun awaitCondition(timeoutMillis: Long, condition: () -> Boolean): Boolean {
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
-        while (System.nanoTime() < deadline) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
             ShadowLooper.idleMainLooper(POLL_MILLIS, TimeUnit.MILLISECONDS)
             if (condition()) return true
             Thread.sleep(POLL_MILLIS)

@@ -10,10 +10,4 @@ Agent 如需设备能力，应使用 Core CLI/MCP/API 的已认证且绑定目�
 
 列表覆盖目标宿主已配置 persistence backend 与 live sessions，所有已认证 OAI 账号共享该部署范围。能力依据实际宿主方法启用（当前不宣告 delete 与 archive），未接入的其他系统实例不在发现范围。请求严格受小于 1 MiB 的紧凑 UTF-8 JSON 预算约束。
 
-消息观察连接与宿主执行分开管理。关闭连接、受理回执超时或慢写端超过预算，只结束当前观察并清理监听与 busy；不会取消宿主已加入 inbox 的输入。显式取消仍调用宿主 `sessionController.cancel`。收到 `clientMessageId` 时原样作为原生 `requestId`，用于关联 `source.rpcId`；没有该字段的旧调用仍使用一次性的随机 ID。这只建立关联，不表示宿主提供幂等提交或持久执行恢复，`generationRecovery`、`idempotentSend` 均为 `false`。
-
-观察队列同时限制为 128 帧和 1 MiB。`res.write()` 返回 `false` 后等待 `drain`；无法在预算内恢复或队列超限时关闭当前响应，宿主执行继续。可选配置 `promptTimeoutMs`（默认 30000）、`observationTimeoutMs`（默认 1800000）、`drainTimeoutMs`（默认 5000）均为正整数毫秒，最大为 2147483647。没有原生终态证据的期限结束返回 `OUTCOME_UNKNOWN` / `state=unknown`；迟到的受理回执不会改写已经结束的观察。
-
-本轮调用回归、复跑命令和能力边界见[通信可靠性验证](communication-reliability.zh-CN.md)。
-
 架构细节与代码出处见[架构事实基线](../../docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)，完整配置、实际 API 证据、设备凭据隔离、测试与回滚步骤见[原生会话适配器部署文档](../../docs/plans/2026-10-25-native-session-adapters.zh-CN.md)。

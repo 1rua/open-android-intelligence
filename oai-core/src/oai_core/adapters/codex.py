@@ -13,7 +13,6 @@ import json
 import os
 import re
 import tomllib
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -64,17 +63,6 @@ def _summary(thread: dict[str, Any], archived: bool = False) -> dict[str, Any]:
     }
 
 
-@dataclass
-class _Execution:
-    """Volatile native turn ownership, not a conversation or recovery store."""
-
-    started: asyncio.Future
-    terminal: asyncio.Future
-    turn_id: str | None = None
-    task: asyncio.Task | None = None
-    early_terminals: dict[str, dict[str, Any]] = field(default_factory=dict)
-
-
 class CodexSessionAdapter:
     def __init__(
         self, command: list[str], codex_home: Path, *, adapter_id: str = "codex",
@@ -103,7 +91,7 @@ class CodexSessionAdapter:
         self._start_lock, self._write_lock = asyncio.Lock(), asyncio.Lock()
         self._pending: dict[int, asyncio.Future] = {}
         self._streams: dict[str, asyncio.Queue] = {}
-        self._executions: dict[str, _Execution] = {}
+        self._thread_locks: dict[str, asyncio.Lock] = {}
         self._turns: dict[str, str] = {}
         self._sequence = 0
 
@@ -111,13 +99,10 @@ class CodexSessionAdapter:
         return {
             "id": self.adapter_id, "name": self.name, "kind": "codex",
             "sessionScope": "deployment", "deviceTools": False,
-            "capabilities": {
-                **{key: key != "delete" for key in (
-                    "list", "history", "create", "send", "rename", "archive",
-                    "delete", "cancel", "stream",
-                )},
-                "generationRecovery": False, "idempotentSend": False,
-            },
+            "capabilities": {key: key != "delete" for key in (
+                "list", "history", "create", "send", "rename", "archive",
+                "delete", "cancel", "stream",
+            )},
         }
 
     async def status(self) -> bool:
@@ -210,9 +195,7 @@ class CodexSessionAdapter:
         await self._ensure_started()
         return await self._rpc_raw(method, params)
 
-    async def _rpc_raw(
-        self, method: str, params: dict[str, Any], *, wait_for_response: bool = False,
-    ) -> dict[str, Any]:
+    async def _rpc_raw(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self._sequence += 1
         identifier = self._sequence
         future = asyncio.get_running_loop().create_future()
@@ -220,10 +203,7 @@ class CodexSessionAdapter:
         try:
             await self._write({"id": identifier, "method": method, "params": params})
             try:
-                # The service owns turn/start until its actual response (or
-                # transport loss). An observer deadline must not discard a late
-                # acceptance and make the native turn impossible to cancel.
-                message = await future if wait_for_response else await asyncio.wait_for(future, self.request_timeout)
+                message = await asyncio.wait_for(future, self.request_timeout)
             except TimeoutError:
                 # Never retry a timed-out native mutation: its outcome may be unknown.
                 raise AdapterError("AGENT_TIMEOUT", 504) from None
@@ -238,32 +218,13 @@ class CodexSessionAdapter:
             self._pending.pop(identifier, None)
 
     def _emit(self, thread_id: str, message: dict[str, Any]) -> None:
-        execution = self._executions.get(thread_id)
-        method, params = message.get("method"), message.get("params", {})
-        if execution is not None and not execution.terminal.done():
-            turn = params.get("turn")
-            if method == "turn/completed" and isinstance(turn, dict) and turn.get("status") in {"completed", "interrupted", "failed"}:
-                turn_id = turn.get("id")
-                if isinstance(turn_id, str) and turn_id:
-                    if execution.turn_id == turn_id:
-                        execution.terminal.set_result({"id": turn_id, "status": turn["status"]})
-                    elif execution.turn_id is None:
-                        # Notifications may precede turn/start's RPC response.
-                        # Keep only lifecycle evidence, independently of deltas.
-                        if len(execution.early_terminals) >= 128:
-                            execution.early_terminals.pop(next(iter(execution.early_terminals)))
-                        execution.early_terminals[turn_id] = {"id": turn_id, "status": turn["status"]}
-            elif method == "oai/error" and params.get("code") == "AGENT_OFFLINE":
-                execution.terminal.set_exception(AdapterError("AGENT_OFFLINE", 503))
         queue = self._streams.get(thread_id)
         if queue is None:
             return
         try:
             queue.put_nowait(message)
         except asyncio.QueueFull:
-            # End this observer once; keep consuming native lifecycle evidence.
-            # Slow output never blocks RPC responses or discards turn ownership.
-            self._streams.pop(thread_id, None)
+            # A slow HTTP reader must not stall all native RPC responses.
             while not queue.empty():
                 queue.get_nowait()
             queue.put_nowait({"method": "oai/error", "params": {"code": "STREAM_OVERFLOW"}})
@@ -302,7 +263,7 @@ class CodexSessionAdapter:
             for future in list(self._pending.values()):
                 if not future.done():
                     future.set_exception(AdapterError("AGENT_OFFLINE", 503))
-            for thread_id in set(self._streams) | set(self._executions):
+            for thread_id in list(self._streams):
                 self._emit(thread_id, {"method": "oai/error", "params": {"code": "AGENT_OFFLINE"}})
             if process.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
@@ -373,110 +334,67 @@ class CodexSessionAdapter:
             thread = {**thread, "name": title}
         return _summary(thread)
 
-    async def _execute(self, session_id: str, text: str, execution: _Execution) -> None:
-        try:
-            await self._rpc_raw("thread/resume", {"threadId": session_id})
-            result = await self._rpc_raw("turn/start", {
-                "threadId": session_id,
-                "input": [{"type": "text", "text": text, "text_elements": []}],
-            }, wait_for_response=True)
-            del text
-            turn = result.get("turn")
-            turn_id = turn.get("id") if isinstance(turn, dict) else None
-            if not isinstance(turn_id, str) or not turn_id:
-                execution.started.set_exception(AdapterError("OUTCOME_UNKNOWN", 409))
-                # No trustworthy turn identity: retain the reservation until
-                # transport loss. Never replay or cancel an arbitrary turn.
-                await execution.terminal
-                return
-            execution.turn_id = turn_id
-            self._turns[session_id] = turn_id
-            execution.started.set_result(turn_id)
-            early = execution.early_terminals.get(turn_id)
-            if early is not None and not execution.terminal.done():
-                execution.terminal.set_result(early)
-            execution.early_terminals.clear()
-            await execution.terminal
-        except AdapterError as exc:
-            if not execution.started.done():
-                execution.started.set_exception(exc)
-        except asyncio.CancelledError:
-            if not execution.started.done():
-                execution.started.set_exception(AdapterError("AGENT_OFFLINE", 503))
-            raise
-        finally:
-            # Only this service task, driven by native terminal/transport loss,
-            # releases execution ownership. Closing send() cannot reach here.
-            if self._executions.get(session_id) is execution:
-                self._executions.pop(session_id, None)
-                self._turns.pop(session_id, None)
-            execution.early_terminals.clear()
-
-    async def send(self, principal: Principal, session_id: str, text: str, *,
-                   client_message_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
-        # client_message_id remains Core's correlation identity. Codex has no
-        # negotiated idempotency/recovery contract for turn/start; do not invent
-        # a native user item ID or send undocumented RPC parameters.
-        await self._ensure_started()
-        if session_id in self._executions:
+    async def send(self, principal: Principal, session_id: str, text: str) -> AsyncIterator[dict[str, Any]]:
+        lock = self._thread_locks.setdefault(session_id, asyncio.Lock())
+        if lock.locked():
             raise AdapterError("SESSION_BUSY", 409)
-        loop = asyncio.get_running_loop()
-        execution = _Execution(loop.create_future(), loop.create_future())
-        for future in (execution.started, execution.terminal):
-            future.add_done_callback(lambda result: result.exception() if not result.cancelled() else None)
-        queue: asyncio.Queue = asyncio.Queue(maxsize=128)
-        self._executions[session_id] = execution
-        self._streams[session_id] = queue
-        execution.task = asyncio.create_task(self._execute(session_id, text, execution))
-        try:
+        async with lock:
+            await self._rpc("thread/resume", {"threadId": session_id})
+            queue: asyncio.Queue = asyncio.Queue(maxsize=128)
+            self._streams[session_id] = queue
+            complete = False
+            turn_id: str | None = None
             try:
-                turn_id = await asyncio.wait_for(asyncio.shield(execution.started), self.request_timeout)
-            except TimeoutError:
-                raise AdapterError("AGENT_TIMEOUT", 504) from None
-            yield {"type": "generation", "generationId": turn_id, "state": "running",
-                   **({"clientMessageId": client_message_id} if client_message_id is not None else {})}
-            streamed_items: set[str] = set()
-            assistant_message_id: str | None = None
-            deadline = loop.time() + self.turn_timeout
-            while True:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    raise AdapterError("AGENT_TIMEOUT", 504)
-                try:
-                    event = await asyncio.wait_for(queue.get(), remaining)
-                except TimeoutError:
-                    raise AdapterError("AGENT_TIMEOUT", 504) from None
-                method, params = event.get("method"), event.get("params", {})
-                if method == "oai/error":
-                    yield {"type": "error", "code": params["code"], "state": "unknown"}
-                    return
-                if method == "item/agentMessage/delta" and params.get("turnId") == turn_id:
-                    assistant_message_id = params.get("itemId")
-                    streamed_items.add(assistant_message_id or "")
-                    yield {"type": "delta", "text": params.get("delta", ""),
-                           **({"messageId": assistant_message_id} if assistant_message_id else {})}
-                elif method == "item/completed" and params.get("turnId") == turn_id:
-                    item = params.get("item", {})
-                    if item.get("type") == "agentMessage":
-                        assistant_message_id = item.get("id")
-                        if assistant_message_id not in streamed_items:
-                            yield {"type": "delta", "text": item.get("text", ""),
-                                   **({"messageId": assistant_message_id} if assistant_message_id else {})}
-                elif method == "turn/completed" and isinstance(params.get("turn"), dict) and params["turn"].get("id") == turn_id:
-                    status = params["turn"].get("status")
-                    if status == "completed":
-                        yield {"type": "done", "generationId": turn_id, **({"messageId": assistant_message_id} if assistant_message_id else {})}
-                    elif status in {"interrupted", "failed"}:
-                        yield {"type": "error", "code": "TURN_INTERRUPTED" if status == "interrupted" else "NATIVE_TURN_FAILED"}
-                    else:
-                        yield {"type": "error", "code": "OUTCOME_UNKNOWN", "state": "unknown"}
-                    return
-        finally:
-            if self._streams.get(session_id) is queue:
+                result = await self._rpc("turn/start", {
+                    "threadId": session_id,
+                    "input": [{"type": "text", "text": text, "text_elements": []}],
+                })
+                turn_id = result["turn"]["id"]
+                self._turns[session_id] = turn_id
+                streamed_items: set[str] = set()
+                assistant_message_id: str | None = None
+                deadline = asyncio.get_running_loop().time() + self.turn_timeout
+                while True:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise AdapterError("AGENT_TIMEOUT", 504)
+                    try:
+                        event = await asyncio.wait_for(queue.get(), remaining)
+                    except TimeoutError:
+                        raise AdapterError("AGENT_TIMEOUT", 504) from None
+                    method, params = event.get("method"), event.get("params", {})
+                    if method == "oai/error":
+                        yield {"type": "error", "code": params["code"]}
+                        return
+                    if method == "item/agentMessage/delta" and params.get("turnId") == turn_id:
+                        assistant_message_id = params.get("itemId")
+                        streamed_items.add(assistant_message_id or "")
+                        yield {"type": "delta", "text": params.get("delta", ""),
+                               **({"messageId": assistant_message_id} if assistant_message_id else {})}
+                    elif method == "item/completed" and params.get("turnId") == turn_id:
+                        item = params.get("item", {})
+                        if item.get("type") == "agentMessage":
+                            assistant_message_id = item.get("id")
+                            if assistant_message_id not in streamed_items:
+                                yield {"type": "delta", "text": item.get("text", ""),
+                                       **({"messageId": assistant_message_id} if assistant_message_id else {})}
+                    elif method == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
+                        complete = True
+                        turn = params["turn"]
+                        if turn.get("status") == "completed":
+                            yield {"type": "done", **({"messageId": assistant_message_id} if assistant_message_id else {})}
+                        else:
+                            yield {"type": "error", "code": "TURN_INTERRUPTED" if turn.get("status") == "interrupted" else "NATIVE_TURN_FAILED"}
+                        return
+            finally:
                 self._streams.pop(session_id, None)
-            # This queue is only an observer buffer; release its transcript now.
-            while not queue.empty():
-                queue.get_nowait()
+                self._turns.pop(session_id, None)
+                if (turn_id is not None and not complete and self._process is not None
+                        and self._process.returncode is None):
+                    with contextlib.suppress(AdapterError):
+                        # Cleanup may interrupt the current process, but must not
+                        # restart an app-server that close() just terminated.
+                        await self._rpc_raw("turn/interrupt", {"threadId": session_id, "turnId": turn_id})
 
     async def manage(self, principal: Principal, session_id: str, action: str, value: Any = None) -> dict[str, Any]:
         if action == "rename":
@@ -489,42 +407,10 @@ class CodexSessionAdapter:
             method = "thread/unarchive" if value is False else "thread/archive"
             await self._rpc(method, {"threadId": session_id})
         elif action == "cancel":
-            requested_turn = None
-            if value is not None:
-                if (not isinstance(value, dict) or set(value) != {"generationId"}
-                        or not isinstance(value["generationId"], str) or not value["generationId"]):
-                    raise AdapterError("INVALID_ACTION", 400)
-                requested_turn = value["generationId"]
-            execution = self._executions.get(session_id)
             turn_id = self._turns.get(session_id)
             if turn_id is None:
-                if execution is not None or requested_turn is None:
-                    raise AdapterError("OUTCOME_UNKNOWN" if execution is not None else "NO_ACTIVE_TURN", 409)
-                # A completed service task has no local receipt cache. Read the
-                # exact native turn in this thread; never interrupt a new turn.
-                result = await self._rpc("thread/read", {"threadId": session_id, "includeTurns": True})
-                thread = result.get("thread", {})
-                terminal = next((turn for turn in thread.get("turns", [])
-                                 if turn.get("id") == requested_turn), None) if thread.get("id") == session_id else None
-                if terminal is None:
-                    raise AdapterError("GENERATION_NOT_FOUND", 404)
-                turn_id = requested_turn
-            else:
-                if requested_turn is not None and requested_turn != turn_id:
-                    raise AdapterError("GENERATION_NOT_FOUND", 404)
-                terminal = None
-                if execution is not None:
-                    # Hold this execution's future across native cleanup. RPC
-                    # success acknowledges interrupt, not its execution result.
-                    with contextlib.suppress(AdapterError):
-                        if not execution.terminal.done():
-                            await self._rpc_raw("turn/interrupt", {"threadId": session_id, "turnId": turn_id})
-                    with contextlib.suppress(AdapterError, TimeoutError):
-                        terminal = await asyncio.wait_for(asyncio.shield(execution.terminal), self.request_timeout)
-            outcome = {"interrupted": "cancelled", "completed": "already_completed"}.get(
-                terminal.get("status") if terminal is not None and terminal.get("id") == turn_id else None, "unknown")
-            return {"id": session_id, "action": action, "generationId": turn_id, "outcome": outcome}
-
+                raise AdapterError("NO_ACTIVE_TURN", 409)
+            await self._rpc("turn/interrupt", {"threadId": session_id, "turnId": turn_id})
         else:
             raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
         return {"id": session_id, "action": action}
@@ -544,12 +430,4 @@ class CodexSessionAdapter:
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reader
-        tasks = [execution.task for execution in list(self._executions.values()) if execution.task is not None]
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._streams.clear()
-        self._turns.clear()
         self._process, self._reader = None, None

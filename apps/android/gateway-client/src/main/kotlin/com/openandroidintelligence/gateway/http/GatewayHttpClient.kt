@@ -219,23 +219,6 @@ class GatewayHttpClient(
         return true
     }
 
-    /** 可选诊断头：同账号、同逻辑操作跨请求保留 traceId，每次 HTTP 产生独立 span。 */
-    internal fun operationTraceParent(logicalId: String): String {
-        val trace = java.security.MessageDigest.getInstance("SHA-256")
-            .digest((profile.accountId + "\u0000" + logicalId).toByteArray(Charsets.UTF_8))
-            .take(16).joinToString("") { "%02x".format(it) }
-        val span = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
-        return "00-$trace-$span-00"
-    }
-
-    private fun transportPhase(phase: String, request: WireRequest, status: Int? = null) {
-        com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence(phase, mapOf(
-            "requestId" to RawHeaders.single(request.headers, "X-Open-Android-Intelligence-Request-Id"),
-            "traceId" to RawHeaders.single(request.headers, "traceparent")?.split('-')?.getOrNull(1),
-            "spanId" to RawHeaders.single(request.headers, "traceparent")?.split('-')?.getOrNull(2),
-            "method" to request.method, "status" to status))
-    }
-
     suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
         val replayable = request.copy(requestId = request.requestId ?: newRequestId())
         var snapshot = sessionProfile()
@@ -249,13 +232,9 @@ class GatewayHttpClient(
 
     private suspend fun executeOnce(request: SignedGatewayRequest, snapshot: GatewayProfile): GatewayResponse {
         val wire = signedWireRequest(request, snapshot)
-        transportPhase("http.io_queued", wire)
         return withContext(ioDispatcher) {
-            transportPhase("http.io_dequeued", wire)
             request.beforeSend()
-            transportPhase("http.dispatched", wire)
             val response = transport.execute(wire)
-            transportPhase("http.response_received", wire, response.status)
             GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
         }
     }
@@ -270,13 +249,9 @@ class GatewayHttpClient(
         var canRecover = sessionRenewal != null
         while (true) {
             val wire = signedWireRequest(replayable, snapshot)
-            transportPhase("http.io_queued", wire)
             val result = withContext(ioDispatcher) {
-                transportPhase("http.io_dequeued", wire)
                 replayable.beforeSend()
-                transportPhase("http.dispatched", wire)
                 transport.consumeResponse(wire) { status, rawHeaders, stream ->
-                    transportPhase("http.headers_received", wire, status)
                     val headers = RawHeaders.validate(rawHeaders)
                     if (status == 401 && canRecover) ResponseAttempt.Rejected
                     else ResponseAttempt.Consumed(consume(status, headers, stream))

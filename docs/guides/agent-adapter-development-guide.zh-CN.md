@@ -217,12 +217,3 @@ def create_adapter(entry: dict[str, Any], storage_root: Path, core: Any) -> Sess
 | `IDEMPOTENCY_KEY_REQUIRED` | 400 | 未传递 `Idempotency-Key` 请求头（针对非 HMAC 签名的直接请求）。 |
 
 旧 `dev` 基线的能力目录若返回 `GATEWAY_DISABLED`，表示旧实现检查了账号设备能力策略；应记录 Core 版本、设备与请求关联信息，并按[历史修复计划](../reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)定位。该判断已在 `feature/android-device-authority-20261028` 分支修复，分支验证和兼容边界见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。不要要求用户回到 Agent Gateway 的旧能力 `setup` 授权。
-
-
-## 通信任务与观察连接
-
-消息可靠受理后，执行由宿主持有。HTTP/SSE/NDJSON 的关闭、写入超时或慢观察者溢出只结束观察，不能代替绑定真实 generation 的显式取消。先持久受理再登记分派的路径必须由同一宿主任务持有，避免取消等待者后只提交了输入却没有安排执行。
-
-同会话按已提交顺序调度未领取的 queued；running/unknown 不能因断线而自动重投。同步数据库、历史锁、附件解密和文件同步写入不得阻塞事件循环。观察输出使用有界缓冲，Node 写入返回 false 时遵守 drain；超过观察预算时释放订阅并保留宿主事实。
-
-`traceparent` 和 Core 转发的请求 ID 仅用于脱敏阶段关联，不能替代账号、设备、配对或会话认证。generationRecovery/eventSync 继续按实际能力声明，不能因 Core 提供 operationRecovery 就假定宿主也具备恢复能力。具体端点和生命周期见[通信说明](../architecture/2026-10-30-communication-lifecycle.zh-CN.md)。

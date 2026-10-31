@@ -463,7 +463,6 @@ fun WorkbenchScreen(
                                                     } else {
                                                         TimelineDisplayRow(
                                                             item = item,
-                                                            evidenceOwner = controller to state.activeThreadId,
                                                             onDecide = controller::decideApproval,
                                                             timing = executionTiming,
                                                             onDownloadAttachment = downloadAction,

@@ -37,17 +37,9 @@ class NativeConversationMirror(
     private val mirror get() = mirrorDelegate.value
     private fun delegateMirror() = mirror
 
-    internal fun offlineMirror() = mirror
-
     /** 连接的全部子任务完成后关闭仓储持有的句柄，不触发新的存储初始化。 */
     internal fun close() {
         if (mirrorDelegate.isInitialized()) mirror.closeNativeStore()
-    }
-
-    override suspend fun creation(requestId: String) = withContext(Dispatchers.IO) { mirror.nativeCreation(requestId) }
-
-    override suspend fun commitCreation(requestId: String, receipt: NativeCreationReceipt) = withContext(Dispatchers.IO) {
-        mirror.commitNativeCreation(requestId, receipt)
     }
 
     override suspend fun saveConversations(page: ConversationPage) = withContext(Dispatchers.IO) {

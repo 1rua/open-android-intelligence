@@ -6,8 +6,6 @@ Both deployment-shared and account-isolated remote agents can build on this.
 """
 from __future__ import annotations
 
-from ..native_diagnostics import current_trace_headers
-
 import asyncio
 import hashlib
 import json
@@ -103,7 +101,7 @@ class RemoteSessionAdapter:
         return extra
 
     def _session(self, headers: dict[str, str] | None = None) -> aiohttp.ClientSession:
-        combined_headers = {"Authorization": f"Bearer {self.token}", **current_trace_headers(), **(headers or {})}
+        combined_headers = {"Authorization": f"Bearer {self.token}", **(headers or {})}
         return aiohttp.ClientSession(
             headers=combined_headers,
             timeout=aiohttp.ClientTimeout(total=self.timeout_seconds),

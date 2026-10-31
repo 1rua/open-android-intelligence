@@ -147,9 +147,6 @@ class NativeEventSynchronizerTest {
     }
 
     internal class Storage(private val log:MutableList<String> = mutableListOf()):NativeConversationStore {
-        val creations = mutableMapOf<String, NativeCreationReceipt>()
-        override suspend fun creation(requestId: String) = creations[requestId]
-        override suspend fun commitCreation(requestId: String, receipt: NativeCreationReceipt) { creations[requestId] = receipt }
         var cursor:String?="base"
         var pending:String?=null
         var failCommit=false

@@ -18,7 +18,6 @@ object RawHeaders {
      */
     private val SINGLETONS = setOf(
         "content-length",
-        "traceparent",
         "digest",
         "content-type",
         "authorization",

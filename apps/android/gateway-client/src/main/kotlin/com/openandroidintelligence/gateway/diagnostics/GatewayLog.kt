@@ -9,14 +9,12 @@ package com.openandroidintelligence.gateway.diagnostics
  * keeps the module usable from tests and from non-Android hosts.
  */
 object GatewayLog {
-    private val bootId = java.util.UUID.randomUUID().toString()
     /** Explicitly enabled by debug builds; contains IDs/timestamps, never tokens or message text. */
     var protocolEvidenceEnabled = false
 
     fun protocolEvidence(type: String, fields: Map<String, Any?>) {
         if (protocolEvidenceEnabled) emit("OaiE2E", com.openandroidintelligence.gateway.schema.Json.canonical(
-            com.openandroidintelligence.gateway.schema.Json.of(fields + mapOf("type" to type, "at" to System.currentTimeMillis(),
-                "monotonicNs" to System.nanoTime(), "bootId" to bootId)),
+            com.openandroidintelligence.gateway.schema.Json.of(fields + mapOf("type" to type, "at" to System.currentTimeMillis())),
         ))
     }
     /** `(tag, message)` — installed by the app, absent in tests. */

@@ -131,28 +131,6 @@ class WorkbenchConversationManagementTest {
         restarted.close()
     }
 
-    @Test fun nativeCreationAfterRestartUsesTheSavedIdToQueryWithoutAnotherCreate() = runTest {
-        val host = Host().apply { loseCreationResponse = true }
-        val queries = mutableListOf<String>()
-        val native = object : ConversationRepository by host, ConversationCreationRecovery {
-            override suspend fun recoverConversationCreation(scope: ConversationScope, clientConversationId: String): Conversation {
-                queries += clientConversationId
-                return host.createdConversations.getValue(clientConversationId)
-            }
-        }
-        val saved = MemoryPersistence()
-        val first = controller(native, saved)
-        runCurrent(); first.createThread(); runCurrent(); first.flushPendingPersistence()
-        val originalId = saved.checkpoint!!.pendingConversationCreation!!.clientId
-        first.close()
-        val restarted = controller(native, saved)
-        runCurrent(); restarted.createThread(); runCurrent()
-        assertEquals(listOf(originalId), host.creationIds)
-        assertEquals(listOf(originalId), queries)
-        assertEquals("created", restarted.state.value.activeThreadId)
-        restarted.close()
-    }
-
     @Test fun firstMessageCanSendInTheConfirmedConversationWhileFolderAssignmentIsUnavailable() = runTest {
         val host=Host().apply {
             threads=emptyList()
@@ -660,7 +638,7 @@ class WorkbenchConversationManagementTest {
         controller.close()
     }
 
-    private fun TestScope.controller(host:ConversationRepository,persistence:WorkbenchPersistence?=null,supported:Boolean=true,external:() -> Set<String> = {emptySet()},
+    private fun TestScope.controller(host:Host,persistence:WorkbenchPersistence?=null,supported:Boolean=true,external:() -> Set<String> = {emptySet()},
         deleteSupported:Boolean=supported,
         unarchiveSupported:Boolean=supported,
         scope:() -> ConversationScope = {ConversationScope("profile","gateway","account","install")})=

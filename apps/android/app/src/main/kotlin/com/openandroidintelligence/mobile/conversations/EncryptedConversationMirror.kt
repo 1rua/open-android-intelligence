@@ -206,30 +206,6 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             }
     }
 
-    @Synchronized fun nativeCreation(requestId: String): NativeCreationReceipt? = read("native-creation:$requestId")?.let { value ->
-        NativeCreationReceipt(com.openandroidintelligence.gateway.agents.NativeAgentSession(str(value,"id"),
-            JsonFields.string(value,"title"),JsonFields.string(value,"updatedAt"),JsonFields.bool(value,"archived") == true),
-            str(value,"eventId"),JsonFields.long(value,"occurredAt") ?: error("MIRROR_CORRUPTED"))
-    }
-
-    /** 权威创建与列表增量同事务保存；通知尚未投递时重启仍能用原 requestId 读取。 */
-    @Synchronized fun commitNativeCreation(requestId: String, receipt: NativeCreationReceipt) {
-        documents.transaction {
-            val session = receipt.session
-            val existing = nativeCreation(requestId)
-            check(existing == null || existing.session.id == session.id) { "NATIVE_CREATE_IDENTITY_CONFLICT" }
-            documents.write("native-creation:$requestId", encode(mapOf("id" to session.id,"title" to session.title,
-                "updatedAt" to session.updatedAt,"archived" to session.archived,
-                "eventId" to receipt.eventId,"occurredAt" to receipt.occurredAt)))
-            val current = threads().orEmpty()
-            if (current.none { it.id.value == session.id } && !isConversationDeleted(session.id)) {
-                saveThreads(current + ConversationSummary(ConversationId(session.id), session.title?.takeIf(String::isNotBlank) ?: "新对话",
-                    receipt.occurredAt, session.archived))
-            }
-        }
-        documents.flush()
-    }
-
     @Synchronized fun commitNativeEvents(events: List<VerifiedConversationEvent>) {
         documents.transaction { events.forEach(::apply) }
         documents.flush()

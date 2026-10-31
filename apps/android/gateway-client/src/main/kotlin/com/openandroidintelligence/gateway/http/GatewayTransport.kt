@@ -6,7 +6,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.isActive
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -41,36 +40,11 @@ class GatewayTransport(
     private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
         ?: error("GATEWAY_ENDPOINT_INVALID: ${profile.gatewayBaseUrl}")
 
-    private fun phase(request: WireRequest, mode: String, stage: String) {
-        GatewayLog.protocolEvidence("transport.$stage", mapOf("mode" to mode,
-            "requestId" to RawHeaders.single(request.headers, "X-Open-Android-Intelligence-Request-Id"),
-            "traceId" to RawHeaders.single(request.headers, "traceparent")?.split('-')?.getOrNull(1)))
-    }
-
-    private suspend fun <T> withTransportIo(request: WireRequest, mode: String, block: suspend () -> T): T {
-        phase(request, mode, "io_queued")
-        return kotlinx.coroutines.withContext(Dispatchers.IO) {
-            phase(request, mode, "io_dequeued")
-            block()
-        }
-    }
-
-    private fun observedStream(request: WireRequest, mode: String, input: InputStream): InputStream =
-        object : java.io.FilterInputStream(input) {
-            private var observed = false
-            private fun received(count: Int) {
-                if (!observed && count > 0) { observed = true; phase(request, mode, "first_byte") }
-            }
-            override fun read(): Int = super.read().also { if (it >= 0) received(1) }
-            override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
-                super.read(buffer, offset, length).also(::received)
-        }
-
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override suspend fun <T> consumeResponse(
         request: WireRequest,
         consume: suspend (Int, List<RawHeader>, InputStream) -> T,
-    ): T = withTransportIo(request, "consumeResponse") {
+    ): T = kotlinx.coroutines.withContext(Dispatchers.IO) {
         val connection = open(request)
         val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion(onCancelling = true) {
             connection.disconnect()
@@ -81,21 +55,14 @@ class GatewayTransport(
                 connection.setFixedLengthStreamingMode(request.body.size)
                 connection.doOutput = true
             }
-            phase(request, "consumeResponse", "connect_started")
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
-            phase(request, "consumeResponse", "connect_ready")
-            if (request.body.isNotEmpty()) {
-                phase(request, "consumeResponse", "write_started")
-                connection.outputStream.use { it.write(request.body) }
-                phase(request, "consumeResponse", "write_completed")
-            }
+            if (request.body.isNotEmpty()) connection.outputStream.use { it.write(request.body) }
             val status = connection.responseCode
-            phase(request, "consumeResponse", "response_headers")
             val headers = RawHeaders.validate(readHeaders(connection))
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
                 ?: java.io.ByteArrayInputStream(ByteArray(0))
-            observedStream(request, "consumeResponse", stream).use { consume(status, headers, it) }
+            stream.use { consume(status, headers, it) }
         } finally {
             cancelHandle?.dispose()
             connection.disconnect()
@@ -103,7 +70,7 @@ class GatewayTransport(
     }
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
-    override suspend fun execute(request: WireRequest): WireResponse = withTransportIo(request, "execute") {
+    override suspend fun execute(request: WireRequest): WireResponse = kotlinx.coroutines.withContext(Dispatchers.IO) {
         val connection = open(request)
         val job = currentCoroutineContext()[Job]
         val cancelHandle = job?.invokeOnCompletion(onCancelling = true) {
@@ -125,11 +92,8 @@ class GatewayTransport(
             }
             // Establish the connection and its identity before any sensitive
             // request body is written to the socket.
-            phase(request, "execute", "connect_started")
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
-            phase(request, "execute", "connect_ready")
-            if (request.body.isNotEmpty() || streamBody != null) phase(request, "execute", "write_started")
             if (streamBody != null) {
                 writeStreamBody(connection, streamBody)
             } else if (request.body.isNotEmpty()) {
@@ -137,11 +101,9 @@ class GatewayTransport(
                     stream.write(request.body)
                 }
             }
-            if (request.body.isNotEmpty() || streamBody != null) phase(request, "execute", "write_completed")
             val status = connection.responseCode
-            phase(request, "execute", "response_headers")
             val headers = readHeaders(connection)
-            val body = readBody(connection, status, request)
+            val body = readBody(connection, status)
             WireResponse(status, headers, body)
         } finally {
             cancelHandle?.dispose()
@@ -196,7 +158,6 @@ class GatewayTransport(
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
-        phase(request, "eventStream", "io_dequeued")
         GatewayLog.d(TAG, "sse open ${request.method} ${request.target}")
         val connection = open(request, readTimeoutMillis = SSE_IDLE_TIMEOUT_MILLIS)
         val job = currentCoroutineContext()[Job]
@@ -204,12 +165,9 @@ class GatewayTransport(
             runCatching { connection.disconnect() }
         }
         try {
-            phase(request, "eventStream", "connect_started")
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
-            phase(request, "eventStream", "connect_ready")
             val status = connection.responseCode
-            phase(request, "eventStream", "response_headers")
             if (status !in 200..299) {
                 if (status == 410) throw EventCursorExpiredException()
                 if (status == 401) throw EventSessionRejectedException()
@@ -219,7 +177,7 @@ class GatewayTransport(
             if (!contentType.contains("text/event-stream")) {
                 throw IOException("EVENT_STREAM_FAILED:unexpected-content-type:$contentType")
             }
-            observedStream(request, "eventStream", connection.inputStream).use { stream ->
+            connection.inputStream.use { stream ->
                 val buffer = ByteArray(EVENT_CHUNK_BYTES)
                 while (currentCoroutineContext().isActive) {
                     val read = try {
@@ -250,7 +208,7 @@ class GatewayTransport(
             cancelHandle?.dispose()
             connection.disconnect()
         }
-    }.flowOn(Dispatchers.IO).onStart { phase(request, "eventStream", "io_queued") }
+    }.flowOn(Dispatchers.IO)
 
     private fun open(
         request: WireRequest,
@@ -281,13 +239,13 @@ class GatewayTransport(
         return headers
     }
 
-    private fun readBody(connection: HttpURLConnection, status: Int, request: WireRequest): ByteArray {
+    private fun readBody(connection: HttpURLConnection, status: Int): ByteArray {
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             ?: return ByteArray(0)
         require(maximumResponseBytes >= 0)
         if (connection.contentLengthLong > maximumResponseBytes) throw java.io.IOException("RESPONSE_TOO_LARGE")
         val out = ByteArrayOutputStream()
-        observedStream(request, "execute", stream).use { input ->
+        stream.use { input ->
             val buffer = ByteArray(BODY_CHUNK_BYTES)
             while (true) {
                 val read = input.read(buffer)

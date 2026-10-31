@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
-from contextlib import closing, contextmanager, suppress
+from contextlib import suppress
 from copy import deepcopy
 from contextvars import ContextVar
 from functools import wraps
@@ -26,7 +26,7 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 
 from oai_core.gateway.core import AgentSessionBindings, GatewayError, NEW_CONVERSATION_COMMAND, iso_millis, _epoch_millis
 from oai_core.sessions import AdapterError
-from oai_core.native_diagnostics import current_trace_headers, trace_context, trace_native_stage
+from oai_core.native_diagnostics import trace_native_stage
 from .platform_identity import GATEWAY_PLATFORM_ID, GATEWAY_PLATFORM_IDS
 from .context import native_input_receipt, trusted_turn
 from .bridge import NativeApprovalMixin, create_hermes_bridge_app
@@ -56,10 +56,6 @@ async def report_dispatch_delivered(
     状态上报是旁路事实，任何失败都不能冒泡回事件分发栈——那会被当成 Agent
     不可用，把一条正在处理的消息标记成 failed。
     """
-    return await asyncio.to_thread(_report_dispatch_delivered, account, record, claim_token)
-
-
-def _report_dispatch_delivered(account: Any, record: Mapping[str, Any] | None, claim_token: str | None) -> bool:
     if record is None or str(record.get("status") or "") != "queued":
         return False
     message_id = str(record.get("messageId") or "")
@@ -205,10 +201,10 @@ class _NativeInputCapture:
                     self.admitted.add(staged["key"])
                     try:
                         self.history.accept_native_input(staged)
-                    except Exception as exc:
+                    except Exception:
                         # Already accepted by the host: don't return False and make
                         # the busy dispatcher inject the same input a second time.
-                        logger.warning("Native input accepted; presentation write pending errorType=%s", type(exc).__name__)
+                        logger.exception("[open_android] Native input accepted; presentation write pending")
                 return accepted
         return admit
 
@@ -316,10 +312,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         self._conv_to_account = {}
         self._processing_media_files = {}
         self._generation_locks = {}
-        self._generation_traces = {}
-        self._first_reply_events = set()
-        self._generation_trace_lock = threading.RLock()
-        self._event_locks = {}
         self._conversation_platforms = {}
         self._streaming_replies = {}
         self._native_turns = {}
@@ -332,13 +324,13 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             if self._runner is not None:
                 return True
             self._loop = asyncio.get_running_loop()
-            await asyncio.to_thread(self.services.core.acquire_accounts)
+            self.services.core.acquire_accounts()
             self._refresh_generation_canceller()
             history = HermesHistoryPort(self.services.core, self._session_store)
             self.services.core.history_reader = history.read
             self.services.core.conversation_manager = history.manage
             self._tool_observer = NativeToolObserver(self.services.core, history)
-            await asyncio.to_thread(self._cleanup_inbound_media_cache)
+            self._cleanup_inbound_media_cache()
             self._app = create_hermes_bridge_app(HermesSessionAdapter(self.services.core, self), self._token, self._accounts)
             self._runner = web.AppRunner(self._app)
             try:
@@ -348,7 +340,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             except BaseException:
                 await self._runner.cleanup()
                 self._runner = self._site = self._app = None
-                await asyncio.to_thread(self.services.core.close)
+                self.services.core.close()
                 self._loop = None
                 raise
             for account in self._accounts:
@@ -365,56 +357,13 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             if self._background_tasks:
                 await asyncio.gather(*self._background_tasks, return_exceptions=True)
             self._runner = self._site = self._app = None
-            await asyncio.to_thread(self.services.core.close)
+            self.services.core.close()
             self._loop = None
             self._mark_disconnected()
 
-    def remember_generation_trace(self, account_id: str, conversation_id: str, generation_id: str) -> None:
-        # Diagnostics only. This map neither authorizes work nor selects native
-        # history, and is keyed by the real receipt produced by admission.
-        headers = current_trace_headers()
-        if not headers:
-            with trace_context():
-                headers = current_trace_headers()
-        with self._generation_trace_lock:
-            self._generation_traces[(account_id, conversation_id, generation_id)] = headers
-
-    @contextmanager
-    def _generation_trace(self, account_id: str, conversation_id: str, generation_id: str):
-        lock = getattr(self, "_generation_trace_lock", None)
-        if lock is None:
-            headers = current_trace_headers()
-        else:
-            with lock:
-                key = (account_id, conversation_id, generation_id)
-                headers = self._generation_traces.get(key)
-                if headers is None:
-                    # Recovery may have no surviving Core request context. A
-                    # fresh generation trace avoids borrowing a later request.
-                    with trace_context():
-                        headers = current_trace_headers()
-                    self._generation_traces[key] = headers
-        with trace_context(headers, request_id=headers.get("X-OAI-Request-Id")):
-            yield
-
     def set_message_handler(self, handler: Any) -> None:
-        if handler is None:
-            super().set_message_handler(None)
-        else:
-            @wraps(handler)
-            async def traced_handler(event):
-                turn = getattr(event, "_oai_native_diagnostic_turn", None)
-                if turn is None:
-                    return await handler(event)
-                with self._generation_trace(turn["accountId"], turn["conversationId"], turn["generationId"]):
-                    # This boundary is the actual handler invocation. Neither
-                    # claim_dispatch nor delivered can stand in for this stage.
-                    trace_native_stage("T3_HANDLER", client_message_id=event.message_id,
-                        generation_id=turn["generationId"], message_id=turn["messageId"],
-                        agent_id="hermes", conversation_id=turn["conversationId"],
-                        event_type="handler_started", operation="send")
-                    return await handler(event)
-            super().set_message_handler(traced_handler)
+        super().set_message_handler(handler)
+        # Hosts may wire callbacks after connect or replace them on reconnect.
         self._refresh_generation_canceller()
 
     def set_busy_session_handler(self, handler: Any) -> None:
@@ -698,7 +647,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             receipt = native_input_receipt.get()
             if receipt is not None and receipt.get("open"):
                 receipt["deliveryFailed"] = True
-            logger.error("Native reply delivery failed conversationId=%s errorType=%s", chat_id, type(exc).__name__)
+            logger.error("[open_android] Failed to deliver message to %s: %s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=False)
 
 
@@ -710,26 +659,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         from .history_media import HistoryMedia
         account_id=(metadata.get("account_id") if isinstance(metadata,dict) else None) or self._conv_to_account.get(chat_id) or self._account_id
         if not account_id: return SendResult(success=False,error="ACCOUNT_NOT_CONFIGURED",retryable=False)
-        return await self._store_reply(account_id, chat_id, self._persist_document, account_id, chat_id, file_path, caption)
-
-    async def _store_reply(self, account_id, chat_id, persist, *args):
-        locks = self.__dict__.setdefault("_event_locks", {})
-        async with locks.setdefault((account_id, chat_id), asyncio.Lock()):
-            worker = asyncio.create_task(asyncio.to_thread(persist, *args))
-            cancelled = False
-            while not worker.done():
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError:
-                    # A thread cannot be cancelled. Keep the session's event
-                    # order locked until its in-flight commit really finishes.
-                    cancelled = True
-            result = worker.result()
-            if cancelled:
-                raise asyncio.CancelledError
-            return result
-
-    def _persist_document(self, account_id, chat_id, file_path, caption):
         account=self.services.core.open_gateway_account(account_id)
         try:
             generation = self._reply_generation(account, chat_id)
@@ -753,8 +682,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 saved = history_port.record_visible(account, visible_payload)
                 if saved is not None:
                     payload["revision"] = saved["revision"]
-            event = account.events.append("conversation.message.completed",origin["messageId"] if origin else message_id,payload)
-            self._trace_first_reply(account_id, chat_id, generation, origin, event, payload, "conversation.message.completed")
+            account.events.append("conversation.message.completed",origin["messageId"] if origin else message_id,payload)
             return SendResult(success=True,message_id=message_id)
         except Exception:
             return SendResult(success=False,error="ATTACHMENT_READ_FAILED",retryable=False)
@@ -842,11 +770,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         so an event only ever has one path to a live subscriber.
         """
         target_account = account_id or self._conv_to_account.get(chat_id) or self._account_id
-        await self._store_reply(target_account, chat_id, self._persist_event, event_type, chat_id,
-                                message_id, text, occurred_at, target_account, generation_id)
-
-    def _persist_event(self, event_type, chat_id, message_id, text, occurred_at, account_id, generation_id):
-        target_account = account_id or self._conv_to_account.get(chat_id) or self._account_id
         if not target_account:
             logger.warning("[open_android] No account configured; %s was not published", event_type)
             return
@@ -871,7 +794,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 try:
                     account.conversations.record_assistant_message(chat_id, message_id, text, occurred_at)
                 except Exception as rec_err:
-                    logger.warning("[open_android] Failed to record completed message errorType=%s", type(rec_err).__name__)
+                    logger.warning("[open_android] Failed to record completed message: %s", rec_err)
             origin = account.conversations.workflow._get("message-device:" + generation["messageIds"][0]) if generation else None
             visible_payload = dict(payload)
             if origin and origin.get("conversationId") == chat_id:
@@ -885,7 +808,11 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                     payload["revision"] = saved["revision"]
             correlation_id = origin["messageId"] if origin and origin.get("conversationId") == chat_id else message_id
             saved_event = account.events.append(event_type, correlation_id, payload, occurred_at)
-            self._trace_first_reply(target_account, chat_id, generation, origin, saved_event, payload, event_type)
+            if event_type == "conversation.message.delta" and generation and message_id not in self._streaming_replies.get(
+                    (target_account, chat_id, generation["generationId"]), {}):
+                trace_native_stage("T4", client_message_id=origin.get("clientMessageId") if origin else None,
+                    generation_id=generation["generationId"], message_id=message_id,
+                    event_id=saved_event["eventId"], revision=payload.get("revision"), event_type="first_delta")
             if generation:
                 key = (target_account, chat_id, generation["generationId"])
                 if event_type == "conversation.message.delta":
@@ -899,21 +826,6 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         finally:
             account.close()
 
-
-    def _trace_first_reply(self, account_id, chat_id, generation, origin, event, payload, event_type):
-        if generation is None:
-            return
-        key = (account_id, chat_id, generation["generationId"])
-        seen = self.__dict__.setdefault("_first_reply_events", set())
-        if key in seen:
-            return
-        seen.add(key)
-        with self._generation_trace(account_id, chat_id, generation["generationId"]):
-            trace_native_stage("T4", client_message_id=origin.get("clientMessageId") if origin else None,
-                generation_id=generation["generationId"], message_id=payload["messageId"],
-                event_id=event["eventId"], revision=payload.get("revision"),
-                event_type="first_delta" if event_type == "conversation.message.delta" else "first_completed",
-                agent_id="hermes", conversation_id=chat_id, operation="send")
 
     def _reply_generation(self, account: Any, chat_id: str, generation_id: str | None = None) -> Any:
         from .context import trusted_turn
@@ -932,9 +844,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
 
 
     async def _finish_streaming_replies(self, account_id: str, chat_id: str, generation_id: str) -> None:
-        locks = self.__dict__.setdefault("_event_locks", {})
-        async with locks.setdefault((account_id, chat_id), asyncio.Lock()):
-            pending = dict(self._streaming_replies.get((account_id, chat_id, generation_id), {}))
+        pending = dict(self._streaming_replies.get((account_id, chat_id, generation_id), {}))
         for message_id, snapshot in pending.items():
             await self._publish_event(
                 "conversation.message.completed", chat_id, message_id, snapshot["text"],
@@ -1144,7 +1054,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         try:
             account = self.services.core.open_gateway_account(account_id)
         except Exception as exc:
-            logger.warning("Native account binding unavailable accountId=%s errorType=%s", account_id, type(exc).__name__)
+            logger.warning("[open_android] Account %s is unavailable for binding: %s", account_id, exc)
             return
         try:
             with account.store.transaction():
@@ -1153,71 +1063,32 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                     account.agent_sessions.attach(conversation_id, agent_session_id, session_key)
         except Exception as exc:
             logger.warning(
-                "Native session binding failed conversationId=%s errorType=%s", conversation_id, type(exc).__name__
+                "[open_android] Agent session binding failed for %s: %s", conversation_id, exc
             )
         finally:
             account.close()
 
 
-    def _next_dispatch(self, account_id: str, conversation_id: str) -> tuple[bool, dict[str, Any] | None]:
-        """Read durable acceptance order, including work whose observer is gone."""
-        with closing(self.services.core.open_gateway_account(account_id)) as account, account.store.transaction():
-            generations = [json.loads(row[0]) for row in account.store.database.execute(
-                "SELECT value FROM account_metadata WHERE key LIKE 'generation:%'")]
-            active = [item for item in generations if item["conversationId"] == conversation_id
-                      and item["state"] in {"queued", "running", "unknown"}]
-            if any(item["state"] in {"running", "unknown"} for item in active):
-                return True, None
-            if not active:
-                return False, None
-            generation = min(active, key=lambda item: item["order"])
-            row = account.store.database.execute("SELECT client_message_id FROM messages WHERE message_id=?",
-                (generation["messageIds"][0],)).fetchone()
-            record = account.conversations.dispatch_message(row[0]) if row else None
-            if record is None or record["status"] != "queued" or record.get("claimUntil"):
-                # A missing/inconsistent dispatch is not evidence that it is
-                # safe to run a later turn or replay an earlier handoff.
-                return True, None
-            record["generationId"] = generation["generationId"]
-            return False, record
-
-    async def _notify_agent_inbound(self, path: str, body_bytes: bytes, response_body: Any,
-                                    account_id: str | None = None) -> None:
-        source_account = account_id or self._account_id
-        conversation_id = _conversation_id_of(path)
-        if not source_account or not conversation_id:
-            return
-        lock = self._generation_locks.setdefault((source_account, conversation_id), asyncio.Lock())
+    async def _notify_agent_inbound(self,path: str,body_bytes: bytes,response_body: Any,account_id: str | None = None) -> None:
+        source_account=account_id or self._account_id
+        conversation_id=_conversation_id_of(path)
+        if not source_account or not conversation_id: return
+        lock=self._generation_locks.setdefault((source_account,conversation_id),asyncio.Lock())
         async with lock:
-            loop = asyncio.get_running_loop()
-            changed = asyncio.Event()
-            def committed(owner, event):
-                if owner != source_account or event.get("payload", {}).get("conversationId") != conversation_id:
-                    return
+            await self._dispatch_agent_inbound(path,body_bytes,response_body,source_account)
+            data=json.loads(body_bytes)
+            client_id=data.get("clientMessageId") or (data.get("members") or [{}])[0].get("clientMessageId")
+            if not client_id or not callable(getattr(self,"cancel_session_processing",None)): return
+            while True:
+                account=self.services.core.open_gateway_account(source_account)
                 try:
-                    loop.call_soon_threadsafe(changed.set)
-                except RuntimeError:
-                    pass
-            self.services.core.register_event_sink(committed)
-            try:
-                while True:
-                    # Subscribe before reading. A commit during this read either
-                    # changes the durable result or leaves this wake-up set.
-                    changed.clear()
-                    blocked, record = await asyncio.to_thread(self._next_dispatch, source_account, conversation_id)
-                    if blocked:
-                        # Only the committed terminal receipt releases this
-                        # fence. No polling sleep adds latency to the next turn.
-                        await changed.wait()
-                        continue
-                    if record is None:
-                        return
-                    body = json.dumps({"clientMessageId": record["clientMessageId"]}).encode()
-                    with self._generation_trace(source_account, conversation_id, record["generationId"]):
-                        await self._dispatch_agent_inbound(path, body, {"data": record}, source_account)
-            finally:
-                self.services.core.unregister_event_sink(committed)
-
+                    row=account.store.database.execute("SELECT message_id FROM messages WHERE conversation_id=? AND client_message_id=?",(conversation_id,client_id)).fetchone()
+                    generation=account.conversations.workflow.for_message(row[0]) if row else None
+                    # Unknown outcome keeps this thread paused until native completion proves a terminal state.
+                    waiting=generation and generation["state"] in {"running","unknown"}
+                finally: account.close()
+                if not waiting: break
+                await asyncio.sleep(0.2)
 
     async def dispatch_native_input(
         self,
@@ -1229,14 +1100,14 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         generation_id: str | None = None,
     ) -> dict[str, Any]:
         """Hand original input to the host's native command/busy dispatcher."""
-        def read_binding():
-            with closing(self.services.core.open_gateway_account(account_id)) as account:
-                binding = account.agent_sessions.lookup(conversation_id)
-                if not binding or not binding.get("agentSessionId") or not binding.get("sessionKey"):
-                    raise AdapterError("SESSION_NOT_FOUND", 404)
-                return binding
-        binding = await asyncio.to_thread(read_binding)
-        session_key = str(binding["sessionKey"])
+        account = self.services.core.open_gateway_account(account_id)
+        try:
+            binding = account.agent_sessions.lookup(conversation_id)
+            if not binding or not binding.get("agentSessionId") or not binding.get("sessionKey"):
+                raise AdapterError("SESSION_NOT_FOUND", 404)
+            session_key = str(binding["sessionKey"])
+        finally:
+            account.close()
         self._conv_to_account[conversation_id] = account_id
         event = MessageEvent(
             text=text,
@@ -1286,131 +1157,174 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
     async def _dispatch_agent_inbound(
         self, path: str, body_bytes: bytes, response_body: Any, account_id: str | None = None,
     ) -> None:
-        """Claim once, prepare storage on workers, and enter the native host loop."""
+        """Notify Hermes agent of a user message received from the Android device."""
         source_account = account_id or self._account_id
         if not source_account:
+            logger.warning("[open_android] Inbound message carries no account identity; not dispatching")
             return
-        data = json.loads(body_bytes)
-        conv_id = _conversation_id_of(path) or "default"
-        client_message_id = str(data.get("clientMessageId") or data.get("clientTurnId")
-                                or (data.get("members") or [{}])[0].get("clientMessageId") or uuid.uuid4())
-        user_text = str(data.get("text") or data.get("content") or "")
-        if user_text.strip() == NEW_CONVERSATION_COMMAND and path.endswith("/commands"):
-            return
-        self._conv_to_account[conv_id] = source_account
-        dispatch_record = None
-        dispatch_claim_token = None
-        materialized_files = []
+        client_message_id: str | None = None
+        dispatch_record: dict[str, Any] | None = None
+        dispatch_claim_token: str | None = None
+        materialized_files: list[Path] = []
         account = None
         error_code = "AGENT_UNAVAILABLE"
-        handed_to_host = handoff_started = handoff_rejected = False
+        handed_to_host = False
+        try:
+            conv_id = _conversation_id_of(path) or "default"
+            self._conv_to_account[conv_id] = source_account
+            # A user turn boundary: whatever the Agent answered before belongs to
+            # the previous turn, so the same text from now on is a new message.
 
-        def prepare():
-            nonlocal account, dispatch_record, dispatch_claim_token, materialized_files, error_code
+            data = json.loads(body_bytes.decode("utf-8"))
+            user_text = data.get("text") or data.get("content") or ""
+            client_message_id = data.get("clientMessageId") or data.get("clientTurnId") or (data.get("members") or [{}])[0].get("clientMessageId")
+            client_message_id = str(client_message_id) if client_message_id else str(uuid.uuid4())
+
+            if user_text.strip() == NEW_CONVERSATION_COMMAND and path.endswith("/commands"):
+                # The Gateway's own command entry owns `/new` (contract §7.1): it
+                # has already created the conversation and answered with its id.
+                # Handing the same text to the Agent would make the host run its
+                # own new-session command on the *source* conversation, wiping the
+                # memory the user is still reading.
+                logger.info("[open_android] Reserved /new stays a command entry; not dispatched to the agent")
+                return
+
             account = self.services.core.open_gateway_account(source_account)
             dispatch_record = account.conversations.dispatch_message(client_message_id)
-            if dispatch_record is None:
-                return user_text, conv_id, datetime.now(timezone.utc), [], []
-            if dispatch_record["status"] != "queued":
-                return None
-            dispatch_record = account.conversations.claim_dispatch(client_message_id)
-            if dispatch_record is None:
-                return None
-            dispatch_claim_token = str(dispatch_record["claimToken"])
-            error_code = "ATTACHMENT_READ_FAILED"
-            media_urls, media_types, materialized_files = self._materialize_message_attachments(
-                source_account, dispatch_record, account)
-            error_code = "AGENT_UNAVAILABLE"
-            return (str(dispatch_record["text"]), str(dispatch_record["conversationId"]),
-                    datetime.fromisoformat(str(dispatch_record["createdAt"]).replace("Z", "+00:00")),
-                    media_urls, media_types)
+            if dispatch_record is not None:
+                if dispatch_record["status"] != "queued":
+                    logger.info(
+                        "[open_android] Message %s is already %s; duplicate dispatch ignored",
+                        client_message_id, dispatch_record["status"],
+                    )
+                    return
+                dispatch_record = account.conversations.claim_dispatch(client_message_id)
+                if dispatch_record is None:
+                    logger.info(
+                        "[open_android] Message dispatch already claimed messageId=%s",
+                        client_message_id,
+                    )
+                    return
+                dispatch_claim_token = str(dispatch_record["claimToken"])
+                error_code = "ATTACHMENT_READ_FAILED"
+                media_urls, media_types, materialized_files = self._materialize_message_attachments(
+                    source_account, dispatch_record, account,
+                )
+                error_code = "AGENT_UNAVAILABLE"
+                user_text = str(dispatch_record["text"])
+                client_message_id = str(dispatch_record["clientMessageId"])
+                conversation_id = str(dispatch_record["conversationId"])
+                created_at = datetime.fromisoformat(str(dispatch_record["createdAt"]).replace("Z", "+00:00"))
+            else:
+                media_urls, media_types = [], []
+                conversation_id = conv_id
+                created_at = datetime.now(timezone.utc)
 
-        def capture():
-            history = getattr(getattr(self.services.core, "history_reader", None), "__self__", None)
-            if dispatch_record is not None and callable(getattr(history, "capture_submission", None)):
+            await self._ensure_agent_session(
+                conv_id, source_account, force_new=False,
+                created_via=AgentSessionBindings.CREATED_VIA_INBOUND_MESSAGE,
+            )
+            history_port = getattr(getattr(self.services.core, "history_reader", None), "__self__", None)
+            if dispatch_record is not None and callable(getattr(history_port, "capture_submission", None)):
+                from .history_media import HistoryMedia
                 HistoryMedia(account).adopt_inbound(conversation_id, dispatch_record["messageId"],
                     dispatch_record["attachments"], media_urls)
-                history.capture_submission(account, dispatch_record)
-            origin_row = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?",
-                (f"message-device:{client_message_id}",)).fetchone()
-            return (json.loads(origin_row[0]) if origin_row else {}, account.agent_sessions.lookup(conversation_id),
-                    account.conversations.workflow.for_message(dispatch_record["messageId"]) if dispatch_record else None)
+                history_port.capture_submission(account, dispatch_record)
 
-        def acknowledge():
-            for attachment_id in dispatch_record["attachmentIds"]:
-                try:
-                    account.attachments.mark_delivered(attachment_id)
-                    account.attachments.acknowledge(attachment_id, f"message-ack-{dispatch_record['messageId']}")
-                except Exception as exc:
-                    logger.warning("Native attachment ACK failed messageId=%s errorType=%s",
-                        dispatch_record["messageId"], type(exc).__name__)
-
-        def record_failure(failure_code):
-            if dispatch_record is None or account is None or handed_to_host:
-                return
-            if handoff_started and not handoff_rejected:
-                # An exception during intake cannot prove whether the host
-                # adopted the turn. Preserve ambiguity and prohibit redelivery.
-                account.conversations.workflow.settle(dispatch_record["messageId"], "unknown")
-                return
-            status_error = error_code if error_code == "ATTACHMENT_READ_FAILED" else failure_code
-            account.conversations.update_dispatch_status(dispatch_record["messageId"], "failed", status_error,
-                f"dispatch-failed-{dispatch_record['messageId']}", claim_token=dispatch_claim_token)
-
-        try:
-            prepared = await asyncio.to_thread(prepare)
-            if prepared is None:
-                return
-            user_text, conversation_id, created_at, media_urls, media_types = prepared
-            await self._ensure_agent_session(conv_id, source_account, force_new=False,
-                created_via=AgentSessionBindings.CREATED_VIA_INBOUND_MESSAGE)
-            origin, binding, generation = await asyncio.to_thread(capture)
-            event = MessageEvent(text=user_text, source=self._agent_source(conversation_id, source_account),
-                message_type=(MessageType.TEXT if not media_types else
+            event = MessageEvent(
+                text=user_text,
+                source=self._agent_source(conversation_id, source_account),
+                message_type=(
+                    MessageType.TEXT if not media_types else
                     getattr(MessageType, "PHOTO", MessageType.DOCUMENT)
                     if all(media_type.casefold().startswith("image/") for media_type in media_types) else
                     getattr(MessageType, "AUDIO", MessageType.DOCUMENT)
                     if all(media_type.casefold().startswith("audio/") for media_type in media_types) else
-                    getattr(MessageType, "DOCUMENT", MessageType.TEXT)),
-                message_id=client_message_id, media_urls=media_urls, media_types=media_types, timestamp=created_at)
-            event._gateway_claim_token = dispatch_claim_token
+                    getattr(MessageType, "DOCUMENT", MessageType.TEXT)
+                ),
+                message_id=client_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
+                timestamp=created_at,
+            )
+            event._gateway_claim_token=dispatch_claim_token
             if dispatch_record is not None:
                 self._processing_media_files[(source_account, client_message_id)] = list(materialized_files)
-            token = trusted_turn.set({**origin, "core": self.services.core, "accountId": source_account,
-                "sessionId": binding.get("agentSessionId") if binding else None,
-                "conversationId": conversation_id, "clientMessageId": client_message_id,
-                "generationId": generation.get("generationId") if generation else None,
-                "executionObserver": getattr(self, "_tool_observer", None)})
+            logger.info(
+                "[open_android] Dispatching Android message messageId=%s attachmentCount=%d",
+                dispatch_record["messageId"] if dispatch_record is not None else client_message_id,
+                len(media_urls),
+            )
+            from .context import trusted_turn
+            origin_row = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?",(f"message-device:{client_message_id}",)).fetchone() if account is not None else None
+            binding_row = account.agent_sessions.lookup(conversation_id) if account is not None else None
+            origin = json.loads(origin_row[0]) if origin_row else {}
+            generation = account.conversations.workflow.for_message(dispatch_record["messageId"]) if dispatch_record else None
+            token = trusted_turn.set({**origin,"core":self.services.core,"accountId":source_account,
+                "sessionId":binding_row.get("agentSessionId") if binding_row else None,
+                "conversationId":conversation_id,"clientMessageId":client_message_id,
+                "generationId":generation.get("generationId") if generation else None,
+                "executionObserver":getattr(self,"_tool_observer",None)})
             try:
-                handoff_started = True
                 await self.handle_message(event)
             finally:
                 trusted_turn.reset(token)
             if getattr(event, "_gateway_accepted", False) is not True:
-                handoff_rejected = True
                 raise GatewayError("AGENT_UNAVAILABLE")
             handed_to_host = True
             materialized_files = []
-            if dispatch_record is not None:
+            if dispatch_record is not None and account is not None:
+                # 上报失败只记日志：它不能把一条已经交给 Agent 的消息标记成失败。
                 await report_dispatch_delivered(account, dispatch_record, dispatch_claim_token)
-                await asyncio.to_thread(acknowledge)
+                for attachment_id in dispatch_record["attachmentIds"]:
+                    try:
+                        account.attachments.mark_delivered(attachment_id)
+                        account.attachments.acknowledge(
+                            attachment_id, f"message-ack-{dispatch_record['messageId']}",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[open_android] Attachment ACK failed messageId=%s errorCode=INTERNAL_ERROR",
+                            dispatch_record["messageId"],
+                        )
         except Exception as exc:
             failure_code = str(getattr(exc, "code", "AGENT_UNAVAILABLE"))
-            if failure_code not in {"AGENT_UNAVAILABLE", "ATTACHMENT_READ_FAILED", "AGENT_MEDIA_REJECTED", "MODEL_REQUEST_REJECTED"}:
+            if failure_code not in {
+                "AGENT_UNAVAILABLE", "ATTACHMENT_READ_FAILED", "AGENT_MEDIA_REJECTED",
+                "MODEL_REQUEST_REJECTED",
+            }:
                 failure_code = "AGENT_UNAVAILABLE"
-            logger.warning("Native inbound dispatch failed clientMessageId=%s errorCode=%s", client_message_id, failure_code)
-            with suppress(Exception):
-                await asyncio.to_thread(record_failure, failure_code)
+            logger.warning(
+                "[open_android] Inbound dispatch failed messageId=%s errorCode=%s",
+                dispatch_record["messageId"] if dispatch_record is not None else client_message_id,
+                failure_code,
+            )
+            if dispatch_record is not None and account is not None:
+                # Any error while materializing verified encrypted content is a
+                # read failure; once local paths exist, a host dispatch error is
+                # classified as unavailable for a safe client retry.
+                status_error_code = (
+                    error_code if error_code == "ATTACHMENT_READ_FAILED" else failure_code
+                )
+                if status_error_code not in {
+                    "AGENT_UNAVAILABLE", "ATTACHMENT_READ_FAILED", "AGENT_MEDIA_REJECTED",
+                    "MODEL_REQUEST_REJECTED",
+                }:
+                    status_error_code = error_code
+                with suppress(Exception):
+                    account.conversations.update_dispatch_status(
+                        dispatch_record["messageId"], "failed", status_error_code,
+                        f"dispatch-failed-{dispatch_record['messageId']}",
+                        claim_token=dispatch_claim_token,
+                    )
         finally:
-            if dispatch_claim_token is not None and not handed_to_host:
+            if dispatch_claim_token is not None and not handed_to_host and client_message_id:
                 self._processing_media_files.pop((source_account, client_message_id), None)
-            def release_storage():
-                for cached_file in materialized_files:
-                    with suppress(OSError):
-                        HistoryMedia._retire_path(cached_file)
-                if account is not None:
-                    account.close()
-            await asyncio.to_thread(release_storage)
+            for cached_file in materialized_files:
+                with suppress(OSError):
+                    HistoryMedia._retire_path(cached_file)
+            if account is not None:
+                account.close()
 
 
     def _materialize_message_attachments(
@@ -1486,30 +1400,25 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
 
 
     async def _recover_message_dispatches(self, account_id: str) -> None:
-        """Resume only unclaimed work; interrupted handoffs retain unknown facts."""
-        def recover():
-            queued = set()
-            with closing(self.services.core.open_gateway_account(account_id)) as account:
-                account.attachments.recover_interrupted_uploads()
-                with account.store.transaction():
-                    for dispatch in account.conversations.incomplete_dispatches():
-                        generation = account.conversations.workflow.for_message(dispatch["messageId"])
-                        if generation is None or generation["state"] in {"completed", "failed", "cancelled"}:
-                            continue
-                        if (generation["state"] in {"running", "unknown"} or dispatch["status"] == "delivered"
-                                or dispatch.get("claimUntil")):
-                            account.conversations.workflow.settle(dispatch["messageId"], "unknown")
-                        else:
-                            queued.add(dispatch["conversationId"])
-            return queued
+        """Fail interrupted host handoffs durably instead of replaying a turn."""
+        account = None
         try:
-            conversations = await asyncio.to_thread(recover)
-            for conversation_id in conversations:
-                task = asyncio.create_task(self._notify_agent_inbound(
-                    f"/open-android-intelligence/v2/conversations/{conversation_id}/messages", b"{}", {}, account_id))
-                self._track_background_task(task, "native-startup-recovery")
+            account = self.services.core.open_gateway_account(account_id)
+            account.attachments.recover_interrupted_uploads()
+            for dispatch in account.conversations.incomplete_dispatches():
+                account.conversations.update_dispatch_status(
+                    dispatch["messageId"], "failed", "AGENT_UNAVAILABLE",
+                    f"startup-recovery-{dispatch['messageId']}",
+                    force=True,
+                )
         except Exception as exc:
-            logger.warning("Native dispatch recovery failed accountId=%s errorType=%s", account_id, type(exc).__name__)
+            logger.warning(
+                "[open_android] Message dispatch recovery failed accountId=%s errorCode=%s",
+                account_id, str(getattr(exc, "code", "INTERNAL_ERROR")),
+            )
+        finally:
+            if account is not None:
+                account.close()
 
 
     def _cleanup_inbound_media_cache(self) -> None:
@@ -1534,32 +1443,33 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         client_id = str(getattr(event, "message_id", "") or "")
         if not account_id or not client_id:
             return
-        def record_admission():
-            with closing(self.services.core.open_gateway_account(account_id)) as account:
-                record = account.conversations.dispatch_message(client_id)
-                _report_dispatch_delivered(account, record, getattr(event, "_gateway_claim_token", None))
-                generation = account.conversations.workflow.for_message(record["messageId"]) if record else None
-                return record, generation
-        record, generation = await asyncio.to_thread(record_admission)
-        if not generation:
-            return
-        event._oai_native_diagnostic_turn = {"accountId": account_id, "conversationId": record["conversationId"],
-            "generationId": generation["generationId"], "messageId": record["messageId"]}
-        with self._generation_trace(account_id, record["conversationId"], generation["generationId"]):
+        account = self.services.core.open_gateway_account(account_id)
+        try:
+            record = account.conversations.dispatch_message(client_id)
+            generation = account.conversations.workflow.for_message(record["messageId"]) if record else None
+            # Agent 已经接下这一轮：先上报 delivered，手机端的"等待接收"不必等到整轮结束。
+            await report_dispatch_delivered(account, record, getattr(event, "_gateway_claim_token", None))
+            if not generation:
+                return
             trace_native_stage("T3", client_message_id=client_id, generation_id=generation["generationId"],
-                message_id=record["messageId"], revision=generation.get("revision"), state=generation["state"],
-                event_type="host_admitted", agent_id="hermes", conversation_id=record["conversationId"], operation="send")
-        key = (account_id, record["conversationId"], generation["generationId"])
-        session_key = self._event_session_key(event)
-        task = self._session_tasks.get(session_key)
-        if task is None or task.done():
-            return
-        self._native_turns[key] = (session_key, task, source)
-        def release(done: asyncio.Task) -> None:
-            turn = self._native_turns.get(key)
-            if turn is not None and turn[1] is done:
-                self._native_turns.pop(key, None)
-        task.add_done_callback(release)
+                message_id=record["messageId"], revision=generation.get("revision"),
+                state=generation["state"], event_type="host_admitted")
+            key = (account_id, record["conversationId"], generation["generationId"])
+            # Some host versions run lifecycle hooks in a separate Task. The
+            # native session map, rather than the hook's current Task, owns the
+            # actual generation and remains authoritative across such wrappers.
+            session_key = self._event_session_key(event)
+            task = self._session_tasks.get(session_key)
+            if task is None or task.done():
+                return
+            self._native_turns[key] = (session_key, task, source)
+            def release(done: asyncio.Task) -> None:
+                turn = self._native_turns.get(key)
+                if turn is not None and turn[1] is done:
+                    self._native_turns.pop(key, None)
+            task.add_done_callback(release)
+        finally:
+            account.close()
 
 
     async def on_processing_complete(self, event: Any, outcome: Any) -> None:
@@ -1574,29 +1484,12 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         error_code = None if status == "completed" else (
             "AGENT_UNAVAILABLE" if "cancel" in name else "MODEL_REQUEST_REJECTED"
         )
-        def read_turn():
-            with closing(self.services.core.open_gateway_account(account_id)) as account:
-                record = account.conversations.dispatch_message(client_message_id)
-                generation = account.conversations.workflow.for_message(record["messageId"]) if record else None
-                return record, generation
-
-        def settle_turn(record, generation):
-            final_status, final_error = status, error_code
-            with closing(self.services.core.open_gateway_account(account_id)) as account, account.store.transaction():
-                current_generation = account.conversations.workflow.for_message(record["messageId"])
-                if current_generation and current_generation["state"] == "cancelled":
-                    final_status, final_error = "failed", "AGENT_UNAVAILABLE"
-                if final_status == "completed" and record["status"] == "queued":
-                    account.conversations.update_dispatch_status(record["messageId"], "delivered", None,
-                        f"agent-adopted-{record['messageId']}", claim_token=getattr(event, "_gateway_claim_token", None))
-                account.conversations.workflow.settle(record["messageId"], final_status)
-                account.conversations.update_dispatch_status(record["messageId"], final_status, final_error,
-                    f"agent-complete-{record['messageId']}")
-                return account.conversations.workflow.for_message(record["messageId"])
-
+        account = None
         try:
-            record, generation = await asyncio.to_thread(read_turn)
+            account = self.services.core.open_gateway_account(account_id)
+            record = account.conversations.dispatch_message(client_message_id)
             if record is not None:
+                generation=account.conversations.workflow.for_message(record["messageId"])
                 if generation:
                     await self.withdraw_generation_approvals(account_id, record["conversationId"], generation["generationId"])
                     await self._finish_streaming_replies(account_id, record["conversationId"], generation["generationId"])
@@ -1606,24 +1499,30 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                             await asyncio.to_thread(observer.close_generation, account_id, record["conversationId"],
                                 generation["generationId"], record["messageId"])
                         except Exception as observation_failure:
-                            logger.warning("Native tool terminal observation unavailable errorType=%s", type(observation_failure).__name__)
-                settled = await asyncio.to_thread(settle_turn, record, generation)
+                            logger.warning("Native tool terminal observation unavailable errorType=%s",
+                                type(observation_failure).__name__)
+                if generation and generation["state"]=="cancelled":
+                    status, error_code = "failed", "AGENT_UNAVAILABLE"
+                if status=="completed" and record["status"]=="queued":
+                    account.conversations.update_dispatch_status(record["messageId"],"delivered",None,f"agent-adopted-{record['messageId']}",claim_token=getattr(event,"_gateway_claim_token",None))
+                account.conversations.workflow.settle(record["messageId"],status)
+                account.conversations.update_dispatch_status(
+                    record["messageId"], status, error_code,
+                    f"agent-complete-{record['messageId']}",
+                )
+                settled = account.conversations.workflow.for_message(record["messageId"])
                 if settled:
-                    with self._generation_trace(account_id, record["conversationId"], settled["generationId"]):
-                        trace_native_stage("T10", client_message_id=client_message_id, generation_id=settled["generationId"],
-                            message_id=record["messageId"], revision=settled.get("revision"), state=settled["state"],
-                            event_type="terminal_committed", agent_id="hermes", conversation_id=record["conversationId"], operation="send")
-                    if hasattr(self, "_generation_trace_lock"):
-                        with self._generation_trace_lock:
-                            key = (account_id, record["conversationId"], settled["generationId"])
-                            self._generation_traces.pop(key, None)
-                            self._first_reply_events.discard(key)
+                    trace_native_stage("T10", client_message_id=client_message_id,
+                        generation_id=settled["generationId"], message_id=record["messageId"],
+                        revision=settled.get("revision"), state=settled["state"], event_type="terminal_committed")
         except Exception as exc:
-            logger.warning("Native completion status failed clientMessageId=%s errorType=%s", client_message_id, type(exc).__name__)
+            logger.warning(
+                "[open_android] Agent completion status failed messageId=%s errorCode=%s",
+                client_message_id, str(getattr(exc, "code", "INTERNAL_ERROR")),
+            )
         finally:
-            media_paths = self._processing_media_files.pop((account_id, client_message_id), [])
-            def retire_media():
-                for media_path in media_paths:
-                    with suppress(OSError):
-                        HistoryMedia._retire_path(media_path)
-            await asyncio.to_thread(retire_media)
+            if account is not None:
+                account.close()
+            for media_path in self._processing_media_files.pop((account_id, client_message_id), []):
+                with suppress(OSError):
+                    HistoryMedia._retire_path(media_path)

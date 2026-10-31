@@ -49,22 +49,6 @@ class NativeConversationMirrorTest {
     private fun checkpoint(ids:List<String>)=WorkbenchCheckpoint(ids.map { ConversationSummary(ConversationId(it),it,1) },
         "old","old",emptyList(),emptyMap(),"",0,emptyList(),null,emptySet(),emptySet(),threadsHydrated=true)
 
-    @Test fun authoritativeCreationAndNotificationIdentitySurviveOwnerRecreationWithoutListRefresh()=runBlocking {
-        val mirror=NativeConversationMirror(context,scope(),{"hermes"},key)
-        val receipt=NativeCreationReceipt(com.openandroidintelligence.gateway.agents.NativeAgentSession("created", "real title", null, false),"creation-event",17)
-        mirror.commitCreation("original-create",receipt)
-        mirror.closeStore()
-        val reopened=NativeConversationMirror(context,scope(),{"hermes"},key)
-        val otherAgent=NativeConversationMirror(context,scope(),{"other"},key)
-        val otherAccount=NativeConversationMirror(context,scope("other"),{"hermes"},key)
-        try {
-            assertEquals(receipt,reopened.creation("original-create"))
-            assertEquals("created",reopened.offlineMirror().threads()!!.single().id.value)
-            assertNull(otherAgent.creation("original-create"))
-            assertNull(otherAccount.creation("original-create"))
-        } finally { reopened.closeStore(); otherAgent.closeStore(); otherAccount.closeStore() }
-    }
-
     @Test fun anAuthoritativeNativeListRejectsALaterOldWorkbenchCheckpoint()=runBlocking {
         val mirror=NativeConversationMirror(context,scope(),{"hermes"},key)
         try {

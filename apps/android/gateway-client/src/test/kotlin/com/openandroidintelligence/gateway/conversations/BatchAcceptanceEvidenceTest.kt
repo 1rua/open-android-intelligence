@@ -36,9 +36,7 @@ class BatchAcceptanceEvidenceTest {
         val previousSink=GatewayLog.sink; val previousEnabled=GatewayLog.protocolEvidenceEnabled
         val evidence=mutableListOf<JsonValue.JObject>()
         GatewayLog.protocolEvidenceEnabled=true
-        GatewayLog.sink={tag,line -> if (tag=="OaiE2E") {
-            JsonFields.obj(Json.parse(line))?.takeIf { JsonFields.string(it,"type") == "message.accepted" }?.let { evidence += it }
-        } }
+        GatewayLog.sink={tag,line -> if (tag=="OaiE2E") evidence += JsonFields.obj(Json.parse(line))!! }
         try {
             for (count in listOf(1,2)) {
                 evidence.clear()
@@ -65,8 +63,7 @@ class BatchAcceptanceEvidenceTest {
         val previousSink=GatewayLog.sink;val previousEnabled=GatewayLog.protocolEvidenceEnabled
         val evidence=mutableListOf<String>()
         GatewayLog.protocolEvidenceEnabled=true
-        GatewayLog.sink={tag,line -> if(tag=="OaiE2E" &&
-            JsonFields.string(JsonFields.obj(Json.parse(line)),"type") == "message.accepted") evidence+=line }
+        GatewayLog.sink={tag,line -> if(tag=="OaiE2E") evidence+=line }
         try {
             val good=mapOf("batchId" to "batch_remote","status" to "accepted",
                 "members" to listOf(mapOf("clientMessageId" to "cm_1","messageId" to "msg_1")))
