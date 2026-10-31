@@ -13,7 +13,7 @@
       "id": "core",
       "title": "Core reliable admission and operation recovery",
       "owner": "main",
-      "status": "completed",
+      "status": "in_progress",
       "depends_on": [],
       "attempts": 1,
       "checkpoints": [
@@ -51,7 +51,7 @@
       "id": "android",
       "title": "Android lifecycle receipt and create recovery",
       "owner": "Schrodinger",
-      "status": "completed",
+      "status": "in_progress",
       "depends_on": [],
       "attempts": 1,
       "checkpoints": [],
@@ -75,28 +75,17 @@
       "id": "measurements",
       "title": "Fixed-source baseline and after measurements",
       "owner": "Plato",
-      "status": "completed",
+      "status": "in_progress",
       "depends_on": [],
       "attempts": 1,
-      "checkpoints": [
-        {
-          "commit": "dda2a4dc8ece02289b3e4f54dab11f8515249707",
-          "baseline_attempts": 13000,
-          "baseline_failures": 3000,
-          "after_attempts": 13000,
-          "after_failures": 0,
-          "sqlite_runtime": "3.53.1",
-          "diagnostics": "disabled",
-          "ledger": "disk"
-        }
-      ],
+      "checkpoints": [],
       "error_log": []
     },
     {
       "id": "verification",
       "title": "Cross-layer focused and PR validation",
       "owner": "main",
-      "status": "completed",
+      "status": "in_progress",
       "depends_on": [
         "core",
         "hermes",
@@ -121,15 +110,6 @@
       "attempts": 1,
       "checkpoints": [],
       "error_log": []
-    },
-    {
-      "id": "physical-device-acceptance",
-      "title": "Verify phone and actual Agent after installing approved test builds",
-      "status": "pending",
-      "depends_on": [
-        "delivery"
-      ],
-      "blocker": "No online test phone; production retained read-only; no real model/device acceptance claimed"
     }
   ]
 }
