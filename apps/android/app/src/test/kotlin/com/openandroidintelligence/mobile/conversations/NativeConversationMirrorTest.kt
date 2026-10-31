@@ -12,8 +12,15 @@ import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.state.WorkbenchCheckpoint
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -73,6 +80,95 @@ class NativeConversationMirrorTest {
             mirror.saveCheckpoint(checkpoint(listOf("old")))
             assertEquals(listOf("old","new"),mirror.load()!!.threads.map {it.id.value})
         } finally {mirror.closeStore()}
+    }
+
+    @Test fun nativeListAndAckUseTheSameLockOrder()=runBlocking {
+        val testScope=scope("lock-order-${UUID.randomUUID()}")
+        val mirror=NativeConversationMirror(context,testScope,{"hermes"},key,observerId="phone:1")
+        val delegate=mirror.offlineMirror()
+        val records=EncryptedConversationMirror::class.java.getDeclaredField("documents").let { field ->
+            field.isAccessible=true
+            checkNotNull(field.get(delegate))
+        }
+        val receipt=NativeCreationReceipt(com.openandroidintelligence.gateway.agents.NativeAgentSession("created", "title", null, false),"event",17)
+        val page=ConversationPage(listOf("old","created").map { ConversationSummary(ConversationId(it),it,1) },null)
+        try {
+            mirror.commitCreation("original-create",receipt)
+            mirror.commitPage("chat",emptyList(),emptyList(),"cursor_one")
+
+            // Block each real monitor separately so both production paths can finish even on the old lock order.
+            val listWrite=async(Dispatchers.IO,start=CoroutineStart.LAZY) { mirror.saveConversations(page) }
+            val recordsProbe=monitorProbe(records)
+            val recordsAvailable=synchronized(delegate) {
+                listWrite.start()
+                check(waitForBlockedCall("saveNativeConversations")) { "NATIVE_LIST_WAIT_NOT_OBSERVED" }
+                recordsProbe.start()
+                recordsProbe.canAcquire()
+            }
+            withTimeout(5_000) { listWrite.await() }
+            recordsProbe.thread.join(5_000)
+            assertFalse(recordsProbe.thread.isAlive)
+
+            val ack=async(Dispatchers.IO,start=CoroutineStart.LAZY) { mirror.confirmAck("chat","cursor_one") }
+            val mirrorProbe=monitorProbe(delegate)
+            val mirrorAvailable=synchronized(records) {
+                ack.start()
+                check(waitForBlockedCall("confirmNativeAck")) { "NATIVE_ACK_WAIT_NOT_OBSERVED" }
+                mirrorProbe.start()
+                mirrorProbe.canAcquire()
+            }
+            withTimeout(5_000) { ack.await() }
+            mirrorProbe.thread.join(5_000)
+            assertFalse(mirrorProbe.thread.isAlive)
+
+            assertFalse("ACK 确认应在持有镜像锁时等待真实数据库锁",mirrorAvailable)
+            assertTrue("会话列表保存不能持有数据库锁等待镜像锁，否则与 ACK 确认死锁",recordsAvailable)
+            mirror.closeStore()
+            val reopened=NativeConversationMirror(context,testScope,{"hermes"},key,observerId="phone:1")
+            try {
+                assertEquals(receipt,reopened.creation("original-create"))
+                assertEquals("cursor_one",reopened.eventCursor("chat"))
+                assertNull(reopened.pendingAck("chat"))
+                assertEquals(listOf("old","created"),reopened.offlineMirror().threads()!!.map { it.id.value })
+            } finally { reopened.closeStore() }
+        } finally { mirror.closeStore() }
+    }
+
+    private class MonitorProbe(monitor:Any) {
+        val started=CountDownLatch(1)
+        val acquired=CountDownLatch(1)
+        val thread=Thread({
+            started.countDown()
+            synchronized(monitor) { acquired.countDown() }
+        },"native-mirror-lock-probe").apply { isDaemon=true }
+        fun start()=thread.start()
+        fun canAcquire():Boolean {
+            check(started.await(5,TimeUnit.SECONDS)) { "MONITOR_PROBE_NOT_STARTED" }
+            val deadline=System.nanoTime()+5_000_000_000L
+            while (System.nanoTime()<deadline) {
+                if (acquired.count==0L) return true
+                if (thread.state==Thread.State.BLOCKED) return false
+                check(thread.isAlive) { "MONITOR_PROBE_STOPPED" }
+                Thread.sleep(5)
+            }
+            error("MONITOR_PROBE_TIMED_OUT")
+        }
+    }
+
+    private fun monitorProbe(monitor:Any)=MonitorProbe(monitor)
+
+    private fun waitForBlockedCall(method:String):Boolean {
+        val deadline=System.nanoTime()+5_000_000_000L
+        while (System.nanoTime()<deadline) {
+            if (Thread.getAllStackTraces().any { (thread,stack) ->
+                thread.state==Thread.State.BLOCKED && stack.any { frame ->
+                    frame.className.startsWith(EncryptedConversationMirror::class.java.name) &&
+                        (frame.methodName==method || frame.className.contains("\$$method\$"))
+                }
+            }) return true
+            Thread.sleep(5)
+        }
+        return false
     }
 
     @Test fun ownerIsFixedBeforeTheIoWriteAndOtherAgentsStaySeparate()=runBlocking {
