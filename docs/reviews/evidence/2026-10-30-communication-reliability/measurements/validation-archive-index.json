@@ -11,13 +11,7 @@
     "validation-fixtures-dd676c35edb14bd0946930b2f8caef2b.tmp",
     "validation-manifest-mutation-bfcc3cb48ab44647972174db3cf7912d",
     "validation-manifest-mutation-ee5f74ba306e479884c7e4ffc1cc13e1",
-    "validation-manifest-mutation-eff5e7e6cdfa4265bc7f55e6da787a2b",
-    "validation-controlled-cli-7c87490913fd4b3091b7f547fbb3723e",
-    "validation-controlled-cli-ad84d0f73dde410890e4556044813e7f",
-    "validation-fixtures-3b4b8169a7c5434087d8e9ce2e409cb0.tmp",
-    "validation-fixtures-74091d8e090c443bbf330d99f678eac5.tmp",
-    "validation-manifest-mutation-61645af32d274784b5741dd91fba2641",
-    "validation-manifest-mutation-dd2a3eb6691141168a350b9f7572d4f1"
+    "validation-manifest-mutation-eff5e7e6cdfa4265bc7f55e6da787a2b"
   ],
   "reason": "Retain only formal baseline/after evidence in PR; validation fixtures and raw intermediate artifacts remain locally reviewable.",
   "permanent_deletions": 0
