@@ -1,16 +1,17 @@
 # 全局设备授权重构执行记录
 
-日期：2026-11-01。需求状态：已接受；全局授权主实现与UI保真补充已提交；手动屏幕允许的真实stale失败修复中，完整验收尚未完成。
+日期：2026-11-01。需求状态：本轮收尾；全局授权主实现与UI-01至10已提交；屏幕手动允许仍FAIL，补丁仅本地保存，完整验收尚未完成。
+最终状态及后续入口见[收尾报告](2026-11-01-global-device-authorization-closeout.zh-CN.md)，下文保留各阶段历史记录。
 基线 `dev@3c9b82d1ef18062fc7dd09546efe6136803079cc` 已通过 `git ls-remote origin refs/heads/dev` 核对。
 工作分支 `feature/global-device-authorization-20261101`，独立工作树 `.worktrees/global-device-authorization-20261101`。
 完整要求见[规格](../superpowers/specs/2026-11-01-global-device-authorization.md)。
 
 ## 当前交付与未闭合项
 
-- 通知/SMS范围与界面保真补充task-010已完成：源码1f338778，本地Fast/PR、Play回归、远端7checks全通过；Terra实际通知选择与短信被动/主动关键词、正文边界及未选端点对照通过。证据文档12d3f8f6已推PR #71，目标dev、OPEN、自动合并关闭。
-- 已完成新包保留未ACK队列及真实1小时自然到期、突然进程死亡/重启保持。普通am kill未实际回收，未算系统OOM通过。全退出/重新登录、离线和剩余系统撤销矩阵仍分项执行。
-- 手动屏幕允许back实测failed/SCREEN_STALE_REFERENCE，task-011正在建立受限修复，不关闭真实目标变化保护。reader、截图、只读拒绝成功不等于控制允许成功。
-- 实体手机未连接，物理验收BLOCKED；整体goal保持active，不以自动化或模拟器替代完整要求。
+- UI-01至10已完成：通知原选择器、短信三种范围、取消256应用数量上限、移除插件恢复按钮、统一主动推送子页和原导航转场；文档约束同步。源码1f338778/c0779957及证据ff720cde已推PR71，ff720cde七项CI全部SUCCESS。
+- 已完成通知双端ACK/恢复、SMS真实范围/元数据/1小时自然到期、被动断Core同请求恢复、当前绑定密钥重登、临时许可有效期内撤销及突然进程死亡后失效等分项证据。Accessibility系统撤销时拒绝、恢复READY已补；完整矩阵仍有缺口。
+- 屏幕真实手动允许仍为SCREEN_STALE_REFERENCE；未完成18文件已单独保存本地c71735b0，未推PR。2ad99d诊断包未安装或执行。本轮按用户要求停止新增操作并完成文档交接。
+- PR保持OPEN、目标dev、自动合并关闭；实体手机未连接，物理验收未完成。task008/009/011及整体goal保持未完成，详见[收尾报告](2026-11-01-global-device-authorization-closeout.zh-CN.md)。
 
 ## 已确认事实、待验证假设与设计
 
@@ -29,7 +30,7 @@
 | 3b | 统一请求声明、稳定端点注册和发现 | GLOBAL-07、11 契约及隔离测试通过 | 主实现已提交，已有自动化与 Core 运行证据 |
 | 3c | 短信/通知独立推送、加密队列和生命周期 | GLOBAL-06、08、09 集成测试通过 | 主实现与SMS范围过滤已提交并验收，完整生命周期继续 |
 | 3d | 屏幕独立策略及最小 FIFO 租约保护 | GLOBAL-10 并发、撤销、过期测试通过 | 主实现已提交，Terra 完整矩阵待闭合 |
-| 4 | Fast、PR 受影响测试及 Terra 运行验收 | 记录真实退出码、版本和分项 PASS/FAIL/BLOCKED | 持续分项验收；最新 head CI 有失败待修复 |
+| 4 | Fast、PR 受影响测试及 Terra 运行验收 | 记录真实退出码、版本和分项 PASS/FAIL/BLOCKED | 本轮停止新增操作；ff720cde七项CI成功，剩余运行矩阵未闭合 |
 | 5 | 文档与实际行为核对，PR 指向 dev | 中文提交、PR 链接、保持 Review | PR #71 已创建，OPEN、目标 dev、自动合并关闭 |
 
 ## 证据纪律
@@ -578,3 +579,20 @@ Terra在20:11:49仅一次真实刷新5556队列：待发0/投递0、累计过期
 最新用户UI补丁Fast已完整退出0（App1361/0失败/0跳过；Core634及独立适配器通过），PR执行中。Terra新包确认主动推送完整背景/顶栏/单次返回与原配置保留，动态实际录屏和插件按钮检查仍单列。审批审计初始化NPE曾失败，诊断断言保留、定向/当前Fast均过；根因尚未证实，未按“flaky修复”处理。
 
 UI新要求最终Fast/PR均完整退出0，App1361/0失败/0跳过，产物67d7d5源码摘要保持。准备只提交通知无应用数量上限、插件按钮移除与菜单页面容器修正及对应规则/测试，屏幕task-011仍未通过的源码继续保存在工作树，不将其借UI提交标为完成。
+
+屏幕后续诊断集中见[task-011剩余诊断](2026-11-01-global-device-authorization-screen-continuation.zh-CN.md)，不把本地门禁通过当成实际控制成功。
+
+后续screen新包预检发现5554多用户共用APK代码路径：最新诊断在安装前停止，2ad99d未在5554执行。以后需要覆盖安装的诊断改用5556合成数据环境，原“仅user10覆盖”不代表程序版本按用户隔离。详见screen后续诊断；不扩大为既有user0资料已被读取或清理。
+
+## 原目标继续：临时许可生命周期阶段A
+
+2026-11-01，Terra在5556专用d097绑定保持原被动关键词/正文关闭与主动配置，仅将sms.query设为MANUAL。未来2099空范围limit1请求devreq_889c7ca4-32c2-43b7-9b59-543a0b4f92c7经真实“允许5分钟”后succeeded/0条；不同Agent声明但相同参数的devreq_7a3c6ca0-0e2a-47da-95b3-b9c0074382e2无新批准succeeded/0条。没有查询历史短信或注入数据。撤销与进程重启时未过期票据失效仍待后续阶段结果，不能把阶段A通过替代整个R3。
+
+临时许可阶段B：重新真实授予5分钟（22:09:41.541–22:09:41.562）后，于22:10:09.393–22:10:09.413点击原“撤销临时授权”，相隔约28秒；同范围devreq_7c9360c2-8937-4254-a37c-46800ef4afbf重新awaiting_confirmation，未批准而通过CLI取消，终态cancelled。此前较早许可接近到期的那次撤销不作为有效期内撤销证明。MANUAL/关键词/正文关闭与主动策略不变，后续重启失效阶段仍待。
+
+
+## 2026-11-01T22:36:24+08:00 最终收尾
+
+用户追加的UI-01至10全部完成并已推PR71；ff720cde在线核对七项checks全SUCCESS、OPEN、目标dev、autoMerge关闭。临时许可A/B/C已补齐：真实5min共享、28秒内撤销重新确认、有效期内突然进程死亡/重启后重新确认；所有本轮请求成功或取消，恢复SMS READ_ONLY/原关键词/正文关闭。Accessibility真实ON→OFF→ON时reader/control缺权、唯一reader无requestId即被拒、恢复READY；长期策略恢复后未复核，其他系统撤销不算通过。
+
+未完成屏幕源码及测试/相关文档18文件已保存为仅本地分支feature/global-device-authorization-screen-wip-20261101，提交c71735b0daf325ab24cc9856b8da1917183a5b06，未推PR。2ad99d诊断APK未安装、未执行；5554多用户共享程序代码，后续5556诊断也按收尾停止。旧v2包已核验但真实旧迁移未执行。完整结论见[收尾报告](2026-11-01-global-device-authorization-closeout.zh-CN.md)、[临时许可](2026-11-01-global-device-authorization-temporary-lifecycle.zh-CN.md)、[系统撤销](2026-11-01-global-device-authorization-system-revoke.zh-CN.md)和[旧包准备](2026-11-01-global-device-authorization-legacy-validation-preparation.zh-CN.md)。本轮不再新增设备操作；task008/009/011与整体goal保持未完成，不合并PR。
