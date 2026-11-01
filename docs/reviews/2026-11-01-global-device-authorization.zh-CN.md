@@ -1,6 +1,6 @@
 # 全局设备授权重构执行记录
 
-日期：2026-11-01。需求状态：已接受；实现状态：分模块实施中；验收状态：待验证。
+日期：2026-11-01。需求状态：已接受；全局授权主实现已提交，最新 UI 保真补充实施中；自动化与 Terra 分项结果见下文，完整验收尚未完成。
 基线 `dev@3c9b82d1ef18062fc7dd09546efe6136803079cc` 已通过 `git ls-remote origin refs/heads/dev` 核对。
 工作分支 `feature/global-device-authorization-20261101`，独立工作树 `.worktrees/global-device-authorization-20261101`。
 完整要求见[规格](../superpowers/specs/2026-11-01-global-device-authorization.md)。
@@ -16,14 +16,14 @@
 
 | 阶段 | 工作 | 完成条件 | 当前状态 |
 | --- | --- | --- | --- |
-| 1 | Android、Core/CLI/MCP 并行只读审计；Terra 环境预检 | 文件/函数证据、文档冲突和环境清单 | 进行中 |
-| 2 | 固化最小接口、全局迁移、请求生命周期与端点方案 | 明确写集合、兼容性与回归矩阵 | 待实施 |
-| 3a | 全局持久策略、旧授权清理、最终裁决及 UI | GLOBAL-01 至 05 自动化通过 | 待实施 |
-| 3b | 统一请求声明、稳定端点注册和发现 | GLOBAL-07、11 契约及隔离测试通过 | 待实施 |
-| 3c | 短信/通知独立推送、加密队列和生命周期 | GLOBAL-06、08、09 集成测试通过 | 待实施 |
-| 3d | 屏幕独立策略及最小 FIFO 租约保护 | GLOBAL-10 并发、撤销、过期测试通过 | 待实施 |
-| 4 | Fast、PR 受影响测试及 Terra 运行验收 | 记录真实退出码、版本和分项 PASS/FAIL/BLOCKED | 待验证 |
-| 5 | 文档与实际行为核对，PR 指向 dev | 中文提交、PR 链接、保持 Review | 待交付 |
+| 1 | Android、Core/CLI/MCP 并行只读审计；Terra 环境预检 | 文件/函数证据、文档冲突和环境清单 | 已完成，见源码审计结论 |
+| 2 | 固化最小接口、全局迁移、请求生命周期与端点方案 | 明确写集合、兼容性与回归矩阵 | 主实现已提交 |
+| 3a | 全局持久策略、旧授权清理、最终裁决及 UI | GLOBAL-01 至 05 自动化通过 | 主实现已提交；UI 补充修正中 |
+| 3b | 统一请求声明、稳定端点注册和发现 | GLOBAL-07、11 契约及隔离测试通过 | 主实现已提交，已有自动化与 Core 运行证据 |
+| 3c | 短信/通知独立推送、加密队列和生命周期 | GLOBAL-06、08、09 集成测试通过 | 主实现已提交，UI 与 SMS 过滤补充中 |
+| 3d | 屏幕独立策略及最小 FIFO 租约保护 | GLOBAL-10 并发、撤销、过期测试通过 | 主实现已提交，Terra 完整矩阵待闭合 |
+| 4 | Fast、PR 受影响测试及 Terra 运行验收 | 记录真实退出码、版本和分项 PASS/FAIL/BLOCKED | 持续分项验收；最新 head CI 有失败待修复 |
+| 5 | 文档与实际行为核对，PR 指向 dev | 中文提交、PR 链接、保持 Review | PR #71 已创建，OPEN、目标 dev、自动合并关闭 |
 
 ## 证据纪律
 
@@ -325,3 +325,165 @@ Android仍IN_PROGRESS，记录链接后继续设备验收，不watch、不循环
 计时中不覆盖安装、不杀进程、不切全局模式/范围；上述动作会按设计使许可失效，不能误判为自然到期。
 后台到期观察有70分钟总截止，使用同参数的新请求确认重新进入手动等待，再取消请求，不改系统时钟。
 实际批准尚未写入起点文件前不能宣称计时开始；未运行完的长时用例保持PENDING。
+
+## 临时许可真实授予与跨Core即时共享
+
+最终App在user10真实卡片分别批准future2099范围limit1/2/3的5/30/60分钟许可，批准时间下界为
+12:01:16.499、12:03:34.117、12:06:26.736（Asia/Shanghai），点击上下界和设备单调时间保存在private `runtime/temporary-approvals.json`。
+CoreB在30/60分钟窗口内使用完全相同参数、不同Agent声明，新请求
+`devreq_b445a726-02cb-4271-8158-15dee3cc25ab`和`devreq_eb7f85e8-5687-47b6-a0a4-9e316385bbd8`
+均无需新批准成功返回0记录，界面无新确认卡片。
+5分钟跨Core请求实际提交晚于自然到期，重新进入确认并取消，只能作为到期后需重新确认的证据，不能当即时共享失败/成功。
+未批准limit4范围请求进入确认并取消，不能扩大已批准参数范围。30/60分钟自然到期仍在后台计时观察，不能提前PASS。
+
+## 提交1199eb70 CI最终完成
+
+完成设备批次后再次只读核对，源码1199eb70全部checks已COMPLETED/SUCCESS：
+APK/签名插件Run41270553841；Core3.11、Core3.12、Hermes native、DSH、Android Run41270556995均成功。
+这是该源码提交的CI证明，不覆盖后续仅本地尚未推送的脱敏文档提交，也不替代剩余运行矩阵或物理手机。
+
+独立SMS模拟器准备：emulator-5556/API34已干净启动，独立AVD及运行目录不与原5554/user10共用；
+App/test包安装哈希与签名已核对，但启动后仍桌面，正在有界诊断，不据此声称SMS样本验证通过。
+原5554的READ_SMS系统UI授予后严格范围查询`devreq_1ae3155b-57e7-4254-8b42-ad3ad59a8fe9`成功返回0记录，
+只能证明调用/单次批准链路，不能证明注入样本归属及正文过滤。未读user0短信或补造数据。
+
+## 30分钟临时许可自然到期
+
+后台有界观察器按点击后上界+30分钟+5秒提交同一limit2/future2099范围，
+请求`devreq_3d65079a-0b10-47a2-810f-1a82ccc83609`重新进入claimed/awaiting_confirmation，
+未自动执行，测试随后取消为cancelled，scope30记录PASS。与到期前CoreB立即共享成功记录对应；
+60分钟观察仍按原13:06:31计划，不提前宣称通过。
+
+## Core wheel独立安装验收
+
+从源码1199eb70的干净staging构建wheel `open_android_intelligence_core-0.2.0-py3-none-any.whl`，
+SHA-256 `30fadccbabf34af63236323efbc77520a9a43e3750855e430c7b29c935c64a77`。
+安装到独立target，取消PYTHONPATH/Hermes环境变量，并以`python -I`、checkout外cwd运行现有
+`independent_core_contract.py`，确认import路径来自installed target、无旧Gateway/Hermes adapter，
+端点与声明模块可导入、内置contracts存在，完整独立HTTP验收输出`independent Core HTTP contracts passed`，退出0。
+第一次launcher参数错位导致路径断言失败，修正测试启动参数后通过，没有改生产返回值或放宽断言。
+日志与wheel位于ignored `runtime/wheel-1199eb70/`；不执行生产部署。
+
+## 屏幕预置入口的真实验收修复
+
+Terra实测内置插件卡仅三项，源码`BundledPlugin`枚举也仅notification/SMS/calllog，尽管Gradle真实打包六个ALP。
+追加screen-reader/capture/control三项及对应中文系统权限说明，复用同一验签/作者信任/禁止跨ID覆盖安装流程，
+每个包独立缺失可诊断，新能力仍默认MANUAL。真实编译屏幕WASM签名测试包与UI定向38项通过，
+最新完整Fast/PR正在覆盖；原5554许可计时中不重装，到期后再用最终包复测该入口。
+
+新5556主用户已登录CoreA secondary测试账号，安装ID/设备公钥与服务端新设备记录匹配，
+CLI绑定`dev_c16e3d46-108f-4fcb-833d-cf6d76487a5e`、online=true、generation1，不以列表第一设备猜身份。
+初始capabilities为PLUGIN_NOT_INSTALLED，后续经真实UI安装SMS及系统授权再验样本，不绕过默认状态。
+原5554独立用户仍保留临时许可计时，两个AVD所有操作显式serial。
+
+## 实测屏幕绑定错误及回归
+
+Terra请求`devreq_3711752e-5d09-468c-bb26-c1492ea5ba1d`在reader启用/READY、手动本次批准后，
+拒绝SCREEN_SESSION_BINDING_CHANGED，未返回屏幕数据。源码核对发现selected屏幕登记在SSE初始IDLE/CONNECTING时被删除、
+重连时换新opaque generation，但driver保留旧handle。新增真实Runtime重连序列回归先失败，
+最小修复stream liveness变化只撤销旧请求/lease/image，保留仍已认证的设备关系；显式退出/配对撤销仍移除登记，
+原批准不得因重连复活，新签名HTTP请求重新走全局策略。device-primitives全模块退出0（`runtime/screen-stream-green.log`），
+当前完整Fast/PR和13:06许可到期后的最终包设备复测待完成。
+
+## 60分钟自然到期及外部Terra服务阻塞
+
+后台observer已finished/PASS，scope60在原计划到期后新请求
+`devreq_db56f068-6553-41fd-884b-d5e0b3235109`重新进入等待确认并取消为cancelled；
+scope5（延迟复验）、scope30和scope60三项均PASS，累计真实观察2848.13秒，不使用系统时钟跳变或Mock加速。
+关键日志已脱敏保存`2026-11-01-global-device-authorization-ttl-complete-evidence.txt`。
+
+两个手机Terra子Agent随后因外部模型API HTTP503 Service temporarily unavailable退出，
+request IDs分别为`8f2c8062-6229-45f0-80c7-c4cafd5dc5d4`、`964024a7-0df3-4ecd-87f0-557eef2eab41`。
+未完成的SMS样本/屏幕修复后运行/生命周期不据此标PASS，主Agent只尝试恢复原Terra会话一次，
+不将主Agent或Mock当Terra验收。实体手机也仍未连接。
+
+## 屏幕修复最终本地提交
+
+屏幕入口和stream重连登记修复完整Fast/PR均退出0，App1309项、device-primitives52项、gateway-client320项无失败/错误/跳过；
+本地提交`97f601f7`。当前feature领先远端两个提交（`cbf742a5`公开证据、`97f601f7`屏幕修复），
+因为push自动审批连续两次超时，未执行推送且未绕过；远端PR#71目前源码仍1199eb70并已全部CI成功。
+
+本地新App SHA-256 `cd1ec569ea4af5cc7a3b3ba08b8ac3f2cadae9195e78d514705fd4361eb2b608`，
+androidTest `e3ee156dc87e66fb4c1d7d37c0103b04a20b61c7bbcd44fc521f2206addd7096`，
+构建退出0。真实reader重试由恢复后的Terra继续，不提前PASS。
+
+## 本地97f601f7新包真实reader复测
+
+Terra核对App/test安装哈希后，手动本次批准
+`devreq_03e191d5-adeb-4f9a-a913-dfd9c7a0d1e6`成功，前台package为OAI自身、8节点有界且truncated=true，
+hash/revision元数据已记录，不输出节点正文，未再发生SCREEN_SESSION_BINDING_CHANGED。
+截图MediaProjection和控制尚在后续独立验收，不将reader成功扩大为截图/控制许可。
+
+## 新5556真实短信只读与本地范围
+
+仅允许专用sender15550102202的READ_ONLY下，
+`devreq_1fd4b447-5753-467d-8b3f-0d1929ad2b78`无需手动批准即成功1条固定样本；
+越界sender15550103303请求`devreq_427bfdce-0db3-4c2f-b1f7-86ebb64e082b`明确denied/LOCAL_DATA_SCOPE_DENIED。
+关闭正文且移除正文搜索query后，`devreq_669e2332-ffaa-4369-891a-d84c2805bea4`返回1条metadata，
+`text:null`且无正文/marker，内容隔离通过；字段保留null不声称字段完全省略。
+未改schedule/cancel的手动模式，未读其他号码或原5554user0。SMS主动推送接下来独立选择另一专用sender/正文，与被动范围分开。
+
+## 真实MediaProjection与单次截图
+
+原5554 user10在Android系统MediaProjection中选择“单个应用→OAI”，不是用ADB授权或复用附件圈选票据。
+Screen Capture安装启用且MANUAL，App显示系统许可可用，真实本次卡片批准
+`devreq_0b7358f9-003c-46b1-9436-3cea8dddab7c`成功返回PNG元数据512×1137/176517字节，
+imageId `4d685c0a-ce58-4e5e-89bb-792c032a1b4a`，摘要
+`c8eddfc75b65c80e9cf72b105bafd99ff94673669236f38e00413548dce4444f`。
+未读取或公开像素数据，截图成功不授予CONTROL；下一步控制拒绝/执行与系统撤销分别测试。
+
+## 远端状态复核（阶段描述更新）
+
+后续只读`git ls-remote`确认远端已到97f601f7，PR71 head也为该SHA，仍OPEN/dev/autoMerge=null。
+这与先前两次push审批超时未执行的工具返回阶段不同，未据此推断异步执行者或时间；当前同步状态以远端SHA为准，
+先前“领先远端2提交”不是当前结论。
+97f601f7的APK/签名/Core3.11/Core3.12/DSH成功，Android仍在运行，Hermes native3项审批测试失败。
+读取已完成job独立日志（未等待整个workflow）得到3项StopIteration，正在沿测试/SDK真实事件链定位，不改自动批准/拒绝。
+
+## 2026-11-01 用户 UI 补充与修复状态
+
+用户要求已先写入规格 UI-01 至 UI-06、CONTEXT、设置规格、操作指南及仓库 AGENTS.md：通知使用原应用列表搜索、正选和反选；短信新配置默认全部，提供关键词/电话号码；功能改造不得擅自降级原 UI 或任意改写文案。新增范围须进入真实查询、采集和重投过滤，保持被动/主动独立，兼容旧配置与未 ACK 队列。
+
+静态核对已确认本轮 PushSettingsScreen 手填通知包名、短信地址和 SmsPassiveScopeSettings 地址输入与用户要求冲突，正在恢复原选择行为并补范围模型与迁移；尚未通过新增自动化与 Terra UI 验收，不标记完成。文档相对链接、代码块、阶段任务 JSON 与 git diff --check 已通过，不能代替功能测试。
+
+## 2026-11-01 最新远端与 CI 核对
+
+PR #71 已核对为 OPEN、目标 dev、head `97f601f712728483e9917cec5dcfa5aaa41d5a3f`、autoMergeRequest=null；远端已包含前述曾遇审批超时的提交。该 head APK/签名、Core 3.11/3.12、DSH 成功；Hermes native 与 Android Play 有失败，不能称 CI 全绿。
+
+Hermes 三项审批测试的本地复现证实：宿主审批持久化后等待固定 10ms，不保证流消费者已收到结构化 approval_requested；将真实事件读取延迟 50ms 可复现同三个 StopIteration。修复为等待实际结构化事件，保留原 3 秒上限和所有 51 条断言，同延迟下交互文件 18 passed、固定 SDK `75b083e` 的 native 组 143 passed。仅测试同步夹具变化，不自动作出批准/拒绝。本地 Python 3.14.6 与 CI 3.12.15 不同，远端复核待新提交。日志保存在忽略的运行目录。
+
+Android Play 失败为 CoreAgentConversationRepositoryTest.serverQueuedReceiptDoesNotClaimAgentReceivedUntilAuthoritativeRunning 的 TimeoutCancellationException（189 项、1 failed、24 skipped）；完整日志已保存，正在单独定位，不跳过原断言。
+
+## 2026-11-01 SMS 主动链路新增证据
+
+Terra 接收端观察器已记录唯一匹配的 OS 合成短信：专用号码 15550104404、固定合成标记匹配，事件 push_cb5d79d1b1a8fb2417efd345b66e2af233ca12bc1e7216c5fc8544aff7c87cb1，投递 delivery_3f0bd6df3df64678aa3e2082b024c653，路由与已选端点逐项匹配，结果 PASS。观察 106.92 秒后退出，没有提交 ACK。此证据仅证明旧界面配置下的模拟器 SMS 主动链路，不代替新选择界面验收、1 小时自然到期或物理真机。
+
+## CI 时序修复定向验证补充
+
+Android Play 的队列用例观察 `SharedFlow` 首帧，但测试在 IO dispatcher 上普通 launch collector 后只 yield 当前 runBlocking，不能保证 collector 已订阅。CI JUnit 确认第 159 行等待 MessageAccepted 超时；同版真实 coroutines 的受控首次调度探针中，原方案发送前订阅数 0、3 秒超时，UNDISPATCHED 发送前订阅数 1、成功接收。原完整测试失败未在本地直接复现，不能将探针当成完整重现。仅将该测试 collector 改为 UNDISPATCHED 并移除 yield，保留业务断言和等待上限；修复后整个 Play CoreAgentConversationRepositoryTest 32 项、0 fail/error/skip，原用例 0.007 秒通过。生产会话代码未改。
+
+## 屏幕运行补充：READ_ONLY 不自动允许控制
+
+Terra 使用历史真实 revision 提交可逆 back：devreq_f4e2ea14-9d39-4a84-8b9a-5ddf2862f0b2 出现真实 CONTROL/back 确认卡，拒绝后 denied/LOCAL_USER_REJECTED，前后仍为插件管理页。仅证明只读不自动批准控制及拒绝有效，不证明允许执行。插件管理动态页面两次 reader 以 SCREEN_CHANGED 结束；切换 OAI 静态设置页后仅复测一次，devreq_b8218221-bada-4839-a8e0-3f43cc558ab8 succeeded、8 节点、truncated，未输出节点正文。源码表明 SCREEN_CHANGED 是捕获前后 generation/display 变化，未放宽保护来追求测试通过。
+
+## Core B 最终终态进度字段复测
+
+Terra 仅将 Core B 在无非终态请求时有界重启到 `97f601f7` 生产源码，保留原账号、令牌、设备配对、主密钥与 TLS 状态，旧源码快照留存。Core A 未重启。Core B 的 `core.py` SHA-256 为 `026a6119fb16545a1250c454a55073fc7d4aaec7950849dd56929759847398f7`。
+
+使用原 B 凭据发现 schema 后提交未来范围空通话请求 `devreq_a7ef8a7a-559c-4ee3-b73b-3af3722a2084`，先观察 claimed/awaiting_confirmation，再取消；cancel_requested 与最终 cancelled 都不包含 localAuthorizationState，证明终态不继续显示等待/执行。见[脱敏证据](2026-11-01-global-device-authorization-core-b-97f601f7-cancel-evidence.txt)。此结论仅适用 B 运行快照，A 尚未更新，不能笼统称两个运行 Core 均为最新。
+
+## 用户 UI 补充最新定向结果
+
+新增UI62项通过后，独立复核找到257项通知草稿超限后无法修改再保存的P2；已先复现、再分离本地校验错误与并发/保存拒绝，原冲突保护不弱化。最新源码同次构建两APK及60项定向回归全部通过，见[专项报告](2026-11-01-device-scope-ui-preservation.zh-CN.md)。Fast/PR正在运行，Terra已收到新版产物做保留数据的升级及界面/实际过滤复测；未将旧版UI下的证据当新版验收。
+
+## 本轮 Fast 与 PR 门禁
+
+本次 UI/范围/迁移及CI同步补丁冻结后，`npm run test:fast` 与 `npm run test:pr` 均完整退出0。Core 634 passed、1 skipped、6 subtests；Hermes native143、DSH37、通信测量25通过。Android App1347、gateway-client320、device-primitives55、platform-kernel83、conversation-ui684均0 fail/error/skip；PR复用增量结果，未重编译无变化模块。Core skip仍为托管文件系统无法创建符号链接的危险卸载路径环境限制，不是授权断言被跳过。
+
+Terra新包覆盖安装后18:09:17仍见短信队列1/1、expired0；18:12:43一次真实刷新变为0/0、expired1、待远端清理0，未ACK/改scope/改时钟。本机1小时自然过期PASS，不凭Core60秒buffer空结果推断手机到期。
+
+## UI 补充交付与远端复核
+
+`1f338778ecd6c39fc8eb0bd11134867d6c238568` 已推送到现有PR #71，用户要求的通知原应用选择、短信默认全部/关键词/电话号码及既有功能/文案保真规则已完成并通过本地Fast/PR；Play补充63项通过。Terra在新包完成通知名称/包名搜索、正反选、取消后恢复原选择和同值保存，SMS三模式草稿/空条件、独立范围持久化、CLI/MCP关键词实际过滤与正文边界、主动关键词metadata/有效未选端点0条、非匹配OS样本不入队，详见[专项报告](2026-11-01-device-scope-ui-preservation.zh-CN.md)。
+
+18:43:50仅一次核对该head远端7项checks，Core3.11/3.12、Hermes native、DSH、Android、APK及插件签名全部SUCCESS。整体任务仍未完成，实体设备仍缺失，完整屏幕控制与生命周期正在分项验收，不因task-010完成或CI全绿扩大运行结论。

@@ -277,6 +277,50 @@
         }
       ],
       "started_at_commit": null
+    },
+    {
+      "id": "task-010",
+      "title": "恢复通知原应用选择器及短信全部/关键词/电话号码范围，保留原UI与文案",
+      "status": "completed",
+      "priority": "P0",
+      "depends_on": [
+        "task-007"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast && npm run test:pr",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [
+        {
+          "step": 1,
+          "total": 4,
+          "description": "用户补充已写入spec、CONTEXT、设置UI规格及操作指南；实现、迁移与过滤回归待完成",
+          "timestamp": "2026-11-01T17:17:53.954313+08:00"
+        },
+        {
+          "step": 2,
+          "total": 4,
+          "description": "通知原选择器与SMS三模式UI已接线，62/62定向回归通过；被动原控件与文案保留，模型过滤/迁移测试、Fast/PR及Terra新APK复测仍进行中",
+          "timestamp": "2026-11-01T17:56:10.068951+08:00"
+        },
+        {
+          "step": 3,
+          "total": 4,
+          "description": "1f338778通知/SMS范围和保真规则已推PR71；Fast/PR退出0，App1347无失败/跳过；新APK保留未ACK短信队列并完成1h自然到期，Terra新UI及实际过滤分项继续",
+          "timestamp": "2026-11-01T18:20:47.034596+08:00"
+        },
+        {
+          "step": 4,
+          "total": 4,
+          "description": "1f338778本地Fast/PR与远端7checks全成功；Terra通知搜索/正反选/取消重开/同值保存、SMS三模式草稿/持久化、真实CLI/MCP关键词过滤/正文拒绝、OS主动metadata和非匹配不入队已通过；整体GLOBAL矩阵仍task-008进行中",
+          "timestamp": "2026-11-01T18:46:00.446426+08:00"
+        }
+      ],
+      "started_at_commit": "97f601f7",
+      "completed_at": "2026-11-01T18:46:00.446426+08:00"
     }
   ]
 }

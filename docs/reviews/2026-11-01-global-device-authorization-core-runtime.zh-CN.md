@@ -1,4 +1,4 @@
-# 隔离 Core A 接收端运行验证
+# 隔离 Core A 接收端与 Core B 临时授权运行验证
 
 ## 范围和结果
 
@@ -20,6 +20,8 @@
 | 旧 TerraReceiverB（同 A 凭据） | `core_...a4ea1e54` | `acct_...8d99a222` | `endpoint_...ac9df718` | 1 | 2026-11-01 03:03:07.082 |
 
 两者对应北京时间 11:02:32.489 和 11:03:07.082。CLI `endpoint list` 与 MCP `oai_endpoints` 分别找到两条记录，且都与注册结果的完整四字段逐项相等。该比较不证明服务重启、凭据更换或租期结束后的路由仍不变；过期后应重新发现并核对代次和白名单。
+
+后续 A 与新 B 曾续期，最后一次已记录的截止时间分别为北京时间 12:29:38.188 和 12:30:01.645，续期时两条 route 的 generation 均保持为 1。截至用户报告的 2026-11-01 16 时左右，这两份已记录租约均已过期；本次文档整理没有实时访问 Core。后续推送测试须另行限定范围续租、核对完整 route 和代次，并由手机侧明确重新选择；不能把先前选择或历史投递当作新租约的验收结果。
 
 ## MCP 和认证拒绝
 
@@ -71,6 +73,19 @@
 
 用户报告手机已通过真实系统界面启用通知监听并配置 A、新 B，且已触发操作系统合成样本；本执行者没有操作或独立检查手机界面。上述观察证明 Core 返回的固定样本匹配，不单凭接收日志证明手机侧排队状态或逐端确认完成。
 
+## 第一事件逐端 ACK 与未选中端点
+
+仅针对观察到的第一事件，分别通过两个端点各自的真实 CLI 凭据提交 ACK；回执的事件、投递及完整 route 均与观察记录一致：
+
+| 接收端 | `state` | `acknowledgedAt`（UTC） | 证据 |
+| --- | --- | --- | --- |
+| A | `acknowledged` | 2026-11-01T03:10:17.680Z | [A 回执](2026-11-01-global-device-authorization-core-runtime-ack-a-evidence.txt) |
+| 新 B | `acknowledged` | 2026-11-01T03:14:00.170Z | [B 回执](2026-11-01-global-device-authorization-core-runtime-ack-b-evidence.txt) |
+
+按后续授权，两端对第一事件各重复一次 ACK，完整回执和确认时间均与首次一致。针对这两条指定投递的 Core 存储元数据只读检查显示正文为空、长度为 0；没有读取正文。[重复 ACK 证据](2026-11-01-global-device-authorization-repeat-ack-evidence.txt)。主 Agent 报告真实手机 UI 的队列在 A ACK 后由 `2 events / 4 deliveries` 变为 `2 / 3`，B ACK 后变为 `1 / 2`；这是主 Agent 的 UI 观察，不是本执行者自行操作手机所得。
+
+未选中旧 B 的原代次租期过期后，使用其原凭据读取返回 `409 ENDPOINT_UNAVAILABLE`，不能当作零投递证据。随后按明确授权使用原登记键续期，端点 ID 不变、generation 从 1 变为 2；发现新 route 后，拥有者 GET 返回 `200`、数量 0。[旧 B 证据](2026-11-01-global-device-authorization-old-b-unselected-evidence.txt)。该结果只说明新代次检查时为空，不能证明旧代次历史上无投递，也不能证明未选中时对后续新事件的行为。未选中状态由主 Agent 报告，本执行者没有检查手机 UI。
+
 ## 未确认样本恢复观察
 
 2026-11-01 约 11:28（Asia/Shanghai），A 与新 B 的一次实际接收各返回 0，因没有正文或事件 ID 无法确认当时手机队列中的第二事件。随后用户报告手机回到 OAI 前台、没有发布新样本；11:43 的 observer2 首轮接收在 A、新 B 各发现一条完整固定样本，`eventType`、正文和各自完整路由均匹配。两端为同一事件 `push_45e447a7...f6345750`，A、B 的投递 ID 不同，脚本在 0.083 秒后以 `PASS` 结束，观察时未发送 ACK。[脱敏原始日志摘录](2026-11-01-global-device-authorization-recovery-observer-evidence.txt)。
@@ -87,3 +102,48 @@ observer2 在启动时读取并核验第一事件的两端 ACK 回执；若该�
 | 新 B | 1 | 1 | 2026-11-01T03:50:58.278Z | 与首次完整一致 |
 
 两端回执均为 `acknowledged`，事件 ID、对应投递 ID 和完整 route 与观察回执一致。没有确认其他事件，也没有再次读取正文。[脱敏 ACK 验证记录](2026-11-01-global-device-authorization-recovery-ack-evidence.txt)。手机队列 `0/0` 尚待主 Agent 通过 UI 检查，不能由 Core ACK 直接推定。
+
+## Core B 临时授权到期观察：5/30/60 分钟
+
+本节记录后台观察已完成的 5、30 和 60 分钟结果。Core B 使用现有测试 CLI 凭据和明确绑定的设备，没有更换令牌或创建新绑定。用户报告三个授权均由原用户 10 的真实 App 界面产生，App 未重启、授权版本未更改；本执行者未操作或独立核验手机界面。
+
+- 授权记录包含相同通话查询能力、分别为 `limit=1/2/3` 的原始参数，且 `receivedAfter=2099-01-01T00:00:00Z`。三次点击的前后时间界经过结构和一致性检查；到期时刻使用各次**点击后上界 + 时长 + 5 秒**，不把点击前时间误当作上界。
+- 文件中的单调时间与主机单调时钟的时基不同，未直接混用；按点击后 UTC 上界换算至主机单调时钟。该脚本在后台按真实时间等待，没有调整系统时钟；启动时记录 `PID=2465473`、总截止 4200 秒，并当时核实进程存活。主 Agent 保存的完成证据显示最终 `finished / PASS`，实际运行 2848.13 秒。[私密运行日志](../plans/2026-11-01-global-device-authorization/runtime/temporary-approval-run-20261101T041916Z-a18a9a64/observer.jsonl)包含请求轨迹，不应公开凭据或未经脱敏的输入数据。
+- **5 分钟：延迟复验 PASS。** 计划到期后检查时刻为 12:06:21.530，实际发起前检查点为 12:19:17.152，记录约晚 775.6 秒。Core B 请求 `devreq_f2d65fb3-bc4e-42ba-adcf-e1ad61c8a4dd` 经 `pending` 到达 `claimed / localAuthorizationState=awaiting_confirmation`，随后 CLI 取消到终态 `cancelled`，日志没有记录 `succeeded`。这是到期后的延迟复验，**不证明恰好到期后 5 秒**的行为。
+- **30 分钟：自然到期观察 PASS。** 计划检查时刻为 UTC `2026-11-01T04:33:39.142Z`，即北京时间 `12:33:39.142`；发起前检查点为 UTC `04:33:39.253Z`，脚本记录晚 0.112 秒。使用 `limit=2` 和未来时间参数的新请求 `devreq_3d65079a-0b10-47a2-810f-1a82ccc83609` 经 `pending` 到达 `claimed / localAuthorizationState=awaiting_confirmation`，随后取消到终态 `cancelled`；观察期间日志未记录 `succeeded`。
+- **60 分钟：自然到期观察 PASS。** 计划检查 UTC `2026-11-01T05:06:31.758Z`，即北京时间 `13:06:31.758`。请求 `devreq_db56f068-6553-41fd-884b-d5e0b3235109` 的完成证据记录了 `claimed / localAuthorizationState=awaiting_confirmation`，随后 CLI 取消至 `cancelled`，该项 `case_finished / PASS`。
+
+`due` 的 `actualUTC` 是 CLI 发起请求之前的调度检查点，不是服务端提交时间；日志中的 `submitted`、等待确认和取消记录均未附带各自时间戳，不能推断精确时刻。[5/30 分钟脱敏日志摘录](2026-11-01-global-device-authorization-ttl-5-30-evidence.txt)和[主 Agent 保存的完整结果证据](2026-11-01-global-device-authorization-ttl-complete-evidence.txt)保留实际记录顺序。计划时刻不是测试结果；设备离线、`GRANT_STALE`、未观察到等待确认或取消未到终态均不能记作通过。
+
+## Core B 最终终态进度字段复测
+
+Terra 仅将 Core B 在无非终态请求时有界重启到 `97f601f7` 生产源码，保留原账号、令牌、设备配对、主密钥与 TLS 状态，旧源码快照留存。Core A 未重启。Core B 的 `core.py` SHA-256 为 `026a6119fb16545a1250c454a55073fc7d4aaec7950849dd56929759847398f7`。
+
+使用原 B 凭据发现 schema 后提交未来范围空通话请求 `devreq_a7ef8a7a-559c-4ee3-b73b-3af3722a2084`，先观察 claimed/awaiting_confirmation，再取消；cancel_requested 与最终 cancelled 都不包含 localAuthorizationState，证明终态不继续显示等待/执行。见[脱敏证据](2026-11-01-global-device-authorization-core-b-97f601f7-cancel-evidence.txt)。此结论仅适用 B 运行快照，A 尚未更新，不能笼统称两个运行 Core 均为最新。
+
+## 5556 被动短信 KEYWORDS：真实 CLI/MCP 三请求
+
+2026-11-01，工作树 HEAD 为 `1f338778ecd6c39fc8eb0bd11134867d6c238568`。Hubble 报告新包已安装，真实 UI 已保存并重新进入确认：被动短信为 READ_ONLY、KEYWORDS=`OAI-SAMPLE-SMS-5556-20261101`、正文关闭；号码草稿仍保留 phone22，主动推送范围独立。本执行者未操作手机或读取原 user0 设备。
+
+通过 5556 的现有专用 CLI 凭据发现 `org.openandroidintelligence.sms.query@1.0.0` 为 READY；官方 MCP stdio 子进程返回的 schema 与 CLI 一致。实际 schema 只允许 `senders`、`receivedAfter`、`limit`、`query`，没有远端 `includeContent` 开关。本次仅发出以下三条请求，收到各自终态后继续下一条，没有人工批准或结果 ACK：
+
+| 场景 | 入口 | requestId（脱敏） | 实际结果 |
+| --- | --- | --- | --- |
+| phone22 元数据，不带 query | CLI | `devreq_afcbe5cd...c244cba2` | `succeeded`，1 条；正文内容为空或缺失的检查通过 |
+| phone22 加固定标记的正文搜索 | 真实 MCP | `devreq_0d78310d...c4c31fad` | `denied / LOCAL_DATA_SCOPE_DENIED`，由 Android 本地范围拒绝 |
+| phone44 元数据，不带 query | CLI | `devreq_90f6ed58...c3de6745` | `succeeded`，0 条 |
+
+三项均限定 `receivedAfter=2026-11-01T05:02:22Z` 和单个测试发送方；元数据两项 `limit=5`，正文搜索 `limit=1`。没有扫描其他号码或输出短信正文。元数据结果没有远端正文，因此不能据此直接复验样本文字；其与本地关键词的关系还依赖 Hubble 的真实配置及专用样本记录。[公开脱敏请求与接口记录](2026-11-01-global-device-authorization-sms-keywords-evidence.txt)，完整请求 ID 保留在忽略的 `runtime/sms-emulator/passive-keywords-1f338778/run-20261101T102937Z-5a2b7bde/`。
+
+## 5556 主动短信 KEYWORDS：新有效未选端点对照
+
+先通过现有凭据发现原 `TerraSmsReceiver`：generation 1、租期截止北京时间 18:53:08.905，完整 route 与历史记录一致。随后使用相同的既有 5556 凭据、独立登记键注册 `TerraSmsUnselected`，租期 3600 秒，generation 1，截止北京时间 19:33:02.493；新端点的脱敏 ID 为 `endpoint_d9a2937c...b275b418`。发现结果完整匹配新 route，原已选端点的 route、代次和租期未变。两端点使用同一账号和设备凭据，不能把此对照称为独立令牌隔离测试。本执行者没有在手机选择新端点；未选状态由 Hubble 报告。[第二端点脱敏记录](2026-11-01-global-device-authorization-sms-unselected-evidence.txt)。
+
+Hubble 随后报告主动短信范围已独立保存为 KEYWORDS=`OAI-SAMPLE-SMS-KEYWORD-PUSH-20261101`、正文关闭、保留期 1 小时，仅原接收端仍选中，被动设置不变。后台观察器于约 18:38:09 启动，最长 300 秒；Hubble 报告在主机北京时间 18:39:43.369978741 至 18:39:43.387304266 之间唯一一次从 OS 注入 sender55 的专用样本，退出码 0。本执行者没有注入、操作手机或读取短信正文。
+
+- 观察器在 97.727 秒后正常 `finished / PASS`：已选端点接收到 sender=`15550105505`、`eventType=sms.received`、启动后时间及完整 route 匹配的新事件；`body` 和 `text` 键均不存在。
+- 事件为 `push_d962b57e...d6a93169`，投递为 `delivery_0a66aed6...35d71e31`。同轮已选端点为 1、非目标数量 0；新有效未选端点真实 owned GET 返回 0，所有已记录轮次均为 0。两端租约均覆盖这次观察。
+- 该对照覆盖了一次新受控 SMS 事件，与此前旧 B 过期后换代才得到空列表的证据不同。正文未外发，接收端不能独立检查正文标记；事件与固定标记的关联依据 sender、时间、route 及 Hubble 的唯一一次受控注入报告，不把元数据当作正文读取证据。
+- 观察器始终 `ackSubmitted=false`，事件保留未由本执行者确认，供后续退出、离线或进程场景观察。当前手机队列、后续到期或清理尚未由本执行者验证；本轮没有续租、改变代次或为 sender66 启动新观察器。
+
+[公开脱敏元数据推送记录](2026-11-01-global-device-authorization-sms-keyword-push-evidence.txt)。完整事件、投递及 route 位于忽略的 `runtime/sms-emulator/unselected-receiver/keyword-push-20261101T103809Z-6be92d56.receipt.json`，权限 `0600`。

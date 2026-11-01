@@ -218,3 +218,25 @@ Core B CLI 使用独立账号、设备凭据和 CA 发现通话能力 `READY`，
 主 Agent 后续报告：观察器已在两个接收端观察到样本事件 `push_7e267b912b1056ed53658b86e1ac20a8295cbe03d209a3ac3159e298fd8e0b79`，两个 delivery 不同且样本正文完整；其 UI 测量在 A ACK 前后为 `2` 个事件、`4` 次待投递变为 `2` 个事件、`3` 次待投递。这是主 Agent 提供的阶段证据，不是本记录作者独立读取的接收日志或最终 B ACK 结论，不能推断队列当前仍为该数值。
 
 剩余矩阵：最终提交 APK 的按钮真实拒绝复测、新 Core 源码的终态字段、两端 ACK 全流程与队列清空、通话记录实际查询及合成数据过滤、短信、屏幕、撤销与离线恢复、实体设备均未由本轮完成；不得用上述局部结果替代完整验收。通知、短信与屏幕系统权限和本机范围仍分别管理。
+
+## 主流程核对的临时许可计时结果与服务限制
+
+原后台计时器日志最终`finished/PASS`，scope5为到期后延迟复验、scope30和scope60为按点击上界及真实期限排期；
+60分钟请求`devreq_db56f068-6553-41fd-884b-d5e0b3235109`再次等待确认后取消，未自动执行。
+[完整脱敏关键记录](2026-11-01-global-device-authorization-ttl-complete-evidence.txt)。主Agent核对的是先前由Terra启动的真实后台进程输出，
+并未以主Agent新发请求冒充Terra设备测试。
+
+手机子Agent执行后续SMS/屏幕步骤时模型服务503退出，因此完整运行矩阵保持未完成。
+源码屏幕重连handle和预置入口修复已本地回归，最终新包运行待恢复Terra服务后复测；实体手机缺失继续BLOCKED。
+
+## 屏幕控制只读拒绝与静态 reader 分项
+
+Terra 在 emulator-5554/user10 上确认控制插件为 READ_ONLY。devreq_f4e2ea14-9d39-4a84-8b9a-5ddf2862f0b2 使用历史真实 revision 触发 CONTROL/back 卡片，真实点击拒绝后为 denied/LOCAL_USER_REJECTED，前后均为插件管理页；这项 PASS 不证明历史 revision 可用于允许执行。
+
+插件管理页两次读取 devreq_5784f9c4-65aa-4929-bc84-8461cc63da0c、devreq_ebff0544-1e6d-4924-b012-44b81e151a8e 均 failed/SCREEN_CHANGED；参数 maxNodes=8、maxDepth=8、maxBytes=4096，分别 snapshot/state，无 revision。保留原保护后，静态 OAI 设置页单次读取 devreq_b8218221-bada-4839-a8e0-3f43cc558ab8 succeeded，8 节点、truncated=true，未输出正文。无控制允许、点击/滑动、系统撤销或并发租约运行通过结论。
+
+## 新版范围界面升级、自然过期与关键词保存
+
+5556新包SHA-256为1ec8841c6fc7957c2fd6cf0e0fa0f77dec3d63f2ccfa1936b8d204ad89a81e5a，测试包d5ee749ae541b9c88d1f03a05dca1411065824c29e4dc21171657fc4fa31ef6e。Terra已核对设备内哈希并覆盖安装，账号、系统权限和既有策略未清空。新包18:09:17刷新仍为未ACK队列1/1、expired0；18:12:43刷新为0/0、expired1、待远端清理0，未ACK/改scope/改时钟。
+
+旧被动短信配置真实UI核对为READ_ONLY、电话号码15550102202、正文关闭；随后通过新UI将范围保存为关键词OAI-SAMPLE-SMS-5556-20261101，退出重进后KEYWORDS和正文关闭仍保留。推送范围未保存变更。本项仅证明本地保存与升级保留，真实关键词读取/拒绝以随后requestId结果为准。补充uiautomator检查两次退出137后停止，状态通过正常返回的android layout核验，不把失败命令伪报成功。

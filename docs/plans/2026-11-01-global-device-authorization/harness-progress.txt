@@ -6,3 +6,8 @@
 [2026-11-01T08:54:13.495430+08:00] [SESSION-1] CHECKPOINT [task-007] step=3/3 PR门禁全部通过，App1297项；完整Terra矩阵仍进行中，物理设备未连接
 [2026-11-01T09:06:00.763135+08:00] [SESSION-1] CHECKPOINT [task-009] step=2/2 源码17895223已创建dev PR#71保持Review；Terra完整矩阵与实体手机未闭合，goal继续active
 [2026-11-01T11:50:31.076432+08:00] [SESSION-1] CHECKPOINT [task-008] step=2/3 双端OS通知与逐端ACK/后台重投已实测，SMS系统许可已取得，完整矩阵未完成；1199eb70已推PR71
+
+[2026-11-01T17:17:53.954313+08:00] CHECKPOINT task-010 docs-first: UI-01..06已落盘，通知复用应用选择器，SMS全部/关键词/电话号码，禁止UI功能降级及任意文案改写；实现/自动化/Terra验收待完成。
+[2026-11-01T17:56:10.069283+08:00] CHECKPOINT task-010 UI定向62/62、无fail/skip；完整验证与Terra新APK待完成。
+[2026-11-01T18:20:47.034596+08:00] CHECKPOINT task-010 step3/4 1f338778已推PR71，Fast/PR=0，新UI与实际过滤Terra复测中；CI Run41296937078/41296932216已触发，未watch。
+[2026-11-01T18:46:00.446426+08:00] COMPLETED task-010 UI保真补充闭合，1f338778全CI成功；task-008/整体goal仍active，物理真机BLOCKED。

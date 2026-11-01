@@ -1,0 +1,27 @@
+{
+  "core": "B",
+  "gitHead": "97f601f712728483e9917cec5dcfa5aaa41d5a3f",
+  "corePySha256": "026a6119fb16545a1250c454a55073fc7d4aaec7950849dd56929759847398f7",
+  "sourceDigestSha256": "ed26cf20e41fca86c05090ce1f2ca884dcce7da4e774db8d16715bd2983a0ccc",
+  "requestId": "devreq_a7ef8a7a-559c-4ee3-b73b-3af3722a2084",
+  "capability": "org.openandroidintelligence.call-log.query@1.0.0",
+  "parameters": {
+    "limit": 1,
+    "receivedAfter": "2099-01-01T00:00:00Z"
+  },
+  "observed": [
+    {
+      "state": "claimed",
+      "localAuthorizationState": "awaiting_confirmation"
+    },
+    {
+      "state": "cancel_requested",
+      "localAuthorizationStatePresent": false
+    },
+    {
+      "state": "cancelled",
+      "localAuthorizationStatePresent": false,
+      "resultOutcome": "cancelled"
+    }
+  ]
+}
