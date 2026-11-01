@@ -282,3 +282,14 @@ Core 仍沿用 `20261101T000129Z-df92df96` 运行快照（源码清单摘要 `5d
 - [当前d097官方密钥恢复目录及脱敏汇总](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/current-binding-device-key-login-20261101/)。
 
 本次仅归档既有证据，不新增设备或Core操作。未再注入样本、ACK、修改权限/scope/端点/时钟/登录，未追加系统回收或Doze；保持5556现状待机，后续screen修复验收不据此扩写为已完成。
+
+
+## 5554/user10：67d7d5 菜单进退与插件按钮抽查
+
+2026-11-01，Terra 仅在 `emulator-5554 / user10` 保留数据覆盖安装。App SHA-256 为 `67d7d5330d2b6ebbb3e227f88cffe19a2b8a55c251e0e913e1a7d26e4124fa68`，test APK 为 `9e313b7a56b2f5a67cc6bedbc8cc8c0cd31e12a6aed6258a61c950a9adc5c57c`；设备端哈希均匹配，签名一致。[安装核验](../plans/2026-11-01-global-device-authorization/runtime/evidence/terra-ui-67d7d5-installation-private.json)。本节归档既有证据，未新增设备操作。
+
+- **页面容器与返回：PASS。** 从设置进入授权管理，再进入“短信与通知主动推送”；完整背景、标题栏和返回按钮均可见，无裸内容。点击一次顶栏返回即回到授权管理，无需重复返回。仍显示原“已选择 1 个应用”，通知推送及正文开关保持开启；未操作选择器、端点或任何配置。[进入前](../plans/2026-11-01-global-device-authorization/runtime/evidence/terra-ui-67d7d5-authorization-before-private.png)、[推送页](../plans/2026-11-01-global-device-authorization/runtime/evidence/terra-ui-67d7d5-push-entered-private.png)、[返回后](../plans/2026-11-01-global-device-authorization/runtime/evidence/terra-ui-67d7d5-authorization-after-private.png)。静态截图本身不证明动画通过。
+- **插件按钮：Call Log Query 单卡抽查 PASS。** 已装、已启用的 `org.openandroidintelligence.call-log` 常规操作区完整可见，未出现“恢复上一版本”，仍有“停用”“系统权限与后台任务”“卸载”。所有操作按钮均未点击。[完整操作区布局](../plans/2026-11-01-global-device-authorization/runtime/evidence/terra-ui-67d7d5-plugin-call-log-private.json)。`Notifications Query` 仅确认已安装、已启用标题，其操作区未完整核对，不能写为第二张卡通过。全部插件的按钮删除由 root 的共用实现及多插件 UI 自动化另行证明；本次设备证据仅为 Call Log 单卡抽查。
+- **录屏与动画证据：** Terra 只录制一次“授权管理→主动推送→等待 2 秒→顶栏返回”，`screenrecord` 后台限时 15 秒，实际视频时长 `3.478867` 秒，H.264、540×1200、426427 字节；录制、拉取和 ffprobe 均退出 0，未复录。[私密原视频](../plans/2026-11-01-global-device-authorization/runtime/evidence/terra-ui-67d7d5-push-motion-private.mp4)、[录屏元数据](../plans/2026-11-01-global-device-authorization/runtime/evidence/terra-ui-67d7d5-push-motion-metadata-private.json)。root 随后离线以 8 fps 抽帧并目检顶半屏拼图，反馈本段进出方向一致，统一背景和标题栏随动画完整，无裸内容或黑底；末格黑帧是 ffmpeg 补帧，未记为 App 异常。该动画结论来自 **root 离线复核**，不是 Terra 根据静态页面推断；公开证据仅为已裁去路由区域的[菜单动画拼图](evidence/2026-11-01-global-device-authorization/terra-device-push-menu-motion.png)，原视频留在 ignored runtime。
+
+通知应用超过 256 项（1025 项）的覆盖属于 root 自动化证据，本次未安装假应用或扩大真实范围。未发任何 screen 能力请求，未修改账号、模式或系统权限，未操作 5556；既有 task011 的 MANUAL 控制失败结论继续保留，本节 UI 验收不改变该结论。

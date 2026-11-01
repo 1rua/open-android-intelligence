@@ -13,3 +13,6 @@
 [2026-11-01T18:46:00.446426+08:00] COMPLETED task-010 UI保真补充闭合，1f338778全CI成功；task-008/整体goal仍active，物理真机BLOCKED。
 [2026-11-01T18:59:40.459612+08:00] START task-011 Terra真实manual-control批准后stale失败，建立回归并修复；task-010保持完成，完整GLOBAL仍active。
 [2026-11-01T20:14:04.948389+08:00] CHECKPOINT task-011 step2/3 本地门禁green但立即链批准后stale仍FAIL；774620metadata诊断包待运行；生命周期已记录，goal保持active。
+[2026-11-01T20:51:55.198927+08:00] START task-012 docs-first取消通知应用256上限，禁止自行定义未要求设计；task-011原screen源码保留待验证。
+[2026-11-01T20:54:46.336332+08:00] START task-013 docs-first移除插件恢复入口、主动推送菜单转场对齐既有菜单；与task012独立并行。
+[2026-11-01T21:37:14.751525+08:00] COMPLETED task-012/task-013 c0779957已推PR71，最新Fast/PR=0、UI定向58/standalone53；实际正常菜单进退录屏核验。task011/整体goal仍active，真机与完整矩阵未闭合。

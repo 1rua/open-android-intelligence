@@ -147,3 +147,22 @@ Hubble 随后报告主动短信范围已独立保存为 KEYWORDS=`OAI-SAMPLE-SMS
 - 观察器始终 `ackSubmitted=false`，事件保留未由本执行者确认，供后续退出、离线或进程场景观察。当前手机队列、后续到期或清理尚未由本执行者验证；本轮没有续租、改变代次或为 sender66 启动新观察器。
 
 [公开脱敏元数据推送记录](2026-11-01-global-device-authorization-sms-keyword-push-evidence.txt)。完整事件、投递及 route 位于忽略的 `runtime/sms-emulator/unselected-receiver/keyword-push-20261101T103809Z-6be92d56.receipt.json`，权限 `0600`。
+
+## 5556 真正断开 Core 传输后的同请求恢复
+
+本场景使用 secondary 测试账号中已经存在的当前 d097 设备绑定，generation 为 1；官方 CLI 登录仅为该既有配对签发独立客户端令牌，没有新建设备或配对，也没有替换旧 c16 客户端。后续请求使用当前绑定的专用配置，不使用旧设备或旧接收端 route。
+
+Hubble/root 报告：2026-11-01 北京时间 20:39:00，仅移除 5556 的 `tcp:19841` ADB reverse mapping，其他端口及系统网络未改；20:46:25 确认恢复 `tcp:19841 -> tcp:19841`，OAI 回前台，期间未更改账号、授权策略或权限。本执行者没有操作或独立检查手机、ADB 或网络，以下 Core 结果只与该外部报告关联。
+
+通过当前 d097 凭据仅提交一次 `sms.query@1.0.0`，参数为 `senders=["15550102202"]`、`receivedAfter=2026-11-01T05:02:22Z`、`limit=1`，不含远端 `query`。断开期立即查询一次，恢复确认后再次查询同一 ID 一次：
+
+| 阶段 | requestId（脱敏） | 实际结果 |
+| --- | --- | --- |
+| 断开期提交与状态检查 | `devreq_d1416263...e399be8e` | `pending`，`DEVICE_OFFLINE`，`queued=true`，无结果 |
+| 恢复后同请求状态检查 | `devreq_d1416263...e399be8e` | `succeeded / result.outcome=succeeded`，1 条元数据，`text=null`，无 `body` 字段 |
+
+三份已有回执中的 requestId、d097 deviceId、pairingGeneration、能力和请求期限均一致。元数据记录匹配专用测试发送方和日期下界，没有输出短信正文。任务只提交一次，未重提、未人工批准、未取消该请求，也未发送结果 ACK；恢复执行不需要新的设备请求或重新选择手机范围。[公开脱敏恢复证据](2026-11-01-global-device-authorization-sms-offline-recovery-evidence.txt)。
+
+Core 实际记录 `createdAt=2026-11-01T12:41:18.683Z`、`expiresAt=2026-11-02T12:41:18.683Z`，两者相差 **86400 秒，即 24 小时请求排队寿命**；对应北京时间 11 月 1 日 20:41:18.683 至 11 月 2 日 20:41:18.683。该期限与 **5 分钟本机确认等待**独立，不能互换；本请求按 READ_ONLY 执行，没有等待或点击人工批准卡片。
+
+断开期本地授权页面可读和网络 mapping 动作来自手机 Agent 报告；草稿取消因工具超时未完成，**不记为 PASS**。本场景的 PASS 仅覆盖 Core 离线排队后同一请求恢复成功，不代表断开期全部本地 UI 流程通过。

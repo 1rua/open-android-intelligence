@@ -352,6 +352,82 @@
         }
       ],
       "started_at_commit": "12d3f8f6"
+    },
+    {
+      "id": "task-012",
+      "title": "移除通知推送256应用数量上限，落实未明确要求设计禁止自行定义",
+      "status": "completed",
+      "priority": "P0",
+      "depends_on": [
+        "task-010"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast && npm run test:pr",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [
+        {
+          "step": 1,
+          "total": 3,
+          "description": "用户补充UI-07/08已先写spec/AGENTS/设置规格/指南；UI模型与codec隐藏限制同步移除，超过256应用完整保存恢复待验证",
+          "timestamp": "2026-11-01T20:51:55.198927+08:00"
+        },
+        {
+          "step": 2,
+          "total": 3,
+          "description": "UI模型/codec数量限制均移除；1025应用UI先红后绿、257/1025/2049真实加密恢复与旧格式无损，standalone53通过；最终Fast/PR与Terra最新UI观测待闭合",
+          "timestamp": "2026-11-01T21:16:26.028490+08:00"
+        },
+        {
+          "step": 3,
+          "total": 3,
+          "description": "c0779957通知UI/模型/codec数量上限已移除无替代值，1025UI/2049加密恢复、53standalone及最新Fast/PR通过，规则UI07/08已入AGENTS/spec；该headCI已触发尚在运行，整体GLOBAL/task011仍未完成",
+          "timestamp": "2026-11-01T21:37:14.751525+08:00"
+        }
+      ],
+      "started_at_commit": "c18ffb70",
+      "completed_at": "2026-11-01T21:37:14.751525+08:00"
+    },
+    {
+      "id": "task-013",
+      "title": "移除插件恢复上一版本按钮并统一主动推送菜单进入退出转场",
+      "status": "completed",
+      "priority": "P0",
+      "depends_on": [
+        "task-010"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast && npm run test:pr",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [
+        {
+          "step": 1,
+          "total": 3,
+          "description": "用户UI-09/10已写spec和设置规范；复用既有转场，不擅自设动效参数，删除范围仅按钮",
+          "timestamp": "2026-11-01T20:54:46.336332+08:00"
+        },
+        {
+          "step": 2,
+          "total": 3,
+          "description": "按钮删除与统一页面容器完成；新增7项normal/reduced/presentation背景与返回回归通过；综合58项与新APK构建通过；最终Fast/PR与Terra最新UI观测待闭合",
+          "timestamp": "2026-11-01T21:16:26.028490+08:00"
+        },
+        {
+          "step": 3,
+          "total": 3,
+          "description": "c0779957删除每plugin恢复按钮，统一设置页容器/原AppTransitions；58定向与Fast/PR通过，Terra实际单返回/CallLog卡抽查/3.479s正常进退录屏由root取帧核验；该headCI已触发尚在运行，整体GLOBAL/task011仍未完成",
+          "timestamp": "2026-11-01T21:37:14.751525+08:00"
+        }
+      ],
+      "started_at_commit": "c18ffb70",
+      "completed_at": "2026-11-01T21:37:14.751525+08:00"
     }
   ]
 }

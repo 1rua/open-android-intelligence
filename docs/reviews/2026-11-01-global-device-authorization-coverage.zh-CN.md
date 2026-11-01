@@ -27,6 +27,10 @@
 | --- | --- | --- |
 | UI-01..06 通知原选择器、SMS全部/关键词/电话号码、保留原功能与文案 | spec、CONTEXT、设置规格、操作指南、AGENTS.md；NotificationAppPicker / PushSettingsScreen / SmsPassiveScopeSettings | 实现1f338778已推PR，UI62/最新60/standalone49与Fast/PR通过；Terra新APK通知全部选择行为与SMS真实关键词命中/不命中/正文边界、主动metadata通过；整体GLOBAL矩阵仍在task-008 |
 
+| 最新UI要求 | 实现与验证 | 当前边界 |
+| --- | --- | --- |
+| UI-07..10 应用数量不限/禁止自行设计/删除插件恢复按钮/统一菜单转场 | c0779957已推PR，1025UI/2049真实加密恢复、58综合/53standalone与Fast/PR通过；Terra单返回/卡片抽查/正常进退录屏由root取帧核验 | CI Run41311820490/41311815681已触发，不将旧head全绿移用；整体GLOBAL与task011仍未完成 |
+
 ## 保留边界
 
 - Android系统权限、通知监听、无障碍、MediaProjection和系统强制同意独立生效，自动模式不代替系统批准。

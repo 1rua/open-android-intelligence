@@ -1,0 +1,61 @@
+{
+  "scenario": "5556 移除并恢复单个 Core A reverse mapping 后，同一排队请求恢复执行",
+  "result": "PASS for the same-request Core transport recovery only",
+  "requestId": "devreq_d1416263...e399be8e",
+  "deviceId": "dev_d097914b...3a3654f0",
+  "pairingGeneration": 1,
+  "capability": "org.openandroidintelligence.sms.query@1.0.0",
+  "parameters": {
+    "senders": [
+      "15550102202"
+    ],
+    "receivedAfter": "2026-11-01T05:02:22Z",
+    "limit": 1
+  },
+  "hubbleNetworkActionReported": {
+    "offlineConfirmedAsiaShanghai": "2026-11-01T20:39:00+08:00",
+    "restoredConfirmedAsiaShanghai": "2026-11-01T20:46:25+08:00",
+    "mapping": "5556 tcp:19841 -> tcp:19841",
+    "systemNetworkAndOtherPortsReportedUnchanged": true,
+    "policyAccountAndPermissionReportedUnchanged": true,
+    "independentlyOperatedOrInspectedByCoreExecutor": false
+  },
+  "offlineStatus": {
+    "state": "pending",
+    "details": {
+      "reason": "DEVICE_OFFLINE",
+      "queued": true,
+      "source": "core-connection"
+    },
+    "resultPresent": false
+  },
+  "restoredStatus": {
+    "state": "succeeded",
+    "resultOutcome": "succeeded",
+    "metadataCount": 1,
+    "textIsNull": true,
+    "bodyFieldAbsent": true,
+    "expectedTestSenderMatched": true,
+    "testDateLowerBoundMatched": true
+  },
+  "sameRequestAndDeviceBindingInAllThreeReceipts": true,
+  "createdAtUTC": "2026-11-01T12:41:18.683Z",
+  "expiresAtUTC": "2026-11-02T12:41:18.683Z",
+  "requestQueueLifetimeSeconds": 86400.0,
+  "lifetimeDistinction": "24 小时是本请求实际排队寿命，不是 5 分钟本机确认等待；本请求按 READ_ONLY 执行，没有人工批准。",
+  "deviceSubmissionsByThisTask": 1,
+  "resubmissionsByThisTask": 0,
+  "manualApprovalsByThisTask": 0,
+  "resultAcknowledgementsByThisTask": 0,
+  "offlineDraftCancellation": {
+    "result": "NOT_COMPLETED",
+    "reasonReported": "tool timeout",
+    "passClaimed": false
+  },
+  "privateReceiptFiles": [
+    "docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/offline-d097-submit.json",
+    "docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/offline-d097-initial-status.json",
+    "docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/offline-d097-restored-status.json"
+  ],
+  "evidenceLimit": "仅离线核对已有回执；恢复后状态只查询一次。网络动作与 App 前台状态来自 Hubble/root 报告，未独立操作手机。"
+}

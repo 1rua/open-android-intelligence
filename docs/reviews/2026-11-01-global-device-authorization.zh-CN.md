@@ -564,3 +564,17 @@ Terra在20:11:49仅一次真实刷新5556队列：待发0/投递0、累计过期
 诊断包链reader devreq_99c24d40-4bd2-4032-a713-17d31f35fd46成功；本机确认窗口可信ID531，确认前窗口460（导航区域）、457（状态栏）、530（应用）。窗口移除后reader发行gen205，立即control devreq_802273f5-bb2e-4bc6-a24a-c96f14f4e4ae在prepare阶段gen206：revision/hash/fingerprint不匹配、连接epoch相同、cache年龄不足1秒、完整proof存在。区间唯一事件是457状态栏TYPE_WINDOW_CONTENT_CHANGED；未见目标应用窗口事件。最终failed/SCREEN_STALE_REFERENCE，尚未弹控制卡，不按前一轮bf3c的批准后失败混写。
 
 此证据说明“reader自己的确认通知退场或状态栏迟到变化”与全屏前置版本相冲突，具体通知来源仍需受限证明；不能将所有系统窗口变化一律忽略。下一修复须将调用动作真实作用目标与本机确认/通知窗口生命周期关联，保持未知/目标内容变化拒绝，不用固定等待或自动替换expectedRevision。
+
+## 用户追加UI-07至10与断网恢复结果
+
+用户明确取消通知推送256应用数量上限，并禁止自行定义未要求设计；已docs-first写spec/AGENTS/设置规范/指南，UI、模型、codec三处同步取消，无替代数量上限。1025应用UI回归先红后绿、27项定向与53项standalone通过。用户另外要求移除插件下方“恢复上一版本”按钮并修正主动推送菜单进退动画：只移除该入口，菜单复用其他设置页容器与四项既有AppTransitions，不另造新动效或文案；最终验证进行中。
+
+真正断Core传输已补：只移除5556对应19841反向端口，pending请求devreq_d1416263-2269-4d13-a861-0f0ce399be8e为DEVICE_OFFLINE，20:46:25恢复同映射后，同request succeeded/metadata1/无正文，没有重提批准ACK。该请求实际排队寿命24h，与本机确认等待上限5min不同；断开期间本地授权可读，但草稿取消因工具timeout未完成，未计PASS。
+
+## 最新用户菜单要求的静态修正
+
+已确认DEVICE_PUSH与其他菜单继承同一NavHost四项AppTransitions；生产分支直接放PushSettingsScreen裸内容，只有运行时不可用分支使用SettingsPageScaffold，页面背景/标题栏/inset容器因此与同级子页不同。现改为两种运行状态都进入统一DevicePushSubScreen，复用原SettingsPageScaffold及presentation，原转场参数不动、正文文案不改。每插件“恢复上一版本”按钮已移除，底层回滚和历史包不删除。新增正常进入返回/减少动态/背景覆盖/多个插件操作回归收尾中。
+
+最新用户UI补丁Fast已完整退出0（App1361/0失败/0跳过；Core634及独立适配器通过），PR执行中。Terra新包确认主动推送完整背景/顶栏/单次返回与原配置保留，动态实际录屏和插件按钮检查仍单列。审批审计初始化NPE曾失败，诊断断言保留、定向/当前Fast均过；根因尚未证实，未按“flaky修复”处理。
+
+UI新要求最终Fast/PR均完整退出0，App1361/0失败/0跳过，产物67d7d5源码摘要保持。准备只提交通知无应用数量上限、插件按钮移除与菜单页面容器修正及对应规则/测试，屏幕task-011仍未通过的源码继续保存在工作树，不将其借UI提交标为完成。
