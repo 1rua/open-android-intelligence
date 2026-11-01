@@ -3162,7 +3162,9 @@ class DeviceRequestStore:
             **({"caller": self.store.open_json(row["caller_json"], f"device-request:{self.account_id}:{row['request_id']}:caller")} if row["caller_json"] else {}),
             **({"resultDigest": row["result_digest"]} if row["result_digest"] else {}),
             **({"acknowledgedAt": row["acknowledged_at"]} if row["acknowledged_at"] else {}),
-            **({"localAuthorizationState": row["local_authorization_state"]} if row["local_authorization_state"] else {}),
+            **({"localAuthorizationState": row["local_authorization_state"]}
+               if row["state"] == "claimed" and row["local_authorization_state"] in {"awaiting_confirmation", "executing"}
+               and _now(row["expires_at"]) > _now() else {}),
         }
 
     def _row(self, request_id: str) -> sqlite3.Row:

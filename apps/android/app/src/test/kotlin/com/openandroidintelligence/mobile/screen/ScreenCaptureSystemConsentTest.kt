@@ -16,4 +16,10 @@ class ScreenCaptureSystemConsentTest {
         assertFalse(screenCaptureConsentCurrent(ticket, 4, 7, true, true))
         assertFalse(screenCaptureConsentCurrent(null, 4, 7, true, false))
     }
+    @Test fun stopDuringTheSystemDialogInvalidatesItsDelayedConsentWithoutResettingGlobalMode() {
+        val ticket = ScreenCaptureConsentTicket(4, 7, stopGeneration = 2)
+        assertTrue(screenCaptureConsentCurrent(ticket, 4, 7, true, false, stopGeneration = 2))
+        assertFalse(screenCaptureConsentCurrent(ticket, 4, 7, true, false, stopGeneration = 3))
+    }
+
 }

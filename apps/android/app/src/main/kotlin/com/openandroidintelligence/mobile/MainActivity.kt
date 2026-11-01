@@ -416,7 +416,8 @@ class MainActivity : ComponentActivity() {
                 }
                 fun captureConsentCurrent() = com.openandroidintelligence.mobile.screen.screenCaptureConsentCurrent(
                     remoteCaptureTicket, app.pairingGrants.state.value?.revision ?: -1L, app.pluginHost.revision.value,
-                    captureEnabled(), app.kernel.isEmergencyStopped())
+                    captureEnabled(), app.kernel.isEmergencyStopped(),
+                    com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L)
                 val remoteScreenCaptureLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
                 ) { result ->
@@ -479,7 +480,8 @@ class MainActivity : ComponentActivity() {
                                 notify("系统未提供屏幕录制服务，截图暂不可用")
                             } else {
                                 remoteCaptureTicket = com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket(
-                                    app.pairingGrants.state.value?.revision ?: -1L, app.pluginHost.revision.value)
+                                    app.pairingGrants.state.value?.revision ?: -1L, app.pluginHost.revision.value,
+                                    com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L)
                                 remoteScreenCaptureLauncher.launch(intent)
                             }
                         }

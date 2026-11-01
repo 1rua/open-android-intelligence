@@ -198,6 +198,28 @@ class DevicePushRuntimeTest {
         assertEquals(1L, runtime.snapshot().expiredEvents)
     }
 
+    @Test fun restartWithWallClockRollbackKeepsUnacknowledgedEventsAndTheirOriginalDeadline() = runBlocking {
+        val persistence = InMemoryOutboxPersistence()
+        val original = runtime(persistence)
+        original.configure(configuration().copy(retentionHours = 1))
+        original.onLoginStateChanged(true)
+        original.onSms(sms)
+        val sent = TestPushTransport { PushReceiptState.ACCEPTED }
+        original.deliver(sent)
+        val before = sent.deliveries.first().event
+        clock.epoch -= PUSH_HOUR_MS
+        val restarted = runtime(persistence)
+        assertEquals(1, restarted.snapshot().queuedEvents)
+        assertEquals(0L, restarted.snapshot().expiredEvents)
+        restarted.onLoginStateChanged(true)
+        val after = TestPushTransport { PushReceiptState.ACCEPTED }
+        restarted.deliver(after)
+        assertEquals(before, after.deliveries.first().event)
+        clock.elapsed += PUSH_HOUR_MS
+        assertEquals(0, restarted.maintain().queuedEvents)
+        assertEquals(1L, restarted.snapshot().expiredEvents)
+    }
+
     @Test fun damagedCiphertextAndMissingInstallationOwnershipFailClosedWithoutReset() {
         val memory = InMemoryOutboxPersistence()
         val runtime = ready(memory)

@@ -46,14 +46,9 @@ class DevicePushRuntime(
     init {
         require(attemptTimeoutMs in 1..120_000)
         synchronized(lock) {
-            // A wall-clock rollback across process death cannot extend sensitive retention.
-            if (clock.epochMs() + 5_000 < state.observedAtEpochMs && state.events.isNotEmpty()) {
-                val cleanup = mergeRevocations(state.revocations, state.events.flatMap { queued ->
-                    queued.targets.keys.map { it to queued.event.eventId }
-                })
-                commit(state.copy(events = emptyList(), seen = emptyMap(),
-                    expiredEvents = state.expiredEvents + state.events.size, revocations = cleanup))
-            }
+            // Keep the original event deadline on a clock rollback. A restart is not
+            // revocation or proof of expiry; the persisted anchor and monotonic runtime
+            // clock keep advancing without inventing a replacement retention deadline.
             maintainLocked()
         }
     }

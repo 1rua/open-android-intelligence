@@ -6,6 +6,7 @@ data class ScreenHostStatus(
     val accessibilityError: String?,
     val captureError: String?,
     val capabilityErrors: Map<ScreenPermission, String?>,
+    val stopGeneration: Long = 0L,
 )
 
 /** Trusted, in-process host integration. None of these methods is a remote capability. */

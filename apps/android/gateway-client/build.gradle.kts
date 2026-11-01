@@ -9,6 +9,9 @@ android {
     testOptions.unitTests.all {
         val testHome = rootProject.layout.projectDirectory.dir(".gradle/robolectric-home").asFile
         it.systemProperty("user.home", testHome.absolutePath)
+        it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        it.testLogging.showCauses = true
+        it.testLogging.showStackTraces = true
         it.doFirst { testHome.mkdirs() }
     }
 }

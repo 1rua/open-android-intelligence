@@ -122,14 +122,17 @@ class PairingGrantStateHolder(
     )
     val state: StateFlow<PairingGrantState?> = _state.asStateFlow()
 
-    private data class BoundGrant(val binding: PairingGrantBinding, val state: PairingGrantState)
+    private data class BoundGrant(val binding: PairingGrantBinding, val state: PairingGrantState,
+        val current: () -> Boolean)
 
     @Volatile private var boundGrant: BoundGrant? = null
     private val verifiedBindings = java.util.concurrent.ConcurrentHashMap<String, PairingGrantBinding>()
+    private val connectionChecks = java.util.concurrent.ConcurrentHashMap<String, () -> Boolean>()
+    private fun current(check: () -> Boolean): Boolean = runCatching(check).getOrDefault(false)
     val authorization = CapabilityAuthorizationController()
 
     @Synchronized
-    fun bind(nextBinding: PairingGrantBinding) {
+    fun bind(nextBinding: PairingGrantBinding, connectionCurrent: () -> Boolean = { true }) {
         boundGrant = null
         _state.value = _state.value?.copy(pairingId = INSTALLATION_POLICY_ID)
         var loaded = loadPolicy(nextBinding)
@@ -148,7 +151,7 @@ class PairingGrantStateHolder(
             } catch (_: Exception) { loaded }
         }
         if (loaded.localError == null) {
-            boundGrant = BoundGrant(nextBinding, loaded)
+            boundGrant = BoundGrant(nextBinding, loaded, connectionCurrent)
             _state.value = loaded
         } else _state.value = loaded.copy(pairingId = INSTALLATION_POLICY_ID)
     }
@@ -227,22 +230,28 @@ class PairingGrantStateHolder(
     fun currentBinding(): PairingGrantBinding? = boundGrant?.binding
 
     /** Only the authenticated connection composition can register these transport relationships. */
-    fun attachConnection(binding: PairingGrantBinding): String {
+    fun attachConnection(binding: PairingGrantBinding, connectionCurrent: () -> Boolean = { true }): String {
         check(_state.value?.migrationRequired == false && _state.value?.localError == null) { "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED" }
         val registrationId = UUID.randomUUID().toString()
+        connectionChecks[registrationId] = connectionCurrent
         verifiedBindings[registrationId] = binding
         return registrationId
     }
 
     fun detachConnection(binding: PairingGrantBinding, registrationId: String? = null) {
-        if (registrationId != null) verifiedBindings.remove(registrationId, binding)
-        else verifiedBindings.entries.removeIf { it.value == binding }
+        if (registrationId != null) {
+            if (verifiedBindings.remove(registrationId, binding)) connectionChecks.remove(registrationId)
+        } else verifiedBindings.entries.filter { it.value == binding }.forEach {
+            if (verifiedBindings.remove(it.key, it.value)) connectionChecks.remove(it.key)
+        }
     }
     fun isConnectionCurrent(binding: PairingGrantBinding): Boolean =
-        boundGrant?.binding == binding || verifiedBindings.containsValue(binding)
+        boundGrant?.let { it.binding == binding && current(it.current) } == true ||
+            verifiedBindings.entries.any { it.value == binding && connectionChecks[it.key]?.let(::current) == true }
 
     fun currentKernelGrant(pairingId: String): PairingGrant? =
-        _state.value?.takeIf { boundGrant?.binding?.pairingId == pairingId || verifiedBindings.values.any { it.pairingId == pairingId } }
+        _state.value?.takeIf { boundGrant?.let { it.binding.pairingId == pairingId && current(it.current) } == true ||
+            verifiedBindings.entries.any { it.value.pairingId == pairingId && connectionChecks[it.key]?.let(::current) == true } }
             ?.copy(pairingId = pairingId)?.asKernelGrant()
 
     @Synchronized
@@ -287,7 +296,7 @@ class PairingGrantStateHolder(
         val barrier = persisted.copy(localError = "LOCAL_AUTHORIZATION_UPDATE_INCOMPLETE")
         store.save(currentBinding, barrier)
         authorization.revokeAll()
-        if (bound != null) boundGrant = BoundGrant(currentBinding, barrier)
+        if (bound != null) boundGrant = BoundGrant(currentBinding, barrier, bound.current)
         _state.value = if (bound == null) barrier.copy(pairingId = INSTALLATION_POLICY_ID) else barrier
         try {
             audit.record(
@@ -303,7 +312,7 @@ class PairingGrantStateHolder(
         }
         store.save(currentBinding, persisted)
         authorization.revokeAll()
-        if (bound != null) boundGrant = BoundGrant(currentBinding, persisted)
+        if (bound != null) boundGrant = BoundGrant(currentBinding, persisted, bound.current)
         _state.value = if (bound == null) persisted.copy(pairingId = INSTALLATION_POLICY_ID) else persisted
         return persisted
     }

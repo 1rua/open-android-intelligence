@@ -160,7 +160,9 @@ class AdditionalDeviceConnections(
         val job = SupervisorJob(scope.coroutineContext[Job])
         val connection = Connection(profile, binding, job, CoroutineScope(scope.coroutineContext + job))
         try {
-            connection.registrationId = holder.attachConnection(binding)
+            connection.registrationId = holder.attachConnection(binding) {
+                connection.owned() && runCatching(connection.profile.isCurrent).getOrDefault(false)
+            }
             connection.screenHost = ScreenHostRegistry.current
             connection.screenBinding = connection.screenHost?.registerConnection(
                 profile.accountId, binding.pairingId, profile.generation.toLong(),

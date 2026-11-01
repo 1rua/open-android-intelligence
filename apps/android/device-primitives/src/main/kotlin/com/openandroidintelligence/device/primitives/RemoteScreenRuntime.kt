@@ -109,7 +109,7 @@ internal class RemoteScreenRuntime(
                 else -> ScreenPermission.CONTROL
             }
             permission to provider.availability()
-        })
+        }, stopGeneration = requestRevocation.get())
 
     @Synchronized override fun registerConnection(accountId: String, pairingId: String,
         pairingGeneration: Long, localRevision: () -> Long): ScreenAuthorizationBinding {

@@ -386,8 +386,12 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
                 val wait = CompletableDeferred<Int>(); confirmations[id] = wait
                 val sharedApproval = scope.launch {
                     host.authorizationChanges.collect {
-                        if (host.requestAuthorization(id, entry, parameters, authenticatedBinding) is CapabilityAuthorization.Allowed)
-                            wait.complete(ALREADY_AUTHORIZED)
+                        when (runCatching { host.requestAuthorization(id, entry, parameters, authenticatedBinding) }
+                            .getOrElse { CapabilityAuthorization.Denied("AUTHENTICATED_DEVICE_BINDING_REQUIRED") }) {
+                            is CapabilityAuthorization.Allowed -> wait.complete(ALREADY_AUTHORIZED)
+                            is CapabilityAuthorization.Denied -> wait.complete(-1)
+                            CapabilityAuthorization.AwaitingConfirmation -> Unit
+                        }
                     }
                 }
                 confirmation.value = DeviceConfirmation(id, identity.pluginId, key, Json.canonical(parameters).take(4096),

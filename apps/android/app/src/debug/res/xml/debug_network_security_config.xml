@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Debug builds accept the CA the test user explicitly installs through Android Settings.
+         Platform chain/hostname validation and the protocol SPKI binding remain active. -->
+    <!-- Preserve the existing explicit HTTP development profile (ADR-0047). -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

@@ -334,7 +334,7 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
             notificationKey = key,
             appLabel = null,
             title = extras?.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString(),
-            body = extras?.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString(),
+            body = readableNotificationBody(notification, includeContent),
             channelId = notification.channelId,
             postedAtEpochMs = postTime,
         )
@@ -343,4 +343,12 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
     override fun onNotificationRemoved(sbn: android.service.notification.StatusBarNotification) {
         session?.removed(sbn.key)
     }
+}
+
+/** Prefer the complete Android-provided expanded text; never synthesize unavailable content. */
+internal fun readableNotificationBody(notification: android.app.Notification, includeContent: Boolean): String? {
+    if (!includeContent) return null
+    val extras = notification.extras ?: return null
+    return (extras.getCharSequence(android.app.Notification.EXTRA_BIG_TEXT)
+        ?: extras.getCharSequence(android.app.Notification.EXTRA_TEXT))?.toString()
 }

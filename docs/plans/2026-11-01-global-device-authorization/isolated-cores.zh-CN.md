@@ -52,3 +52,34 @@ OAI_BUNDLED_PLUGINS_DIR=../../../docs/plans/2026-11-01-global-device-authorizati
 两套测试 CA 彼此独立，服务器证书包含 `localhost` 和 `127.0.0.1`。本机已做严格证书链检查及内存 TLS 握手测试，验证错误 CA 和错误主机名被拒绝。这些检查没有经过 Android 或 Core 网络服务。
 
 当前 App 走系统 TLS 信任链后才校验协商得到的证书公钥指纹；自建测试 CA 不会因此自动受 Android 信任。真实测试必须通过受支持的测试设备/构建信任配置建立证书信任，并实测握手和指纹；不得关闭证书或主机名验证，不得静默降级到 HTTP。此前缺少严格校验扩展的首版测试证书保留在忽略目录中，现有配置使用 `tls/v2/`。测试证书仅用于本地验收，过期后应停止并评估新的受控测试环境，不覆盖已有信任记录。
+
+## Android自身TLS诊断探针
+
+`CoreTlsConnectivityTest`在目标App的真实Android进程中通过同一GatewayTransport使用平台默认HTTPS，
+不携带凭据、不申请设备权限，只检查隔离Core未认证接口是否返回401。
+需要先构建并安装对应debug androidTest包，在隔离测试用户执行：
+
+```bash
+adb -e shell am instrument --user 10 -w \
+  -e class com.openandroidintelligence.mobile.CoreTlsConnectivityTest \
+  -e oaiCoreUrl https://127.0.0.1:19841 \
+  com.openandroidintelligence.mobile.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+缺少参数会明确失败。探针不安装CA，不替换TrustManager，不关闭证书或主机名校验；
+失败的异常类型用于区分网络/TLS原因，不能把该探针通过当作登录、配对或设备权限验收通过。
+
+## 真实系统通知的合成样本
+
+完成用户10的POST_NOTIFICATIONS和Notification Listener系统UI批准、手机独立推送范围/端点选择后，可运行：
+
+```bash
+adb -e shell am instrument --user 10 -w \
+  -e class com.openandroidintelligence.mobile.AcceptanceNotificationSampleTest \
+  -e oaiAcceptanceSample post \
+  com.openandroidintelligence.mobile.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+此测试通过Android NotificationManager产生固定合成内容，不注入collector、队列或Core数据库。
+只有真实Notification Listener收到OS事件、手机按独立范围入队、Core路由、CLI/MCP接收并消费ACK，才可称推送链路通过。
+样本fixture的运行通过不能单独证明该业务链路。

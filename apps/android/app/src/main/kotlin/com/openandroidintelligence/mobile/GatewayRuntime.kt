@@ -658,6 +658,8 @@ class GatewayRuntime(
             val retainedPins = identityTrust.pinsBeforeConnect(endpoint, username)
             val negotiation = runCatching { authClientFor(normalized, retainedPins).negotiate("neg_" + newToken()) }
             val negotiated = negotiation.getOrElse { cause ->
+                val rootCause = generateSequence(cause) { it.cause }.take(8).last()
+                GatewayLog.w("OaiConnection", "stage=NEGOTIATION state=failed errorType=${cause.javaClass.simpleName} rootType=${rootCause.javaClass.simpleName}")
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
                 return@launch
             }
@@ -1486,7 +1488,9 @@ class GatewayRuntime(
                 accountId = session.accountId,
                 installationId = installationId(),
             )
-        initializePostLogin(InitializationStage.PAIRING_STATE) { pairingGrants.bind(binding) }
+        initializePostLogin(InitializationStage.PAIRING_STATE) {
+            pairingGrants.bind(binding) { authorizationAgreement.get() && sessionRenewal === renewal }
+        }
         gatewayGrantRevision = session.grantRevision.toLong()
         val conversationScope = ConversationScope(profileId,endpoint.baseUrl,session.accountId,installationId())
         val mirror = initializePostLogin(InitializationStage.MIRROR_RECOVERY) {

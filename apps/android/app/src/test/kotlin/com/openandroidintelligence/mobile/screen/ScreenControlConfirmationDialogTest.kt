@@ -100,4 +100,21 @@ class ScreenControlConfirmationDialogTest {
         compose.runOnIdle { id = "second-request" }
         compose.onNodeWithTag("screen-confirmation-details").assertDoesNotExist()
     }
+    @Test fun allDecisionButtonsHaveSeparateVerticalTouchBounds() {
+        compose.setContent {
+            androidx.compose.material3.MaterialTheme {
+                ScreenControlConfirmationDialog("bounds", "plugin", "org.openandroidintelligence.call-log.query@1.0.0",
+                    "{\"limit\":1}", "测试Agent", "拒绝合成样本查询", "READ", System.currentTimeMillis() + 60_000,
+                    onApprove = { error("must not approve during layout") }, onDeny = {})
+            }
+        }
+        val tags = listOf("device-confirmation-allow:0", "device-confirmation-allow:5",
+            "device-confirmation-allow:30", "device-confirmation-allow:60", "screen-confirmation-deny")
+        val bounds = tags.map { compose.onNodeWithTag(it).fetchSemanticsNode().boundsInRoot }
+        bounds.zipWithNext().forEach { (first, second) ->
+            org.junit.Assert.assertTrue("Decision touch targets overlap", first.bottom <= second.top)
+        }
+        bounds.forEach { org.junit.Assert.assertTrue(it.width > 0 && it.height > 0) }
+    }
+
 }

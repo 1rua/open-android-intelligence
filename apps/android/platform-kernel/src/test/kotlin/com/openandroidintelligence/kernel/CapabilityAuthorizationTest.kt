@@ -134,4 +134,23 @@ class CapabilityAuthorizationTest {
         assertFalse(holder.isConnectionCurrent(binding))
     }
 
+    @Test fun logoutImmediatelyFencesEveryKernelProjectionWithoutChangingSavedPolicy() {
+        val holder = PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore())
+        val a = PairingGrantBinding("https://a.example", "alice", "phone")
+        val b = PairingGrantBinding("https://b.example", "bob", "phone")
+        var aCurrent = true
+        var bCurrent = true
+        holder.bind(a) { aCurrent }
+        holder.attachConnection(b) { bCurrent }
+        holder.updateCapabilityPolicy("sms", CapabilityPolicy(mode = CapabilityAuthorizationMode.AUTOMATIC))
+        assertNotNull(holder.currentKernelGrant(a.pairingId))
+        assertNotNull(holder.currentKernelGrant(b.pairingId))
+        aCurrent = false
+        bCurrent = false
+        assertNull(holder.currentKernelGrant(a.pairingId))
+        assertNull(holder.currentKernelGrant(b.pairingId))
+        assertFalse(holder.isConnectionCurrent(a))
+        assertEquals(CapabilityAuthorizationMode.AUTOMATIC, holder.capabilityPolicy("sms").mode)
+    }
+
 }
