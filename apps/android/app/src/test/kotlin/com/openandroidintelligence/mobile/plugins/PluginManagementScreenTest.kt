@@ -8,6 +8,7 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.printToString
@@ -265,6 +266,59 @@ class PluginManagementScreenTest {
         assertEquals(1, store.listInstalled().size)
     }
 
+    @Test
+    @Config(application = OpenAndroidIntelligenceApplication::class)
+    fun allBundledInstallButtonsUseRealPackagesAndLeaveScreenCapabilitiesManual() {
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        val packages = BundledPlugin.entries.associateWith { TestAlpPackages.compiledBundledPackage(it) }
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(true, true, {}, store = store,
+                    bundledPluginPackages = packages.mapValues { (_, bytes) -> { bytes } })
+            }
+        }
+        for (plugin in BundledPlugin.entries) {
+            compose.onNodeWithTag(plugin.installTag).performScrollTo().assertIsEnabled().performClick()
+            compose.waitUntil(10_000) {
+                compose.onAllNodesWithText("${plugin.displayName}插件已安装").fetchSemanticsNodes().isNotEmpty()
+            }
+            assertTrue(store.listInstalled().any { it.pluginId == plugin.pluginId })
+            assertFalse(app.pluginHost.isEnabled(plugin.pluginId))
+            val node = compose.onNodeWithTag(plugin.installTag).fetchSemanticsNode()
+            assertFalse(node.config.getOrNull(SemanticsActions.OnClick) != null)
+            if (plugin in listOf(BundledPlugin.SCREEN_READER, BundledPlugin.SCREEN_CAPTURE, BundledPlugin.SCREEN_CONTROL)) {
+                val entry = app.pluginHost.entries(plugin.pluginId).single()
+                assertEquals(CapabilityAuthorizationMode.MANUAL, app.pluginHost.capabilityPolicy(plugin.pluginId, entry.key).mode)
+            }
+        }
+        assertEquals(6, store.listInstalled().size)
+        compose.onAllNodesWithText("请在下方启用插件，并检查 Android 无障碍服务", substring = true).assertCountEquals(2)
+        compose.onNodeWithText("请在下方启用插件；截图还需 Android 屏幕捕获同意", substring = true).assertExists()
+    }
+
+    @Test fun aMissingBundledPackageDoesNotBlockTheOtherFiveInstallButtons() {
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(true, false, {}, store = store,
+                    bundledPluginPackages = BundledPlugin.entries.associateWith { plugin ->
+                        { throw BundledPluginUnavailable(plugin) }
+                    })
+            }
+        }
+        for (plugin in BundledPlugin.entries) {
+            compose.onNodeWithTag(plugin.installTag).performScrollTo().assertIsEnabled().performClick()
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithText("当前安装包未附带${plugin.displayName}插件，请从文件导入已签名的 .alp 插件包。")
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            for (other in BundledPlugin.entries.filter { it != plugin }) {
+                assertTrue(compose.onNodeWithTag(other.installTag).fetchSemanticsNode().config.getOrNull(SemanticsActions.OnClick) != null)
+            }
+        }
+        assertTrue(store.listInstalled().isEmpty())
+        compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).assertIsEnabled()
+    }
+
     @Test fun theBundledPluginButtonsExplainMissingAssetsAndKeepFileImportAvailable() {
         compose.setContent {
             MaterialTheme {
@@ -286,7 +340,7 @@ class PluginManagementScreenTest {
             MaterialTheme {
                 PluginManagementScreen(false, false, {}, store = store,
                     bundledPluginPackages = BundledPlugin.entries.associateWith { plugin ->
-                        { reads++; TestAlpPackages.signedPackage(id = plugin.pluginId) }
+                        { reads++; TestAlpPackages.compiledBundledPackage(plugin) }
                     })
             }
         }

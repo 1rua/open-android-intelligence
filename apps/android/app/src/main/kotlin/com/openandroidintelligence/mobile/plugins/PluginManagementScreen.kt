@@ -420,9 +420,14 @@ fun PluginManagementScreen(
                             supporting = when {
                                 !allowRuntimePlugins -> "当前版本不支持内置插件，请使用支持插件的完整版本"
                             alreadyInstalled && host?.loadFailures?.containsKey(plugin.pluginId) == true -> "现有的包已损坏，请先卸载它，再重新安装"
-                            alreadyInstalled -> if (plugin == BundledPlugin.NOTIFICATIONS)
-                                "请在下方启用插件，并检查通知读取范围与系统通知使用权"
-                            else "请在下方启用插件；短信或通话记录还需要对应的系统权限"
+                            alreadyInstalled -> when (plugin) {
+                                BundledPlugin.NOTIFICATIONS -> "请在下方启用插件，并检查通知读取范围与系统通知使用权"
+                                BundledPlugin.SMS, BundledPlugin.CALL_LOG -> "请在下方启用插件；短信或通话记录还需要对应的系统权限"
+                                BundledPlugin.SCREEN_READER, BundledPlugin.SCREEN_CONTROL ->
+                                    "请在下方启用插件，并检查 Android 无障碍服务；请求仍按本机授权模式处理"
+                                BundledPlugin.SCREEN_CAPTURE ->
+                                    "请在下方启用插件；截图还需 Android 屏幕捕获同意，请求仍按本机授权模式处理"
+                            }
                             else -> "安装应用自带的插件，安装后可在下方启用并设置本机能力开关"
                             },
                             icon = Icons.Default.InstallMobile,

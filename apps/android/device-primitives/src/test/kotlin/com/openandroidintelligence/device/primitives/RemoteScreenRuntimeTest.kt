@@ -133,8 +133,29 @@ class RemoteScreenRuntimeTest {
         fixture.now++
         assertEquals("SCREEN_REQUEST_EXPIRED", code { fixture.invoke(ScreenPermission.CONTROL, controlInput, "expired") })
         fixture.runtime.connectionChanged(false)
+        assertNull("A stream outage does not erase the authenticated relationship", fixture.provider(ScreenPermission.CONTROL).availability())
+        assertEquals("SCREEN_REQUEST_AUTHORIZATION_REQUIRED", code { fixture.invoke(ScreenPermission.CONTROL, controlInput, "expired") })
+        fixture.runtime.disconnectConnection(fixture.runtime.binding()!!)
         assertEquals("SCREEN_CONNECTION_REQUIRED", fixture.provider(ScreenPermission.CONTROL).availability())
         assertEquals(0, fixture.backend.actions)
+    }
+
+    @Test fun eventStreamReconnectKeepsAuthenticatedDriverHandleButNeverRevivesAnOldApproval() = runTest {
+        val fixture = Fixture()
+        val owner = fixture.runtime.binding()!!
+        fixture.grant("old-request", ScreenPermission.READ, binding = owner)
+        fixture.runtime.connectionChanged(false)
+        fixture.runtime.connectionChanged(true)
+        assertEquals("SCREEN_REQUEST_AUTHORIZATION_REQUIRED", code {
+            fixture.invoke(ScreenPermission.READ, id = "old-request")
+        })
+        // Runtime's selected driver holds this exact authenticated registration across SSE reconnect.
+        fixture.grant("new-request", ScreenPermission.READ, binding = owner)
+        assertEquals("revision", JsonFields.string(fixture.invoke(ScreenPermission.READ, id = "new-request"), "revision"))
+        fixture.runtime.disconnectConnection(owner)
+        assertEquals("SCREEN_SESSION_BINDING_CHANGED", code {
+            fixture.grant("after-logout", ScreenPermission.READ, binding = owner)
+        })
     }
 
     @Test fun globalPermissionNeverReplacesAccessibilityLockScreenOrMediaProjectionChecks() = runTest {

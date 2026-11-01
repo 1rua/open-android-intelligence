@@ -79,6 +79,49 @@ internal object TestAlpPackages {
             "signature.ed25519" to Base64.getUrlEncoder().withoutPadding().encode(signature)))
     }
 
+    fun compiledScreenReaderPackage(): ByteArray = compiledReferencePackage("screen-reader")
+    fun compiledScreenCapturePackage(): ByteArray = compiledReferencePackage("screen-capture")
+    fun compiledScreenControlPackage(): ByteArray = compiledReferencePackage("screen-control")
+    fun compiledCallLogPackage(): ByteArray = compiledReferencePackage("call-log")
+
+    /** 每项都使用仓库真实 manifest、Schema 和编译的 Rust WASM，仅作者换成隔离测试密钥。 */
+    fun compiledBundledPackage(plugin: BundledPlugin): ByteArray = when (plugin) {
+        BundledPlugin.NOTIFICATIONS -> compiledNotificationsPackage()
+        BundledPlugin.SMS -> compiledSmsPackage()
+        BundledPlugin.CALL_LOG -> compiledCallLogPackage()
+        BundledPlugin.SCREEN_READER -> compiledScreenReaderPackage()
+        BundledPlugin.SCREEN_CAPTURE -> compiledScreenCapturePackage()
+        BundledPlugin.SCREEN_CONTROL -> compiledScreenControlPackage()
+    }
+
+    private fun compiledReferencePackage(name: String): ByteArray {
+        val root = generateSequence(File(requireNotNull(System.getProperty("user.dir"))).absoluteFile) { it.parentFile }
+            .first { File(it, "plugins/$name/manifest.json").isFile }
+        val author = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val publicKey = Base64.getUrlEncoder().withoutPadding().encodeToString(author.public.encoded.copyOfRange(12, 44))
+        val template = Json.parse(File(root, "plugins/$name/manifest.json").readText()) as JsonValue.JObject
+        val manifest = Json.canonical(template.copy(fields = template.fields.map { (key, value) ->
+            key to if (key == "author") Json.of(mapOf("algorithm" to "Ed25519", "publicKey" to publicKey)) else value
+        })).encodeToByteArray()
+        val runtime = template.fields.toMap().getValue("runtime") as JsonValue.JObject
+        val payload = (runtime.fields.toMap().getValue("payload") as JsonValue.JString).value
+        val capabilities = template.fields.toMap().getValue("capabilities") as JsonValue.JObject
+        val provides = capabilities.fields.toMap().getValue("provides") as JsonValue.JArray
+        val schemas = provides.items.map { entry ->
+            ((entry as JsonValue.JObject).fields.toMap().getValue("schema") as JsonValue.JString).value
+        }.distinct()
+        val content = listOf(payload to File(root, "plugins/target/wasm32-unknown-unknown/release/${payload.substringAfterLast('/')}").readBytes()) +
+            schemas.map { path -> path to File(root, "plugins/$path").readBytes() }
+        val index = filesJson(content)
+        val signature = Signature.getInstance("Ed25519").run {
+            initSign(author.private)
+            update("OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1\n".encodeToByteArray() + manifest + byteArrayOf(10) + index)
+            sign()
+        }
+        return zipOf(content + listOf("manifest.json" to manifest, "files.json" to index,
+            "signature.ed25519" to Base64.getUrlEncoder().withoutPadding().encode(signature)))
+    }
+
     /** §8 声明式设置贡献：一个带 set-setting 动作的 toggle。 */
     const val SETTINGS_CONTRIBUTION_JSON =
         """{"id":"settings-main","title":"示例插件设置","root":{""" +

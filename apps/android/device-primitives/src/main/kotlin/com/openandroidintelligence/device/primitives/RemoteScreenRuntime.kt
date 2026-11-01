@@ -134,12 +134,10 @@ internal class RemoteScreenRuntime(
 
     @Synchronized override fun connectionChanged(live: Boolean) {
         val current = selected ?: return
-        if (live) {
-            if (connections[current.generation] !== current) {
-                val next = registerConnection(current.accountId, current.pairingId, current.pairingGeneration, current.localRevision)
-                selected = requireConnection(next)
-            }
-        } else removeConnection(current)
+        // Stream liveness is not the authenticated device relationship. Clear every old
+        // request/lease/image on loss, but retain the driver's opaque registration so a
+        // fresh signed HTTP request can be authorized after reconnect without a new grant.
+        if (!live) clearConnectionRequests(current)
     }
 
     override fun refreshAuthorization() {
