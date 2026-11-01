@@ -1114,7 +1114,7 @@ class GatewayRuntime(
             pendingRotations.remove(profileId)
             return pending
         }
-        val negotiated = authClientFor(endpoint.baseUrl, pins).negotiate("neg_" + newToken())
+        val negotiated = authClientFor(endpoint.baseUrl, pins, beforeConnect = checkOwner).negotiate("neg_" + newToken())
         checkOwner()
         val tlsPin = identityTrust.verifyNegotiation(endpoint, username, negotiated)
         val refresh = credentialStore.loadRefresh(profileId)?.takeIf { it.isNotEmpty() }
@@ -1122,7 +1122,14 @@ class GatewayRuntime(
         try {
             val operation = refreshJournal.prepare(profileId, refresh, negotiated.refreshReplaySupported)
             val session = try {
-                authClientFor(endpoint.baseUrl, setOfNotNull(tlsPin)).refresh(
+                authClientFor(endpoint.baseUrl, setOfNotNull(tlsPin), beforeConnect = {
+                    try { checkOwner() } catch (cancelled: CancellationException) {
+                        // A new legacy refresh rejected before open has never reached the server.
+                        // Replayable journals may belong to an earlier unknown outcome; retain them.
+                        if (!operation.replayable) refreshJournal.clear(profileId)
+                        throw cancelled
+                    }
+                }).refresh(
                     accountId, deviceId, negotiated.negotiationId, refresh,
                     operation.id.takeIf { operation.replayable },
                 )
@@ -2305,6 +2312,7 @@ class GatewayRuntime(
     private fun authClientFor(
         gatewayUrl: String,
         pinnedSpkiSha256: Set<String> = emptySet(),
+        beforeConnect: () -> Unit = {},
     ): GatewayAuthClient = GatewayAuthClient(
         transport = GatewayTransport(
             GatewayProfile(
@@ -2314,6 +2322,7 @@ class GatewayRuntime(
                 gatewayBaseUrl = gatewayUrl,
                 pinnedSpkiSha256 = pinnedSpkiSha256,
             ),
+            beforeConnect = beforeConnect,
         ),
         installationId = installationId(),
         appVersion = BuildConfig.VERSION_NAME.ifBlank { "unversioned" },

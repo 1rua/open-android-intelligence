@@ -313,29 +313,114 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
+    fun aBackgroundRecoveryCannotStartTransportAfterItsLeaseExpires() {
+        assertExpiredBackgroundLeaseStopsBeforeTransport(NEGOTIATE_PATH)
+    }
+
+    @Test
+    fun aBackgroundRecoveryCannotRefreshIfItsLeaseExpiresBeforeTransport() {
+        assertExpiredBackgroundLeaseStopsBeforeTransport(REFRESH_PATH)
+    }
+
+    private fun assertExpiredBackgroundLeaseStopsBeforeTransport(target: String) {
+        saveLoginBeforeProcessDeath()
+        val recovery = AgentSessionRecoveryState(ApplicationProvider.getApplicationContext())
+        assertTrue(recovery.markPendingWork())
+        assertNotNull(recovery.beginRecovery())
+        val previousAttempts = gateway.requests.count { it.target == target }
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val transportNumber = if (target == NEGOTIATE_PATH) 1 else 2
+        val transportAttempts = java.util.concurrent.atomic.AtomicInteger()
+        val previousSink = GatewayLog.sink
+        val previousEvidence = GatewayLog.protocolEvidenceEnabled
+        GatewayLog.protocolEvidenceEnabled = true
+        GatewayLog.sink = { tag, message ->
+            if (tag == "OaiE2E" && message.contains("\"type\":\"transport.io_dequeued\"") &&
+                message.contains("\"mode\":\"execute\"") && transportAttempts.incrementAndGet() == transportNumber) {
+                entered.countDown()
+                check(release.await(10, java.util.concurrent.TimeUnit.SECONDS)) { "transport 闩锁未释放" }
+            }
+        }
+        val restored = runtime()
+        try {
+            restored.onBackgroundSessionRestarted()
+            assertTrue("必须暂停在 IO 已调度、尚未打开连接的边界", awaitCondition(AWAIT_MILLIS) { entered.count == 0L })
+            assertTrue(recovery.hasRecoveryLease)
+            assertEquals("暂停时尚未发出 $target 请求", previousAttempts,
+                gateway.requests.count { it.target == target })
+            val owner = restoreJob(restored)
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+            assertFalse(recovery.hasRecoveryLease)
+            release.countDown()
+            assertTrue("失去后台租约后恢复所有者必须结束", awaitCondition(AWAIT_MILLIS) { owner.isCompleted })
+            assertEquals("IO 调度期间过期的后台租约不得开始 $target transport", previousAttempts,
+                gateway.requests.count { it.target == target })
+            assertFalse(gateway.requests.any { it.target == REFRESH_PATH })
+            assertEquals("未发送刷新不能轮换或删除凭据", "refresh_1", credentialStore.loadRefresh(profileId())?.decodeToString())
+            restored.onAppForegrounded()
+            awaitConnected(restored)
+            assertEquals("前台恢复必须仍可提交一次真实刷新", 1, gateway.requests.count { it.target == REFRESH_PATH })
+            assertEquals("refresh_2", credentialStore.loadRefresh(profileId())?.decodeToString())
+        } finally {
+            release.countDown()
+            GatewayLog.sink = previousSink
+            GatewayLog.protocolEvidenceEnabled = previousEvidence
+        }
+    }
+
+    @Test
     fun aBackgroundRecoveryStopsRetryingAtLeaseExpiryAndForegroundingRestartsIt() {
         saveLoginBeforeProcessDeath()
         val context = ApplicationProvider.getApplicationContext<Application>()
         val recovery = AgentSessionRecoveryState(context)
         assertTrue(recovery.markPendingWork())
         assertNotNull(recovery.beginRecovery())
-        gateway.respond(NEGOTIATE_PATH, """{"error":{"code":"GATEWAY_UNAVAILABLE","retryable":true}}""", 503)
+        val unavailable = """{"error":{"code":"GATEWAY_UNAVAILABLE","retryable":true}}"""
+        gateway.respond(NEGOTIATE_PATH, unavailable, 503)
         val previousAttempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
         val restored = runtime()
         restored.onBackgroundSessionRestarted()
         assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value is ConnectionPhase.OfflineMirror })
-        val attempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
-        assertTrue(attempts > previousAttempts)
-        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
-        repeat(3) { restored.onNetworkAvailable() }
-        Thread.sleep(1_100)
-        assertEquals("租约过期后恢复循环不得继续发网络请求", attempts,
-            gateway.requests.count { it.target == NEGOTIATE_PATH })
-        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
-        restored.onAppForegrounded()
-        awaitConnected(restored)
-        assertEquals(1, gateway.requests.count { it.target == PASSWORD_PATH })
+        assertTrue(gateway.requests.count { it.target == NEGOTIATE_PATH } > previousAttempts)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        gateway.respond(NEGOTIATE_PATH) {
+            entered.countDown()
+            check(release.await(10, java.util.concurrent.TimeUnit.SECONDS)) { "在途协商响应未释放" }
+            503 to unavailable
+        }
+        try {
+            restored.onNetworkAvailable()
+            assertTrue("租约仍有效时将下一次请求固定在服务端已登记、尚未响应的边界", awaitCondition(AWAIT_MILLIS) {
+                entered.count == 0L
+            })
+            assertTrue(recovery.hasRecoveryLease)
+            val attempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
+            val owner = restoreJob(restored)
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+            repeat(3) { restored.onNetworkAvailable() }
+            release.countDown()
+            assertTrue("等待同一恢复所有者完成，不能把 OfflineMirror 当成没有在途请求", awaitCondition(AWAIT_MILLIS) {
+                owner.isCompleted
+            })
+            repeat(3) { restored.onNetworkAvailable() }
+            assertSame("后台网络回调不得创建新的恢复所有者", owner, restoreJob(restored))
+            assertEquals("租约过期后恢复循环不得继续发网络请求", attempts,
+                gateway.requests.count { it.target == NEGOTIATE_PATH })
+            assertFalse(gateway.requests.any { it.target == REFRESH_PATH })
+            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
+            restored.onAppForegrounded()
+            awaitConnected(restored)
+            assertEquals(1, gateway.requests.count { it.target == PASSWORD_PATH })
+        } finally { release.countDown() }
     }
+
+    private fun restoreJob(runtime: GatewayRuntime): Job =
+        GatewayRuntime::class.java.getDeclaredField("connectionJob").run {
+            isAccessible = true
+            get(runtime) as Job
+        }
 
     @Test
     fun aStoppedBackgroundRecoveryPersistsALateRotationWithoutPublishingAConnection() {
