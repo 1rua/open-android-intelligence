@@ -2,7 +2,7 @@
   "version": 2,
   "created": "2026-11-01T05:13:12.912471+08:00",
   "session_count": 1,
-  "last_session": "2026-11-01T05:13:12.912471+08:00",
+  "last_session": "2026-11-01T08:54:13.495430+08:00",
   "session_config": {
     "concurrency_mode": "concurrent",
     "max_tasks_per_session": 50,
@@ -17,7 +17,7 @@
     {
       "id": "task-001",
       "title": "源码审计与最小方案",
-      "status": "in_progress",
+      "status": "completed",
       "priority": "P0",
       "depends_on": [],
       "attempts": 0,
@@ -27,13 +27,21 @@
         "timeout_seconds": 30
       },
       "error_log": [],
-      "checkpoints": [],
-      "started_at_commit": "3c9b82d1ef18062fc7dd09546efe6136803079cc"
+      "checkpoints": [
+        {
+          "step": 1,
+          "total": 1,
+          "description": "Android/Core审计完成，源码事实及最小方案写入执行记录",
+          "timestamp": "2026-11-01T05:32:22.472677+08:00"
+        }
+      ],
+      "started_at_commit": "3c9b82d1ef18062fc7dd09546efe6136803079cc",
+      "completed_at": "2026-11-01T05:32:22.472677+08:00"
     },
     {
       "id": "task-002",
       "title": "全局策略与旧许可迁移",
-      "status": "pending",
+      "status": "completed",
       "priority": "P0",
       "depends_on": [
         "task-001"
@@ -45,13 +53,28 @@
         "timeout_seconds": 1800
       },
       "error_log": [],
-      "checkpoints": [],
-      "started_at_commit": null
+      "checkpoints": [
+        {
+          "step": 2,
+          "total": 3,
+          "timestamp": "2026-11-01T07:23:53.758813+08:00",
+          "description": "安装实例持久策略、原子迁移、离线可见、审计拒绝屏障已实现，最终门禁待跑"
+        },
+        {
+          "step": 3,
+          "total": 3,
+          "description": "代码接线与受影响自动化由Fast/PR完整退出0证明；设备侧完整矩阵仍由task-008单列，不冒充运行验收",
+          "timestamp": "2026-11-01T08:54:13.495430+08:00"
+        }
+      ],
+      "started_at_commit": "2e6a799c",
+      "claimed_by": "main-or-assigned-worker",
+      "completed_at": "2026-11-01T08:54:13.495430+08:00"
     },
     {
       "id": "task-003",
       "title": "Core、CLI/MCP和稳定接收端点",
-      "status": "pending",
+      "status": "completed",
       "priority": "P0",
       "depends_on": [
         "task-001"
@@ -63,13 +86,22 @@
         "timeout_seconds": 1800
       },
       "error_log": [],
-      "checkpoints": [],
-      "started_at_commit": null
+      "checkpoints": [
+        {
+          "step": 3,
+          "total": 3,
+          "description": "代码接线与受影响自动化由Fast/PR完整退出0证明；设备侧完整矩阵仍由task-008单列，不冒充运行验收",
+          "timestamp": "2026-11-01T08:54:13.495430+08:00"
+        }
+      ],
+      "started_at_commit": "2e6a799c",
+      "claimed_by": "main-or-assigned-worker",
+      "completed_at": "2026-11-01T08:54:13.495430+08:00"
     },
     {
       "id": "task-004",
       "title": "三级授权、确认及临时许可",
-      "status": "pending",
+      "status": "completed",
       "priority": "P0",
       "depends_on": [
         "task-002"
@@ -81,13 +113,22 @@
         "timeout_seconds": 1800
       },
       "error_log": [],
-      "checkpoints": [],
-      "started_at_commit": null
+      "checkpoints": [
+        {
+          "step": 3,
+          "total": 3,
+          "description": "代码接线与受影响自动化由Fast/PR完整退出0证明；设备侧完整矩阵仍由task-008单列，不冒充运行验收",
+          "timestamp": "2026-11-01T08:54:13.495430+08:00"
+        }
+      ],
+      "started_at_commit": "2e6a799c",
+      "claimed_by": "main-or-assigned-worker",
+      "completed_at": "2026-11-01T08:54:13.495430+08:00"
     },
     {
       "id": "task-005",
       "title": "独立主动推送与加密ACK队列",
-      "status": "pending",
+      "status": "completed",
       "priority": "P0",
       "depends_on": [
         "task-002",
@@ -100,13 +141,22 @@
         "timeout_seconds": 1800
       },
       "error_log": [],
-      "checkpoints": [],
-      "started_at_commit": null
+      "checkpoints": [
+        {
+          "step": 3,
+          "total": 3,
+          "description": "代码接线与受影响自动化由Fast/PR完整退出0证明；设备侧完整矩阵仍由task-008单列，不冒充运行验收",
+          "timestamp": "2026-11-01T08:54:13.495430+08:00"
+        }
+      ],
+      "started_at_commit": "2e6a799c",
+      "claimed_by": "main-or-assigned-worker",
+      "completed_at": "2026-11-01T08:54:13.495430+08:00"
     },
     {
       "id": "task-006",
       "title": "屏幕FIFO租约与生命周期",
-      "status": "pending",
+      "status": "completed",
       "priority": "P0",
       "depends_on": [
         "task-004"
@@ -118,13 +168,22 @@
         "timeout_seconds": 1800
       },
       "error_log": [],
-      "checkpoints": [],
-      "started_at_commit": null
+      "checkpoints": [
+        {
+          "step": 3,
+          "total": 3,
+          "description": "代码接线与受影响自动化由Fast/PR完整退出0证明；设备侧完整矩阵仍由task-008单列，不冒充运行验收",
+          "timestamp": "2026-11-01T08:54:13.495430+08:00"
+        }
+      ],
+      "started_at_commit": "2e6a799c",
+      "claimed_by": "main-or-assigned-worker",
+      "completed_at": "2026-11-01T08:54:13.495430+08:00"
     },
     {
       "id": "task-007",
       "title": "自动化PR门禁与文档核对",
-      "status": "pending",
+      "status": "completed",
       "priority": "P0",
       "depends_on": [
         "task-003",
@@ -139,13 +198,27 @@
         "timeout_seconds": 1800
       },
       "error_log": [],
-      "checkpoints": [],
-      "started_at_commit": null
+      "checkpoints": [
+        {
+          "step": 2,
+          "total": 3,
+          "description": "Fast完整退出0；App1295/0/0/0，Core624+Hermes143+DSH37通过；最终PR门禁进行中",
+          "timestamp": "2026-11-01T08:44:16.424756+08:00"
+        },
+        {
+          "step": 3,
+          "total": 3,
+          "description": "代码接线与受影响自动化由Fast/PR完整退出0证明；设备侧完整矩阵仍由task-008单列，不冒充运行验收",
+          "timestamp": "2026-11-01T08:54:13.495430+08:00"
+        }
+      ],
+      "started_at_commit": "2e6a799c",
+      "completed_at": "2026-11-01T08:54:13.495430+08:00"
     },
     {
       "id": "task-008",
       "title": "Terra Android实际验收",
-      "status": "pending",
+      "status": "in_progress",
       "priority": "P0",
       "depends_on": [
         "task-007"
@@ -157,13 +230,20 @@
         "timeout_seconds": 1800
       },
       "error_log": [],
-      "checkpoints": [],
-      "started_at_commit": null
+      "checkpoints": [
+        {
+          "step": 1,
+          "total": 3,
+          "description": "Terra隔离模拟器user10、双TLS Core及官方签名插件已准备；APK提供并进入实际矩阵，物理手机未连接",
+          "timestamp": "2026-11-01T08:44:16.424756+08:00"
+        }
+      ],
+      "started_at_commit": "2e6a799c"
     },
     {
       "id": "task-009",
       "title": "提交dev PR并保持Review",
-      "status": "pending",
+      "status": "in_progress",
       "priority": "P0",
       "depends_on": [
         "task-007",
@@ -176,7 +256,14 @@
         "timeout_seconds": 1800
       },
       "error_log": [],
-      "checkpoints": [],
+      "checkpoints": [
+        {
+          "step": 1,
+          "total": 2,
+          "description": "Fast/PR完整通过，准备中文提交及dev Review PR；可先公开验收缺口，不因此完成task-008或整体goal",
+          "timestamp": "2026-11-01T08:54:13.495430+08:00"
+        }
+      ],
       "started_at_commit": null
     }
   ]

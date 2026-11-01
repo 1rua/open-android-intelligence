@@ -20,12 +20,10 @@ data class HostEnvelope(val primitives: Set<String>)
 data class PhoneLimits(val primitives: Set<String>)
 
 /**
- * Android-local capability state for an authenticated pairing.
- *
- * [defaultEnabled] is true only after the client has established the current
- * local model. Legacy explicit grants remain readable until a local migration
- * review; they are not another server permission source. Background execution
- * always needs its own explicit local grant.
+ * Projection of installation-owned primitive limits onto one authenticated connection.
+ * Publication generations bind transport/replay; they never choose a separate capability policy.
+ * Foreground mode decisions are checked by the injected invocation authorizer. Background
+ * plugin jobs retain an explicit installation-local choice, separate from proactive delivery.
  */
 data class PairingGrant(
     val pairingId: String,

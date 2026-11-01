@@ -47,7 +47,7 @@ class SettingsHonestyCopyTest {
         // 插件安装/授权链路，而不是给一个点了也不生效的授权位。
         compose.onNodeWithText("读取与发送短信").assertDoesNotExist()
         compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("短信读取").performScrollTo().performClick()
+        compose.onNodeWithText("全局设备能力").performScrollTo().performClick()
         compose.onNodeWithText("未安装任何插件").assertExists()
     }
 
@@ -63,17 +63,17 @@ class SettingsHonestyCopyTest {
         }
 
         compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("短信读取").performScrollTo().performClick()
+        compose.onNodeWithText("全局设备能力").performScrollTo().performClick()
         assertTrue(environment.pairingGrants.state.value!!.granted.isEmpty())
     }
 
     /**
-     * 授权管理子页只做一件事：把手机能力授权给当前 Gateway。
+     * 授权管理提供安装实例策略与独立设备主动推送。
      * 通知类条目（推送、气泡、实时活动、读取范围）已归入主览的「通知管理」区，
      * 因此不应在这个子页里重复出现——两处入口意味着改文案时必然漏掉一处。
      */
     @Test
-    fun theAuthorisationSubScreenKeepsNotificationEntriesOutOfTheGrantList() {
+    fun authorisationSeparatesDevicePushFromReplyNotificationPresentation() {
         compose.setContent {
             MaterialTheme {
                 Surface {
@@ -84,8 +84,9 @@ class SettingsHonestyCopyTest {
 
         compose.onNodeWithText("授权管理").performScrollTo().performClick()
 
-        compose.onNodeWithText("短信读取").performScrollTo().assertExists()
+        compose.onNodeWithText("全局设备能力").performScrollTo().assertExists()
         compose.onNodeWithText("屏幕上下文分析与圈选").performScrollTo().assertExists()
+        compose.onNodeWithText("短信与通知主动推送").performScrollTo().assertExists()
         compose.onNodeWithText("通知读取范围").assertDoesNotExist()
         compose.onNodeWithText("系统通知推送").assertDoesNotExist()
     }
@@ -125,7 +126,7 @@ class SettingsHonestyCopyTest {
         compose.onNodeWithText("授权管理").performScrollTo().performClick()
 
         compose.onNodeWithText(
-            "这台手机为各账号分别保存能力设置。切换账号不会覆盖原来的设置，切回来时继续使用。解除设备配对则会终止对应的连接信任。",
+            "这台手机统一保存各项能力的开关与授权模式。切换 Core、账号或 Agent 不会重置；退出全部账号后暂停采集、执行和推送。",
         ).performScrollTo().assertExists()
         compose.onNodeWithText("切换账号或解除配对后，需要重新授权").assertDoesNotExist()
     }

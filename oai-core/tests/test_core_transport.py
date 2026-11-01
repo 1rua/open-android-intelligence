@@ -155,6 +155,7 @@ async def test_password_check_does_not_block_devices_or_live_events(gateway, mon
             response = await client.get(DEVICE_API + "/devices", headers=cli)
             assert response.status == 200, await response.text()
             response = await client.post(DEVICE_API + "/device-requests", json={
+                "caller": {"agentName": "transport-test", "purpose": "验证设备请求链路"},
                 "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}},
                 headers={**cli, "Idempotency-Key": "during-password-check"})
             assert response.status == 200, await response.text()
@@ -266,7 +267,7 @@ async def test_cli_and_signed_phone_share_one_native_queue_claim_result_and_ack(
     else:
         stream = await client.ws_connect(PREFIX + "/events", headers=headers)
     try:
-        body = {"capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}}
+        body = {"caller": {"agentName": "transport-test", "purpose": "验证设备请求链路"}, "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}}
         response = await client.post(DEVICE_API + "/device-requests", json=body, headers={**cli, "Idempotency-Key": "invoke_once"})
         assert response.status == 200, await response.text()
         receipt = await response.json()
@@ -314,7 +315,7 @@ async def test_cancellation_and_expiry_recover_native_uncertain_outcome(gateway)
     bundle, key = await phone_login(client, core)
     binding, _ = await publish(client, core, bundle, key)
     cli = await token(client, bundle)
-    body = {"capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}}
+    body = {"caller": {"agentName": "transport-test", "purpose": "验证设备请求链路"}, "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}}
     response = await client.post(DEVICE_API + "/device-requests", json=body, headers={**cli, "Idempotency-Key": "cancel-before"})
     pending = (await response.json())["requestId"]
     response = await client.post(DEVICE_API + f"/device-requests/{pending}/cancel", headers=cli)
@@ -334,7 +335,9 @@ async def test_cancellation_and_expiry_recover_native_uncertain_outcome(gateway)
     account = core.open_gateway_account("alice")
     account.bump_grant_revision(bundle["deviceId"], "test-revoke")
     account.close()
-    assert (await client.get(DEVICE_API + "/devices", headers=cli)).status == 403
+    assert (await client.get(DEVICE_API + "/devices", headers=cli)).status == 200
+    stale = await client.get(DEVICE_API + f"/device-requests/{claimed}", headers=cli)
+    assert stale.status == 403 and (await stale.json())["error"]["code"] == "GRANT_STALE"
 
 
 @pytest.mark.asyncio
@@ -343,7 +346,7 @@ async def test_device_rest_requires_scoped_core_token_and_rejects_v2_phone_token
     bundle, key = await phone_login(client, core)
     binding, _ = await publish(client, core, bundle, key)
     path = DEVICE_API + "/device-requests"
-    body = {"capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}}
+    body = {"caller": {"agentName": "transport-test", "purpose": "验证设备请求链路"}, "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}}
     raw, headers = signed(bundle, key, "POST", path, body, "req_signed_once")
     response = await client.post(path, data=raw, headers=headers)
     assert response.status == 401
@@ -365,7 +368,7 @@ async def test_restart_preserves_queue_token_idempotency_and_nonce_replay_fence(
         bundle, key = await phone_login(client, core)
         binding, _ = await publish(client, core, bundle, key)
         cli = await token(client, bundle)
-        body = {"capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}}
+        body = {"caller": {"agentName": "transport-test", "purpose": "验证设备请求链路"}, "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1}}
         response = await client.post(DEVICE_API + "/device-requests", json=body, headers={**cli, "Idempotency-Key": "restart_once"})
         request_id = (await response.json())["requestId"]
         await request_signed(client, bundle, key, "POST", PREFIX + f"/device-requests/{request_id}/claim", {})

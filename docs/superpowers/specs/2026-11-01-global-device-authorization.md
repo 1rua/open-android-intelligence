@@ -1,7 +1,7 @@
 ---
 status: accepted
 requirements_date: 2026-11-01
-implementation_status: pending
+implementation_status: in_progress
 acceptance_status: pending
 ---
 

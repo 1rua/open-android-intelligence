@@ -57,16 +57,26 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
         finally { windows.forEach { it.root.close() } }
     }
 
-    override suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit): ScreenActionResult =
-        actionLock.withLock {
+    override suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit): ScreenActionResult {
+        val lease = currentCoroutineContext()[ScreenControlLease]
+            ?: throw ScreenOperationException("SCREEN_CONTROL_LEASE_REQUIRED")
+        lease.ensureCurrent()
+        return actionLock.withLock {
             withContext(Dispatchers.Main.immediate) {
                 currentCoroutineContext().ensureActive()
+                lease.ensureCurrent()
                 val (snapshot, generation) = capture()
                 if (expectedRevision != snapshot.revision) throw ScreenOperationException("SCREEN_STALE_REFERENCE")
                 fun guard() {
+                    lease.ensureCurrent()
                     ready()
                     if (runtime.generation() != generation || runtime.display() != snapshot.display) throw ScreenOperationException("SCREEN_STALE_REFERENCE")
                     beforeDispatch()
+                    lease.ensureCurrent()
+                }
+                fun dispatchGuard() {
+                    guard()
+                    lease.beforeSystemEffect()
                 }
                 fun node(id: String): ScreenNode = snapshot.nodes.singleOrNull { it.nodeId == id }
                     ?.also { if (!it.enabled || it.password) throw ScreenOperationException("SCREEN_TARGET_NOT_INTERACTABLE") }
@@ -89,7 +99,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                         else -> if (!target.scrollable) throw ScreenOperationException("SCREEN_TARGET_NOT_SCROLLABLE")
                     }
                     guard()
-                    return runtime.nodeAction(target, kind, text, generation, ::guard)
+                    return runtime.nodeAction(target, kind, text, generation, ::dispatchGuard)
                 }
                 val performed = when (action) {
                     is ScreenAction.Click -> {
@@ -100,7 +110,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                         } else {
                             val coordinate = point(action.x, action.y)
                             guard()
-                            runtime.gesture(listOf(coordinate), 100, generation, ::guard)
+                            runtime.gesture(listOf(coordinate), 100, generation, ::dispatchGuard)
                         }
                     }
                     is ScreenAction.LongPress -> {
@@ -112,7 +122,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                         } else {
                             val coordinate = point(action.x, action.y)
                             guard()
-                            runtime.gesture(listOf(coordinate), action.durationMs.coerceAtLeast(500), generation, ::guard)
+                            runtime.gesture(listOf(coordinate), action.durationMs.coerceAtLeast(500), generation, ::dispatchGuard)
                         }
                     }
                     is ScreenAction.SetText -> {
@@ -131,32 +141,34 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                     is ScreenAction.Swipe -> {
                         val points = listOf(point(action.x, action.y), point(action.endX, action.endY))
                         val ms = duration(action.durationMs)
-                        guard(); runtime.gesture(points, ms, generation, ::guard)
+                        guard(); runtime.gesture(points, ms, generation, ::dispatchGuard)
                     }
                     is ScreenAction.Drag -> {
                         val points = listOf(point(action.x, action.y), point(action.endX, action.endY))
                         val ms = duration(action.durationMs)
                         // The runtime holds the first point before continuing the same stroke.
-                        guard(); runtime.gesture(points, ms, generation, ::guard, drag = true)
+                        guard(); runtime.gesture(points, ms, generation, ::dispatchGuard, drag = true)
                     }
                     is ScreenAction.Global -> {
                         if (action.globalAction !in setOf("back", "home", "recents", "notifications", "quickSettings")) throw ScreenOperationException("SCHEMA_INVALID")
-                        guard(); runtime.global(action.globalAction, generation, ::guard)
+                        guard(); runtime.global(action.globalAction, generation, ::dispatchGuard)
                     }
                     is ScreenAction.LaunchApp -> {
                         if (!Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+").matches(action.packageName) || action.packageName.length > 256) {
                             throw ScreenOperationException("SCHEMA_INVALID")
                         }
-                        guard(); runtime.launch(action.packageName, generation, ::guard)
+                        guard(); runtime.launch(action.packageName, generation, ::dispatchGuard)
                     }
                 }
                 if (!performed) throw ScreenOperationException("SCREEN_ACTION_REJECTED")
                 // Android acceptance is reported separately from the observed post-action state.
                 // No sleep, retry or invented guarantee that the target app has finished rendering.
                 try {
+                    lease.ensureCurrent()
                     beforeDispatch()
                     val observed = read(ScreenReadQuery())
                     beforeDispatch()
+                    lease.ensureCurrent()
                     ScreenActionResult(true, observed)
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (failure: ScreenOperationException) { ScreenActionResult(true, null, failure.code) }
@@ -164,6 +176,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                 catch (_: Exception) { ScreenActionResult(true, null, "SCREEN_STATE_UNAVAILABLE") }
             }
         }
+    }
 
     private fun ready() { availability()?.let { throw ScreenOperationException(it) } }
 }

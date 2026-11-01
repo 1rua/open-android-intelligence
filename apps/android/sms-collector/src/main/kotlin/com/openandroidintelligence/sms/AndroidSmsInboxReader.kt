@@ -42,24 +42,24 @@ class AndroidSmsInboxReader private constructor(
         }
         return queryExecutor.query(
             SmsProviderTarget.INBOX,
-            PROJECTION,
+            if (request.includeBody) PROJECTION else METADATA_PROJECTION,
             clauses.joinToString(" AND ").ifEmpty { null },
             arguments.toTypedArray().takeIf { it.isNotEmpty() },
-            "date DESC, _id DESC",
-        )?.use { readRows(it, request.history.maxRecords, request.textQuery) }.orEmpty()
+            if (request.oldestFirst) "date ASC, _id ASC" else "date DESC, _id DESC",
+        )?.use { readRows(it, request.history.maxRecords, request.textQuery, request.includeBody) }.orEmpty()
     }
 
-    private fun readRows(cursor: Cursor, limit: Int, textQuery: String): List<SmsInboxRow> {
+    private fun readRows(cursor: Cursor, limit: Int, textQuery: String, includeBody: Boolean): List<SmsInboxRow> {
         val providerId = cursor.getColumnIndexOrThrow("_id")
         val threadId = cursor.getColumnIndexOrThrow("thread_id")
         val address = cursor.getColumnIndexOrThrow("address")
-        val body = cursor.getColumnIndexOrThrow("body")
+        val body = if (includeBody) cursor.getColumnIndexOrThrow("body") else -1
         val date = cursor.getColumnIndexOrThrow("date")
         val read = cursor.getColumnIndexOrThrow("read")
         val subscriptionId = cursor.getColumnIndexOrThrow("sub_id")
         return buildList {
             while (size < limit && cursor.moveToNext()) {
-                val text = cursor.getString(body)
+                val text = if (body >= 0) cursor.getString(body) else null
                 // SQLite LIKE only folds ASCII. Keep the public literal Unicode
                 // substring semantics, and apply the limit after matching rows.
                 if (textQuery.isNotEmpty() && !text.orEmpty().contains(textQuery, ignoreCase = true)) continue
@@ -80,6 +80,7 @@ class AndroidSmsInboxReader private constructor(
 
     private companion object {
         val PROJECTION = arrayOf("_id", "thread_id", "address", "body", "date", "read", "sub_id")
+        val METADATA_PROJECTION = arrayOf("_id", "thread_id", "address", "date", "read", "sub_id")
     }
 
     private fun interface QueryExecutor {

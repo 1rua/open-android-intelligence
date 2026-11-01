@@ -196,7 +196,17 @@ class Authentication:
             raise GatewayError("AUTHENTICATION_REQUIRED")
         principal = Principal(row["account_id"], device_id=row["device_id"], pairing_generation=row["generation"], grant_revision=row["revision"], token_id=digest)
         self.assert_current(principal)
-        return principal
+        # A token identifies a legal access relationship, not an Android
+        # capability publication. Bind each new invocation to today's snapshot.
+        account = self.core.open_gateway_account(principal.account_id)
+        try:
+            binding = account.store.database.execute("SELECT pairing_generation,grant_revision FROM device_keys WHERE device_id=?", (principal.device_id,)).fetchone()
+            if binding is None or binding[0] != principal.pairing_generation:
+                raise GatewayError("PAIRING_GENERATION_STALE")
+            return Principal(principal.account_id, device_id=principal.device_id,
+                pairing_generation=principal.pairing_generation, grant_revision=binding[1], token_id=digest)
+        finally:
+            account.close()
 
     def assert_current(self, principal: Principal) -> None:
         if not self.core.account_exists(principal.account_id):
@@ -204,15 +214,17 @@ class Authentication:
         account = self.core.open_gateway_account(principal.account_id)
         try:
             row = account.store.database.execute("SELECT pairing_generation,grant_revision FROM device_keys WHERE device_id=?", (principal.device_id,)).fetchone()
-            if row is None or tuple(row) != (principal.pairing_generation, principal.grant_revision):
+            if row is None or row[0] != principal.pairing_generation:
+                raise GatewayError("PAIRING_GENERATION_STALE")
+            if principal.token_id is None and row[1] != principal.grant_revision:
                 raise GatewayError("GRANT_STALE")
         finally:
             account.close()
         if principal.context is not None and not self.core.is_event_session_active(principal.context):
             raise GatewayError("SESSION_REVOKED")
         if principal.token_id is not None:
-            row = self.database.execute("SELECT 1 FROM core_tokens WHERE digest=? AND expires>?", (principal.token_id, time.time())).fetchone()
-            if row is None:
+            row = self.database.execute("SELECT account_id,device_id,generation FROM core_tokens WHERE digest=? AND expires>?", (principal.token_id, time.time())).fetchone()
+            if row is None or tuple(row) != (principal.account_id, principal.device_id, principal.pairing_generation):
                 raise GatewayError("AUTHENTICATION_REQUIRED")
 
     def revoke(self, principal: Principal) -> None:

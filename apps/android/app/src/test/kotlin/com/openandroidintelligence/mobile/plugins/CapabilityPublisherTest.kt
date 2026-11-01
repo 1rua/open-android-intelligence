@@ -92,7 +92,7 @@ class CapabilityPublisherTest {
         assertEquals(1,fixture.remote.bodies.size)
         assertEquals(0,fixture.foreignChanges)
         assertEquals(2,restarted.grantRevision)
-        assertNull(EncryptedDocuments(fixture.context,"capability-publication:android-v1:${fixture.scope}",TestDocumentKeys).read("pending"))
+        assertNull(EncryptedDocuments(fixture.context,"capability-publication:installation-v3:${fixture.scope}",TestDocumentKeys).read("pending"))
     }
 
     @Test fun unsentPendingPublicationIsReplacedAfterLocalAuthorizationChanges() = runBlocking {

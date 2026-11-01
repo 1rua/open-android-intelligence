@@ -39,7 +39,7 @@ OAI 遵循「设备控制中心与原生会话分离」的设计哲学：
 
 | 组件 | 核心职责 | 绝对禁止事项 |
 | --- | --- | --- |
-| **Android 客户端** | 设备能力授权的唯一权威；插件安装且启用后能力默认开启，执行时检查本地显式开关、系统权限、数据范围与必要敏感确认。 | 不接受 Agent 或 Core 参数扩大本地权限。 |
+| **Android 客户端** | 设备能力授权的唯一权威；新能力默认每次手动，按每项全局模式执行，执行时检查本地显式开关、系统权限、数据范围与必要敏感确认。 | 不接受 Agent 或 Core 参数扩大本地权限。 |
 | **OAI Core** | 连接认证、设备绑定、Token 签发、能力发现、协议验证、请求路由与幂等校验；裁剪宿主未实现的会话操作。 | 不追加账号级设备能力授权；不维护 Agent 私有长对话数据库；不硬编码特定 Agent 品牌类型。 |
 | **Agent 适配器 (Adapter)** | 将 Core 的标准化会话请求转发给 Agent 真实宿主进程或远程服务，并返回真实流式事件。 | 不提供额外设备能力授权设置；不自行实现设备连接或调度，不绕过 Core 直接向手机发送设备请求。 |
 | **Agent 宿主** | 拥有对话会话的完整事实、历史存储、上下文执行和模型调用。 | 不应当感知 OAI 底层复杂的设备签名与加密细节。 |
@@ -171,7 +171,7 @@ class SessionAdapter(Protocol):
 
 1. **共享会话绝不共享设备凭据**：在 `deployment` 共享模式下，适配器和 Agent 进程严禁自动继承任何账号的 OAI 客户端配置文件（`~/.config/oai/client.json`）或设备主密钥。
 2. **设备能力调用标准途径**：任何 Agent 或第三方 Gateway 插件需要读取通知、短信、屏幕或控制手机时，都使用 OAI CLI、MCP stdio 或 Core 的 `/open-android-intelligence/core/v1` REST 接口。调用凭据必须由 Core 认证并绑定目标账号、已配对设备与有效配对代次；能力 ID、版本和参数按 Core 返回的实际声明构造，不让模型提供或覆盖账号、设备、风险级别与授权版本。
-3. **Android 作最终决定**：插件安装且启用后能力默认开启；本地显式关闭、系统权限不足或必要确认未完成时，Android 仍拒绝执行。Core 记录或转发手机的能力状态，不把账号策略、会话桥账号清单或旧 capability grant 当作第二套设备授权。
+3. **Android 作最终决定**：新能力默认每次手动，按每项全局模式执行；本地显式关闭、系统权限不足或必要确认未完成时，Android 仍拒绝执行。Core 记录或转发手机的能力状态，不把账号策略、会话桥账号清单或旧 capability grant 当作第二套设备授权。
 4. **区分两条链路**：原生会话走 `Android → Core → Session Adapter → Agent`；设备工具走 `Agent → Core CLI/MCP/API → Android → 设备插件`，会话桥不必经过每次设备调用。第三方接入复用同一规则，不增加专属授权开关。桥 Token、Hermes 宿主账号 allowlist 和一对一账号映射仍保护会话访问，不能混同为应移除的设备 capability allowlist。
 5. **兼容性据实声明**：`dev` 尚待本分支 PR 合入；外部旧 Hermes/OpenClaw/DSH 独立 Gateway 不会因本次实现自动完成适配。混合版本的能力状态及撤销语义按[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)和目标部署版本单独验收。
 
@@ -227,3 +227,18 @@ def create_adapter(entry: dict[str, Any], storage_root: Path, core: Any) -> Sess
 同会话按已提交顺序调度未领取的 queued；running/unknown 不能因断线而自动重投。同步数据库、历史锁、附件解密和文件同步写入不得阻塞事件循环。观察输出使用有界缓冲，Node 写入返回 false 时遵守 drain；超过观察预算时释放订阅并保留宿主事实。
 
 `traceparent` 和 Core 转发的请求 ID 仅用于脱敏阶段关联，不能替代账号、设备、配对或会话认证。generationRecovery/eventSync 继续按实际能力声明，不能因 Core 提供 operationRecovery 就假定宿主也具备恢复能力。具体端点和生命周期见[通信说明](../architecture/2026-10-30-communication-lifecycle.zh-CN.md)。
+
+## 安装实例全局设备授权（2026-11-01）
+
+设备接入不要求独立注册 Agent 身份，也不依赖 Session Adapter 或 Gateway 插件 setup。
+使用现有 Core 设备凭据，经统一 CLI/API/MCP 提交能力标识、版本、参数和 `caller:{agentName,purpose}`；
+声明用于手机展示与审计，不授予权限，不选择可信账号。具体命令见[全局授权操作说明](global-device-authorization.zh-CN.md)。
+
+App 内按每项能力保存总开关、每次手动/允许只读/自动允许、独立被动数据范围。
+临时 5/30/60 分钟许可跨合法设备调用者共享，单次批准只关联原连接中的原请求。
+Core 可因认证、设备绑定、提供者、Schema、期限或撤销错误拒绝请求；不能用旧账号 grant 覆盖手机决定。
+原生会话账号映射、附件与历史范围保持隔离。
+
+推送接收者通过 Core endpoint API 或 CLI/MCP 注册稳定路由，再由手机用户选入独立推送白名单。
+注册、label、声明名称、订阅意愿都不产生敏感数据接收许可。接收后消费并 ACK 同一事件；
+Android 保存长期加密队列，Core 只做有界短期内容暂存和最小去重/ACK账本，禁止复制为会话或长期通知数据库。

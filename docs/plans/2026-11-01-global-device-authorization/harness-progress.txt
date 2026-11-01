@@ -1,2 +1,6 @@
 [2026-11-01T05:13:12.912471+08:00] [SESSION-1] INIT 基线核对、完整任务规格、CONTEXT和ADR已写入，goal已创建
 [2026-11-01T05:13:12.912471+08:00] [SESSION-1] Starting [task-001] Android/Core只读审计并行，Terra环境预检并行
+[2026-11-01T05:32:22.472677+08:00] [SESSION-1] CHECKPOINT [task-001] step=1/1 静态根因与最小方案已记录；全局policy/持久化/执行主线与UI/Core/推送/屏幕并行实施
+[2026-11-01T07:23:53.758813+08:00] [SESSION-1] CHECKPOINT [task-007] App定向108项2fail，修复真实sha256格式错误，审计/取消安全补丁整合，Fast/PR最终门禁未通过不可宣称完成
+[2026-11-01T08:44:16.424756+08:00] [SESSION-1] CHECKPOINT [task-007] step=2/3 Fast全部通过，PR门禁运行；物理设备仍BLOCKED不可宣称全部验收完成
+[2026-11-01T08:54:13.495430+08:00] [SESSION-1] CHECKPOINT [task-007] step=3/3 PR门禁全部通过，App1297项；完整Terra矩阵仍进行中，物理设备未连接

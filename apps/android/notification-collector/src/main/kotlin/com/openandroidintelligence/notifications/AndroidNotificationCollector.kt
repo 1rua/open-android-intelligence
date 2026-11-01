@@ -245,7 +245,7 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
     private var runtimeScope: CoroutineScope? = null
     private var preinstalledCollector: AndroidNotificationCollector? = null
     private var session: NotificationListenerSession? = null
-    private var listenerConnected = false
+    @Volatile private var listenerConnected = false
 
     override fun onCreate() {
         super.onCreate()
@@ -269,7 +269,12 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
     private fun installSession() {
         session?.disconnect()
         session = collector?.let { value ->
-            NotificationListenerSession(value) { activeNotifications?.map { it.toRawNotification() } }
+            NotificationListenerSession(value) snapshot@{
+                val notifications = NotificationCollectionAccess.capture { activeNotifications } ?: return@snapshot null
+                notifications.map { notification ->
+                    NotificationCollectionAccess.capture { notification.toRawNotification() } ?: return@snapshot null
+                }
+            }
         }
         if (listenerConnected) {
             session?.connect()
@@ -283,16 +288,27 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
         session?.connect()
         NotificationRuntimeFactoryRegistry.activeSession = session
         session?.refresh()
+        NotificationPushSource.connected(this) snapshot@{
+            if (!listenerConnected) return@snapshot
+            val notifications = NotificationCollectionAccess.capture { activeNotifications } ?: return@snapshot
+            notifications.forEach { notification ->
+                if (!NotificationCollectionAccess.isAllowed()) return@snapshot
+                NotificationPushSource.posted(notification.packageName) { includeContent -> notification.toRawNotification(includeContent) }
+            }
+        }
+        NotificationPushSource.captureActive()
     }
 
     override fun onListenerDisconnected() {
         listenerConnected = false
+        NotificationPushSource.disconnected(this)
         if (NotificationRuntimeFactoryRegistry.activeSession === session) NotificationRuntimeFactoryRegistry.activeSession = null
         session?.disconnect()
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
+        NotificationPushSource.disconnected(this)
         if (NotificationRuntimeFactoryRegistry.activeSession === session) NotificationRuntimeFactoryRegistry.activeSession = null
         session?.disconnect()
         session = null
@@ -307,11 +323,12 @@ class OpenAndroidIntelligenceNotificationListenerService : android.service.notif
     }
 
     override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification) {
-        session?.posted(sbn.toRawNotification())
+        NotificationPushSource.posted(sbn.packageName) { includeContent -> sbn.toRawNotification(includeContent) }
+        session?.posted { sbn.toRawNotification() }
     }
 
-    private fun android.service.notification.StatusBarNotification.toRawNotification(): RawNotification {
-        val extras = notification.extras
+    private fun android.service.notification.StatusBarNotification.toRawNotification(includeContent: Boolean = true): RawNotification {
+        val extras = if (includeContent) notification.extras else null
         return RawNotification(
             packageName = packageName,
             notificationKey = key,

@@ -58,6 +58,9 @@ class OpenAndroidIntelligenceApplication : Application() {
     lateinit var pluginHost: com.openandroidintelligence.mobile.plugins.ProductionPluginHost
         private set
 
+    var devicePush: DevicePushComposition? = null
+        private set
+
     private lateinit var auditSink: PersistentAuditSink
 
     /**
@@ -124,7 +127,13 @@ class OpenAndroidIntelligenceApplication : Application() {
         auditSink = PersistentAuditSink(File(filesDir, "platform-kernel/audit-events.log"))
         auditStore = AndroidAuditStore(sink = auditSink)
         pairingGrants = PairingGrantStateHolder(
-            store = SharedPreferencesPairingGrantStore.from(this),
+            store = object : com.openandroidintelligence.kernel.PairingGrantStore {
+                override fun load(binding: com.openandroidintelligence.kernel.PairingGrantBinding) =
+                    SharedPreferencesPairingGrantStore.from(this@OpenAndroidIntelligenceApplication).load(binding)
+                override fun save(binding: com.openandroidintelligence.kernel.PairingGrantBinding,
+                    state: com.openandroidintelligence.kernel.PairingGrantState) =
+                    SharedPreferencesPairingGrantStore.from(this@OpenAndroidIntelligenceApplication).save(binding, state)
+            },
             audit = auditStore,
         )
 
@@ -143,12 +152,18 @@ class OpenAndroidIntelligenceApplication : Application() {
             providerSelector = pluginHost.selector,
             grants = { pairingId -> pairingGrants.currentKernelGrant(pairingId) },
             mediate = pluginHost::mediate,
+            authorizeInvocation = pluginHost::authorizeKernelInvocation,
         )
 
         pluginHost.attach(kernel)
         kernel.onEmergencyStop { stopped ->
-            if (stopped) com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()
+            if (stopped) {
+                pairingGrants.revokeTemporaryApprovals()
+                com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnectAll()
+            }
         }
+
+        devicePush = DevicePushComposition(this, installId).also { it.start() }
 
         // Visibility is a process fact, not an Activity one: a background gap
         // can leave the event stream nominally alive while the Gateway dropped
@@ -160,11 +175,18 @@ class OpenAndroidIntelligenceApplication : Application() {
                 override fun onStart(owner: LifecycleOwner) {
                     gatewayNetworkMonitor.start()
                     gatewayRuntime.onAppForegrounded()
+                    devicePush?.onVisibilityChanged(true)
                 }
                 override fun onStop(owner: LifecycleOwner) {
                     gatewayRuntime.onAppBackgrounded()
+                    devicePush?.onVisibilityChanged(false)
                 }
             },
         )
     }
+    override fun onTerminate() {
+        devicePush?.close()
+        super.onTerminate()
+    }
+
 }

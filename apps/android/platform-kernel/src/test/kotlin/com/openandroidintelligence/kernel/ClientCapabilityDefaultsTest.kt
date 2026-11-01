@@ -22,7 +22,8 @@ class ClientCapabilityDefaultsTest {
         val kernel = PluginKernel(HostEnvelope(declared), PhoneLimits(declared),
             mapOf(PluginKernel.RUNTIME_PROTECTED_WASM to runtime), AndroidAuditStore(), trust,
             NativePluginLoader(trust), CapabilityProviderSelector(mapOf(capability to identity)),
-            holder::currentKernelGrant)
+            holder::currentKernelGrant,
+            authorizeInvocation = testInvocationAuthorizer(mapOf(identity to setOf(capability)), declared))
         kernel.register(PluginRegistration(identity, PluginKernel.RUNTIME_PROTECTED_WASM, declared,
             ResourceBudget(1000, 1048576, 65536, 1, 1024), identityScopedGrants = true))
         kernel.enable(identity.pluginId)
@@ -99,21 +100,13 @@ class ClientCapabilityDefaultsTest {
     }
 
     @Test
-    fun legacyAmbiguityRequiresOneLocalReviewAndExplicitDenialsSurviveIt() {
+    fun oldAuthorizationModelCannotBecomeAnUnreviewedGlobalAutomaticPolicy() {
         val binding = PairingGrantBinding("https://gateway.example", "account-a", "install-a")
         val store = InMemoryPairingGrantStore().apply { save(binding, PairingGrantState.legacy(binding.pairingId)) }
-        val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
-        assertTrue(holder.state.value!!.migrationRequired)
-        assertFalse(holder.currentKernelGrant(binding.pairingId)!!.permits("kernel.sms.read"))
-        holder.updatePrimitive("plugin:org.example.reader:author:kernel.sms.read", false)
-        val migrated = holder.completeCapabilityMigration()
-        assertFalse(migrated.migrationRequired)
-        assertTrue(migrated.permits("kernel.notifications.read"))
-        assertFalse(migrated.permits("plugin:org.example.reader:author:kernel.sms.read"))
-        assertFalse(migrated.permits("kernel.background.run"))
-        assertFalse(migrated.screenSelectionEnabled)
-        assertEquals(2L, migrated.revision)
-        assertEquals(migrated, PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }.state.value)
+        val holder = PairingGrantStateHolder(store, AndroidAuditStore())
+        holder.bind(binding)
+        assertEquals("LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED", holder.state.value?.localError)
+        assertNull(holder.currentKernelGrant(binding.pairingId))
     }
 
     @Test
@@ -124,10 +117,7 @@ class ClientCapabilityDefaultsTest {
         holder.updatePrimitive("kernel.sms.read", false)
         holder.clearCurrent()
         holder.bind(binding)
-        assertTrue(holder.state.value!!.migrationRequired)
-        assertFalse(holder.currentKernelGrant(binding.pairingId)!!.permits("kernel.sms.read"))
-        assertFalse(holder.currentKernelGrant(binding.pairingId)!!.permits("kernel.notifications.read"))
-        holder.completeCapabilityMigration()
+        assertFalse(holder.state.value!!.migrationRequired)
         assertFalse(holder.currentKernelGrant(binding.pairingId)!!.permits("kernel.sms.read"))
         assertTrue(holder.currentKernelGrant(binding.pairingId)!!.permits("kernel.notifications.read"))
     }
@@ -138,11 +128,11 @@ class ClientCapabilityDefaultsTest {
         val store = object : PairingGrantStore {
             override fun load(binding: PairingGrantBinding): PairingGrantState = error("corrupt")
             override fun save(binding: PairingGrantBinding, state: PairingGrantState) = Unit
-            override fun clear(binding: PairingGrantBinding) = Unit
         }
         val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
-        assertTrue(holder.state.value!!.migrationRequired)
-        assertFalse(holder.currentKernelGrant(binding.pairingId)!!.permits("kernel.sms.read"))
+        assertEquals("LOCAL_AUTHORIZATION_STATE_UNAVAILABLE", holder.state.value?.localError)
+        assertNull(holder.currentKernelGrant(binding.pairingId))
+        assertFalse(holder.capabilityPolicy("sms").enabled)
     }
 
     @Test
@@ -184,7 +174,7 @@ class ClientCapabilityDefaultsTest {
                 primitiveCalls++
                 holder.updatePrimitive(identityGrantKey(identity, primitive), false)
                 "sensitive-output".toByteArray()
-            })
+            }, authorizeInvocation = testInvocationAuthorizer(mapOf(identity to setOf(capability)), declared))
         kernel.register(PluginRegistration(identity, PluginKernel.RUNTIME_PROTECTED_WASM, declared,
             ResourceBudget(1000, 1048576, 65536, 1, 1024), identityScopedGrants = true))
         kernel.enable(identity.pluginId)
@@ -213,12 +203,15 @@ class ClientCapabilityDefaultsTest {
         }
         val kernel = PluginKernel(HostEnvelope(declared), PhoneLimits(declared),
             mapOf(PluginKernel.RUNTIME_PROTECTED_WASM to runtime), AndroidAuditStore(), trust,
-            NativePluginLoader(trust), CapabilityProviderSelector(mapOf(capability to identity)), holder::currentKernelGrant)
+            NativePluginLoader(trust), CapabilityProviderSelector(mapOf(capability to identity)), holder::currentKernelGrant,
+            authorizeInvocation = testInvocationAuthorizer(mapOf(identity to setOf(capability)), declared))
         kernel.register(PluginRegistration(identity, PluginKernel.RUNTIME_PROTECTED_WASM, declared,
             ResourceBudget(1000, 1048576, 65536, 1, 1024), identityScopedGrants = true))
         kernel.enable(identity.pluginId)
-        assertTrue(runCatching { kernel.invoke(identity, binding.accountId, binding.pairingId, capability,
-            byteArrayOf(), SessionConstraints(declared, true, "background-other-author")) }.exceptionOrNull() is CapabilityDenied)
+        val failure = runCatching { kernel.invoke(identity, binding.accountId, binding.pairingId, capability,
+            byteArrayOf(), SessionConstraints(declared, true, "background-other-author")) }.exceptionOrNull()
+        assertTrue(failure is CapabilityDenied)
+        assertEquals("kernel.background.run", (failure as CapabilityDenied).primitive)
         assertEquals(0, calls)
     }
 

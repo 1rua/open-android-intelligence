@@ -1,6 +1,6 @@
 # open-android-intelligence 领域语境
 
-open-android-intelligence 让 Android 设备连接到用户拥有的 Agent Gateway，同时确保 Android 客户端是本机数据与设备操作的唯一能力授权者。产品由极简 Android 宿主、可安装设备插件、Agent 宿主内的 Gateway 适配器，以及可独立安装部署、统一设备协议与多个 Agent 原生会话接入的 OAI Core 组成。
+open-android-intelligence 让 Android 设备通过 OAI Core 接受多个 Agent 的合法请求，由 Android 客户端独立决定本机数据与设备操作的许可。产品包括 Android 宿主、可安装设备插件、OAI Core 和各 Agent 的原生会话适配器。
 
 设备能力授权术语遵循 [ADR-0059](docs/adr/0059-android-is-the-sole-device-capability-authority.md) 与[全局授权规格](docs/superpowers/specs/2026-11-01-global-device-authorization.md)。
 
@@ -79,7 +79,7 @@ _Avoid_: Git 仓库、未固定下载目录、裸 WASM
 _Avoid_: 插件代码导入、隐式依赖、授权继承
 
 **能力提供者选择（Capability Provider Selection）**:
-平台内核为一项能力选择实际设备插件的路由决定；手机保存默认提供者，每个已认证 Gateway 配对可以有本地覆盖；切换时重新核验 Android 本地安全批准和必要确认，不继承旧提供者的敏感许可，也不新增远端许可或重复正向 grant。
+平台内核为一项能力选择实际设备插件的路由决定；手机统一保存提供者选择；切换提供者不继承旧作者的敏感许可，也不新增远端许可或重复配对 grant。
 _Avoid_: 同时调用全部插件、自动继承授权、全局唯一实现
 
 **受控网络访问（Mediated Network Access）**:
@@ -107,7 +107,7 @@ _Avoid_: 作者配额、无限资源、性能建议
 _Avoid_: 启用、授权、授予 Android 权限
 
 **插件启用（Plugin Enablement）**:
-用户允许一个已安装设备插件在 Android 宿主中工作的手机级状态；该插件的能力默认开启，无需额外 Gateway 账号开关或重复配对能力授权。实际调用仍须经过认证和配对，并受 Android 本地显式关闭、系统权限、数据范围和敏感确认约束。
+用户允许一个已安装设备插件在 Android 宿主中工作的手机级状态；启用使插件能够接受请求，新能力默认每次手动，具体执行受全局能力策略、系统权限、数据范围和必要系统同意约束。
 _Avoid_: 安装、配对授权
 
 **插件运行状态（Plugin Operational State）**:
@@ -209,7 +209,7 @@ _Avoid_: 保存的密码、永久登录、全局设备授权
 _Avoid_: 登录、网络连通、全局设备注册
 
 **账号设备会话（Account Device Session）**:
-一个 Android 安装实例登录某个 Gateway 账号后建立的独立设备上下文；即使多个设备使用同一账号，它们也不共享设备 ID、插件授权或审计身份。
+一个 Android 安装实例登录某个 Gateway 账号后建立的独立设备上下文；即使多个设备使用同一账号，它们也不共享设备 ID、安装实例策略或审计身份；同一安装内的账号共享本地能力策略。
 _Avoid_: 账号会话、共享设备、IP 身份
 
 **退出登录（Logout）**:

@@ -22,9 +22,10 @@ internal class SmsReadPrimitive(
                 history = SmsHistoryPolicy(receivedAfter(request), readLimit(request)),
                 senders = JsonFields.strings(request, "senders").toSet(),
                 textQuery = JsonFields.string(request, "query").orEmpty(),
+                includeBody = JsonFields.bool(request, "includeContent") != false,
             ))
         } catch (_: SecurityException) { throw CapabilityDenied("READ_SMS_REQUIRED") }
-        val records = rows.map { mapOf("id" to it.providerId.toString(), "sender" to it.address, "text" to it.body,
+        val records = rows.map { mapOf("id" to it.providerId.toString(), "sender" to it.address, "text" to it.body.takeIf { _ -> JsonFields.bool(request, "includeContent") != false },
             "timestamp" to it.messageAtEpochMs, "read" to it.read) }
         checkPermission()
         return records

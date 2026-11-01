@@ -87,14 +87,14 @@ class DeviceFixture:
             raise FixtureFailure("CAPABILITY_DENIED")
         receipt = await self.request("POST", DEVICE_API + "/device-requests", headers={
             **headers, "Idempotency-Key": "fixture_" + secrets.token_hex(12),
-        }, body={"capabilityId": capability_id, "capabilityVersion": capability["capabilityVersion"],
+        }, body={"caller": {"agentName": "device-fixture", "purpose": "执行真机验收请求"}, "capabilityId": capability_id, "capabilityVersion": capability["capabilityVersion"],
                  "parameters": parameters})
         self.request_id = receipt["requestId"]
         self.task = asyncio.create_task(self.wait_for_result(self.request_id, headers))
         return {"started": True}
 
     async def wait_for_result(self, request_id: str, headers: dict[str, str]) -> dict[str, Any]:
-        async with asyncio.timeout(10):
+        async with asyncio.timeout(360):
             while True:
                 record = await self.request("GET", DEVICE_API + "/device-requests/" + request_id, headers=headers)
                 if record["state"] in TERMINAL:

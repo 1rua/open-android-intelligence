@@ -121,6 +121,45 @@ class CapabilityBindings:
         # An authenticated Android publication is the only capability decision.
         return self.list(device_id, generation, revision)
 
+    def unavailable_error(self, device_id: str, generation: int, revision: int,
+                          capability_id: str, version: str) -> Exception:
+        """Explain a missing binding using Android's latest bound inventory.
+
+        This path only constructs a refusal. READY inventory without a real
+        binding can never authorize, dispatch, or supply a caller-chosen risk.
+        """
+        from .core import GatewayError
+        details = {"capabilityId": capability_id, "capabilityVersion": version,
+                   "source": "android-publication"}
+        saved = self.publication(device_id)
+        if not saved or saved["generation"] != generation or saved["revision"] != revision:
+            return GatewayError("CAPABILITY_UNAVAILABLE", {**details, "reason": "SYNC_REQUIRED"})
+        inventory = saved.get("inventory")
+        if inventory is None:
+            return GatewayError("CAPABILITY_UNAVAILABLE", {**details, "reason": "ANDROID_STATE_UNKNOWN"})
+        details["source"] = "android-inventory"
+        matches = [item for item in inventory if item["capabilityId"] == capability_id and item["capabilityVersion"] == version]
+        if not matches:
+            if any(item["capabilityId"] == capability_id for item in inventory):
+                reason = "CAPABILITY_VERSION_UNAVAILABLE"
+            elif any(capability_id.startswith(item["pluginId"] + ".") for item in inventory):
+                reason = "CAPABILITY_NOT_IMPLEMENTED"
+            else:
+                return GatewayError("CAPABILITY_NOT_INSTALLED", {**details, "reason": "NOT_IN_ANDROID_INVENTORY"})
+            return GatewayError("CAPABILITY_UNAVAILABLE", {**details, "reason": reason})
+        states = {(item["status"], item["reason"]) for item in matches}
+        if len(states) != 1:
+            return GatewayError("CAPABILITY_UNAVAILABLE", {**details, "reason": "PROVIDER_SELECTION_REQUIRED"})
+        status, reason = states.pop()
+        details.update({"androidStatus": status, "reason": reason or status})
+        if status == "ANDROID_PERMISSION_REQUIRED":
+            return GatewayError("ANDROID_PERMISSION_REQUIRED", details)
+        if status == "PLUGIN_DISABLED" or status == "LOCAL_GRANT_REQUIRED" and reason in {"", "LOCAL_CAPABILITY_DISABLED", "LOCAL_GRANT_REQUIRED"}:
+            return GatewayError("LOCAL_CAPABILITY_DISABLED", details)
+        if status == "READY":
+            details["reason"] = "SYNC_REQUIRED"
+        return GatewayError("CAPABILITY_UNAVAILABLE", details)
+
     def validate(self, device_id: str, generation: int, revision: int, request: Mapping[str, Any]) -> bool:
         if not self.contracts.validate("device.request", request): return False
         provider, capability = request["provider"], request["capability"]

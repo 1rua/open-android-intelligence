@@ -66,6 +66,10 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 }
 
 tasks.withType<Test>().configureEach {
+    // App tests emulate distinct installations but host registries and Compose idling resources
+    // are process globals. A prior class must not leak callbacks or Android state into the next.
+    // Keep compiled outputs/caches; isolate only the test JVM, without disabling idle checks.
+    forkEvery = 1
     // 参考插件的真实编译产物与清单：测试用它们构造与发布同构的签名包，
     // 因此这些输入变动必须让测试失效，不能复用旧结果。
     for (spec in listOf(

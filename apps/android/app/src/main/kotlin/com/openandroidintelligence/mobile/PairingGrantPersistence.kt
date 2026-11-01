@@ -1,116 +1,110 @@
 package com.openandroidintelligence.mobile
 
-import android.accounts.AccountManager
 import android.content.Context
 import android.content.SharedPreferences
-import java.security.MessageDigest
+import com.openandroidintelligence.kernel.CapabilityAuthorizationMode
+import com.openandroidintelligence.kernel.CapabilityPolicy
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantState
 import com.openandroidintelligence.kernel.PairingGrantStore
+import java.util.Base64
 
-/** SharedPreferences persistence for non-secret, Android-owned capability decisions. */
+/** The name remains for binary/source migration; no policy is stored by Core, account, or pairing. */
 class SharedPreferencesPairingGrantStore(
     private val preferences: SharedPreferences,
 ) : PairingGrantStore {
+    init { synchronized(SharedPreferencesPairingGrantStore::class.java) { migrateInstallationPolicy() } }
 
-    override fun load(binding: PairingGrantBinding): PairingGrantState {
-        val prefix = prefix(binding)
-        // A v1 scope can have no keys after an explicit revoke. Its installation
-        // migration snapshot must therefore be consulted before applying defaults.
-        val legacy = !preferences.contains("$prefix.authorization_model") && (
-            preferences.all.keys.any { it.startsWith("$prefix.") } ||
-                binding.storageKey in preferences.getStringSet(LEGACY_SCOPES, emptySet()).orEmpty() ||
-                preferences.getBoolean(UNKNOWN_LEGACY_SCOPES, false))
-        val savedModel = preferences.contains("$prefix.authorization_model")
-        if (savedModel) {
-            check(listOf("revision", "granted", "screen_selection", "disabled", "legacy_projection_digest")
-                .all { preferences.contains("$prefix.$it") }) { "LOCAL_AUTHORIZATION_STATE_INCOMPLETE" }
+    override fun load(binding: PairingGrantBinding): PairingGrantState = synchronized(SharedPreferencesPairingGrantStore::class.java) {
+        check(preferences.getInt(MODEL, 0) == PairingGrantState.CURRENT_AUTHORIZATION_MODEL) {
+            "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED"
         }
-        val granted = preferences.getStringSet("$prefix.granted", emptySet()).orEmpty().toSet()
-        val revision = preferences.getLong("$prefix.revision", 0L)
-        val screenSelection = preferences.getBoolean("$prefix.screen_selection", false)
-        val projectionChanged = savedModel && preferences.getString("$prefix.legacy_projection_digest", null) !=
-            legacyProjectionDigest(revision, granted, screenSelection)
-        // An old binary can still write the v1 projection. Recognise that
-        // write instead of treating its empty grant as v2 default permission.
-        val model = if (projectionChanged) 1 else preferences.getInt("$prefix.authorization_model",
-            if (legacy) 1 else PairingGrantState.CURRENT_AUTHORIZATION_MODEL)
-        return PairingGrantState(binding.pairingId, granted, revision, screenSelection, model,
-            preferences.getStringSet("$prefix.disabled", emptySet()).orEmpty().toSet()).withStablePluginCapabilityDenials()
+        check(listOf("revision", "disabled", "screen_selection").all { preferences.contains("$GLOBAL.$it") }) {
+            "LOCAL_AUTHORIZATION_STATE_INCOMPLETE"
+        }
+        val policies = preferences.all.filterKeys { it.startsWith("$POLICY.") }.map { (key, value) ->
+            val decoded = String(Base64.getUrlDecoder().decode(key.removePrefix("$POLICY.")), Charsets.UTF_8)
+            val json = org.json.JSONObject(value as? String ?: error("LOCAL_POLICY_CORRUPTED"))
+            val sources = json.getJSONArray("allowedSources")
+            decoded to CapabilityPolicy(json.getBoolean("enabled"), CapabilityAuthorizationMode.valueOf(json.getString("mode")),
+                (0 until sources.length()).map { sources.getString(it) }.toSet(), json.getBoolean("includeContent"))
+        }.toMap()
+        PairingGrantState(
+            pairingId = binding.pairingId,
+            revision = preferences.getLong("$GLOBAL.revision", 0),
+            screenSelectionEnabled = preferences.getBoolean("$GLOBAL.screen_selection", false),
+            explicitDisabled = preferences.getStringSet("$GLOBAL.disabled", emptySet()).orEmpty().toSet(),
+            capabilityPolicies = policies,
+            granted = preferences.getStringSet("$GLOBAL.local_primitives", emptySet()).orEmpty().toSet(),
+            localError = preferences.getString("$GLOBAL.error", null),
+        ).withStablePluginCapabilityDenials()
     }
 
-    override fun save(binding: PairingGrantBinding, state: PairingGrantState) {
-        require(state.pairingId == binding.pairingId) { "pairing grant binding mismatch" }
-        val prefix = prefix(binding)
+    override fun save(binding: PairingGrantBinding, state: PairingGrantState) = synchronized(SharedPreferencesPairingGrantStore::class.java) {
+        require(state.pairingId == binding.pairingId) { "pairing transport projection mismatch" }
+        check(!state.migrationRequired) { "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED" }
         val saved = state.withStablePluginCapabilityDenials()
-        check(
-            preferences.edit()
-                .putLong("$prefix.revision", saved.revision)
-                .putStringSet("$prefix.granted", saved.granted.toSet())
-                .putBoolean("$prefix.screen_selection", saved.screenSelectionEnabled)
-                .putInt("$prefix.authorization_model", saved.authorizationModelVersion)
-                .putStringSet("$prefix.disabled", saved.explicitDisabled.toSet())
-                .putString("$prefix.legacy_projection_digest", legacyProjectionDigest(saved.revision, saved.granted, saved.screenSelectionEnabled))
-                .commit(),
-        ) { "PAIRING_GRANT_PERSISTENCE_FAILED" }
+        val edit = preferences.edit()
+            .putLong("$GLOBAL.revision", saved.revision)
+            .putStringSet("$GLOBAL.disabled", saved.explicitDisabled.toSet())
+            .putStringSet("$GLOBAL.local_primitives", saved.granted.toSet())
+            .putBoolean("$GLOBAL.screen_selection", saved.screenSelectionEnabled)
+            .apply {
+                if (saved.localError == null) remove("$GLOBAL.error") else putString("$GLOBAL.error", saved.localError)
+            }
+        preferences.all.keys.filter { it.startsWith("$POLICY.") }.forEach(edit::remove)
+        saved.capabilityPolicies.forEach { (key, policy) ->
+            val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(key.toByteArray(Charsets.UTF_8))
+            val json = org.json.JSONObject().put("enabled", policy.enabled).put("mode", policy.mode.name)
+                .put("allowedSources", org.json.JSONArray(policy.allowedSources.sorted())).put("includeContent", policy.includeContent)
+            edit.putString("$POLICY.$encoded", json.toString())
+        }
+        check(edit.commit()) { "INSTALLATION_CAPABILITY_PERSISTENCE_FAILED" }
     }
 
-    override fun clear(binding: PairingGrantBinding) {
-        val current = runCatching { load(binding) }.getOrElse { PairingGrantState.legacy(binding.pairingId) }
-        // Keep an explicit revocation tombstone. Removing the keys would make a
-        // future bind indistinguishable from a genuinely new local scope.
-        save(binding, PairingGrantState.legacy(binding.pairingId, Math.addExact(current.revision, 1L))
-            .copy(explicitDisabled = current.explicitDisabled))
+    private fun migrateInstallationPolicy() {
+        val model = preferences.getInt(MODEL, 0)
+        check(model in 0..PairingGrantState.CURRENT_AUTHORIZATION_MODEL) { "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED" }
+        if (model == PairingGrantState.CURRENT_AUTHORIZATION_MODEL) {
+            val obsolete = preferences.all.keys.filter { it.startsWith(LEGACY_PREFIX) ||
+                it == "android_capability_legacy_scopes" || it == "android_capability_unknown_legacy_scopes" }
+            if (obsolete.isNotEmpty()) {
+                val edit = preferences.edit(); obsolete.forEach(edit::remove)
+                check(edit.commit()) { "INSTALLATION_CAPABILITY_MIGRATION_FAILED" }
+            }
+            return
+        }
+        val old = preferences.all
+        val scoped = old.keys.filter { it.startsWith(LEGACY_PREFIX) }
+        val denied = scoped.filter { it.endsWith(".disabled") }.flatMap { key ->
+            @Suppress("UNCHECKED_CAST")
+            ((old[key] as? Set<*>)?.filterIsInstance<String>()).orEmpty()
+        }.toSet()
+        val revision = scoped.filter { it.endsWith(".revision") }.mapNotNull { old[it] as? Long }.maxOrNull() ?: 0L
+        val selection = scoped.filter { it.endsWith(".screen_selection") }.mapNotNull { old[it] as? Boolean }
+        // One atomic SharedPreferences transaction writes the complete global state and removes only
+        // obsolete capability keys. A failed commit is retried on next process start, never reviewed in UI.
+        val edit = preferences.edit()
+            .putLong("$GLOBAL.revision", Math.addExact(revision, 1L))
+            .putStringSet("$GLOBAL.disabled", denied)
+            .putStringSet("$GLOBAL.local_primitives", emptySet())
+            .putBoolean("$GLOBAL.screen_selection", selection.isNotEmpty() && selection.all { it })
+            .putInt(MODEL, PairingGrantState.CURRENT_AUTHORIZATION_MODEL)
+            .remove("android_capability_legacy_scopes")
+            .remove("android_capability_unknown_legacy_scopes")
+        scoped.forEach(edit::remove)
+        check(edit.commit()) { "INSTALLATION_CAPABILITY_MIGRATION_FAILED" }
     }
-
-    private fun prefix(binding: PairingGrantBinding): String = "pairing_grant_v1.${binding.storageKey}"
-
-    private fun legacyProjectionDigest(revision: Long, granted: Set<String>, screenSelection: Boolean): String =
-        MessageDigest.getInstance("SHA-256")
-            .digest(("$revision\u0000$screenSelection\u0000" + granted.sorted().joinToString("\u0000")).toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     companion object {
         private const val PREFERENCES_NAME = "open_android_intelligence_pairing_grants"
-        private const val INSTALLATION_MODEL = "android_capability_authorization_model"
-        private const val LEGACY_SCOPES = "android_capability_legacy_scopes"
-        private const val UNKNOWN_LEGACY_SCOPES = "android_capability_unknown_legacy_scopes"
+        private const val MODEL = "android_capability_authorization_model"
+        private const val GLOBAL = "installation_capability_policy_v3"
+        private const val POLICY = "$GLOBAL.capability"
+        private const val LEGACY_PREFIX = "pairing_grant_v1."
 
-        fun from(context: Context): SharedPreferencesPairingGrantStore {
-            val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-            synchronized(SharedPreferencesPairingGrantStore::class.java) {
-                if (!preferences.contains(INSTALLATION_MODEL)) snapshotLegacyScopes(context, preferences)
-                check(preferences.getInt(INSTALLATION_MODEL, 0) == PairingGrantState.CURRENT_AUTHORIZATION_MODEL) {
-                    "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED"
-                }
-            }
-            return SharedPreferencesPairingGrantStore(preferences)
-        }
-
-        private fun snapshotLegacyScopes(context: Context, preferences: SharedPreferences) {
-            val legacyScopes = preferences.all.keys.filter { it.startsWith("pairing_grant_v1.") }
-                .map { it.removePrefix("pairing_grant_v1.").substringBefore('.') }.toMutableSet()
-            val installation = context.getSharedPreferences("open_android_intelligence_runtime", Context.MODE_PRIVATE)
-                .getString("installation_id", null)
-            var unknown = false
-            runCatching {
-                val accounts = AccountManager.get(context).getAccountsByType(AndroidAccountProfileStore.TYPE)
-                val profiles = AndroidAccountProfileStore(context)
-                val readable = profiles.list()
-                if (readable.size != accounts.size) unknown = true
-                for (profile in readable) {
-                    val accountId = profiles.accountId(profile.localProfileId)
-                    if (installation == null || accountId == null) unknown = true
-                    else legacyScopes += PairingGrantBinding(profile.gatewayBaseUrl, accountId, installation).storageKey
-                }
-            }.onFailure { unknown = true }
-            // The installation marker is written only after the complete old
-            // scope snapshot. Completing one scope never releases another one.
-            check(preferences.edit()
-                .putStringSet(LEGACY_SCOPES, legacyScopes)
-                .putBoolean(UNKNOWN_LEGACY_SCOPES, unknown)
-                .putInt(INSTALLATION_MODEL, PairingGrantState.CURRENT_AUTHORIZATION_MODEL)
-                .commit()) { "LOCAL_AUTHORIZATION_MIGRATION_SNAPSHOT_FAILED" }
-        }
+        fun from(context: Context): SharedPreferencesPairingGrantStore = SharedPreferencesPairingGrantStore(
+            context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE),
+        )
     }
 }

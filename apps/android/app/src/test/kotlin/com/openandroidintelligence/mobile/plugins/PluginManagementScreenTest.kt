@@ -17,6 +17,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.kernel.AndroidAuditStore
+import com.openandroidintelligence.kernel.CapabilityAuthorization
+import com.openandroidintelligence.kernel.CapabilityAuthorizationMode
+import com.openandroidintelligence.kernel.CapabilityRequestScope
+import com.openandroidintelligence.kernel.DeviceOperation
+import com.openandroidintelligence.kernel.CapabilityPolicy
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
 import com.openandroidintelligence.kernel.DeveloperTrustMode
 import com.openandroidintelligence.kernel.HostEnvelope
@@ -325,7 +330,7 @@ class PluginManagementScreenTest {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
         }
         // Only the legitimate row can expose normal actions or its declarative UI.
-        assertEquals(1,compose.onAllNodesWithText("权限与提供者").fetchSemanticsNodes().size)
+        assertEquals(1,compose.onAllNodesWithText("系统权限与后台任务").fetchSemanticsNodes().size)
         compose.onNodeWithTag("damaged-plugin-delete:org.example.disguised").performScrollTo().performClick()
         assertTrue(disguised.exists())
         compose.onNodeWithTag("damaged-plugin-delete-confirm").performClick()
@@ -339,24 +344,37 @@ class PluginManagementScreenTest {
 
     @Test
     @Config(application = OpenAndroidIntelligenceApplication::class)
-    fun anInstalledPluginHasOneLocalCapabilitySwitchThatDoesNotCreatePairingGrants() {
+    fun anInstalledCapabilityCanBeConfiguredOfflineWithoutAPairingGrant() {
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
-        app.pairingGrants.bind(PairingGrantBinding("https://gateway.example", "test_toggle", "test_install"))
         store.install(TestAlpPackages.compiledNotificationsPackage())
         app.pluginHost.reload()
-        app.pluginHost.enable(NOTIFICATION_PLUGIN_ID, true)
+        val entry = app.pluginHost.entries(NOTIFICATION_PLUGIN_ID).first()
+        app.pluginHost.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy())
+        val approvalScope = CapabilityRequestScope(entry.key, DeviceOperation.READ, "a".repeat(64))
+        val policyRevision = requireNotNull(app.pairingGrants.state.value).revision
+        app.pairingGrants.authorization.approve("ui-test-approval", approvalScope, 5, policyRevision, 300_000L)
+        assertTrue(app.pairingGrants.authorization.evaluate("ui-test-approval", approvalScope, CapabilityPolicy(), policyRevision)
+            is CapabilityAuthorization.Allowed)
 
         compose.setContent {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
         }
 
-        val toggle = compose.onNodeWithTag("plugin-capability-toggle:$NOTIFICATION_PLUGIN_ID")
-        toggle.performScrollTo().assertIsDisplayed().assertIsEnabled().assertIsOn().performClick()
+        compose.onNodeWithTag("revoke-temporary-approvals").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithText("已撤销本机全部临时授权；各项能力的长期设置保持原样。").assertExists()
+        assertEquals(CapabilityAuthorization.AwaitingConfirmation,
+            app.pairingGrants.authorization.evaluate("ui-test-approval", approvalScope, CapabilityPolicy(), policyRevision))
+        assertEquals(CapabilityPolicy(), app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key))
+        val identity = "$NOTIFICATION_PLUGIN_ID:${entry.key}"
+        compose.onNodeWithTag("capability-enabled:$identity")
+            .performScrollTo().assertIsDisplayed().assertIsEnabled().assertIsOn().performClick()
         compose.waitForIdle()
-
-        assertFalse(app.pluginHost.isCapabilityEnabled(NOTIFICATION_PLUGIN_ID))
-        assertTrue(app.pairingGrants.state.value?.granted.orEmpty().isEmpty())
-        compose.onNodeWithText("本机已关闭；服务端不能远程开启").assertExists()
+        assertFalse(app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key).enabled)
+        assertFalse(app.pluginHost.isEnabled(NOTIFICATION_PLUGIN_ID))
+        compose.onNodeWithText("能力已关闭，授权模式仍会保留").assertExists()
+        compose.onNodeWithTag("capability-mode:$identity:READ_ONLY").performScrollTo().performClick()
+        assertEquals(CapabilityPolicy(false, CapabilityAuthorizationMode.READ_ONLY),
+            app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key))
     }
 
     @Test
@@ -385,7 +403,7 @@ class PluginManagementScreenTest {
         compose.setContent {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
         }
-        compose.onNodeWithText("权限与提供者").performScrollTo().performClick()
+        compose.onNodeWithText("系统权限与后台任务").performScrollTo().performClick()
         compose.onNodeWithText("允许后台任务").assertExists()
 
         compose.onNodeWithTag("plugin-background-toggle:$SMS_PLUGIN_ID").performClick()
@@ -403,6 +421,20 @@ class PluginManagementScreenTest {
     }
 
     @Test
+    fun localAuthorizationStorageErrorsRemainVisibleInCapabilityDiagnostics() {
+        for (code in listOf(
+            "LOCAL_AUTHORIZATION_STATE_INCOMPLETE",
+            "INSTALLATION_CAPABILITY_MIGRATION_FAILED",
+            "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED",
+        )) {
+            val label = capabilityStatusLabel("LOCAL_GRANT_REQUIRED", code)
+            assertTrue(label.contains("无法读取本机授权设置，请检查存储或升级应用后重试"))
+            assertTrue(label.contains(code))
+            assertFalse(label.contains("复核"))
+        }
+    }
+
+    @Test
     fun capabilityStatusLabelsExplainLegacyServerAndLocalReasonsWithoutInventingWireStates() {
         assertEquals(
             "服务端尚不支持 Android 统一授权，请升级 OAI Core；当前设备能力不可用",
@@ -412,7 +444,6 @@ class PluginManagementScreenTest {
         assertEquals("本机能力尚未开启或需要重新同步", capabilityStatusLabel("LOCAL_GRANT_REQUIRED"))
         assertTrue(capabilityStatusLabel("SYNC_FAILED", "GRANT_STALE").contains("GRANT_STALE"))
         assertTrue(capabilityStatusLabel("SYNC_RETRYING", "NETWORK_ERROR").contains("正在重试同步"))
-        assertTrue(capabilityStatusLabel("LOCAL_GRANT_REQUIRED", "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED").contains("复核旧的本机设置"))
     }
 
     // ------------------------------------------------------------------

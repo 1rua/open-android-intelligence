@@ -46,7 +46,7 @@ class PairingGrantStateTest {
         assertEquals(1L, granted.revision)
         assertTrue(PairingGrantCapabilities.SMS in granted.granted)
         assertEquals(1, sink.events().size)
-        assertEquals("pairing.grant.changed", sink.events().single().action)
+        assertEquals("capability.policy.changed", sink.events().single().action)
 
         val restored = PairingGrantStateHolder(store, AndroidAuditStore(InMemoryAuditSink()))
         restored.bind(binding)
@@ -59,7 +59,7 @@ class PairingGrantStateTest {
     }
 
     @Test
-    fun differentGatewayAccountOrInstallationCannotSeeAnotherGrant() {
+    fun differentGatewayAndAccountShareInstallationPolicyButNotTransportBinding() {
         val store = InMemoryPairingGrantStore()
         val holder = PairingGrantStateHolder(store, AndroidAuditStore(InMemoryAuditSink()))
         holder.bind(binding)
@@ -70,11 +70,11 @@ class PairingGrantStateTest {
             PairingGrantBinding(
                 gatewayId = "https://other.example.com",
                 accountId = "account-b",
-                installationId = "install-b",
+                installationId = "install-a",
             ),
         )
 
-        assertTrue(other.state.value?.granted.isNullOrEmpty())
+        assertEquals(setOf(PairingGrantCapabilities.NOTIFICATIONS), other.state.value?.granted)
         assertNull(other.currentKernelGrant(binding.pairingId))
     }
 
@@ -102,7 +102,7 @@ class PairingGrantStateTest {
     }
 
     @Test
-    fun clearingTheCurrentPairingKeepsARevocationTombstone() {
+    fun clearingTheCurrentPairingPreservesGlobalPolicyAndRevokesOnlyTheConnection() {
         val store = InMemoryPairingGrantStore()
         val holder = PairingGrantStateHolder(store, AndroidAuditStore(InMemoryAuditSink()))
         holder.bind(binding)
@@ -112,9 +112,10 @@ class PairingGrantStateTest {
 
         val restored = PairingGrantStateHolder(store, AndroidAuditStore(InMemoryAuditSink()))
         restored.bind(binding)
-        assertEquals(2L, restored.state.value?.revision)
-        assertTrue(restored.state.value?.granted.isNullOrEmpty())
-        assertTrue(restored.state.value?.migrationRequired == true)
+        assertEquals(1L, restored.state.value?.revision)
+        assertEquals(setOf(PairingGrantCapabilities.SMS), restored.state.value?.granted)
+        assertFalse(restored.state.value?.migrationRequired ?: true)
+        assertNull(holder.currentKernelGrant(binding.pairingId))
     }
 
     @Test
@@ -133,7 +134,6 @@ class PairingGrantStateTest {
                 return backing.load(target)
             }
             override fun save(target: PairingGrantBinding, state: PairingGrantState) = backing.save(target, state)
-            override fun clear(target: PairingGrantBinding) = backing.clear(target)
         }
         val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
         val worker = Thread {
@@ -144,7 +144,7 @@ class PairingGrantStateTest {
             assertTrue(loading.await(5, TimeUnit.SECONDS))
             assertNull(holder.currentKernelGrant(other.pairingId))
             assertNull(holder.currentKernelGrant(binding.pairingId))
-            assertNull(holder.state.value)
+            assertEquals(INSTALLATION_POLICY_ID, holder.state.value?.pairingId)
         } finally {
             release.countDown()
             worker.join(5_000)

@@ -1,6 +1,16 @@
 # Android 屏幕能力：前端开发交接
 
-**2026-10-28 授权规则**：Android 是设备能力授权唯一权威，普通前台能力默认开启；Core 和 Agent Gateway 不增加账号级设备许可。屏幕本地会话、系统权限和敏感确认仍须由用户在 Android 单独完成。实现已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`；当前验证与真机验收边界见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。本文件继续交接屏幕接口，不把既有界面存在视为真机验收。
+**2026-11-01 现行授权规则**：安装实例全局保存每项能力总开关及三级模式，新能力默认每次手动，主动推送独立且默认关闭；旧配对许可/迁移复核/按账号保存能力规则已被取代。系统权限、合法设备绑定、账号会话和附件隔离继续保留。详见[全局规格](../superpowers/specs/2026-11-01-global-device-authorization.md)，实现和验收以[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)为准。
+
+> 下文保留旧屏幕会话方案的历史接口说明，不能再用作当前设备授权流程。当前生产接线如下：
+>
+> - 设置页直接读取每能力全局总开关和三级模式，不创建旧配对屏幕会话。
+> - 请求通过全局策略后，driver以每条已认证连接的 `registerConnection` handle调用 `installRequestAuthorization`，分别注入READ/CAPTURE/CONTROL许可和最终复核回调。
+> - `finishRequest/cancelRequest`必须携带同一handle；跨连接相同原始ID冲突安全拒绝，不能覆盖另一票据。
+> - MediaProjection由Activity真实系统弹窗批准，回调及前台服务就绪后复核本地策略/提供者版本，不再调用旧 `authorization.start/requirePermission` 作为前置许可。
+> - 控制FIFO租约30秒、可信heartbeat续租累计5分钟；只读不持有控制锁。全局紧急停止用 `disconnectAll`，单连接退出只释放自己的handle。
+> - 以下“30分钟本地会话”“每次重新建会话”“前台逐次确认”等历史章节已被取代，保留用于理解旧版本，不能据此新增第二授权门槛。
+
 
 ## 当前源码状态与适用范围
 

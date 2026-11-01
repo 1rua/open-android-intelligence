@@ -1,7 +1,7 @@
 # OAI Core 架构事实基线（2026-10-26）
 
 本文件记录“统一 Core”的实现事实，每条结论都应有可核对的代码位置。
-**2026-10-28 授权审查补充**：本文的代码事实固定于其原架构基线，明确标为“遗留”的服务端账号开关与额外 grant 检查不是新规则。当前设备授权决策见 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 和[需求修订](../superpowers/specs/2026-10-28-device-capability-authorization.md)：Android 唯一授权，普通前台能力默认开启，Core 负责认证、绑定、发现、协议验证和路由。该修复已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；当前源码与测试状态见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。不要把本文历史代码行号当作分支现况。
+**2026-11-01 现行授权规则**：安装实例全局保存每项能力总开关及三级模式，新能力默认每次手动，主动推送独立且默认关闭；旧配对许可/迁移复核/按账号保存能力规则已被取代。系统权限、合法设备绑定、账号会话和附件隔离继续保留。详见[全局规格](../superpowers/specs/2026-11-01-global-device-authorization.md)，实现和验收以[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)为准。
 
 迁移前基线：OAI `dev` 提交 `f2c4a4eab081aa48fc0307c51f0f3c8754a5891d`；设备实现迁移来源为 Hermes `b64dda00a0de9ff1a95a375dcf92f62b5a1027b3`。以下描述以本文件所在提交的实现为准，迁移分类与数据切换见[依赖迁移清单](2026-10-26-core-independence-migration.zh-CN.md)。
 

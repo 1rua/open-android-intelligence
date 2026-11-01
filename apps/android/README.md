@@ -254,3 +254,19 @@ first network request. A changed deployment or SPKI is refused; the login form
 offers explicit identity reconfirmation after the user checks the administrator's
 change. This clears the old automatic-login credential before password login.
 Automatic acceptance of a rotation proof is not implemented.
+
+## 安装实例全局设备授权
+
+各项设备能力的总开关、每次手动/允许只读/自动允许及被动数据范围由本安装统一保存。
+切换 Core、账号或 Agent、断网或重启不重置；账号私有会话、附件与历史仍分别隔离。
+新能力默认每次手动，短信与通知主动推送分别默认关闭，系统权限仍由 Android 管理。
+
+设置 → 授权管理 → 全局设备能力按单项能力配置；确认卡片和系统通知展示声明的请求方、目的和实际参数。
+临时授权选项为本次或5/30/60分钟，可撤销；确认等待最长5分钟，系统强制同意不能被替代。
+设置 → 授权管理 → 短信与通知主动推送选择独立范围、稳定端点与保留时间。
+本机加密队列默认72小时，逐端消费ACK才完成投递；Android JobScheduler负责有界恢复与维护。
+全账号退出停止采集、执行与推送，配置和有效队列保留；强行停止后需要重新打开应用。
+
+操作与限制见[全局授权指南](../../docs/guides/global-device-authorization.zh-CN.md)，
+真实运行证据见[Terra 报告](../../docs/reviews/2026-11-01-global-device-authorization-terra.zh-CN.md)。
+报告区分单测、模拟器和实体手机；没有通过的项目不作为完成结论。

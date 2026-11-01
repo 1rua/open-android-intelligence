@@ -105,9 +105,10 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                         val cap = entry as? JsonValue.JObject ?: error("MANIFEST_INVALID")
                         val capabilityId = JsonFields.string(cap,"id") ?: error("MANIFEST_INVALID")
                         val schemaPath = JsonFields.string(cap,"schema") ?: error("MANIFEST_INVALID")
+                        val operationPrimitives = PluginCapabilityRisk.primitivesFor(capabilityId, primitives)
                         VerifiedCapability(verified.identity,capabilityId,JsonFields.string(cap,"version") ?: error("MANIFEST_INVALID"),
                             Json.parse(File(verified.stagedDirectory,schemaPath).readText()),
-                            PluginCapabilityRisk.classify(verified.runtime.type,primitives),primitives)
+                            PluginCapabilityRisk.classify(verified.runtime.type,operationPrimitives),operationPrimitives)
                     }
                     val declared = entries.map { it.key }.toSet() + primitives
                     val surface = verified.security.surface
@@ -248,6 +249,122 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             quarantineNative(pluginId); throw cause
         } finally { nativeInFlight.remove(pluginId); crashPreferences.edit().remove("loading:$pluginId").commit() }
     }
+    private data class ActiveAuthorization(val requestId: String, val binding: PairingGrantBinding,
+        val scope: CapabilityRequestScope)
+    private val activeAuthorization = ThreadLocal<ActiveAuthorization>()
+
+    private fun authorizationRequestKey(requestId: String, binding: PairingGrantBinding? = null): String {
+        val owner = binding ?: grants.currentBinding() ?: throw CapabilityDenied("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        return digestName(owner.storageKey + "\u0000" + requestId)
+    }
+
+    private fun requireBinding(binding: PairingGrantBinding?): PairingGrantBinding {
+        val owner = binding ?: grants.currentBinding() ?: throw CapabilityDenied("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        if (!grants.isConnectionCurrent(owner)) throw CapabilityDenied("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        return owner
+    }
+
+    private fun policyKey(entry: VerifiedCapability): String = identityGrantKey(entry.identity,
+        "capability:${entry.id}:${Json.sha256(entry.schema)}:${entry.risk}:${Json.sha256(Json.of(entry.primitives.sorted()))}")
+
+    private fun capabilityEntry(pluginId: String, capability: String): VerifiedCapability =
+        entries(pluginId).firstOrNull { it.key == capability } ?: throw CapabilityDenied(capability)
+
+    fun capabilityPolicy(pluginId: String, capability: String): com.openandroidintelligence.kernel.CapabilityPolicy {
+        val entry = capabilityEntry(pluginId, capability)
+        val state = grants.state.value
+        val policy = grants.capabilityPolicy(policyKey(entry))
+        if (state?.localError != null) return policy.copy(enabled = false)
+        val legacyAllows = state != null && (entry.primitives.filterNot { it == "kernel.background.run" } + entry.key).all {
+            state.permits(it) && state.permits(identityGrantKey(entry.identity, it))
+        }
+        return if (legacyAllows) policy else policy.copy(enabled = false)
+    }
+
+    fun setCapabilityPolicy(pluginId: String, capability: String, policy: com.openandroidintelligence.kernel.CapabilityPolicy) {
+        val entry = capabilityEntry(pluginId, capability)
+        if (policy.enabled && !capabilityPolicy(pluginId, capability).enabled) {
+            // Convert the old group denial to independent choices before reopening this capability.
+            val siblings = entries(pluginId).filter { it.key != entry.key && !capabilityPolicy(pluginId, it.key).enabled }
+                .associate { policyKey(it) to grants.capabilityPolicy(policyKey(it)).copy(enabled = false) }
+            if (siblings.isNotEmpty()) grants.updateCapabilityPolicies(siblings)
+            val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+            grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, true)
+            val target = entry.primitives.filterNot { it == "kernel.background.run" }.toSet() + entry.key
+            grants.updatePrimitives(target + target.map { identityGrantKey(entry.identity, it) }, true)
+        }
+        grants.updateCapabilityPolicy(policyKey(entry), policy)
+        if (policy.enabled) selector.setOverride(entry.key, grants.state.value?.pairingId ?: error("LOCAL_POLICY_UNAVAILABLE"), entry.identity)
+        revision.value++
+    }
+
+    fun authorizationScope(entry: VerifiedCapability, parameters: JsonValue): com.openandroidintelligence.kernel.CapabilityRequestScope =
+        com.openandroidintelligence.kernel.CapabilityRequestScope(policyKey(entry), when {
+            "kernel.screen.control" in entry.primitives -> com.openandroidintelligence.kernel.DeviceOperation.CONTROL
+            entry.risk == "read" -> com.openandroidintelligence.kernel.DeviceOperation.READ
+            else -> com.openandroidintelligence.kernel.DeviceOperation.WRITE
+        }, Json.sha256(parameters))
+
+    fun requestAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: PairingGrantBinding? = null): CapabilityAuthorization = grants.authorization.evaluate(
+            authorizationRequestKey(requestId, requireBinding(binding)), authorizationScope(entry, parameters),
+            capabilityPolicy(entry.identity.pluginId, entry.key), grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"))
+
+    fun approveRequest(requestId: String, entry: VerifiedCapability, parameters: JsonValue, durationMinutes: Int,
+        remainingRequestMillis: Long, binding: PairingGrantBinding? = null): LocalCapabilityApproval =
+        grants.authorization.approve(authorizationRequestKey(requestId, requireBinding(binding)),
+            authorizationScope(entry, parameters), durationMinutes,
+            grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), remainingRequestMillis)
+
+    fun authorizationIsCurrent(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: PairingGrantBinding? = null): Boolean = runCatching {
+            requestAuthorization(requestId, entry, parameters, binding) is CapabilityAuthorization.Allowed
+        }.getOrDefault(false)
+
+    fun authorizationScopeIsCurrent(requestId: String, scope: CapabilityRequestScope,
+        approvalId: String?, binding: PairingGrantBinding? = null): Boolean = runCatching {
+        val local = grants.state.value ?: return false
+        val policy = grants.capabilityPolicy(scope.capability)
+        if (!policy.enabled || local.localError != null) return false
+        val key = authorizationRequestKey(requestId, requireBinding(binding))
+        if (approvalId != null) grants.authorization.isCurrent(approvalId, key, scope, local.revision)
+        else grants.authorization.evaluate(key, scope, policy, local.revision) is CapabilityAuthorization.Allowed
+    }.getOrDefault(false)
+
+    fun auditRequestDecision(requestId: String, accountId: String, binding: PairingGrantBinding?, allowed: Boolean,
+        action: String = "capability.request.confirmed") {
+        val owner = binding ?: grants.currentBinding() ?: throw CapabilityDenied("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        check(owner.accountId == accountId && grants.isConnectionCurrent(owner)) { "DEVICE_ACCOUNT_BINDING_MISMATCH" }
+        grants.recordRequestDecision(requestId, accountId, owner.pairingId, action, allowed)
+    }
+
+    fun cancelRequestAuthorization(requestId: String, binding: PairingGrantBinding? = null) {
+        runCatching { authorizationRequestKey(requestId, binding) }.getOrNull()?.let(grants.authorization::cancel)
+    }
+    fun finishRequestAuthorization(requestId: String, binding: PairingGrantBinding? = null) {
+        runCatching { authorizationRequestKey(requestId, binding) }.getOrNull()?.let(grants.authorization::finish)
+    }
+    val authorizationChanges get() = grants.authorization.changes
+    fun revokeTemporaryApprovals() { grants.revokeTemporaryApprovals(); revision.value++ }
+
+    fun authorizeKernelInvocation(identity: PluginIdentity, capability: String, input: ByteArray, session: SessionConstraints) {
+        val entry = capabilityEntry(identity.pluginId, capability)
+        require(entry.identity == identity) { "PLUGIN_IDENTITY_MISMATCH" }
+        val active = activeAuthorization.get() ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
+        if (active.requestId != session.correlationId || active.scope != authorizationScope(entry, Json.parse(input.decodeToString())))
+            throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
+        requireActiveAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.binding)
+    }
+
+    private fun requireActiveAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: PairingGrantBinding? = null) {
+        when (val decision = requestAuthorization(requestId, entry, parameters, binding)) {
+            is com.openandroidintelligence.kernel.CapabilityAuthorization.Allowed -> Unit
+            is com.openandroidintelligence.kernel.CapabilityAuthorization.Denied -> throw CapabilityDenied(decision.code)
+            com.openandroidintelligence.kernel.CapabilityAuthorization.AwaitingConfirmation -> throw CapabilityDenied("LOCAL_CONFIRMATION_REQUIRED")
+        }
+    }
+
     /** Local ability switch; enabling it never grants background, system or screen permissions. */
     fun setCapabilityEnabled(pluginId: String, enabled: Boolean) {
         val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
@@ -284,13 +401,6 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         revision.value++
     }
 
-    fun capabilityMigrationRequired(): Boolean = grants.state.value?.migrationRequired == true
-
-    fun completeCapabilityMigration() {
-        grants.completeCapabilityMigration()
-        revision.value++
-    }
-
     /** Compatibility for explicit Android consent, including its separate background choice. */
     fun grant(pluginId: String, enabled: Boolean) {
         val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
@@ -317,12 +427,13 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             var status = "READY"
             var reason = ""
             when {
+                state?.localError != null -> { status = "LOCAL_GRANT_REQUIRED"; reason = requireNotNull(state.localError) }
                 !isEnabled(entry.identity.pluginId) -> { status = "PLUGIN_DISABLED"; reason = "PLUGIN_DISABLED" }
-                state == null || !(entry.primitives.filterNot { it == "kernel.background.run" } + entry.key).all {
+                !capabilityPolicy(entry.identity.pluginId, entry.key).enabled || state == null || !(entry.primitives.filterNot { it == "kernel.background.run" } + entry.key).all {
                     state.permits(identityGrantKey(entry.identity,it)) && state.permits(it)
                 } -> {
                     status = "LOCAL_GRANT_REQUIRED"
-                    reason = if (state?.migrationRequired == true) "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED" else "LOCAL_CAPABILITY_DISABLED"
+                    reason = "LOCAL_CAPABILITY_DISABLED"
                 }
                 !runCatching { selector.select(entry.key,state.pairingId).identity == entry.identity }.getOrDefault(false) -> {
                     status = "PROVIDER_NOT_SELECTED"; reason = "PROVIDER_NOT_SELECTED"
@@ -349,12 +460,25 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }
         return CapabilitySnapshot(bindings, inventory, inventoryComplete = loadFailures.isEmpty())
     }
-    fun invoke(identity: PluginIdentity, accountId: String, capability: String, parameters: JsonValue, correlationId: String, background: Boolean = false): ByteArray {
+    fun invoke(identity: PluginIdentity, accountId: String, capability: String, parameters: JsonValue, correlationId: String,
+        background: Boolean = false, authenticatedBinding: PairingGrantBinding? = null): ByteArray {
         val entry = entries(identity.pluginId).firstOrNull { it.identity == identity && it.key == capability } ?: throw CapabilityDenied(capability)
         check(CapabilitySchemaValidator.accepts(entry.schema,parameters)) { "SCHEMA_INVALID" }
-        val pairingId = grants.state.value?.pairingId ?: error("PAIRING_REQUIRED")
-        return kernel.invoke(identity,accountId,pairingId,capability,Json.canonical(parameters).toByteArray(),
-            SessionConstraints(entry.primitives + entry.key,background,correlationId)).output
+        val binding = authenticatedBinding ?: grants.currentBinding() ?: error("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        check(grants.isConnectionCurrent(binding)) { "AUTHENTICATED_DEVICE_BINDING_REQUIRED" }
+        check(binding.accountId == accountId) { "DEVICE_ACCOUNT_BINDING_MISMATCH" }
+        val pairingId = binding.pairingId
+        requireActiveAuthorization(correlationId, entry, parameters, binding)
+        val previousAuthorization = activeAuthorization.get()
+        activeAuthorization.set(ActiveAuthorization(correlationId, binding, authorizationScope(entry, parameters)))
+        try {
+            val output = kernel.invoke(identity,accountId,pairingId,capability,Json.canonical(parameters).toByteArray(),
+                SessionConstraints(entry.primitives + entry.key,background,correlationId)).output
+            requireActiveAuthorization(correlationId, entry, parameters, binding)
+            return output
+        } finally {
+            if (previousAuthorization == null) activeAuthorization.remove() else activeAuthorization.set(previousAuthorization)
+        }
     }
     fun scheduledTarget(call: KernelCallContext, args: JsonValue.JObject): VerifiedCapability {
         val id = JsonFields.string(args,"capabilityId") ?: error("SCHEDULE_TARGET_REQUIRED")
@@ -367,9 +491,41 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         return entry
     }
     fun mediate(call: KernelCallContext, primitive: String, input: ByteArray): ByteArray {
-        KernelPrimitiveRegistry.provider(primitive)?.let { provider -> return runBlocking {
-            withTimeout(call.budget.maxInvocationMillis) { provider.invoke(LocalGrantContext(call.identity.pluginId,call.accountId,call.pairingId,call.session.correlationId),input) }
-        } }
+        val invocation = activeAuthorization.get() ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
+        if (invocation.requestId != call.session.correlationId || invocation.binding.accountId != call.accountId ||
+            invocation.binding.pairingId != call.pairingId || !authorizationScopeIsCurrent(call.session.correlationId,
+                invocation.scope, null, invocation.binding)) {
+            throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+        }
+        KernelPrimitiveRegistry.provider(primitive)?.let { provider ->
+            val scope = invocation.scope
+            val policy = grants.capabilityPolicy(scope.capability)
+            val localInput = if (primitive == "kernel.sms.read") {
+                val query = JsonFields.obj(Json.parse(input.decodeToString())) ?: error("SCHEMA_INVALID")
+                val fields = query.fields.associate { it.first to it.second }.toMutableMap<String, Any?>()
+                val requested = JsonFields.strings(query, "senders").toSet()
+                if (!policy.includeContent && JsonFields.string(query, "query").orEmpty().isNotBlank())
+                    throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
+                if (policy.allowedSources.isNotEmpty()) {
+                    if (requested.any { it !in policy.allowedSources }) throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
+                    fields["senders"] = (requested.ifEmpty { policy.allowedSources }).sorted()
+                }
+                fields["includeContent"] = policy.includeContent
+                Json.canonical(Json.of(fields)).toByteArray()
+            } else input
+            val expectedRevision = grants.state.value?.revision ?: throw CapabilityDenied("LOCAL_POLICY_UNAVAILABLE")
+            val result = runBlocking {
+                withTimeout(call.budget.maxInvocationMillis) {
+                    if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
+                        !isEnabled(call.identity.pluginId) || !authorizationScopeIsCurrent(call.session.correlationId,
+                            invocation.scope, null, invocation.binding)) throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+                    provider.invoke(LocalGrantContext(call.identity.pluginId,call.accountId,call.pairingId,call.session.correlationId),localInput)
+                }
+            }
+            if (!authorizationScopeIsCurrent(call.session.correlationId, invocation.scope, null, invocation.binding))
+                throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+            return result
+        }
         val args = JsonFields.obj(Json.parse(input.decodeToString())) ?: error("SCHEMA_INVALID")
         val store = stores.getOrPut(call.identity) {
             val verified = installStore.openVerified(call.identity.pluginId)

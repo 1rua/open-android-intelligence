@@ -76,13 +76,13 @@ def test_cli_login_and_submission_share_authenticated_core(tmp_path, monkeypatch
         assert path.stat().st_mode & 0o077 == 0
         assert load_client_config(path)["token"] == "private-core-token"
         assert main(["--client-config", str(path), "invoke", "screen.read", "--version", "1.0.0",
-                     "--parameters", '{"limit":2}', "--idempotency-key", "request-retry-1"]) == 0
+                     "--agent-name", "CLI-test", "--purpose", "验证调用声明", "--parameters", '{"limit":2}', "--idempotency-key", "request-retry-1"]) == 0
         assert json.loads(capsys.readouterr().out)["requestId"] == "req_native"
         _, target, headers, body = received[-1]
         assert target == "/open-android-intelligence/core/v1/device-requests"
         assert headers["Authorization"] == "Bearer private-core-token"
         assert headers["Idempotency-Key"] == "request-retry-1"
-        assert body == {"capabilityId": "screen.read", "capabilityVersion": "1.0.0", "parameters": {"limit": 2}}
+        assert body == {"caller": {"agentName": "CLI-test", "purpose": "验证调用声明"}, "capabilityId": "screen.read", "capabilityVersion": "1.0.0", "parameters": {"limit": 2}}
         assert received[0][3] == {"username": "alice", "password": "secret-password", "deviceId": "paired_phone"}
 
 
@@ -139,17 +139,18 @@ def test_mcp_tools_use_core_api_and_never_take_account_identity():
         tools = await server.list_tools()
         assert {tool.name for tool in tools} == {
             "oai_capabilities", "oai_invoke", "oai_request_status", "oai_cancel_request", "oai_ack_result",
+            "oai_register_endpoint", "oai_endpoints", "oai_unregister_endpoint", "oai_receive_deliveries", "oai_ack_delivery",
         }
         for tool in tools:
             assert not {"accountId", "account_id", "deviceId", "device_id"} & set(tool.inputSchema.get("properties", {}))
         await server.call_tool("oai_invoke", {"capability_id": "screen.read", "capability_version": "1.0.0",
-            "parameters": {}, "idempotency_key": "mcp-retry-1"})
+            "parameters": {}, "idempotency_key": "mcp-retry-1", "agent_name": "MCP-test", "purpose": "验证MCP调用声明"})
         await server.call_tool("oai_cancel_request", {"request_id": "req_native"})
 
     with core_http() as (url, received):
         asyncio.run(scenario(url))
         assert received[0][2]["Idempotency-Key"] == "mcp-retry-1"
-        assert received[0][3] == {"capabilityId": "screen.read", "capabilityVersion": "1.0.0", "parameters": {}}
+        assert received[0][3] == {"caller": {"agentName": "MCP-test", "purpose": "验证MCP调用声明"}, "capabilityId": "screen.read", "capabilityVersion": "1.0.0", "parameters": {}}
         assert received[1][1].endswith("/req_native/cancel")
 
 
@@ -158,6 +159,60 @@ def test_cli_wait_timeout_keeps_core_request_running_until_explicit_cancel():
         result = _wait(CoreClient(url, "private-core-token"), {"requestId": "req_native", "state": "claimed"}, 0)
         assert result == {"requestId": "req_native", "state": "claimed", "clientWaitExpired": True}
         assert received == []
+
+
+def test_cli_client_and_mcp_reject_missing_or_blank_caller_without_network(tmp_path, capsys):
+    with core_http() as (url, received):
+        path = tmp_path / "caller-client.json"
+        save_client_config(path, {"url": url, "token": "private-core-token"})
+        assert main(["--client-config", str(path), "invoke", "screen.read", "--version", "1.0.0"]) == 1
+        assert "CALLER_DECLARATION_REQUIRED" in capsys.readouterr().err
+        for agent_name, purpose in ((None, None), (" ", "test"), ("MCP", "\n")):
+            with pytest.raises(CoreClientError, match="CALLER_DECLARATION_REQUIRED"):
+                CoreClient(url, "private-core-token").invoke("screen.read", "1.0.0", {}, agent_name=agent_name, purpose=purpose)
+
+        async def scenario():
+            server = create_mcp(CoreClient(url, "private-core-token"))
+            with pytest.raises(Exception, match="CALLER_DECLARATION_REQUIRED"):
+                await server.call_tool("oai_invoke", {"capability_id": "screen.read", "capability_version": "1.0.0", "parameters": {}, "idempotency_key": "legacy-mcp"})
+
+        asyncio.run(scenario())
+        assert received == []
+
+
+def test_cli_and_mcp_endpoint_methods_use_authenticated_core_routes(tmp_path, capsys):
+    with core_http() as (url, received):
+        path = tmp_path / "endpoint-client.json"
+        save_client_config(path, {"url": url, "token": "private-core-token"})
+        for arguments in (["register", "--registration-key", "receiver-main", "--label", "Hermes"],
+                          ["list"], ["receive", "endpoint_test"],
+                          ["ack", "endpoint_test", "delivery_test", "event_test"], ["unregister", "endpoint_test"]):
+            assert main(["--client-config", str(path), "endpoint", *arguments]) == 0
+            capsys.readouterr()
+        assert [(method, route) for method, route, _, _ in received] == [
+            ("POST", "/open-android-intelligence/core/v1/endpoints"),
+            ("GET", "/open-android-intelligence/core/v1/endpoints"),
+            ("GET", "/open-android-intelligence/core/v1/endpoints/endpoint_test/deliveries"),
+            ("POST", "/open-android-intelligence/core/v1/endpoints/endpoint_test/deliveries/delivery_test/ack"),
+            ("DELETE", "/open-android-intelligence/core/v1/endpoints/endpoint_test"),
+        ]
+        assert received[0][3] == {"registrationKey": "receiver-main", "label": "Hermes", "ttlSeconds": 3600}
+        assert received[3][3] == {"eventId": "event_test"}
+        assert all(headers["Authorization"] == "Bearer private-core-token" for _, _, headers, _ in received)
+
+        async def scenario():
+            server = create_mcp(CoreClient(url, "private-core-token"))
+            for name, arguments in (
+                ("oai_register_endpoint", {"registration_key": "receiver-main", "label": "Hermes"}),
+                ("oai_endpoints", {}),
+                ("oai_receive_deliveries", {"endpoint_id": "endpoint_test"}),
+                ("oai_ack_delivery", {"endpoint_id": "endpoint_test", "delivery_id": "delivery_test", "event_id": "event_test"}),
+                ("oai_unregister_endpoint", {"endpoint_id": "endpoint_test"}),
+            ):
+                await server.call_tool(name, arguments)
+
+        asyncio.run(scenario())
+        assert received[:5] == received[5:]
 
 
 def test_official_mcp_client_negotiates_and_calls_stdio_process(tmp_path):

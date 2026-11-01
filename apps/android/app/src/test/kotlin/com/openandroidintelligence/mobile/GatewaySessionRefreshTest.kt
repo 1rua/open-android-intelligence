@@ -123,22 +123,25 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
-    fun aGrantCleanupFailureAfterConfirmedUnpairStillDeletesRefreshAndSigningKeys() {
+    fun confirmedUnpairRevokesConnectionKeysAndPreservesGlobalCapabilityPolicy() {
         val path = "/open-android-intelligence/v2/pairings/current"
         gateway.respond(path, """{"protocol":"2.1","data":{"deviceId":"dev_stub","deviceKeysRevoked":true,"refreshRevoked":true,"grantsRevoked":true,"deviceRequestsRevoked":true,"unconfirmedAttachmentsRevoked":true,"sessionsRevoked":true}}""")
         val underlying = InMemoryPairingGrantStore()
         pairingGrants = PairingGrantStateHolder(object : PairingGrantStore {
             override fun load(binding: PairingGrantBinding) = underlying.load(binding)
             override fun save(binding: PairingGrantBinding, state: PairingGrantState) = underlying.save(binding, state)
-            override fun clear(binding: PairingGrantBinding) = error("PAIRING_GRANT_CLEAR_FAILED")
         }, AndroidAuditStore(InMemoryAuditSink()))
+        pairingGrants.updateCapabilityPolicy("sms-test", com.openandroidintelligence.kernel.CapabilityPolicy(
+            mode = com.openandroidintelligence.kernel.CapabilityAuthorizationMode.READ_ONLY))
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
         runtime.unpair()
-        assertTrue(awaitCondition(AWAIT_MILLIS) { !deviceKeys.hasKey(profileId()) && runtime.operationNotice.value?.contains("清理失败") == true })
+        assertTrue(awaitCondition(AWAIT_MILLIS) { !deviceKeys.hasKey(profileId()) && !credentialStore.hasRefresh(profileId()) })
         assertFalse(credentialStore.hasRefresh(profileId()))
-        assertNull(pairingGrants.state.value)
+        assertNotNull(pairingGrants.state.value)
+        assertEquals(com.openandroidintelligence.kernel.CapabilityAuthorizationMode.READ_ONLY,
+            pairingGrants.capabilityPolicy("sms-test").mode)
         assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
     }
 
@@ -729,7 +732,8 @@ class GatewaySessionRefreshTest {
             assertEquals("POST_LOGIN_INITIALIZATION_FAILED:ATTACHMENT_RECOVERY", (runtime.phase.value as ConnectionPhase.Failed).code)
             assertNull(runtime.controller.value)
             assertNull(runtime.connectedAccountId)
-            assertNull(pairingGrants.state.value)
+            assertNotNull(pairingGrants.state.value)
+            assertNull(pairingGrants.currentBinding())
             assertTrue("登录已签发的刷新凭据必须保留", credentialStore.hasRefresh(profileId()))
             assertTrue("配对设备密钥必须保留", deviceKeys.hasKey(profileId()))
             assertEquals(listOf(profileId()), runtime.savedProfiles.value.map { it.localProfileId })

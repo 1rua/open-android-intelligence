@@ -269,7 +269,7 @@ class SettingsCapabilityUiTest {
         setContent { SettingsScreen(environment = environment, onBack = {}) }
 
         compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("安装并启用插件后，本机设备能力开关默认开启", substring = true).assertExists()
+        compose.onNodeWithText("新能力默认每次手动", substring = true).assertExists()
         compose.onNodeWithText("以下两种情况会清空本机授权", substring = true).assertDoesNotExist()
         assertTrue(
             compose.onAllNodesWithText("Android 系统权限", substring = true).fetchSemanticsNodes().isNotEmpty(),
@@ -310,6 +310,20 @@ class SettingsCapabilityUiTest {
 
         compose.onNodeWithText("系统通知推送").performClick()
         assertEquals(true, toggled)
+    }
+
+    @Test
+    fun unreadableLocalAuthorizationShowsStorageRecoveryInsteadOfLegacyMigrationReview() {
+        for (code in listOf(
+            "LOCAL_AUTHORIZATION_STATE_INCOMPLETE",
+            "INSTALLATION_CAPABILITY_MIGRATION_FAILED",
+            "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED",
+            "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED",
+        )) {
+            val label = deviceCapabilityReasonLabel(code)
+            assertEquals("无法读取本机授权设置，请检查存储或升级应用后重试（$code）", label)
+            assertFalse(label.contains("复核"))
+        }
     }
 
     @Test

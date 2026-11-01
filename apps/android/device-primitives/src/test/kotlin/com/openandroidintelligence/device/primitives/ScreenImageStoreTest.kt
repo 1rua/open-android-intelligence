@@ -47,4 +47,13 @@ class ScreenImageStoreTest {
         }
         fail("the original elapsed-time deadline must clear the image")
     }
+    @Test fun clearingOneAuthenticatedConnectionScopePreservesOtherScopesPixels() {
+        val store = ScreenImageStore { 1_000L }
+        val a = store.put(owner, "core-a", byteArrayOf(1, 2, 3), 1, 1, 100_000)["imageId"] as String
+        val b = store.put(owner, "core-b", byteArrayOf(4, 5, 6), 1, 1, 100_000)["imageId"] as String
+        store.clearScope("core-a")
+        assertThrows(ScreenOperationException::class.java) { store.read(owner, "core-a", a, 0) }
+        assertEquals("BAUG", store.read(owner, "core-b", b, 0)["data"])
+    }
+
 }

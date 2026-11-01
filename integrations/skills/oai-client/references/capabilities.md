@@ -2,7 +2,7 @@
 
 本参考文档总结了 OAI Core 常见设备能力标识、适用场景与典型调用参数。
 
-**2026-10-28 设备授权规则**：Android 是设备能力授权的唯一权威，已安装且启用的插件普通前台能力默认开启；本地显式开关、系统权限、后台许可、数据范围与必要敏感确认仍决定实际执行。Core 和 Agent Gateway 不另设账号能力开关。规则已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`；分支实现与验证见 [ADR-0059](../../../../docs/adr/0059-android-is-the-sole-device-capability-authority.md) 和[实施记录](../../../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。能力名称和参数始终以当前实际发现结果为准。
+**2026-11-01 现行授权规则**：安装实例全局保存每项能力总开关及三级模式，新能力默认每次手动，主动推送独立且默认关闭；旧配对许可/迁移复核/按账号保存能力规则已被取代。系统权限、合法设备绑定、账号会话和附件隔离继续保留。详见[全局规格](../../../../docs/superpowers/specs/2026-11-01-global-device-authorization.md)，实现和验收以[执行记录](../../../../docs/reviews/2026-11-01-global-device-authorization.zh-CN.md)为准。
 
 ## 1. 基础设备信息与状态
 

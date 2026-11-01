@@ -13,97 +13,103 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import kotlinx.coroutines.delay
 
-/**
- * 面向其他应用的本地确认弹层。
- *
- * 改造前这里直接把 `pluginId`、能力 ID 和原始 JSON 参数打在弹窗里 —— 用户看到的
- * 是一串没有意义的技术标识，既无法据此判断该不该允许，又暴露了内部实现细节。
- *
- * 现在：默认只显示「要做什么 + 对谁做」，原始参数折叠在「技术详情」里按需展开，
- * 供排障使用。确认结论仍由既有 `DeviceExecutionDriver.decide()` 处理，
- * 本弹层不参与任何授权判定。
- */
+/** 展示可信请求上下文并提交用户选择；许可签发、范围校验和超时由执行层处理。 */
 @Composable
 fun ScreenControlConfirmationDialog(
+    requestId: String,
     pluginId: String,
     capability: String,
     parameters: String,
-    onApprove: () -> Unit,
+    agentName: String,
+    purpose: String,
+    operation: String,
+    expiresAtMillis: Long,
+    onApprove: (durationMinutes: Int) -> Unit,
     onDeny: () -> Unit,
 ) {
-    val summary = remember(capability, parameters) {
-        summarizeDeviceControl(capability, parameters)
+    val action = remember(capability, operation, parameters) { deviceRequestAction(capability, operation, parameters) }
+    val parameterLines = remember(parameters) { deviceRequestParameterLines(parameters) }
+    var showTechnical by remember(requestId) { mutableStateOf(false) }
+    val now by produceState(System.currentTimeMillis(), requestId, expiresAtMillis) {
+        value = System.currentTimeMillis()
+        while (value < expiresAtMillis) {
+            delay(minOf(1_000L, expiresAtMillis - value))
+            value = System.currentTimeMillis()
+        }
     }
-    var showTechnical by remember { mutableStateOf(false) }
+    val expired = now >= expiresAtMillis
 
     AlertDialog(
         onDismissRequest = onDeny,
-        title = {
-            Text(if (summary.isScreen) "允许这次屏幕操作" else "确认设备操作")
-        },
+        title = { Text("确认设备请求") },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
                 modifier = Modifier.verticalScroll(rememberScrollState()),
             ) {
+                Text("Agent 声明名称：${agentName.ifBlank { "未提供" }}", modifier = Modifier.testTag("device-confirmation-agent"))
+                Text("操作目的：${purpose.ifBlank { "未提供" }}", modifier = Modifier.testTag("device-confirmation-purpose"))
                 Text(
-                    text = summary.action,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.testTag("screen-confirmation-action"),
-                )
-                summary.target?.let { target ->
-                    Text(
-                        text = "作用于：$target",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Text(
-                    text = if (summary.isScreen) {
-                        "允许后这次操作才会执行；页面内容变化时可能需要重新读取并再次确认。"
-                    } else {
-                        "允许后这次操作才会执行。"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
+                    "Agent 名称和操作目的由请求方声明，仅供展示与审计，不证明身份或扩大权限。",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Text(action, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.testTag("screen-confirmation-action"))
+                Text("操作类型：${operation.ifBlank { "未提供" }}")
+                Text("本次参数与范围", style = MaterialTheme.typography.titleSmall)
+                parameterLines.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                Text(
+                    deviceRequestSensitiveNotice(capability),
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag("device-confirmation-sensitive"),
+                )
+                Text(
+                    "限时允许仅适用于同一能力、操作和已批准的数据范围，并由合法接入的 Agent 共享。Android 系统授权仍需单独满足。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    if (expired) "请求已过期，不能继续允许。" else "剩余确认时间：${(expiresAtMillis - now + 999L) / 1_000L} 秒",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("device-confirmation-expiry"),
+                )
                 TextButton(
                     onClick = { showTechnical = !showTechnical },
                     modifier = Modifier.testTag("screen-confirmation-details-toggle"),
-                ) {
-                    Text(if (showTechnical) "隐藏技术详情" else "查看技术详情")
-                }
+                ) { Text(if (showTechnical) "隐藏技术详情" else "查看技术详情") }
                 if (showTechnical) {
                     Text(
-                        text = "插件：$pluginId\n能力：$capability\n参数：$parameters",
+                        "插件：$pluginId\n能力：$capability\n参数：$parameters",
                         style = AppTextStyles.MonoSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("screen-confirmation-details"),
+                        modifier = Modifier.fillMaxWidth().testTag("screen-confirmation-details"),
                     )
                 }
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = onApprove,
-                modifier = Modifier.testTag("screen-confirmation-approve"),
-            ) { Text("允许这次操作") }
+            Column(Modifier.fillMaxWidth()) {
+                listOf(0, 5, 30, 60).forEach { duration ->
+                    TextButton(
+                        onClick = { if (System.currentTimeMillis() < expiresAtMillis) onApprove(duration) },
+                        enabled = !expired,
+                        modifier = Modifier.fillMaxWidth().testTag("device-confirmation-allow:$duration"),
+                    ) { Text(if (duration == 0) "仅允许本次" else if (duration == 60) "允许 1 小时" else "允许 $duration 分钟") }
+                }
+            }
         },
         dismissButton = {
-            TextButton(
-                onClick = onDeny,
-                modifier = Modifier.testTag("screen-confirmation-deny"),
-            ) { Text("不允许") }
+            TextButton(onClick = onDeny, modifier = Modifier.testTag("screen-confirmation-deny")) { Text("拒绝") }
         },
     )
 }

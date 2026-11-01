@@ -21,8 +21,8 @@ class CapabilityPublisher(context: Context,private val http: GatewayHttpClient,s
     private val bindingCurrent: () -> Boolean = { true },
     private val ownerCurrent: () -> Boolean = { true }) {
     // Never replay the positive pairing-grant journal across the authorization-model change.
-    private val documents = if (keyProvider == null) EncryptedDocuments(context,"capability-publication:android-v1:$scopeKey")
-        else EncryptedDocuments(context,"capability-publication:android-v1:$scopeKey",keyProvider)
+    private val documents = if (keyProvider == null) EncryptedDocuments(context,"capability-publication:installation-v3:$scopeKey")
+        else EncryptedDocuments(context,"capability-publication:installation-v3:$scopeKey",keyProvider)
     private val lock = Mutex()
     @Volatile var grantRevision = initialRevision; private set
     @Volatile private var pendingDigest: String? = documents.read("pending")?.let { digest(JsonFields.obj(Json.parse(it.decodeToString()))!!) }

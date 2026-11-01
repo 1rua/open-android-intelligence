@@ -17,11 +17,16 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import com.openandroidintelligence.control.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -164,6 +169,8 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
 
     private suspend fun dispatch(stroke: GestureDescription.StrokeDescription, durationMs: Long,
         generation: Long, beforeDispatch: () -> Unit): Boolean {
+        val settled = CompletableDeferred<Unit>()
+        var dispatched = false
         try {
             return withTimeout(durationMs + 1500) {
                 currentCoroutineContext().ensureActive()
@@ -173,23 +180,32 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
                     val gesture = GestureDescription.Builder().addStroke(stroke).build()
                     val callback = object : AccessibilityService.GestureResultCallback() {
                         override fun onCompleted(gestureDescription: GestureDescription?) {
+                            settled.complete(Unit)
                             if (continuation.isActive) continuation.resume(true)
                         }
                         override fun onCancelled(gestureDescription: GestureDescription?) {
+                            settled.complete(Unit)
                             if (continuation.isActive) continuation.resumeWithException(ScreenOperationException("SCREEN_ACTION_OUTCOME_UNKNOWN"))
                         }
                     }
                     val accepted = try {
                         service().dispatchGesture(gesture, callback, Handler(Looper.getMainLooper()))
                     } catch (_: SecurityException) { throw ScreenOperationException("ACCESSIBILITY_SERVICE_UNAVAILABLE") }
+                    dispatched = accepted
                     if (!accepted && continuation.isActive) continuation.resume(false)
-                    // Android cannot recall an already dispatched stroke. Cancellation stops waiting;
-                    // OAI records the uncertain result and never replays it with a new request ID.
+                    // Android cannot recall an accepted stroke. Cancellation cleanup retains
+                    // control ownership until the system callback or a bounded fallback.
                 }
             }
         } catch (_: TimeoutCancellationException) {
             currentCoroutineContext().ensureActive()
             throw ScreenOperationException("SCREEN_ACTION_OUTCOME_UNKNOWN")
+        } finally {
+            if (!currentCoroutineContext().isActive && dispatched && !settled.isCompleted) {
+                withContext(NonCancellable) {
+                    withTimeoutOrNull(durationMs + 1500) { settled.await() }
+                }
+            }
         }
     }
 

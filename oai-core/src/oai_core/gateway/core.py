@@ -24,6 +24,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.parse import urlsplit, parse_qs
 
@@ -106,6 +107,9 @@ APPROVAL_EVENT_RESOLVED = "conversation.approval.resolved"
 # Only a fallback for a payload that omits it: the host's own `approvals.timeout`
 # is what actually decides, and the Gateway always sends the number it used.
 APPROVAL_DEFAULT_TIMEOUT_SECONDS = 300
+DEVICE_CONFIRMATION_WINDOW_SECONDS = 300
+DEVICE_EXECUTION_WINDOW_SECONDS = 60
+HTTP_DEVICE_ACTIVITY_SECONDS = 30
 APPROVAL_CAPABILITY = "agent-approval-cards-v1"
 
 
@@ -544,6 +548,13 @@ class ContractRegistry:
         "device.request": ("device-request.schema.json", "request"),
         "device.request.result": ("device-request.schema.json", "result"),
         "device.request.resultRequest": ("device-request.schema.json", "resultRequest"),
+        "device.caller": ("device-request.schema.json", "caller"),
+        "device.authorizationProgress": ("device-request.schema.json", "authorizationProgress"),
+        "push.route": ("device-request.schema.json", "endpointRoute"),
+        "push.registration": ("device-request.schema.json", "endpointRegistration"),
+        "push.delivery": ("device-request.schema.json", "pushDelivery"),
+        "push.ack": ("device-request.schema.json", "pushAck"),
+        "push.revoke": ("device-request.schema.json", "pushRevoke"),
         "response.success": ("envelope.schema.json", "success"),
         "response.failure": ("envelope.schema.json", "failure"),
         "conversation.commandCatalog": ("conversation.schema.json", "commandCatalog"),
@@ -709,8 +720,12 @@ class ContractRegistry:
                     return False
         if isinstance(value, (int, float)) and "minimum" in schema and value < schema["minimum"]:
             return False
+        if isinstance(value, (int, float)) and "maximum" in schema and value > schema["maximum"]:
+            return False
         if isinstance(value, list):
             if len(value) < int(schema.get("minItems", 0)):
+                return False
+            if "maxItems" in schema and len(value) > int(schema["maxItems"]):
                 return False
             if schema.get("uniqueItems") and len({_jcs(item) for item in value}) != len(value):
                 return False
@@ -1224,6 +1239,10 @@ class AccountStore:
             self.database.execute("CREATE INDEX IF NOT EXISTS events_expiry ON events(expires_at)")
             if "result_json" not in {row["name"] for row in self.database.execute("PRAGMA table_info(device_requests)")}:
                 self.database.execute("ALTER TABLE device_requests ADD COLUMN result_json TEXT NOT NULL DEFAULT ''")
+            device_columns = {row["name"] for row in self.database.execute("PRAGMA table_info(device_requests)")}
+            for column in ("caller_json", "result_digest", "acknowledged_at", "local_authorization_state"):
+                if column not in device_columns:
+                    self.database.execute(f"ALTER TABLE device_requests ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             existing_attachment_cols = {
                 row[1] for row in self.database.execute("PRAGMA table_info(attachments)").fetchall()
             }
@@ -2783,7 +2802,7 @@ class DeviceRequestStore:
         provider: Mapping[str, Any] | None = None, parameters: Mapping[str, Any] | None = None,
         correlation_id: str | None = None, now: datetime | str | None = None,
         requires_foreground_confirmation: bool | None = None, online: bool = False,
-        timeout_seconds: float | None = None, **aliases: Any,
+        timeout_seconds: float | None = None, caller: Mapping[str, Any] | None = None, **aliases: Any,
     ) -> dict[str, Any]:
         request_id = request_id if request_id is not None else aliases.pop("requestId")
         device_id = device_id if device_id is not None else aliases.pop("deviceId")
@@ -2802,9 +2821,9 @@ class DeviceRequestStore:
         current = _now(now)
         ttl = maximum_device_request_queue_seconds(risk)
         state = "expired" if ttl == 0 and not online else "pending"
-        lifetime = ttl or (30 if online else 0)
+        lifetime = ttl or (DEVICE_CONFIRMATION_WINDOW_SECONDS + DEVICE_EXECUTION_WINDOW_SECONDS if online else 0)
         if timeout_seconds is not None:
-            if not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds < float("inf"):
+            if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds < float("inf"):
                 raise GatewayError("SCHEMA_INVALID")
             lifetime = min(lifetime, timeout_seconds)
         expires_at = iso_millis(current + timedelta(seconds=lifetime))
@@ -2819,6 +2838,9 @@ class DeviceRequestStore:
             "expiresAt": expires_at,
             "requiresForegroundConfirmation": risk == "high-privilege-ephemeral" or bool(requires_foreground_confirmation),
         }
+        if caller is not None:
+            from ..declarations import caller_declaration
+            record["caller"] = caller_declaration(caller)
         if not self.capabilities.validate(device_id, int(pairing_generation), int(grant_revision), record):
             raise GatewayError("SCHEMA_INVALID")
         parameters_json = "" if state == "expired" else self.store.seal_json(
@@ -2832,12 +2854,13 @@ class DeviceRequestStore:
             self.store.database.execute(
                 """
                 INSERT INTO device_requests(request_id, device_id, pairing_generation, grant_revision, risk, state,
-                  capability_json, provider_json, parameters_json, created_at, expires_at, requires_foreground_confirmation)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  capability_json, provider_json, parameters_json, created_at, expires_at, requires_foreground_confirmation, caller_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (request_id, device_id, pairing_generation, grant_revision, risk, state,
                  _json(capability), _json(provider), parameters_json, record["createdAt"], expires_at,
-                 int(record["requiresForegroundConfirmation"])),
+                 int(record["requiresForegroundConfirmation"]),
+                 self.store.seal_json(record["caller"], f"device-request:{self.account_id}:{request_id}:caller") if caller is not None else ""),
             )
             if state == "pending":
                 self.events.append("device.requested", correlation_id, record, current)
@@ -2917,10 +2940,17 @@ class DeviceRequestStore:
                 if row["state"] not in {"claimed", "cancel_requested"}:
                     raise GatewayError("OUTCOME_UNKNOWN")
                 outcome = result.get("outcome")
+                if row["state"] == "cancel_requested" and outcome == "succeeded":
+                    # Cancellation can commit after Android's last GET. Decide
+                    # under this same write lock and never retain late content
+                    # or claim that a possible write side effect was prevented.
+                    outcome = "cancelled" if row["risk"] == "read" else "outcome_unknown"
+                    result = {"outcome": outcome}
                 event = "result_outcome_unknown" if outcome == "outcome_unknown" else f"result_{outcome}"
                 next_state = next_device_request_state(row["state"], event)
                 sealed_result = self.store.seal_json(result, f"device-result:{request_id}:{claim_id}")
-                self.store.database.execute("UPDATE device_requests SET state = ?, parameters_json = '', result_json = ? WHERE request_id = ?", (next_state, sealed_result, request_id))
+                result_digest = "sha256:" + hashlib.sha256(_jcs(result).encode()).hexdigest()
+                self.store.database.execute("UPDATE device_requests SET state = ?, parameters_json = '', result_json = ?, result_digest = ? WHERE request_id = ?", (next_state, sealed_result, result_digest, request_id))
                 self.events.release_device_request(request_id)
                 self.audit.append(
                     "device.request.result", {"accountId": self.account_id, "deviceId": device_id},
@@ -2963,18 +2993,59 @@ class DeviceRequestStore:
             return None
         return self.store.open_json(row["result_json"], f"device-result:{request_id}:{claim_id}") if row["result_json"] else None
 
-    def acknowledge_result(self, request_id: str, claim_id: str) -> None:
-        receipt = self.store.database.execute("SELECT 1 FROM claim_receipts WHERE request_id = ? AND claim_id = ?", (request_id, claim_id)).fetchone()
-        if receipt is None:
-            raise GatewayError("OUTCOME_UNKNOWN")
-        self.store.database.execute("UPDATE device_requests SET result_json = '' WHERE request_id = ?", (request_id,))
-        self.events.release_device_request(request_id)
+    def acknowledge_result(self, request_id: str, claim_id: str, result_digest: str | None = None) -> dict[str, Any]:
+        with self.store.transaction():
+            row = self._row(request_id)
+            self._assert_request_not_revoked(row)
+            receipt = self.store.database.execute("SELECT 1 FROM claim_receipts WHERE request_id = ? AND claim_id = ?", (request_id, claim_id)).fetchone()
+            if receipt is None:
+                raise GatewayError("OUTCOME_UNKNOWN")
+            if row["state"] not in {"succeeded", "failed", "denied", "cancelled", "outcome_unknown"}:
+                raise GatewayError("RESULT_NOT_READY")
+            stored_digest = row["result_digest"]
+            if not stored_digest and row["result_json"]:
+                # Older already-completed results have no digest column. Derive
+                # it from the real retained result; never invent a result/ACK.
+                retained = self.store.open_json(row["result_json"], f"device-result:{request_id}:{claim_id}")
+                stored_digest = "sha256:" + hashlib.sha256(_jcs(retained).encode()).hexdigest()
+                self.store.database.execute("UPDATE device_requests SET result_digest=? WHERE request_id=?", (stored_digest, request_id))
+            if not stored_digest:
+                raise GatewayError("RESULT_NOT_READY")
+            if result_digest is not None and result_digest != stored_digest:
+                raise GatewayError("IDEMPOTENCY_CONFLICT")
+            acknowledged_at = row["acknowledged_at"]
+            if not acknowledged_at:
+                if not row["result_json"]:
+                    raise GatewayError("RESULT_EXPIRED")
+                acknowledged_at = iso_millis()
+                self.store.database.execute("UPDATE device_requests SET result_json = '', acknowledged_at = ? WHERE request_id = ?", (acknowledged_at, request_id))
+                self.events.release_device_request(request_id)
+            return {"requestId": request_id, "state": row["state"], "acknowledged": True,
+                    "resultDigest": stored_digest, "acknowledgedAt": acknowledged_at}
 
     def purge_terminal_payloads(self, now: datetime | str | None = None) -> int:
         return self.store.database.execute(
             "UPDATE device_requests SET result_json = '', parameters_json = '' WHERE request_id IN (SELECT request_id FROM device_requests WHERE expires_at <= ? AND (result_json != '' OR parameters_json != '') LIMIT 1000)",
             (iso_millis(now),),
         ).rowcount
+
+    def report_authorization(self, request_id: str, device_id: str, pairing_generation: int,
+                             grant_revision: int, state: str, correlation_id: str,
+                             now: datetime | str | None = None) -> dict[str, Any]:
+        if not isinstance(state, str) or state not in {"awaiting_confirmation", "executing"}:
+            raise GatewayError("SCHEMA_INVALID")
+        with self.store.transaction():
+            row = self._row(request_id)
+            self._assert_binding(row, device_id, pairing_generation, grant_revision)
+            self._assert_request_not_revoked(row)
+            if self._expire_if_due(row, _now(now)) or row["state"] != "claimed":
+                raise GatewayError("INVALID_STATE_TRANSITION")
+            if row["local_authorization_state"] == "executing" and state != "executing":
+                raise GatewayError("INVALID_STATE_TRANSITION")
+            self.store.database.execute("UPDATE device_requests SET local_authorization_state=? WHERE request_id=?", (state, request_id))
+            self.audit.append("device.request.authorization.progress", {"accountId": self.account_id, "deviceId": device_id},
+                              {"requestId": request_id, "localState": state}, correlation_id, now)
+            return {"requestId": request_id, "localAuthorizationState": state}
 
     def validate_result_replay(
         self, request_id: str, device_id: str, pairing_generation: int,
@@ -3088,6 +3159,10 @@ class DeviceRequestStore:
             ),
             "createdAt": row["created_at"], "expiresAt": row["expires_at"],
             "requiresForegroundConfirmation": bool(row["requires_foreground_confirmation"]),
+            **({"caller": self.store.open_json(row["caller_json"], f"device-request:{self.account_id}:{row['request_id']}:caller")} if row["caller_json"] else {}),
+            **({"resultDigest": row["result_digest"]} if row["result_digest"] else {}),
+            **({"acknowledgedAt": row["acknowledged_at"]} if row["acknowledged_at"] else {}),
+            **({"localAuthorizationState": row["local_authorization_state"]} if row["local_authorization_state"] else {}),
         }
 
     def _row(self, request_id: str) -> sqlite3.Row:
@@ -4396,6 +4471,7 @@ class GatewayCore:
         self.attachment_policy = attachment_policy or DEFAULT_ATTACHMENT_POLICY
         self.credential_verifier = credential_verifier
         self._online_devices: dict[tuple[str,str,str], tuple[VerifiedRequestContext,int]] = {}
+        self._http_device_activity: dict[tuple[str,str,str,int], tuple[VerifiedRequestContext,float]] = {}
         self.command_catalog = (command_catalog if callable(command_catalog) else tuple(command_catalog)) if command_catalog is not None else ()
         self.history_reader: Any = None
         self.conversation_manager: Any = None
@@ -4512,12 +4588,27 @@ class GatewayCore:
         if not online and not self.is_device_online(context.account_id,context.device_id,context.pairing_generation) and self.account_exists(context.account_id):
             account=self.open_gateway_account(context.account_id)
             try:
-                with account.store.transaction():
-                    rows=account.store.database.execute("SELECT request_id FROM device_requests WHERE device_id=? AND pairing_generation=? AND risk='high-privilege-ephemeral' AND state='pending'",(context.device_id,context.pairing_generation)).fetchall()
-                    for row in rows:
-                        account.store.database.execute("UPDATE device_requests SET state='expired',parameters_json='',result_json='',expires_at=? WHERE request_id=?",(iso_millis(),row[0]))
-                        account.events.release_device_request(row[0])
+                self._expire_pending_high_privilege(account, context.device_id, context.pairing_generation)
             finally:account.close()
+
+    @staticmethod
+    def _expire_pending_high_privilege(account: Any, device_id: str, generation: int) -> None:
+        with account.store.transaction():
+            rows = account.store.database.execute(
+                "SELECT request_id FROM device_requests WHERE device_id=? AND pairing_generation=? "
+                "AND risk='high-privilege-ephemeral' AND state='pending'", (device_id, generation),
+            ).fetchall()
+            for row in rows:
+                account.store.database.execute("UPDATE device_requests SET state='expired',parameters_json='',result_json='',expires_at=? WHERE request_id=?", (iso_millis(), row[0]))
+                account.events.release_device_request(row[0])
+
+    def note_device_http_activity(self, context: VerifiedRequestContext) -> None:
+        """A verified pending poll supplies presence, never capability consent."""
+        if not isinstance(context, VerifiedRequestContext) or not self.is_event_session_active(context):
+            raise GatewayError("SESSION_REVOKED")
+        key = (context.account_id, context.device_id, context.session_id, context.pairing_generation)
+        with self._admission_lock:
+            self._http_device_activity[key] = (context, monotonic() + HTTP_DEVICE_ACTIVITY_SECONDS)
 
     @contextmanager
     def _generation_cancel_lock(self, account_id: str, generation_id: str):
@@ -4538,7 +4629,12 @@ class GatewayCore:
 
     def is_device_online(self, account_id: str, device_id: str, generation: int) -> bool:
         with self._admission_lock:
+            current = monotonic()
+            for key, (_, deadline) in list(self._http_device_activity.items()):
+                if deadline <= current:
+                    self._http_device_activity.pop(key, None)
             contexts = [item[0] for key,item in self._online_devices.items() if key[:2] == (account_id,device_id)]
+            contexts += [item[0] for key,item in self._http_device_activity.items() if key[:2] == (account_id,device_id)]
         return any(ctx.pairing_generation == generation and self.is_event_session_active(ctx) for ctx in contexts)
 
     def list_gateway_account_ids(self) -> list[str]:
@@ -5703,6 +5799,21 @@ class GatewayCore:
                         account.device_requests.capabilities.register(context["deviceId"],int(context["pairingGeneration"]),revision,body["bindings"],body.get("inventory"))
                         account.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)", (key,digest))
                         return _success(context,{"grantRevision":revision,"grantDigest":digest})
+                    if method == "GET" and target_path == "/open-android-intelligence/v2/device-requests/pending":
+                        if parsed_target.query or body is not None:
+                            raise GatewayError("SCHEMA_INVALID")
+                        if not self.is_device_online(context["accountId"], context["deviceId"], context["pairingGeneration"]):
+                            self._expire_pending_high_privilege(account, context["deviceId"], context["pairingGeneration"])
+                        self.note_device_http_activity(_value(request, "context"))
+                        pending = account.store.database.execute(
+                            "SELECT request_id FROM device_requests WHERE device_id=? AND pairing_generation=? "
+                            "AND state IN ('pending','claimed','cancel_requested') AND expires_at>? "
+                            "ORDER BY created_at,request_id LIMIT 128",
+                            (context["deviceId"], context["pairingGeneration"], iso_millis(_request_now(request))),
+                        ).fetchall()
+                        return _success(context, {"deviceId": context["deviceId"],
+                            "pairingGeneration": context["pairingGeneration"], "grantRevision": context["grantRevision"],
+                            "pendingDeviceRequests": [row[0] for row in pending]})
                     device_get = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)",target_path)
                     if method == "GET" and device_get:
                         row = account.device_requests._row(device_get.group(1))
@@ -5711,6 +5822,9 @@ class GatewayCore:
                         if row["grant_revision"] != int(context["grantRevision"]):
                             raise GatewayError("GRANT_STALE")
                         account.device_requests._assert_request_not_revoked(row)
+                        if row["risk"] == "high-privilege-ephemeral" and row["state"] == "pending" and not self.is_device_online(context["accountId"], context["deviceId"], context["pairingGeneration"]):
+                            self._expire_pending_high_privilege(account, context["deviceId"], context["pairingGeneration"])
+                            row = account.device_requests._row(device_get.group(1))
                         record = account.device_requests._map(row)
                         return _success(context,{"request":record})
                     if method == "DELETE" and target_path == "/open-android-intelligence/v2/pairings/current":
@@ -5851,11 +5965,23 @@ class GatewayCore:
                         }})
                     claim_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/claim", target_path)
                     if method == "POST" and claim_match:
+                        row = account.device_requests._row(claim_match.group(1))
+                        account.device_requests._assert_binding(row, context["deviceId"], int(context["pairingGeneration"]), int(context["grantRevision"]))
+                        account.device_requests._assert_request_not_revoked(row)
+                        if row["risk"] == "high-privilege-ephemeral" and row["state"] == "pending" and not self.is_device_online(context["accountId"], context["deviceId"], context["pairingGeneration"]):
+                            self._expire_pending_high_privilege(account, context["deviceId"], context["pairingGeneration"])
                         return _success(context, account.device_requests.claim(
                             request_id=claim_match.group(1), device_id=context["deviceId"],
                             pairing_generation=int(context["pairingGeneration"]), grant_revision=int(context["grantRevision"]),
                             correlation_id=context["correlationId"], now=_request_now(request),
                         ))
+                    authorization_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/authorization", target_path)
+                    if method == "POST" and authorization_match:
+                        if not isinstance(body, Mapping) or set(body) != {"state"}:
+                            raise GatewayError("SCHEMA_INVALID")
+                        return _success(context, account.device_requests.report_authorization(
+                            authorization_match.group(1), context["deviceId"], int(context["pairingGeneration"]),
+                            int(context["grantRevision"]), body["state"], context["correlationId"], _request_now(request)))
                     result_match = re.fullmatch(r"/open-android-intelligence/v2/device-requests/([^/]+)/result", target_path)
                     if method == "POST" and result_match:
                         body_map = body if isinstance(body, Mapping) else None

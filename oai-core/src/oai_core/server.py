@@ -23,6 +23,7 @@ from .gateway.local_keys import LocalMasterKeyStore, ensure_master_key_file
 
 from .auth import Authentication, Principal, raw_request
 from .device_service import DeviceService
+from .endpoints import EndpointService, create_endpoint_routes
 
 GATEWAY_REVISION = "b64dda00a0de9ff1a95a375dcf92f62b5a1027b3"
 DEVICE_API = "/open-android-intelligence/core/v1"
@@ -31,6 +32,7 @@ DEVICE_AUTHORIZATION_MODEL = "android-v1"
 CORE_KEY = web.AppKey("oai_core", GatewayCore)
 AUTH_KEY = web.AppKey("authentication", Authentication)
 DEVICE_KEY = web.AppKey("devices", DeviceService)
+ENDPOINT_KEY = web.AppKey("endpoints", EndpointService)
 REGISTRY_KEY = web.AppKey("agents", object)
 logger = logging.getLogger(__name__)
 
@@ -104,7 +106,7 @@ async def errors(request: web.Request, handler: Any) -> web.StreamResponse:
     try:
         return await handler(request)
     except GatewayError as exc:
-        body = {"error": {"code": exc.code, "message": exc.code, "retryable": False, "details": exc.details}}
+        body = {"error": {"code": exc.code, "message": exc.code, "retryable": exc.code == "DEVICE_OFFLINE", "details": exc.details}}
         status = _status(body)
         if exc.code in {"CAPABILITY_DENIED", "GRANT_STALE", "PAIRING_GENERATION_STALE", "IDENTITY_OVERRIDE_REJECTED"}:
             status = 403
@@ -157,11 +159,13 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
     core = core if core is not None else create_core(config)
     auth = Authentication(core, Path(config["storageRoot"]) / "core-tokens.sqlite")
     devices = DeviceService(core, auth)
+    endpoints = EndpointService(core, auth, Path(config["storageRoot"]) / "push-endpoints.sqlite")
     if registry is None:
         from .sessions import build_registry
         registry = build_registry(config, core)
     app = web.Application(middlewares=[errors], client_max_size=1024 * 1024)
     app[CORE_KEY], app[AUTH_KEY], app[DEVICE_KEY], app[REGISTRY_KEY] = core, auth, devices, registry
+    app[ENDPOINT_KEY] = endpoints
     routes = web.RouteTableDef()
 
     @routes.post(DEVICE_API + "/tokens")
@@ -201,9 +205,11 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
 
     @routes.post(DEVICE_API + "/device-requests/{requestId}/ack")
     async def acknowledge(request: web.Request) -> web.Response:
-        if await request.read() not in (b"", b"{}"):
+        raw = await request.read()
+        body = json.loads(raw) if raw else {}
+        if not isinstance(body, dict) or set(body) - {"resultDigest"} or "resultDigest" in body and not isinstance(body["resultDigest"], str):
             raise GatewayError("SCHEMA_INVALID")
-        return web.json_response(devices.acknowledge(await auth.authenticate(request), request.match_info["requestId"]))
+        return web.json_response(devices.acknowledge(await auth.authenticate(request), request.match_info["requestId"], body.get("resultDigest")))
 
     def is_active(principal: Principal) -> bool:
         try:
@@ -213,6 +219,7 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
             return False
 
     app.add_routes(routes)
+    app.add_routes(create_endpoint_routes(endpoints, auth))
     app.add_routes(create_agent_routes(registry, auth.authenticate, is_active, core.contracts, core=core))
     # This compatibility range describes the pinned Core Python interface. It
     # makes no claim that a Hermes host process is installed or online.
@@ -223,6 +230,10 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
 
     async def maintenance() -> None:
         while True:
+            try:
+                endpoints.sweep()
+            except Exception:
+                logger.warning("Core push buffer maintenance failed; retrying on the next sweep")
             for account_id in core.list_gateway_account_ids():
                 account = None
                 try:
@@ -258,6 +269,7 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
         await registry.close()
 
     async def cleanup(_: web.Application) -> None:
+        endpoints.close()
         auth.close()
 
     app.on_startup.append(startup)

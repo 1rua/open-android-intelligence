@@ -22,6 +22,8 @@ data class SmsInboxQuery(
     val cursor: SmsCursor? = null,
     val senders: Set<String> = emptySet(),
     val textQuery: String = "",
+    val oldestFirst: Boolean = false,
+    val includeBody: Boolean = true,
 )
 
 fun interface SmsInboxReader {

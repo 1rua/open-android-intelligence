@@ -45,7 +45,7 @@
 
 ## 30 秒看懂
 
-> **2026-10-28 授权规则**：Android 客户端是设备能力授权的唯一权威。已安装且启用的设备插件，其能力默认开启；实际执行仍受手机本地显式开关、Android 系统权限、数据范围设置和必要的敏感操作确认约束。OAI Core 负责身份认证、设备绑定、能力发现、协议校验与请求路由；Hermes、DSH 等 Agent 插件负责接入与桥接，两者均不另设账号级设备能力授权。规则已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 和真机验收。实现与当前验证见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；旧 `dev` 基线证据见[修复计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)。
+> **2026-11-01 全局授权规则**：Android 安装实例统一保存每项能力总开关、每次手动/允许只读/自动允许及数据范围。新能力默认每次手动，主动推送默认关闭；切 Core、账号或 Agent 不重置。本地系统权限与合法设备访问关系保持独立。实现和自动化/模拟器/实体机边界见[执行记录](docs/reviews/2026-11-01-global-device-authorization.zh-CN.md)，操作见[指南](docs/guides/global-device-authorization.zh-CN.md)。
 
 > [!TIP]
 > ### Open Android Intelligence（OAI）是**一个统一的安卓客户端，用于连接多种主流 Agent**（如 Hermes、DSH、Codex、OpenClaw 等）。
@@ -64,7 +64,7 @@
 
 > [!NOTE]
 > **无中转架构**：Android App 直接与用户自托管的 OAI Core 服务端通信，项目本身不提供任何公网中转服务器。<br>
-> **手机统一授权（当前 feature 规则）**：设备插件安装并启用后普通能力默认开启，Android 决定能否执行；系统权限、独立后台许可和必要敏感操作确认仍各自生效。
+> **手机全局授权**：设备能力独立总开关和三级模式由Android统一保存，新能力默认每次手动；系统权限和主动推送范围分别管理。
 
 
 ---
@@ -89,7 +89,7 @@
     </td>
     <td width="50%" valign="top">
       <h3>零信任安全与屏幕确认 <img src="https://img.shields.io/badge/安全第一-F59E0B?style=flat-square" alt="安全第一"></h3>
-      <p>设备能力统一在 Android 客户端管理。插件安装并启用后能力默认开启，本地显式关闭、缺少系统权限或未完成必要确认时不能执行。连接身份认证和设备配对持续生效；目标设计不要求网关账号另行授予设备能力。</p>
+      <p>设备能力统一在 Android 客户端管理。安装启用后按每项能力的全局模式处理请求，缺少系统权限、本地拒绝或必要系统同意时不能执行。连接身份认证和设备配对持续生效；目标设计不要求网关账号另行授予设备能力。</p>
     </td>
   </tr>
   <tr>
@@ -145,7 +145,7 @@
 | --- | --- |
 | **通话记录** | **仅允许只读基础元数据**（联系人/号码、时间戳、通话时长）；严禁任何形式的录音、代接、挂断或自动拨号。 |
 | **短信记录** | 仅支持受控读取收发记录；**发短信等变更操作必须在手机屏幕上手动逐条点击确认**，绝不允许后台代发。 |
-| **应用通知** | 插件安装并启用后能力默认开启；通知访问权限、手机上的应用包名范围与字段设置继续限制实际数据读取，未选中的应用不得外发，不落明文日志。 |
+| **应用通知** | 新能力默认每次手动；通知访问权限、手机上的应用包名范围与字段设置继续限制实际数据读取，未选中的应用不得外发，不落明文日志。 |
 
 ---
 
@@ -299,7 +299,7 @@ OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64位十六进制字�
 
 ### 4. 设备能力按需启用
 
-当前 feature 分支规则下，在手机的插件管理中安装并启用设备插件后，其普通设备能力默认开启。用户可在 Android 本地明确关闭能力；系统权限、通知应用范围、后台许可和必要的单次敏感操作确认继续生效。Agent 使用已认证且绑定目标设备的 Core CLI/MCP/API，先读取 `oai capabilities` 的实际声明，再按 Schema 调用。
+在手机插件管理中安装并启用设备插件后，每项能力采用独立总开关和三级模式，新能力默认每次手动。全局策略在切换Core、账号或Agent后保持；系统权限、被动范围及独立主动推送许可各自生效。Agent 使用已认证且绑定目标设备的 Core CLI/MCP/API，先读取 `oai capabilities` 的实际声明，再按 Schema 调用。
 
 旧 `dev` 基线可能显示“当前 Gateway 账号未启用；请通过 Gateway 能力配置开启”。这是旧授权判断与新架构不一致的表现，不能把回到 Hermes 配置能力开关作为目标操作流程。Android 唯一授权修复已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 并完成真机验收；实现和验证状态见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
 

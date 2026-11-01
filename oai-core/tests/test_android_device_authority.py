@@ -52,6 +52,7 @@ async def test_legacy_policy_cannot_override_android_publication_or_request_life
     assert "gatewayEnabled" not in actual
 
     response = await client.post(DEVICE_API + "/device-requests", json={
+        "caller": {"agentName": "authority-test", "purpose": "验证设备授权边界"},
         "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1},
     }, headers={**headers, "Idempotency-Key": "android-authority-request"})
     assert response.status == 200, await response.text()
@@ -82,6 +83,7 @@ async def test_legacy_permanent_request_revocation_survives_policy_retirement(ga
     binding, _ = await publish(client, core, bundle, key)
     headers = await token(client, bundle)
     response = await client.post(DEVICE_API + "/device-requests", json={
+        "caller": {"agentName": "authority-test", "purpose": "验证设备授权边界"},
         "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1},
     }, headers={**headers, "Idempotency-Key": "revoked-request"})
     assert response.status == 200, await response.text()
@@ -108,6 +110,7 @@ async def test_upgrade_fences_legacy_calls_and_snapshots_without_recreating_iden
     requests = {}
     for name in ("pending", "claimed", "succeeded"):
         response = await client.post(DEVICE_API + "/device-requests", json={
+            "caller": {"agentName": "authority-test", "purpose": "验证设备授权边界"},
             "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1},
         }, headers={**headers, "Idempotency-Key": "legacy-" + name})
         assert response.status == 200, await response.text()
@@ -219,10 +222,9 @@ async def test_upgrade_fences_legacy_calls_and_snapshots_without_recreating_iden
     finally:
         reopened.close()
     response = await client.get(DEVICE_API + "/capabilities", headers=headers)
-    assert response.status == 403
-    assert (await response.json())["error"]["code"] == "GRANT_STALE"
-    headers = await token(client, bundle)
-    response = await client.get(DEVICE_API + "/capabilities", headers=headers)
+    # Publication revision invalidates old requests, not the authenticated
+    # account/device access relationship or a registered receive route.
+    assert response.status == 200
     actual = next(item for item in (await response.json())["capabilities"] if item["capabilityId"] == binding["capabilityId"])
     assert actual["status"] == "SYNC_REQUIRED"
     await request_signed(client, bundle, key, "POST", PREFIX + "/pairings/current/capabilities", {
@@ -230,6 +232,7 @@ async def test_upgrade_fences_legacy_calls_and_snapshots_without_recreating_iden
     })
     headers = await token(client, bundle)
     response = await client.post(DEVICE_API + "/device-requests", json={
+        "caller": {"agentName": "authority-test", "purpose": "验证设备授权边界"},
         "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 1},
     }, headers={**headers, "Idempotency-Key": "after-upgrade"})
     assert response.status == 200, await response.text()
@@ -450,6 +453,7 @@ async def test_backup_failure_leaves_legacy_requests_and_identity_untouched_and_
     binding, revision = await publish(client, core, bundle, key)
     headers = await token(client, bundle)
     response = await client.post(DEVICE_API + "/device-requests", json={
+        "caller": {"agentName": "authority-test", "purpose": "验证设备授权边界"},
         "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": {"limit": 7},
     }, headers={**headers, "Idempotency-Key": "backup-failure-request"})
     assert response.status == 200, await response.text()
