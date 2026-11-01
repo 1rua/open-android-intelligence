@@ -21,7 +21,7 @@ data class NotificationPushScope(
     val packageIds: Set<String> = emptySet(),
     val includeContent: Boolean = true,
 ) {
-    init { require(packageIds.size <= 256 && packageIds.all { it.isNotBlank() && it.length <= 256 }) }
+    init { require(packageIds.all { it.isNotBlank() && it.length <= 256 }) }
     internal fun frozen() = copy(packageIds = packageIds.toSet())
 }
 

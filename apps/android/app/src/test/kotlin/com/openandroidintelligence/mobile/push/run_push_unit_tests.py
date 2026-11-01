@@ -73,7 +73,7 @@ def main() -> int:
         dto = output / "PushEndpointOption.kt"
         dto.write_text("package com.openandroidintelligence.mobile.push\n" + declaration + "\n")
         sources.append(dto)
-        test_classes = ["DevicePushRuntimeTest", "GatewayPushTransportTest", "PushRevocationTest", "PushStateCodecMigrationTest", "PushEndpointAvailabilityTest", "SmsPushScopeTest"]
+        test_classes = ["DevicePushRuntimeTest", "GatewayPushTransportTest", "PushRevocationTest", "PushStateCodecMigrationTest", "NotificationPushScopePersistenceTest", "PushEndpointAvailabilityTest", "SmsPushScopeTest"]
         sources.extend(tests / f"{name}.kt" for name in test_classes)
         test_package = "com.openandroidintelligence.mobile.push."
     compiled = output / "classes"

@@ -287,7 +287,6 @@ internal fun NotificationPushScopeSettings(
     var selectedPackages by rememberSaveable { mutableStateOf<List<String>?>(null) }
     var openingPackages by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var rejection by rememberSaveable { mutableStateOf<String?>(null) }
-    var validationError by rememberSaveable { mutableStateOf<String?>(null) }
     var submittedPackages by remember { mutableStateOf<List<String>?>(null) }
     var submittedAtCompletion by remember { mutableStateOf<Long?>(null) }
 
@@ -332,7 +331,6 @@ internal fun NotificationPushScopeSettings(
             openingPackages = packageIds.toList()
             selectedPackages = openingPackages
             rejection = null
-            validationError = null
         },
         enabled = !saving,
         modifier = Modifier.testTag("push-save-packages"),
@@ -344,27 +342,19 @@ internal fun NotificationPushScopeSettings(
             loadFailed = loadFailed,
             savedPackages = packageIds.toList(),
             selectedPackages = draft,
-            rejection = rejection ?: validationError,
-            onSelectionChanged = {
-                selectedPackages = it
-                // Editing can fix a local limit, never a stale-authority/save rejection.
-                if (it.size <= 256 && it.all { id -> id.length <= 256 }) validationError = null
-            },
+            rejection = rejection,
+            onSelectionChanged = { selectedPackages = it },
             onRetry = { refresh += 1 },
             onReloadSelection = {
                 openingPackages = packageIds.toList()
                 selectedPackages = openingPackages
                 rejection = null
-                validationError = null
             },
             onCancel = { selectedPackages = null },
             onSave = {
                 when {
                     packageIds != openingPackages.toSet() -> {
                         rejection = "应用范围已在其他位置修改，请重新载入已保存选择后再保存。"
-                    }
-                    draft.size > 256 || draft.any { it.length > 256 } -> {
-                        validationError = "最多选择 256 个应用。"
                     }
                     else -> {
                         submittedAtCompletion = saveCompletion

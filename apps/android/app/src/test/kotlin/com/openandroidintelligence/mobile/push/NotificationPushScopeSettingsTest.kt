@@ -123,9 +123,10 @@ class NotificationPushScopeSettingsTest {
         assertEquals(2, saves)
     }
 
-    @Test fun reducingAnOverLimitDraftRestoresSaveWithoutLosingTheRemainingSelection() {
-        val largeList = (0..256).map { InstalledNotificationApp("com.example.app$it", "应用$it") }
+    @Test fun moreThan256ApplicationsCanBeSelectedSavedSearchedAndReopenedWithoutTruncation() {
+        val largeList = (0..1024).map { InstalledNotificationApp("com.example.app$it", "应用$it") }
         val loader = { largeList }
+        val allIds = largeList.map { it.packageId }.toSet()
         var saved = emptySet<String>()
         var saves = 0
         compose.setContent {
@@ -136,15 +137,27 @@ class NotificationPushScopeSettingsTest {
         }
         openPicker()
         compose.onNodeWithTag("notification-app-select-all").performClick()
-        compose.onNodeWithTag("notification-app-save").performClick()
-        compose.onNodeWithText("设置没有保存成功：最多选择 256 个应用。").assertExists()
-        compose.onNodeWithTag("notification-app-save").assertIsNotEnabled()
-        assertEquals(0, saves)
-        app(largeList.first().packageId).assertIsOn().performClick().assertIsOff()
         compose.onNodeWithTag("notification-app-save").assertIsEnabled().performClick()
-        assertEquals(largeList.drop(1).map { it.packageId }.toSet(), saved)
+        assertEquals(allIds, saved)
         assertEquals(1, saves)
         compose.onNodeWithTag("notification-app-picker").assertDoesNotExist()
+
+        openPicker()
+        compose.onNodeWithTag("notification-app-search").performTextReplacement(largeList.last().packageId)
+        app(largeList.last().packageId).assertIsOn()
+        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        app(largeList.last().packageId).assertIsOff()
+        compose.onNodeWithContentDescription("取消选择").performClick()
+        assertEquals(allIds, saved)
+        assertEquals(1, saves)
+
+        openPicker()
+        compose.onNodeWithTag("notification-app-search").performTextReplacement(largeList.last().packageId)
+        app(largeList.last().packageId).assertIsOn()
+        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        assertEquals(allIds - largeList.last().packageId, saved)
+        assertEquals(2, saves)
     }
 
     @Test fun invisibleSavedApplicationsAreKeptUntilTheUserExplicitlyClearsThem() {

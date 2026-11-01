@@ -16,6 +16,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onLast
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityAuthorization
@@ -152,6 +154,42 @@ class PluginManagementScreenTest {
         // 点击不静默：如实回显无处授权
         compose.onNodeWithText("合并同类通知").performClick()
         compose.onNodeWithText("当前版本暂不支持插件运行，这里的设置无法操作", substring = true).assertExists()
+    }
+
+    @Test
+    @Config(application = OpenAndroidIntelligenceApplication::class)
+    fun multiplePluginsOmitRollbackAndKeepEnablePermissionsAndInstallActions() {
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        store.install(TestAlpPackages.compiledNotificationsPackage())
+        store.install(TestAlpPackages.compiledSmsPackage())
+        app.pluginHost.reload()
+        val installed = store.listInstalled().map { it.pluginId }
+        assertEquals(listOf(NOTIFICATION_PLUGIN_ID, SMS_PLUGIN_ID), installed)
+
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
+        }
+
+        compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
+        compose.onAllNodesWithText("启用").assertCountEquals(2)
+        compose.onAllNodesWithText("系统权限与后台任务").assertCountEquals(2)
+        compose.onAllNodesWithText("卸载").assertCountEquals(2)
+        compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).assertIsEnabled()
+        compose.onNodeWithText("打开通知访问设置").assertExists()
+
+        compose.onAllNodesWithText("启用").onFirst().performScrollTo().performClick()
+        assertTrue(app.pluginHost.isEnabled(NOTIFICATION_PLUGIN_ID))
+        assertFalse(app.pluginHost.isEnabled(SMS_PLUGIN_ID))
+        compose.onNodeWithText("停用").assertExists()
+        compose.onNodeWithText("启用").assertExists()
+
+        compose.onAllNodesWithText("系统权限与后台任务").onLast().performScrollTo().performClick()
+        compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
+        compose.onNodeWithText("允许后台任务").assertExists()
+        compose.onNodeWithText("检查 Android 系统权限").assertIsEnabled()
+        compose.onNodeWithText("取消").performClick()
+        compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
+        assertEquals(installed, store.listInstalled().map { it.pluginId })
     }
 
     @Test

@@ -369,16 +369,14 @@ fun SettingsScreen(
 
         composable(SettingsRoutes.DEVICE_PUSH) {
             val push = (context.applicationContext as? OpenAndroidIntelligenceApplication)?.devicePush
-            if (push?.runtime != null) {
-                val endpoints by push.endpoints.collectAsState()
-                com.openandroidintelligence.mobile.push.PushSettingsScreen(push.runtime, endpoints,
-                    onRefreshEndpoints = push::refreshEndpoints, onBack = { navController.popBackStack() })
-            } else {
-                SettingsPageScaffold(title = "短信与通知主动推送", presentation = presentation,
-                    onBack = { navController.popBackStack() }) { padding ->
-                    Text("本机加密队列暂不可用，请检查设备存储和密钥状态。", Modifier.padding(padding))
-                }
-            }
+            val endpoints = if (push != null) push.endpoints.collectAsState().value else emptyList()
+            DevicePushSubScreen(
+                runtime = push?.runtime,
+                endpoints = endpoints,
+                onRefreshEndpoints = { push?.refreshEndpoints() },
+                onBack = { navController.popBackStack() },
+                presentation = presentation,
+            )
         }
 
         composable(SettingsRoutes.NOTIFICATIONS) {
@@ -465,6 +463,38 @@ fun SettingsScreen(
                 TextButton(onClick = { showUnpairDialog = false }) { Text("取消") }
             },
         )
+    }
+}
+
+/** 主动推送沿用设置子页容器；正文继续负责自己的滚动和配置操作。 */
+@Composable
+internal fun DevicePushSubScreen(
+    runtime: com.openandroidintelligence.mobile.push.DevicePushRuntime?,
+    endpoints: List<com.openandroidintelligence.mobile.push.PushEndpointOption>,
+    onRefreshEndpoints: () -> Unit,
+    onBack: () -> Unit,
+    presentation: SettingsPresentation,
+) {
+    SettingsPageScaffold(
+        title = "短信与通知主动推送",
+        presentation = presentation,
+        onBack = onBack,
+    ) { padding ->
+        Box(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            if (runtime != null) {
+                com.openandroidintelligence.mobile.push.PushSettingsScreen(
+                    runtime = runtime,
+                    endpoints = endpoints,
+                    onRefreshEndpoints = onRefreshEndpoints,
+                    modifier = Modifier.fillMaxHeight(),
+                )
+            } else {
+                Text("本机加密队列暂不可用，请检查设备存储和密钥状态。")
+            }
+        }
     }
 }
 

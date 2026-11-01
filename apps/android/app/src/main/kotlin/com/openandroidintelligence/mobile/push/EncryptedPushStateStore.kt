@@ -190,7 +190,7 @@ internal object PushStateCodec {
     }
 
     private fun DataInputStream.config(version: Int): PushConfiguration {
-        val notifications = NotificationPushSettings(readBoolean(), NotificationPushScope(strings(), readBoolean()), endpoints())
+        val notifications = NotificationPushSettings(readBoolean(), NotificationPushScope(notificationPackages(), readBoolean()), endpoints())
         val smsEnabled = readBoolean()
         val senders = strings()
         val allSenders = readBoolean()
@@ -215,6 +215,19 @@ internal object PushStateCodec {
     }
     private fun DataOutputStream.strings(value: Set<String>) { writeInt(value.size); value.forEach { text(it) } }
     private fun DataInputStream.strings() = List(count(256)) { text(1_024) }.toSet()
+    private fun DataInputStream.notificationPackages(): Set<String> {
+        val size = readInt()
+        // Each nonblank package needs its length prefix and at least one UTF-8 byte.
+        // Bound malformed counts by the actual input, without a product app-count limit.
+        check(size in 0..(available() / (Int.SIZE_BYTES + 1)))
+        return buildSet {
+            repeat(size) {
+                val packageId = text(1_024)
+                check(packageId.isNotBlank())
+                add(packageId)
+            }
+        }
+    }
     private fun DataOutputStream.optional(value: String?) { writeBoolean(value != null); if (value != null) text(value) }
     private fun DataInputStream.optional() = if (readBoolean()) text(512) else null
     private fun DataOutputStream.text(value: String) { val bytes = value.toByteArray(); writeInt(bytes.size); write(bytes) }

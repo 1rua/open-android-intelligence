@@ -1,7 +1,24 @@
 package com.openandroidintelligence.mobile
 
 import android.app.Application
+import android.view.View
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.drawToBitmap
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.material3.Surface
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -18,12 +35,22 @@ import com.openandroidintelligence.kernel.NativePluginLoader
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.PhoneLimits
 import com.openandroidintelligence.kernel.PluginKernel
+import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.encrypted.store.InMemoryOutboxPersistence
+import com.openandroidintelligence.mobile.push.DevicePushRuntime
+import com.openandroidintelligence.mobile.push.EncryptedPushStateStore
+import com.openandroidintelligence.mobile.push.PushSystemAccess
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.MotionPolicy
+import javax.crypto.spec.SecretKeySpec
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** SMS access must lead to the real author-scoped plugin grant, never a standalone capability bit. */
 @RunWith(RobolectricTestRunner::class)
@@ -129,6 +156,143 @@ class SettingsHonestyCopyTest {
             "这台手机统一保存各项能力的开关与授权模式。切换 Core、账号或 Agent 不会重置；退出全部账号后暂停采集、执行和推送。",
         ).performScrollTo().assertExists()
         compose.onNodeWithText("切换账号或解除配对后，需要重新授权").assertDoesNotExist()
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun devicePushFullScreenCoversItsBackgroundAndKeepsProductionControls() {
+        assertDevicePushProductionPage(SettingsPresentation.SCREEN)
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun devicePushBottomSheetUsesItsPresentationBackgroundAndOneBackAction() {
+        assertDevicePushProductionPage(SettingsPresentation.BOTTOM_SHEET)
+    }
+
+    @Test
+    fun devicePushFullScreenEntersAndReturnsThroughSettingsNavigation() {
+        assertDevicePushNavigation(SettingsPresentation.SCREEN, reducedMotion = false)
+    }
+
+    @Test
+    fun devicePushBottomSheetEntersAndReturnsThroughSettingsNavigation() {
+        assertDevicePushNavigation(SettingsPresentation.BOTTOM_SHEET, reducedMotion = false)
+    }
+
+    @Test
+    fun devicePushFullScreenRespectsTheSharedReducedMotionPolicy() {
+        assertDevicePushNavigation(SettingsPresentation.SCREEN, reducedMotion = true)
+    }
+
+    @Test
+    fun devicePushBottomSheetRespectsTheSharedReducedMotionPolicy() {
+        assertDevicePushNavigation(SettingsPresentation.BOTTOM_SHEET, reducedMotion = true)
+    }
+
+    private fun assertDevicePushProductionPage(presentation: SettingsPresentation) {
+        val runtime = DevicePushRuntime(
+            EncryptedPushStateStore(
+                "settings-page-test",
+                InMemoryOutboxPersistence(),
+                SecretKeySpec(ByteArray(32) { 1 }, "AES"),
+            ),
+            PushSystemAccess { true },
+        )
+        val screenColor = Color(0xFFF4F1EB)
+        val sheetColor = Color(0xFFE4E1DB)
+        var backCalls = 0
+        var refreshCalls = 0
+        lateinit var contentView: View
+        compose.setContent {
+            contentView = LocalView.current
+            MaterialTheme(colorScheme = lightColorScheme(surface = screenColor, surfaceContainerLow = sheetColor)) {
+                Box(Modifier.fillMaxSize().background(Color.Magenta)) {
+                    DevicePushSubScreen(
+                        runtime = runtime,
+                        endpoints = emptyList(),
+                        onRefreshEndpoints = { refreshCalls++ },
+                        onBack = { backCalls++ },
+                        presentation = presentation,
+                    )
+                }
+            }
+        }
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("push-notification-enabled").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("短信与通知主动推送").assertIsDisplayed()
+        compose.onNodeWithText("主动推送").assertIsDisplayed()
+        compose.onAllNodesWithContentDescription("返回").assertCountEquals(1)
+        compose.onNodeWithText("返回").assertDoesNotExist()
+        // Robolectric 不驱动 WindowCapture 等待的窗口重绘回调；直接绘制已布局的真实 View。
+        val pixels = compose.runOnIdle { contentView.drawToBitmap() }
+        val expectedColor = if (presentation == SettingsPresentation.SCREEN) screenColor else sheetColor
+        assertEquals(expectedColor, Color(pixels.getPixel(pixels.width - 2, pixels.height - 2)))
+
+        compose.onNodeWithTag("push-notification-enabled").performClick()
+        compose.waitUntil(5_000) { runtime.snapshot().configuration.notifications.enabled }
+        compose.onNodeWithTag("push-notification-enabled").assertIsOn()
+        compose.onNodeWithText("刷新队列状态").performScrollTo().performClick()
+        compose.onNodeWithTag("push-refresh-endpoints").performScrollTo().performClick()
+        assertEquals(1, refreshCalls)
+        compose.onNodeWithContentDescription("返回").assertIsDisplayed().performClick()
+        assertEquals(1, backCalls)
+        assertTrue(runtime.snapshot().configuration.notifications.enabled)
+    }
+
+    private fun assertDevicePushNavigation(presentation: SettingsPresentation, reducedMotion: Boolean) {
+        var closeCalls = 0
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = reducedMotion)) {
+                MaterialTheme {
+                    Surface {
+                        SettingsScreen(
+                            environment = settingsEnvironment(),
+                            onBack = { closeCalls++ },
+                            presentation = presentation,
+                        )
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("短信与通知主动推送").performScrollTo()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithText("短信与通知主动推送").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(MotionSpecs.ReducedMotionCrossfadeDuration.toLong() / 4)
+        val unavailable = compose.onNodeWithText("本机加密队列暂不可用，请检查设备存储和密钥状态。")
+        val enteringLeft = unavailable.fetchSemanticsNode().boundsInRoot.left
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        val settledLeft = unavailable.fetchSemanticsNode().boundsInRoot.left
+        if (reducedMotion) {
+            assertEquals("减少动态时进入不应产生水平位移", settledLeft, enteringLeft, 1f)
+        } else {
+            assertTrue("普通进入沿用设置导航的水平转场", enteringLeft > settledLeft)
+        }
+        compose.onAllNodesWithContentDescription("返回").assertCountEquals(1)
+        compose.onNodeWithText("返回").assertDoesNotExist()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithContentDescription("返回").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(MotionSpecs.ReducedMotionCrossfadeDuration.toLong() / 4)
+        val exitingLeft = unavailable.fetchSemanticsNode().boundsInRoot.left
+        if (reducedMotion) {
+            assertEquals("减少动态时返回不应产生水平位移", settledLeft, exitingLeft, 1f)
+        } else {
+            assertTrue("普通返回沿用设置导航的反向转场", exitingLeft > settledLeft)
+        }
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        unavailable.assertDoesNotExist()
+        compose.onNodeWithText("全局设备能力").performScrollTo().assertIsDisplayed()
+        assertEquals(0, closeCalls)
+        compose.onNodeWithContentDescription("返回").performClick()
+        val closeDescription = if (presentation == SettingsPresentation.BOTTOM_SHEET) "关闭设置" else "返回"
+        compose.onNodeWithContentDescription(closeDescription).performClick()
+        assertEquals(1, closeCalls)
     }
 
     private fun settingsEnvironment(): PlatformSettingsEnvironment {
