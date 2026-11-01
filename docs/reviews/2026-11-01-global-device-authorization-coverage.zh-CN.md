@@ -7,14 +7,14 @@
 
 | 需求 | 生产实现入口 | 自动化证据入口 | 当前运行证据 |
 | --- | --- | --- | --- |
-| GLOBAL-01 全局策略 | `PairingGrantStateHolder`、`SharedPreferencesPairingGrantStore`；策略键不含Core/账号 | `CapabilityAuthorizationTest`、`PairingGrantPersistenceTest` | CoreA登录/系统权限/手动拒绝与超时已实测；切Core/账号待测 |
+| GLOBAL-01 全局策略 | `PairingGrantStateHolder`、`SharedPreferencesPairingGrantStore`；策略键不含Core/账号 | `CapabilityAuthorizationTest`、`PairingGrantPersistenceTest` | CoreA→B→A实测设置/权限保持；CoreB请求与取消通过；最终Core快照复测待做 |
 | GLOBAL-02 历史清理 | 同一SharedPreferences事务移除旧`pairing_grant_v1.*`和旧scope标记，提升本地版本；Core保留历史fence | 迁移幂等、提交失败恢复、来源不明默认手动、无关键保留测试 | 隔离测试用户升级保留数据；真实旧策略样本升级待测 |
 | GLOBAL-03 三级模式 | `ProductionPluginHost`、`PluginKernel.authorizeInvocation`、每原语和返回前复核 | `ClientCapabilityAuthorizationTest`、`DeviceGrantFenceTest` | 通话查询CLI→Core→App拒绝结果链路已通过；其他模式和能力待测 |
-| GLOBAL-04 确认与通知 | `DeviceExecutionDriver.confirm`、`ScreenControlConfirmationDialog`、300秒等待期限 | UI选项、确认进度、取消及拒绝测试 | 真实确认超时与App手动拒绝已通过；修复后触摸分区待复测 |
+| GLOBAL-04 确认与通知 | `DeviceExecutionDriver.confirm`、`ScreenControlConfirmationDialog`、300秒等待期限 | UI选项、确认进度、取消及拒绝测试 | 真实确认超时、手动拒绝及修复包触摸分区通过；最终提交最小复测待做 |
 | GLOBAL-05 临时许可 | `CapabilityAuthorizationController`单调时间内存票据；单次绑连接/请求，限时按范围共享 | 到期/取消/重启、同rawId跨Core单次不共享、timed共享 | 5/30/60分钟设备运行待测 |
 | GLOBAL-06 独立推送 | `DevicePushRuntime`、`NotificationPushSource`、`SmsPushSource`；独立配置/来源/正文 | push runtime、collector及source测试 | 真实OS事件与被动MANUAL独立待测 |
-| GLOBAL-07 端点白名单 | `endpoints.py`、`GatewayPushTransport`、`PushSettingsScreen` | ownership、route/代次、旧事件不转新代次、缺席保留配置 | 真实CLI/MCP注册/发现及未认证401已通过，实际推送消费待测 |
-| GLOBAL-08 队列与ACK | `EncryptedPushStateStore`、逐端状态、精确撤销账本；Core60秒密文暂存 | runtime/codec/endpoint/revoke顺序/ACK幂等测试 | 断网/补发/到期/撤销待测 |
+| GLOBAL-07 端点白名单 | `endpoints.py`、`GatewayPushTransport`、`PushSettingsScreen` | ownership、route/代次、旧事件不转新代次、缺席保留配置 | 真实CLI/MCP注册/发现、独立凭据403、未认证401、双端OS通知及逐端ACK通过；白名单外/离线剩余待测 |
+| GLOBAL-08 队列与ACK | `EncryptedPushStateStore`、逐端状态、精确撤销账本；Core60秒密文暂存 | runtime/codec/endpoint/revoke顺序/ACK幂等测试 | OS通知双端投递、A/B逐端ACK与手机2/4→2/3→1/2通过；断网/补发/到期/撤销待测 |
 | GLOBAL-09 生命周期 | `DevicePushComposition`、`DevicePushJobService`、登录门槛、有界任务与有效期维护 | logout取消、缺权限采集拒绝、恢复只补报一次 | 后台/息屏/回收/全退出待测 |
 | GLOBAL-10 屏幕独立与FIFO | `RemoteScreenRuntime`按请求注入、`ScreenControlLeaseManager`独占30秒/累计5分钟 | 读控制隔离、48并发互斥、FIFO/撤销/期限/多连接测试 | Accessibility/MediaProjection系统交互待测 |
 | GLOBAL-11 统一设备调用 | `client/cli/mcp/device_service`caller声明、签名pending列表/HTTP短租约、具体错误 | Core主套件、CLI/MCP、账号隔离、pending18项 | 两Core合法请求与未知调用者拒绝待测 |

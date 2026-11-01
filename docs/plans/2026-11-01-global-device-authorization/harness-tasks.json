@@ -2,7 +2,7 @@
   "version": 2,
   "created": "2026-11-01T05:13:12.912471+08:00",
   "session_count": 1,
-  "last_session": "2026-11-01T09:06:00.763135+08:00",
+  "last_session": "2026-11-01T11:50:31.076432+08:00",
   "session_config": {
     "concurrency_mode": "concurrent",
     "max_tasks_per_session": 50,
@@ -236,6 +236,12 @@
           "total": 3,
           "description": "Terra隔离模拟器user10、双TLS Core及官方签名插件已准备；APK提供并进入实际矩阵，物理手机未连接",
           "timestamp": "2026-11-01T08:44:16.424756+08:00"
+        },
+        {
+          "step": 2,
+          "total": 3,
+          "description": "Terra实测CoreA TLS/登录、通话系统权限/拒绝/超时、A-B-A保持、双端OS通知与逐端ACK/重投恢复；SMS/屏幕/生命周期完整矩阵与物理手机仍未完成",
+          "timestamp": "2026-11-01T11:50:31.076432+08:00"
         }
       ],
       "started_at_commit": "2e6a799c"

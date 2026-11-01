@@ -1,0 +1,23 @@
+2026-11-01 Android 用户 10 通话记录能力手动拒绝，脱敏轨迹
+
+系统权限：READ_CALL_LOG 通过真实系统弹窗允许，granted=true
+Core A 能力发现：org.openandroidintelligence.call-log.query@1.0.0，READY
+App 本机模式：每次手动
+参数：{"limit":1,"receivedAfter":"2099-01-01T00:00:00Z"}
+调用方声明：Terra验收
+目的：拒绝专用通话记录测试请求
+
+首个 requestId: devreq_cd0bb3a0-b734-4ef7-9626-7c59ed592fb3
+首个终态: denied / LOCAL_CONFIRMATION_TIMEOUT，未点击拒绝
+
+重试 requestId: devreq_807c16e8-f620-4c4c-9c32-e1c356e9d955
+重试幂等键: terra-call-log-deny-20261101-user10-02
+App UI: 与请求一致的审批卡片；Tab 焦点定位“拒绝”，Enter 激活
+09:58:28.810 Android: claim SUCCEEDED
+09:59:36.163 Android: authorization LOCAL_USER_REJECTED
+09:59:36.167 Android: completed denied
+09:59:36.224 Android: result ACKNOWLEDGED
+CLI status: state=denied, outcome=denied, code=CAPABILITY_DENIED, reason=LOCAL_USER_REJECTED
+CLI status 同时返回 localAuthorizationState=awaiting_confirmation，含义待核查
+
+设备 ID 已脱敏；未输出账号口令、设备令牌或通话记录正文。

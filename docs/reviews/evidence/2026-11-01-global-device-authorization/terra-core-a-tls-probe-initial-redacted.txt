@@ -1,0 +1,16 @@
+Core A TLS 探针首次运行失败摘录，2026-11-01，Android 用户 10。
+
+测试：com.openandroidintelligence.mobile.CoreTlsConnectivityTest
+App APK SHA-256：fa03661d439fe1166f7a5f155bab85e95c217f97cf18919862f437a6ceb4f79a
+Test APK SHA-256：f8e7b8d7c420146591e00308bf9df76f7ee15923a932bd6a7b006cbbc1103542
+
+java.lang.AssertionError: ISOLATED_CORE_TLS_FAILURE:SSLHandshakeException/CertificateException/CertPathValidatorException
+Caused by: javax.net.ssl.SSLHandshakeException: java.security.cert.CertPathValidatorException: Trust anchor for certification path not found.
+Caused by: java.security.cert.CertificateException: java.security.cert.CertPathValidatorException: Trust anchor for certification path not found.
+Caused by: java.security.cert.CertPathValidatorException: Trust anchor for certification path not found.
+
+Time: 0.043
+FAILURES!!!
+Tests run: 1,  Failures: 1
+
+ADB 退出码为 0 不代表测试通过；结果以测试输出为准。原始输出从上次工具返回的内容复原，没有重跑探针。

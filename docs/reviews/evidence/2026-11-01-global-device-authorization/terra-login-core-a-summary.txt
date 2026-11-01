@@ -1,0 +1,11 @@
+2026-11-01 Android 15/API35 模拟器隔离用户10，Terra真实运行摘要。
+
+TLS红：CoreTlsConnectivityTest 1项1失败，Trust anchor for certification path not found。
+TLS绿：debug Android用户CA配置后，同探针 OK (1 test)，断言未认证设备接口401。
+未使用TrustAll或关闭主机名校验。App与androidTest安装后hash均核对。
+App APK: 677155810ca6c9a957ee29c859d9318df6d806c7fc4d63289ebd4254b237ee1d
+Test APK: 780ea9db6d46e393de7f1db953a13d3f978e3948e78abc38c3aba48516eca7c3
+
+真实账号密码UI登录CoreA后进入主页，Android 09:34:30.316 session.ready，
+后续请求 reqce8f278b3d674e15b4ec HTTP200。账号/口令/token不公开。
+该证据不证明实时会话、设备能力矩阵或实体手机验收通过。

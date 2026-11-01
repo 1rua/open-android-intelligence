@@ -1,0 +1,45 @@
+PASS: credentials and 0700/0600 permissions; distinct routes; full CLI/MCP route comparison
+[
+  {
+    "label": "TerraReceiverA",
+    "route": {
+      "coreInstanceId": "core_...a4ea1e54",
+      "accountScope": "acct_...8d99a222",
+      "endpointId": "endpoint_...a70a13de",
+      "generation": 1
+    },
+    "leaseExpiresAt": "2026-11-01T03:02:32.489Z"
+  },
+  {
+    "label": "TerraReceiverB",
+    "route": {
+      "coreInstanceId": "core_...a4ea1e54",
+      "accountScope": "acct_...8d99a222",
+      "endpointId": "endpoint_...ac9df718",
+      "generation": 1
+    },
+    "leaseExpiresAt": "2026-11-01T03:03:07.082Z"
+  }
+]
+{
+  "server": "OAI",
+  "protocolVersion": "2025-11-25",
+  "tools": [
+    "oai_ack_delivery",
+    "oai_ack_result",
+    "oai_cancel_request",
+    "oai_capabilities",
+    "oai_endpoints",
+    "oai_invoke",
+    "oai_receive_deliveries",
+    "oai_register_endpoint",
+    "oai_request_status",
+    "oai_unregister_endpoint"
+  ]
+}
+GET /core/v1/endpoints HTTP=401 curl_ssl_verify_result=0 (certificate validation successful)
+GET /core/v1/devices HTTP=401 curl_ssl_verify_result=0 (certificate validation successful)
+GET /core/v1/capabilities HTTP=401 curl_ssl_verify_result=0 (certificate validation successful)
+GET /v2/push/endpoints HTTP=401 curl_ssl_verify_result=0 (certificate validation successful)
+POST /core/v1/device-requests HTTP=401 curl_ssl_verify_result=0 (certificate validation successful)
+PASS: unauthenticated endpoints and device APIs rejected; no delivery body requested

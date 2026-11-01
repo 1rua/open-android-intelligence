@@ -243,3 +243,85 @@ App报告为1300项、0失败/错误/跳过。上述结果覆盖当前队列时�
 真实Core CLI/MCP已注册/发现两个稳定接收端点，五项未认证API均401；随后以同账号设备关系的独立新B凭据验证
 B访问A、A访问新B的owned deliveries均403，名称或账号相同不扩展端点持有权。
 端到端主动推送的手机选择、真实OS样本、逐端ACK仍待运行，不能以端点注册代替接收许可。
+
+## 后续提交1680c04e的可复现产物
+
+源码`1680c04e`已推送到同一PR#71，未合并。提交后本地App构建退出0，
+APK `5affe22f0918e869539428f0a673491209fecedfdbf6fc059bcefcf0787e19ea`（73,481,493字节）；
+androidTest APK `51a4fbce323c59f06482b471172ae3bd39c6c4e4014d46c7ba8eb33fda0461be`。
+日志/元数据位于ignored运行目录`runtime/apk-1680c04e.*`，公开报告与最终源码SHA建立对应。
+物理手机仍未连接；模拟器完整矩阵仍在逐项执行，不能将签名包或本地构建替代运行验收。
+
+## 远端Android异步失败的确切来源
+
+1680c04e远端APK、签名插件、Core3.11/3.12、Hermes native、DSH全部成功；Android仍1/318失败。
+下载always保留的JUnit产物后，`UncaughtExceptionsBeforeTest`的suppressed明确来自
+`GatewayTransportConcurrencyTest.heldStreamsDoNotSerializeCreateAndEveryTransportBoundaryHasItsOwnClock`
+取消consumeResponse协程后，`GatewayTransport.observedStream.read/withTransportIo`逃逸`SocketException: Socket closed`，
+被后续WebSocket测试开始时收集。正在最小修复取消传播，不使用忽略异常/跳过断言/测试进程隔离掩盖该问题。
+证据XML位于ignored `runtime/ci-1680c04e-report/GatewayWebSocketTransportTest.xml`。
+
+## CI网络取消问题的修复
+
+最小生产修复仅在`GatewayTransport.withTransportIo`中捕获IOException后先`ensureActive()`：
+协程已取消时保留取消原因，未取消时继续抛原网络错误。不是吞Socket异常或测试隔离。
+`GatewayTransportConcurrencyTest`新增execute/consumeResponse两条阻塞读取取消与未取消错误路径回归；
+定向31项通过，gateway-client全模块320项0失败/错误/跳过。完整Fast/PR和新CI仍需覆盖该后续补丁。
+
+## 双端真实主动通知投递（消费ACK前）
+
+Terra在user10通过真实系统NotificationManager发布固定样本，instrumentation `OK (1 test)`；
+App主动通知范围仅自身包，正文开启，A和独立B在白名单，被动查询仍每次手动。
+真实HTTPS receiver观察器确认同eventId `push_7e267b912b1056ed53658b86e1ac20a8295cbe03d209a3ac3159e298fd8e0b79`，
+A投递`delivery_c822675c5fb34f2bb6875b31ad5fa666`，B投递`delivery_13ef41a1db40430eb5a1c4ea338d885d`，
+两条route全字段匹配，正文等于`OAI-SAMPLE-NOTIFICATION-20261101 complete synthetic body`。
+观察器在112.122秒结束PASS，全程无ACK，证明HTTP接收并未自行完成消费；手机队列与逐端ACK清理下一步验证。
+该样本不含私人通知正文；不能将此单条通知代替SMS、离线恢复或实体手机矩阵。
+
+## 手机队列与单端ACK
+
+样本观察器结束后，主Agent按Android CLI真实界面读取并点击“刷新队列状态”，实际为2条事件、4次投递；
+未以预期1/2代替实际读数。对已由两端消费观察到的固定样本，仅A提交ACK（03:10:17.680UTC），
+返回acknowledged且route/事件/投递匹配；手机随后刷新为2条、3次投递，B和另一事件仍待确认。
+公开截图`queue-before-ack.png`、`queue-after-ack-a.png`仅包含隔离测试配置和队列计数，未显示私人通知正文。
+
+B端对同一固定事件提交消费ACK（03:14:00.170UTC）后，主Agent真实UI刷新队列为1条、2次待投递，
+对应事件只有两端都确认后才清除；另一未确认事件仍保留。截图`queue-after-ack-b.png`。
+这闭合一条OS事件→手机独立推送范围/白名单→Core→两个独立接收凭据→逐端ACK→手机清理的真实链路，
+不等于全部SMS/离线/到期/撤销或物理设备矩阵通过。
+
+重复消费ACK验证：对第一固定样本A/B各重复ACK一次，完整回执和首次acknowledgedAt保持一致；
+只读元数据核查已ACK正文为空且长度0，未恢复敏感正文。未确认第二事件仍保留不被顺带ACK。
+旧未选B端点因租期到期GET返回409，不能据此认定白名单零投递，正在正常续期后独立验证。
+
+## 后台恢复发送前租约竞态
+
+Fast曾在`GatewaySessionRefreshTest`得到租约到期后协商计数6→7。该日志不足以证明时序，
+因此新增transport.io_dequeued闩锁，修复前令租约过期后放行，真实服务端协商计数1→2稳定复现。
+`GatewayTransport`新增窄beforeConnect检查，在gateway-client网络owner真实factory.open前执行；
+`GatewayRuntime.rotateStoredSession`为协商与刷新传递恢复所有者/租约检查。
+原测试改成服务端在途闩锁和恢复Job完成状态，保留严格计数，不增加sleep或放宽断言。
+新建且尚未发出的旧协议刷新记录在发送前拒绝时可安全清理；已有可重放未知结果记录保持。
+noVpnSurfaceCheck及6项定向回归全部通过，最新完整Fast/PR仍在验证此补丁。
+
+## 后台恢复与SMS系统许可的实测进展
+
+手机长时间停在系统设置时，Core短缓冲到期后剩余未ACK事件的接收查询为0，不据此清空手机队列或伪造ACK。
+返回OAI前台后，真实observer2在首轮0.083秒匹配同一历史未确认第二事件，两端同eventId、不同delivery、正文和route正确，
+此前已ACK的第一事件没有重现；没有新发OS样本，符合本地持久队列恢复投递。仍需消费ACK及手机最终清理核对。
+Terra随后从App SMS插件权限入口触发真实Android弹窗允许，user10 READ_SMS已granted=true，未用pm grant/appops。
+短信OS合成样本及严格范围被动查询下一步运行，不以系统权限授予等同数据读取成功。
+
+网络取消/后台租约修复已提交并推送`1199eb70`，最新Fast/PR均完整退出0；新head CI仅触发，不前台等待。
+
+## 提交1199eb70的CI一次状态核对
+
+APK和签名插件产物成功（Run41270553841）；Core3.11/3.12、Hermes native、DSH成功（Run41270556995），
+Android仍IN_PROGRESS，记录链接后继续设备验收，不watch、不循环等待，也不宣称CI全绿。
+
+## 长时临时许可验收排期约束
+
+5/30/60分钟真实批准以每次UI批准时刻和设备单调时间记起点，未来时间范围参数避免返回私人通话内容。
+计时中不覆盖安装、不杀进程、不切全局模式/范围；上述动作会按设计使许可失效，不能误判为自然到期。
+后台到期观察有70分钟总截止，使用同参数的新请求确认重新进入手动等待，再取消请求，不改系统时钟。
+实际批准尚未写入起点文件前不能宣称计时开始；未运行完的长时用例保持PENDING。

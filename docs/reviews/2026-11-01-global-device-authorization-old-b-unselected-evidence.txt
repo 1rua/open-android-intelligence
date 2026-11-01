@@ -1,0 +1,17 @@
+2026-11-01 Core A: previously unselected old B renewal and owned receive
+
+The old B endpoint was renewed using its original CLI credential and original
+registration key. Core instance, account scope, and endpoint ID remained the
+same. Its generation changed from 1 to 2; the renewed lease expires at
+2026-11-01T04:23:39.435Z. No phone selection was performed by this executor.
+
+Authenticated discovery found exactly one descriptor matching the full
+renewed generation-2 route. A single owned GET /deliveries then returned
+HTTP 200 with count 0; the fixed sample marker was absent from that empty
+response. No other notification body was printed.
+
+The empty result applies only to the renewed generation at that moment. It
+does not establish whether the expired generation previously received an event,
+and it does not test delivery of a newly published event while unselected.
+The phone whitelist selection itself was reported by the coordinating agent,
+not independently inspected by this executor.
