@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.openandroidintelligence.kernel.CapabilityAuthorizationMode
 import com.openandroidintelligence.kernel.CapabilityPolicy
+import com.openandroidintelligence.kernel.SmsScopeMode
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantState
 import com.openandroidintelligence.kernel.PairingGrantStore
@@ -26,8 +27,16 @@ class SharedPreferencesPairingGrantStore(
             val decoded = String(Base64.getUrlDecoder().decode(key.removePrefix("$POLICY.")), Charsets.UTF_8)
             val json = org.json.JSONObject(value as? String ?: error("LOCAL_POLICY_CORRUPTED"))
             val sources = json.getJSONArray("allowedSources")
+            val allowedSources = (0 until sources.length()).map { sources.getString(it) }.toSet()
+            // Missing fields are the old format; partial/new unknown fields must fail closed.
+            check(json.has("smsScopeMode") == json.has("smsKeywords")) { "LOCAL_POLICY_CORRUPTED" }
+            val scopeMode = if (json.has("smsScopeMode")) SmsScopeMode.valueOf(json.getString("smsScopeMode"))
+                else if (allowedSources.isEmpty()) SmsScopeMode.ALL else SmsScopeMode.PHONE_NUMBERS
+            val keywords = if (json.has("smsKeywords")) json.getJSONArray("smsKeywords").let { values ->
+                (0 until values.length()).map { values.getString(it) }.toSet()
+            } else emptySet()
             decoded to CapabilityPolicy(json.getBoolean("enabled"), CapabilityAuthorizationMode.valueOf(json.getString("mode")),
-                (0 until sources.length()).map { sources.getString(it) }.toSet(), json.getBoolean("includeContent"))
+                allowedSources, json.getBoolean("includeContent"), scopeMode, keywords)
         }.toMap()
         PairingGrantState(
             pairingId = binding.pairingId,
@@ -57,6 +66,7 @@ class SharedPreferencesPairingGrantStore(
             val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(key.toByteArray(Charsets.UTF_8))
             val json = org.json.JSONObject().put("enabled", policy.enabled).put("mode", policy.mode.name)
                 .put("allowedSources", org.json.JSONArray(policy.allowedSources.sorted())).put("includeContent", policy.includeContent)
+                .put("smsScopeMode", policy.smsScopeMode.name).put("smsKeywords", org.json.JSONArray(policy.smsKeywords.sorted()))
             edit.putString("$POLICY.$encoded", json.toString())
         }
         check(edit.commit()) { "INSTALLATION_CAPABILITY_PERSISTENCE_FAILED" }
@@ -65,7 +75,17 @@ class SharedPreferencesPairingGrantStore(
     private fun migrateInstallationPolicy() {
         val model = preferences.getInt(MODEL, 0)
         check(model in 0..PairingGrantState.CURRENT_AUTHORIZATION_MODEL) { "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED" }
-        if (model == PairingGrantState.CURRENT_AUTHORIZATION_MODEL) {
+        if (model == 3 || model == PairingGrantState.CURRENT_AUTHORIZATION_MODEL) {
+            // v3 already owns installation-wide grants. Preserve every policy and revision;
+            // v4 is a downgrade barrier because old binaries cannot understand keyword scopes.
+            if (model == 3) {
+                check(listOf("revision", "disabled", "screen_selection").all { preferences.contains("$GLOBAL.$it") }) {
+                    "LOCAL_AUTHORIZATION_STATE_INCOMPLETE"
+                }
+                check(preferences.edit().putInt(MODEL, PairingGrantState.CURRENT_AUTHORIZATION_MODEL).commit()) {
+                    "INSTALLATION_CAPABILITY_MIGRATION_FAILED"
+                }
+            }
             val obsolete = preferences.all.keys.filter { it.startsWith(LEGACY_PREFIX) ||
                 it == "android_capability_legacy_scopes" || it == "android_capability_unknown_legacy_scopes" }
             if (obsolete.isNotEmpty()) {

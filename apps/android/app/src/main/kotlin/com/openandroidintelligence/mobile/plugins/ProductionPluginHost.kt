@@ -498,6 +498,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
         }
         KernelPrimitiveRegistry.provider(primitive)?.let { provider ->
+            val expectedRevision = grants.state.value?.revision ?: throw CapabilityDenied("LOCAL_POLICY_UNAVAILABLE")
             val scope = invocation.scope
             val policy = grants.capabilityPolicy(scope.capability)
             val localInput = if (primitive == "kernel.sms.read") {
@@ -506,14 +507,18 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                 val requested = JsonFields.strings(query, "senders").toSet()
                 if (!policy.includeContent && JsonFields.string(query, "query").orEmpty().isNotBlank())
                     throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
-                if (policy.allowedSources.isNotEmpty()) {
+                if (!SmsScopeMatcher.hasConditions(policy.smsScopeMode, policy.allowedSources, policy.smsKeywords))
+                    throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
+                if (policy.smsScopeMode == SmsScopeMode.PHONE_NUMBERS) {
                     if (requested.any { it !in policy.allowedSources }) throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
                     fields["senders"] = (requested.ifEmpty { policy.allowedSources }).sorted()
                 }
-                fields["includeContent"] = policy.includeContent
+                fields["smsScopeMode"] = policy.smsScopeMode.name
+                fields["smsPhoneNumbers"] = policy.allowedSources.sorted()
+                fields["smsKeywords"] = policy.smsKeywords.sorted()
+                fields["includeContent"] = policy.includeContent && JsonFields.bool(query, "includeContent") != false
                 Json.canonical(Json.of(fields)).toByteArray()
             } else input
-            val expectedRevision = grants.state.value?.revision ?: throw CapabilityDenied("LOCAL_POLICY_UNAVAILABLE")
             val result = runBlocking {
                 withTimeout(call.budget.maxInvocationMillis) {
                     if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
@@ -522,7 +527,9 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                     provider.invoke(LocalGrantContext(call.identity.pluginId,call.accountId,call.pairingId,call.session.correlationId),localInput)
                 }
             }
-            if (!authorizationScopeIsCurrent(call.session.correlationId, invocation.scope, null, invocation.binding))
+            if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
+                !isEnabled(call.identity.pluginId) ||
+                !authorizationScopeIsCurrent(call.session.correlationId, invocation.scope, null, invocation.binding))
                 throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
             return result
         }

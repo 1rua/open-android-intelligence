@@ -17,16 +17,33 @@ internal class SmsReadPrimitive(
     override fun availability(): String? = if (permissionGranted()) null else "READ_SMS_REQUIRED"
     override suspend fun read(request: JsonValue.JObject, context: LocalGrantContext): List<Map<String, Any?>> {
         checkPermission()
+        val includeContent = JsonFields.bool(request, "includeContent") != false
+        val textQuery = JsonFields.string(request, "query").orEmpty()
+        if (!includeContent && textQuery.isNotEmpty()) throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
+        val scopeMode = JsonFields.string(request, "smsScopeMode")?.let(SmsScopeMode::valueOf) ?: SmsScopeMode.ALL
+        val phoneNumbers = JsonFields.strings(request, "smsPhoneNumbers").toSet()
+        val keywords = JsonFields.strings(request, "smsKeywords").toSet()
+        val senders = JsonFields.strings(request, "senders").toSet()
+        if (!SmsScopeMatcher.hasConditions(scopeMode, phoneNumbers, keywords)) return emptyList()
         val rows = try {
             reader.query(SmsInboxQuery(
                 history = SmsHistoryPolicy(receivedAfter(request), readLimit(request)),
-                senders = JsonFields.strings(request, "senders").toSet(),
-                textQuery = JsonFields.string(request, "query").orEmpty(),
-                includeBody = JsonFields.bool(request, "includeContent") != false,
+                senders = senders,
+                textQuery = textQuery,
+                includeBody = includeContent,
+                allSenders = scopeMode == SmsScopeMode.ALL,
+                phoneNumbers = phoneNumbers.takeIf { scopeMode == SmsScopeMode.PHONE_NUMBERS }.orEmpty(),
+                keywords = keywords.takeIf { scopeMode == SmsScopeMode.KEYWORDS }.orEmpty(),
             ))
         } catch (_: SecurityException) { throw CapabilityDenied("READ_SMS_REQUIRED") }
-        val records = rows.map { mapOf("id" to it.providerId.toString(), "sender" to it.address, "text" to it.body.takeIf { _ -> JsonFields.bool(request, "includeContent") != false },
-            "timestamp" to it.messageAtEpochMs, "read" to it.read) }
+        catch (_: SmsQueryScanLimitExceeded) { throw CapabilityDenied("SMS_QUERY_SCAN_LIMIT_EXCEEDED") }
+        // Recheck before disclosure even if an injected/provider implementation ignored the query.
+        val records = rows.filter {
+            it.scopeMatched && (senders.isEmpty() || it.address in senders) &&
+                SmsScopeMatcher.matches(scopeMode, phoneNumbers, keywords, it.address, it.body, it.matchedKeywords) &&
+                (textQuery.isEmpty() || it.body.orEmpty().contains(textQuery, ignoreCase = true))
+        }.take(readLimit(request)).map { mapOf("id" to it.providerId.toString(), "sender" to it.address,
+            "text" to it.body.takeIf { includeContent }, "timestamp" to it.messageAtEpochMs, "read" to it.read) }
         checkPermission()
         return records
     }

@@ -79,7 +79,7 @@ data class PairingGrantState(
     }
 
     companion object {
-        const val CURRENT_AUTHORIZATION_MODEL = 3
+        const val CURRENT_AUTHORIZATION_MODEL = 4
 
         /** Legacy representation accepted only by migration readers, never an execution permit. */
         fun legacy(pairingId: String, revision: Long = 0L) = PairingGrantState(
@@ -163,12 +163,12 @@ class PairingGrantStateHolder(
     @Synchronized
     fun updateCapabilityPolicy(key: String, policy: CapabilityPolicy): PairingGrantState {
         require(key.isNotBlank())
-        return update { it.copy(capabilityPolicies = it.capabilityPolicies + (key to policy.copy(allowedSources = policy.allowedSources.toSet()))) }
+        return update { it.copy(capabilityPolicies = it.capabilityPolicies + (key to policy.freeze())) }
     }
 
     @Synchronized
     fun updateCapabilityPolicies(policies: Map<String, CapabilityPolicy>): PairingGrantState =
-        update { it.copy(capabilityPolicies = it.capabilityPolicies + policies.mapValues { (_, p) -> p.copy(allowedSources = p.allowedSources.toSet()) }) }
+        update { it.copy(capabilityPolicies = it.capabilityPolicies + policies.mapValues { (_, p) -> p.freeze() }) }
 
     fun recordRequestDecision(requestId: String, accountId: String, pairingId: String, action: String, allowed: Boolean) {
         audit.record("platform", accountId, pairingId, action,

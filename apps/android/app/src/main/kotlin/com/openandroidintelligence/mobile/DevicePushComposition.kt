@@ -16,9 +16,11 @@ import android.app.job.JobService
 import android.content.ComponentName
 import com.openandroidintelligence.mobile.push.*
 import com.openandroidintelligence.capability.DevicePushSourcesRegistry
+import com.openandroidintelligence.capability.DevicePushSources
 import com.openandroidintelligence.capability.DevicePushNotificationObserver
 import com.openandroidintelligence.capability.DevicePushNotification
 import com.openandroidintelligence.capability.DevicePushSmsQuery
+import com.openandroidintelligence.kernel.SmsScopeMode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -176,21 +178,11 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
         }
         if (!revocationsReady) return@withLock false
         if (local.isCollectionAllowed(PushKind.NOTIFICATION)) DevicePushSourcesRegistry.current?.captureActiveNotifications()
-        if (local.isCollectionAllowed(PushKind.SMS)) {
-            val settings = local.snapshot().configuration
-            val cursor = local.smsCursor()
-            DevicePushSourcesRegistry.current?.captureSms(DevicePushSmsQuery(
-                fromEpochMs = (System.currentTimeMillis() - settings.retentionHours * 3_600_000L).coerceAtLeast(0),
-                afterId = cursor?.providerId, afterEpochMs = cursor?.receivedAtEpochMs,
-                senders = settings.sms.scope.senderAddresses, allSenders = settings.sms.scope.allSenders,
-                includeContent = settings.sms.scope.includeContent,
-            ), isCurrent = { synchronizeLogin() && local.isCollectionAllowed(PushKind.SMS) }, enqueueDurably = { row ->
-                local.onSms(PushSms(row.providerId, row.receivedAtEpochMs, row.senderAddress, row.body, row.threadId, row.subscriptionId))
-                    .status in setOf(PushCaptureStatus.ENQUEUED, PushCaptureStatus.DUPLICATE)
-            })
-        }
+        val moreSmsPages = if (local.isCollectionAllowed(PushKind.SMS)) {
+            DevicePushSourcesRegistry.current?.let { sources -> captureSmsPage(local, sources) { synchronizeLogin() } } ?: false
+        } else false
         if (snapshot.pendingDeliveries > 0 || enabled) local.deliver(transport)
-        local.maintain().let { it.pendingDeliveries == 0 && it.pendingRevocations == 0 }
+        local.maintain().let { pushCycleComplete(it, moreSmsPages) }
     }
 
     companion object {
@@ -198,6 +190,31 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
         const val DELIVERY_JOB = 1874511
     }
 }
+
+/** One native page only; the scheduler owns the next cycle, not a synchronous scan loop. */
+internal fun captureSmsPage(local: DevicePushRuntime, sources: DevicePushSources, loginCurrent: () -> Boolean): Boolean {
+    val settings = local.snapshot().configuration
+    val scope = settings.sms.scope
+    val cursor = local.smsCursor()
+    return sources.captureSms(DevicePushSmsQuery(
+        fromEpochMs = (System.currentTimeMillis() - settings.retentionHours * 3_600_000L).coerceAtLeast(0),
+        afterId = cursor?.providerId, afterEpochMs = cursor?.receivedAtEpochMs,
+        senders = scope.senderAddresses.takeIf { scope.mode == SmsScopeMode.PHONE_NUMBERS }.orEmpty(),
+        allSenders = scope.mode == SmsScopeMode.ALL,
+        includeContent = scope.includeContent,
+        keywords = scope.keywords.takeIf { scope.mode == SmsScopeMode.KEYWORDS }.orEmpty(),
+    ), isCurrent = { loginCurrent() && local.isCollectionAllowed(PushKind.SMS) &&
+        local.snapshot().configuration.sms.scope == scope }, advanceSkippedCursor = { id, receivedAt ->
+        local.advanceSmsCursor(PushSmsCursor(id, receivedAt), scope)
+    }, enqueueDurably = { row ->
+        loginCurrent() && local.onSms(PushSms(row.providerId, row.receivedAtEpochMs, row.senderAddress, row.body, row.threadId,
+            row.subscriptionId, row.matchedKeywords), expectedScope = scope)
+            .status in setOf(PushCaptureStatus.ENQUEUED, PushCaptureStatus.DUPLICATE)
+    })
+}
+
+internal fun pushCycleComplete(snapshot: PushSnapshot, moreSmsPages: Boolean): Boolean =
+    !moreSmsPages && snapshot.pendingDeliveries == 0 && snapshot.pendingRevocations == 0
 
 class DevicePushJobService : JobService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

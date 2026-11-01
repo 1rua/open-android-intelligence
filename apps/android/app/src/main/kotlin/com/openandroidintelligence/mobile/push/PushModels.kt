@@ -1,5 +1,7 @@
 package com.openandroidintelligence.mobile.push
 
+import com.openandroidintelligence.kernel.SmsScopeMode
+
 /** Names are deliberately absent: a display name is never a routing authority. */
 data class PushEndpoint(
     val coreInstanceId: String,
@@ -25,11 +27,16 @@ data class NotificationPushScope(
 
 data class SmsPushScope(
     val senderAddresses: Set<String> = emptySet(),
-    val allSenders: Boolean = false,
+    val allSenders: Boolean = senderAddresses.isEmpty(),
     val includeContent: Boolean = true,
+    val mode: SmsScopeMode = if (allSenders) SmsScopeMode.ALL else SmsScopeMode.PHONE_NUMBERS,
+    val keywords: Set<String> = emptySet(),
 ) {
-    init { require(senderAddresses.size <= 256 && senderAddresses.all { it.isNotBlank() && it.length <= 256 }) }
-    internal fun frozen() = copy(senderAddresses = senderAddresses.toSet())
+    init {
+        require(senderAddresses.size <= 256 && senderAddresses.all { it.isNotBlank() && it.length <= 256 })
+        require(keywords.size <= 256 && keywords.all { it.isNotBlank() && it.length <= 256 })
+    }
+    internal fun frozen() = copy(senderAddresses = senderAddresses.toSet(), keywords = keywords.toSet())
 }
 
 data class NotificationPushSettings(
@@ -91,6 +98,8 @@ data class PushSms(
     val body: String? = null,
     val threadId: String? = null,
     val subscriptionId: Int? = null,
+    // Internal native-collector proof; never serialized into the delivered event payload.
+    val matchedKeywords: Set<String> = emptySet(),
 ) {
     init { require(providerId > 0 && receivedAtEpochMs >= 0) }
 }
@@ -202,6 +211,8 @@ internal data class QueuedPushEvent(
     val event: PushEvent,
     val targets: Map<PushEndpoint, String?>,
     val retentionDeadlineEpochMs: Long = event.expiresAtEpochMs,
+    // Only matched configured keywords, never an undisclosed SMS body.
+    val smsMatchedKeywords: Set<String> = emptySet(),
 )
 internal data class PushStoredState(
     val installationId: String,

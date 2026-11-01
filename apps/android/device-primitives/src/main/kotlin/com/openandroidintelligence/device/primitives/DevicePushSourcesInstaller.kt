@@ -31,14 +31,15 @@ internal object DevicePushSourcesInstaller {
             override fun setNotificationCollectionAccess(allowed: () -> Boolean) = NotificationCollectionAccess.install(allowed)
             override fun captureActiveNotifications() = NotificationPushSource.captureActive()
             override fun captureSms(query: DevicePushSmsQuery, isCurrent: () -> Boolean,
-                enqueueDurably: (DevicePushSms) -> Boolean): Boolean {
+                advanceSkippedCursor: (Long, Long) -> Boolean, enqueueDurably: (DevicePushSms) -> Boolean): Boolean {
                 val afterId = query.afterId
                 val afterTime = query.afterEpochMs
                 val result = SmsPushSource(context.contentResolver).capture(SmsPushCaptureRequest(query.fromEpochMs,
                     if (afterId != null && afterTime != null) SmsCursor(afterId, afterTime) else null,
-                    query.senders, query.allSenders, query.includeContent, query.maxRecords), isCurrent) { row ->
+                    query.senders, query.allSenders, query.includeContent, query.maxRecords, query.keywords),
+                    isCurrent, { cursor -> advanceSkippedCursor(cursor.providerId, cursor.messageAtEpochMs) }) { row ->
                     enqueueDurably(DevicePushSms(row.providerId, row.messageAtEpochMs, row.address,
-                        row.body, row.threadId, row.subscriptionId))
+                        row.body, row.threadId, row.subscriptionId, row.matchedKeywords))
                 }
                 return result.morePossible && !result.paused
             }

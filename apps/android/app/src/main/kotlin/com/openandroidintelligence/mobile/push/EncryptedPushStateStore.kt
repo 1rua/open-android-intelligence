@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile.push
 
 import android.content.Context
+import com.openandroidintelligence.kernel.SmsScopeMode
 import com.openandroidintelligence.encrypted.store.AesGcmEncryptedBlobStore
 import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvider
 import com.openandroidintelligence.encrypted.store.EncryptedOutboxPersistence
@@ -76,7 +77,7 @@ class EncryptedPushStateStore(
 internal object PushStateCodec {
     fun encode(state: PushStoredState): ByteArray = ByteArrayOutputStream().use { bytes ->
         DataOutputStream(bytes).use { out ->
-            out.writeInt(3)
+            out.writeInt(4)
             out.text(state.installationId)
             out.writeLong(state.revision)
             out.writeLong(state.observedAtEpochMs)
@@ -93,6 +94,7 @@ internal object PushStateCodec {
                 out.writeLong(event.expiresAtEpochMs)
                 out.text(event.payloadJson)
                 out.writeLong(queued.retentionDeadlineEpochMs)
+                out.strings(queued.smsMatchedKeywords)
                 out.writeInt(queued.targets.size)
                 queued.targets.forEach { (endpoint, deliveryId) -> out.endpoint(endpoint); out.optional(deliveryId) }
             }
@@ -114,11 +116,11 @@ internal object PushStateCodec {
         require(bytes.size <= MAX_PUSH_STATE_BYTES)
         return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt()
-            check(version in 1..3)
+            check(version in 1..4)
             val installation = input.text(2_048)
             val revision = input.nonnegative()
             val observed = input.nonnegative()
-            val config = input.config()
+            val config = input.config(version)
             val expired = input.nonnegative()
             val revoked = input.nonnegative()
             val capacity = input.nonnegative()
@@ -131,6 +133,10 @@ internal object PushStateCodec {
                 val payload = input.text(MAX_PUSH_EVENT_BYTES)
                 val deadline = if (version >= 2) input.nonnegative() else expires
                 check(deadline <= expires)
+                val proof = if (version >= 4) input.strings().also { values ->
+                    check(values.all { it.isNotBlank() && it.length <= 256 })
+                } else emptySet()
+                check(kind == PushKind.SMS || proof.isEmpty())
                 val targets = linkedMapOf<PushEndpoint, String?>()
                 repeat(input.count(MAX_PUSH_ENDPOINTS)) {
                     val target = input.endpoint()
@@ -138,7 +144,7 @@ internal object PushStateCodec {
                     targets[target] = input.optional()
                 }
                 check(targets.isNotEmpty())
-                QueuedPushEvent(PushEvent(id, kind, captured, expires, payload), targets, deadline)
+                QueuedPushEvent(PushEvent(id, kind, captured, expires, payload), targets, deadline, proof)
             }
             check(events.map { it.event.eventId }.distinct().size == events.size)
             val smsCursor = if (input.readBoolean()) PushSmsCursor(input.readLong(), input.nonnegative()) else null
@@ -175,15 +181,25 @@ internal object PushStateCodec {
         strings(value.sms.scope.senderAddresses)
         writeBoolean(value.sms.scope.allSenders)
         writeBoolean(value.sms.scope.includeContent)
+        text(value.sms.scope.mode.name)
+        strings(value.sms.scope.keywords)
         endpoints(value.sms.endpoints)
         writeInt(value.retentionHours)
         writeInt(value.maxEvents)
         writeInt(value.maxQueueBytes)
     }
 
-    private fun DataInputStream.config(): PushConfiguration {
+    private fun DataInputStream.config(version: Int): PushConfiguration {
         val notifications = NotificationPushSettings(readBoolean(), NotificationPushScope(strings(), readBoolean()), endpoints())
-        val sms = SmsPushSettings(readBoolean(), SmsPushScope(strings(), readBoolean(), readBoolean()), endpoints())
+        val smsEnabled = readBoolean()
+        val senders = strings()
+        val allSenders = readBoolean()
+        val content = readBoolean()
+        // Never apply the new ALL default to an old explicit false/empty sender scope.
+        val mode = if (version >= 4) SmsScopeMode.valueOf(text(64))
+            else if (allSenders) SmsScopeMode.ALL else SmsScopeMode.PHONE_NUMBERS
+        val keywords = if (version >= 4) strings() else emptySet()
+        val sms = SmsPushSettings(smsEnabled, SmsPushScope(senders, allSenders, content, mode, keywords), endpoints())
         return PushConfiguration(notifications, sms, readInt(), readInt(), readInt())
     }
 

@@ -18,19 +18,32 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.openandroidintelligence.kernel.SmsScopeMode
+import com.openandroidintelligence.mobile.notifications.InstalledNotificationApp
+import com.openandroidintelligence.mobile.notifications.NotificationAppPicker
+import com.openandroidintelligence.mobile.notifications.loadInstalledNotificationApps
+import com.openandroidintelligence.mobile.sms.SmsScopeSelector
+import com.openandroidintelligence.mobile.sms.parseSmsScopeEntries
+import com.openandroidintelligence.mobile.sms.validSmsScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -50,7 +63,8 @@ fun PushSettingsScreen(
 ) {
     var snapshot by remember(runtime) { mutableStateOf<PushSnapshot?>(null) }
     var error by remember(runtime) { mutableStateOf<String?>(null) }
-    var saving by remember { mutableStateOf(false) }
+    var saving by remember(runtime) { mutableStateOf(false) }
+    var saveCompletion by remember(runtime) { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(runtime) {
         try { snapshot = withContext(Dispatchers.IO) { runtime.maintain() } }
@@ -70,16 +84,27 @@ fun PushSettingsScreen(
         endpoints = endpoints,
         saving = saving,
         error = error,
+        saveCompletion = saveCompletion,
         onRefreshEndpoints = onRefreshEndpoints,
         onConfigurationChange = { configuration ->
             if (!saving) scope.launch {
                 saving = true
                 error = null
-                try { snapshot = withContext(Dispatchers.IO) { runtime.configure(configuration) } }
+                try {
+                    snapshot = withContext(Dispatchers.IO) {
+                        runtime.configure(configuration, expectedConfiguration = state.configuration)
+                    }
+                }
                 catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: IllegalStateException) {
+                    error = if (failure.message == "PUSH_CONFIGURATION_CHANGED") {
+                        snapshot = withContext(Dispatchers.IO) { runtime.snapshot() }
+                        "推送配置已在其他位置修改，请重新载入已保存选择后再保存。"
+                    } else "推送配置保存失败，尚未应用本次修改。"
+                }
                 catch (_: IllegalArgumentException) { error = "无法保存：范围或容量无效，容量不能小于当前队列用量。" }
                 catch (_: Exception) { error = "推送配置保存失败，尚未应用本次修改。" }
-                finally { saving = false }
+                finally { saving = false; saveCompletion += 1 }
             }
         },
         onRefreshState = { scope.launch {
@@ -104,15 +129,17 @@ fun PushSettingsContent(
     onRefreshState: () -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
+    saveCompletion: Long? = null,
 ) {
     val config = snapshot.configuration
-    var packages by remember(config.notifications.scope.packageIds) { mutableStateOf(config.notifications.scope.packageIds.joinToString("\n")) }
+    var smsMode by remember(config.sms.scope.mode) { mutableStateOf(config.sms.scope.mode) }
+    var keywords by remember(config.sms.scope.keywords) { mutableStateOf(config.sms.scope.keywords.joinToString("\n")) }
     var senders by remember(config.sms.scope.senderAddresses) { mutableStateOf(config.sms.scope.senderAddresses.joinToString("\n")) }
     var retention by remember(config.retentionHours) { mutableStateOf(config.retentionHours.toString()) }
     var maxEvents by remember(config.maxEvents) { mutableStateOf(config.maxEvents.toString()) }
     var maxMiB by remember(config.maxQueueBytes) { mutableStateOf((config.maxQueueBytes / 1_048_576.0).toString()) }
-    val packageSet = splitEntries(packages)
-    val senderSet = splitEntries(senders)
+    val keywordSet = parseSmsScopeEntries(keywords)
+    val senderSet = parseSmsScopeEntries(senders)
     val hours = retention.toIntOrNull()
     val capacity = maxEvents.toIntOrNull()
     val bytes = maxMiB.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 && it <= 8 }?.let { (it * 1_048_576).toInt() }
@@ -130,11 +157,17 @@ fun PushSettingsContent(
         ToggleRow("通知主动推送", config.notifications.enabled, !saving, "push-notification-enabled") {
             onConfigurationChange(config.copy(notifications = config.notifications.copy(enabled = it)))
         }
-        OutlinedTextField(packages, { packages = it }, label = { Text("允许推送的应用包名，每行一项") },
-            modifier = Modifier.fillMaxWidth().testTag("push-notification-packages"), enabled = !saving)
-        Text("仅收集以上应用；留空时不采集。此范围不修改被动读取设置。", style = MaterialTheme.typography.bodySmall)
-        Button(onClick = { onConfigurationChange(config.copy(notifications = config.notifications.copy(scope = config.notifications.scope.copy(packageIds = packageSet)))) },
-            enabled = !saving && validEntries(packageSet), modifier = Modifier.testTag("push-save-packages")) { Text("保存应用范围") }
+        NotificationPushScopeSettings(
+            packageIds = config.notifications.scope.packageIds,
+            saving = saving,
+            error = error,
+            saveCompletion = saveCompletion,
+            onPackagesChange = {
+                onConfigurationChange(config.copy(notifications = config.notifications.copy(
+                    scope = config.notifications.scope.copy(packageIds = it),
+                )))
+            },
+        )
         ToggleRow("推送通知正文", config.notifications.scope.includeContent, !saving, "push-notification-content") {
             onConfigurationChange(config.copy(notifications = config.notifications.copy(scope = config.notifications.scope.copy(includeContent = it))))
         }
@@ -147,13 +180,28 @@ fun PushSettingsContent(
         ToggleRow("短信主动推送", config.sms.enabled, !saving, "push-sms-enabled") {
             onConfigurationChange(config.copy(sms = config.sms.copy(enabled = it)))
         }
-        ToggleRow("允许所有短信发件人", config.sms.scope.allSenders, !saving, "push-sms-all-senders") {
-            onConfigurationChange(config.copy(sms = config.sms.copy(scope = config.sms.scope.copy(allSenders = it))))
-        }
-        OutlinedTextField(senders, { senders = it }, label = { Text("允许的发件人地址，每行一项") },
-            modifier = Modifier.fillMaxWidth().testTag("push-sms-senders"), enabled = !saving && !config.sms.scope.allSenders)
-        Button(onClick = { onConfigurationChange(config.copy(sms = config.sms.copy(scope = config.sms.scope.copy(senderAddresses = senderSet)))) },
-            enabled = !saving && !config.sms.scope.allSenders && validEntries(senderSet), modifier = Modifier.testTag("push-save-senders")) { Text("保存短信范围") }
+        SmsScopeSelector(
+            mode = smsMode,
+            keywords = keywords,
+            phoneNumbers = senders,
+            onModeChange = { smsMode = it },
+            onKeywordsChange = { keywords = it },
+            onPhoneNumbersChange = { senders = it },
+            tagPrefix = "push-sms",
+            enabled = !saving,
+        )
+        Button(
+            onClick = {
+                onConfigurationChange(config.copy(sms = config.sms.copy(scope = config.sms.scope.copy(
+                    mode = smsMode,
+                    allSenders = smsMode == SmsScopeMode.ALL,
+                    keywords = keywordSet,
+                    senderAddresses = senderSet,
+                ))))
+            },
+            enabled = !saving && validSmsScope(smsMode, keywordSet, senderSet),
+            modifier = Modifier.testTag("push-save-senders"),
+        ) { Text("保存短信范围") }
         ToggleRow("推送短信正文", config.sms.scope.includeContent, !saving, "push-sms-content") {
             onConfigurationChange(config.copy(sms = config.sms.copy(scope = config.sms.scope.copy(includeContent = it))))
         }
@@ -219,5 +267,113 @@ private fun EndpointChoices(kind: String, selected: Set<PushEndpoint>, options: 
     }
 }
 
-private fun splitEntries(value: String) = value.split('\n', ',', '，').map(String::trim).filter(String::isNotEmpty).toSet()
-private fun validEntries(value: Set<String>) = value.size <= 256 && value.all { it.length <= 256 }
+/** 只保存主动通知的应用范围，不读取或写入被动通知策略端口。 */
+@Composable
+internal fun NotificationPushScopeSettings(
+    packageIds: Set<String>,
+    saving: Boolean,
+    error: String?,
+    onPackagesChange: (Set<String>) -> Unit,
+    loadInstalledApps: (() -> List<InstalledNotificationApp>)? = null,
+    saveCompletion: Long? = null,
+) {
+    val packageManager = LocalContext.current.applicationContext.packageManager
+    val appLoader = remember(packageManager, loadInstalledApps) {
+        loadInstalledApps ?: { loadInstalledNotificationApps(packageManager) }
+    }
+    var installedApps by remember(appLoader) { mutableStateOf<List<InstalledNotificationApp>?>(null) }
+    var loadFailed by remember(appLoader) { mutableStateOf(false) }
+    var refresh by remember { mutableStateOf(0) }
+    var selectedPackages by rememberSaveable { mutableStateOf<List<String>?>(null) }
+    var openingPackages by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var rejection by rememberSaveable { mutableStateOf<String?>(null) }
+    var validationError by rememberSaveable { mutableStateOf<String?>(null) }
+    var submittedPackages by remember { mutableStateOf<List<String>?>(null) }
+    var submittedAtCompletion by remember { mutableStateOf<Long?>(null) }
+
+    LaunchedEffect(appLoader, refresh) {
+        installedApps = null
+        loadFailed = false
+        try {
+            installedApps = withContext(Dispatchers.IO) { appLoader() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            loadFailed = true
+        }
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refresh += 1
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    // 只有权威快照确认保存才退出；失败时保留草稿，允许重新载入。
+    LaunchedEffect(packageIds, submittedPackages, saving, error, saveCompletion) {
+        val submitted = submittedPackages ?: return@LaunchedEffect
+        // 生产入口显式报告一次写入结束，不能因保存前后选择相同就假定成功。
+        if (!saving && (saveCompletion == null || saveCompletion != submittedAtCompletion)) {
+            if (error != null) {
+                rejection = error
+                submittedPackages = null
+            } else if (packageIds == submitted.toSet()) {
+                selectedPackages = null
+                submittedPackages = null
+            }
+        }
+    }
+
+    Text("已选择 ${packageIds.size} 个应用", modifier = Modifier.testTag("push-notification-packages"))
+    Text("仅收集以上应用；留空时不采集。此范围不修改被动读取设置。", style = MaterialTheme.typography.bodySmall)
+    Button(
+        onClick = {
+            openingPackages = packageIds.toList()
+            selectedPackages = openingPackages
+            rejection = null
+            validationError = null
+        },
+        enabled = !saving,
+        modifier = Modifier.testTag("push-save-packages"),
+    ) { Text("选择应用") }
+
+    selectedPackages?.let { draft ->
+        NotificationAppPicker(
+            apps = installedApps,
+            loadFailed = loadFailed,
+            savedPackages = packageIds.toList(),
+            selectedPackages = draft,
+            rejection = rejection ?: validationError,
+            onSelectionChanged = {
+                selectedPackages = it
+                // Editing can fix a local limit, never a stale-authority/save rejection.
+                if (it.size <= 256 && it.all { id -> id.length <= 256 }) validationError = null
+            },
+            onRetry = { refresh += 1 },
+            onReloadSelection = {
+                openingPackages = packageIds.toList()
+                selectedPackages = openingPackages
+                rejection = null
+                validationError = null
+            },
+            onCancel = { selectedPackages = null },
+            onSave = {
+                when {
+                    packageIds != openingPackages.toSet() -> {
+                        rejection = "应用范围已在其他位置修改，请重新载入已保存选择后再保存。"
+                    }
+                    draft.size > 256 || draft.any { it.length > 256 } -> {
+                        validationError = "最多选择 256 个应用。"
+                    }
+                    else -> {
+                        submittedAtCompletion = saveCompletion
+                        submittedPackages = draft
+                        onPackagesChange(draft.toSet())
+                    }
+                }
+            },
+            saving = saving || submittedPackages != null,
+        )
+    }
+}

@@ -13,8 +13,14 @@ data class CapabilityPolicy(
     val mode: CapabilityAuthorizationMode = CapabilityAuthorizationMode.MANUAL,
     val allowedSources: Set<String> = emptySet(),
     val includeContent: Boolean = true,
+    val smsScopeMode: SmsScopeMode = if (allowedSources.isEmpty()) SmsScopeMode.ALL else SmsScopeMode.PHONE_NUMBERS,
+    val smsKeywords: Set<String> = emptySet(),
 ) {
-    init { require(allowedSources.size <= 256 && allowedSources.all { it.isNotBlank() && it.length <= 256 }) }
+    init {
+        require(allowedSources.size <= 256 && allowedSources.all { it.isNotBlank() && it.length <= 256 })
+        require(smsKeywords.size <= 256 && smsKeywords.all { it.isNotBlank() && it.length <= 256 })
+    }
+    fun freeze() = copy(allowedSources = allowedSources.toSet(), smsKeywords = smsKeywords.toSet())
 }
 
 enum class DeviceOperation { READ, WRITE, CONTROL }

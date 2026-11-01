@@ -64,11 +64,12 @@ internal fun NotificationAppPicker(
     onReloadSelection: () -> Unit,
     onCancel: () -> Unit,
     onSave: () -> Unit,
+    saving: Boolean = false,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val candidates = remember(apps, savedPackages) {
+    val candidates = remember(apps, savedPackages, selectedPackages) {
         val installedIds = apps.orEmpty().map { it.packageId }.toSet()
-        apps.orEmpty() + savedPackages.filterNot { it in installedIds }.map {
+        apps.orEmpty() + (savedPackages + selectedPackages).distinct().filterNot { it in installedIds }.map {
             InstalledNotificationApp(packageId = it, label = it)
         }
     }
@@ -82,7 +83,7 @@ internal fun NotificationAppPicker(
     val selectedIds = selectedPackages.toSet()
 
     Dialog(
-        onDismissRequest = onCancel,
+        onDismissRequest = { if (!saving) onCancel() },
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
         Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxSize()) {
@@ -96,14 +97,14 @@ internal fun NotificationAppPicker(
                         TopAppBar(
                             title = { Text("选择应用") },
                             navigationIcon = {
-                                IconButton(onClick = onCancel) {
+                                IconButton(onClick = onCancel, enabled = !saving) {
                                     Icon(Icons.Default.Close, contentDescription = "取消选择")
                                 }
                             },
                             actions = {
                                 TextButton(
                                     onClick = onSave,
-                                    enabled = apps != null && !loadFailed && rejection == null,
+                                    enabled = !saving && apps != null && !loadFailed && rejection == null,
                                     modifier = Modifier.testTag("notification-app-save"),
                                 ) { Text("保存") }
                             },
@@ -131,6 +132,7 @@ internal fun NotificationAppPicker(
                             )
                         }
                         OutlinedTextField(
+                            enabled = !saving,
                             value = query,
                             onValueChange = { query = it },
                             singleLine = true,
@@ -148,6 +150,7 @@ internal fun NotificationAppPicker(
                                 val allTargetSelected = targetIds.isNotEmpty() && targetIds.all { it in selectedIds }
 
                                 TextButton(
+                                    enabled = !saving,
                                     onClick = {
                                         if (allTargetSelected) {
                                             onSelectionChanged((selectedIds - targetIds).toList())
@@ -161,6 +164,7 @@ internal fun NotificationAppPicker(
                                 }
 
                                 TextButton(
+                                    enabled = !saving,
                                     onClick = {
                                         val newSelection = selectedIds.toMutableSet()
                                         for (id in targetIds) {
@@ -184,12 +188,12 @@ internal fun NotificationAppPicker(
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodyMedium,
                             )
-                            TextButton(onClick = onReloadSelection) { Text("重新载入已保存选择") }
+                            TextButton(onClick = onReloadSelection, enabled = !saving) { Text("重新载入已保存选择") }
                         }
                         when {
                             loadFailed -> {
                                 Text("无法读取本机应用列表，请重试。", color = MaterialTheme.colorScheme.error)
-                                TextButton(onClick = onRetry) { Text("重试") }
+                                TextButton(onClick = onRetry, enabled = !saving) { Text("重试") }
                             }
                             apps == null -> {
                                 CircularProgressIndicator(modifier = Modifier.size(Dimensions.Progress))
@@ -218,7 +222,7 @@ internal fun NotificationAppPicker(
                                         trailingContent = { Checkbox(checked = checked, onCheckedChange = null) },
                                         modifier = Modifier
                                             .testTag("notification-app-${app.packageId}")
-                                            .toggleable(value = checked, role = Role.Checkbox) { selected ->
+                                            .toggleable(value = checked, enabled = !saving, role = Role.Checkbox) { selected ->
                                                 onSelectionChanged(
                                                     if (selected) selectedPackages + app.packageId
                                                     else selectedPackages - app.packageId,

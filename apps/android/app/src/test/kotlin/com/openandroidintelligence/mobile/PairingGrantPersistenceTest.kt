@@ -113,4 +113,56 @@ class PairingGrantPersistenceTest {
         assertEquals(current, SharedPreferencesPairingGrantStore.from(context()).load(binding))
         assertFalse(preferences().all.keys.any { it.startsWith("pairing_grant_v1.") })
     }
+    @Test fun versionThreeMigrationPreservesEveryPolicyAndWritesADowngradeBarrier() {
+        val scope = "sms"
+        val encoded = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(scope.toByteArray())
+        preferences().edit().putInt("android_capability_authorization_model", 3)
+            .putLong("installation_capability_policy_v3.revision", 19)
+            .putStringSet("installation_capability_policy_v3.disabled", setOf("off"))
+            .putStringSet("installation_capability_policy_v3.local_primitives", setOf("kernel.store.read"))
+            .putBoolean("installation_capability_policy_v3.screen_selection", true)
+            .putString("installation_capability_policy_v3.capability.$encoded",
+                """{"enabled":true,"mode":"READ_ONLY","allowedSources":["BANK-ID","+86 13800000000"],"includeContent":false}""")
+            .commit()
+        val first = SharedPreferencesPairingGrantStore.from(context()).load(binding)
+        assertEquals(4, preferences().getInt("android_capability_authorization_model", 0))
+        assertEquals(19L, first.revision)
+        assertEquals(setOf("off"), first.explicitDisabled)
+        assertEquals(setOf("kernel.store.read"), first.granted)
+        val sms = first.capabilityPolicies.getValue(scope)
+        assertEquals(SmsScopeMode.PHONE_NUMBERS, sms.smsScopeMode)
+        assertEquals(setOf("BANK-ID", "+86 13800000000"), sms.allowedSources)
+        assertFalse(sms.includeContent)
+        assertEquals(first, SharedPreferencesPairingGrantStore.from(context()).load(binding))
+        // The released v3 store checks model in 0..3 before loading any policy.
+        val oldBinaryModel = preferences().getInt("android_capability_authorization_model", 0)
+        assertFalse(oldBinaryModel in 0..3)
+    }
+
+    @Test fun keywordAndEmptyRestrictedScopesRoundTripWithoutChangingPassiveOrPushDefaults() {
+        val holder = PairingGrantStateHolder(SharedPreferencesPairingGrantStore.from(context()), AndroidAuditStore())
+        val keywordPolicy = CapabilityPolicy(smsScopeMode = SmsScopeMode.KEYWORDS, smsKeywords = setOf("code", "%", "_", "'"),
+            includeContent = false, mode = CapabilityAuthorizationMode.READ_ONLY)
+        holder.updateCapabilityPolicy("keyword-sms", keywordPolicy)
+        val emptyNumbers = CapabilityPolicy(smsScopeMode = SmsScopeMode.PHONE_NUMBERS)
+        holder.updateCapabilityPolicy("empty-numbers", emptyNumbers)
+        val saved = SharedPreferencesPairingGrantStore.from(context()).load(binding)
+        assertEquals(keywordPolicy, saved.capabilityPolicies.getValue("keyword-sms"))
+        assertEquals(emptyNumbers, saved.capabilityPolicies.getValue("empty-numbers"))
+        assertFalse(SmsScopeMatcher.hasConditions(emptyNumbers.smsScopeMode, emptyNumbers.allowedSources, emptyNumbers.smsKeywords))
+        assertEquals(4, preferences().getInt("android_capability_authorization_model", 0))
+        assertFalse(com.openandroidintelligence.mobile.push.PushConfiguration().sms.enabled)
+        assertEquals(SmsScopeMode.ALL, com.openandroidintelligence.mobile.push.PushConfiguration().sms.scope.mode)
+    }
+
+    @Test fun partialOrUnknownScopeFieldsFailClosedInsteadOfUsingTheAllDefault() {
+        val store = SharedPreferencesPairingGrantStore.from(context())
+        val encoded = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("sms".toByteArray())
+        val key = "installation_capability_policy_v3.capability.$encoded"
+        for (extra in listOf("\"smsScopeMode\":\"KEYWORDS\"", "\"smsScopeMode\":\"FUTURE\",\"smsKeywords\":[]")) {
+            preferences().edit().putString(key,
+                """{"enabled":true,"mode":"MANUAL","allowedSources":[],"includeContent":false,$extra}""").commit()
+            assertThrows(Exception::class.java) { store.load(binding) }
+        }
+    }
 }

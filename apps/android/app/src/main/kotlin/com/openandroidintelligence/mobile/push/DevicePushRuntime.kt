@@ -2,6 +2,8 @@ package com.openandroidintelligence.mobile.push
 
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
+import com.openandroidintelligence.kernel.SmsScopeMatcher
+import com.openandroidintelligence.kernel.SmsScopeMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -58,14 +60,14 @@ class DevicePushRuntime(
         snapshotLocked()
     }
 
-    fun configure(configuration: PushConfiguration): PushSnapshot {
+    fun configure(configuration: PushConfiguration, expectedConfiguration: PushConfiguration? = null): PushSnapshot {
         val cancellations: List<ActiveAttempt>
         val notifyCleanup: Boolean
         val snapshot: PushSnapshot
         synchronized(lock) {
             checkHealthy()
+            check(expectedConfiguration == null || expectedConfiguration == state.configuration) { "PUSH_CONFIGURATION_CHANGED" }
             val nextConfig = configuration.frozen()
-            val old = state.configuration
             val now = now()
             val remoteRevocations = mutableListOf<Pair<PushEndpoint, String>>()
             var revoked = 0L
@@ -84,7 +86,7 @@ class DevicePushRuntime(
                 )
             }
             var next = state.copy(configuration = nextConfig, events = events, revokedDeliveries = state.revokedDeliveries + revoked,
-                smsCursor = if (old.sms.scope == nextConfig.sms.scope) state.smsCursor else null,
+                smsCursor = state.smsCursor,
                 revocations = mergeRevocations(state.revocations, remoteRevocations))
             next = prune(next, now)
             // Never silently evict unacknowledged data to save a smaller capacity setting.
@@ -139,7 +141,8 @@ class DevicePushRuntime(
     fun isCollectionAllowed(kind: PushKind): Boolean = synchronized(lock) {
         healthy && loggedIn && systemAccess.isGranted(kind) && when (kind) {
             PushKind.NOTIFICATION -> state.configuration.notifications.let { it.enabled && it.endpoints.isNotEmpty() && it.scope.packageIds.isNotEmpty() }
-            PushKind.SMS -> state.configuration.sms.let { it.enabled && it.endpoints.isNotEmpty() && (it.scope.allSenders || it.scope.senderAddresses.isNotEmpty()) }
+            PushKind.SMS -> state.configuration.sms.let { it.enabled && it.endpoints.isNotEmpty() &&
+                SmsScopeMatcher.hasConditions(it.scope.mode, it.scope.senderAddresses, it.scope.keywords) }
         }
     }
 
@@ -167,13 +170,16 @@ class DevicePushRuntime(
         ), record, settings.endpoints)
     }.also { if (it.status == PushCaptureStatus.ENQUEUED) wakeWork() }
 
-    fun onSms(sms: PushSms): PushCaptureResult = synchronized(lock) {
+    fun onSms(sms: PushSms, expectedScope: SmsPushScope? = null): PushCaptureResult = synchronized(lock) {
         checkHealthy()
         if (!loggedIn) return@synchronized PushCaptureResult(PushCaptureStatus.LOGGED_OUT)
         if (!systemAccess.isGranted(PushKind.SMS)) return@synchronized PushCaptureResult(PushCaptureStatus.DISABLED)
         val settings = state.configuration.sms
+        if (expectedScope != null && expectedScope != settings.scope)
+            return@synchronized PushCaptureResult(PushCaptureStatus.OUT_OF_SCOPE)
         if (!settings.enabled || settings.endpoints.isEmpty()) return@synchronized PushCaptureResult(PushCaptureStatus.DISABLED)
-        if (!settings.scope.allSenders && sms.senderAddress !in settings.scope.senderAddresses) {
+        if (!SmsScopeMatcher.matches(settings.scope.mode, settings.scope.senderAddresses, settings.scope.keywords,
+                sms.senderAddress, sms.body, sms.matchedKeywords)) {
             return@synchronized PushCaptureResult(PushCaptureStatus.OUT_OF_SCOPE)
         }
         val record = linkedMapOf<String, Any?>(
@@ -184,10 +190,23 @@ class DevicePushRuntime(
             "subscriptionId" to sms.subscriptionId,
         )
         if (settings.scope.includeContent) record["body"] = sms.body
-        enqueue(PushKind.SMS, sms.receivedAtEpochMs, listOf(sms.providerId, sms.receivedAtEpochMs, sms.subscriptionId), record, settings.endpoints, PushSmsCursor(sms.providerId, sms.receivedAtEpochMs))
+        val proof = if (settings.scope.mode == SmsScopeMode.KEYWORDS)
+            SmsScopeMatcher.matchingKeywords(sms.body, settings.scope.keywords) + sms.matchedKeywords.filter { matched ->
+                settings.scope.keywords.any { it.equals(matched, ignoreCase = true) }
+            } else emptySet()
+        enqueue(PushKind.SMS, sms.receivedAtEpochMs, listOf(sms.providerId, sms.receivedAtEpochMs, sms.subscriptionId),
+            record, settings.endpoints, PushSmsCursor(sms.providerId, sms.receivedAtEpochMs), proof)
     }.also { if (it.status == PushCaptureStatus.ENQUEUED) wakeWork() }
 
     fun smsCursor(): PushSmsCursor? = synchronized(lock) { checkHealthy(); state.smsCursor }
+
+    /** A rejected native row has no payload, but its scan position must still be durable. */
+    fun advanceSmsCursor(cursor: PushSmsCursor, expectedScope: SmsPushScope): Boolean = synchronized(lock) {
+        checkHealthy()
+        if (state.configuration.sms.scope != expectedScope || !isCollectionAllowed(PushKind.SMS)) return@synchronized false
+        if (state.smsCursor == null || cursor > state.smsCursor!!) commit(state.copy(smsCursor = cursor))
+        true
+    }
 
     /** Safe while offline or logged out; expires content without opening a connection. */
     fun maintain(): PushSnapshot = synchronized(lock) {
@@ -290,6 +309,7 @@ class DevicePushRuntime(
         record: Map<String, Any?>,
         endpoints: Set<PushEndpoint>,
         smsCursor: PushSmsCursor? = null,
+        smsMatchedKeywords: Set<String> = emptySet(),
     ): PushCaptureResult {
         maintainLocked()
         val now = now()
@@ -304,7 +324,8 @@ class DevicePushRuntime(
         val payload = Json.canonical(Json.of(mapOf("kind" to kind.name.lowercase(), "record" to record)))
         if (payload.toByteArray().size > MAX_PUSH_EVENT_BYTES) return PushCaptureResult(PushCaptureStatus.TOO_LARGE, id)
         val expiry = minOf(now + ttl, sourceAt + ttl)
-        val event = QueuedPushEvent(PushEvent(id, kind, now, expiry, payload), endpoints.associateWith { null })
+        val event = QueuedPushEvent(PushEvent(id, kind, now, expiry, payload), endpoints.associateWith { null },
+            smsMatchedKeywords = smsMatchedKeywords.toSet())
         val next = state.copy(events = state.events + event, seen = state.seen + (id to expiry), smsCursor = nextCursor)
         if (next.events.size > state.configuration.maxEvents || next.seen.size > MAX_PUSH_SEEN_EVENTS ||
             queueBudgetSize(next) > state.configuration.maxQueueBytes || !hasRevocationCapacity(next)
@@ -337,7 +358,8 @@ class DevicePushRuntime(
     private fun authorized(delivery: PushDelivery, epoch: Long): Boolean = healthy && loggedIn && epoch == loginEpoch &&
         systemAccess.isGranted(delivery.event.kind) &&
         now() < delivery.event.expiresAtEpochMs && delivery.endpoint in endpoints(state.configuration, delivery.event.kind) &&
-        state.events.any { it.event.eventId == delivery.event.eventId && delivery.endpoint in it.targets && it.retentionDeadlineEpochMs > now() }
+        state.events.any { it.event.eventId == delivery.event.eventId && delivery.endpoint in it.targets &&
+            it.retentionDeadlineEpochMs > now() && permitsQueued(it, state.configuration) }
 
     private fun permitsQueued(queued: QueuedPushEvent, config: PushConfiguration): Boolean {
         val payload = JsonFields.obj(Json.parse(queued.event.payloadJson)) ?: throw PushStateUnavailable()
@@ -348,7 +370,8 @@ class DevicePushRuntime(
                     (settings.scope.includeContent || (JsonFields.field(record, "title") == null && JsonFields.field(record, "body") == null))
             }
             PushKind.SMS -> config.sms.let { settings ->
-                settings.enabled && (settings.scope.allSenders || JsonFields.string(record, "senderAddress") in settings.scope.senderAddresses) &&
+                settings.enabled && SmsScopeMatcher.matches(settings.scope.mode, settings.scope.senderAddresses, settings.scope.keywords,
+                    JsonFields.string(record, "senderAddress"), JsonFields.string(record, "body"), queued.smsMatchedKeywords) &&
                     (settings.scope.includeContent || JsonFields.field(record, "body") == null)
             }
         }

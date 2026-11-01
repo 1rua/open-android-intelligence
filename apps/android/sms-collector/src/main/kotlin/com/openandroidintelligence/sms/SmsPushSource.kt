@@ -11,6 +11,7 @@ data class SmsPushCaptureRequest(
     val allSenders: Boolean = false,
     val includeContent: Boolean = true,
     val maxRecords: Int = 128,
+    val keywords: Set<String> = emptySet(),
 ) {
     init { require(fromEpochMs >= 0 && maxRecords in 1..512) }
 }
@@ -35,25 +36,43 @@ class SmsPushSource(private val reader: SmsInboxReader) {
         request: SmsPushCaptureRequest,
         isCurrent: () -> Boolean,
         enqueueDurably: (SmsInboxRow) -> Boolean,
+    ): SmsPushCaptureResult = capture(request, isCurrent, { false }, enqueueDurably)
+
+    fun capture(
+        request: SmsPushCaptureRequest,
+        isCurrent: () -> Boolean,
+        advanceSkippedCursor: (SmsCursor) -> Boolean,
+        enqueueDurably: (SmsInboxRow) -> Boolean,
     ): SmsPushCaptureResult {
-        if ((!request.allSenders && request.senders.isEmpty()) || !isCurrent()) {
+        if ((!request.allSenders && request.senders.isEmpty() && request.keywords.isEmpty()) || !isCurrent()) {
             return SmsPushCaptureResult(0, 0, request.after, false, true)
         }
         val rows = reader.query(SmsInboxQuery(
             history = SmsHistoryPolicy(request.fromEpochMs, request.maxRecords),
             cursor = request.after,
-            senders = if (request.allSenders) emptySet() else request.senders,
+            senders = if (request.allSenders || request.keywords.isNotEmpty()) emptySet() else request.senders,
             oldestFirst = true,
             includeBody = request.includeContent,
+            allSenders = request.allSenders,
+            phoneNumbers = request.senders,
+            keywords = request.keywords,
+            includeRejected = true,
         )).sortedWith(compareBy(SmsInboxRow::messageAtEpochMs, SmsInboxRow::providerId))
         var accepted = 0
         var cursor = request.after
         for (row in rows) {
-            if (!isCurrent() || !enqueueDurably(row)) {
-                return SmsPushCaptureResult(rows.size, accepted, cursor, true, true)
-            }
-            cursor = SmsCursor(row.providerId, row.messageAtEpochMs)
-            accepted += 1
+            if (!isCurrent()) return SmsPushCaptureResult(rows.size, accepted, cursor, true, true)
+            val nextCursor = SmsCursor(row.providerId, row.messageAtEpochMs)
+            val matches = row.scopeMatched && matchesSmsConditions(request.allSenders, request.senders, request.keywords, row)
+            val durable = if (matches) {
+                val proof = matchingSmsKeywords(row.body, request.keywords) + row.matchedKeywords.filter { matched ->
+                    request.keywords.any { it.equals(matched, ignoreCase = true) }
+                }
+                enqueueDurably(row.copy(body = row.body.takeIf { request.includeContent }, matchedKeywords = proof))
+            } else advanceSkippedCursor(nextCursor)
+            if (!durable) return SmsPushCaptureResult(rows.size, accepted, cursor, true, true)
+            cursor = nextCursor
+            if (matches) accepted += 1
         }
         return SmsPushCaptureResult(rows.size, accepted, cursor, rows.size == request.maxRecords, false)
     }

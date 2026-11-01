@@ -66,13 +66,14 @@ def main() -> int:
         source = repo / "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/push"
         tests = Path(__file__).resolve().parent
         sources = [source / name for name in ("PushModels.kt", "EncryptedPushStateStore.kt", "DevicePushRuntime.kt", "GatewayPushTransport.kt")]
+        sources.append(repo / "apps/android/platform-kernel/src/main/kotlin/com/openandroidintelligence/kernel/SmsScope.kt")
         # The picker DTO lives beside UI. Read its exact declaration, without a behavior stub.
         declaration = next(line for line in (source / "PushSettingsScreen.kt").read_text().splitlines()
                            if line.startswith("data class PushEndpointOption("))
         dto = output / "PushEndpointOption.kt"
         dto.write_text("package com.openandroidintelligence.mobile.push\n" + declaration + "\n")
         sources.append(dto)
-        test_classes = ["DevicePushRuntimeTest", "GatewayPushTransportTest", "PushRevocationTest", "PushStateCodecMigrationTest", "PushEndpointAvailabilityTest"]
+        test_classes = ["DevicePushRuntimeTest", "GatewayPushTransportTest", "PushRevocationTest", "PushStateCodecMigrationTest", "PushEndpointAvailabilityTest", "SmsPushScopeTest"]
         sources.extend(tests / f"{name}.kt" for name in test_classes)
         test_package = "com.openandroidintelligence.mobile.push."
     compiled = output / "classes"
