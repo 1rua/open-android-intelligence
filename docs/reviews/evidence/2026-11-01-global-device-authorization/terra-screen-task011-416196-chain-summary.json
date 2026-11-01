@@ -1,0 +1,292 @@
+{
+  "readerRequestId": "devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3",
+  "readerState": "succeeded",
+  "revision": "sha256:6f0bc4ea9624df98aa2427b1b303ed0a4ede306698f9c7d8fbf1623a65781618",
+  "foregroundPackage": "com.openandroidintelligence.mobile",
+  "returnedNodeCount": 8,
+  "windowCount": 3,
+  "controlRequestId": "devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+  "successObservedToControlSubmitMillis": 0.046413,
+  "successObservedToControlResponseMillis": 46.208714,
+  "readerSucceededObservedMonotonicNs": 92148282989170,
+  "controlSubmitMonotonicNs": 92148283035583,
+  "controlResponseMonotonicNs": 92148329197884,
+  "deviceSerial": "emulator-5554",
+  "androidUser": 10,
+  "appSha256": "4161967a4e101d388f88d5be004ba7223fe8698dc11d5b5626b096814f2c0b71",
+  "readerParameters": {
+    "operation": "snapshot",
+    "maxNodes": 8,
+    "maxDepth": 8,
+    "maxBytes": 4096
+  },
+  "readerDecision": "allow_once",
+  "readerTapAtUtc": "2026-11-01T11:58:23.608315+00:00",
+  "controlParameters": {
+    "action": "global",
+    "globalAction": "back",
+    "expectedRevision": "sha256:6f0bc4ea9624df98aa2427b1b303ed0a4ede306698f9c7d8fbf1623a65781618"
+  },
+  "controlConfirmationCardObserved": true,
+  "controlDecision": "allow_once",
+  "controlTapAtUtc": "2026-11-01T12:00:17.308879+00:00",
+  "controlState": "failed",
+  "controlErrorCode": "SCREEN_STALE_REFERENCE",
+  "confirmationCardRemovedAfter": true,
+  "staticSettingsVisibleAfter": true,
+  "scriptPath": "docs/plans/2026-11-01-global-device-authorization/runtime/evidence/terra-screen-task011-416196-chain-once.py",
+  "eventMetadata": [
+    {
+      "logTime": "11-01 19:57:19.079",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3",
+        "stage=lookup",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:57:19.176",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3",
+        "stage=claim",
+        "code=SUCCEEDED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:57:28.346",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3",
+        "stage=lookup",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:57:58.369",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3",
+        "stage=lookup",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:58:21.210",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3",
+        "stage=invoke",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:58:21.293",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3",
+        "stage=completed",
+        "code=succeeded"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:58:21.422",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3",
+        "stage=result",
+        "code=ACKNOWLEDGED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:58:21.540",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=lookup",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:58:21.661",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=claim",
+        "code=SUCCEEDED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:58:28.391",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=lookup",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:58:58.414",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=lookup",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:59:28.459",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=lookup",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 19:59:58.484",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=lookup",
+        "code=STARTED"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.649",
+      "tag": "OaiScreenConfirmation",
+      "metadata": [
+        "generation=349",
+        "windowId=457",
+        "eventType=2048",
+        "windowChanges=0"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.649",
+      "tag": "OaiScreenConfirmation",
+      "metadata": [
+        "generation=350",
+        "windowId=463",
+        "eventType=32",
+        "windowChanges=0"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.649",
+      "tag": "OaiScreenConfirmation",
+      "metadata": [
+        "generation=351",
+        "windowId=463",
+        "eventType=4194304",
+        "windowChanges=1"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.649",
+      "tag": "OaiScreenConfirmation",
+      "metadata": [
+        "generation=352",
+        "windowId=457",
+        "eventType=2048",
+        "windowChanges=0"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.649",
+      "tag": "OaiScreenConfirmation",
+      "metadata": [
+        "generation=353",
+        "windowId=463",
+        "eventType=2048",
+        "windowChanges=0"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.649",
+      "tag": "OaiScreenConfirmation",
+      "metadata": [
+        "generation=354",
+        "windowId=457",
+        "eventType=2048",
+        "windowChanges=0"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.649",
+      "tag": "OaiScreenConfirmation",
+      "metadata": [
+        "generation=355",
+        "windowId=463",
+        "eventType=2048",
+        "windowChanges=0"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.649",
+      "tag": "OaiScreenConfirmation",
+      "metadata": [
+        "generation=356",
+        "windowId=463",
+        "eventType=4194304",
+        "windowChanges=8"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.650",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=authorization",
+        "code=SCREEN_STALE_REFERENCE"
+      ],
+      "codes": [
+        "SCREEN_STALE_REFERENCE"
+      ]
+    },
+    {
+      "logTime": "11-01 20:00:14.657",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=completed",
+        "code=failed"
+      ],
+      "codes": []
+    },
+    {
+      "logTime": "11-01 20:00:14.738",
+      "tag": "OaiDeviceRequest",
+      "metadata": [
+        "requestId=devreq_bf3c1096-044a-4e49-9921-8759f1a3b474",
+        "stage=result",
+        "code=ACKNOWLEDGED"
+      ],
+      "codes": []
+    }
+  ],
+  "privateLogPath": "docs/plans/2026-11-01-global-device-authorization/runtime/evidence/terra-screen-task011-416196-chain-android-logcat-private.txt",
+  "noRetry": true
+}

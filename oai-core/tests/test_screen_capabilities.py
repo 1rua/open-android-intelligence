@@ -68,10 +68,13 @@ async def test_screen_permissions_are_diagnostics_not_callable_grants(gateway):
         assert item["reason"] == "LOCAL_SCREEN_GRANT_REQUIRED"
         assert "schema" not in item and "provider" not in item
         response = await client.post(DEVICE_API + "/device-requests", json={
+            "caller": {"agentName": "screen-test", "purpose": "验证屏幕设备请求"},
             "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": parameters,
         }, headers={**headers, "Idempotency-Key": binding["pluginId"]})
-        assert response.status == 403
-        assert (await response.json())["error"]["code"] == "CAPABILITY_DENIED"
+        assert response.status == 409
+        error = (await response.json())["error"]
+        assert error["code"] == "CAPABILITY_UNAVAILABLE"
+        assert error["details"]["reason"] == "LOCAL_SCREEN_GRANT_REQUIRED"
     account = core.open_gateway_account(bundle["accountId"])
     try:
         assert account.store.database.execute("SELECT count(*) FROM device_requests").fetchone()[0] == 0
@@ -104,17 +107,19 @@ async def test_screen_cli_api_and_mcp_share_exact_request_and_signed_result(gate
     # First submit through the real CLI HTTP client, then replay via MCP and API.
     request_key = "screen-once-" + str(index)
     assert await asyncio.to_thread(main, ["--client-config", str(config), "invoke", binding["capabilityId"],
-        "--version", "1.0.0", "--parameters", json.dumps(parameters), "--idempotency-key", request_key]) == 0
+        "--version", "1.0.0", "--agent-name", "screen-test", "--purpose", "验证屏幕设备请求", "--parameters", json.dumps(parameters), "--idempotency-key", request_key]) == 0
     receipt = json.loads(capsys.readouterr().out)
     request_id = receipt["requestId"]
     assert receipt["state"] == "pending"
     assert receipt["requiresForegroundConfirmation"] is (SCREEN[index][2] == "write")
     await mcp.call_tool("oai_invoke", {"capability_id": binding["capabilityId"], "capability_version": "1.0.0",
-                        "parameters": parameters, "idempotency_key": request_key})
-    replay = await asyncio.to_thread(core_client.invoke, binding["capabilityId"], "1.0.0", parameters, request_key)
+                        "parameters": parameters, "idempotency_key": request_key, "agent_name": "screen-test", "purpose": "验证屏幕设备请求"})
+    replay = await asyncio.to_thread(core_client.invoke, binding["capabilityId"], "1.0.0", parameters, request_key,
+                                     agent_name="screen-test", purpose="验证屏幕设备请求")
     assert replay["requestId"] == request_id
     changed = {**parameters, "expectedRevision": "different"} if index == 2 else {**parameters, "operation": "state" if index == 0 else "release"}
     response = await client.post(DEVICE_API + "/device-requests", json={
+        "caller": {"agentName": "screen-test", "purpose": "验证屏幕设备请求"},
         "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": changed,
     }, headers={**headers, "Idempotency-Key": request_key})
     assert response.status == 409 and (await response.json())["error"]["code"] == "IDEMPOTENCY_CONFLICT"
@@ -148,7 +153,7 @@ async def test_screen_pending_cancel_claimed_cancel_failure_and_revocation(gatew
     capabilities, revision = await publish_screen(client, core, bundle, key)
     headers = await token(client, bundle)
     binding = capabilities[2]
-    body = {"capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": SCREEN[2][3]}
+    body = {"caller": {"agentName": "screen-test", "purpose": "验证屏幕设备请求"}, "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": SCREEN[2][3]}
 
     async def submit(idempotency):
         response = await client.post(DEVICE_API + "/device-requests", json=body, headers={**headers, "Idempotency-Key": idempotency})
@@ -206,6 +211,7 @@ async def test_screen_legacy_account_policy_cannot_block_android_ready_requests(
         account.close()
 
     response = await client.post(DEVICE_API + "/device-requests", json={
+        "caller": {"agentName": "screen-test", "purpose": "验证屏幕设备请求"},
         "capabilityId": binding["capabilityId"], "capabilityVersion": "1.0.0", "parameters": SCREEN[0][3],
     }, headers={**headers, "Idempotency-Key": "test-disabled"})
     assert response.status == 200, await response.text()

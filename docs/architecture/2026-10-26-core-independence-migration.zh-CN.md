@@ -1,6 +1,6 @@
 # OAI Core 设备核心独立化迁移清单
 
-**2026-10-28 授权范围更新**：本文记录此前 Core 拆包迁移，不作为继续保留账号级能力开关的要求。表中的“能力策略/授权管理”描述旧阶段。设备授权现由 Android 唯一决定，普通前台能力默认开启，系统权限、本地显式限制、后台许可和敏感确认仍分别生效。新规则已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；当前结果见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。下文的迁移事实仍按其原代码基线阅读。
+**2026-11-01 现行授权规则**：安装实例全局保存每项能力总开关及三级模式，新能力默认每次手动，主动推送独立且默认关闭；旧配对许可/迁移复核/按账号保存能力规则已被取代。系统权限、合法设备绑定、账号会话和附件隔离继续保留。详见[全局规格](../superpowers/specs/2026-11-01-global-device-authorization.md)，实现和验收以[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)为准。
 
 本次迁移使设备协议、安全认证和请求状态机只由 OAI Core 实现，Hermes 以可选会话适配器接入。Android 仍使用 Gateway Protocol v2.1，不通过本次代码迁移修改公开协议版本。
 

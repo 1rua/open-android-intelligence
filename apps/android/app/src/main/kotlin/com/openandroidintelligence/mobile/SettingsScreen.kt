@@ -130,6 +130,7 @@ object SettingsRoutes {
     const val SECURITY = "settings/security"
     const val AUDIT_LOG = "settings/audit"
     const val PLUGINS = "settings/plugins"
+    const val DEVICE_PUSH = "settings/device-push"
     const val NOTIFICATIONS = "settings/notifications"
     const val APP_UPDATES = "settings/app-updates"
 
@@ -333,6 +334,7 @@ fun SettingsScreen(
                 onBack = { navController.popBackStack() },
                 presentation = presentation,
                 onRequestCaptureAuthorization = onRequestScreenCaptureAuthorization,
+                onOpenPlugins = { navController.navigate(SettingsRoutes.PLUGINS) { launchSingleTop = true } },
             )
         }
 
@@ -362,6 +364,18 @@ fun SettingsScreen(
                 pluginRuntimesWired = uiState.pluginRuntimesWired,
                 onBack = { navController.popBackStack() },
                 onOpenNotificationSettings = { navController.navigate(SettingsRoutes.NOTIFICATIONS) { launchSingleTop = true } },
+            )
+        }
+
+        composable(SettingsRoutes.DEVICE_PUSH) {
+            val push = (context.applicationContext as? OpenAndroidIntelligenceApplication)?.devicePush
+            val endpoints = if (push != null) push.endpoints.collectAsState().value else emptyList()
+            DevicePushSubScreen(
+                runtime = push?.runtime,
+                endpoints = endpoints,
+                onRefreshEndpoints = { push?.refreshEndpoints() },
+                onBack = { navController.popBackStack() },
+                presentation = presentation,
             )
         }
 
@@ -449,6 +463,38 @@ fun SettingsScreen(
                 TextButton(onClick = { showUnpairDialog = false }) { Text("取消") }
             },
         )
+    }
+}
+
+/** 主动推送沿用设置子页容器；正文继续负责自己的滚动和配置操作。 */
+@Composable
+internal fun DevicePushSubScreen(
+    runtime: com.openandroidintelligence.mobile.push.DevicePushRuntime?,
+    endpoints: List<com.openandroidintelligence.mobile.push.PushEndpointOption>,
+    onRefreshEndpoints: () -> Unit,
+    onBack: () -> Unit,
+    presentation: SettingsPresentation,
+) {
+    SettingsPageScaffold(
+        title = "短信与通知主动推送",
+        presentation = presentation,
+        onBack = onBack,
+    ) { padding ->
+        Box(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            if (runtime != null) {
+                com.openandroidintelligence.mobile.push.PushSettingsScreen(
+                    runtime = runtime,
+                    endpoints = endpoints,
+                    onRefreshEndpoints = onRefreshEndpoints,
+                    modifier = Modifier.fillMaxHeight(),
+                )
+            } else {
+                Text("本机加密队列暂不可用，请检查设备存储和密钥状态。")
+            }
+        }
     }
 }
 
@@ -744,6 +790,13 @@ private fun SettingsOverviewScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     // 屏幕能力单独一条：它按「本地会话 + 三类权限」逐项授予，
                     // 与「安装插件」是两件不同的事，混在一起会让用户以为装完就能用。
+                    SettingsNavigationItem(
+                        headline = "短信与通知主动推送",
+                        supporting = "独立选择内容范围、接收端点和离线保留时间；默认关闭",
+                        icon = Icons.Default.Notifications,
+                        onClick = { onNavigate(SettingsRoutes.DEVICE_PUSH) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
                         headline = "屏幕读取与控制",
                         supporting = "按需授予读取界面、截取画面、操作其他应用；随时可以结束",
@@ -1292,15 +1345,15 @@ private fun PairingSubScreen(
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     Text(
-                        text = "插件设备能力由手机上的本机开关控制；Android 系统权限、通知读取范围和屏幕会话仍分别管理。",
+                        text = "手机统一管理设备能力总开关与授权模式，离线也可设置。Android 系统权限、查询范围和主动推送各自独立。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
-                        headline = "短信读取",
-                        supporting = "安装并启用短信插件后，可在插件管理中设置本机能力开关；短信系统权限仍需单独授予",
+                        headline = "全局设备能力",
+                        supporting = "按每项能力设置总开关和授权模式；切换 Core、账号或 Agent 后继续使用",
                         icon = Icons.Default.Sms,
                         onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
@@ -1318,6 +1371,13 @@ private fun PairingSubScreen(
                     // 屏幕读取与控制是另一回事：它按「本地会话 + 三类权限」逐项授予，
                     // 与上面的圈选（把圈选结果回传 Gateway）不是同一个授权。
                     SettingsNavigationItem(
+                        headline = "短信与通知主动推送",
+                        supporting = "独立选择内容范围、接收端点和离线保留时间；默认关闭",
+                        icon = Icons.Default.Notifications,
+                        onClick = { onNavigate(SettingsRoutes.DEVICE_PUSH) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    SettingsNavigationItem(
                         headline = "屏幕读取与控制",
                         supporting = "按需授予读取界面、截取画面、操作其他应用；随时可以结束",
                         icon = Icons.Default.Visibility,
@@ -1330,12 +1390,12 @@ private fun PairingSubScreen(
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     Text(
-                        text = "安装并启用插件后，本机设备能力开关默认开启，你可以随时关闭。这个开关不会代替 Android 系统权限、通知读取范围、后台设置或屏幕会话。",
+                        text = "每项设备能力可选择每次手动、允许只读或自动允许，新能力默认每次手动。系统权限和屏幕捕获的系统同意仍分别生效；短信、通知主动推送另行配置。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "这台手机为各账号分别保存能力设置。切换账号不会覆盖原来的设置，切回来时继续使用。解除设备配对则会终止对应的连接信任。",
+                        text = "这台手机统一保存各项能力的开关与授权模式。切换 Core、账号或 Agent 不会重置；退出全部账号后暂停采集、执行和推送。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1358,10 +1418,12 @@ private fun ScreenCapabilitySubScreen(
     onBack: () -> Unit,
     presentation: SettingsPresentation,
     onRequestCaptureAuthorization: () -> Unit,
+    onOpenPlugins: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val controller = remember { ScreenCapabilityController(scope) }
     val state by controller.state.collectAsState()
+    var policyError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -1374,12 +1436,6 @@ private fun ScreenCapabilitySubScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    // 会话进行中需要展示倒计时；无会话时不必空转。
-    LaunchedEffect(state.hasSession) {
-        if (!state.hasSession) return@LaunchedEffect
-        controller.startPolling()
-    }
-
     SettingsPageScaffold(
         title = "屏幕读取与控制",
         presentation = presentation,
@@ -1387,27 +1443,56 @@ private fun ScreenCapabilitySubScreen(
     ) { padding ->
         SettingsPageColumn(contentPadding = padding) {
             SectionLabel("屏幕能力")
+            policyError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
-            ScreenCapabilitySection(
-                state = state,
-                onStartSession = controller::startSession,
-                onRevoke = controller::revokeSession,
-                onRequestCaptureAuthorization = onRequestCaptureAuthorization,
-                onOpenAccessibilitySettings = { openAccessibilitySettings(context) },
-            )
+            val app = context.applicationContext as? OpenAndroidIntelligenceApplication
+            val host = app?.pluginHost
+            val revision = host?.revision?.collectAsState()?.value
+            val entries = remember(host, revision) {
+                listOf("org.openandroidintelligence.screen-reader", "org.openandroidintelligence.screen-capture",
+                    "org.openandroidintelligence.screen-control").flatMap { host?.entries(it).orEmpty() }
+            }
+            if (entries.isEmpty()) {
+                SettingsSectionCard {
+                    Text("尚未安装屏幕能力插件。安装并启用后，可分别设置读取、截图与控制的全局授权。")
+                    TextButton(onClick = onOpenPlugins) { Text("打开插件管理") }
+                }
+            } else entries.forEach { entry ->
+                SettingsSectionCard {
+                    com.openandroidintelligence.mobile.plugins.CapabilityAuthorizationControls(entry.identity.pluginId,
+                        entry.key, entry.risk == "read", host!!.capabilityPolicy(entry.identity.pluginId, entry.key),
+                        onPolicyChange = { policy ->
+                            policyError = runCatching { host.setCapabilityPolicy(entry.identity.pluginId, entry.key, policy) }
+                                .fold(onSuccess = { null }, onFailure = { "本机授权设置未能保存，请检查存储后重试。" })
+                            controller.refresh()
+                        })
+                }
+            }
+            SectionLabel("Android 系统许可")
+            SettingsSectionCard {
+                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                    Text(if (state.accessibilityReady) "无障碍服务已连接" else "无障碍服务尚未连接，屏幕内容读取与控制暂不可用")
+                    TextButton(onClick = { openAccessibilitySettings(context) }) { Text("打开无障碍设置") }
+                    Text(if (state.captureSystemGranted) "屏幕捕获系统许可当前可用" else "屏幕捕获需要 Android 系统同意")
+                    TextButton(onClick = onRequestCaptureAuthorization) { Text("请求屏幕捕获系统许可") }
+                    TextButton(onClick = {
+                        app?.pairingGrants?.revokeTemporaryApprovals()
+                        com.openandroidintelligence.control.ScreenHostRegistry.current?.revoke()
+                        controller.refresh()
+                    }) { Text("立即停止当前屏幕请求") }
+                }
+            }
 
             SectionLabel("这三项分别意味着什么")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     Text(
-                        text = "三项权限互相独立：允许读取不会带出截图，允许截图也不会带出操作。" +
-                            "操作始终需要在手机上逐次确认，系统从不允许静默执行。",
+                        text = "读取、截图和控制分别配置全局模式。允许截图不包含控制；允许只读不会批准点击、滑动或输入。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "许可只保存在这台手机的内存里，进程重启后需要重新确认；" +
-                            "锁屏、断开连接、切换账号或系统撤销投屏时，相关许可会立即失效。",
+                        text = "全局模式在本机持久保存，切换 Core 或账号保持不变。临时批准可撤销，进程重启后失效；Android 系统捕获同意与无障碍服务继续独立检查。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

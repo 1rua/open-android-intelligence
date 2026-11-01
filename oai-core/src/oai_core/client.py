@@ -24,10 +24,18 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class CoreClientError(RuntimeError):
-    def __init__(self, code: str, status: int | None = None):
-        super().__init__(code)
+    def __init__(self, code: str, status: int | None = None, *,
+                 details: dict[str, Any] | None = None, retryable: bool = False):
         self.code = code
         self.status = status
+        self.details = details or {}
+        self.retryable = retryable
+        # MCP retains this structured diagnostic in its tool error text.
+        super().__init__(json.dumps(self.as_error(), ensure_ascii=False) if self.details else code)
+
+    def as_error(self) -> dict[str, Any]:
+        return {"code": self.code, **({"details": self.details} if self.details else {}),
+                **({"retryable": True} if self.retryable else {})}
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -126,14 +134,18 @@ class CoreClient:
                 payload = response.read(MAX_RESPONSE_BYTES + 1)
         except HTTPError as error:
             payload = error.read(MAX_RESPONSE_BYTES + 1)
+            details, retryable = {}, False
             try:
                 result = json.loads(payload)
                 failure = result.get("error", {})
                 code = failure.get("code") if isinstance(failure, dict) else None
                 code = code or result.get("code") or result.get("errorCode")
+                if isinstance(failure, dict):
+                    details = failure.get("details") if isinstance(failure.get("details"), dict) else {}
+                    retryable = failure.get("retryable") is True
             except (ValueError, AttributeError):
                 code = None
-            raise CoreClientError(str(code or "CORE_HTTP_ERROR"), error.code) from error
+            raise CoreClientError(str(code or "CORE_HTTP_ERROR"), error.code, details=details, retryable=retryable) from error
         except (URLError, TimeoutError, OSError) as error:
             raise CoreClientError("CORE_UNREACHABLE") from error
         if len(payload) > MAX_RESPONSE_BYTES:
@@ -146,7 +158,9 @@ class CoreClient:
             raise CoreClientError("CORE_RESPONSE_INVALID")
         if "error" in result:
             error = result["error"]
-            raise CoreClientError(str(error.get("code", "CORE_ERROR")) if isinstance(error, dict) else "CORE_ERROR")
+            raise CoreClientError(str(error.get("code", "CORE_ERROR")) if isinstance(error, dict) else "CORE_ERROR",
+                details=error.get("details") if isinstance(error, dict) and isinstance(error.get("details"), dict) else None,
+                retryable=isinstance(error, dict) and error.get("retryable") is True)
         return result.get("data", result)
 
     def login(self, username: str, password: str, device_id: str) -> dict[str, Any]:
@@ -164,12 +178,16 @@ class CoreClient:
         return self._request("GET", "/capabilities")
 
     def invoke(self, capability_id: str, capability_version: str,
-               parameters: dict[str, Any], idempotency_key: str | None = None) -> dict[str, Any]:
+               parameters: dict[str, Any], idempotency_key: str | None = None, *,
+               agent_name: str | None = None, purpose: str | None = None) -> dict[str, Any]:
         if not isinstance(parameters, dict):
             raise CoreClientError("PARAMETERS_INVALID")
+        if not isinstance(agent_name, str) or not agent_name.strip() or not isinstance(purpose, str) or not purpose.strip():
+            raise CoreClientError("CALLER_DECLARATION_REQUIRED")
         return self._request("POST", "/device-requests", {
             "capabilityId": capability_id, "capabilityVersion": capability_version,
             "parameters": parameters,
+            "caller": {"agentName": agent_name, "purpose": purpose},
         }, idempotency_key=idempotency_key or str(uuid.uuid4()))
 
     @staticmethod
@@ -184,5 +202,27 @@ class CoreClient:
     def cancel(self, request_id: str) -> dict[str, Any]:
         return self._request("POST", self._request_path(request_id) + "/cancel", {})
 
-    def acknowledge(self, request_id: str) -> dict[str, Any]:
-        return self._request("POST", self._request_path(request_id) + "/ack", {})
+    def acknowledge(self, request_id: str, result_digest: str | None = None) -> dict[str, Any]:
+        return self._request("POST", self._request_path(request_id) + "/ack",
+                             {"resultDigest": result_digest} if result_digest is not None else {})
+
+    def register_endpoint(self, registration_key: str, label: str, ttl_seconds: int = 3600) -> dict[str, Any]:
+        return self._request("POST", "/endpoints", {"registrationKey": registration_key, "label": label, "ttlSeconds": ttl_seconds})
+
+    def endpoints(self) -> dict[str, Any]:
+        return self._request("GET", "/endpoints")
+
+    @staticmethod
+    def _endpoint_path(endpoint_id: str) -> str:
+        if not isinstance(endpoint_id, str) or not endpoint_id:
+            raise CoreClientError("ENDPOINT_ID_REQUIRED")
+        return "/endpoints/" + quote(endpoint_id, safe="")
+
+    def unregister_endpoint(self, endpoint_id: str) -> dict[str, Any]:
+        return self._request("DELETE", self._endpoint_path(endpoint_id))
+
+    def receive_deliveries(self, endpoint_id: str) -> dict[str, Any]:
+        return self._request("GET", self._endpoint_path(endpoint_id) + "/deliveries")
+
+    def acknowledge_delivery(self, endpoint_id: str, delivery_id: str, event_id: str) -> dict[str, Any]:
+        return self._request("POST", self._endpoint_path(endpoint_id) + "/deliveries/" + quote(delivery_id, safe="") + "/ack", {"eventId": event_id})

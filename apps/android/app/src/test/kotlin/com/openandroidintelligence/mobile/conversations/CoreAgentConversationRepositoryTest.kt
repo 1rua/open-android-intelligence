@@ -21,6 +21,7 @@ import com.openandroidintelligence.gateway.http.WireRequest
 import com.openandroidintelligence.gateway.http.WireResponse
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -152,9 +153,9 @@ class CoreAgentConversationRepositoryTest {
             }
         }
         val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" }, parent)
-        val collector = parent.launch { repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(observed) }
+        // Register the SharedFlow collector before submitMessage can emit its queued receipt.
+        val collector = parent.launch(start = CoroutineStart.UNDISPATCHED) { repo.observeEvents(ConversationScope("p1", "https://core", "a1", "i1")).toList(observed) }
         try {
-            kotlinx.coroutines.yield()
             repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("cm_lifecycle"), "prompt"))
             withTimeout(3000) { while (observed.filterIsInstance<VerifiedConversationEvent.MessageAccepted>().isEmpty()) kotlinx.coroutines.delay(1) }
             assertEquals(GenerationState.QUEUED, repo.generationState.value)

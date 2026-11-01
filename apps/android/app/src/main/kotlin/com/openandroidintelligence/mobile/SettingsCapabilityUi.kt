@@ -292,7 +292,9 @@ internal fun deviceCapabilityReasonLabel(reason: String): String {
         "PAIRING_BINDING_CHANGED", "DEVICE_SESSION_CHANGED" -> "连接已变化，等待当前连接重新同步"
         "GRANT_STALE", "CAPABILITY_PUBLICATION_STALE" -> "服务端状态版本已变化，正在重新读取"
         "NETWORK_ERROR" -> "网络暂不可用，连接恢复后自动重试"
-        "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED" -> "请在插件管理中复核旧的本机设置"
+        "LOCAL_AUTHORIZATION_STATE_INCOMPLETE", "INSTALLATION_CAPABILITY_MIGRATION_FAILED",
+        "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED", "LOCAL_AUTHORIZATION_UPDATE_INCOMPLETE", "LOCAL_AUTHORIZATION_AUDIT_FAILED", "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED" ->
+            "无法读取本机授权设置，请检查存储或升级应用后重试"
         "LOCAL_CAPABILITY_DISABLED" -> "本机已关闭此能力"
         "CAPABILITY_DIGEST_MISMATCH", "CAPABILITY_BINDING_INVALID", "PAIRING_INVALID" -> "状态校验未通过，请检查 OAI Core 版本"
         else -> "当前阻塞原因"

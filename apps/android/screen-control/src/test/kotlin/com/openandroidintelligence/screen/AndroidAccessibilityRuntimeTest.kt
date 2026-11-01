@@ -13,6 +13,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import com.openandroidintelligence.control.*
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -210,6 +211,51 @@ class AndroidAccessibilityRuntimeTest {
         runCurrent()
         assertTrue(drag.await())
         assertEquals(3, checks)
+    }
+
+    @Test fun cancellingDispatchedGestureKeepsNextControllerQueuedUntilSystemCallback() = runTest {
+        val manager = ScreenControlLeaseManager({ 1_000_000L + testScheduler.currentTime }, testScheduler.timeSource)
+        var nextRan = false
+        val first = launch {
+            manager.withLease("first", 1_060_000, {}) {
+                runtime.gesture(listOf(10 to 20, 50 to 80), 400, runtime.generation(), {})
+            }
+        }
+        runCurrent()
+        val next = async { manager.withLease("next", 1_060_000, {}) { nextRan = true } }
+        runCurrent()
+        first.cancel()
+        runCurrent()
+        assertFalse(first.isCompleted)
+        assertFalse(nextRan)
+        val dispatched = shadowService.gesturesDispatched.single()
+        dispatched.callback().onCompleted(dispatched.description())
+        runCurrent()
+        first.join(); next.await()
+        assertTrue(first.isCancelled)
+        assertTrue(nextRan)
+        assertEquals(1, shadowService.gesturesDispatched.size)
+    }
+
+    @Test fun cancelledGestureWithoutCallbackHasBoundedCleanupAndDoesNotResend() = runTest {
+        val manager = ScreenControlLeaseManager({ 1_000_000L + testScheduler.currentTime }, testScheduler.timeSource)
+        var nextRan = false
+        val first = launch {
+            manager.withLease("first", 1_060_000, {}) {
+                runtime.gesture(listOf(10 to 20, 50 to 80), 400, runtime.generation(), {})
+            }
+        }
+        runCurrent()
+        val next = async { manager.withLease("next", 1_060_000, {}) { nextRan = true } }
+        runCurrent()
+        first.cancel()
+        runCurrent()
+        advanceTimeBy(1_899); runCurrent()
+        assertFalse(nextRan)
+        advanceTimeBy(1); runCurrent()
+        first.join(); next.await()
+        assertTrue(nextRan)
+        assertEquals(1, shadowService.gesturesDispatched.size)
     }
 
     @Test fun missingGestureCallbackProducesUnknownOutcomeWithoutRetry() = runTest {

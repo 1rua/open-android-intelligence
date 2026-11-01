@@ -12,6 +12,7 @@ from .gateway.capability_policy import capability_catalog
 from .gateway.core import GatewayError, _jcs, _now
 
 from .auth import Authentication, Principal
+from .declarations import caller_declaration
 
 
 class DeviceService:
@@ -39,8 +40,20 @@ class DeviceService:
         with self.account(principal) as account:
             return {"capabilities": capability_catalog(account, principal.device_id)}
 
+    @staticmethod
+    def _publication_revision(account: Any, principal: Principal) -> int:
+        if principal.token_id is None:
+            return principal.grant_revision
+        row = account.store.database.execute("SELECT pairing_generation,grant_revision FROM device_keys WHERE device_id=?", (principal.device_id,)).fetchone()
+        if row is None or row[0] != principal.pairing_generation:
+            raise GatewayError("PAIRING_GENERATION_STALE")
+        return int(row[1])
+
     def submit(self, principal: Principal, body: Any, idempotency_key: str | None) -> dict[str, Any]:
-        if not isinstance(body, dict) or set(body) != {"capabilityId", "capabilityVersion", "parameters"} or not isinstance(body["parameters"], dict):
+        if not isinstance(body, dict):
+            raise GatewayError("SCHEMA_INVALID")
+        caller = caller_declaration(body.get("caller"))
+        if set(body) != {"capabilityId", "capabilityVersion", "parameters", "caller"} or not isinstance(body["parameters"], dict):
             raise GatewayError("SCHEMA_INVALID")
         if not isinstance(body["capabilityId"], str) or not isinstance(body["capabilityVersion"], str):
             raise GatewayError("SCHEMA_INVALID")
@@ -54,30 +67,37 @@ class DeviceService:
         key = "core-device-idempotency:" + hashlib.sha256(f"{principal.device_id}:{principal.pairing_generation}:{idempotency_key}".encode()).hexdigest()
         with self.account(principal) as account:
             with account.store.transaction():
+                revision = self._publication_revision(account, principal)
                 saved = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?", (key,)).fetchone()
                 if saved:
                     previous = json.loads(saved[0])
                     if previous["digest"] != digest:
                         raise GatewayError("IDEMPOTENCY_CONFLICT")
                     return self._record(account, principal, previous["requestId"])
-                bindings = account.device_requests.capabilities.available(principal.device_id, principal.pairing_generation, principal.grant_revision)
+                bindings = account.device_requests.capabilities.available(principal.device_id, principal.pairing_generation, revision)
                 binding = next((b for b in bindings if b["capabilityId"] == body["capabilityId"] and b["capabilityVersion"] == body["capabilityVersion"]), None)
                 if binding is None:
-                    raise GatewayError("CAPABILITY_DENIED")
+                    raise account.device_requests.capabilities.unavailable_error(
+                        principal.device_id, principal.pairing_generation, revision, body["capabilityId"], body["capabilityVersion"])
+                online = self.core.is_device_online(principal.account_id, principal.device_id, principal.pairing_generation)
+                if binding["risk"] == "high-privilege-ephemeral" and not online:
+                    raise GatewayError("DEVICE_OFFLINE", {"reason": "LIVE_CONNECTION_REQUIRED", "source": "core-connection",
+                        "capabilityId": body["capabilityId"], "capabilityVersion": body["capabilityVersion"]})
                 request_id = "devreq_" + str(uuid.uuid4())
                 record = account.device_requests.enqueue(
                     request_id=request_id, device_id=principal.device_id,
-                    pairing_generation=principal.pairing_generation, grant_revision=principal.grant_revision,
+                    pairing_generation=principal.pairing_generation, grant_revision=revision,
                     risk=binding["risk"], capability={"id": binding["capabilityId"], "version": binding["capabilityVersion"]},
                     provider={"pluginId": binding["pluginId"], "authorKeyId": binding["authorKeyId"]}, parameters=body["parameters"],
+                    caller=caller,
                     correlation_id=request_id, requires_foreground_confirmation=binding["risk"] in {"write", "high-privilege-ephemeral"},
-                    online=self.core.is_device_online(principal.account_id, principal.device_id, principal.pairing_generation))
+                    online=online)
                 account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES (?,?)", (key, _jcs({"digest": digest, "requestId": request_id})))
-                return {k: v for k, v in record.items() if k != "parameters"}
+                return self._record(account, principal, request_id)
 
     def _record(self, account: Any, principal: Principal, request_id: str) -> dict[str, Any]:
         row = account.device_requests._row(request_id)
-        account.device_requests._assert_binding(row, principal.device_id, principal.pairing_generation, principal.grant_revision)
+        account.device_requests._assert_binding(row, principal.device_id, principal.pairing_generation, self._publication_revision(account, principal))
         account.device_requests._assert_request_not_revoked(row)
         account.device_requests._expire_if_due(row, _now())
         record = account.device_requests.get(request_id)
@@ -87,23 +107,44 @@ class DeviceService:
             result = account.device_requests.read_result(request_id, receipt[0])
             if result is not None:
                 record["result"] = result
+        if record["state"] == "pending" and not self.core.is_device_online(principal.account_id, principal.device_id, principal.pairing_generation):
+            record["details"] = {"reason": "DEVICE_OFFLINE", "queued": True, "source": "core-connection"}
+        elif record["state"] == "claimed" and record.get("localAuthorizationState") == "awaiting_confirmation":
+            record["details"] = {"reason": "awaiting_confirmation", "source": "android-progress"}
+        result = record.get("result", {})
+        if result.get("outcome") in {"denied", "failed"} and isinstance(result.get("data"), dict):
+            data = result["data"]
+            reason = data.get("reason", data.get("code"))
+            if reason == "LOCAL_USER_REJECTED":
+                record["details"] = {"reason": "user_rejected", "androidReason": reason, "source": "android-result"}
+            elif isinstance(reason, str) and reason in {"LOCAL_CONFIRMATION_TIMEOUT", "DEVICE_REQUEST_TIMEOUT"}:
+                record["details"] = {"reason": "timeout", "androidReason": reason, "source": "android-result",
+                                     "phase": "confirmation" if reason == "LOCAL_CONFIRMATION_TIMEOUT" else "execution"}
+            elif isinstance(reason, str) and re.fullmatch(r"[A-Z0-9_]{1,128}", reason):
+                record["details"] = {"reason": reason, "source": "android-result"}
+        elif record["state"] in {"expired", "outcome_unknown"} and _now(record["expiresAt"]) <= _now():
+            record["details"] = {"reason": "timeout", "source": "core-deadline",
+                                 "outcomeUnknown": record["state"] == "outcome_unknown"}
         return record
 
     def get(self, principal: Principal, request_id: str) -> dict[str, Any]:
         with self.account(principal) as account:
-            return self._record(account, principal, request_id)
+            with account.store.transaction():
+                return self._record(account, principal, request_id)
 
     def cancel(self, principal: Principal, request_id: str) -> dict[str, Any]:
         with self.account(principal) as account:
-            record = self._record(account, principal, request_id)
-            if record["state"] in {"pending", "claimed", "cancel_requested"}:
-                account.device_requests.cancel(request_id, principal.device_id, principal.pairing_generation, principal.grant_revision, request_id)
-            return self._record(account, principal, request_id)
+            with account.store.transaction():
+                record = self._record(account, principal, request_id)
+                if record["state"] in {"pending", "claimed", "cancel_requested"}:
+                    account.device_requests.cancel(request_id, principal.device_id, principal.pairing_generation, self._publication_revision(account, principal), request_id)
+                return self._record(account, principal, request_id)
 
-    def acknowledge(self, principal: Principal, request_id: str) -> dict[str, Any]:
+    def acknowledge(self, principal: Principal, request_id: str, result_digest: str | None = None) -> dict[str, Any]:
         with self.account(principal) as account:
-            record = self._record(account, principal, request_id)
-            receipt = account.store.database.execute("SELECT claim_id FROM claim_receipts WHERE request_id=?", (request_id,)).fetchone()
-            if receipt:
-                account.device_requests.acknowledge_result(request_id, receipt[0])
-            return {"requestId": request_id, "state": record["state"], "acknowledged": bool(receipt)}
+            with account.store.transaction():
+                self._record(account, principal, request_id)
+                receipt = account.store.database.execute("SELECT claim_id FROM claim_receipts WHERE request_id=?", (request_id,)).fetchone()
+                if receipt is None:
+                    raise GatewayError("RESULT_NOT_READY")
+                return account.device_requests.acknowledge_result(request_id, receipt[0], result_digest)

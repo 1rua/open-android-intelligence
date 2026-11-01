@@ -1,8 +1,8 @@
 # open-android-intelligence 领域语境
 
-open-android-intelligence 让 Android 设备连接到用户拥有的 Agent Gateway，同时确保 Android 客户端是本机数据与设备操作的唯一能力授权者。产品由极简 Android 宿主、可安装设备插件、Agent 宿主内的 Gateway 适配器，以及可独立安装部署、统一设备协议与多个 Agent 原生会话接入的 OAI Core 组成。
+open-android-intelligence 让 Android 设备通过 OAI Core 接受多个 Agent 的合法请求，由 Android 客户端独立决定本机数据与设备操作的许可。产品包括 Android 宿主、可安装设备插件、OAI Core 和各 Agent 的原生会话适配器。
 
-2026-10-28 授权规则已在 `feature/android-device-authority-20261028` 实施：Android 是设备能力授权唯一权威，`dev` 待 PR 合入。需求见 [ADR-0059](docs/adr/0059-android-is-the-sole-device-capability-authority.md) 和[需求修订](docs/superpowers/specs/2026-10-28-device-capability-authorization.md)；当前测试、源码细节和待完成的真机验收见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。此前 e5 静态排查与测试结论保留在[只读修复计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)及其证据记录，不代表本分支测试结果。
+设备能力授权术语遵循 [ADR-0059](docs/adr/0059-android-is-the-sole-device-capability-authority.md) 与[全局授权规格](docs/superpowers/specs/2026-11-01-global-device-authorization.md)。
 
 ## Android 端
 
@@ -79,7 +79,7 @@ _Avoid_: Git 仓库、未固定下载目录、裸 WASM
 _Avoid_: 插件代码导入、隐式依赖、授权继承
 
 **能力提供者选择（Capability Provider Selection）**:
-平台内核为一项能力选择实际设备插件的路由决定；手机保存默认提供者，每个已认证 Gateway 配对可以有本地覆盖；切换时重新核验 Android 本地安全批准和必要确认，不继承旧提供者的敏感许可，也不新增远端许可或重复正向 grant。
+平台内核为一项能力选择实际设备插件的路由决定；手机统一保存提供者选择；切换提供者不继承旧作者的敏感许可，也不新增远端许可或重复配对 grant。
 _Avoid_: 同时调用全部插件、自动继承授权、全局唯一实现
 
 **受控网络访问（Mediated Network Access）**:
@@ -107,7 +107,7 @@ _Avoid_: 作者配额、无限资源、性能建议
 _Avoid_: 启用、授权、授予 Android 权限
 
 **插件启用（Plugin Enablement）**:
-用户允许一个已安装设备插件在 Android 宿主中工作的手机级状态；该插件的能力默认开启，无需额外 Gateway 账号开关或重复配对能力授权。实际调用仍须经过认证和配对，并受 Android 本地显式关闭、系统权限、数据范围和敏感确认约束。
+用户允许一个已安装设备插件在 Android 宿主中工作的手机级状态；启用使插件能够接受请求，新能力默认每次手动，具体执行受全局能力策略、系统权限、数据范围和必要系统同意约束。
 _Avoid_: 安装、配对授权
 
 **插件运行状态（Plugin Operational State）**:
@@ -205,11 +205,11 @@ Android 通过账号密码、账号刷新凭据或账号绑定的设备密钥建
 _Avoid_: 保存的密码、永久登录、全局设备授权
 
 **配对（Pairing）**:
-一个 Android 安装实例与一个账号所属逻辑 Gateway 之间独立建立的信任关系；所有连接方式先确定账号，每个配对拥有彼此隔离的身份、授权、消息、附件和审计状态。
+一个 Android 安装实例与一个账号所属逻辑 Gateway 之间独立建立的信任关系；所有连接方式先确定账号，每个配对隔离连接身份、消息、附件和传输状态；设备能力策略属于 Android 安装实例。
 _Avoid_: 登录、网络连通、全局设备注册
 
 **账号设备会话（Account Device Session）**:
-一个 Android 安装实例登录某个 Gateway 账号后建立的独立设备上下文；即使多个设备使用同一账号，它们也不共享设备 ID、插件授权或审计身份。
+一个 Android 安装实例登录某个 Gateway 账号后建立的独立设备上下文；即使多个设备使用同一账号，它们也不共享设备 ID、安装实例策略或审计身份；同一安装内的账号共享本地能力策略。
 _Avoid_: 账号会话、共享设备、IP 身份
 
 **退出登录（Logout）**:
@@ -233,7 +233,7 @@ _Avoid_: 退出登录、移除本地账号、解除单台设备配对
 _Avoid_: 公开邮件找回、匿名自助恢复、静默保留全部会话
 
 **配对授权（Pairing Grant）**:
-旧模型中按配对保存的正向能力 grant。目标模型不再要求用户在启用插件后重复创建这份许可；Android 根据已启用插件的默认开启值和本地显式限制决定有效能力，账号与配对仍是隔离及请求绑定范围。相关本地状态版本与撤销栅栏继续保留，Core 只镜像已验证状态。
+已废弃的按配对保存的设备能力许可；它不参与现行能力裁决，连接与请求绑定版本也不构成能力许可。
 _Avoid_: Gateway 账号能力开关、认证替代物、默认跨账号授权
 
 **活动 Gateway（Active Gateway）**:
@@ -305,7 +305,7 @@ Android 为当前草稿短期保留的加密附件字节，普通附件可在重
 _Avoid_: 本地媒体缓存、永久附件库、系统 Uri
 
 **后台同步授权（Background Sync Grant）**:
-用户在 Android 本地针对一个已认证 Gateway 配对与一个设备插件明确开启的后台数据交换许可；保存 Gateway、安装插件或启用插件都不会自动产生该许可。
+已废弃的按配对和插件保存的后台数据许可；现行短信、通知主动推送由安装实例保存独立的范围和接收端点白名单。
 _Avoid_: 配对、默认同步、全局同步
 
 **Gateway 协议状态（Gateway Protocol State）**:
@@ -385,7 +385,7 @@ Android 与 Gateway 在会话开始时固定双方共同支持的协议、认证
 _Avoid_: 运行时猜测、单方能力声明、静默降级
 
 **插件生命周期状态（Plugin Lifecycle State）**:
-插件从发现、下载、验证、安装、启用到隔离、等待本地安全批准、回滚或卸载的明确状态；安装不等于启用，启用后能力默认开启也不代表 Android 系统权限或敏感确认已经满足。
+插件从发现、下载、验证、安装、启用到隔离、等待本地安全批准、回滚或卸载的明确状态；安装不等于启用，启用后能力仍需安装实例策略裁决，新能力默认每次手动。
 _Avoid_: 已安装即授权、半启用、隐式恢复
 
 **身份轮换（Identity Rotation）**:
@@ -463,3 +463,37 @@ _Avoid_: 普通代码块降级、无状态指令、隐藏日志
 **命令补全悬浮窗（Command Autocomplete Popup）**:
 用户在消息编辑器中键入斜杠前缀时浮动于输入框正上方的交互层，提供来自 Gateway 目录与内置兜底目录的快捷指令筛选、参数提示与精准补全填入。
 _Avoid_: 挤占时间线列表、阻塞式对话框、全屏菜单
+
+## 全局设备授权
+
+**安装实例能力策略（Installation Capability Policy）**:
+同一 Android 安装内每项能力的总开关、授权模式与数据范围，独立于 Core、账号和 Agent。
+_Avoid_: 配对授权、Core grant、账号能力开关
+
+**设备访问关系（Device Access Binding）**:
+可信调用凭据与目标 Android 设备之间经验证的可访问关系；它决定请求是否能抵达设备，能力执行仍由 App 决定。
+_Avoid_: Agent 自报名称、能力许可、会话可见权限
+
+**能力授权模式（Capability Authorization Mode）**:
+每次手动、允许只读、自动允许三种本地策略；模式只在已启用能力和系统许可范围内生效。
+_Avoid_: 系统权限、插件安装、免除系统同意
+
+**临时能力许可（Temporary Capability Approval）**:
+用户针对设备能力、操作类型和数据范围批准的有期限许可，在合法请求间共享，可随时撤销。
+_Avoid_: Agent 身份、跨范围授权、配对 grant
+
+**主动推送授权（Proactive Delivery Consent）**:
+用户独立选择短信或通知范围及可验证接收端点的本地许可，与被动读取模式分开。
+_Avoid_: 被动查询授权、会话订阅、后台配对 grant
+
+**Agent 接收端点（Agent Receiver Endpoint）**:
+Core 注册并验证路由绑定的稳定投递目标，只有 App 白名单选中后才能接收相应敏感事件。
+_Avoid_: Agent 声明名称、账号昵称、匿名订阅
+
+**通知应用范围（Notification App Scope）**:
+用户从本机应用列表中搜索、正选或反选形成的通知来源集合，分别用于被动采集和主动推送；空集合表示不接收任何应用的通知。
+_Avoid_: 手填包名、空集合等于全部、查询与推送共用许可
+
+**短信范围（SMS Scope）**:
+用户在全部、关键词或电话号码之间选择的短信过滤条件，新配置默认全部；被动查询与主动推送分别保存，推送是否开启由独立总开关决定。
+_Avoid_: 发件人地址输入、范围等于推送开关、空条件过滤等于全部

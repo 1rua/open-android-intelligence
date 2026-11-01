@@ -33,7 +33,8 @@ class DeviceGrantFenceTest {
                 lookups++
                 return WireResponse(200,emptyList(),Json.canonical(Json.of(mapOf("protocol" to "2.1",
                     "data" to mapOf("request" to mapOf("deviceId" to "dev","pairingGeneration" to 1,
-                        "grantRevision" to 7,"state" to "claimed","expiresAt" to expires))))).toByteArray())
+                        "grantRevision" to 7,"state" to "claimed","expiresAt" to expires,
+                        "caller" to mapOf("agentName" to "授权屏障测试 Agent", "purpose" to "验证撤销后保留敏感结果")))))).toByteArray())
             }
             override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
         }
@@ -91,7 +92,8 @@ class DeviceGrantFenceTest {
                 override suspend fun execute(request: WireRequest): WireResponse {
                     assertEquals("GET",request.method);lookups++
                     val envelope=if(status==409) mapOf("error" to mapOf("code" to "GRANT_STALE"))
-                        else mapOf("data" to mapOf("request" to mapOf("deviceId" to "dev","pairingGeneration" to 1,"grantRevision" to 6)))
+                        else mapOf("data" to mapOf("request" to mapOf("deviceId" to "dev","pairingGeneration" to 1,"grantRevision" to 6,
+                            "caller" to mapOf("agentName" to "授权屏障测试 Agent", "purpose" to "验证旧请求不能恢复"))))
                     return WireResponse(status,emptyList(),Json.canonical(Json.of(envelope+("protocol" to "2.1"))).toByteArray())
                 }
                 override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()

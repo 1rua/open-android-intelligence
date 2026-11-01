@@ -1,0 +1,101 @@
+{
+  "appSourceCommitReported": "1f338778ecd6c39fc8eb0bd11134867d6c238568",
+  "phoneConfigurationReported": {
+    "mode": "READ_ONLY",
+    "scope": "KEYWORDS",
+    "keyword": "OAI-SAMPLE-SMS-5556-20261101",
+    "body": false
+  },
+  "interface": {
+    "officialMcpStdioProcess": true,
+    "server": "OAI",
+    "protocolVersion": "2025-11-25",
+    "cliMcpSchemaMatched": true,
+    "capability": {
+      "capabilityId": "org.openandroidintelligence.sms.query",
+      "capabilityVersion": "1.0.0",
+      "status": "READY",
+      "risk": "read",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 2048,
+            "type": "string"
+          },
+          "receivedAfter": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "senders": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  "cases": [
+    {
+      "case": "phone22_metadata",
+      "transport": "cli",
+      "requestId": "devreq_afcbe5cd...c244cba2",
+      "result": "PASS",
+      "state": "succeeded",
+      "recordCount": 1,
+      "metadataOnly": true,
+      "parameters": {
+        "senders": [
+          "15550102202"
+        ],
+        "receivedAfter": "2026-11-01T05:02:22Z",
+        "limit": 5
+      }
+    },
+    {
+      "case": "phone22_body_query_denied",
+      "transport": "mcp",
+      "requestId": "devreq_0d78310d...c4c31fad",
+      "result": "PASS",
+      "state": "denied",
+      "androidReason": "LOCAL_DATA_SCOPE_DENIED",
+      "parameters": {
+        "senders": [
+          "15550102202"
+        ],
+        "receivedAfter": "2026-11-01T05:02:22Z",
+        "limit": 1,
+        "query": "OAI-SAMPLE-SMS-5556-20261101"
+      }
+    },
+    {
+      "case": "phone44_keyword_miss",
+      "transport": "cli",
+      "requestId": "devreq_90f6ed58...c3de6745",
+      "result": "PASS",
+      "state": "succeeded",
+      "recordCount": 0,
+      "metadataOnly": true,
+      "parameters": {
+        "senders": [
+          "15550104404"
+        ],
+        "receivedAfter": "2026-11-01T05:02:22Z",
+        "limit": 5
+      }
+    }
+  ],
+  "deviceQueriesSubmitted": 3,
+  "resultAcknowledgementsSubmitted": 0,
+  "privateRunDirectory": "docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/passive-keywords-1f338778/run-20261101T102937Z-5a2b7bde"
+}

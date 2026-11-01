@@ -1,0 +1,19 @@
+2026-11-01 用户 10 通话记录能力发现，脱敏记录
+
+Core A: https://127.0.0.1:19841，使用本次隔离 CA 校验证书
+工作树 CLI login: authenticated=true；密码从标准输入提供；token 未输出
+devices: 1 个已配对设备，online=true，deviceId 已脱敏
+capabilities:
+  pluginId: org.openandroidintelligence.call-log
+  capabilityId: org.openandroidintelligence.call-log.query
+  capabilityVersion: 1.0.0
+  androidStatus: ANDROID_PERMISSION_REQUIRED
+  status: ANDROID_PERMISSION_REQUIRED
+  reason: READ_CALL_LOG_REQUIRED
+  schema: 响应中不存在
+
+Android 系统权限 UI: 真实显示请求通话记录权限，选择 Don't allow
+Android 用户 10: READ_CALL_LOG granted=false
+App 能力设置: 已开启，每次手动已选中
+invoke: 未执行；requestId: 未产生；App 审批卡片: 未显示或操作
+终态: 未验证 local_user_rejected 或 denied

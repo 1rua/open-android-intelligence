@@ -124,6 +124,51 @@ class DeviceReadPrimitivesTest {
         Unit
     }
 
+    @Test fun smsMetadataKeywordScopeOnlyReturnsMatchingMetadataAndRemoteFiltersNarrowIt() = runBlocking {
+        var requested: SmsInboxQuery? = null
+        val primitive = SmsReadPrimitive(SmsInboxReader { query ->
+            requested = query
+            listOf(SmsInboxRow(1, null, "BANK", "CODE apple", 100, false, null),
+                SmsInboxRow(2, null, "BANK", "unrelated apple", 101, false, null),
+                SmsInboxRow(3, null, "OTHER", "CODE apple", 102, false, null),
+                SmsInboxRow(4, null, "BANK", "code pear", 103, false, null))
+        }) { true }
+        val records = invoke(primitive,
+            """{"smsScopeMode":"KEYWORDS","smsKeywords":["absent","code"],"senders":["BANK"],"includeContent":false}""")
+        assertEquals(listOf("1", "4"), records.map { JsonFields.string(it, "id") })
+        assertTrue(records.all { JsonFields.field(it, "text") == JsonValue.JNull })
+        assertFalse(requested!!.includeBody)
+        assertFalse(requested!!.allSenders)
+        assertEquals(setOf("absent", "code"), requested!!.keywords)
+        val content = invoke(primitive,
+            """{"smsScopeMode":"KEYWORDS","smsKeywords":["code"],"senders":["BANK"],"query":"apple"}""")
+        assertEquals(listOf("1"), content.map { JsonFields.string(it, "id") })
+    }
+
+    @Test fun smsEmptyExplicitModesAndMetadataBodySearchNeverQueryAndNumbersMatchExactly() = runBlocking {
+        var calls = 0
+        val primitive = SmsReadPrimitive(SmsInboxReader {
+            calls++
+            listOf(SmsInboxRow(1, null, "BANK-ID", "body", 100, false, null),
+                SmsInboxRow(2, null, "bank-id", "body", 101, false, null))
+        }) { true }
+        for (mode in listOf("KEYWORDS", "PHONE_NUMBERS"))
+            assertTrue(invoke(primitive, """{"smsScopeMode":"$mode"}""").isEmpty())
+        assertEquals(0, calls)
+        assertThrows(CapabilityDenied::class.java) {
+            runBlocking { invoke(primitive, """{"includeContent":false,"query":"body"}""") }
+        }
+        assertEquals(0, calls)
+        val numbers = invoke(primitive, """{"smsScopeMode":"PHONE_NUMBERS","smsPhoneNumbers":["BANK-ID"]}""")
+        assertEquals(listOf("1"), numbers.map { JsonFields.string(it, "id") })
+    }
+
+    @Test fun smsReaderScanLimitIsAnExplicitFailureNotPartialContent() {
+        val primitive = SmsReadPrimitive(SmsInboxReader { throw SmsQueryScanLimitExceeded() }) { true }
+        val failure = assertThrows(CapabilityDenied::class.java) { runBlocking { invoke(primitive) } }
+        assertEquals("SMS_QUERY_SCAN_LIMIT_EXCEEDED", failure.primitive)
+    }
+
     private fun notifications(granted: Boolean = true, fieldAccess: NotificationFieldAccess = NotificationFieldAccess.CONTENT): Pair<PersistentNotificationPolicyAuthority, AndroidNotificationCollector> {
         val authority = PersistentNotificationPolicyAuthority(InMemoryNotificationPolicyPersistence())
         val policy = NotificationCollectionPolicyV1(NotificationRuleMode.ALLOWLIST, listOf("com.mail"), fieldAccess, 1u)

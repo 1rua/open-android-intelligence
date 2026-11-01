@@ -8,6 +8,7 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.printToString
@@ -15,8 +16,15 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onLast
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.kernel.AndroidAuditStore
+import com.openandroidintelligence.kernel.CapabilityAuthorization
+import com.openandroidintelligence.kernel.CapabilityAuthorizationMode
+import com.openandroidintelligence.kernel.CapabilityRequestScope
+import com.openandroidintelligence.kernel.DeviceOperation
+import com.openandroidintelligence.kernel.CapabilityPolicy
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
 import com.openandroidintelligence.kernel.DeveloperTrustMode
 import com.openandroidintelligence.kernel.HostEnvelope
@@ -149,6 +157,42 @@ class PluginManagementScreenTest {
     }
 
     @Test
+    @Config(application = OpenAndroidIntelligenceApplication::class)
+    fun multiplePluginsOmitRollbackAndKeepEnablePermissionsAndInstallActions() {
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        store.install(TestAlpPackages.compiledNotificationsPackage())
+        store.install(TestAlpPackages.compiledSmsPackage())
+        app.pluginHost.reload()
+        val installed = store.listInstalled().map { it.pluginId }
+        assertEquals(listOf(NOTIFICATION_PLUGIN_ID, SMS_PLUGIN_ID), installed)
+
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
+        }
+
+        compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
+        compose.onAllNodesWithText("启用").assertCountEquals(2)
+        compose.onAllNodesWithText("系统权限与后台任务").assertCountEquals(2)
+        compose.onAllNodesWithText("卸载").assertCountEquals(2)
+        compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).assertIsEnabled()
+        compose.onNodeWithText("打开通知访问设置").assertExists()
+
+        compose.onAllNodesWithText("启用").onFirst().performScrollTo().performClick()
+        assertTrue(app.pluginHost.isEnabled(NOTIFICATION_PLUGIN_ID))
+        assertFalse(app.pluginHost.isEnabled(SMS_PLUGIN_ID))
+        compose.onNodeWithText("停用").assertExists()
+        compose.onNodeWithText("启用").assertExists()
+
+        compose.onAllNodesWithText("系统权限与后台任务").onLast().performScrollTo().performClick()
+        compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
+        compose.onNodeWithText("允许后台任务").assertExists()
+        compose.onNodeWithText("检查 Android 系统权限").assertIsEnabled()
+        compose.onNodeWithText("取消").performClick()
+        compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
+        assertEquals(installed, store.listInstalled().map { it.pluginId })
+    }
+
+    @Test
     fun aBrokenDeclarationIsReportedInsteadOfRendered() {
         store.install(TestAlpPackages.signedPackage())
         // 移除有效声明，只留下一个无法通过校验的声明文件。
@@ -260,6 +304,59 @@ class PluginManagementScreenTest {
         assertEquals(1, store.listInstalled().size)
     }
 
+    @Test
+    @Config(application = OpenAndroidIntelligenceApplication::class)
+    fun allBundledInstallButtonsUseRealPackagesAndLeaveScreenCapabilitiesManual() {
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        val packages = BundledPlugin.entries.associateWith { TestAlpPackages.compiledBundledPackage(it) }
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(true, true, {}, store = store,
+                    bundledPluginPackages = packages.mapValues { (_, bytes) -> { bytes } })
+            }
+        }
+        for (plugin in BundledPlugin.entries) {
+            compose.onNodeWithTag(plugin.installTag).performScrollTo().assertIsEnabled().performClick()
+            compose.waitUntil(10_000) {
+                compose.onAllNodesWithText("${plugin.displayName}插件已安装").fetchSemanticsNodes().isNotEmpty()
+            }
+            assertTrue(store.listInstalled().any { it.pluginId == plugin.pluginId })
+            assertFalse(app.pluginHost.isEnabled(plugin.pluginId))
+            val node = compose.onNodeWithTag(plugin.installTag).fetchSemanticsNode()
+            assertFalse(node.config.getOrNull(SemanticsActions.OnClick) != null)
+            if (plugin in listOf(BundledPlugin.SCREEN_READER, BundledPlugin.SCREEN_CAPTURE, BundledPlugin.SCREEN_CONTROL)) {
+                val entry = app.pluginHost.entries(plugin.pluginId).single()
+                assertEquals(CapabilityAuthorizationMode.MANUAL, app.pluginHost.capabilityPolicy(plugin.pluginId, entry.key).mode)
+            }
+        }
+        assertEquals(6, store.listInstalled().size)
+        compose.onAllNodesWithText("请在下方启用插件，并检查 Android 无障碍服务", substring = true).assertCountEquals(2)
+        compose.onNodeWithText("请在下方启用插件；截图还需 Android 屏幕捕获同意", substring = true).assertExists()
+    }
+
+    @Test fun aMissingBundledPackageDoesNotBlockTheOtherFiveInstallButtons() {
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(true, false, {}, store = store,
+                    bundledPluginPackages = BundledPlugin.entries.associateWith { plugin ->
+                        { throw BundledPluginUnavailable(plugin) }
+                    })
+            }
+        }
+        for (plugin in BundledPlugin.entries) {
+            compose.onNodeWithTag(plugin.installTag).performScrollTo().assertIsEnabled().performClick()
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithText("当前安装包未附带${plugin.displayName}插件，请从文件导入已签名的 .alp 插件包。")
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            for (other in BundledPlugin.entries.filter { it != plugin }) {
+                assertTrue(compose.onNodeWithTag(other.installTag).fetchSemanticsNode().config.getOrNull(SemanticsActions.OnClick) != null)
+            }
+        }
+        assertTrue(store.listInstalled().isEmpty())
+        compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).assertIsEnabled()
+    }
+
     @Test fun theBundledPluginButtonsExplainMissingAssetsAndKeepFileImportAvailable() {
         compose.setContent {
             MaterialTheme {
@@ -281,7 +378,7 @@ class PluginManagementScreenTest {
             MaterialTheme {
                 PluginManagementScreen(false, false, {}, store = store,
                     bundledPluginPackages = BundledPlugin.entries.associateWith { plugin ->
-                        { reads++; TestAlpPackages.signedPackage(id = plugin.pluginId) }
+                        { reads++; TestAlpPackages.compiledBundledPackage(plugin) }
                     })
             }
         }
@@ -325,7 +422,7 @@ class PluginManagementScreenTest {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
         }
         // Only the legitimate row can expose normal actions or its declarative UI.
-        assertEquals(1,compose.onAllNodesWithText("权限与提供者").fetchSemanticsNodes().size)
+        assertEquals(1,compose.onAllNodesWithText("系统权限与后台任务").fetchSemanticsNodes().size)
         compose.onNodeWithTag("damaged-plugin-delete:org.example.disguised").performScrollTo().performClick()
         assertTrue(disguised.exists())
         compose.onNodeWithTag("damaged-plugin-delete-confirm").performClick()
@@ -339,24 +436,37 @@ class PluginManagementScreenTest {
 
     @Test
     @Config(application = OpenAndroidIntelligenceApplication::class)
-    fun anInstalledPluginHasOneLocalCapabilitySwitchThatDoesNotCreatePairingGrants() {
+    fun anInstalledCapabilityCanBeConfiguredOfflineWithoutAPairingGrant() {
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
-        app.pairingGrants.bind(PairingGrantBinding("https://gateway.example", "test_toggle", "test_install"))
         store.install(TestAlpPackages.compiledNotificationsPackage())
         app.pluginHost.reload()
-        app.pluginHost.enable(NOTIFICATION_PLUGIN_ID, true)
+        val entry = app.pluginHost.entries(NOTIFICATION_PLUGIN_ID).first()
+        app.pluginHost.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy())
+        val approvalScope = CapabilityRequestScope(entry.key, DeviceOperation.READ, "a".repeat(64))
+        val policyRevision = requireNotNull(app.pairingGrants.state.value).revision
+        app.pairingGrants.authorization.approve("ui-test-approval", approvalScope, 5, policyRevision, 300_000L)
+        assertTrue(app.pairingGrants.authorization.evaluate("ui-test-approval", approvalScope, CapabilityPolicy(), policyRevision)
+            is CapabilityAuthorization.Allowed)
 
         compose.setContent {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
         }
 
-        val toggle = compose.onNodeWithTag("plugin-capability-toggle:$NOTIFICATION_PLUGIN_ID")
-        toggle.performScrollTo().assertIsDisplayed().assertIsEnabled().assertIsOn().performClick()
+        compose.onNodeWithTag("revoke-temporary-approvals").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithText("已撤销本机全部临时授权；各项能力的长期设置保持原样。").assertExists()
+        assertEquals(CapabilityAuthorization.AwaitingConfirmation,
+            app.pairingGrants.authorization.evaluate("ui-test-approval", approvalScope, CapabilityPolicy(), policyRevision))
+        assertEquals(CapabilityPolicy(), app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key))
+        val identity = "$NOTIFICATION_PLUGIN_ID:${entry.key}"
+        compose.onNodeWithTag("capability-enabled:$identity")
+            .performScrollTo().assertIsDisplayed().assertIsEnabled().assertIsOn().performClick()
         compose.waitForIdle()
-
-        assertFalse(app.pluginHost.isCapabilityEnabled(NOTIFICATION_PLUGIN_ID))
-        assertTrue(app.pairingGrants.state.value?.granted.orEmpty().isEmpty())
-        compose.onNodeWithText("本机已关闭；服务端不能远程开启").assertExists()
+        assertFalse(app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key).enabled)
+        assertFalse(app.pluginHost.isEnabled(NOTIFICATION_PLUGIN_ID))
+        compose.onNodeWithText("能力已关闭，授权模式仍会保留").assertExists()
+        compose.onNodeWithTag("capability-mode:$identity:READ_ONLY").performScrollTo().performClick()
+        assertEquals(CapabilityPolicy(false, CapabilityAuthorizationMode.READ_ONLY),
+            app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key))
     }
 
     @Test
@@ -385,7 +495,7 @@ class PluginManagementScreenTest {
         compose.setContent {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
         }
-        compose.onNodeWithText("权限与提供者").performScrollTo().performClick()
+        compose.onNodeWithText("系统权限与后台任务").performScrollTo().performClick()
         compose.onNodeWithText("允许后台任务").assertExists()
 
         compose.onNodeWithTag("plugin-background-toggle:$SMS_PLUGIN_ID").performClick()
@@ -403,6 +513,20 @@ class PluginManagementScreenTest {
     }
 
     @Test
+    fun localAuthorizationStorageErrorsRemainVisibleInCapabilityDiagnostics() {
+        for (code in listOf(
+            "LOCAL_AUTHORIZATION_STATE_INCOMPLETE",
+            "INSTALLATION_CAPABILITY_MIGRATION_FAILED",
+            "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED",
+        )) {
+            val label = capabilityStatusLabel("LOCAL_GRANT_REQUIRED", code)
+            assertTrue(label.contains("无法读取本机授权设置，请检查存储或升级应用后重试"))
+            assertTrue(label.contains(code))
+            assertFalse(label.contains("复核"))
+        }
+    }
+
+    @Test
     fun capabilityStatusLabelsExplainLegacyServerAndLocalReasonsWithoutInventingWireStates() {
         assertEquals(
             "服务端尚不支持 Android 统一授权，请升级 OAI Core；当前设备能力不可用",
@@ -412,7 +536,6 @@ class PluginManagementScreenTest {
         assertEquals("本机能力尚未开启或需要重新同步", capabilityStatusLabel("LOCAL_GRANT_REQUIRED"))
         assertTrue(capabilityStatusLabel("SYNC_FAILED", "GRANT_STALE").contains("GRANT_STALE"))
         assertTrue(capabilityStatusLabel("SYNC_RETRYING", "NETWORK_ERROR").contains("正在重试同步"))
-        assertTrue(capabilityStatusLabel("LOCAL_GRANT_REQUIRED", "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED").contains("复核旧的本机设置"))
     }
 
     // ------------------------------------------------------------------

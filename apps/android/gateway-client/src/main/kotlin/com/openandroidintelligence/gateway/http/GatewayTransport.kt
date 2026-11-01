@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -36,6 +37,8 @@ class GatewayTransport(
     private val profile: GatewayProfile,
     private val factory: GatewayConnectionFactory = GatewayConnectionFactory(),
     private val maximumResponseBytes:Int = 32*1024*1024,
+    /** Recheck the caller's lifecycle authority on IO, immediately before opening a connection. */
+    private val beforeConnect: () -> Unit = {},
 ) : GatewayByteTransport {
 
     private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
@@ -51,7 +54,13 @@ class GatewayTransport(
         phase(request, mode, "io_queued")
         return kotlinx.coroutines.withContext(Dispatchers.IO) {
             phase(request, mode, "io_dequeued")
-            block()
+            try {
+                block()
+            } catch (failure: IOException) {
+                // Disconnecting a cancelled read must preserve the Job's cancellation cause.
+                currentCoroutineContext().ensureActive()
+                throw failure
+            }
         }
     }
 
@@ -256,8 +265,10 @@ class GatewayTransport(
         request: WireRequest,
         readTimeoutMillis: Int = GatewayConnectionFactory.READ_TIMEOUT_MILLIS,
     ): HttpURLConnection {
+        val url = URL(endpoint.baseUrl.trimEnd('/') + request.target)
+        beforeConnect()
         val connection = factory.open(
-            URL(endpoint.baseUrl.trimEnd('/') + request.target),
+            url,
             readTimeoutMillis = readTimeoutMillis,
         )
         connection.requestMethod = request.method

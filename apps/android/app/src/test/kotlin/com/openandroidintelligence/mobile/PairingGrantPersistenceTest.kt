@@ -1,8 +1,8 @@
 package com.openandroidintelligence.mobile
 
 import android.app.Application
+import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.kernel.*
 import com.openandroidintelligence.plugin.pkg.PluginIdentity
 import org.junit.Assert.*
@@ -18,134 +18,151 @@ class PairingGrantPersistenceTest {
     private fun context() = ApplicationProvider.getApplicationContext<Application>()
     private fun preferences() = context().getSharedPreferences("open_android_intelligence_pairing_grants", Application.MODE_PRIVATE)
 
-    @Test
-    fun freshInstallationAndLaterNewScopeUseDefaultsWithoutASecondGrant() {
-        val store = SharedPreferencesPairingGrantStore.from(context())
-        assertFalse(store.load(binding).migrationRequired)
-        assertTrue(store.load(binding).permits("kernel.sms.read"))
-        context().getSharedPreferences("open_android_intelligence_runtime", Application.MODE_PRIVATE)
-            .edit().putString("installation_id", "install-a").commit()
-        val newScope = binding.copy(accountId = "account-new")
-        assertFalse(SharedPreferencesPairingGrantStore.from(context()).load(newScope).migrationRequired)
-    }
-
-    @Test
-    fun oldEmptyOrPartialScopesStayLegacyAndMigrationKeepsExplicitOff() {
-        val prefix = "pairing_grant_v1.${binding.storageKey}"
-        preferences().edit().putStringSet("$prefix.granted", emptySet()).commit()
+    @Test fun globalPolicySurvivesCoreAccountAndProcessChanges() {
         val store = SharedPreferencesPairingGrantStore.from(context())
         val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
-        assertTrue(holder.state.value!!.migrationRequired)
-        assertFalse(holder.state.value!!.permits("kernel.sms.read"))
-        holder.updatePrimitive("plugin:org.example.reader:author:kernel.sms.read", false)
-        holder.completeCapabilityMigration()
-        val restored = SharedPreferencesPairingGrantStore.from(context()).load(binding)
-        assertFalse(restored.migrationRequired)
-        assertTrue(restored.permits("kernel.sms.read"))
-        assertFalse(restored.permits("plugin:org.example.reader:author:kernel.sms.read"))
-        assertFalse(restored.permits("kernel.background.run"))
-    }
-
-    @Test
-    fun existingV2DeclarationDenialsRemainClosedAcrossReplacementAndReopenOnlyTheirAuthor() {
-        val store = SharedPreferencesPairingGrantStore.from(context())
-        val author = PluginIdentity("org.example.reader", "a".repeat(64), "1.0.0")
-        val updated = author.copy(version = "2.0.0")
-        val other = PluginIdentity("org.example.other", "b".repeat(64), "1.0.0")
-        store.save(binding, PairingGrantState(binding.pairingId, revision = 7L))
-        // Simulate the shipped v2 representation before stable plugin decisions were introduced.
-        val prefix = "pairing_grant_v1.${binding.storageKey}"
-        preferences().edit().putStringSet("$prefix.disabled", setOf(
-            identityGrantKey(author, "org.example.reader.previous@1.0.0"),
-            identityGrantKey(author, "kernel.background.run"),
-            identityGrantKey(other, "kernel.notifications.read"),
-        )).commit()
-
-        val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
-        assertFalse(holder.state.value!!.migrationRequired)
-        assertFalse(holder.state.value!!.permits(identityGrantKey(updated, "kernel.sms.read")))
-        assertFalse(holder.state.value!!.permits(identityGrantKey(updated, "org.example.reader.query@2.0.0")))
-        holder.updatePluginCapabilities(updated, setOf("kernel.sms.read", "org.example.reader.query@2.0.0"), false)
-        val restarted = SharedPreferencesPairingGrantStore.from(context()).load(binding)
+        assertEquals(CapabilityAuthorizationMode.MANUAL, holder.capabilityPolicy("sms").mode)
+        holder.updateCapabilityPolicy("sms", CapabilityPolicy(mode = CapabilityAuthorizationMode.READ_ONLY))
+        val other = binding.copy(gatewayId = "https://other.example", accountId = "account-b")
+        holder.bind(other)
+        assertEquals(CapabilityAuthorizationMode.READ_ONLY, holder.capabilityPolicy("sms").mode)
+        val restarted = SharedPreferencesPairingGrantStore.from(context()).load(other)
+        assertEquals(CapabilityAuthorizationMode.READ_ONLY, restarted.capabilityPolicies["sms"]!!.mode)
         assertFalse(restarted.migrationRequired)
-        assertFalse(restarted.permits(identityGrantKey(updated, "org.example.reader.query@2.0.0")))
-
-        holder.bind(binding)
-        holder.updatePluginCapabilities(updated, setOf("kernel.sms.read", "org.example.reader.query@2.0.0"), true)
-        val reopened = SharedPreferencesPairingGrantStore.from(context()).load(binding)
-        assertTrue(reopened.permits(identityGrantKey(updated, "org.example.reader.query@2.0.0")))
-        assertFalse(reopened.permits(identityGrantKey(updated, "kernel.background.run")))
-        assertFalse(reopened.permits(identityGrantKey(other, "kernel.notifications.read")))
-        assertTrue(reopened.granted.isEmpty())
-        assertEquals(9L, reopened.revision)
+        assertFalse(restarted.permits("kernel.background.run"))
     }
 
-    @Test
-    fun oldMissingKeysAreDetectedFromExistingAccountBindingsAndScopesMigrateSeparately() {
-        context().getSharedPreferences("open_android_intelligence_runtime", Application.MODE_PRIVATE)
-            .edit().putString("installation_id", "install-a").commit()
-        val profiles = AndroidAccountProfileStore(context())
-        profiles.save(AccountProfile("profile-a", binding.gatewayId, "alice", TLS_TRUST_ID),
-            AndroidAccountProfileStore.Binding(binding.accountId, "device-a", null, 1))
-        val other = binding.copy(accountId = "account-b")
-        profiles.save(AccountProfile("profile-b", binding.gatewayId, "bob", TLS_TRUST_ID),
-            AndroidAccountProfileStore.Binding(other.accountId, "device-b", null, 1))
+    @Test fun migrationIsAtomicIdempotentAndNeverImportsOldAutomaticOrBackgroundGrants() {
+        val old = "pairing_grant_v1.${binding.storageKey}"
+        val other = "pairing_grant_v1.${binding.copy(accountId = "b").storageKey}"
+        val author = PluginIdentity("org.example.reader", "a".repeat(64), "1.0.0")
+        preferences().edit().putInt("android_capability_authorization_model", 2)
+            .putLong("$old.revision", 7).putStringSet("$old.granted", setOf("kernel.sms.read", "kernel.background.run"))
+            .putStringSet("$other.disabled", setOf(identityGrantKey(author, "kernel.sms.read")))
+            .putStringSet("android_capability_legacy_scopes", setOf(binding.storageKey))
+            .putBoolean("android_capability_unknown_legacy_scopes", true)
+            .putString("unrelated_login_reference", "preserve-me").commit()
         val store = SharedPreferencesPairingGrantStore.from(context())
-        assertTrue(store.load(binding).migrationRequired)
-        assertTrue(store.load(other).migrationRequired)
-        PairingGrantStateHolder(store, AndroidAuditStore()).apply {
-            bind(binding); completeCapabilityMigration()
+        val first = store.load(binding)
+        assertEquals(8L, first.revision)
+        assertFalse(first.migrationRequired)
+        assertTrue(first.granted.isEmpty())
+        assertTrue(first.capabilityPolicies.isEmpty())
+        assertFalse(first.permits("kernel.background.run"))
+        assertFalse(first.permits(identityGrantKey(author.copy(version = "2.0.0"), "kernel.sms.read")))
+        assertFalse(preferences().all.keys.any { it.startsWith("pairing_grant_v1.") })
+        assertFalse(preferences().contains("android_capability_legacy_scopes"))
+        assertFalse(preferences().contains("android_capability_unknown_legacy_scopes"))
+        assertEquals("preserve-me", preferences().getString("unrelated_login_reference", null))
+        val second = SharedPreferencesPairingGrantStore.from(context()).load(binding)
+        assertEquals(first, second)
+    }
+
+    @Test fun migrationCommitFailureLeavesOldStateAndCanBeRetriedWithoutPartialPolicy() {
+        val actual = preferences()
+        val old = "pairing_grant_v1.${binding.storageKey}"
+        actual.edit().putLong("$old.revision", 4).commit()
+        val failing = object : SharedPreferences by actual {
+            override fun edit(): SharedPreferences.Editor {
+                val editor = actual.edit()
+                return java.lang.reflect.Proxy.newProxyInstance(
+                    SharedPreferences.Editor::class.java.classLoader,
+                    arrayOf(SharedPreferences.Editor::class.java),
+                ) { proxy, method, args ->
+                    if (method.name == "commit") false
+                    else method.invoke(editor, *(args ?: emptyArray())).let { if (it === editor) proxy else it }
+                } as SharedPreferences.Editor
+            }
         }
-        val restarted = SharedPreferencesPairingGrantStore.from(context())
-        assertFalse(restarted.load(binding).migrationRequired)
-        assertTrue(restarted.load(other).migrationRequired)
-        // A genuinely new account after the frozen upgrade snapshot is not another grant workflow.
-        assertFalse(restarted.load(binding.copy(accountId = "account-new")).migrationRequired)
+        try { SharedPreferencesPairingGrantStore(failing); fail("failed commit must stop migration") }
+        catch (expected: IllegalStateException) { assertEquals("INSTALLATION_CAPABILITY_MIGRATION_FAILED", expected.message) }
+        assertFalse(actual.contains("installation_capability_policy_v3.revision"))
+        assertTrue(actual.contains("$old.revision"))
+        assertEquals(5L, SharedPreferencesPairingGrantStore(actual).load(binding).revision)
     }
 
-    private companion object {
-        val TLS_TRUST_ID = "sha256:${"a".repeat(64)}"
-    }
-
-    @Test
-    fun clearPersistsARevocationTombstoneAndNeverReusesDefaultsOnRebind() {
+    @Test fun removingConnectionsAndOfflineChangesPreserveTheInstallationPolicy() {
         val store = SharedPreferencesPairingGrantStore.from(context())
         val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
-        holder.updatePrimitive("kernel.sms.read", false)
-        store.clear(binding)
-        val restored = store.load(binding)
-        assertTrue(restored.migrationRequired)
-        assertEquals(2L, restored.revision)
-        assertFalse(restored.permits("kernel.sms.read"))
-        assertFalse(restored.permits("kernel.notifications.read"))
+        holder.updateCapabilityPolicy("calls", CapabilityPolicy(enabled = false))
+        holder.clearCurrent()
+        assertNull(holder.currentBinding())
+        assertNotNull(holder.state.value)
+        holder.updateCapabilityPolicy("sms", CapabilityPolicy(mode = CapabilityAuthorizationMode.AUTOMATIC))
+        holder.bind(binding.copy(accountId = "another"))
+        assertFalse(holder.capabilityPolicy("calls").enabled)
+        assertEquals(CapabilityAuthorizationMode.AUTOMATIC, holder.capabilityPolicy("sms").mode)
     }
 
-    @Test
-    fun corruptOrUnknownLocalFormatFailsClosedInsteadOfApplyingFreshDefaults() {
-        val prefix = "pairing_grant_v1.${binding.storageKey}"
-        preferences().edit().putInt("$prefix.authorization_model", 99).commit()
+    @Test fun unknownGlobalModelOrIncompleteCurrentStateFailsClosed() {
+        preferences().edit().putInt("android_capability_authorization_model", 99).commit()
+        try { SharedPreferencesPairingGrantStore.from(context()); fail("future models must be rejected") }
+        catch (expected: IllegalStateException) { assertEquals("LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED", expected.message) }
+        preferences().edit().putInt("android_capability_authorization_model", 3).commit()
+        try { SharedPreferencesPairingGrantStore.from(context()).load(binding); fail("incomplete policy must be rejected") }
+        catch (expected: IllegalStateException) { assertEquals("LOCAL_AUTHORIZATION_STATE_INCOMPLETE", expected.message) }
+    }
+
+    @Test fun staleOldBinaryWritesCannotChangeCurrentPolicyOrDemandAnotherMigration() {
+        val store = SharedPreferencesPairingGrantStore.from(context())
+        val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
+        holder.updateCapabilityPolicy("sms", CapabilityPolicy(enabled = false))
+        val current = store.load(binding)
+        val old = "pairing_grant_v1.${binding.storageKey}"
+        preferences().edit().putLong("$old.revision", 999).putStringSet("$old.granted", setOf("kernel.sms.read")).commit()
+        assertEquals(current, SharedPreferencesPairingGrantStore.from(context()).load(binding))
+        assertFalse(preferences().all.keys.any { it.startsWith("pairing_grant_v1.") })
+    }
+    @Test fun versionThreeMigrationPreservesEveryPolicyAndWritesADowngradeBarrier() {
+        val scope = "sms"
+        val encoded = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(scope.toByteArray())
+        preferences().edit().putInt("android_capability_authorization_model", 3)
+            .putLong("installation_capability_policy_v3.revision", 19)
+            .putStringSet("installation_capability_policy_v3.disabled", setOf("off"))
+            .putStringSet("installation_capability_policy_v3.local_primitives", setOf("kernel.store.read"))
+            .putBoolean("installation_capability_policy_v3.screen_selection", true)
+            .putString("installation_capability_policy_v3.capability.$encoded",
+                """{"enabled":true,"mode":"READ_ONLY","allowedSources":["BANK-ID","+86 13800000000"],"includeContent":false}""")
+            .commit()
+        val first = SharedPreferencesPairingGrantStore.from(context()).load(binding)
+        assertEquals(4, preferences().getInt("android_capability_authorization_model", 0))
+        assertEquals(19L, first.revision)
+        assertEquals(setOf("off"), first.explicitDisabled)
+        assertEquals(setOf("kernel.store.read"), first.granted)
+        val sms = first.capabilityPolicies.getValue(scope)
+        assertEquals(SmsScopeMode.PHONE_NUMBERS, sms.smsScopeMode)
+        assertEquals(setOf("BANK-ID", "+86 13800000000"), sms.allowedSources)
+        assertFalse(sms.includeContent)
+        assertEquals(first, SharedPreferencesPairingGrantStore.from(context()).load(binding))
+        // The released v3 store checks model in 0..3 before loading any policy.
+        val oldBinaryModel = preferences().getInt("android_capability_authorization_model", 0)
+        assertFalse(oldBinaryModel in 0..3)
+    }
+
+    @Test fun keywordAndEmptyRestrictedScopesRoundTripWithoutChangingPassiveOrPushDefaults() {
         val holder = PairingGrantStateHolder(SharedPreferencesPairingGrantStore.from(context()), AndroidAuditStore())
-        holder.bind(binding)
-        assertTrue(holder.state.value!!.migrationRequired)
-        assertFalse(holder.state.value!!.permits("kernel.sms.read"))
+        val keywordPolicy = CapabilityPolicy(smsScopeMode = SmsScopeMode.KEYWORDS, smsKeywords = setOf("code", "%", "_", "'"),
+            includeContent = false, mode = CapabilityAuthorizationMode.READ_ONLY)
+        holder.updateCapabilityPolicy("keyword-sms", keywordPolicy)
+        val emptyNumbers = CapabilityPolicy(smsScopeMode = SmsScopeMode.PHONE_NUMBERS)
+        holder.updateCapabilityPolicy("empty-numbers", emptyNumbers)
+        val saved = SharedPreferencesPairingGrantStore.from(context()).load(binding)
+        assertEquals(keywordPolicy, saved.capabilityPolicies.getValue("keyword-sms"))
+        assertEquals(emptyNumbers, saved.capabilityPolicies.getValue("empty-numbers"))
+        assertFalse(SmsScopeMatcher.hasConditions(emptyNumbers.smsScopeMode, emptyNumbers.allowedSources, emptyNumbers.smsKeywords))
+        assertEquals(4, preferences().getInt("android_capability_authorization_model", 0))
+        assertFalse(com.openandroidintelligence.mobile.push.PushConfiguration().sms.enabled)
+        assertEquals(SmsScopeMode.ALL, com.openandroidintelligence.mobile.push.PushConfiguration().sms.scope.mode)
     }
 
-    @Test
-    fun oldBinaryWritesAndIncompleteCurrentStateCannotRestoreDefaultPermission() {
+    @Test fun partialOrUnknownScopeFieldsFailClosedInsteadOfUsingTheAllDefault() {
         val store = SharedPreferencesPairingGrantStore.from(context())
-        val holder = PairingGrantStateHolder(store, AndroidAuditStore()).apply { bind(binding) }
-        holder.updateScreenSelection(true)
-        val prefix = "pairing_grant_v1.${binding.storageKey}"
-        // Simulate the previous binary updating only its three known v1 fields.
-        preferences().edit().putLong("$prefix.revision", 2L).putStringSet("$prefix.granted", emptySet())
-            .putBoolean("$prefix.screen_selection", false).commit()
-        assertTrue(store.load(binding).migrationRequired)
-        assertFalse(store.load(binding).permits("kernel.sms.read"))
-        holder.bind(binding)
-        holder.completeCapabilityMigration()
-        preferences().edit().remove("$prefix.disabled").commit()
-        holder.bind(binding)
-        assertTrue(holder.state.value!!.migrationRequired)
-        assertFalse(holder.state.value!!.permits("kernel.sms.read"))
+        val encoded = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("sms".toByteArray())
+        val key = "installation_capability_policy_v3.capability.$encoded"
+        for (extra in listOf("\"smsScopeMode\":\"KEYWORDS\"", "\"smsScopeMode\":\"FUTURE\",\"smsKeywords\":[]")) {
+            preferences().edit().putString(key,
+                """{"enabled":true,"mode":"MANUAL","allowedSources":[],"includeContent":false,$extra}""").commit()
+            assertThrows(Exception::class.java) { store.load(binding) }
+        }
     }
 }

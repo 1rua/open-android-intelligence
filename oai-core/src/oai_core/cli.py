@@ -46,11 +46,28 @@ def _parser() -> argparse.ArgumentParser:
     invoke.add_argument("--version", required=True)
     invoke.add_argument("--parameters", default="{}", help="JSON object, or @relative/file.json")
     invoke.add_argument("--idempotency-key")
+    invoke.add_argument("--agent-name")
+    invoke.add_argument("--purpose")
     invoke.add_argument("--wait", type=float, default=0, metavar="SECONDS",
                         help="Poll Core up to this many seconds; use cancel to stop the request")
     for command in ("status", "cancel", "ack"):
         operation = commands.add_parser(command)
         operation.add_argument("request_id")
+        if command == "ack":
+            operation.add_argument("--result-digest")
+    endpoint = commands.add_parser("endpoint", help="Register and consume an authenticated push route")
+    endpoints = endpoint.add_subparsers(dest="endpoint_command", required=True)
+    registration = endpoints.add_parser("register")
+    registration.add_argument("--registration-key", required=True)
+    registration.add_argument("--label", required=True)
+    registration.add_argument("--ttl-seconds", type=int, default=3600)
+    endpoints.add_parser("list")
+    for action in ("unregister", "receive", "ack"):
+        operation = endpoints.add_parser(action)
+        operation.add_argument("endpoint_id")
+        if action == "ack":
+            operation.add_argument("delivery_id")
+            operation.add_argument("event_id")
     commands.add_parser("mcp", help="Run the official MCP stdio server using your scoped Core credential")
     skill = commands.add_parser("skill", help="Manage and deploy OAI skills for AI agents")
     skills = skill.add_subparsers(dest="skill_command", required=True)
@@ -150,20 +167,32 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "invoke":
             if args.wait < 0 or not math.isfinite(args.wait):
                 raise CoreClientError("WAIT_INVALID")
-            result = client.invoke(args.capability_id, args.version, _parameters(args.parameters), args.idempotency_key)
+            result = client.invoke(args.capability_id, args.version, _parameters(args.parameters), args.idempotency_key,
+                                   agent_name=args.agent_name, purpose=args.purpose)
             if args.wait:
                 result = _wait(client, result, args.wait)
         elif args.command == "status":
             result = client.status(args.request_id)
         elif args.command == "cancel":
             result = client.cancel(args.request_id)
+        elif args.command == "endpoint":
+            if args.endpoint_command == "register":
+                result = client.register_endpoint(args.registration_key, args.label, args.ttl_seconds)
+            elif args.endpoint_command == "list":
+                result = client.endpoints()
+            elif args.endpoint_command == "unregister":
+                result = client.unregister_endpoint(args.endpoint_id)
+            elif args.endpoint_command == "receive":
+                result = client.receive_deliveries(args.endpoint_id)
+            else:
+                result = client.acknowledge_delivery(args.endpoint_id, args.delivery_id, args.event_id)
         else:
-            result = client.acknowledge(args.request_id)
+            result = client.acknowledge(args.request_id, args.result_digest)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (CoreClientError, OSError, ValueError) as error:
-        code = error.code if isinstance(error, CoreClientError) else "CLIENT_INPUT_INVALID"
-        print(json.dumps({"error": {"code": code}}), file=sys.stderr)
+        failure = error.as_error() if isinstance(error, CoreClientError) else {"code": "CLIENT_INPUT_INVALID"}
+        print(json.dumps({"error": failure}, ensure_ascii=False), file=sys.stderr)
         return 1
 
 

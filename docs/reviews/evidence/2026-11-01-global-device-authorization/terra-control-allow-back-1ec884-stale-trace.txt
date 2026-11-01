@@ -1,0 +1,43 @@
+2026-11-01 5554/user10 一次真实允许 back：失败轨迹（脱敏）
+
+设备来源：emulator-5554，Android 15 / API 35，Android 用户 10。
+模型来源：本会话手机 Agent 的实际调用；模型名称以主流程会话路由记录为准，不以文件名自证。
+App 源码关联：1f338778ecd6c39fc8eb0bd11134867d6c238568（主流程构建/交付记录）。
+已核对设备端 App SHA-256：1ec8841c6fc7957c2fd6cf0e0fa0f77dec3d63f2ccfa1936b8d204ad89a81e5a。
+测试 APK SHA-256：d5ee749ae541b9c88d1f03a05dca1411065824c29e4dc21171657fc4fa31ef6e。
+控制设置：READ_ONLY，enabled=true；本轮未改变策略，先前只读读取持久策略版本为 2。
+本轮采证时工作树 HEAD：12d3f8f65d0f9e4cdeda3fe1e3e23450f3ad2ee0，不将其当作已安装 APK 的源码标识。
+Core：沿用 20261101T000129Z-df92df96 运行快照，未重启；不代表最终源码的 Core 验收。
+
+1. 真实 UI 在无账号正文的 OAI 静态设置主览顶部。
+2. reader requestId：devreq_b7e50d69-1685-4dc9-a5f4-3311edecaf9a
+   Core createdAt：2026-11-01T10:52:03.276Z
+   参数：{"operation":"snapshot","maxNodes":8,"maxDepth":8,"maxBytes":4096}
+   匹配卡片后真实点击“仅允许本次”；最终 succeeded，前台包 com.openandroidintelligence.mobile，8 节点。
+   返回 revision：sha256:9849a632dea4338bf587bf2b842a7934b0f38f83bf2a717a0136d9605b8cbb6c
+3. control requestId：devreq_65d70d31-9ab2-41f7-b78f-36fdaa1e1da9
+   Core createdAt：2026-11-01T10:54:45.906Z
+   参数：{"action":"global","globalAction":"back","expectedRevision":"sha256:9849a632dea4338bf587bf2b842a7934b0f38f83bf2a717a0136d9605b8cbb6c"}
+   Agent 声明：Terra控制允许验收；目的：静态设置页仅本次允许可逆back。
+   真实卡片核对上述 Agent/目的、CONTROL、back 后，adb -s emulator-5554 shell input tap 540 1600 激活“仅允许本次”。
+   没有修改 AUTO、安全校验、revision 或重新读取屏幕来替换参数。
+4. Core 最终 state=failed，result.outcome=failed，code=SCREEN_STALE_REFERENCE，source=android-result。
+   localAuthorizationState 仍为 executing；这是旧 Core 终态字段问题，不能冒充控制成功。
+   没有 returned performed=true，不宣称 back 已执行；本轮未另做事后页面读取。
+
+Android OaiDeviceRequest 日志（设备本地时钟，与 Core createdAt 使用的主机时钟分开记录；PID 5228）：
+18:52:00.492 reader lookup STARTED
+18:52:00.561 reader claim SUCCEEDED
+18:53:02.415 reader invoke STARTED
+18:53:02.641 reader completed succeeded
+18:53:02.721 reader result ACKNOWLEDGED
+18:54:43.113 control lookup STARTED
+18:54:43.180 control claim SUCCEEDED
+18:55:35.204 control invoke STARTED
+18:55:35.342 control invoke SCREEN_STALE_REFERENCE
+18:55:35.346 control completed failed
+18:55:35.396 control result ACKNOWLEDGED
+
+现有日志没有独立“用户批准”时间字段；批准动作由真实 UI 卡片与已执行的 ADB input 命令证明，不伪造批准日志。
+该序列仅证实一次允许后 stale 失败；确切失效原因交 task-011 源码复现，不将卡片动画或 generation 变化直接认定为已证实根因。
+未输出节点正文、账号、设备 token 或图片字节；未操作 emulator-5556。

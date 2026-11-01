@@ -7,6 +7,8 @@ import android.content.ComponentName
 import android.content.ContentProvider
 import android.service.notification.NotificationListenerService
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.core.model.*
 import com.openandroidintelligence.gateway.auth.GatewayAuthClient
 import com.openandroidintelligence.gateway.auth.ed25519WirePublicKey
@@ -41,10 +43,22 @@ import org.robolectric.shadow.api.Shadow
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34], application=Application::class)
 class NotificationCapabilityHttpTest {
+    private fun installNotificationAccess(allowed: () -> Boolean) {
+        val type = Class.forName("com.openandroidintelligence.notifications.NotificationCollectionAccess")
+        type.getMethod("install", Function0::class.java).invoke(type.getField("INSTANCE").get(null), allowed)
+    }
+    private fun notificationAccessAllowed(): Boolean {
+        val type = Class.forName("com.openandroidintelligence.notifications.NotificationCollectionAccess")
+        return type.getMethod("isAllowed").invoke(type.getField("INSTANCE").get(null)) as Boolean
+    }
+
     @Test fun notificationReadingRequiresEveryGateAndResynchronizesAfterRevocationAndReconnect() = runBlocking {
         assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val context = ApplicationProvider.getApplicationContext<Application>()
         val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
+        val oldLogSink = com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink
+        val diagnostics = java.util.concurrent.CopyOnWriteArrayList<String>()
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { tag, message -> diagnostics += "$tag:$message" }
         val root = generateSequence(File(System.getProperty("user.dir")).canonicalFile) { it.parentFile }
             .first { File(it,"gateway-contract").isDirectory }
         val log = File.createTempFile("capability-http-", ".log")
@@ -77,10 +91,25 @@ class NotificationCapabilityHttpTest {
             val profile = GatewayProfile(session.accountId,session.deviceId,session.sessionId,baseUrl,accessToken=session.accessToken)
             var loseClaimReply = true
             var loseResultReply = true
+            val authorizationStates = java.util.concurrent.CopyOnWriteArrayList<String>()
             val wire = GatewayTransport(profile,factory)
             val interruptedWire = object : GatewayByteTransport by wire {
                 override suspend fun execute(request: WireRequest): WireResponse {
                     val response = wire.execute(request)
+                    if (request.target.endsWith("/authorization")) {
+                        assertEquals("POST", request.method)
+                        val state = JsonFields.string(JsonFields.obj(Json.parse(request.body.decodeToString())), "state")!!
+                        assertTrue(state in setOf("awaiting_confirmation", "executing"))
+                        assertEquals(200, response.status)
+                        val envelope = JsonFields.obj(Json.parse(response.body.decodeToString()))
+                            ?: error("AUTHORIZATION_PROGRESS_ENVELOPE_REQUIRED")
+                        val receipt = JsonFields.obj(JsonFields.field(envelope, "data"))
+                            ?: error("AUTHORIZATION_PROGRESS_REQUIRED")
+                        assertEquals(request.target.substringAfter("/device-requests/").substringBefore('/'),
+                            JsonFields.string(receipt, "requestId"))
+                        assertEquals(state, JsonFields.string(receipt, "localAuthorizationState"))
+                        authorizationStates += state
+                    }
                     // 服务器已接受后丢掉回包，检验真实 HTTP 收据与结果重试的幂等性。
                     if (response.status == 200 && request.target.endsWith("/claim") && loseClaimReply) {
                         loseClaimReply = false
@@ -98,6 +127,7 @@ class NotificationCapabilityHttpTest {
             },InMemoryEventCursorStore(),webSocketTransport=null)
             val binding = PairingGrantBinding(baseUrl,session.accountId,"notification_install")
             resetNotificationComposition()
+            installNotificationAccess { true } // This fixture has an authenticated test account.
             installRuntimeProvider("com.openandroidintelligence.notification.host.NotificationControlBootstrapProvider")
             installRuntimeProvider("com.openandroidintelligence.device.primitives.PrimitiveBootstrapProvider")
             assertNotNull(KernelPrimitiveRegistry.provider("kernel.notifications.read"))
@@ -107,7 +137,7 @@ class NotificationCapabilityHttpTest {
             val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"notification_install")
             host.installStore.installRoot.deleteRecursively()
             val kernel = PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
-                audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },host::mediate)
+                audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
             host.attach(kernel)
             var publisher = CapabilityPublisher(context,http,binding.storageKey,session.grantRevision,
                 { grants.state.value!!.revision },host,{ error("Unexpected foreign grant") },TestDocumentKeys,
@@ -128,9 +158,11 @@ class NotificationCapabilityHttpTest {
             assertFalse(host.isEnabled(PLUGIN))
             assertTrue(host.authorizedBindings().isEmpty())
             val entry = host.entries(PLUGIN).single()
-            // Enabling the signed plugin defaults its capabilities on. System
-            // permission, notification scope and listener readiness remain gates.
+            // Enabling leaves the capability manual. This unattended HTTP fixture
+            // records a separate local automatic choice; OS permission and scope remain gates.
             host.enable(PLUGIN,true)
+            assertEquals(CapabilityAuthorizationMode.MANUAL, host.capabilityPolicy(PLUGIN, entry.key).mode)
+            host.setCapabilityPolicy(PLUGIN, entry.key, CapabilityPolicy(mode = CapabilityAuthorizationMode.AUTOMATIC))
 
             // The same runtime-only composition used by the production APK.
             val manager = context.getSystemService(NotificationManager::class.java)
@@ -166,11 +198,12 @@ class NotificationCapabilityHttpTest {
                 return result
             }
             val result = invoke()
-            assertEquals("succeeded",JsonFields.string(result,"outcome"))
+            assertEquals("Unexpected device result: " + Json.canonical(result) + "; diagnostics=" + diagnostics, "succeeded", JsonFields.string(result, "outcome"))
             assertTrue(Json.canonical(result).contains("permitted message"))
             assertFalse(Json.canonical(result).contains("excluded secret"))
             assertFalse(loseClaimReply)
             assertFalse(loseResultReply)
+            assertEquals(listOf("executing"), authorizationStates.toList())
             foreground = true
             // An installed but damaged package cannot be diagnosed as absent, or retain a callable binding.
             val payload = File(host.installStore.installRoot, "$PLUGIN/payload/notifications.wasm")
@@ -210,9 +243,70 @@ class NotificationCapabilityHttpTest {
             assertTrue(host.authorizedBindings().isEmpty())
             assertNotNull(entry)
         } finally {
+            installNotificationAccess { false }
             listener?.onDestroy()
             executionScope.cancel()
             process.destroy();process.waitFor(10,TimeUnit.SECONDS)
+            Thread.setDefaultUncaughtExceptionHandler(oldHandler)
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = oldLogSink
+            resetNotificationComposition()
+        }
+    }
+
+    @Test fun logoutBlocksTheRealNotificationProviderDespiteSystemPermissionAndAutomaticPolicy() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
+        val oldProvider = KernelPrimitiveRegistry.provider("kernel.notifications.read")
+        val listenerClass = Class.forName(LISTENER).asSubclass(NotificationListenerService::class.java)
+        var listener: NotificationListenerService? = null
+        try {
+            resetNotificationComposition()
+            installNotificationAccess { true }
+            installRuntimeProvider("com.openandroidintelligence.notification.host.NotificationControlBootstrapProvider")
+            installRuntimeProvider("com.openandroidintelligence.device.primitives.PrimitiveBootstrapProvider")
+            val manager = context.getSystemService(NotificationManager::class.java)
+            shadowOf(manager).setNotificationListenerAccessGranted(ComponentName(context, listenerClass), true)
+            val policy = NotificationControlRegistry.policyPort()
+            assertTrue(policy.update(NotificationPolicyUpdate(policy.snapshot().revision, granted = true,
+                packageIds = listOf("com.mail"), fieldAccess = NotificationFieldAccess.CONTENT,
+                mode = NotificationDeliveryMode.ON_DEMAND)) is NotificationPolicyUpdateOutcome.Accepted)
+            val binding = PairingGrantBinding("https://notification-test.example", "test-account", "test-installation")
+            val audit = AndroidAuditStore()
+            val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit).apply { bind(binding) }
+            val trust = DeveloperTrustMode()
+            val host = ProductionPluginHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
+            host.installStore.install(TestAlpPackages.compiledNotificationsPackage())
+            host.attach(PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities), host.runtimes,
+                audit, trust, host.nativeLoader, host.selector, grants::currentKernelGrant,
+                mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation))
+            host.enable(PLUGIN, true)
+            val entry = host.entries(PLUGIN).single()
+            host.setCapabilityPolicy(PLUGIN, entry.key, CapabilityPolicy(mode = CapabilityAuthorizationMode.AUTOMATIC))
+            listener = Robolectric.buildService(listenerClass).create().get()
+            val shadow = Shadow.extract<ShadowNotificationListenerService>(listener)
+            shadow.addActiveNotification("com.mail", 1, Notification.Builder(context, "mail")
+                .setContentTitle("Test").setContentText("private-before-logout").build())
+            listener.onListenerConnected()
+            val parameters = Json.parse("""{"limit":1}""")
+            assertTrue(host.invoke(entry.identity, binding.accountId, entry.key, parameters, "before-logout")
+                .decodeToString().contains("private-before-logout"))
+
+            installNotificationAccess { false }
+            shadow.addActiveNotification("com.mail", 2, Notification.Builder(context, "mail")
+                .setContentText("must-not-read-after-logout").build())
+            val denied = runCatching { host.invoke(entry.identity, binding.accountId, entry.key, parameters, "after-logout") }
+                .exceptionOrNull()
+            assertTrue("The real provider must enforce the application login gate", denied is CapabilityDenied)
+            assertEquals("NOTIFICATION_LISTENER_UNAVAILABLE", (denied as CapabilityDenied).primitive)
+            assertEquals(CapabilityAuthorizationMode.AUTOMATIC, host.capabilityPolicy(PLUGIN, entry.key).mode)
+            assertTrue(host.isEnabled(PLUGIN))
+            assertFalse(notificationAccessAllowed())
+        } finally {
+            installNotificationAccess { false }
+            listener?.onDestroy()
+            KernelPrimitiveRegistry.provider("kernel.notifications.read")?.let(KernelPrimitiveRegistry::unregister)
+            if (oldProvider != null) KernelPrimitiveRegistry.register(oldProvider)
             Thread.setDefaultUncaughtExceptionHandler(oldHandler)
             resetNotificationComposition()
         }
@@ -224,6 +318,19 @@ class NotificationCapabilityHttpTest {
         Robolectric.buildContentProvider(Class.forName(name).asSubclass(ContentProvider::class.java)).create()
     }
     private fun resetNotificationComposition() {
+        // PrimitiveBootstrapProvider installs screen capture too. Isolate its process-global
+        // registrations between these tests; the production install-once guard remains active.
+        val oldScreen = ScreenHostRegistry.current
+        ScreenHostRegistry.current = null
+        oldScreen?.revoke()
+        RemoteScreenCaptureRegistry.source?.release()
+        RemoteScreenCaptureRegistry::class.java.getDeclaredField("source").apply {
+            isAccessible = true
+            set(null, null)
+        }
+        KernelPrimitiveRegistry.ids().filter { it.startsWith("kernel.screen.") }.forEach { id ->
+            KernelPrimitiveRegistry.provider(id)?.let(KernelPrimitiveRegistry::unregister)
+        }
         listOf("com.openandroidintelligence.notifications.NotificationRuntimeFactoryRegistry" to "reset",
             "com.openandroidintelligence.notification.host.NotificationHostInstaller" to "resetForTest").forEach { (name,method) ->
             val type=Class.forName(name)

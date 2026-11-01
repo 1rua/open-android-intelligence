@@ -44,6 +44,7 @@ class KernelIsolationTest {
         runtime: PluginRuntime = EchoRuntime(),
         provider: PluginIdentity = smsIdentity,
         capability: String = "kernel.sms.read",
+        expectedSessionPrimitives: Set<String> = setOf("kernel.sms.read"),
     ): PluginKernel {
         val audit = AndroidAuditStore()
         val trustMode = DeveloperTrustMode()
@@ -57,6 +58,10 @@ class KernelIsolationTest {
             nativeLoader = NativePluginLoader(trustMode),
             providerSelector = selector,
             grants = { if (it == "pairing-a") grant else null },
+            authorizeInvocation = testInvocationAuthorizer(
+                mapOf(smsIdentity to setOf(capability), otherIdentity to setOf(capability)),
+                expectedSessionPrimitives,
+            ),
         )
     }
 
@@ -105,6 +110,41 @@ class KernelIsolationTest {
     }
 
     @Test
+    fun missingInvocationAuthorizerDeniesBeforeRuntimeExecutionAndIsAudited() {
+        val sink = InMemoryAuditSink()
+        val trust = DeveloperTrustMode()
+        val primitives = setOf("kernel.sms.read")
+        var runtimeCalls = 0
+        val runtime = object : PluginRuntime {
+            override fun invoke(identity: PluginIdentity, budget: ResourceBudget, input: ByteArray): ByteArray {
+                runtimeCalls++
+                return input
+            }
+        }
+        val kernel = PluginKernel(
+            hostEnvelope = HostEnvelope(primitives),
+            phoneLimits = PhoneLimits(primitives),
+            runtimes = mapOf(PluginKernel.RUNTIME_PROTECTED_WASM to runtime),
+            audit = AndroidAuditStore(sink),
+            trustMode = trust,
+            nativeLoader = NativePluginLoader(trust),
+            providerSelector = CapabilityProviderSelector(mapOf("kernel.sms.read" to smsIdentity)),
+            grants = { id -> PairingGrant(id, primitives, 1L) },
+        )
+        registered(kernel)
+        kernel.enable(smsIdentity.pluginId)
+
+        try {
+            kernel.invoke(smsIdentity, "account-a", "pairing-a", "kernel.sms.read", byteArrayOf(1), session())
+            fail("missing authorization context must deny invocation")
+        } catch (cause: CapabilityDenied) {
+            assertEquals("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED", cause.primitive)
+        }
+        assertEquals(0, runtimeCalls)
+        assertEquals(AuditOutcome.DENIED, sink.events().single().outcome)
+    }
+
+    @Test
     fun deniesWhenTheHostEnvelopeLacksThePrimitive() {
         val kernel = kernel(hostPrimitives = setOf("kernel.notifications.read"))
         registered(kernel)
@@ -150,7 +190,7 @@ class KernelIsolationTest {
 
     @Test
     fun deniesWhenTheSessionDoesNotPermitThePrimitive() {
-        val kernel = kernel()
+        val kernel = kernel(expectedSessionPrimitives = emptySet())
         registered(kernel)
         kernel.enable("org.openandroidintelligence.sms")
 
@@ -211,7 +251,7 @@ class KernelIsolationTest {
         val upgraded=otherIdentity.copy(version="2.0.0")
         selector.refreshOverrides(mapOf(capability to listOf(smsIdentity,upgraded)))
         assertEquals(selection.copy(identity=upgraded),selector.select(capability,"pairing-a"))
-        assertEquals(smsIdentity,selector.select(capability,"pairing-b").identity)
+        assertEquals(upgraded,selector.select(capability,"pairing-b").identity)
         val differentAuthor=upgraded.copy(authorKeyFingerprint="different-author")
         selector.refreshOverrides(mapOf(capability to listOf(smsIdentity,differentAuthor)))
         assertEquals(upgraded,selector.select(capability,"pairing-a").identity)
@@ -247,13 +287,13 @@ class KernelIsolationTest {
     }
 
     @Test
-    fun overridesAreIsolatedPerPairing() {
+    fun providerChoiceIsInstallationWideWhileTheProjectionUsesEachPairing() {
         val selector = CapabilityProviderSelector(
             phoneDefaults = mapOf("org.openandroidintelligence.sms.query@1.0.0" to smsIdentity),
         )
         selector.setOverride("org.openandroidintelligence.sms.query@1.0.0", "pairing-a", otherIdentity)
         assertEquals(
-            smsIdentity,
+            otherIdentity,
             selector.select("org.openandroidintelligence.sms.query@1.0.0", "pairing-b").identity,
         )
     }
@@ -498,6 +538,9 @@ class KernelIsolationTest {
                 phoneDefaults = mapOf("kernel.sms.read" to smsIdentity),
             ),
             grants = { null },
+            authorizeInvocation = testInvocationAuthorizer(
+                mapOf(smsIdentity to setOf("kernel.sms.read")), setOf("kernel.sms.read"),
+            ),
         )
         kernel.register(
             PluginRegistration(
@@ -515,7 +558,7 @@ class KernelIsolationTest {
             )
             fail("expected denial")
         } catch (cause: CapabilityDenied) {
-            // expected
+            assertEquals("kernel.sms.read", cause.primitive)
         }
         val event = sink.events().single()
         assertEquals(AuditOutcome.DENIED, event.outcome)

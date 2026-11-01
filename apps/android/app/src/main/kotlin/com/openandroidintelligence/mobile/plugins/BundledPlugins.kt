@@ -9,6 +9,9 @@ import java.io.FileNotFoundException
 internal const val NOTIFICATION_PLUGIN_ID = "org.openandroidintelligence.notifications"
 internal const val SMS_PLUGIN_ID = "org.openandroidintelligence.sms"
 internal const val CALL_LOG_PLUGIN_ID = "org.openandroidintelligence.call-log"
+internal const val SCREEN_READER_PLUGIN_ID = "org.openandroidintelligence.screen-reader"
+internal const val SCREEN_CAPTURE_PLUGIN_ID = "org.openandroidintelligence.screen-capture"
+internal const val SCREEN_CONTROL_PLUGIN_ID = "org.openandroidintelligence.screen-control"
 
 /**
  * Full APK 可携带的官方插件包。
@@ -40,6 +43,24 @@ enum class BundledPlugin(
         assetPath = "bundled-plugins/call-log.alp",
         installTag = "bundled-call-log-install",
         displayName = "通话记录读取",
+    ),
+    SCREEN_READER(
+        pluginId = SCREEN_READER_PLUGIN_ID,
+        assetPath = "bundled-plugins/screen-reader.alp",
+        installTag = "bundled-screen-reader-install",
+        displayName = "屏幕读取",
+    ),
+    SCREEN_CAPTURE(
+        pluginId = SCREEN_CAPTURE_PLUGIN_ID,
+        assetPath = "bundled-plugins/screen-capture.alp",
+        installTag = "bundled-screen-capture-install",
+        displayName = "屏幕截图",
+    ),
+    SCREEN_CONTROL(
+        pluginId = SCREEN_CONTROL_PLUGIN_ID,
+        assetPath = "bundled-plugins/screen-control.alp",
+        installTag = "bundled-screen-control-install",
+        displayName = "屏幕控制",
     ),
 }
 

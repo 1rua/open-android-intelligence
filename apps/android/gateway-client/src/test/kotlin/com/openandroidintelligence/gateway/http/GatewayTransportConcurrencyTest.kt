@@ -8,8 +8,12 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
 import org.junit.Assert.*
 import org.junit.Test
+import java.io.InputStream
+import java.net.HttpURLConnection
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
+import java.net.URL
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -33,7 +37,10 @@ class GatewayTransportConcurrencyTest {
         val evidence = CopyOnWriteArrayList<String>()
         GatewayLog.protocolEvidenceEnabled = true
         GatewayLog.sink = { _, line -> evidence += line }
-        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val coroutineFailures = CopyOnWriteArrayList<Throwable>()
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, failure ->
+            coroutineFailures += failure
+        })
         val profile = GatewayProfile("account", "phone", "login", "http://127.0.0.1:${server.localPort}", accessToken="synthetic")
         val transport = GatewayTransport(profile)
         val http = GatewayHttpClient(profile, transport, { ByteArray(64) }, InMemoryEventCursorStore())
@@ -73,8 +80,8 @@ class GatewayTransportConcurrencyTest {
                 assertTrue(phases.all { JsonFields.string(it,"traceId")?.length == 32 && JsonFields.string(it,"bootId") != null })
             }
         } finally {
-            release.countDown()
             owner.cancel()
+            release.countDown()
             server.close()
             withTimeout(5000) { streaming.join(); consuming.join() }
             workers.forEach { it.join(2000) }
@@ -83,6 +90,93 @@ class GatewayTransportConcurrencyTest {
             GatewayLog.protocolEvidenceEnabled = oldEnabled
         }
         assertTrue(failures.toString(), failures.isEmpty())
+        assertTrue(coroutineFailures.toString(), coroutineFailures.isEmpty())
+    }
+
+    @Test fun cancelledBlockingReadsPreserveCancellationWithoutUncaughtIoErrors() = runBlocking {
+        for (consumeResponse in listOf(false, true)) {
+            assertBlockingReadOutcome(consumeResponse, cancel = true)
+        }
+    }
+
+    @Test fun activeBlockingReadsStillReportSocketErrors() = runBlocking {
+        for (consumeResponse in listOf(false, true)) {
+            assertBlockingReadOutcome(consumeResponse, cancel = false)
+        }
+    }
+
+    private suspend fun assertBlockingReadOutcome(consumeResponse: Boolean, cancel: Boolean) {
+        val mode = if (consumeResponse) "consumeResponse" else "execute"
+        val connection = BlockingFailureConnection()
+        val profile = GatewayProfile("account", "phone", "login", "http://gateway.example.invalid", accessToken = "synthetic")
+        val transport = GatewayTransport(profile, GatewayConnectionFactory { connection })
+        val http = GatewayHttpClient(profile, transport, { ByteArray(64) }, InMemoryEventCursorStore())
+        val uncaught = CopyOnWriteArrayList<Throwable>()
+        val owner = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, failure ->
+            uncaught += failure
+        })
+        val completed = CompletableDeferred<Throwable?>()
+        val request = SignedGatewayRequest("GET", "/open-android-intelligence/v2/held", requestId = "blocked")
+        val reading = owner.launch {
+            if (consumeResponse) {
+                http.consumeResponse(request) { _, _, input -> input.read() }
+            } else {
+                http.execute(request)
+            }
+            error("$mode must not succeed after the blocking read fails")
+        }
+        reading.invokeOnCompletion { completed.complete(it) }
+        try {
+            withTimeout(5000) { connection.readStarted.await() }
+            val cancellation = CancellationException("cancel blocked $mode")
+            if (cancel) reading.cancel(cancellation) else connection.failRead()
+            val cause = withTimeout(5000) { reading.join(); completed.await() }
+            assertTrue("$mode must disconnect its connection", connection.disconnected)
+            if (cancel) {
+                assertTrue("$mode replaced cancellation with $cause", cause is CancellationException)
+                assertEquals(cancellation.message, cause?.message)
+                assertTrue("$mode reported an uncaught exception: $uncaught", uncaught.isEmpty())
+            } else {
+                assertTrue("$mode must report the real network failure: $cause", cause is SocketException)
+                assertTrue("$mode must retain the original IOException",
+                    generateSequence(cause) { it.cause }.any { it === connection.readFailure })
+                assertEquals("$mode must report the failure exactly once", 1, uncaught.size)
+                assertTrue("$mode must keep the original error in its uncaught report",
+                    generateSequence(uncaught.single()) { it.cause }.any { it === connection.readFailure })
+                assertTrue("the caller was not cancelled", owner.isActive)
+            }
+        } finally {
+            owner.cancel()
+            connection.failRead()
+            withTimeout(5000) { reading.join() }
+        }
+    }
+
+    /** Hold a blocking read until disconnect, then raise the same close error as a real socket. */
+    private class BlockingFailureConnection : HttpURLConnection(URL("http://gateway.example.invalid")) {
+        val readStarted = CompletableDeferred<Unit>()
+        val readFailure = SocketException("Socket closed")
+        private val releaseRead = CountDownLatch(1)
+        @Volatile var disconnected = false
+            private set
+        private val input = object : InputStream() {
+            override fun read(): Int {
+                readStarted.complete(Unit)
+                check(releaseRead.await(5, TimeUnit.SECONDS)) { "blocking read was not released" }
+                throw readFailure
+            }
+        }
+
+        fun failRead() { releaseRead.countDown() }
+        override fun connect() { connected = true }
+        override fun usingProxy() = false
+        override fun getResponseCode() = HTTP_OK
+        override fun getHeaderFields(): Map<String, List<String>> = emptyMap()
+        override fun getInputStream(): InputStream = input
+        override fun disconnect() {
+            disconnected = true
+            failRead()
+        }
     }
 
     private fun serve(socket: Socket, release: CountDownLatch) = socket.use {

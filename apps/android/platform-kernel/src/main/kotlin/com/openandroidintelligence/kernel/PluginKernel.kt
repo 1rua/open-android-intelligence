@@ -61,6 +61,9 @@ class PluginKernel(
     private val providerSelector: CapabilityProviderSelector,
     private val grants: (String) -> PairingGrant?,
     private val mediate: (KernelCallContext, String, ByteArray) -> ByteArray = { _, id, _ -> throw CapabilityDenied(id) },
+    private val authorizeInvocation: (PluginIdentity, String, ByteArray, SessionConstraints) -> Unit = { _, _, _, _ ->
+        throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
+    },
 ) {
     companion object {
         const val RUNTIME_PROTECTED_WASM = "protected-wasm"
@@ -243,6 +246,7 @@ class PluginKernel(
         }
 
         try {
+            authorizeInvocation(identity, capability, input, session)
             // "Plugin enabled" is one of the six terms in the intersection, so
             // a plugin that is installed but not enabled is denied by the
             // intersection rather than by a separate check. That keeps the
@@ -293,6 +297,7 @@ class PluginKernel(
             }
             if (grants(pairingId)?.revision!=grantRevision || !registration.state.isExecutable() || emergencyStopped) throw CapabilityDenied(capability)
 
+            authorizeInvocation(identity, capability, input, session)
             if (output.size > registration.budget.maxOutputBytes) {
                 throw BudgetExceeded("OUTPUT")
             }

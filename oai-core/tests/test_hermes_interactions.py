@@ -87,6 +87,39 @@ class PromptRuntime(UnsupportedApprovalMixin):
             account.conversations.workflow.settle(accepted["messageId"], "completed")
 
 
+class ObservedEvents(list):
+    """Wait for stream consumption, not for host persistence plus a short sleep."""
+
+    def __init__(self):
+        super().__init__()
+        self.changed = asyncio.Event()
+
+    def append(self, event):
+        super().append(event)
+        self.changed.set()
+
+    async def wait_for_type(self, event_type, consumer):
+        async def observed():
+            while True:
+                self.changed.clear()
+                for event in self:
+                    if event["type"] == event_type:
+                        return event
+                if consumer.done():
+                    await consumer
+                    pytest.fail(f"native stream ended before {event_type}; observed types={[event['type'] for event in self]}")
+                await self.changed.wait()
+
+        def finished(_task):
+            self.changed.set()
+
+        consumer.add_done_callback(finished)
+        try:
+            return await asyncio.wait_for(observed(), 3)
+        finally:
+            consumer.remove_done_callback(finished)
+
+
 @pytest.mark.asyncio
 async def test_native_prompt_waits_for_opaque_approval_decision_and_streams_both_edges(interaction_core, monkeypatch):
     calls = []
@@ -97,7 +130,7 @@ async def test_native_prompt_waits_for_opaque_approval_decision_and_streams_both
     adapter = HermesSessionAdapter(interaction_core, runtime)
     principal = Principal("alice", device_id="phone", pairing_generation=7, grant_revision=9)
     conversation = (await adapter.list_sessions(principal))[0]["id"]
-    received = []
+    received = ObservedEvents()
 
     async def consume():
         async for event in adapter.send(principal, conversation, "run sensitive command"):
@@ -110,10 +143,9 @@ async def test_native_prompt_waits_for_opaque_approval_decision_and_streams_both
         if pending in done:
             await pending
         assert prompted in done, "the native approval prompt was not reached"
-        await asyncio.sleep(.01)
+        requested = await received.wait_for_type("approval_requested", pending)
         assert calls == [], "rendering an approval must not preemptively deny the native wait"
         assert received[0]["type"] == "generation"
-        requested = next(event for event in received if event["type"] == "approval_requested")
         card = requested["approval"]
         assert card["command"] == "sensitive-test-command"
         assert [option["choice"] for option in card["options"]] == ["once", "deny"]
@@ -201,7 +233,7 @@ async def test_exec_approval_card_works_when_host_metadata_lacks_request_id(inte
     adapter = HermesSessionAdapter(interaction_core, runtime)
     principal = Principal("alice", device_id="phone", pairing_generation=7, grant_revision=9)
     conversation = (await adapter.list_sessions(principal))[0]["id"]
-    received = []
+    received = ObservedEvents()
 
     async def consume():
         async for event in adapter.send(principal, conversation, "run sensitive command"):
@@ -210,8 +242,7 @@ async def test_exec_approval_card_works_when_host_metadata_lacks_request_id(inte
     pending = asyncio.create_task(consume())
     try:
         await asyncio.wait_for(runtime.prompted.wait(), 3)
-        await asyncio.sleep(.01)
-        card = next(event["approval"] for event in received if event["type"] == "approval_requested")
+        card = (await received.wait_for_type("approval_requested", pending))["approval"]
         assert card["command"] == "sensitive-test-command"
         decision = await adapter.decide_approval(principal, conversation, card["approvalId"], "once")
         assert decision["approval"]["decision"] == "once"
@@ -335,7 +366,7 @@ async def test_approval_endpoint_checks_account_session_and_option_before_resolv
     adapter = HermesSessionAdapter(interaction_core, runtime)
     principal = Principal("alice", device_id="phone")
     conversation = (await adapter.list_sessions(principal))[0]["id"]
-    received = []
+    received = ObservedEvents()
     async def consume():
         async for event in adapter.send(principal, conversation, "approval"):
             received.append(event)
@@ -343,8 +374,7 @@ async def test_approval_endpoint_checks_account_session_and_option_before_resolv
     token = "interaction-test-token-at-least-thirty-two-characters"
     try:
         await asyncio.wait_for(runtime.prompted.wait(), 3)
-        await asyncio.sleep(.01)
-        card = next(event["approval"] for event in received if event["type"] == "approval_requested")
+        card = (await received.wait_for_type("approval_requested", pending))["approval"]
         path = f"/oai/session-adapter/v1/sessions/{conversation}/approvals/{card['approvalId']}/decisions"
         async with TestClient(TestServer(create_hermes_bridge_app(adapter, token, ["alice", "bob"]))) as client:
             headers = {"Authorization": "Bearer " + token, "X-OAI-Account": "bob", "X-OAI-Device": "phone"}

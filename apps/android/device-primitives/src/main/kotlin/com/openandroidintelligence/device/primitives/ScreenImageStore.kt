@@ -8,7 +8,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/** Bounded, memory-only image handles; every access is fenced to the original local session. */
+/** Bounded, memory-only handles; every access is fenced to the authenticated connection scope. */
 internal class ScreenImageStore(private val clock: () -> Long = System::currentTimeMillis) {
     private data class Image(val owner: ScreenAuthorizationBinding, val sessionId: String,
         val png: ByteArray, val width: Int, val height: Int, val expiresAt: Long, val digest: String)
@@ -48,6 +48,9 @@ internal class ScreenImageStore(private val clock: () -> Long = System::currentT
     }
 
     @Synchronized fun clear() { images.values.forEach { it.png.fill(0) }; images.clear() }
+    @Synchronized fun clearScope(scope: String) {
+        images.filterValues { it.sessionId == scope }.keys.toList().forEach { discard(it) }
+    }
     @Synchronized fun discard(id: String) { images.remove(id)?.png?.fill(0) }
     @Synchronized fun expire() {
         val expired = images.filterValues { it.expiresAt <= clock() }.keys.toList()

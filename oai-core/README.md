@@ -77,7 +77,7 @@ oai capabilities
 
 `account` 是服务端本机身份管理命令。旧 `dev` 基线中的 `policy` 账号能力开关不再参与本分支的设备授权裁决；它不是目标设计的操作步骤。出现 `GATEWAY_DISABLED` 时，应先确认客户端与 Core 是否完成新授权模型协商；不要另建服务端授权入口。
 
-远程 CLI/API/MCP 请求不接受账号或设备身份覆盖。当前登录凭据绑定该账号下已配对设备、配对代次、授权版本和过期时间，默认有效期 86400 秒；撤销或授权版本变化会使旧凭据失效。后续对授权版本与设备状态同步的调整须按计划实现和验收，认证、配对绑定及凭据撤销机制必须保留。
+远程 CLI/API/MCP 请求不接受账号或设备身份覆盖。登录凭据绑定该账号下已配对设备、配对代次和过期时间，默认有效期 86400 秒；凭据撤销或配对失效会终止访问。Android 能力发布的 `grantRevision` 变化不使 Token 或端点 route 失效；新请求在事务内绑定当前发布版本，已入队请求仍绑定原版本，旧 GET/Claim/Result/幂等重放继续被 `GRANT_STALE` 或历史请求 fence 拒绝。
 客户端配置默认写入 `~/.config/oai/client.json`，以 `0600` 保存，退出使用 `oai ... logout`
 撤销凭据。上述登录和后续命令使用同一个默认客户端配置。需要自定义路径时，每条客户端命令均加
 `--client-config`。`--device` 取 `oai devices` 返回的设备 ID。在操作人的独立终端环境登录，
@@ -88,7 +88,7 @@ oai capabilities
 ```sh
 oai devices
 oai capabilities
-oai invoke org.openandroidintelligence.notifications.query --version 1.0.0 --parameters '{"limit":1}' --idempotency-key read-once --wait 30
+oai invoke org.openandroidintelligence.notifications.query --version 1.0.0 --parameters '{"limit":1}' --agent-name Hermes --purpose '读取用户指定范围内的通知' --idempotency-key read-once --wait 360
 oai status REQUEST_ID
 oai cancel REQUEST_ID
 oai ack REQUEST_ID
@@ -99,6 +99,42 @@ oai mcp
 `--wait` 只等待服务端状态，不创建另一套任务状态；等待结束后可用 `status` 继续读取原请求。
 相同幂等键及参数返回同一请求，参数不同返回冲突。高风险操作仍需手机本地确认。
 `ack` 在消费设备结果后清理临时结果正文。MCP 使用官方 SDK 的 stdio transport，工具均调用同一 API。
+新 REST 请求必须携带 `caller: {agentName, purpose}`；CLI 使用 `--agent-name` 和 `--purpose`，
+MCP `oai_invoke` 使用 `agent_name` 和 `purpose`。两项必须非空，缺失或仅含空白返回
+`CALLER_DECLARATION_REQUIRED`，不会替旧调用者编造声明。名称与目的仅用于展示和审计；
+账号、设备和配对仍来自认证上下文。已持久化的旧请求可以保持无声明，不能因此重新执行或绕过旧请求 fence。
+协议扩展通过现有 Schema hash 协商；新旧不匹配返回 `PROTOCOL_INCOMPATIBLE`。
+
+Android 使用签名 `POST /open-android-intelligence/v2/device-requests/{id}/authorization`，
+提交 `{"state":"awaiting_confirmation"}` 或 `{"state":"executing"}`。
+已 Claim 的未终止请求可更新可选 `localAuthorizationState`，CLI/API/MCP 状态读取均可见。
+该字段不批准操作、不改变请求状态或期限。在线临时高权限请求默认 360 秒，覆盖 300 秒手动确认及有限执行；
+离线仍不可入队，调用者显式更短的内部 deadline 继续生效。HTTP 单次连接超时不等于请求有效期；
+`--wait` 默认为不等待，主动设置的等待时间到期后不会取消 Core 请求。
+结果未产生时 ACK 返回 `RESULT_NOT_READY`；消费后可附 `resultDigest` 确认，重复 ACK 返回原持久回执。
+
+直接 `invoke` 会解释不可用原因，不要求先查询能力目录。未匹配到可调用 binding 时，Core 只使用同设备、
+同配对代次和当前发布 revision 的 Android inventory 生成拒绝诊断；inventory 不会创建 binding、
+批准请求或替代 Android 执行前的权限复核。CLI JSON 错误与 MCP 工具错误均保留 `details`。
+
+| 情形 | 直接调用错误或请求状态 |
+| --- | --- |
+| 缺少 Android 系统权限 | HTTP 403 `ANDROID_PERMISSION_REQUIRED`；`details.reason` 保留 `READ_SMS_REQUIRED`、`READ_CALL_LOG_REQUIRED`、`NOTIFICATION_ACCESS_REQUIRED` 等 Android 原因 |
+| 本地能力或插件关闭 | HTTP 403 `LOCAL_CAPABILITY_DISABLED`；`details.androidStatus/reason` 区分本地能力关闭和插件关闭 |
+| 完整 inventory 中未安装相应插件 | HTTP 404 `CAPABILITY_NOT_INSTALLED`，`details.reason=NOT_IN_ANDROID_INVENTORY` |
+| 提供者未就绪、未选定，或能力/版本不存在 | HTTP 409 `CAPABILITY_UNAVAILABLE`；保留具体 provider 原因，或 `CAPABILITY_NOT_IMPLEMENTED` / `CAPABILITY_VERSION_UNAVAILABLE` |
+| 发布过时或缺少完整 inventory | HTTP 409 `CAPABILITY_UNAVAILABLE`，`details.reason=SYNC_REQUIRED` 或 `ANDROID_STATE_UNKNOWN`，不推断已安装或系统权限已授予 |
+| 高权限请求要求在线设备 | HTTP 503 `DEVICE_OFFLINE`，`details.reason=LIVE_CONNECTION_REQUIRED`；可重试，不创建请求 |
+| read/sync/write 允许的离线队列 | 请求保持 `pending`，`details={reason:DEVICE_OFFLINE,queued:true,source:core-connection}`；既有风险队列及期限不变 |
+| 名称或目的缺失、空白 | HTTP 400 `CALLER_DECLARATION_REQUIRED`，不编造声明 |
+| 正在等待 Android 用户确认 | `state=claimed`、`localAuthorizationState=awaiting_confirmation`、`details.reason=awaiting_confirmation` |
+| Android 用户拒绝 | Android 原始 `result` 保留，`details.reason=user_rejected`、`androidReason=LOCAL_USER_REJECTED` |
+| Android 确认或执行超时 | Android 原始 `result` 保留，`details.reason=timeout`，`details.phase=confirmation` 或 `execution` |
+| Core 请求期限已到 | 保留 `expired` 或 `outcome_unknown`；`details.reason=timeout`、`source=core-deadline`，已 Claim 的结果仍可能未知，不推断副作用已停止 |
+
+诊断 `source` 区分 `android-inventory`、`android-publication`、`android-progress`、`android-result` 与
+`core-connection/core-deadline`。未收到 Android 确认时不推断用户拒绝、超时原因或操作成功；
+ACK/期限清理后不再保留的结果正文也不会被重建。认证、配对/revision/fence 拒绝继续使用原错误。
 
 设备 REST 前缀为 `/open-android-intelligence/core/v1`：
 `POST /tokens`、`DELETE /tokens/current`、`GET /devices`、`GET /capabilities`、
@@ -108,6 +144,48 @@ Android 继续使用原 `/open-android-intelligence/v2` 的签名、配对及设
 会话使用本次新版 App 的 `/agents` 接口；旧 `/conversations` 聊天 API 在 Core 不可用，
 对应可选会话能力不会宣告。旧 App 聊天需保留或回滚到原 Gateway。
 成功协商响应头 `X-OAI-Agent-Sessions: 1` 用于新版 App 选择原生会话界面，旧宿主无需接收 `/agents` 探测。
+
+### 主动推送接收端点
+
+```sh
+oai endpoint register --registration-key receiver-main --label Hermes --ttl-seconds 3600
+oai endpoint list
+oai endpoint receive ENDPOINT_ID
+oai endpoint ack ENDPOINT_ID DELIVERY_ID EVENT_ID
+oai endpoint unregister ENDPOINT_ID
+```
+
+接收端复用现有设备绑定 Bearer 凭据；MCP 对应工具为 `oai_register_endpoint`、`oai_endpoints`、
+`oai_receive_deliveries`、`oai_ack_delivery`、`oai_unregister_endpoint`，没有独立 Agent 身份体系。
+注册本身不授予设备数据订阅权限，Android 用户仍需选择接收 route。
+
+Core v1 接口为 `POST|GET /endpoints`、`DELETE /endpoints/{endpointId}`、
+`GET /endpoints/{endpointId}/deliveries`、`POST /endpoints/{endpointId}/deliveries/{deliveryId}/ack`。
+注册 JSON 为 `{"registrationKey":"receiver-main","label":"Hermes","ttlSeconds":3600}`。
+发现响应为 `{coreInstanceId,accountScope,endpoints}`，即使端点列表为空也保留 Core 与账号范围。
+稳定 route 为 `{coreInstanceId, accountScope, endpointId, generation}`：Core 实例身份持久化，账号范围不透明，
+端点 ID 由服务端生成，重建或更换接收凭据推进代次；label 可重命名但不参与身份判断。
+只有拥有端点的当前合法凭据可以接收、确认和注销；发现及 Android 发送仍受账号、设备和配对绑定约束。
+跨 Core/账号目标由 Android 使用各条已认证连接分别发现和发送，不开放会话、历史或附件的跨账号读取。
+
+Android 签名接口为 `GET /open-android-intelligence/v2/push/endpoints`、
+`POST /open-android-intelligence/v2/push/deliveries`、`GET /open-android-intelligence/v2/push/deliveries/{deliveryId}`、
+`POST /open-android-intelligence/v2/push/deliveries/revoke`。
+提交 JSON 为 `{eventId, route, eventType, occurredAt, expiresAt, payload}`，时间使用 UTC 毫秒格式，
+撤销 JSON 为 `{route,eventIds:[...]}`，按稳定事件 ID 精确撤销，批量为 1–128 个且不能重复；
+未知或尚未投递的事件 ID 幂等忽略，响应不泄露匹配数量。只有明确移除接收端点时才省略 `eventIds`，
+使用兼容的 `{route}` 撤销该 route 全部未完成投递。两种格式均返回 `{route,revoked:true}`，
+复用现有 Ed25519/session/nonce/negotiation 校验和 v2 envelope。
+回执为 `{deliveryId,eventId,route,state,payloadExpiresAt,acknowledgedAt}`，时间缺失时为 null。
+
+Android 保存长期加密队列；Core 仅保存 endpoint、摘要去重与 ACK 等元数据，正文加密暂存最多 60 秒。
+每条正文最多 64 KiB，每账号最多 128 条、合计 1 MiB 活跃正文；超限明确返回 `PUSH_BUFFER_FULL`，
+不会静默丢弃新事件。租约为 60 秒至 24 小时，默认 1 小时，事件截止最多 7 天。
+`pending` 只代表已暂存；`payload_expired` 要求 Android 使用原 eventId 与原内容补投；
+`acknowledged` 才表示接收端确认消费。另有 `revoked`、`expired` 终态。
+逐端 ACK 请求为 `{"eventId":"..."}`；读取不自动 ACK，未读取即 ACK 返回 `DELIVERY_NOT_RECEIVED`。
+ACK 后重复投递或 ACK 返回原回执且不恢复正文，同一投递身份内容改变返回 `IDEMPOTENCY_CONFLICT`。
+撤销会清理相应待投递正文并保留终态去重事实；Android 同时取消本地发送并重新核对当前授权后才能发送新事件。
 
 ## 会话接口
 

@@ -1,11 +1,19 @@
 # Android 屏幕能力：CLI、API 与 MCP 接口
 
-**2026-10-28 授权规则**：设备能力由 Android 唯一授权，已安装且启用插件的普通前台能力默认开启；Core/Agent Gateway 不追加账号能力许可。系统屏幕权限、本地 READ/CAPTURE/CONTROL 许可和逐次敏感确认继续生效。规则已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`。以下远程 API 示例不代表真实设备验收已经通过；当前验证范围见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
+**2026-11-01 现行授权规则**：安装实例全局保存每项能力总开关及三级模式，新能力默认每次手动，主动推送独立且默认关闭；旧配对许可/迁移复核/按账号保存能力规则已被取代。系统权限、合法设备绑定、账号会话和附件隔离继续保留。详见[全局规格](../superpowers/specs/2026-11-01-global-device-authorization.md)，实现和验收以[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)为准。
 
 本文记录屏幕能力的公开调用契约。基线源码已接入 Android 的“屏幕读取与控制”设置页、
-本地屏幕会话开始/撤销、无障碍设置和独立系统投屏授权。代码依据与调用顺序见
-[前端交接说明](android-screen-frontend-handoff.zh-CN.md)。当前 feature 在 Android 唯一授权模型下保留本地屏幕许可；
+安装实例全局模式、请求临时许可撤销、无障碍设置和独立系统投屏授权。代码依据与调用顺序见
+[前端交接说明](android-screen-frontend-handoff.zh-CN.md)。当前实现按每请求注入全局策略决定，不再要求配对级屏幕会话；
 没有有效本地授权时继续安全拒绝，源码有入口不等于真机验收通过。
+
+## 手动确认与屏幕版本
+
+2026-11-01运行验收发现，正常本机确认弹窗也会改变无障碍事件代次，导致真实“仅允许本次”控制以`SCREEN_STALE_REFERENCE`结束。修复使用仅由可信Android驱动创建的本地确认对象：绑定原requestId、完整参数摘要、当前合法连接/权限/期限及一次性消费；远端JSON不能创建或完成该对象。
+
+App先保存真实读取的屏幕前置状态，确认卡的Android窗口实际移除后，再检查目标完整内容、显示与窗口身份相同，并核对期间事件仅来自这一个可信确认窗口。目标节点变化后恢复、未知来源事件、历史缺失/溢出、缺失子节点、密码内容不可证明、旋转或权限/连接/租约变化仍拒绝CONTROL；没有此本地确认对象的旧revision继续失效。调用者不得修改expectedRevision来绕过失败。
+
+普通手动READ只等待自己的确认窗口真正移除，再读取当前实际屏幕；不因控制证明的完整度限制而禁止原有截断读取。此修复定向测试已通过，真实新APK复测仍以[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)和[Terra报告](../reviews/2026-11-01-global-device-authorization-terra.zh-CN.md)为准，不能先写通过。
 
 ## 调用链与能力隔离
 
@@ -18,16 +26,16 @@ CLI 与 MCP 均使用 `CoreClient` 请求既有设备 API；Core 沿用同一账
 | --- | --- | --- | --- |
 | `org.openandroidintelligence.screen-reader` | `org.openandroidintelligence.screen-reader.read` | `kernel.screen.read` | 读取或搜索有界 Accessibility 语义树，`read` |
 | `org.openandroidintelligence.screen-capture` | `org.openandroidintelligence.screen-capture.capture` | `kernel.screen.capture` | 经本地许可与 MediaProjection 授权截图，`read` |
-| `org.openandroidintelligence.screen-control` | `org.openandroidintelligence.screen-control.control` | `kernel.screen.control` | 执行明确的 Android 操作，`write`，每请求本地确认 |
+| `org.openandroidintelligence.screen-control` | `org.openandroidintelligence.screen-control.control` | `kernel.screen.control` | 执行明确的 Android 操作，`write`，按全局模式决定确认 |
 
 三个独立受保护插件各自只声明一个内核原语。能力 ID 必须属于自身插件命名空间，不能把
-不同原语放进一个包后仅靠自然语言区分权限。仅安装不启用插件；启用后其能力默认开启，
+不同原语放进一个包后仅靠自然语言区分权限。仅安装不启用插件；启用后按每项能力的全局模式处理，新能力默认每次手动，
 无需额外账号开关或重复配对 grant。有效的连接认证和设备绑定、Android 系统权限、
-本地屏幕许可及控制逐次确认仍分别生效，启用不能替代这些条件。
+本地全局模式和必要Android系统同意仍分别生效，启用不能替代这些条件。
 
 公开参数 Schema 是 `plugins/schemas/screen-read.json`、`screen-capture.json` 与
 `screen-control.json`，随已签名 `.alp` 发布；Android 经既有能力发布机制向 Core 注册实际
-Schema。设备协议的通用请求封装与核心 Schema 哈希未因新增插件而改变。
+Schema。本轮请求封装增加非可信caller声明，核心Schema hash已同步升级；不兼容版本明确拒绝。
 
 ## 能力发现与权限状态
 
@@ -51,8 +59,8 @@ oai capabilities
 库存条目本身不是授权，缺少实际可调用绑定时 Core 拒绝入队。
 
 屏幕读取还要求用户在系统设置主动启用 OAI 无障碍服务；截图要求本地独立 CAPTURE 许可、
-系统 MediaProjection 授权和有效投影前台服务；控制要求独立 CONTROL 许可、目标窗口绑定和
-针对原请求参数摘要的本地确认。远程参数不能传入本地授权、账号或设备身份来提升权限。
+系统 MediaProjection 授权和有效投影前台服务；控制要求独立全局控制模式、目标窗口绑定和
+当前请求在本地策略下获得允许（手动或限时批准、自动模式），并在排队后重核。远程参数不能传入本地授权、账号或设备身份来提升权限。
 
 ## 屏幕读取
 
@@ -115,6 +123,7 @@ oai capabilities
 ```sh
 oai invoke org.openandroidintelligence.screen-reader.read --version 1.0.0 \
   --parameters '{"operation":"snapshot","maxNodes":128}' \
+  --agent-name "屏幕助手" --purpose "执行用户指定的屏幕操作" \
   --idempotency-key screen-observe-001 --wait 30
 ```
 
@@ -134,8 +143,8 @@ oai invoke org.openandroidintelligence.screen-reader.read --version 1.0.0 \
 
 `mimeType` 为 `image/png`；`sha256` 为完整 PNG 的 64 位小写十六进制摘要。
 `expiresAt` 为 Unix 毫秒时间戳。图片只驻留 Android 内存，最大 8 MiB；最多保留 2 幅；
-有效期不超过 60 秒，且不会晚于本地屏幕会话的到期时间。
-`imageId` 是随机、不透明句柄，绑定原账号、配对、连接与授权版本以及本地会话，不能跨会话转用。
+有效期不超过60秒，且不会晚于创建请求的允许期限。
+`imageId` 是随机、不透明句柄，绑定原账号、配对、连接与授权版本以及授权版本，不能跨账号或连接转用。
 撤销、换账号或断连时清空像素并使旧句柄不可用。
 
 `chunkSize` 为 24576 个原始字节，Base64 编码后仍小于交换区预算。
@@ -145,15 +154,18 @@ oai invoke org.openandroidintelligence.screen-reader.read --version 1.0.0 \
 ```sh
 oai invoke org.openandroidintelligence.screen-capture.capture --version 1.0.0 \
   --parameters '{"operation":"capture","maxWidth":1024}' \
+  --agent-name "屏幕助手" --purpose "执行用户指定的屏幕操作" \
   --idempotency-key screenshot-001 --wait 30
 
 # 取上一次已完成请求 result.data.result 中的 imageId，按返回的 nextOffset 继续读取。
 oai invoke org.openandroidintelligence.screen-capture.capture --version 1.0.0 \
   --parameters '{"operation":"read","imageId":"设备返回的 imageId","offset":0}' \
+  --agent-name "屏幕助手" --purpose "执行用户指定的屏幕操作" \
   --idempotency-key screenshot-001-chunk-0 --wait 30
 
 oai invoke org.openandroidintelligence.screen-capture.capture --version 1.0.0 \
   --parameters '{"operation":"release","imageId":"设备返回的 imageId"}' \
+  --agent-name "屏幕助手" --purpose "执行用户指定的屏幕操作" \
   --idempotency-key screenshot-001-release --wait 30
 ```
 
@@ -185,10 +197,12 @@ Root 或任意命令执行。优先把 `nodeId` 传给语义操作；坐标用�
 ```sh
 oai invoke org.openandroidintelligence.screen-control.control --version 1.0.0 \
   --parameters '{"action":"click","expectedRevision":"最近返回的 revision","nodeId":"最近返回的 nodeId"}' \
+  --agent-name "屏幕助手" --purpose "执行用户指定的屏幕操作" \
   --idempotency-key screen-click-001 --wait 30
 
 oai invoke org.openandroidintelligence.screen-control.control --version 1.0.0 \
   --parameters '{"action":"global","expectedRevision":"最近返回的 revision","globalAction":"back"}' \
+  --agent-name "屏幕助手" --purpose "执行用户指定的屏幕操作" \
   --idempotency-key screen-back-001 --wait 30
 ```
 
@@ -250,7 +264,7 @@ oai ack REQUEST_ID
 `cancelled`、`expired`、`outcome_unknown`。未 Claim 的取消可终止排队；
 `cancel_requested` 仅表示已请求取消，无法证明已经派发的 Android 操作没有发生。
 `--wait` 到期只停止客户端等待，不取消服务端请求；继续使用原 `requestId` 查询。
-Core 沿用现有风险队列的过期预算，Android 同时检查请求期限、本地会话 TTL 与当前授权。
+Core 沿用现有风险队列的过期预算，Android同时检查请求期限、临时许可期限、控制租约与当前授权。
 断连、重启或超时后若副作用结果不确定，返回或保留 `outcome_unknown`，禁止盲目重发。
 
 HTTP 拒绝使用既有 `error.code`，如 `CAPABILITY_DENIED`、`SCHEMA_INVALID`、

@@ -4,9 +4,12 @@ import com.openandroidintelligence.control.*
 import com.openandroidintelligence.gateway.schema.Json
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -67,10 +70,10 @@ class ScreenBackendTest {
         val backend = AndroidScreenBackend(runtime)
         val original = backend.read()
         runtime.currentDisplay = ScreenDisplay(1920, 1080, 1)
-        fails("SCREEN_STALE_REFERENCE") { backend.execute(original.revision, ScreenAction.Click("w1:0")) }
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(original.revision, ScreenAction.Click("w1:0")) }
         val rotated = backend.read()
         runtime.sequence++
-        fails("SCREEN_STALE_REFERENCE") { backend.execute(rotated.revision, ScreenAction.Global("back")) }
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(rotated.revision, ScreenAction.Global("back")) }
         assertTrue(runtime.effects.isEmpty())
     }
 
@@ -78,11 +81,11 @@ class ScreenBackendTest {
         val runtime = FakeRuntime()
         val backend = AndroidScreenBackend(runtime)
         val revision = backend.read().revision
-        assertTrue(backend.execute(revision, ScreenAction.Click("w1:0")).performed)
-        backend.execute(revision, ScreenAction.SetText("w1:0", "真实输入"))
-        backend.execute(revision, ScreenAction.Scroll("w1:0", "down"))
-        backend.execute(revision, ScreenAction.LongPress("w1:0"))
-        backend.execute(revision, ScreenAction.Global("back"))
+        assertTrue(backend.executeLeased(revision, ScreenAction.Click("w1:0")).performed)
+        backend.executeLeased(revision, ScreenAction.SetText("w1:0", "真实输入"))
+        backend.executeLeased(revision, ScreenAction.Scroll("w1:0", "down"))
+        backend.executeLeased(revision, ScreenAction.LongPress("w1:0"))
+        backend.executeLeased(revision, ScreenAction.Global("back"))
         assertEquals(listOf("node:CLICK", "node:SET_TEXT:真实输入", "node:SCROLL_DOWN", "node:LONG_CLICK", "global:back"), runtime.effects)
         assertEquals(runtime.created, runtime.closed)
     }
@@ -91,14 +94,14 @@ class ScreenBackendTest {
         val runtime = FakeRuntime()
         val backend = AndroidScreenBackend(runtime)
         val revision = backend.read().revision
-        fails("SCREEN_COORDINATES_INVALID") { backend.execute(revision, ScreenAction.Click(x = 1080, y = 10)) }
-        fails("SCHEMA_INVALID") { backend.execute(revision, ScreenAction.Click("w1:0", 20, 20)) }
-        fails("SCHEMA_INVALID") { backend.execute(revision, ScreenAction.Swipe(0, 0, 50, 50, 5000)) }
+        fails("SCREEN_COORDINATES_INVALID") { backend.executeLeased(revision, ScreenAction.Click(x = 1080, y = 10)) }
+        fails("SCHEMA_INVALID") { backend.executeLeased(revision, ScreenAction.Click("w1:0", 20, 20)) }
+        fails("SCHEMA_INVALID") { backend.executeLeased(revision, ScreenAction.Swipe(0, 0, 50, 50, 5000)) }
         assertTrue(runtime.effects.isEmpty())
-        backend.execute(revision, ScreenAction.Click(x = 20, y = 30))
-        backend.execute(revision, ScreenAction.Swipe(0, 1, 50, 60))
-        backend.execute(revision, ScreenAction.Drag(20, 30, 60, 70))
-        backend.execute(revision, ScreenAction.LaunchApp("org.example.app"))
+        backend.executeLeased(revision, ScreenAction.Click(x = 20, y = 30))
+        backend.executeLeased(revision, ScreenAction.Swipe(0, 1, 50, 60))
+        backend.executeLeased(revision, ScreenAction.Drag(20, 30, 60, 70))
+        backend.executeLeased(revision, ScreenAction.LaunchApp("org.example.app"))
         assertEquals(listOf("gesture:false:100", "gesture:false:400", "gesture:true:800", "launch:org.example.app"), runtime.effects)
     }
 
@@ -107,10 +110,10 @@ class ScreenBackendTest {
         val backend = AndroidScreenBackend(runtime)
         val revision = backend.read().revision
         fails("SCREEN_SESSION_EXPIRED") {
-            backend.execute(revision, ScreenAction.Click("w1:0")) { throw ScreenOperationException("SCREEN_SESSION_EXPIRED") }
+            backend.executeLeased(revision, ScreenAction.Click("w1:0")) { throw ScreenOperationException("SCREEN_SESSION_EXPIRED") }
         }
         assertTrue(runtime.effects.isEmpty())
-        val result = backend.execute(revision, ScreenAction.Click("w1:0")) {
+        val result = backend.executeLeased(revision, ScreenAction.Click("w1:0")) {
             if (runtime.effects.isNotEmpty()) throw ScreenAuthorizationException("SCREEN_SESSION_EXPIRED")
         }
         assertTrue(result.performed)
@@ -122,11 +125,11 @@ class ScreenBackendTest {
         val runtime = FakeRuntime()
         val backend = AndroidScreenBackend(runtime)
         val revision = backend.read().revision
-        fails("SCREEN_NODE_NOT_FOUND") { backend.execute(revision, ScreenAction.Click("w1:9")) }
+        fails("SCREEN_NODE_NOT_FOUND") { backend.executeLeased(revision, ScreenAction.Click("w1:9")) }
         runtime.denial = "ACCESSIBILITY_SERVICE_UNAVAILABLE"
-        fails("ACCESSIBILITY_SERVICE_UNAVAILABLE") { backend.execute(revision, ScreenAction.Global("back")) }
+        fails("ACCESSIBILITY_SERVICE_UNAVAILABLE") { backend.executeLeased(revision, ScreenAction.Global("back")) }
         runtime.denial = "SCREEN_DEVICE_LOCKED"
-        fails("SCREEN_DEVICE_LOCKED") { backend.execute(revision, ScreenAction.Global("home")) }
+        fails("SCREEN_DEVICE_LOCKED") { backend.executeLeased(revision, ScreenAction.Global("home")) }
         assertTrue(runtime.effects.isEmpty())
     }
 
@@ -134,10 +137,100 @@ class ScreenBackendTest {
         val runtime = FakeRuntime().apply { gestureCompletion = CompletableDeferred() }
         val backend = AndroidScreenBackend(runtime)
         val revision = backend.read().revision
-        val first = launch { backend.execute(revision, ScreenAction.Swipe(0, 0, 50, 50)) }
-        val queued = launch { backend.execute(revision, ScreenAction.Global("back")) }
+        val first = launch { backend.executeLeased(revision, ScreenAction.Swipe(0, 0, 50, 50)) }
+        val queued = launch { backend.executeLeased(revision, ScreenAction.Global("back")) }
         queued.cancelAndJoin()
         first.cancelAndJoin()
+        assertEquals(listOf("gesture:false:400"), runtime.effects)
+    }
+
+    @Test fun controlWithoutLeaseIsRejectedButReadingRemainsAvailable() = runTest {
+        val runtime = FakeRuntime()
+        val backend = AndroidScreenBackend(runtime)
+        val snapshot = backend.read()
+        fails("SCREEN_CONTROL_LEASE_REQUIRED") { backend.execute(snapshot.revision, ScreenAction.Global("back")) }
+        assertEquals(snapshot.revision, backend.read().revision)
+        assertTrue(runtime.effects.isEmpty())
+    }
+
+    @Test fun readDoesNotWaitForControlAndQueuedControlRunsInOrder() = runTest {
+        val runtime = FakeRuntime().apply { gestureCompletion = CompletableDeferred() }
+        val backend = AndroidScreenBackend(runtime)
+        val manager = ScreenControlLeaseManager({ 1_000_000L + testScheduler.currentTime }, testScheduler.timeSource)
+        val revision = backend.read().revision
+        val first = async {
+            manager.withLease("first", 1_060_000, {}) { backend.execute(revision, ScreenAction.Swipe(0, 0, 50, 50)) }
+        }
+        runCurrent()
+        val queued = async {
+            manager.withLease("queued", 1_060_000, {}) { backend.execute(revision, ScreenAction.Global("back")) }
+        }
+        runCurrent()
+        assertEquals(listOf("gesture:false:400"), runtime.effects)
+        assertEquals(revision, backend.read().revision)
+        assertFalse(queued.isCompleted)
+        checkNotNull(runtime.gestureCompletion).complete(true)
+        first.await(); queued.await()
+        assertEquals(listOf("gesture:false:400", "global:back"), runtime.effects)
+    }
+
+    @Test fun queuedControlRechecksSnapshotAfterOtherControllerChangesScreen() = runTest {
+        val runtime = FakeRuntime().apply { gestureCompletion = CompletableDeferred() }
+        val backend = AndroidScreenBackend(runtime)
+        val manager = ScreenControlLeaseManager({ 1_000_000L + testScheduler.currentTime }, testScheduler.timeSource)
+        val revision = backend.read().revision
+        val first = async {
+            manager.withLease("first", 1_060_000, {}) { backend.execute(revision, ScreenAction.Swipe(0, 0, 50, 50)) }
+        }
+        runCurrent()
+        val queued = async {
+            fails("SCREEN_STALE_REFERENCE") {
+                manager.withLease("queued", 1_060_000, {}) { backend.execute(revision, ScreenAction.Global("back")) }
+            }
+        }
+        runCurrent()
+        runtime.sequence++
+        checkNotNull(runtime.gestureCompletion).complete(true)
+        first.await(); queued.await()
+        assertEquals(listOf("gesture:false:400"), runtime.effects)
+    }
+
+    @Test fun finalNativeDispatchRechecksLeaseAuthorization() = runTest {
+        var allowed = true
+        val runtime = FakeRuntime().apply { beforeNative = { allowed = false } }
+        val backend = AndroidScreenBackend(runtime)
+        val manager = ScreenControlLeaseManager({ 1_000_000L }, testScheduler.timeSource)
+        val revision = backend.read().revision
+        try {
+            manager.withLease("request", 1_060_000, {
+                if (!allowed) throw ScreenAuthorizationException("SCREEN_CONTROL_REVOKED")
+            }) { backend.execute(revision, ScreenAction.Global("back")) }
+            fail("expected revocation")
+        } catch (failure: ScreenAuthorizationException) {
+            assertEquals("SCREEN_CONTROL_REVOKED", failure.code)
+        }
+        assertTrue(runtime.effects.isEmpty())
+    }
+
+    @Test fun expiredQueuedNativeActionNeverDispatchesAfterOwnerCompletes() = runTest {
+        val runtime = FakeRuntime().apply { gestureCompletion = CompletableDeferred() }
+        val backend = AndroidScreenBackend(runtime)
+        val manager = ScreenControlLeaseManager({ 1_000_000L + testScheduler.currentTime }, testScheduler.timeSource)
+        val revision = backend.read().revision
+        val first = async {
+            manager.withLease("first", 1_060_000, {}) { backend.execute(revision, ScreenAction.Swipe(0, 0, 50, 50)) }
+        }
+        runCurrent()
+        val queued = async {
+            fails("SCREEN_REQUEST_EXPIRED") {
+                manager.withLease("queued", 1_001_000, {}) { backend.execute(revision, ScreenAction.Global("back")) }
+            }
+        }
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        queued.await()
+        checkNotNull(runtime.gestureCompletion).complete(true)
+        first.await()
         assertEquals(listOf("gesture:false:400"), runtime.effects)
     }
 
@@ -152,6 +245,14 @@ class ScreenBackendTest {
         runtime.roots = listOf(Spec(text = "changed"))
         assertEquals(true, backend.read(ScreenReadQuery(previousHash = original.hash)).changed)
     }
+
+    private suspend fun ScreenBackend.executeLeased(
+        expectedRevision: String,
+        action: ScreenAction,
+        beforeDispatch: () -> Unit = {},
+    ): ScreenActionResult = ScreenHostRegistry.controlLeases.withLease(
+        java.util.UUID.randomUUID().toString(), System.currentTimeMillis() + 60_000L, {},
+    ) { execute(expectedRevision, action, beforeDispatch) }
 
     private suspend fun fails(code: String, action: suspend () -> Unit) {
         try { action(); fail("expected $code") }
@@ -173,6 +274,7 @@ private class FakeRuntime : ScreenRuntime {
     var currentDisplay = ScreenDisplay(1080, 1920, 0)
     val effects = mutableListOf<String>()
     var gestureCompletion: CompletableDeferred<Boolean>? = null
+    var beforeNative: () -> Unit = {}
     override fun availability() = denial
     override fun generation() = sequence
     override fun display() = currentDisplay
@@ -204,16 +306,18 @@ private class FakeRuntime : ScreenRuntime {
         }
     }
     override fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long, beforeDispatch: () -> Unit): Boolean {
+        beforeNative()
         beforeDispatch()
         effects += "node:$action" + (text?.let { ":$it" } ?: "")
         return true
     }
     override suspend fun gesture(points: List<Pair<Int, Int>>, durationMs: Long, generation: Long,
         beforeDispatch: () -> Unit, drag: Boolean): Boolean {
+        beforeNative()
         beforeDispatch()
         effects += "gesture:$drag:$durationMs"
         return gestureCompletion?.await() ?: true
     }
-    override fun global(action: String, generation: Long, beforeDispatch: () -> Unit): Boolean { beforeDispatch(); effects += "global:$action"; return true }
-    override fun launch(packageName: String, generation: Long, beforeDispatch: () -> Unit): Boolean { beforeDispatch(); effects += "launch:$packageName"; return true }
+    override fun global(action: String, generation: Long, beforeDispatch: () -> Unit): Boolean { beforeNative(); beforeDispatch(); effects += "global:$action"; return true }
+    override fun launch(packageName: String, generation: Long, beforeDispatch: () -> Unit): Boolean { beforeNative(); beforeDispatch(); effects += "launch:$packageName"; return true }
 }

@@ -94,7 +94,7 @@ async def scenario():
         response = await client.get(DEVICE_API + "/capabilities", headers=headers)
         assert response.status == 200, await response.text()
         assert binding["capabilityId"] in await response.text()
-        body = {"capabilityId": binding["capabilityId"], "capabilityVersion": binding["capabilityVersion"], "parameters": {"limit": 1}}
+        body = {"caller": {"agentName": "transport-test", "purpose": "验证设备请求链路"}, "capabilityId": binding["capabilityId"], "capabilityVersion": binding["capabilityVersion"], "parameters": {"limit": 1}}
         response = await client.post(DEVICE_API + "/device-requests", json=body, headers={**headers, "Idempotency-Key": "independent-once"})
         assert response.status == 200, await response.text()
         request_id = (await response.json())["requestId"]

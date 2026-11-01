@@ -7,6 +7,8 @@ version: 2.1.0
 
 # open-android-intelligence Gateway Protocol v2 契约
 
+> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../superpowers/specs/2026-11-01-global-device-authorization.md)。
+
 ## 1. 适用范围
 
 本契约定义 Android 宿主与一个账号所属逻辑 Gateway 之间的应用层协议。它不定义 Hermes/OpenClaw 内部 API、插件 WASM ABI 或 Companion IPC。
@@ -1353,3 +1355,23 @@ Hermes 原生命令输入不等待普通消息的 generation 锁；`/new` 在原
 | POST `/device-requests/{id}/ack` | 确认结果已消费，触发临时正文清理 |
 
 服务端本机账号管理不进入该远程调用面；现存 `oai policy` 为待退场的旧能力策略入口，不是目标授权要求。远程请求不接受账号或设备身份覆盖。设备请求的排队、认领、超时、取消与结果状态机由仓库的唯一 `oai_core.gateway` 实现；来源记录见 ADR 0055，取消额外账号能力许可不改变其身份、安全与可靠交付要求。
+
+## 19. 安装实例全局授权与主动投递扩展（2026-11-01）
+
+现行需求为[全局授权规格](../superpowers/specs/2026-11-01-global-device-authorization.md)，实现状态见[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)。
+新设备请求携带封闭对象 `caller:{agentName,purpose}`，只供显示与审计。可信账号、设备、配对代次、凭据及签名均来自认证上下文，
+不从 caller 推导。CLI/API/MCP 缺声明返回 `CALLER_DECLARATION_REQUIRED`，不合成身份或授权。
+
+Android 向已 Claim 的请求签名 POST `/v2/device-requests/{id}/authorization`（完整路径前缀 `/open-android-intelligence`），
+body `state=awaiting_confirmation|executing`。Core 只记录本地进度，不能借此批准请求。
+请求状态继续由既有状态机维护，进度不构成成功；终态结果由 Android 返回，调用方消费后 ACK。提前 ACK 返回 `RESULT_NOT_READY`；
+终态 ACK 绑定结果摘要并保持可重复的持久回执。
+
+主动推送注册/发现/接收端消费使用 `/core/v1/endpoints`；Android 设备签名接口位于 `/v2/push/endpoints`、
+`/v2/push/deliveries`、`/v2/push/deliveries/{deliveryId}` 和 `/v2/push/deliveries/revoke`，完整公共前缀均为 `/open-android-intelligence`。
+稳定 route 为 `coreInstanceId/accountScope/endpointId/generation`；名称只有显示用途。手机从各条合法连接发现并在本地选择端点，
+Core 不维护敏感内容接收许可。Android 的长期加密队列保存原事件与逐端点投递状态；Core 仅短期有界暂存正文、保存去重与消费 ACK 元数据。
+撤销按稳定 route 和具体 eventId 清理，避免同一端点上不同能力或范围相互影响；手机离线保留清理元数据，恢复后重试。
+
+该扩展更新封闭 Schema 与生成的 Core hash；客户端与服务端通过现有 hash 协商识别不兼容，不降级为旧账号 grant 或跳过设备绑定。
+账号私有会话、附件和历史的隔离规则不受全局设备能力策略影响。
