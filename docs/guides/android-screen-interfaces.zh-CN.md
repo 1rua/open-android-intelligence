@@ -7,6 +7,14 @@
 [前端交接说明](android-screen-frontend-handoff.zh-CN.md)。当前实现按每请求注入全局策略决定，不再要求配对级屏幕会话；
 没有有效本地授权时继续安全拒绝，源码有入口不等于真机验收通过。
 
+## 手动确认与屏幕版本
+
+2026-11-01运行验收发现，正常本机确认弹窗也会改变无障碍事件代次，导致真实“仅允许本次”控制以`SCREEN_STALE_REFERENCE`结束。修复使用仅由可信Android驱动创建的本地确认对象：绑定原requestId、完整参数摘要、当前合法连接/权限/期限及一次性消费；远端JSON不能创建或完成该对象。
+
+App先保存真实读取的屏幕前置状态，确认卡的Android窗口实际移除后，再检查目标完整内容、显示与窗口身份相同，并核对期间事件仅来自这一个可信确认窗口。目标节点变化后恢复、未知来源事件、历史缺失/溢出、缺失子节点、密码内容不可证明、旋转或权限/连接/租约变化仍拒绝CONTROL；没有此本地确认对象的旧revision继续失效。调用者不得修改expectedRevision来绕过失败。
+
+普通手动READ只等待自己的确认窗口真正移除，再读取当前实际屏幕；不因控制证明的完整度限制而禁止原有截断读取。此修复定向测试已通过，真实新APK复测仍以[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)和[Terra报告](../reviews/2026-11-01-global-device-authorization-terra.zh-CN.md)为准，不能先写通过。
+
 ## 调用链与能力隔离
 
 调用链统一为 `Agent → OAI CLI/API/MCP → OAI Core → Android → Android 系统能力`。

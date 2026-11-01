@@ -57,19 +57,21 @@ env PYTHONDONTWRITEBYTECODE=1 ~/.oai-core/.venv/bin/python -c 'import importlib.
 
 | 验收项目 | 模拟器 | 实体手机 | 运行时检查 |
 | --- | --- | --- | --- |
-| 通话记录 | PENDING（系统拒绝/允许、App拒绝和超时PASS；读取与模式待测） | BLOCKED | 系统读取权限、三级授权、允许与拒绝；只使用专用测试记录。 |
-| 短信被动查询 | PENDING | BLOCKED | 系统权限、查询范围、三级授权与拒绝；不读取真实个人短信。 |
-| 短信主动推送 | PENDING | BLOCKED | 默认关闭、范围与接收端点、独立于被动查询授权。 |
-| 通知查询与推送 | PENDING（OS通知双端投递/正文/逐端ACK PASS；被动范围与撤销待测） | BLOCKED | 真实通知监听设置、测试应用来源范围、测试标题及正文、推送授权。 |
-| 屏幕读取与截图 | PENDING | BLOCKED | 读取和截图范围、系统 MediaProjection 同意及撤销；只展示专用测试内容。 |
-| 屏幕控制 | PENDING | BLOCKED | 真实无障碍设置、点击与滑动、只读禁止控制、独占锁、FIFO、租约与过期。 |
-| 三级授权切换 | PENDING | BLOCKED | 每次手动、允许只读和自动允许，写入或控制操作不得错误继承只读许可。 |
-| 临时授权 | PENDING | BLOCKED | 单次、5、30、60 分钟；范围约束、撤销、取消、到期和重启后不延长。 |
-| Core 切换与离线配置 | PENDING（A→B→A设置保持、B取消PASS；离线管理待测） | BLOCKED | 同一 App 切换 Core A/B，授权模式和总开关不变，离线仍可管理，恢复后无旧 grant 阻断。 |
-| 跨账号与多 Agent | PENDING（双端独立凭据/403、未认证401 PASS；临时共享待测） | BLOCKED | 使用合法设备访问关系；验证旧账号级 grant 不拦截、未授权访问仍拒绝、临时授权与端点白名单行为正确。 |
-| 加密离线队列 | PENDING（2/4→2/3→1/2逐端ACK PASS；断网/恢复/到期待测） | BLOCKED | 断网补发、每端点状态、事件 ID 去重、ACK、过期、容量限制、端点移除和撤销。 |
-| 后台与登录生命周期 | PENDING | BLOCKED | 后台、息屏、网络断开恢复、进程回收、全部退出登录、重新登录；不假定强行停止后可自动运行。 |
-| 迁移和请求竞争 | PENDING | BLOCKED | 旧状态清理后的默认模式、恢复幂等、执行前及敏感结果交付前的授权复核，取消和重试不重复执行。 |
+| 通话记录 | PARTIAL（系统拒绝/允许、手动拒绝/超时、临时共享与到期、未来空范围读取PASS；真实样本及完整三级待测） | BLOCKED | 系统读取权限、三级授权、允许与拒绝；只使用专用测试记录。 |
+| 短信被动查询 | PARTIAL（MANUAL/READ_ONLY专用样本、号码范围/关键词命中与不命中、正文关闭与MCP拒绝PASS；完整AUTO/撤销待测） | BLOCKED | 系统权限、查询范围、三级授权与拒绝；不读取真实个人短信。 |
+| 短信主动推送 | PARTIAL（OS号码与关键词样本、元数据/正文、有效未选端点0条、非匹配不入队PASS；离线完整闭环待测） | BLOCKED | 默认关闭、范围与接收端点、独立于被动查询授权。 |
+| 通知查询与推送 | PARTIAL（OS双端/正文/逐端ACK/后台恢复、原picker搜索正反选/取消/保存PASS；被动数据与撤销待测） | BLOCKED | 真实通知监听设置、测试应用来源范围、测试标题及正文、推送授权。 |
+| 屏幕读取与截图 | PARTIAL（真实无障碍8节点、系统单AppMediaProjection与512px截图PASS；系统撤销待测） | BLOCKED | 读取和截图范围、系统 MediaProjection 同意及撤销；只展示专用测试内容。 |
+| 屏幕控制 | FAIL（READ_ONLY确认拒绝PASS；真实仅本次允许back为SCREEN_STALE_REFERENCE，task-011修复中） | BLOCKED | 真实无障碍设置、点击与滑动、只读禁止控制、独占锁、FIFO、租约与过期。 |
+| 三级授权切换 | PARTIAL（SMS MANUAL/READ_ONLY及控制READ_ONLY拒绝PASS；AUTO及多能力完整组合待测） | BLOCKED | 每次手动、允许只读和自动允许，写入或控制操作不得错误继承只读许可。 |
+| 临时授权 | PARTIAL（单次拒绝/5/30/60批准、跨Core即时共享及自然到期PASS；撤销/重启临时失效待测） | BLOCKED | 单次、5、30、60 分钟；范围约束、撤销、取消、到期和重启后不延长。 |
+| Core 切换与离线配置 | PARTIAL（A→B→A全局保持、双Core最终取消字段PASS；飞行模式离线保存待测） | BLOCKED | 同一 App 切换 Core A/B，授权模式和总开关不变，离线仍可管理，恢复后无旧 grant 阻断。 |
+| 跨账号与多 Agent | PARTIAL（双端独立凭据/403/401、临时跨Core共享、有效未选推送端点0条PASS；完整账号矩阵待测） | BLOCKED | 使用合法设备访问关系；验证旧账号级 grant 不拦截、未授权访问仍拒绝、临时授权与端点白名单行为正确。 |
+| 加密离线队列 | PARTIAL（逐端ACK/后台恢复、v3新包保留、1h自然到期、进程死亡与端点到期保留PASS；断网/撤销待测） | BLOCKED | 断网补发、每端点状态、事件 ID 去重、ACK、过期、容量限制、端点移除和撤销。 |
+| 后台与登录生命周期 | PARTIAL（退出暂停、匹配样本不入队、突然进程死亡保留PASS；am kill未回收、重登/息屏/Doze待测） | BLOCKED | 后台、息屏、网络断开恢复、进程回收、全部退出登录、重新登录；不假定强行停止后可自动运行。 |
+| 迁移和请求竞争 | PARTIAL（真实v3→v4新包保留配置/未ACK/原TTL PASS；更旧grant样本升级与运行竞争待测） | BLOCKED | 旧状态清理后的默认模式、恢复幂等、执行前及敏感结果交付前的授权复核，取消和重试不重复执行。 |
+
+矩阵已按2026-11-01当前证据更新；下方环境预检与准备记录是历史阶段快照，后续追加章节覆盖其PENDING状态。PARTIAL表示列出的子项已实测，整行其余子项未闭合；所有物理设备列仍BLOCKED。
 
 ## 后续执行与证据
 
@@ -240,3 +242,43 @@ Terra 在 emulator-5554/user10 上确认控制插件为 READ_ONLY。devreq_f4e2e
 5556新包SHA-256为1ec8841c6fc7957c2fd6cf0e0fa0f77dec3d63f2ccfa1936b8d204ad89a81e5a，测试包d5ee749ae541b9c88d1f03a05dca1411065824c29e4dc21171657fc4fa31ef6e。Terra已核对设备内哈希并覆盖安装，账号、系统权限和既有策略未清空。新包18:09:17刷新仍为未ACK队列1/1、expired0；18:12:43刷新为0/0、expired1、待远端清理0，未ACK/改scope/改时钟。
 
 旧被动短信配置真实UI核对为READ_ONLY、电话号码15550102202、正文关闭；随后通过新UI将范围保存为关键词OAI-SAMPLE-SMS-5556-20261101，退出重进后KEYWORDS和正文关闭仍保留。推送范围未保存变更。本项仅证明本地保存与升级保留，真实关键词读取/拒绝以随后requestId结果为准。补充uiautomator检查两次退出137后停止，状态通过正常返回的android layout核验，不把失败命令伪报成功。
+
+## 5554 单次真实允许 back：stale 失败
+
+本节仅记录 `emulator-5554 / user10`，不引用 5556 的运行结果。App 源码关联为主流程构建交付的 `1f338778ecd6c39fc8eb0bd11134867d6c238568`，设备端实际 APK SHA-256 已核对为 `1ec8841c6fc7957c2fd6cf0e0fa0f77dec3d63f2ccfa1936b8d204ad89a81e5a`；测试 APK SHA-256 为 `d5ee749ae541b9c88d1f03a05dca1411065824c29e4dc21171657fc4fa31ef6e`。App `2.2.1`、versionCode `1`、Android `15 / API 35`，失败日志 PID 为 `5228`。采证时工作树 HEAD 已为 `12d3f8f65d0f9e4cdeda3fe1e3e23450f3ad2ee0`，不将它误写为已安装包的源码标识。模型身份以主流程实际会话路由记录为准，不以“Terra”文档标题自证。
+
+控制能力原设置为 `READ_ONLY`、总开关开启，本次没有修改模式；只读持久化检查的本机策略版本为 `2`。先在不含账号正文的 OAI 静态设置主览顶部提交 reader `devreq_b7e50d69-1685-4dc9-a5f4-3311edecaf9a`，精确参数为 `{"operation":"snapshot","maxNodes":8,"maxDepth":8,"maxBytes":4096}`，匹配真实卡片后选择“仅允许本次”。reader 返回 `succeeded`、OAI 前台及 8 节点；实际 revision 为 `sha256:9849a632dea4338bf587bf2b842a7934b0f38f83bf2a717a0136d9605b8cbb6c`，没有编造或用历史成功请求的 revision 替代。
+
+然后提交唯一 control `devreq_65d70d31-9ab2-41f7-b78f-36fdaa1e1da9`，精确参数为 `{"action":"global","globalAction":"back","expectedRevision":"sha256:9849a632dea4338bf587bf2b842a7934b0f38f83bf2a717a0136d9605b8cbb6c"}`。真实卡片显示匹配的 Agent/目的、`CONTROL` 和 `back`；以 `adb -s emulator-5554 shell input tap 540 1600` 激活“仅允许本次”。设备日志在 `18:55:35.204` 记录进入执行，`18:55:35.342` 返回 `SCREEN_STALE_REFERENCE`，随后 `completed=failed`、`result=ACKNOWLEDGED`。Core 最终结果为 **`failed / SCREEN_STALE_REFERENCE`**，没有 `performed=true` 成功结果；本次不证明 back 发生，也没有通过改 AUTO、绕过 revision 校验或循环重试取得成功。卡片批准由匹配的 UI 与已执行的 input 命令证明；日志没有独立的用户批准时间字段，不伪造该字段。
+
+Core 仍沿用 `20261101T000129Z-df92df96` 运行快照（源码清单摘要 `5d8f21d01d160bfa5b8a67f09110ba4174df81e5faa1ae93a30e165fa8035ebe`），本次未更新或重启；其响应还带 `localAuthorizationState=executing`，应与控制 stale 失败分开处理。Core `createdAt` 与 Android 本地日志时间来自不同设备时钟，分别保留，不混为批准时刻。[完整脱敏请求轨迹](evidence/2026-11-01-global-device-authorization/terra-control-allow-back-1ec884-stale-trace.txt)。
+
+私密证据仍在忽略的 `../plans/2026-11-01-global-device-authorization/runtime/evidence/`：`terra-control-allow-back-1ec884-reader-summary-private.json`、`terra-control-allow-back-1ec884-parameters-private.json`、`terra-control-allow-back-1ec884-control-card-private.json`、`terra-control-allow-back-1ec884-final-state-private.json`、`terra-control-allow-back-1ec884-android-log-private.txt`。本次归档只读状态与日志，没有重新读屏、改权限、重启 App 或修改页面；确切根因交由 task-011 的源码复现与修复验证。剩余控制允许、系统撤销等项目不因此标为通过。
+
+## 5556 六项生命周期最终归档
+
+以下均为2026年11月1日上海时间，仅对应独立 `emulator-5556 / user0`；与本报告的5554屏幕验收分开。详细边界见 [SMS分阶段验收报告](2026-11-01-global-device-authorization-sms-emulator.zh-CN.md)。`1/1`是待发1条、接收端投递1次，累计过期和待远端清理另外列示。
+
+| 场景 | 实测时间 | 最终结果与计数 | 明确未覆盖 |
+| --- | --- | --- | --- |
+| 普通 `am kill` | 18:49:04单次命令；18:49:06检查；18:54:23刷新 | `BLOCKED_NOT_RECLAIMED`：exit0但旧PID11994未消失，重新打开HOT；队列1/1、过期1、待清理0 | 不算进程回收、系统OOM或内存压力恢复通过 |
+| debug同UID突然进程死亡 | 18:58:00终止；19:02:03刷新 | 有界场景PASS：旧PID11994消失，系统先拉起14169，手动打开WARM；原账号/插件/范围保留，队列1/1、过期1、待清理0 | 非系统OOM、Doze、系统listener或实体手机测试 |
+| 全部退出后的采集暂停 | 19:06:54退出；19:08:06暂停提示；19:10:44样本；19:10:47刷新 | PASS：唯一secondary profile未删除、READ_SMS仍获授、插件仍安装；退出态可管理，匹配sender77单样本未增队列，仍1/1、过期1、待清理0 | 不证明后续sender77补采归属；无ACK或删除配对 |
+| 飞行离线本地管理 | 19:13:28初态；19:17:56断网检查；19:20:45/19:20:53保存；19:23:40恢复网络 | 有界UI保存PASS：保留期1→2→1小时，两次队列1/1、过期1、待清理0；主动/被动草稿取消后原范围保留，网络恢复原值 | ADB reverse保留，不证明Core loopback不可达；单事件原expiry不延长未从运行状态验证，clock/codec单测是独立证据 |
+| 普通密码新device观察 | 19:30:43点击“登录 OAI Core”；19:33:25身份核对；19:40:54刷新 | 工作界面进入；账号/install/profile/keyhash保持，c16→d097。队列1/1、过期2、待清理1，旧gen1路由仍选中且不可用 | 不是“使用已配对设备密钥登录”；原c16恢复未通过本路径验证，不推断两入口同义或根因 |
+| 当前d097官方密钥恢复 | 19:45:40退出；19:47:27点击确切密钥入口；19:48:15身份核对；19:52:07刷新 | 当前绑定有限场景PASS：d097→d097，四项身份和keyhash保持，双scope/正文false保留；旧gen1路由仍选中且不可用、retention1h；队列1/1、过期2、待清理1 | **原c16未恢复、未尝试恢复**；不回填普通密码登录或原c16恢复为PASS |
+
+普通密码登录使用原地址、账号和现有私密口令，未点击已保存profile行或密钥入口，界面采证未观察到新建设备提示；原始记录字段 `originalProfileUsed:true` 仅指沿用账号资料，不代表实际入口。本次密钥对照明确点击“使用已配对设备密钥登录”，密码框空白。两个场景保持独立；当前设备为 `dev_d097914b-0267-486e-bedd-1ab83a3654f0`，原 `dev_c16e3d46-108f-4fcb-833d-cf6d76487a5e` 未恢复或覆盖。
+
+最后一次范围核对保留：被动 `READ_ONLY`、`KEYWORDS=OAI-SAMPLE-SMS-5556-20261101`、正文关闭；主动启用、`KEYWORDS=OAI-SAMPLE-SMS-KEYWORD-PUSH-20261101`、正文关闭。旧SMS端点 `endpoint_f3d570ce36e74457874a4a98b16ddda6` 第1代仍被选中但不可用，保留期1小时。19:40和19:52累计过期2、待清理1是实际UI计数；未逐条读取队列，不能据总数断言sender55/77的归属、补采或具体过期时刻。
+
+各项私密证据仅留在忽略的运行目录，以下均为报告所在目录的相对链接，不含口令、token或私钥内容：
+
+- [普通am kill未回收目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/process-reclaim-once-20261101/)。
+- [突然进程死亡与重启目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/sudden-process-death-20261101/)。
+- [全部退出与采集暂停目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-collection-pause-20261101/)。
+- [离线保存与网络恢复目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-offline-management-20261101/)。
+- [普通密码新device观察目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/relogin-original-secondary-20261101/)。
+- [当前d097官方密钥恢复目录及脱敏汇总](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/current-binding-device-key-login-20261101/)。
+
+本次仅归档既有证据，不新增设备或Core操作。未再注入样本、ACK、修改权限/scope/端点/时钟/登录，未追加系统回收或Doze；保持5556现状待机，后续screen修复验收不据此扩写为已完成。

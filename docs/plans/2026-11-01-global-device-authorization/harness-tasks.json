@@ -321,6 +321,37 @@
       ],
       "started_at_commit": "97f601f7",
       "completed_at": "2026-11-01T18:46:00.446426+08:00"
+    },
+    {
+      "id": "task-011",
+      "title": "复现并修复手动屏幕批准后SCREEN_STALE_REFERENCE，保留实际目标变化保护",
+      "status": "in_progress",
+      "priority": "P0",
+      "depends_on": [
+        "task-010"
+      ],
+      "attempts": 0,
+      "max_attempts": 3,
+      "validation": {
+        "command": "npm run test:fast && npm run test:pr",
+        "timeout_seconds": 1800
+      },
+      "error_log": [],
+      "checkpoints": [
+        {
+          "step": 1,
+          "total": 3,
+          "description": "Terra实际fresh reader→control back→仅本次批准后SCREEN_STALE_REFERENCE已确认；静态原因待定向测试确认，禁止放宽stale安全边界",
+          "timestamp": "2026-11-01T18:59:40.459612+08:00"
+        },
+        {
+          "step": 2,
+          "total": 3,
+          "description": "本地174定向、追加101项、Fast/PR通过；416196新包reader PASS但control立即链真实批准后仍stale，已更正早期无卡判断；774620仅metadata诊断包交Terra，安全放行条件未改，task未完成",
+          "timestamp": "2026-11-01T20:14:04.948389+08:00"
+        }
+      ],
+      "started_at_commit": "12d3f8f6"
     }
   ]
 }

@@ -11,3 +11,5 @@
 [2026-11-01T17:56:10.069283+08:00] CHECKPOINT task-010 UI定向62/62、无fail/skip；完整验证与Terra新APK待完成。
 [2026-11-01T18:20:47.034596+08:00] CHECKPOINT task-010 step3/4 1f338778已推PR71，Fast/PR=0，新UI与实际过滤Terra复测中；CI Run41296937078/41296932216已触发，未watch。
 [2026-11-01T18:46:00.446426+08:00] COMPLETED task-010 UI保真补充闭合，1f338778全CI成功；task-008/整体goal仍active，物理真机BLOCKED。
+[2026-11-01T18:59:40.459612+08:00] START task-011 Terra真实manual-control批准后stale失败，建立回归并修复；task-010保持完成，完整GLOBAL仍active。
+[2026-11-01T20:14:04.948389+08:00] CHECKPOINT task-011 step2/3 本地门禁green但立即链批准后stale仍FAIL；774620metadata诊断包待运行；生命周期已记录，goal保持active。

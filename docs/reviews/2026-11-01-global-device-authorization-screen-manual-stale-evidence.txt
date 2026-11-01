@@ -1,0 +1,47 @@
+{
+  "sourceCommit": "1f338778ecd6c39fc8eb0bd11134867d6c238568",
+  "apkSha256": "1ec8841c6fc7957c2fd6cf0e0fa0f77dec3d63f2ccfa1936b8d204ad89a81e5a",
+  "environment": "emulator-5554 user10",
+  "readerRequestId": "devreq_b7e50d69-1685-4dc9-a5f4-3311edecaf9a",
+  "readerState": "succeeded",
+  "readerRevision": "sha256:9849a632dea4338bf587bf2b842a7934b0f38f83bf2a717a0136d9605b8cbb6c",
+  "controlRequestId": "devreq_65d70d31-9ab2-41f7-b78f-36fdaa1e1da9",
+  "action": "global/back",
+  "localMode": "READ_ONLY",
+  "userDecision": "真实匹配确认卡，仅允许本次",
+  "finalState": "failed",
+  "reason": "SCREEN_STALE_REFERENCE",
+  "performedSuccessObserved": false,
+  "repeatedAttempts": false,
+  "rootCauseStatus": "待定向测试确认，不以静态假设当根因",
+  "subsequentProbe": {
+    "appSha256": "7746203842ce0110e080380297ed44ca51ac28ec536e6afb5866d2bbdf4725d7",
+    "readerRequestId": "devreq_99c24d40-4bd2-4032-a713-17d31f35fd46",
+    "controlRequestId": "devreq_802273f5-bb2e-4bc6-a24a-c96f14f4e4ae",
+    "stage": "prepare_before_confirmation",
+    "finalState": "failed",
+    "reason": "SCREEN_STALE_REFERENCE",
+    "actualControlCardShown": false,
+    "controlApproved": false,
+    "metadata": {
+      "trustedReaderDialogWindowId": 531,
+      "beforeWindowIds": [
+        460,
+        457,
+        530
+      ],
+      "issuedGeneration": 205,
+      "prepareGeneration": 206,
+      "cacheAge": "lt1s",
+      "connectionEpochMatch": true,
+      "revisionMatch": false,
+      "hashMatch": false,
+      "fingerprintMatch": false,
+      "onlyNewEvent": {
+        "windowId": 457,
+        "eventType": 2048,
+        "windowRoleFromActualRead": "status_bar"
+      }
+    }
+  }
+}

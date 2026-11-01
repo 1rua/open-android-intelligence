@@ -134,6 +134,14 @@ val session = host.authorization.start(
 系统停止投影、屏幕会话到期、撤销或断连时会清理远程投影及其图像缓存。显式用户取消整个会话应调用
 `host.revoke()`，无需让前端重复掌握 VirtualDisplay、ImageReader 等底层对象。
 
+## 远程确认窗口生命周期
+
+手动reader/control由执行驱动创建`DeviceConfirmationWindow`并传入原有`ScreenControlConfirmationDialog`，前端保持原文字与按钮。真实Android窗口root的attach/detach回调关联windowId；Compose的onDispose本身不代表窗口已经移除，不能用固定sleep或一帧延迟代替完成信号。异常、取消、到期和窗口关联不一致均不合成批准或拒绝。
+
+控制的本地确认对象只可消费一次，绑定原requestId、参数摘要、连接、权限与期限；执行前检查原目标完整证明及确认期间事件来源，只容许本机确认窗口自身变化。普通读取待确认窗口实际移除后读取当前屏幕，继续支持原节点/字节预算。目标真正变化、未知事件或证明不完整时拒绝控制，不擅自重读并替换调用方expectedRevision。自动模式和已共享许可未显示本机确认窗口时继续走原版本检查，不凭UI名称或包名猜测可信目标。
+
+实现/单测与实际设备证据分别见执行记录，当前修复尚待新版APK真实复测。
+
 ## 读取、截图和动作调用
 
 远程使用三个能力 ID 和各自已发现的 Schema。前端若需要本地只读预览，可通过

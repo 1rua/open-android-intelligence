@@ -1,8 +1,8 @@
-# SMS 独立模拟器准备记录
+# SMS 独立模拟器准备与分阶段验收记录
 
 ## 范围和隔离
 
-- 目标仅为建立新的、可被 ADB 访问的干净模拟器，并记录电话状态及短信能力；不安装应用、不授予系统权限、不登录 Core、不执行短信收发矩阵。
+- 初始准备阶段仅建立新的、可被 ADB 访问的干净模拟器，并记录电话状态及短信能力；后续安装、许可、登录与生命周期步骤按追加授权分别记录。六项生命周期的最终结果和未覆盖边界见文末“5556 生命周期最终汇总”。
 - 独立运行目录：`docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/`；该目录被项目 `.gitignore` 忽略。运行数据、隔离 home、缓存和日志均放在此处，不使用 `/tmp` 作为运行目录。
 - 复用已有的 `../../.toolchains/android-sdk`，未下载或升级 SDK、模拟器或系统镜像。
 - 不操作现有 `emulator-5554`、其用户或账户，不停止或重启共享 ADB 服务。所有设备检查明确指定新序列号 `emulator-5556`。
@@ -103,3 +103,59 @@ ss -ltnp '( sport = :5037 or sport = :5554 or sport = :5555 or sport = :5556 or 
 - 18:43:02 仅一次 OS 注入 sender `15550106606`、正文 `OAI-UNMATCHED-SMS-20261101 synthetic only`，exit=0/OK；不匹配已保存的主动关键词。
 - 2026-11-01T18:43:48+08:00 再点击一次真实“刷新队列状态”：待发 1 条，共 1 次接收端投递。已过期 1 条，容量拒绝 0 次。 待远端清理 0 次；离线时保留清理记录，恢复连接后重试。；队列未因非匹配样本增为2。
 - 本轮未改scope、未ACK、未查询或新增其他样本，未操作5554。所有原始时间和UI记录保存在忽略的 `runtime/sms-emulator/sms-keyword-push-unmatched-20261101/` 及 `ui-sms-keywords-20261101/ui/`。
+
+## 5556 生命周期最终汇总
+
+以下时间均为 **2026年11月1日，Asia/Shanghai（UTC+08:00）**，仅对应 `emulator-5556 / user0`。使用的 App SHA-256 为 `1ec8841c6fc7957c2fd6cf0e0fa0f77dec3d63f2ccfa1936b8d204ad89a81e5a`；不把其他设备后续屏幕包或测试结果合并为本段证明。队列 `1/1` 表示待发1条、接收端投递1次；过期数和待远端清理数分别记录，单看总数不能确定某条短信的归属。
+
+本段范围基线为：被动 `READ_ONLY`、`KEYWORDS=OAI-SAMPLE-SMS-5556-20261101`、`includeContent=false`；主动保持启用、`KEYWORDS=OAI-SAMPLE-SMS-KEYWORD-PUSH-20261101`、`includeContent=false`，原短信端点 `endpoint_f3d570ce36e74457874a4a98b16ddda6` 第1代被选中，保留期1小时。端点租约到期后的“不可用”提示与本机队列保留分别判断。以下链接仅指向本机被忽略的私密证据目录或脱敏记录；未把凭据、密钥材料或原始账号存储复制进报告。
+
+### 1. 普通 am kill：未实际回收
+
+- **实测时间与动作：** 18:47:42先记录范围和队列；18:49:04通过真实 Home 回到 NexusLauncher 后，仅执行一次 `adb -s emulator-5556 shell am kill --user 0 com.openandroidintelligence.mobile`。命令退出码0；18:49:06记录的两次进程检查中，旧 PID `11994` 都仍存在。
+- **结果：** `BLOCKED_NOT_RECLAIMED`。重新打开为 `HOT`；18:54:23旧 PID仍为11994，队列仍为1/1、累计过期1、待远端清理0。两套范围、正文关闭和1小时保留期保持。
+- **未覆盖：** 系统没有回收该进程，不能报告系统内存回收或 OOM 恢复通过。未追加 kill、force-stop、root 或全局杀进程操作。
+- **证据：** [本机私密目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/process-reclaim-once-20261101/)、[单次命令与 PID 结果](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/process-reclaim-once-20261101/kill-result.json)、[状态汇总](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/process-reclaim-once-20261101/lifecycle-stage-evidence.json)。
+
+### 2. debug 同 UID 突然进程死亡与重启
+
+- **实测时间与动作：** 18:58:00前确认 PID11994 的命令行精确属于本测试包，包 appId、run-as UID 和进程 UID 均为 `10192`（user0）；仅执行一次 `adb -s emulator-5556 shell run-as com.openandroidintelligence.mobile kill -9 11994`，退出码0，旧进程路径消失。
+- **结果：** 本有界场景 `PASS`。系统在手动打开前已自行拉起新 PID `14169`；随后手动打开为 `WARM`。19:02:03复核原账号、安装/设备/profile身份、SMS插件及两套范围保留；原第1代端点仍选中但不可用，保留期仍1小时。刷新队列为1/1、累计过期1、待远端清理0。
+- **未覆盖：** 这是专用 debug 进程突然终止后的恢复，不是系统 OOM、内存压力、Doze、系统 listener 重启或实体手机验证。未读取或解密设备私钥。
+- **证据：** [本机私密目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/sudden-process-death-20261101/)、[旧 PID 消失和自动重启记录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/sudden-process-death-20261101/kill-result.json)、[恢复汇总](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/sudden-process-death-20261101/sudden-death-stage-evidence.json)。
+
+### 3. 全部退出后本地管理与采集暂停
+
+- **实测时间与动作：** 退出前通过 Android AccountManager 只读核对只有本测试 secondary profile，且对应当前账号和设备。19:06:54真实 UI 点击“退出登录”；没有点“移除”或“解除设备配对”。19:08:06确认界面提示“当前已退出全部账号：暂停采集和推送，保留配置与未过期队列”。
+- **结果：** 本有界场景 `PASS`。原 profile、SMS插件和 `READ_SMS granted=true` 保留，退出态仍可进入设置、两套范围及推送页。19:09:35刷新队列为1/1、累计过期1、待远端清理0；原范围、正文关闭、端点第1代及保留期1小时保持。
+- **暂停采集点验：** 19:10:44.600114至19:10:44.605782仅一次真实 OS 注入专用 sender `15550107707` 的匹配合成样本，命令退出码0、返回 `OK`。19:10:47刷新仍为1/1、累计过期1、待清理0，没有因该退出态样本增加队列。
+- **未覆盖：** 这里只验证该次退出态匹配样本未新增队列；没有 ACK、重新登录、改范围或移除配对。后续是否补采 sender77，不能仅依据队列总数认定。
+- **证据：** [本机私密目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-collection-pause-20261101/)、[退出态与注入后队列汇总](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-collection-pause-20261101/signedout-pause-stage-evidence.json)、[退出暂停提示截图](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-collection-pause-20261101/ui/16-all-accounts-signedout-push-paused.png)。
+
+### 4. 飞行模式离线管理、保留期还原与网络恢复
+
+- **实测时间与系统状态：** 19:13:28记录初始状态：飞行模式关、Wi-Fi开、移动数据开。通过真实快捷设置开启飞行模式；19:17:56确认 Wi-Fi系统开关关闭、`Wifi is disabled`、`Active default network: none`，OAI保持全部退出态。
+- **离线保存结果：** 19:20:45通过真实 UI 把保留期1小时保存为2小时；19:20:53再保存还原1小时。两次刷新均为队列1/1、累计过期1、待远端清理0。19:22:25完成被动和主动范围草稿切到“全部”后取消，重入仍保留各自原关键词及正文关闭；没有保存范围或正文变更。
+- **恢复结果：** 19:23:40通过真实系统 UI 恢复原网络值：飞行模式关、Wi-Fi开、移动数据开；当时仍未登录。离线本地设置可访问、保存和还原的有限场景 `PASS`。
+- **未覆盖：** ADB reverse未移除，不能据无线网络断开声称 Core loopback 地址不可达。没有官方单事件 expiry 只读入口，本轮未读取、解密或反射事件存储，不能把 UI 保留或保留期往返当作原 expiry 不延长的实测证据。既有 [clock测试](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/push/DevicePushRuntimeTest.kt) 和 [codec迁移测试](../../apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/push/PushStateCodecMigrationTest.kt) 属于独立自动化证据层；本次文档归档未重跑它们。
+- **证据：** [本机私密目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-offline-management-20261101/)、[离线阶段汇总](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-offline-management-20261101/offline-stage-evidence.json)、[1→2→1小时记录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-offline-management-20261101/retention-roundtrip.json)、[网络恢复记录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/signedout-offline-management-20261101/network-restore-evidence.json)。
+
+### 5. 普通密码登录产生新 device 的观察
+
+- **实际入口与时间：** 19:30:43在普通表单填写原 Core A 地址、secondary账号及现有私密口令，点击“登录 OAI Core”。没有点已保存profile行、“使用已配对设备密钥登录”、新邀请或配对入口。提交前后采集的界面未观察到“将新建device”的提示。原始 `login-submit-attempt.json` 中 `originalProfileUsed:true` 只表示沿用原账号资料，不表示点击了配对入口；本说明纠正该字段命名，不改写原始证据。
+- **19:33:25身份结果：** 工作界面已进入；安装ID、账号、profile及原设备密钥加密文件SHA-256保持，但 `deviceId` 从 `dev_c16e3d46-108f-4fcb-833d-cf6d76487a5e` 变为 `dev_d097914b-0267-486e-bedd-1ab83a3654f0`。只读 CLI发现旧ID离线、新ID在线，`READ_SMS`仍获授。旧CLI配置未改为新device凭据，其旧绑定的READY不能冒充新绑定能力验收。
+- **19:40:54队列结果：** 刷新为待发1/投递1、累计过期2、待远端清理1；1小时保留期及旧第1代路由选择保留，路由显示不可用。没有用改时钟、延长TTL或换路由维持计数。
+- **结论与未覆盖：** 仅记录“普通密码新会话/新绑定观察”，**不能报原 c16 设备配对恢复通过**，也不能据此判断官方密钥入口失败或两种入口应完全同义。c16旧记录未被恢复或覆盖；入口语义、提示及设备ID生成原因交由源码审查。没有逐条读取 sender77 或旧事件，不能由总数确定补采归属或单个事件的到期原因。
+- **证据：** [本机私密目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/relogin-original-secondary-20261101/)、[实际密码入口提交记录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/relogin-original-secondary-20261101/login-submit-attempt.json)、[身份差异与系统许可](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/relogin-original-secondary-20261101/identity-and-permission-evidence.json)、[19:40:54队列记录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/relogin-original-secondary-20261101/current-queue-handoff-evidence.json)。
+
+### 6. 当前 d097 绑定的官方设备密钥登录恢复
+
+- **实际入口与时间：** 19:45:31刷新基线为1/1、累计过期2、待远端清理1；19:45:40仅通过UI“退出登录”退出当前d097账号。只输入原Core地址和账号名、密码框保持空白，于19:47:27准确点击“使用已配对设备密钥登录”，没有密码兜底、邀请或手动重新配对。
+- **19:48:15身份结果：** 已进入工作界面，`d097→d097`；installation/account/device/profile四项及既有设备密钥加密文件SHA-256均保持。本次仅对**当前新绑定**的官方密钥恢复判为 `PASS`。
+- **19:50:32至19:52:07保存状态复核：** 被动READ_ONLY和原被动关键词、主动启用和原主动关键词均保持，两者正文仍关闭。旧短信端点第1代仍选中、显示不可用；保留期仍1小时。19:52:07仅一次刷新为1/1、累计过期2、待远端清理1，与本次退出前一致。没有重选端点或把旧事件换到新route。
+- **未覆盖：** **原 c16 未恢复、未尝试恢复**；不把此次d097成功回填为前一次密码路径或c16身份恢复通过。没有新增样本、ACK、系统回收、Doze或其他登录场景。19:52:07是最后一次本机实测快照，本次归档不执行新的设备操作。
+- **证据：** [本机私密目录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/current-binding-device-key-login-20261101/)、[官方入口点击记录](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/current-binding-device-key-login-20261101/device-key-login-click.json)、[身份保持结果](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/current-binding-device-key-login-20261101/device-key-login-identity-result.json)、[脱敏阶段汇总](../plans/2026-11-01-global-device-authorization/runtime/sms-emulator/current-binding-device-key-login-20261101/device-key-recovery-stage-evidence.json)。
+
+## 追加：生命周期之后自然到期终点
+
+2026-11-01T20:11:49+08:00仅一次真实UI“刷新队列状态”：0条/0次投递、累计过期3、待远端清理2、容量拒绝0。与19:52:07仍1/1、过期2对照，最后有效事件到期后清除敏感队列，未ACK、未注入、未改scope/登录/端点。不可用旧路由的清理元数据保留，不能将待清理2描述为完整远端撤回成功。截图和本轮记录在忽略的runtime/sms-emulator/final-readonly-expiry-refresh-20261101/。此项不直接证明单事件expiry字段或系统时钟回拨场景。

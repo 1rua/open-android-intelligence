@@ -1,9 +1,16 @@
 # 全局设备授权重构执行记录
 
-日期：2026-11-01。需求状态：已接受；全局授权主实现已提交，最新 UI 保真补充实施中；自动化与 Terra 分项结果见下文，完整验收尚未完成。
+日期：2026-11-01。需求状态：已接受；全局授权主实现与UI保真补充已提交；手动屏幕允许的真实stale失败修复中，完整验收尚未完成。
 基线 `dev@3c9b82d1ef18062fc7dd09546efe6136803079cc` 已通过 `git ls-remote origin refs/heads/dev` 核对。
 工作分支 `feature/global-device-authorization-20261101`，独立工作树 `.worktrees/global-device-authorization-20261101`。
 完整要求见[规格](../superpowers/specs/2026-11-01-global-device-authorization.md)。
+
+## 当前交付与未闭合项
+
+- 通知/SMS范围与界面保真补充task-010已完成：源码1f338778，本地Fast/PR、Play回归、远端7checks全通过；Terra实际通知选择与短信被动/主动关键词、正文边界及未选端点对照通过。证据文档12d3f8f6已推PR #71，目标dev、OPEN、自动合并关闭。
+- 已完成新包保留未ACK队列及真实1小时自然到期、突然进程死亡/重启保持。普通am kill未实际回收，未算系统OOM通过。全退出/重新登录、离线和剩余系统撤销矩阵仍分项执行。
+- 手动屏幕允许back实测failed/SCREEN_STALE_REFERENCE，task-011正在建立受限修复，不关闭真实目标变化保护。reader、截图、只读拒绝成功不等于控制允许成功。
+- 实体手机未连接，物理验收BLOCKED；整体goal保持active，不以自动化或模拟器替代完整要求。
 
 ## 已确认事实、待验证假设与设计
 
@@ -18,9 +25,9 @@
 | --- | --- | --- | --- |
 | 1 | Android、Core/CLI/MCP 并行只读审计；Terra 环境预检 | 文件/函数证据、文档冲突和环境清单 | 已完成，见源码审计结论 |
 | 2 | 固化最小接口、全局迁移、请求生命周期与端点方案 | 明确写集合、兼容性与回归矩阵 | 主实现已提交 |
-| 3a | 全局持久策略、旧授权清理、最终裁决及 UI | GLOBAL-01 至 05 自动化通过 | 主实现已提交；UI 补充修正中 |
+| 3a | 全局持久策略、旧授权清理、最终裁决及 UI | GLOBAL-01 至 05 自动化通过 | 主实现与UI补充已提交；屏幕手动允许修复中 |
 | 3b | 统一请求声明、稳定端点注册和发现 | GLOBAL-07、11 契约及隔离测试通过 | 主实现已提交，已有自动化与 Core 运行证据 |
-| 3c | 短信/通知独立推送、加密队列和生命周期 | GLOBAL-06、08、09 集成测试通过 | 主实现已提交，UI 与 SMS 过滤补充中 |
+| 3c | 短信/通知独立推送、加密队列和生命周期 | GLOBAL-06、08、09 集成测试通过 | 主实现与SMS范围过滤已提交并验收，完整生命周期继续 |
 | 3d | 屏幕独立策略及最小 FIFO 租约保护 | GLOBAL-10 并发、撤销、过期测试通过 | 主实现已提交，Terra 完整矩阵待闭合 |
 | 4 | Fast、PR 受影响测试及 Terra 运行验收 | 记录真实退出码、版本和分项 PASS/FAIL/BLOCKED | 持续分项验收；最新 head CI 有失败待修复 |
 | 5 | 文档与实际行为核对，PR 指向 dev | 中文提交、PR 链接、保持 Review | PR #71 已创建，OPEN、目标 dev、自动合并关闭 |
@@ -487,3 +494,73 @@ Terra新包覆盖安装后18:09:17仍见短信队列1/1、expired0；18:12:43一
 `1f338778ecd6c39fc8eb0bd11134867d6c238568` 已推送到现有PR #71，用户要求的通知原应用选择、短信默认全部/关键词/电话号码及既有功能/文案保真规则已完成并通过本地Fast/PR；Play补充63项通过。Terra在新包完成通知名称/包名搜索、正反选、取消后恢复原选择和同值保存，SMS三模式草稿/空条件、独立范围持久化、CLI/MCP关键词实际过滤与正文边界、主动关键词metadata/有效未选端点0条、非匹配OS样本不入队，详见[专项报告](2026-11-01-device-scope-ui-preservation.zh-CN.md)。
 
 18:43:50仅一次核对该head远端7项checks，Core3.11/3.12、Hermes native、DSH、Android、APK及插件签名全部SUCCESS。整体任务仍未完成，实体设备仍缺失，完整屏幕控制与生命周期正在分项验收，不因task-010完成或CI全绿扩大运行结论。
+
+## 新增真实失败：手动允许屏幕控制后版本过期
+
+Terra在新包以真实reader请求devreq_b7e50d69-1685-4dc9-a5f4-3311edecaf9a取得当前revision，随后提交back控制devreq_65d70d31-9ab2-41f7-b78f-36fdaa1e1da9。匹配真实卡点击“仅允许本次”后终态failed/SCREEN_STALE_REFERENCE，没有performed成功结果。已确认该失败，不将screen reader/capture/只读拒绝PASS扩大为控制允许通过。
+
+静态假设：revision绑定无障碍事件代次，本机确认界面/通知和异步消失可能改变版本；仍需以实际路径测试区分本机确认变动和目标真正变化。修复约束：不关闭stale检测，不擅自替换调用者屏幕前置条件，不自动批准/切自动模式，不扩大单次授权。相同目标经过明确用户批准应能完成原动作；目标、显示、窗口或节点真正变化、连接/权限/租约撤销时继续拒绝。实现方案与测试结果待task-011补充。
+
+## 生命周期分项：突然进程终止保留
+
+Terra在5556专用用户0先尝试Home后am kill，返回0但旧PID仍在，未将其当回收成功。随后仅同UID run-as对精确测试进程执行一次kill -9：旧11994消失，系统新拉起14169；手动打开为WARM。账号、安装/设备身份、SMS插件、被动READ_ONLY/关键词/bodyfalse、主动独立关键词/bodyfalse、原端点第1代与1小时保留均保留。19:02:03真实刷新队列1/1、累计过期1、待清理0；端点租约已到期只显示不可用，没有自动清除选择或事件。该项PASS为突然进程死亡/重启，不冒充系统OOM或普通后台am kill成功。
+
+屏幕手动允许失败的[脱敏轨迹](2026-11-01-global-device-authorization-screen-manual-stale-evidence.txt)已单列，修复task-011仍进行中。
+
+## 全部退出账号：暂停与保留
+
+Terra核对5556仅有专用secondary profile，通过真实UI退出全部有效登录，原profile/配对保留，推送页明确显示全部退出暂停。READ_SMS仍grant、SMS插件仍安装；原被动/主动关键词、正文关闭、端点第1代及1小时保留均不变。19:10:44唯一一次OS注入sender15550107707匹配主动关键词的专用合成样本，19:10:47真实刷新仍队列1/1、累计过期1、待清理0，证明退出态不新增采集。重新登录后恢复/补采与离线管理另行验收。
+
+## Core A 更新与状态保留
+
+Terra在无非终态请求时将A有界更新为1f338778生产源码，账号/配对/令牌/主密钥/CA以及endpoint/ACK/撤销账本重启前后相同，B不动。原5554凭据发未来空范围请求devreq_7720678b-703a-4e67-a4e2-a2fb54745a40，观察claimed/awaiting后立即取消，最终cancelled且无localAuthorizationState。原sender55在Core因端点到期已revoked且未ACK，此状态原样保留，不能解释为手机队列已清。
+
+Core A最终运行复测的[脱敏状态保留与取消回执](2026-11-01-global-device-authorization-core-a-1f338778-evidence.txt)已入库。两个Core的终态字段均已分别实测，不能再用A旧快照的executing残留解释新服务行为。
+
+屏幕修复独立审查的两个边界项已交付修复：子节点读取缺失时CONTROL不能生成完整proof；确认期间真实目标A→B→A不能仅比较最终快照放行。二者是当前补丁的静态风险，尚未宣称设备利用；须以新增定向断言和实际复测闭合。普通READ不要求完整控制证明，防止因修复控制而降级既有读取。
+
+## 离线本机管理
+
+Terra在5556真实系统飞行模式开启、WiFi关闭时（保持signedout），仍可查看被动/主动范围，修改草稿后取消不改变原范围；通过真实UI保存队列保留期1→2→1小时，19:20:53队列仍1/1、累计过期1、待清理0。19:23:40恢复初始飞行模式关/WiFi开，尚未重登录。此PASS仅证明离线查看/保存与队列保持；未单独读取原事件expiry，不能据UI声称跨设置修改到期时间未延长，该约束目前由clock/codec自动化证明。
+
+## task-011 当前补丁与自动化（真实复测待定）
+
+后端红测试已先复现同目标经过本机确认事件后旧revision被拒绝（1项失败、13秒）。生产补丁采用可信本地确认对象，绑定request/参数/连接/权限/期限及一次性消费；等待实际Dialog窗口root移除后检查完整目标与事件来源，旧reference不直接变成新参数。未知或目标事件、A→B→A、历史缺失/溢出、空子节点/密码不可证明、旋转、撤销继续拒绝CONTROL；普通READ只待窗口移除后读取当前屏幕，不受控制证明完整度限制。UI文案保持原样。
+
+定向174项及最后构建/追加101项通过；独立安全复核的缺失子节点与中间目标变化两项已修复并加回归。新APK SHA-256为4161967a4e101d388f88d5be004ba7223fe8698dc11d5b5626b096814f2c0b71，测试包91fc97fb09a7a64c8557c3d257337dd35f1cce21228189f7e0470225460fe855，签名校验通过、原debug身份不变。源码基于12d3f8f6加10份生产补丁，摘要存运行目录，未冒充已提交版本。
+
+最新Fast完整退出0：Core634/1符号链接环境skip、Hermes143、DSH37、通信25；App1350、screen-control38、device-primitives58、control-ports38均0 fail/error/skip。PR门禁和Terra freshreader→仅本次control复测继续，不能仅凭单测宣称屏幕实际允许已修。
+
+## 重登录身份观察与现有入口边界
+
+Terra退出后使用原账号资料填写普通密码并点击“登录OAI Core”，没有点击已保存profile或“使用已配对设备密钥登录”。安装/account/profile与设备密钥文件SHA保持，但当前deviceId从旧c16…变为d097…。该结果仅适用普通password路径，不能判定device-key恢复失败，也不能把密钥不变当成配对身份保留PASS。
+
+源码确认Core普通password入口每次Issue新deviceId；现有device-key挑战/签名交换使用当前保存binding并沿用deviceId。UI没有明确提示密码会新建device，协议描述“创建或确认”含义也未完全收敛；本轮不擅自改登录协议、合并旧新设备或恢复数据库。正在通过原设备密钥入口验证当前binding退出恢复，不能将其回填为最早旧binding已恢复。已有旧设备与端点数据保持，不自动转投新device或新代次。
+
+屏幕确认补丁最终PR门禁也已完整退出0（Core634/1环境skip、Hermes143、DSH37、通信25，Android增量复用）。10份生产源码摘要与APK构建manifest一致。新包保留数据安装到5554后，仍等待单次reader/control实测，不先据自动化标task-011完成。
+
+## 官方设备密钥入口恢复当前绑定
+
+Terra再通过UI退出当前d097…绑定，使用原有“使用已配对设备密钥登录”，未填密码，成功回到工作区；当前deviceId保持d097…、installation/account/profile与keyhash均相同。被动READ_ONLY/关键词/bodyfalse、主动关键词/bodyfalse、旧gen1不可用端点及1小时保留保持。19:52:07队列1/1、累计过期2、待清理1，与本次退出前相同。该项PASS仅证明当前binding密钥恢复，不能补写普通密码登录保留最早c16…身份PASS；c16…未恢复，旧route事件不自动迁移。
+
+## task-011新包第一轮实际复测
+
+4161967a…包的手动reader devreq_5d5a3690-6092-405f-b4bb-602db941367d经真实卡批准后succeeded，确认窗口移除路径未再卡死。约两分钟后control devreq_c28087cc-2c63-434e-ae2e-524bf6bdb247在确认卡出现前failed/SCREEN_STALE_REFERENCE，没有盲点批准或重试。它与旧包“批准后stale”阶段不同；正在以同进程立即衔接真实reader revision的单次控制请求区分人为间隔与本机迟到事件，保持所有保护。
+
+## task-011立即链复测仍未通过
+
+为排除第一轮3分13秒人为间隔，同包只执行一次脚本链：reader devreq_f24e7429-4f6f-4580-ae8a-b6ac4f3201b3经真实卡批准后succeeded，从终态中解析真实revision并在0.046413ms内开始提交control、46.208714ms收到提交响应。control devreq_bf3c1096-044a-4e49-9921-8759f1a3b474实际出现CONTROL卡，20:00:17真实点击“仅允许本次”后仍failed/SCREEN_STALE_REFERENCE，不循环重试。主Agent曾根据较早布局过早写“无卡”，已以最终卡片/批准轨迹更正。现在追加仅元数据phase/generation/事件来源诊断，拒绝条件不改；该结果说明当前补丁不能以自动化green直接宣布完整manual-control已修。
+
+立即链批准后的事件日志已出现OaiScreenConfirmation：目标/其他窗口457与463的CONTENT_CHANGED、STATE_CHANGED及WINDOWS_CHANGED元数据被记录。当前还缺可信Dialog windowId与前置窗口关系，不能仅凭ID猜测哪一项来自本机确认；正在补阶段诊断，不把普通目标CONTENT事件自动放行。见[Terra完整脱敏链轨迹](evidence/2026-11-01-global-device-authorization/terra-screen-task011-416196-chain-summary.json)。
+
+仅阶段诊断包已构建：7746203842ce0110e080380297ed44ca51ac28ec536e6afb5866d2bbdf4725d7，测试包仍91fc97fb…。新增日志记录issued/before/resumed窗口数字ID、可信DialogId及phase/generation/epoch和匹配布尔，不记录hash值、文本、节点或凭据，放行条件完全不变。诊断定向及APK构建通过，下一次唯一立即链用于定位statusbar/系统通知与本机Dialog归属，不按构建成功声称manual已修。
+
+## 生命周期后真实到期终点
+
+Terra在20:11:49仅一次真实刷新5556队列：待发0/投递0、累计过期3、待远端清理2、容量拒绝0，未ACK/注入/改登录或范围。先前19:52:07仍1/1、过期2的有效事件自然到期后退出敏感队列；旧不可用路由的撤回元数据继续保留等待合法连接处理，不用清空元数据伪报闭环。该终点补充进程死亡、退出、离线retention1→2→1及密钥重登之后队列仍按期限清理的真实证据；具体单事件绝对expiry未直接读取，不声称精确时钟漂移行为已测。
+
+## 774620诊断定位：reader发行后状态栏迟到事件
+
+诊断包链reader devreq_99c24d40-4bd2-4032-a713-17d31f35fd46成功；本机确认窗口可信ID531，确认前窗口460（导航区域）、457（状态栏）、530（应用）。窗口移除后reader发行gen205，立即control devreq_802273f5-bb2e-4bc6-a24a-c96f14f4e4ae在prepare阶段gen206：revision/hash/fingerprint不匹配、连接epoch相同、cache年龄不足1秒、完整proof存在。区间唯一事件是457状态栏TYPE_WINDOW_CONTENT_CHANGED；未见目标应用窗口事件。最终failed/SCREEN_STALE_REFERENCE，尚未弹控制卡，不按前一轮bf3c的批准后失败混写。
+
+此证据说明“reader自己的确认通知退场或状态栏迟到变化”与全屏前置版本相冲突，具体通知来源仍需受限证明；不能将所有系统窗口变化一律忽略。下一修复须将调用动作真实作用目标与本机确认/通知窗口生命周期关联，保持未知/目标内容变化拒绝，不用固定等待或自动替换expectedRevision。

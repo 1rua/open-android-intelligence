@@ -15,8 +15,8 @@
 | GLOBAL-06 独立推送 | `DevicePushRuntime`、`NotificationPushSource`、`SmsPushSource`；独立配置/来源/正文 | push runtime、collector及source测试 | OS通知双端与SMS专用合成样本主动链路通过；新包被动关键词命中/不命中、MCP正文搜索拒绝与主动关键词metadata投递PASS；通知搜索/正反选/取消/同值保存PASS |
 | GLOBAL-07 端点白名单 | `endpoints.py`、`GatewayPushTransport`、`PushSettingsScreen` | ownership、route/代次、旧事件不转新代次、缺席保留配置 | 真实CLI/MCP注册/发现、独立凭据403、未认证401、双端OS通知及逐端ACK通过；新OS短信已选接收/有效未选端点0条PASS；离线剩余待测 |
 | GLOBAL-08 队列与ACK | `EncryptedPushStateStore`、逐端状态、精确撤销账本；Core60秒密文暂存 | runtime/codec/endpoint/revoke顺序/ACK幂等测试 | OS通知双端投递、A/B逐端ACK与手机2/4→2/3→1/2通过；通知后台补发与SMS新包保留/1h自然到期PASS；断网/撤销剩余待测 |
-| GLOBAL-09 生命周期 | `DevicePushComposition`、`DevicePushJobService`、登录门槛、有界任务与有效期维护 | logout取消、缺权限采集拒绝、恢复只补报一次 | 后台/息屏/回收/全退出待测 |
-| GLOBAL-10 屏幕独立与FIFO | `RemoteScreenRuntime`按请求注入、`ScreenControlLeaseManager`独占30秒/累计5分钟 | 读控制隔离、48并发互斥、FIFO/撤销/期限/多连接测试 | Accessibility/reader8节点、MediaProjection单App系统UI与512px截图PASS；控制READ_ONLY确认拒绝PASS；允许动作/撤销仍待测 |
+| GLOBAL-09 生命周期 | `DevicePushComposition`、`DevicePushJobService`、登录门槛、有界任务与有效期维护 | logout取消、缺权限采集拒绝、恢复只补报一次 | 突发进程死亡重启保留PASS；am kill未实际回收不算通过；全退出UI/保留配置权限/匹配样本不入队PASS；当前binding设备密钥恢复PASS；普通password新device单列、息屏/Doze待测 |
+| GLOBAL-10 屏幕独立与FIFO | `RemoteScreenRuntime`按请求注入、`ScreenControlLeaseManager`独占30秒/累计5分钟 | 读控制隔离、48并发互斥、FIFO/撤销/期限/多连接测试 | Accessibility/reader8节点、MediaProjection单App系统UI与512px截图PASS；控制READ_ONLY确认拒绝PASS；手动允许back实际SCREEN_STALE_REFERENCE失败，task-011修复中；系统撤销待测 |
 | GLOBAL-11 统一设备调用 | `client/cli/mcp/device_service`caller声明、签名pending列表/HTTP短租约、具体错误 | Core主套件、CLI/MCP、账号隔离、pending18项 | 两Core合法请求与未知调用者拒绝待测 |
 | GLOBAL-12 Terra验收 | 指定`gpt-6.1-terra`子Agent；user10隔离模拟器、双TLS Core | 测试环境准备与签名包校验 | 无实体手机，物理验收BLOCKED；模拟器矩阵执行中 |
 | GLOBAL-13 文档与PR | spec、CONTEXT、ADR、协议、指南、Skill、Android说明及本索引 | 相对链接/代码围栏/格式检查；1199eb70全CI通过；1f338778本地Fast/PR及远端全部7checks通过 | PR#71已OPEN、目标dev、autoMerge关闭；UI补充task-010已完成，完整GLOBAL矩阵待闭合 |
