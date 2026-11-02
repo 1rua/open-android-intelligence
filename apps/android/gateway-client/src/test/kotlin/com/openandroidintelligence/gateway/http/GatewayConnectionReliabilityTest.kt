@@ -95,6 +95,228 @@ class GatewayConnectionReliabilityTest {
         assertEquals("ws-open:${cursors.load("account")}", order.last())
     }
 
+    @Test fun upgradedWebSocketsWithoutActivityFallBackAfterTwoFailures() = runTest {
+        for (failureKind in listOf("eof", "close", "idle", "io")) {
+            val cursors = InMemoryEventCursorStore().apply { save("account", "committed_before_outage") }
+            val delays = mutableListOf<Long>()
+            val status = EventStreamStatusSink()
+            val closed = mutableListOf<Int>()
+            var wsAttempts = 0
+            var sseAttempts = 0
+            val ws = object : GatewayWebSocketTransport(profile, { ByteArray(64) }) {
+                override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                    onSignal: (GatewayWebSocketSignal) -> Unit): Flow<GatewayEvent> = flow {
+                    val attempt = ++wsAttempts
+                    check(attempt <= 2) { "Upgraded sockets without activity must yield to SSE" }
+                    assertEquals("committed_before_outage", cursor)
+                    onSignal(GatewayWebSocketSignal.Ready(testScheduler.currentTime))
+                    try {
+                        when (failureKind) {
+                            "close" -> throw GatewayWebSocketClosedException(1011)
+                            "idle" -> {
+                                delay(60_000)
+                                throw GatewayWebSocketTimeoutException(GatewayWebSocketTimeoutStage.IDLE, 60_000)
+                            }
+                            "io" -> throw IOException("synthetic socket interruption")
+                        }
+                    } finally { closed += attempt }
+                }
+            }
+            val transport = object : GatewayByteTransport {
+                override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+                override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                    sseAttempts++
+                    assertEquals(EventStreamStatus.RECONNECTING, status.status.value)
+                    assertEquals(listOf(1, 2), closed)
+                    assertTrue(request.target.endsWith("?cursor=committed_before_outage"))
+                    emit("id: recovered_after_upgrade\ndata: {}\n\nid: stop_after_commit\ndata: {}\n\n".toByteArray())
+                }
+            }
+            val client = GatewayHttpClient(profile, transport, { ByteArray(64) }, cursors,
+                webSocketTransport = ws, statusSink = status, monotonicMillis = { testScheduler.currentTime }, jitterFn = { it },
+                delayFn = { delays += it; delay(it) })
+            assertEquals(listOf("recovered_after_upgrade", "stop_after_commit"),
+                client.events().take(2).toList().map { it.id })
+            assertEquals(2, wsAttempts)
+            assertEquals(1, sseAttempts)
+            assertEquals(listOf(1_000L), delays)
+            assertEquals("recovered_after_upgrade", cursors.load("account"))
+        }
+    }
+
+    @Test fun aFailedUpgradedPromotionImmediatelyReturnsToItsHealthySseCursor() = runTest {
+        for (failureKind in listOf("eof", "close", "idle")) {
+            val order = mutableListOf<String>()
+            val cursors = InMemoryEventCursorStore()
+            var wsAttempts = 0
+            var sseAttempts = 0
+            val ws = object : GatewayWebSocketTransport(profile, { ByteArray(64) }) {
+                override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                    onSignal: (GatewayWebSocketSignal) -> Unit): Flow<GatewayEvent> = flow {
+                    if (++wsAttempts == 1) throw GatewayWebSocketHandshakeException(426)
+                    check(wsAttempts == 2) { "Failed promotion must restore the existing SSE transport" }
+                    assertEquals("before_upgrade", cursor)
+                    order += "formal-ws"
+                    onSignal(GatewayWebSocketSignal.Ready(testScheduler.currentTime))
+                    try {
+                        when (failureKind) {
+                            "close" -> throw GatewayWebSocketClosedException(1011)
+                            "idle" -> {
+                                delay(60_000)
+                                throw GatewayWebSocketTimeoutException(GatewayWebSocketTimeoutStage.IDLE, 60_000)
+                            }
+                        }
+                    } finally { order += "formal-ws-closed" }
+                }
+                override suspend fun probe(sessionSnapshot: GatewayProfile?): GatewayProfile {
+                    order += "probe-closed"
+                    return requireNotNull(sessionSnapshot)
+                }
+            }
+            val transport = object : GatewayByteTransport {
+                override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+                override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                    if (++sseAttempts == 1) {
+                        try {
+                            emit("id: before_upgrade\ndata: {}\n\n".toByteArray())
+                            while (true) { emit(": heartbeat\n\n".toByteArray()); delay(15_000) }
+                        } finally { order += "sse-closed" }
+                    } else {
+                        assertEquals("formal-ws-closed", order.last())
+                        assertTrue(request.target.endsWith("?cursor=before_upgrade"))
+                        order += "sse-restored"
+                        emit("id: after_upgrade_failure\ndata: {}\n\n".toByteArray())
+                    }
+                }
+            }
+            val client = GatewayHttpClient(profile, transport, { ByteArray(64) }, cursors,
+                webSocketTransport = ws, monotonicMillis = { testScheduler.currentTime }, jitterFn = { it },
+                delayFn = { error("Failed promotion must directly restore SSE") })
+            assertEquals(listOf("before_upgrade", "after_upgrade_failure"), client.events().take(2).toList().map { it.id })
+            assertEquals(listOf("probe-closed", "sse-closed", "formal-ws", "formal-ws-closed", "sse-restored"), order)
+            assertEquals(2, wsAttempts)
+            assertEquals(2, sseAttempts)
+        }
+    }
+
+    @Test fun validWebSocketHeartbeatsResetTheNoActivityFailureCount() = runTest {
+        var wsAttempts = 0
+        val delays = mutableListOf<Long>()
+        val ws = object : GatewayWebSocketTransport(profile, { ByteArray(64) }) {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (GatewayWebSocketSignal) -> Unit): Flow<GatewayEvent> = flow {
+                onSignal(GatewayWebSocketSignal.Ready(testScheduler.currentTime))
+                wsAttempts++
+                if (wsAttempts == 2) {
+                    onActivity()
+                    onSignal(GatewayWebSocketSignal.Activity(testScheduler.currentTime))
+                }
+                if (wsAttempts < 4) throw GatewayWebSocketClosedException(1011)
+                emit(GatewayEvent("websocket_recovered", "notice", "{}"))
+            }
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("Heartbeat-proven WS must retain recovery")
+        }
+        val client = GatewayHttpClient(profile, transport, { ByteArray(64) }, InMemoryEventCursorStore(),
+            webSocketTransport = ws, monotonicMillis = { testScheduler.currentTime }, jitterFn = { it },
+            delayFn = { delays += it; delay(it) })
+        assertEquals("websocket_recovered", client.events().take(1).toList().single().id)
+        assertEquals(4, wsAttempts)
+        assertEquals(listOf(1_000L, 2_000L, 5_000L), delays)
+    }
+
+    @Test fun securityOrAuthenticationRejectionAfterUpgradeCannotUseTheNoActivityFallback() = runTest {
+        for (rejected in listOf(javax.net.ssl.SSLHandshakeException("synthetic certificate rejection"),
+            EventStreamForbiddenException(), EventSessionRejectedException(profile))) {
+            var attempts = 0
+            val delays = mutableListOf<Long>()
+            val ws = object : GatewayWebSocketTransport(profile, { ByteArray(64) }) {
+                override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                    onSignal: (GatewayWebSocketSignal) -> Unit): Flow<GatewayEvent> = flow {
+                    onSignal(GatewayWebSocketSignal.Ready(testScheduler.currentTime))
+                    if (++attempts == 1) throw GatewayWebSocketClosedException(1011)
+                    throw rejected
+                }
+            }
+            val transport = object : GatewayByteTransport {
+                override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+                override fun eventStream(request: WireRequest): Flow<ByteArray> = error("Rejected identity must not downgrade")
+            }
+            val client = GatewayHttpClient(profile, transport, { ByteArray(64) }, InMemoryEventCursorStore(),
+                webSocketTransport = ws, monotonicMillis = { testScheduler.currentTime }, jitterFn = { it },
+                delayFn = { delays += it; delay(it) })
+            assertSame(rejected, runCatching { client.events().toList() }.exceptionOrNull())
+            assertEquals(2, attempts)
+            assertEquals(listOf(1_000L), delays)
+        }
+    }
+
+    @Test fun failedPromotionsKeepTheProbeCooldownInsteadOfRestartingEveryMinute() = runTest {
+        val probeTimes = mutableListOf<Long>()
+        var formalAttempts = 0
+        var sseAttempts = 0
+        val ws = object : GatewayWebSocketTransport(profile, { ByteArray(64) }) {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (GatewayWebSocketSignal) -> Unit): Flow<GatewayEvent> = flow {
+                if (++formalAttempts == 1) throw GatewayWebSocketHandshakeException(426)
+                check(formalAttempts <= 3)
+                onSignal(GatewayWebSocketSignal.Ready(testScheduler.currentTime))
+            }
+            override suspend fun probe(sessionSnapshot: GatewayProfile?): GatewayProfile {
+                probeTimes += testScheduler.currentTime
+                return requireNotNull(sessionSnapshot)
+            }
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                emit("id: sse_${++sseAttempts}\ndata: {}\n\n".toByteArray())
+                while (true) { emit(": heartbeat\n\n".toByteArray()); delay(15_000) }
+            }
+        }
+        val client = GatewayHttpClient(profile, transport, { ByteArray(64) }, InMemoryEventCursorStore(),
+            webSocketTransport = ws, monotonicMillis = { testScheduler.currentTime }, jitterFn = { it },
+            delayFn = { error("Failed promotion must resume SSE") })
+        assertEquals(listOf("sse_1", "sse_2", "sse_3"), client.events().take(3).toList().map { it.id })
+        assertEquals(listOf(60_000L, 180_000L), probeTimes)
+        assertEquals(3, formalAttempts)
+        assertEquals(3, sseAttempts)
+    }
+
+    @Test fun aQuietWebSocketWithOnlyHeartbeatsKeepsTheSameOwnerForTenMinutes() = runTest {
+        var wsAttempts = 0
+        var heartbeats = 0
+        val ws = object : GatewayWebSocketTransport(profile, { ByteArray(64) }) {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (GatewayWebSocketSignal) -> Unit): Flow<GatewayEvent> = flow {
+                wsAttempts++
+                onSignal(GatewayWebSocketSignal.Ready(testScheduler.currentTime))
+                while (true) {
+                    delay(15_000)
+                    heartbeats++
+                    onActivity()
+                    onSignal(GatewayWebSocketSignal.Activity(testScheduler.currentTime))
+                }
+            }
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("Healthy heartbeat-only WS must not downgrade")
+        }
+        val status = EventStreamStatusSink()
+        val client = GatewayHttpClient(profile, transport, { ByteArray(64) }, InMemoryEventCursorStore(),
+            webSocketTransport = ws, statusSink = status, monotonicMillis = { testScheduler.currentTime }, jitterFn = { it })
+        val owner = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { client.events().collect() }
+        advanceTimeBy(600_000)
+        runCurrent()
+        assertEquals(1, wsAttempts)
+        assertEquals(40, heartbeats)
+        assertEquals(EventStreamStatus.LIVE, status.status.value)
+        owner.cancelAndJoin()
+    }
+
     @Test fun sixtySecondsOfCompleteHeartbeatsRestoreTheInitialReconnectDelay() = runTest {
         var attempts = 0
         val delays = mutableListOf<Long>()

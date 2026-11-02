@@ -392,6 +392,8 @@ class GatewayHttpClient(
             val reconnect = GatewayEventRetry(GatewayEventRetry.RECONNECT_MILLIS, jitterFn)
             val probes = GatewayEventRetry(GatewayEventRetry.PROBE_MILLIS, jitterFn)
             var preferWebSocket = webSocketTransport != null
+            var inactiveWebSocketFailures = 0
+            var promotingWebSocket = false
             var consecutiveFailures = 0
             var attempt = 0L
             var cursorRecoveryPending = false
@@ -443,7 +445,7 @@ class GatewayHttpClient(
                     } else if (collectSseAttempt(owner, snapshot, health, probes, autoReconnect)) {
                         // The probe socket is closed and the SSE collector has joined before loading the next cursor.
                         preferWebSocket = true
-                        probes.reset()
+                        promotingWebSocket = true
                         reportEventStatus(owner, EventStreamStatus.CONNECTING)
                         continue
                     }
@@ -492,16 +494,32 @@ class GatewayHttpClient(
                         logEventFailure(owner, attempt, transportKind, failure, health, null, "terminal")
                         throw failure
                     }
+                    val businessWebSocketAttempt = recoveringSession == null && !rebuildingCursor && usingWebSocket
+                    if (businessWebSocketAttempt) {
+                        // Upgrade readiness is not activity. A quiet stream with
+                        // real heartbeats is healthy; repeated upgraded sockets
+                        // without a complete frame must yield to working SSE.
+                        inactiveWebSocketFailures = if (health.hadActivity) 0 else
+                            (inactiveWebSocketFailures + 1).coerceAtMost(2)
+                        if (health.wasStable) probes.reset()
+                    }
                     val upgradeCanFallback = failure is GatewayWebSocketHandshakeException &&
                         (failure.upgradeUnsupported || failure.status in 500..599 || failure.status in setOf(408, 429))
                     val handshakeNetworkFailure = failure !is GatewayWebSocketHandshakeException &&
                         failure !is GatewayWebSocketPayloadException && !health.isReady
-                    if (recoveringSession == null && !rebuildingCursor && preferWebSocket && (upgradeCanFallback || handshakeNetworkFailure)) {
-                        // A rejected upgrade never opens a second business channel. SSE is the compatible transport.
+                    val inactiveUpgradedStream = autoReconnect && health.isReady && !health.hadActivity &&
+                        failure !is GatewayWebSocketPayloadException && (promotingWebSocket || inactiveWebSocketFailures >= 2)
+                    if (businessWebSocketAttempt && (upgradeCanFallback || handshakeNetworkFailure || inactiveUpgradedStream)) {
+                        // The failed formal WS has closed before SSE starts;
+                        // neither readiness nor a successful probe commits a cursor.
                         preferWebSocket = false
+                        promotingWebSocket = false
+                        inactiveWebSocketFailures = 0
+                        reportEventStatus(owner, EventStreamStatus.RECONNECTING)
                         logEventFailure(owner, attempt, "WS", failure, health, null, "fallback")
                         continue
                     }
+                    if (businessWebSocketAttempt && health.hadActivity) promotingWebSocket = false
                     if (!autoReconnect) {
                         reportEventStatus(owner, EventStreamStatus.FAILED)
                         if (failure is GatewayWebSocketPayloadException || recoveringSession != null || rebuildingCursor) throw failure
@@ -591,6 +609,8 @@ class GatewayHttpClient(
         val lastHeartbeatAt = java.util.concurrent.atomic.AtomicLong(-1)
         @Volatile var isReady = false
             private set
+        @Volatile var hadActivity = false
+            private set
         @Volatile var wasStable = false
             private set
         @Volatile var closeCode: Int? = null
@@ -608,6 +628,7 @@ class GatewayHttpClient(
         fun activity(authentication: Boolean = false) {
             if (activeEventOwner.get() !== owner) return
             val now = monotonicMillis()
+            hadActivity = true
             lastCompleteAt.set(now)
             ready()
             if (now - liveSince.get() >= STABLE_CONNECTION_MILLIS) wasStable = true

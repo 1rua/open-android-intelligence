@@ -230,6 +230,11 @@ jobs:
           --tests '*PairingGrantPersistenceTest'
           --tests '*PermissionCatalogTest'
           --tests '*SettingsCapabilityUiTest'
+          --tests '*NativeConnectionReliabilityTest'
+          --tests '*NativeGenerationScopeTest'
+          --tests '*PlatformStreamHandoverTest'
+          --tests '*GatewayNetworkMonitorTest'
+          --tests '*DeviceGrantFenceTest'
       - name: Play screen integration and Android API compatibility
         working-directory: apps/android
         run: >-
@@ -255,6 +260,11 @@ jobs:
           --tests '*PairingGrantPersistenceTest'
           --tests '*PermissionCatalogTest'
           --tests '*SettingsCapabilityUiTest'
+          --tests '*NativeConnectionReliabilityTest'
+          --tests '*NativeGenerationScopeTest'
+          --tests '*PlatformStreamHandoverTest'
+          --tests '*GatewayNetworkMonitorTest'
+          --tests '*DeviceGrantFenceTest'
 
       - name: Preserve Android test failure evidence
         if: always()

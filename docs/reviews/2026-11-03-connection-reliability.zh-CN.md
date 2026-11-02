@@ -106,3 +106,21 @@ PR 门禁 Python：Core/安装卸载/门禁 686 passed、1 skipped、6 subtests�
 首次一次性远端检查：Core Python 3.11/3.12、Hermes native、Android 与 APK 构建运行中；DSH 与插件签名已成功。该记录不是全部 CI 通过，后续状态以 PR 对应提交为准；不前台轮询 CI。
 
 最终 fullDebug APK 构建成功，版本 `2.2.1-dev.220+b80cf98ee0d1` / `2200`；apksigner 验证通过。APK SHA-256：`bc76439935ff048bfa0eedd150f078793c7cb0fe3fb74198f806797f43c08797`。未安装验收，完整元数据见设备验收记录。
+
+## PR #72 的 Codex review 跟进
+
+审查基线：`b3f6b0744c90adf022994a5ef75b1825d4f746c5`。2026-11-03（北京时间）核对该提交的 APK、Core Python 3.11/3.12、Hermes、DSH 和 Android 检查均已通过；不把旧提交的通过当作新补丁的 CI 结果。
+
+[Codex P2 评论](https://github.com/1rua/open-android-intelligence/pull/72#discussion_r4447468257) 指出：正式 WS 已 Upgrade 但未收到有效活动即反复关闭/失活时，`health.isReady` 阻止 SSE 降级。从健康 SSE 探测升级后的正式流也存在同样问题。
+
+先补两个定向测试，修复前均失败（2 tests / 2 failed）。修复把“已认证 Upgrade”和“完整有效活动”分别记录：普通 WS 连续两次无活动失败后转 SSE；探测升级后的首次正式 WS 无活动失败立即恢复 SSE。交接仍等待旧流退出，继续最后提交的游标；认证拒绝、TLS、未知续期和持久化失败保持独立处理。有效心跳清除无活动失败计数，不把空闲误判为故障。探测成功不清零探测冷却，避免正式流持续故障时每分钟反复切换。
+
+新增回归覆盖 Upgrade 后 EOF、关闭、失活和 IO 错误、探测升级后的恢复、游标保存、心跳清除计数、十分钟虚拟时间下仅心跳的健康连接、认证/TLS 不降级及重复探测冷却。十分钟是可控时钟测试，不能作为真机十分钟验收。
+
+CI 的 Full/Play 显式筛选补入 NativeConnectionReliabilityTest、NativeGenerationScopeTest、PlatformStreamHandoverTest、GatewayNetworkMonitorTest 和 DeviceGrantFenceTest；DeviceExecutionRecoveryTest 已在两套原有筛选中，不重复添加。工具链和缓存策略保持原样。
+
+本轮传输层新增 6 个测试方法；`test:fast --since b3f6b074` 已通过，gateway-client 共 371 项通过。Full 定向 52 项通过、无跳过；Play 定向 30 项通过，22 项 DeviceExecutionRecoveryTest 因 Play 禁用运行时插件而按既有 Assume 跳过，无失败或错误。两版本构建与定向测试 BUILD SUCCESSFUL（5m39s）。`test:pr --since b3f6b074` 最终通过，gateway-client 371 项全部通过；YAML 解析与 Full/Play 各必需筛选项恰好出现一次的检查通过。独立只读复核未发现新增 P1/P2。
+
+首次 Full/Play 命令的筛选只应用到最后的 Play 任务，Full 误跑全量并缺历史附件 fixture；已取消该轮，改为在每个任务之后分别传入筛选参数，没有放宽断言或修改旧 fixture。该次被取消的运行不作为成功证据。
+
+后台监控每 120 秒只读采集检查、提交 SHA 和 Codex 评论，最多两小时，保留在本 worktree 的忽略目录 `.toolchains/pr72-monitor/`。审查有未处理发现时保持监控，不把旧提交全绿当作新提交通过。完成后在原讨论回复并单独发送 `@codex review` 请求新提交复审。
