@@ -1,8 +1,12 @@
 package com.openandroidintelligence.gateway.http
 
-import java.io.IOException
+import java.security.GeneralSecurityException
+import javax.net.ssl.SSLException
 import java.net.HttpURLConnection
 import javax.net.ssl.HttpsURLConnection
+
+/** A stable code without peer supplied text or trust material. */
+class GatewaySecurityException(val code: String) : SSLException(code)
 
 /**
  * The transport rule that holds whatever scheme the user typed.
@@ -21,6 +25,23 @@ import javax.net.ssl.HttpsURLConnection
  */
 object GatewayConnectionSecurity {
 
+    /** Identity failures stop recovery; a TLS wrapper around a socket outage does not change its cause. */
+    fun isSecurityFailure(failure: Throwable): Boolean {
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+        var current: Throwable? = failure
+        var tlsFailure = false
+        var socketFailure = false
+        while (current != null && seen.add(current)) {
+            if (current is GatewaySecurityException || current is javax.net.ssl.SSLPeerUnverifiedException ||
+                current is GeneralSecurityException || current is SecurityException) return true
+            if (current is SSLException) tlsFailure = true
+            if (current is java.io.EOFException || current is java.net.SocketException ||
+                current is java.net.SocketTimeoutException) socketFailure = true
+            current = current.cause
+        }
+        return tlsFailure && !socketFailure
+    }
+
     const val PIN_REQUIRES_HTTPS =
         "PIN_REQUIRES_HTTPS: a pinned profile cannot use a plaintext connection"
 
@@ -28,7 +49,7 @@ object GatewayConnectionSecurity {
         val https = connection as? HttpsURLConnection
         if (https == null) {
             if (pins.isNotEmpty()) {
-                throw IOException(PIN_REQUIRES_HTTPS)
+                throw GatewaySecurityException("PIN_REQUIRES_HTTPS")
             }
             return TransportSecurity.PLAINTEXT
         }
@@ -40,7 +61,7 @@ object GatewayConnectionSecurity {
         val sslSocket = socket as? javax.net.ssl.SSLSocket
         if (sslSocket == null) {
             if (pins.isNotEmpty()) {
-                throw IOException(PIN_REQUIRES_HTTPS)
+                throw GatewaySecurityException("PIN_REQUIRES_HTTPS")
             }
             return TransportSecurity.PLAINTEXT
         }

@@ -10,6 +10,7 @@ import com.openandroidintelligence.kernel.*
 import com.openandroidintelligence.mobile.BuildConfig
 import com.openandroidintelligence.mobile.SharedPreferencesPairingGrantStore
 import com.openandroidintelligence.mobile.TestDocumentKeys
+import com.openandroidintelligence.mobile.recoverPlatformSnapshot
 import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
@@ -17,6 +18,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -27,6 +30,288 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34], application=Application::class)
 class DeviceExecutionRecoveryTest {
+    @Test fun aBlockedLookupDoesNotBlockAnotherDurableNotificationOrItsCancellation() = runBlocking {
+        fixture("enqueue_during_lookup") { driver, transport, journal, scope, failures, _ ->
+            val lookupStarted = CompletableDeferred<Unit>()
+            transport.onLookup = { id ->
+                if (id == "req_blocked") {
+                    lookupStarted.complete(Unit)
+                    awaitCancellation()
+                }
+                null
+            }
+            withTimeout(1_000) { driver.enqueue("req_blocked") }
+            withTimeout(1_000) { lookupStarted.await() }
+            assertNotNull("enqueue must persist before it returns", journal.read("req_blocked"))
+            withTimeout(1_000) { driver.enqueue("req_ready") }
+            driver.cancel("req_blocked")
+            awaitJobs(scope)
+
+            assertEquals(listOf("req_ready"), transport.claims.map { it.target.substringAfter("/device-requests/").substringBefore('/') })
+            assertEquals(1, transport.invocations.get())
+            assertNotNull("Cancellation must survive a restart", journal.read("req_blocked"))
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun anEnqueuedNotificationSurvivesRestartBeforeAnyLookupStarts() = runBlocking {
+        fixture("notified_restart") { driver, transport, journal, scope, failures, host ->
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            val stopped = CoroutineScope(SupervisorJob().apply { cancel() } + Dispatchers.IO)
+            val http = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
+                transport, { ByteArray(64) }, InMemoryEventCursorStore())
+            val previous = DeviceExecutionDriver(context, stopped, http, host, "acct", "dev", 1,
+                "notified_restart", { 7 }, { true }, TestDocumentKeys)
+            previous.enqueue("req_restart_notification")
+            assertTrue(transport.lookups.isEmpty())
+            assertNotNull(journal.read("req_restart_notification"))
+
+            driver.recoverPending()
+            awaitJobs(scope)
+            assertEquals(1, transport.invocations.get())
+            assertEquals(1, transport.results.size)
+            assertTrue(journal.keys().isEmpty())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun aCancelledNotificationCannotInvokeAPluginAfterRestartOrEventReplay() = runBlocking {
+        fixture("cancelled_notification_restart") { driver, transport, _, scope, failures, host ->
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            val stopped = CoroutineScope(SupervisorJob().apply { cancel() } + Dispatchers.IO)
+            val http = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
+                transport, { ByteArray(64) }, InMemoryEventCursorStore())
+            val previous = DeviceExecutionDriver(context, stopped, http, host, "acct", "dev", 1,
+                "cancelled_notification_restart", { 7 }, { true }, TestDocumentKeys)
+            previous.enqueue("req_cancelled_notification")
+            previous.cancel("req_cancelled_notification")
+
+            driver.recoverPending()
+            awaitJobs(scope)
+            driver.enqueue("req_cancelled_notification")
+            awaitJobs(scope)
+            assertEquals(0, transport.invocations.get())
+            assertTrue(transport.results.all { it.body.decodeToString().contains("cancelled") })
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun concurrentEventAndRecoveryReplaysShareTheBlockedLookup() = runBlocking {
+        fixture("deduplicated_lookup") { driver, transport, _, scope, failures, _ ->
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            transport.onLookup = { id ->
+                if (id == "req_duplicate" && transport.lookups.count { it == id } == 1) {
+                    started.complete(Unit)
+                    release.await()
+                }
+                null
+            }
+            driver.enqueue("req_duplicate")
+            withTimeout(1_000) { started.await() }
+            coroutineScope {
+                (1..16).map { launch(Dispatchers.Default) { driver.enqueue("req_duplicate") } }.joinAll()
+            }
+            driver.recoverPending()
+            assertEquals("Replays must not start another lookup while the first owns the request", 1, transport.lookups.size)
+            release.complete(Unit)
+            awaitJobs(scope)
+            assertEquals(1, transport.claims.size)
+            assertEquals(1, transport.invocations.get())
+            assertEquals(1, transport.results.size)
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun eventReplayDuringCancelledExecutionCleanupCannotOpenAnotherExecution() = runBlocking {
+        fixture("cancelled_execution_cleanup") { driver, transport, _, scope, failures, _ ->
+            val reporting = CompletableDeferred<Unit>()
+            val cleaning = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            transport.afterAuthorization = {
+                reporting.complete(Unit)
+                try { awaitCancellation() }
+                finally { withContext(NonCancellable) { cleaning.complete(Unit); release.await() } }
+            }
+            driver.enqueue("req_cleanup")
+            withTimeout(1_000) { reporting.await() }
+            driver.cancel("req_cleanup")
+            withTimeout(1_000) { cleaning.await() }
+            val lookups = transport.lookups.size
+            repeat(8) { driver.enqueue("req_cleanup") }
+            driver.recoverPending()
+            assertEquals(lookups, transport.lookups.size)
+            assertEquals(1, transport.claims.size)
+            assertEquals(0, transport.invocations.get())
+            release.complete(Unit)
+            awaitJobs(scope)
+            driver.enqueue("req_cleanup")
+            awaitJobs(scope)
+            assertEquals(1, transport.claims.size)
+            assertEquals(0, transport.invocations.get())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun aFencedLookupCancelsTheExistingConfirmationAndNeverSubmitsItsResult() = runBlocking {
+        fixture("confirmation_fence") { driver, transport, journal, scope, failures, host ->
+            val entry = host.entries(NOTIFICATION_PLUGIN_ID).single()
+            host.setCapabilityPolicy(entry.identity.pluginId, entry.key, CapabilityPolicy(mode = CapabilityAuthorizationMode.MANUAL))
+            for (status in listOf(403, 404, 409)) {
+                val id = "req_fenced_$status"
+                driver.enqueue(id)
+                withTimeout(3_000) { driver.confirmation.filterNotNull().first { it.requestId == id } }
+                transport.onLookup = { requested ->
+                    if (requested == id) WireResponse(status, emptyList(),
+                        """{"protocol":"2.1","error":{"code":"REQUEST_FENCED"}}""".toByteArray()) else null
+                }
+                driver.enqueue(id)
+                awaitJobs(scope)
+                assertNull(driver.confirmation.value)
+                driver.decide(id, true)
+                driver.enqueue(id)
+                driver.recoverPending()
+                awaitJobs(scope)
+                assertEquals(0, transport.invocations.get())
+                assertTrue(transport.results.isEmpty())
+                assertNotNull("The remote fence must survive event replay", journal.read(id))
+                assertTrue(failures.isEmpty())
+            }
+        }
+    }
+
+    @Test fun anExpiredRequestCannotBeClaimedOrExecutedByReplay() = runBlocking {
+        fixture("expired_notification") { driver, transport, _, scope, failures, _ ->
+            transport.expiresAt = Instant.now().minusSeconds(1).toString()
+            driver.enqueue("req_expired")
+            awaitJobs(scope)
+            driver.enqueue("req_expired")
+            driver.recoverPending()
+            awaitJobs(scope)
+            assertEquals(1, transport.lookups.size)
+            assertTrue(transport.claims.isEmpty())
+            assertTrue(transport.results.isEmpty())
+            assertEquals(0, transport.invocations.get())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun aFailedJournalWriteCannotAcknowledgeTheNotificationOrStartLookup() = runBlocking {
+        fixture("journal_write_failure") { _, transport, _, scope, failures, host ->
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            val http = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
+                transport, { ByteArray(64) }, InMemoryEventCursorStore())
+            val keyReads = AtomicInteger()
+            val unavailableKeys = object : com.openandroidintelligence.encrypted.store.AesGcmKeyProvider {
+                override fun getOrCreate(): javax.crypto.SecretKey =
+                    if (keyReads.incrementAndGet() == 1) TestDocumentKeys.getOrCreate() else throw IOException("JOURNAL_UNAVAILABLE")
+                override fun delete() = error("UNEXPECTED_KEY_DELETION")
+            }
+            val driver = DeviceExecutionDriver(context, scope, http, host, "acct", "dev", 1,
+                "journal_write_failure", { 7 }, { true }, unavailableKeys)
+            assertEquals("JOURNAL_UNAVAILABLE", runCatching { driver.enqueue("req_unstored") }.exceptionOrNull()?.message)
+            assertTrue(transport.lookups.isEmpty())
+            assertTrue(transport.claims.isEmpty())
+            assertEquals(0, transport.invocations.get())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun aNotificationFromAnOldLocalRevisionCannotAcquireExecutionAuthorityAfterRestart() = runBlocking {
+        fixture("notification_revision_fence") { _, transport, journal, scope, failures, host ->
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            val http = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
+                transport, { ByteArray(64) }, InMemoryEventCursorStore())
+            val stopped = CoroutineScope(SupervisorJob().apply { cancel() } + Dispatchers.IO)
+            val previous = DeviceExecutionDriver(context, stopped, http, host, "acct", "dev", 1,
+                "notification_revision_fence", { 7 }, { true }, TestDocumentKeys, localAuthorizationRevision = { 1L })
+            previous.enqueue("req_previous_revision")
+            val current = DeviceExecutionDriver(context, scope, http, host, "acct", "dev", 1,
+                "notification_revision_fence", { 7 }, { true }, TestDocumentKeys, localAuthorizationRevision = { 2L })
+            current.recoverPending()
+            awaitJobs(scope)
+            current.enqueue("req_previous_revision")
+            awaitJobs(scope)
+            assertTrue(transport.claims.isEmpty())
+            assertEquals(0, transport.invocations.get())
+            assertNotNull(journal.read("req_previous_revision"))
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun snapshotJournalsAllNotificationsBeforeReturningItsBaselineEvenWhenLookupsAreBlocked() = runBlocking {
+        fixture("snapshot_notification_journal") { driver, transport, journal, scope, failures, _ ->
+            val ids = listOf("req_snapshot_blocked", "req_snapshot_next")
+            transport.snapshotIds = ids + ids.first()
+            transport.onLookup = { awaitCancellation() }
+            val contextHttp = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
+                transport, { ByteArray(64) }, InMemoryEventCursorStore())
+            val baseline = withTimeout(1_000) {
+                recoverPlatformSnapshot(contextHttp, {}, driver::enqueue, driver::recoverPending)
+            }
+            assertEquals("evt_durable_baseline", baseline)
+            assertEquals(ids.toSet(), journal.keys())
+            assertTrue(transport.claims.isEmpty())
+            assertEquals(0, transport.invocations.get())
+            ids.forEach(driver::cancel)
+            awaitJobs(scope)
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun aFailedNotificationLookupIsRecoveredWithoutReplayingThePlatformEvent() = runBlocking {
+        fixture("notification_lookup_recovery") { driver, transport, journal, scope, failures, _ ->
+            transport.offlineId = "req_lookup_offline"
+            driver.enqueue("req_lookup_offline")
+            awaitJobs(scope)
+            assertNotNull(journal.read("req_lookup_offline"))
+            assertTrue(transport.claims.isEmpty())
+            transport.offlineId = null
+            driver.recoverPending()
+            awaitJobs(scope)
+            assertEquals(1, transport.claims.size)
+            assertEquals(1, transport.invocations.get())
+            assertEquals(1, transport.results.size)
+            assertTrue(journal.keys().isEmpty())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun cancellationDuringResultRetryCannotReplayTheSensitiveCompletedPayload() = runBlocking {
+        fixture("cancelled_result_retry") { driver, transport, journal, scope, failures, _ ->
+            val submitted = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            transport.resultFailures = 1
+            transport.afterResult = {
+                if (transport.results.size == 1) {
+                    submitted.complete(Unit)
+                    withContext(NonCancellable) { release.await() }
+                }
+            }
+            driver.enqueue("req_cancelled_result")
+            withTimeout(3_000) { submitted.await() }
+            driver.cancel("req_cancelled_result")
+            val lookups = transport.lookups.size
+            driver.enqueue("req_cancelled_result")
+            driver.recoverPending()
+            assertEquals(lookups, transport.lookups.size)
+            assertEquals(1, transport.invocations.get())
+            assertEquals(1, transport.claims.size)
+            release.complete(Unit)
+            awaitJobs(scope)
+            driver.enqueue("req_cancelled_result")
+            driver.recoverPending()
+            awaitJobs(scope)
+            assertEquals(2, transport.results.size)
+            assertTrue(transport.results.first().body.decodeToString().contains("succeeded"))
+            assertTrue(transport.results.last().body.decodeToString().contains("cancelled"))
+            assertFalse(transport.results.last().body.decodeToString().contains("recovery-fixture"))
+            assertEquals(1, transport.invocations.get())
+            assertNotNull(journal.read("req_cancelled_result"))
+            assertTrue(failures.isEmpty())
+        }
+    }
+
     @Test fun restartWithTheSameVerifiedStateRecoversAResultDespiteADifferentInMemoryHostRevision() = runBlocking {
         fixture("restart_same_authority") { _, transport, journal, scope, failures, originalHost ->
             originalHost.revision.value = 9L
@@ -199,7 +484,13 @@ class DeviceExecutionRecoveryTest {
     }
 
     private suspend fun awaitJobs(scope: CoroutineScope) {
-        withTimeout(5_000) { scope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+        withTimeout(5_000) {
+            while (true) {
+                val jobs = scope.coroutineContext[Job]!!.children.toList()
+                if (jobs.isEmpty()) break
+                jobs.forEach { it.join() }
+            }
+        }
     }
 
     private suspend fun fixture(name: String, block: suspend (DeviceExecutionDriver, Transport, EncryptedDocuments,
@@ -260,6 +551,9 @@ class DeviceExecutionRecoveryTest {
     ))).toByteArray()
 
     private class Transport(private val entry: VerifiedCapability, val invocations: AtomicInteger) : GatewayByteTransport {
+        val lookups = CopyOnWriteArrayList<String>()
+        var onLookup: suspend (String) -> WireResponse? = { null }
+        var snapshotIds: List<String>? = null
         val claims = CopyOnWriteArrayList<WireRequest>()
         val results = CopyOnWriteArrayList<WireRequest>()
         val authorizationStates = CopyOnWriteArrayList<Pair<String, String>>()
@@ -275,6 +569,7 @@ class DeviceExecutionRecoveryTest {
         var offlineId: String? = null
         var expiresAt = Instant.now().plusSeconds(60).toString()
         var afterAuthorization: suspend (String) -> Unit = {}
+        var afterResult: suspend () -> Unit = {}
 
         /** A saved Android journal corresponds to an already-issued, still-current Core receipt. */
         fun seedClaimed(vararg ids: String) {
@@ -287,7 +582,14 @@ class DeviceExecutionRecoveryTest {
         }
 
         override suspend fun execute(request: WireRequest): WireResponse {
+            if (request.target.endsWith("/sync/snapshot")) return WireResponse(200, emptyList(),
+                Json.canonical(Json.of(mapOf("protocol" to "2.1", "data" to mapOf("baselineCursor" to "evt_durable_baseline",
+                    "pendingDeviceRequests" to (snapshotIds ?: error("UNEXPECTED_SNAPSHOT")))))).toByteArray())
             val id = request.target.substringAfter("/device-requests/").substringBefore('/')
+            if (request.method == "GET") {
+                lookups += id
+                onLookup(id)?.let { return it }
+            }
             if (id == offlineId) throw IOException("离线夹具")
             val data = when {
                 request.target.endsWith("/claim") -> {
@@ -323,6 +625,7 @@ class DeviceExecutionRecoveryTest {
                     val outcome = JsonFields.string(result, "outcome")!!
                     assertTrue(outcome in setOf("succeeded", "failed", "denied", "cancelled", "outcome_unknown"))
                     results += request
+                    afterResult()
                     if (hangResult) awaitCancellation()
                     if (resultFailures-- > 0) throw IOException("结果尚未被确认")
                     val previous = adoptedResults.putIfAbsent(id, encoded)

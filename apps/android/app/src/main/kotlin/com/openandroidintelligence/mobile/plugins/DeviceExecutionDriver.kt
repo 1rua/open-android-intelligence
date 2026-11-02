@@ -43,22 +43,92 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
     private val decisionOwner = java.util.UUID.randomUUID().toString()
     private val documents = if (keyProvider == null) EncryptedDocuments(context,"device-execution:$scopeKey")
         else EncryptedDocuments(context,"device-execution:$scopeKey",keyProvider)
-    private val client = DeviceRequestClient(HttpDeviceRequestTransport(http) { id ->
-        check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
-        val saved = documents.read(id)?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
-        check(saved != null && journalDeliveryCurrent(saved)) { "LOCAL_AUTHORIZATION_CHANGED" }
-        check(JsonFields.string(saved, "expiresAt")?.let(Instant::parse)?.toEpochMilli()?.let { it > System.currentTimeMillis() } == true) {
-            "DEVICE_REQUEST_EXPIRED"
+    private val client = DeviceRequestClient(object : DeviceRequestTransport {
+        override suspend fun claim(requestId: String, grantRevision: Int): ClaimReceipt =
+            HttpDeviceRequestTransport(http) { id -> checkTransportAuthorization(id) }.claim(requestId, grantRevision)
+
+        override suspend fun submitResult(requestId: String, body: Map<String, Any?>) {
+            HttpDeviceRequestTransport(http) { id -> checkTransportAuthorization(id, body["result"]) }
+                .submitResult(requestId, body)
         }
     })
+    private val stateLock = Any()
+    private val lookups = ConcurrentHashMap<String,Job>()
     private val running = ConcurrentHashMap<String,Job>()
     private val confirmations = ConcurrentHashMap<String,CompletableDeferred<Int>>()
     private val confirmationLock = Mutex()
     private val recoveryLock = Mutex()
     val confirmation = MutableStateFlow<DeviceConfirmation?>(null)
 
-    suspend fun accept(requestId: String) {
+    /** A durable wake-up signal, never a Claim or permission to invoke a plugin. */
+    suspend fun enqueue(requestId: String) = withContext(Dispatchers.IO) {
         require(requestId.matches(Regex("[A-Za-z0-9._~-]{1,128}")))
+        synchronized(stateLock) {
+            if (readJournal(requestId) == null) writeJournal(requestId, notification())
+            scheduleLookup(requestId)
+        }
+    }
+
+    /** Compatibility entry point; platform events and snapshots must use enqueue. */
+    suspend fun accept(requestId: String) {
+        enqueue(requestId)
+        synchronized(stateLock) { lookups[requestId] }?.join()
+    }
+
+    private fun checkTransportAuthorization(id: String, expectedResult: Any? = null) = synchronized(stateLock) {
+        check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+        val saved = readJournal(id)
+        check(saved != null && journalDeliveryCurrent(saved)) { "LOCAL_AUTHORIZATION_CHANGED" }
+        check(JsonFields.string(saved, "expiresAt")?.let(Instant::parse)?.toEpochMilli()?.let { it > System.currentTimeMillis() } == true) {
+            "DEVICE_REQUEST_EXPIRED"
+        }
+        if (expectedResult != null) {
+            val persisted = JsonFields.field(saved, "result") ?: error("EXECUTION_RESULT_MISSING")
+            check(Json.canonical(persisted) == Json.canonical(Json.of(expectedResult))) { "EXECUTION_RESULT_CHANGED" }
+        }
+    }
+
+    private fun notification(): Map<String, Any?> = mapOf("stage" to "notified",
+        "localAuthorizationRevision" to localAuthorizationRevision(),
+        "hostAuthorizationDigest" to executionHostAuthorizationDigest(host))
+
+    private fun readJournal(id: String): JsonValue.JObject? = documents.read(id)?.let {
+        JsonFields.obj(Json.parse(it.decodeToString())) ?: error("EXECUTION_JOURNAL_INVALID")
+    }
+
+    private fun writeJournal(id: String, fields: Map<String, Any?>) =
+        documents.write(id, Json.canonical(Json.of(fields)).toByteArray())
+
+    private fun journalFields(document: JsonValue.JObject): MutableMap<String, Any?> =
+        document.fields.associateTo(mutableMapOf<String, Any?>()) { it.first to it.second }
+
+    /** Called under stateLock; the entry remains owned until the Job has fully completed. */
+    private fun launchTracked(jobs: ConcurrentHashMap<String, Job>, id: String, stage: String,
+        action: suspend () -> Unit) {
+        if (jobs[id]?.isCompleted == false) return
+        val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try { action() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                diagnostic(id, stage, "EXECUTION_RECOVERY_REQUIRED_" + failure.javaClass.simpleName.take(64))
+            }
+        }
+        jobs[id] = job
+        // A cancelled Job can still be persisting/delivering its final outcome. Remove only
+        // after that finalization, comparing the owner so an old Job cannot remove a new one.
+        job.invokeOnCompletion { synchronized(stateLock) { jobs.remove(id, job) } }
+        job.start()
+    }
+
+    private fun scheduleLookup(id: String) {
+        val saved = readJournal(id) ?: return
+        if (JsonFields.string(saved, "stage") == "fenced" || !authorizationCurrent()) return
+        val executing = running[id]
+        if (executing != null && executing.isCancelled && !executing.isCompleted) return
+        launchTracked(lookups, id, "lookup") { lookup(id) }
+    }
+
+    private suspend fun lookup(requestId: String) {
         if (!authorizationCurrent()) return
         diagnostic(requestId,"lookup","STARTED")
         val response = try {
@@ -74,46 +144,40 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
             diagnostic(requestId,"lookup","DEVICE_LOOKUP_FAILED")
             throw failure
         }
-        if (response.status == 403 || response.status == 404 || response.status == 409) {
-            documents.delete(requestId)
-            diagnostic(requestId,"lookup","REQUEST_FENCED")
+        currentCoroutineContext().ensureActive()
+        if (response.status in setOf(403,404,409)) {
+            fence(requestId, "REQUEST_FENCED")
             return
         }
         val request = JsonFields.obj(JsonFields.field(response.requireData("DEVICE_LOOKUP_FAILED"),"request")) ?: error("DEVICE_REQUEST_INVALID")
-        if (JsonFields.string(request,"deviceId") != deviceId || JsonFields.int(request,"pairingGeneration") != generation) return
+        if (JsonFields.string(request,"deviceId") != deviceId || JsonFields.int(request,"pairingGeneration") != generation) {
+            fence(requestId, "REQUEST_BINDING_CHANGED")
+            return
+        }
         if (JsonFields.int(request,"grantRevision") != currentGrantRevision()) {
-            cancel(requestId)
-            documents.delete(requestId); diagnostic(requestId,"lookup","GRANT_STALE"); return
+            fence(requestId, "GRANT_STALE")
+            return
         }
         val remoteState = JsonFields.string(request,"state")
-        if (remoteState == "cancel_requested") {
-            cancel(requestId)
-            if (running[requestId]?.isActive == true) return
-        }
         if (remoteState !in setOf("pending","claimed","cancel_requested")) {
-            cancel(requestId)
-            documents.delete(requestId); diagnostic(requestId,"lookup","REQUEST_TERMINAL"); return
+            fence(requestId, "REQUEST_TERMINAL")
+            return
         }
         if (Instant.parse(JsonFields.string(request,"expiresAt") ?: error("DEVICE_REQUEST_INVALID")).toEpochMilli() <= System.currentTimeMillis()) {
-            cancel(requestId)
-            documents.delete(requestId); diagnostic(requestId,"lookup","REQUEST_EXPIRED"); return
+            fence(requestId, "REQUEST_EXPIRED")
+            return
         }
-        synchronized(running) {
-            if (running[requestId]?.isActive == true) return
-            if (documents.read(requestId) == null) documents.write(requestId,Json.canonical(Json.of(mapOf("stage" to "received",
-                "expiresAt" to JsonFields.string(request,"expiresAt"),
-                "localAuthorizationRevision" to localAuthorizationRevision(),
-                "hostAuthorizationDigest" to executionHostAuthorizationDigest(host)))).toByteArray())
-            val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
-                try { execute(requestId,request) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (failure: Exception) {
-                    diagnostic(requestId,"journal", "EXECUTION_RECOVERY_REQUIRED_" + failure.javaClass.simpleName.take(64))
-                }
-                finally { running.remove(requestId,currentCoroutineContext()[Job]) }
+        if (remoteState == "cancel_requested") recordCancellation(requestId, cancelLookup = false)
+        synchronized(stateLock) {
+            val saved = readJournal(requestId) ?: return
+            if (JsonFields.string(saved, "stage") == "fenced") return
+            if (JsonFields.string(saved, "stage") == "notified") {
+                writeJournal(requestId, journalFields(saved).apply {
+                    this["stage"] = "received"
+                    this["expiresAt"] = JsonFields.string(request, "expiresAt")
+                })
             }
-            running[requestId] = job
-            job.start()
+            launchTracked(running, requestId, "journal") { execute(requestId,request) }
         }
     }
     fun respond(requestId: String, allowed: Boolean, durationMinutes: Int = 0) {
@@ -121,27 +185,70 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
         confirmations[requestId]?.complete(if (allowed) durationMinutes else -1)
     }
     fun decide(requestId: String, approved: Boolean, durationMinutes: Int = 0) = respond(requestId, approved, durationMinutes)
-    fun cancel(requestId: String) {
+    fun cancel(requestId: String) = recordCancellation(requestId)
+
+    private fun signalCancellation(requestId: String, cancelLookup: Boolean) {
         if (screenBinding != null) ScreenHostRegistry.current?.cancelRequest(requestId, screenBinding)
         host.cancelRequestAuthorization(requestId, authenticatedBinding)
-        confirmations[requestId]?.complete(-1); running[requestId]?.cancel()
+        confirmations[requestId]?.complete(-1)
+        running[requestId]?.cancel()
+        if (cancelLookup) lookups[requestId]?.cancel()
     }
+
+    private fun recordCancellation(requestId: String, cancelLookup: Boolean = true) {
+        require(requestId.matches(Regex("[A-Za-z0-9._~-]{1,128}")))
+        try {
+            synchronized(stateLock) {
+                val saved = readJournal(requestId)
+                val fields = saved?.let(::journalFields) ?: notification().toMutableMap()
+                fields["cancelRequested"] = true
+                val result = JsonFields.obj(JsonFields.field(saved, "result"))
+                if (JsonFields.string(result, "outcome") == "succeeded")
+                    fields["result"] = encodeResult(cancelledResult(saved))
+                writeJournal(requestId, fields)
+            }
+        } finally { signalCancellation(requestId, cancelLookup) }
+    }
+
+    private fun fence(requestId: String, reason: String) {
+        try {
+            synchronized(stateLock) {
+                val saved = readJournal(requestId)
+                val fields = saved?.let(::journalFields) ?: notification().toMutableMap()
+                fields["stage"] = "fenced"
+                fields["cancelRequested"] = true
+                fields["fenceReason"] = reason
+                writeJournal(requestId, fields)
+            }
+            diagnostic(requestId,"lookup",reason)
+        } finally { signalCancellation(requestId, cancelLookup = true) }
+    }
+
     fun cancelAll() {
-        running.keys.toList().forEach(::cancel)
-        confirmations.keys.toList().forEach { id -> host.cancelRequestAuthorization(id, authenticatedBinding); confirmations[id]?.complete(-1) }
+        // Closing a connection cancels its in-flight work. A completed delivery
+        // window has no live owner: preserve that result for authenticated
+        // recovery rather than rewriting execution history as cancellation.
+        val ids = synchronized(stateLock) {
+            running.filterValues { !it.isCompleted }.keys + lookups.filterValues { !it.isCompleted }.keys + confirmations.keys
+        }
+        ids.forEach(::cancel)
     }
+
     suspend fun recoverPending() = recoveryLock.withLock {
-        for (id in documents.keys()) {
-            try {
-                val bytes = documents.read(id) ?: continue
-                val doc = JsonFields.obj(Json.parse(bytes.decodeToString())) ?: error("EXECUTION_JOURNAL_INVALID")
-                val expiration = JsonFields.string(doc,"expiresAt")
-                if (expiration == null || Instant.parse(expiration).toEpochMilli() <= System.currentTimeMillis()) {
-                    documents.delete(id)
-                    diagnostic(id,"recovery","REQUEST_EXPIRED")
-                } else accept(id)
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { diagnostic(id,"recovery","EXECUTION_RECOVERY_REQUIRED") }
+        withContext(Dispatchers.IO) {
+            for (id in documents.keys()) {
+                try {
+                    synchronized(stateLock) {
+                        val doc = readJournal(id) ?: return@synchronized
+                        if (JsonFields.string(doc,"stage") == "fenced") return@synchronized
+                        val expiration = JsonFields.string(doc,"expiresAt")
+                        if (expiration != null && Instant.parse(expiration).toEpochMilli() <= System.currentTimeMillis()) {
+                            fence(id,"REQUEST_EXPIRED")
+                        } else scheduleLookup(id)
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { diagnostic(id,"recovery","EXECUTION_RECOVERY_REQUIRED") }
+            }
         }
     }
     private suspend fun execute(id: String,request: JsonValue.JObject) {
@@ -156,13 +263,19 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
             if (!authorizationCurrent()) return
             val grantRevision = JsonFields.int(request,"grantRevision") ?: error("DEVICE_REQUEST_INVALID")
             if (grantRevision != currentGrantRevision()) {
-                documents.delete(id)
-                diagnostic(id,"claim","GRANT_STALE")
+                fence(id, "GRANT_STALE")
                 return
             }
-            val old = JsonFields.obj(Json.parse(documents.read(id)!!.decodeToString())) ?: error("EXECUTION_JOURNAL_INVALID")
+            var old = synchronized(stateLock) { readJournal(id) } ?: return
+            if (JsonFields.string(old, "stage") !in setOf("received", "claimed", "completed")) return
+            if (JsonFields.bool(old, "cancelRequested") == true && JsonFields.obj(JsonFields.field(old, "result")) == null) {
+                val cancellation = if (JsonFields.string(old, "stage") == "received" || invocationRisk == "read")
+                    DeviceRequestResult.Cancelled(mapOf("code" to "DEVICE_REQUEST_CANCELLED")) else DeviceRequestResult.OutcomeUnknown
+                if (!checkpoint(id, request, "completed", encodeResult(cancellation))) return
+                old = synchronized(stateLock) { readJournal(id) } ?: return
+            }
             if (!journalDeliveryCurrent(old)) {
-                diagnostic(id,"authorization","LOCAL_AUTHORIZATION_CHANGED")
+                fence(id, "LOCAL_AUTHORIZATION_CHANGED")
                 return
             }
             persistedResult = JsonFields.obj(JsonFields.field(old,"result"))?.let(::decodeResult)
@@ -170,14 +283,15 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
                 .coerceIn(1,EXECUTION_TIMEOUT_MILLIS)
             withTimeout(remaining) {
                 val receipt = claimWithRetry(id,grantRevision)
-                check(receipt.accountId == accountId && receipt.deviceId == deviceId &&
+                check(receipt.requestId == id && receipt.accountId == accountId && receipt.deviceId == deviceId &&
                     receipt.pairingGeneration == generation && receipt.grantRevision == grantRevision) { "RECEIPT_BINDING_MISMATCH" }
                 claim = receipt
                 diagnostic(id,"claim","SUCCEEDED")
                 if (persistedResult != null) result = persistedResult!!
-                else if (JsonFields.string(old,"stage") == "received" && JsonFields.string(request,"state") == "pending") {
+                else if (JsonFields.string(old,"stage") == "received" && JsonFields.bool(old, "cancelRequested") != true &&
+                    JsonFields.string(request,"state") == "pending") {
                     // 执行前落盘：重启或重放只能补报未知结果，不能再次调用插件。
-                    checkpoint(id,request,"claimed")
+                    if (!checkpoint(id,request,"claimed")) return@withTimeout
                     stage = "authorization"
                     val provider = JsonFields.obj(JsonFields.field(request,"provider")) ?: error("DEVICE_REQUEST_INVALID")
                     val capability = JsonFields.obj(JsonFields.field(request,"capability")) ?: error("DEVICE_REQUEST_INVALID")
@@ -225,7 +339,8 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
                         val current = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/device-requests/$id",
                             beforeSend = {
                                 check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
-                                check(journalAuthorizationCurrent(old)) { "LOCAL_AUTHORIZATION_CHANGED" }
+                                val saved = synchronized(stateLock) { readJournal(id) }
+                                check(saved != null && journalAuthorizationCurrent(saved)) { "LOCAL_AUTHORIZATION_CHANGED" }
                             }))
                         if (current.status in setOf(401,403,404,409)) throw CapabilityDenied("GATEWAY_AUTHORIZATION_REVOKED")
                         val live = JsonFields.obj(JsonFields.field(current.requireData("DEVICE_LOOKUP_FAILED"),"request")) ?: error("DEVICE_REQUEST_INVALID")
@@ -258,9 +373,17 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
                             screen.installRequestAuthorization(id, permissions, expiresAt, Json.sha256(parameters), owner, revalidate)
                         }
                         if (!authorizationCurrent()) throw CapabilityDenied("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
-                        if (!journalAuthorizationCurrent(old) || !host.authorizationIsCurrent(id, entry, parameters, authenticatedBinding))
+                        val saved = synchronized(stateLock) { readJournal(id) }
+                        if (saved == null || !journalAuthorizationCurrent(saved) || !host.authorizationIsCurrent(id, entry, parameters, authenticatedBinding))
                             throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
                         reportAuthorization(id, "executing")
+                        currentCoroutineContext().ensureActive()
+                        val authorized = synchronized(stateLock) { readJournal(id) }
+                        if (!authorizationCurrent() || authorized == null || !journalAuthorizationCurrent(authorized) ||
+                            grantRevision != currentGrantRevision() ||
+                            Instant.parse(JsonFields.string(request,"expiresAt")!!).toEpochMilli() <= System.currentTimeMillis() ||
+                            !host.authorizationIsCurrent(id, entry, parameters, authenticatedBinding))
+                            throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
                         invocationStarted = true
                         diagnostic(id,stage,"STARTED")
                         val output = runInterruptible(Dispatchers.IO) { host.invoke(entry.identity,accountId,key,parameters,id,authenticatedBinding = authenticatedBinding) }
@@ -299,7 +422,7 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
         val receipt = claim ?: return
         // 已落盘的真实结果不能因恢复时的网络异常或超时而被改写。
         persistedResult?.let { result = it }
-        checkpoint(id,request,"completed",encodeResult(result))
+        if (!checkpoint(id,request,"completed",encodeResult(result))) return
         diagnostic(id,"completed",encodeResult(result)["outcome"].toString())
         withContext(NonCancellable) { deliver(id,receipt,result) }
     }
@@ -316,23 +439,29 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
     }
     private suspend fun deliver(id: String,claim: ClaimReceipt,result: DeviceRequestResult) {
         if (!authorizationCurrent()) return
-        var deliveredResult = result
         try {
             withTimeout(DELIVERY_TIMEOUT_MILLIS) {
                 repeat(MAX_ATTEMPTS) { attempt ->
                     try {
-                        val saved = documents.read(id)?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
+                        val saved = synchronized(stateLock) { readJournal(id) }
                         if (!authorizationCurrent() || saved == null || !journalDeliveryCurrent(saved)) return@withTimeout
+                        var deliveredResult = JsonFields.obj(JsonFields.field(saved, "result"))?.let(::decodeResult) ?: result
                         if (deliveredResult is DeviceRequestResult.Succeeded && !remoteAllowsSensitiveDelivery(id, claim)) {
                             host.cancelRequestAuthorization(id, authenticatedBinding)
-                            deliveredResult = if (JsonFields.string(JsonFields.obj(JsonFields.field(saved, "localApproval")), "operation") == "READ")
-                                DeviceRequestResult.Cancelled(mapOf("code" to "DEVICE_REQUEST_CANCELLED"))
-                            else DeviceRequestResult.OutcomeUnknown
+                            deliveredResult = cancelledResult(saved)
                             val request = JsonFields.obj(Json.of(mapOf("expiresAt" to JsonFields.string(saved, "expiresAt"))))!!
-                            checkpoint(id, request, "completed", encodeResult(deliveredResult))
+                            if (!checkpoint(id, request, "completed", encodeResult(deliveredResult))) return@withTimeout
                         }
                         client.submitResult(claim,deliveredResult)
-                        documents.delete(id)
+                        synchronized(stateLock) {
+                            val current = readJournal(id)
+                            if (current != null && JsonFields.bool(current, "cancelRequested") == true) {
+                                writeJournal(id, journalFields(current).apply {
+                                    this["stage"] = "fenced"
+                                    this["fenceReason"] = "REQUEST_CANCELLED"
+                                })
+                            } else documents.delete(id)
+                        }
                         host.finishRequestAuthorization(id, authenticatedBinding)
                         diagnostic(id,"result","ACKNOWLEDGED")
                         return@withTimeout
@@ -444,23 +573,34 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
         }.onFailure { diagnostic(id, "confirmation", "CONFIRMATION_NOTIFICATION_UNAVAILABLE") }
     }
 
-    private fun saveAuthorization(id: String, scope: CapabilityRequestScope, approval: LocalCapabilityApproval?) {
-        val existing = documents.read(id)?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
-            ?: error("EXECUTION_JOURNAL_INVALID")
-        val fields = existing.fields.associate { it.first to it.second }.toMutableMap<String, Any?>()
+    private fun saveAuthorization(id: String, scope: CapabilityRequestScope, approval: LocalCapabilityApproval?) = synchronized(stateLock) {
+        val existing = readJournal(id) ?: error("EXECUTION_JOURNAL_INVALID")
+        if (!journalAuthorizationCurrent(existing)) throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+        val fields = journalFields(existing)
         fields["localApproval"] = mapOf("requestId" to id, "capability" to scope.capability,
             "operation" to scope.operation.name, "parametersSha256" to scope.parametersSha256, "approvalId" to approval?.id)
-        documents.write(id, Json.canonical(Json.of(fields)).toByteArray())
+        writeJournal(id, fields)
     }
-    private fun checkpoint(id: String,request: JsonValue.JObject,stage: String,result: Map<String,Any?>? = null) {
-        val existing = documents.read(id)?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
-        val revision = JsonFields.long(existing,"localAuthorizationRevision") ?: 0L
-        val hostDigest = JsonFields.string(existing,"hostAuthorizationDigest")
-        documents.write(id,Json.canonical(Json.of(mapOf("stage" to stage,"expiresAt" to JsonFields.string(request,"expiresAt"),
-            "localAuthorizationRevision" to revision,"hostAuthorizationDigest" to hostDigest,
-            "localApproval" to JsonFields.field(existing,"localApproval"),"result" to result))).toByteArray())
+    private fun checkpoint(id: String,request: JsonValue.JObject,stage: String,result: Map<String,Any?>? = null): Boolean = synchronized(stateLock) {
+        val existing = readJournal(id) ?: return@synchronized false
+        if (JsonFields.string(existing, "stage") == "fenced") return@synchronized false
+        if (stage == "claimed" && (JsonFields.string(existing, "stage") != "received" || !journalAuthorizationCurrent(existing)))
+            return@synchronized false
+        val fields = journalFields(existing)
+        fields["stage"] = stage
+        fields["expiresAt"] = JsonFields.string(request,"expiresAt")
+        if (result != null) fields["result"] = if (result["outcome"] == "succeeded" && JsonFields.bool(existing, "cancelRequested") == true)
+            encodeResult(cancelledResult(existing)) else result
+        writeJournal(id, fields)
+        true
     }
+
+    private fun cancelledResult(document: JsonValue.JObject?): DeviceRequestResult =
+        if (JsonFields.string(JsonFields.obj(JsonFields.field(document, "localApproval")), "operation") == "READ")
+            DeviceRequestResult.Cancelled(mapOf("code" to "DEVICE_REQUEST_CANCELLED")) else DeviceRequestResult.OutcomeUnknown
+
     private fun journalDeliveryCurrent(document: JsonValue.JObject): Boolean {
+        if (JsonFields.string(document, "stage") == "fenced") return false
         val outcome = JsonFields.string(JsonFields.obj(JsonFields.field(document, "result")), "outcome")
         // A metadata-only refusal/cancellation cannot disclose a sensitive output and must reach Core
         // even if the corresponding manual approval was cancelled. Binding/revision fences still apply.
@@ -470,6 +610,7 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
     }
 
     private fun journalAuthorizationCurrent(document: JsonValue.JObject): Boolean =
+        JsonFields.string(document, "stage") !in setOf("notified", "fenced") && JsonFields.bool(document, "cancelRequested") != true &&
         (JsonFields.long(document,"localAuthorizationRevision") ?: 0L) == localAuthorizationRevision() &&
             JsonFields.string(document,"hostAuthorizationDigest") == executionHostAuthorizationDigest(host) && approvalCurrent(document)
 

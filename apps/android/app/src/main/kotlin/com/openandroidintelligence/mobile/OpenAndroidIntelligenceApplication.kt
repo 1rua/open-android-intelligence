@@ -88,7 +88,12 @@ class OpenAndroidIntelligenceApplication : Application() {
     val pluginRuntimesWired: Boolean get() = ::pluginHost.isInitialized && pluginHost.runtimes.isNotEmpty()
 
     private val gatewayNetworkMonitor by lazy {
-        GatewayNetworkMonitor(this) { gatewayRuntime.onNetworkAvailable() }
+        GatewayNetworkMonitor(
+            context = this,
+            onAvailable = { gatewayRuntime.onNetworkAvailable() },
+            onLost = { gatewayRuntime.onNetworkLost() },
+            onRouteChanged = { gatewayRuntime.onNetworkAvailable(routeChanged = true) },
+        )
     }
 
     /** Only an eligible, already foregrounded service reaches this recovery path. */

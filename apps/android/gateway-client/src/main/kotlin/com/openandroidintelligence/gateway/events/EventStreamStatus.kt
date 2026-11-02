@@ -7,10 +7,9 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * The observable health of the Gateway event stream.
  *
- * The transport used to swallow every failure and silently reconnect forever,
- * so nothing above it could tell "connected" from "dead". The status is now
- * reported on every transition, and [FAILED] is what a screen shows when the
- * stream has actually given up rather than what it guesses from silence.
+ * Network interruptions report RECONNECTING while bounded retries continue.
+ * FAILED is reserved for authentication, identity or local delivery failures
+ * that require intervention; it does not stand in for Core HTTP reachability.
  */
 enum class EventStreamStatus {
     /** No attempt has been made yet. */
@@ -19,13 +18,13 @@ enum class EventStreamStatus {
     /** Opening a channel (WebSocket handshake or SSE request). */
     CONNECTING,
 
-    /** An authenticated channel has delivered a complete event or heartbeat. */
+    /** The WS TLS/authenticated upgrade is ready, or SSE has delivered a complete frame. */
     LIVE,
 
     /** The last attempt failed and another one is already scheduled. */
     RECONNECTING,
 
-    /** The stream stopped retrying; a human has to act. */
+    /** A terminal authorization, identity or local delivery failure needs intervention. */
     FAILED,
 }
 

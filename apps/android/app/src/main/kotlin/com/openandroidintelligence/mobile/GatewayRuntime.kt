@@ -31,6 +31,7 @@ import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
+import com.openandroidintelligence.gateway.http.GatewayConnectionSecurity
 import com.openandroidintelligence.gateway.http.requireData
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayProfile
@@ -205,7 +206,7 @@ class GatewayRuntime(
     @Volatile private var restoringSession = false
     @Volatile private var backgroundRecoveryOnly = false
     @Volatile private var backgroundRestoreJob: Job? = null
-    private var restartPlatformStream: (() -> Unit)? = null
+    private var restartPlatformStream: ((PlatformStreamWakeReason) -> Unit)? = null
     private var restartNativeReads: (() -> Unit)? = null
     private val pendingRotations = mutableMapOf<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
@@ -216,6 +217,9 @@ class GatewayRuntime(
     val credentialStatus: StateFlow<GatewayCredentialStatus> = _credentialStatus.asStateFlow()
     private val _connectionStatus = MutableStateFlow(EventStreamStatus.IDLE)
     val connectionStatus: StateFlow<EventStreamStatus> = _connectionStatus.asStateFlow()
+    private val _coreHttpHealth = MutableStateFlow(CoreHttpHealth())
+    /** Last observed HTTP fact; independent of Platform and Native stream health. */
+    val coreHttpHealth: StateFlow<CoreHttpHealth> = _coreHttpHealth.asStateFlow()
     private val backgroundOwnershipLock = Any()
     @Volatile private var appVisible = false
     @Volatile private var backgroundSessionActive = false
@@ -519,11 +523,22 @@ class GatewayRuntime(
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
-        onNetworkAvailable()
+        wakeConnection(PlatformStreamWakeReason.FOREGROUND)
     }
 
-    /** Network changes wake the existing owner; they never start an Android service. */
-    fun onNetworkAvailable() {
+    /** Duplicate availability signals preserve healthy process-owned channels. */
+    fun onNetworkAvailable(routeChanged: Boolean = false) {
+        wakeConnection(if (routeChanged) PlatformStreamWakeReason.NETWORK_CHANGED else PlatformStreamWakeReason.RECOVERY_SIGNAL)
+    }
+
+    fun onNetworkLost() {
+        _coreHttpHealth.value = CoreHttpHealth(observedAtMillis = android.os.SystemClock.elapsedRealtime(), failureCode = "NETWORK_LOST")
+        GatewayLog.d("OaiConnection", "stage=NETWORK_LOST source=default_route")
+        // The transport owns socket health and its bounded failure detector.
+        // A network callback cannot publish a fabricated stream failure.
+    }
+
+    private fun wakeConnection(reason: PlatformStreamWakeReason) {
         recoveryWakeup.trySend(Unit)
         if (backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease) return
         if (_loginStatus.value == GatewayLoginStatus.REAUTHENTICATION_REQUIRED) return
@@ -531,8 +546,11 @@ class GatewayRuntime(
         else if (!restoringSession && _phase.value is ConnectionPhase.OfflineMirror) reconnectOfflineMirror()
         else if (!restoringSession && _phase.value is ConnectionPhase.Connected) {
             restartNativeReads?.invoke()
-            restartPlatformStream?.invoke()
-            resumeWorkbench()
+            restartPlatformStream?.invoke(reason)
+            if (_nativeAgents.value == null || reason == PlatformStreamWakeReason.NETWORK_CHANGED ||
+                reason == PlatformStreamWakeReason.USER_RETRY || _connectionStatus.value != EventStreamStatus.LIVE) {
+                resumeWorkbench()
+            }
         }
     }
 
@@ -547,7 +565,7 @@ class GatewayRuntime(
             _phase.value = ConnectionPhase.Disconnected
             _operationNotice.value = null
             restoreSessionIfAvailable()
-        } else onNetworkAvailable()
+        } else wakeConnection(PlatformStreamWakeReason.USER_RETRY)
     }
 
     private fun redirectRetiringWorkbench(
@@ -1086,7 +1104,7 @@ class GatewayRuntime(
                 renewal.refresh(rejected)
                 if (sessionRenewal === renewal) {
                     _operationNotice.value = "已向 Gateway 续期会话凭据，新的访问令牌已生效。"
-                    restartPlatformStream?.invoke()
+                    restartPlatformStream?.invoke(PlatformStreamWakeReason.CREDENTIAL_CHANGED)
                     resumeWorkbench()
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -1412,7 +1430,7 @@ class GatewayRuntime(
 
     private fun isTransientConnectionFailure(cause: Throwable): Boolean = when {
         cause is RefreshOutcomeUnknownException -> false
-        cause is javax.net.ssl.SSLException -> false
+        GatewayConnectionSecurity.isSecurityFailure(cause) -> false
         cause is java.io.IOException -> true
         cause is GatewayAuthException -> cause.retryable == true || cause.httpStatus in setOf(408, 429, 500, 502, 503, 504)
         cause.message?.matches(Regex("NEGOTIATION_FAILED:(408|429|5[0-9][0-9])")) == true -> true
@@ -1513,7 +1531,27 @@ class GatewayRuntime(
                 legacyCursor.clear(session.accountId)
             }
         }
-        val transport = GatewayTransport(profile)
+        _coreHttpHealth.value = CoreHttpHealth()
+        val transport = GatewayTransport(
+            profile,
+            onHttpResponse = { status ->
+                if (sessionRenewal === renewal) _coreHttpHealth.value = CoreHttpHealth(
+                    reachability = CoreHttpReachability.REACHABLE,
+                    httpStatus = status,
+                    observedAtMillis = android.os.SystemClock.elapsedRealtime(),
+                )
+            },
+            onHttpFailure = { failure ->
+                if (sessionRenewal === renewal && failure !is CancellationException) {
+                    val security = GatewayConnectionSecurity.isSecurityFailure(failure)
+                    _coreHttpHealth.value = CoreHttpHealth(
+                        reachability = if (security) CoreHttpReachability.SECURITY_BLOCKED else CoreHttpReachability.UNREACHABLE,
+                        observedAtMillis = android.os.SystemClock.elapsedRealtime(),
+                        failureCode = if (security) "TRANSPORT_SECURITY_REJECTED" else failure.javaClass.simpleName,
+                    )
+                }
+            },
+        )
         val eventStreamStatus = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
         val http = GatewayHttpClient(
             profile = profile,
@@ -1723,7 +1761,7 @@ class GatewayRuntime(
                 requireRecoveryOwner()
                 val baseline = recoverPlatformSnapshot(http,
                     syncCapabilities = { requireRecoveryOwner(); capabilityPublisher?.sync() },
-                    acceptRequest = { requireRecoveryOwner(); executionDriver?.accept(it) },
+                    acceptRequest = { requireRecoveryOwner(); executionDriver?.enqueue(it) },
                     recoverLocalRequests = { requireRecoveryOwner(); executionDriver?.recoverPending() })
                 requireRecoveryOwner()
                 return@setCursorRecovery baseline
@@ -1949,9 +1987,9 @@ class GatewayRuntime(
             restartNativeReads = {
                 if (sessionJob === ownedJob && _nativeAgents.value === nativeController) {
                     coreAgentRepo?.connectionRestored()
-                    nativeController.refresh()
-                    if (canRetryWorkbenchInitialization) sessionScope.launch {
-                        updateNativeWorkbench(nativeController.state.value)
+                    if (canRetryWorkbenchInitialization) {
+                        nativeController.refresh()
+                        sessionScope.launch { updateNativeWorkbench(nativeController.state.value) }
                     }
                 }
             }
@@ -2079,7 +2117,7 @@ class GatewayRuntime(
         platformHttp.setCursorRecovery {
             val baseline = recoverPlatformSnapshot(platformHttp,
                 syncCapabilities = { capabilityPublisher?.sync() },
-                acceptRequest = { executionDriver?.accept(it) },
+                acceptRequest = { executionDriver?.enqueue(it) },
                 recoverLocalRequests = { executionDriver?.recoverPending() })
             reconcileNotifications(force = true)
             baseline
@@ -2093,83 +2131,89 @@ class GatewayRuntime(
             }
         }
         var platformJob: Job? = null
+        var notificationRecoveryJob: Job? = null
         val streamOwnerLock = Any()
-        var authenticationBlocked = false
+        var streamBlocked = false
         var blockedSnapshot: GatewayProfile? = null
+        var platformHasBeenLive = false
+        var ownerSequence = 0L
         fun updateScreenConnection(live: Boolean) {
             if (sessionJob === ownedJob) com.openandroidintelligence.control.ScreenHostRegistry.current?.connectionChanged(live)
         }
-        // The public connection fact is independent of login and device grants.
         sessionScope.launch {
             platformStatus.status.collect { status ->
-                if (sessionJob === ownedJob) _connectionStatus.value = status
+                if (sessionJob !== ownedJob) return@collect
+                val projected = if (platformHasBeenLive && status == EventStreamStatus.CONNECTING)
+                    EventStreamStatus.RECONNECTING else status
+                _connectionStatus.value = projected
                 updateScreenConnection(status == EventStreamStatus.LIVE)
-                if (status == EventStreamStatus.LIVE && sessionJob === ownedJob) {
+                if (status == EventStreamStatus.LIVE) {
+                    platformHasBeenLive = true
                     coreAgentRepo?.connectionRestored()
-                    withContext(Dispatchers.IO) { reconcileNotifications(force = true) }
-                    _controller.value?.refreshThreads()
+                    // Keep network IO out of the status collector. Recovery
+                    // activity must not cancel Native reads or refresh history.
+                    if (notificationRecoveryJob?.isActive != true) {
+                        notificationRecoveryJob = sessionScope.launch(Dispatchers.IO) {
+                            reconcileNotifications(force = true)
+                        }
+                    }
+                    if (coreAgentRepo == null) _controller.value?.refreshThreads()
                 }
             }
         }
-        val startPlatform: () -> Unit = {
+        val startPlatform: (PlatformStreamWakeReason) -> Unit = start@ { reason ->
             synchronized(streamOwnerLock) {
-                if ((!authenticationBlocked || blockedSnapshot != renewal.current) && sessionJob === ownedJob) {
-                    val previous = platformJob
-                    previous?.cancel()
-                    val next = sessionScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-                        previous?.join()
-                        var backoff = 1_000L
-                        while (isActive && sessionJob === ownedJob) {
-                            try {
-                                _connectionStatus.value = EventStreamStatus.CONNECTING
-                                updateScreenConnection(false)
-                                platformHttp.events().collect {
-                                    _connectionStatus.value = EventStreamStatus.LIVE
-                                    updateScreenConnection(true)
-                                }
-                            } catch (cancelled: CancellationException) { throw cancelled }
-                              catch (rejected: EventSessionRejectedException) {
-                                updateScreenConnection(false)
-                                // A fresh session was already tried once. A misconfigured
-                                // event channel cannot revoke the user's device grant.
-                                authenticationBlocked = true
-                                blockedSnapshot = renewal.current
-                                _connectionStatus.value = EventStreamStatus.FAILED
-                                _operationNotice.value = "Gateway 事件通道认证仍被拒绝，已暂停该通道。登录和本机授权已保留，请检查 Gateway 会话与设备认证配置。"
-                                return@launch
-                            } catch (cause: RefreshOutcomeUnknownException) {
-                                updateScreenConnection(false)
-                                authenticationBlocked = true
-                                blockedSnapshot = renewal.current
-                                _connectionStatus.value = EventStreamStatus.FAILED
-                                _operationNotice.value = renewalFailureNotice(cause)
-                                return@launch
-                            } catch (cause: Exception) {
-                                updateScreenConnection(false)
-                                if (sessionJob !== ownedJob) return@launch
-                                if (!isTransientConnectionFailure(cause)) {
-                                    authenticationBlocked = true
-                                    blockedSnapshot = renewal.current
-                                    _connectionStatus.value = EventStreamStatus.FAILED
-                                    _operationNotice.value = "Gateway 事件通道恢复已暂停，登录资料已保留，请检查连接配置或本机存储后重试。"
-                                    return@launch
-                                }
-                                _connectionStatus.value = EventStreamStatus.RECONNECTING
-                                nativeConversationNotifications.disconnect()
-                                withTimeoutOrNull(backoff) { recoveryWakeup.receive() }
-                                backoff = minOf(backoff * 2, 60_000L)
-                            }
-                        }
+                if (sessionJob !== ownedJob) return@start
+                if (streamBlocked && blockedSnapshot == renewal.current && reason != PlatformStreamWakeReason.USER_RETRY) return@start
+                val previous = platformJob
+                val replace = reason in setOf(PlatformStreamWakeReason.NETWORK_CHANGED,
+                    PlatformStreamWakeReason.CREDENTIAL_CHANGED, PlatformStreamWakeReason.USER_RETRY)
+                if (previous?.isActive == true && !replace) return@start
+                previous?.cancel()
+                val owner = ++ownerSequence
+                val next = sessionScope.launchAfterPlatformStream(previous) {
+                    if (sessionJob !== ownedJob) return@launchAfterPlatformStream
+                    streamBlocked = false
+                    GatewayLog.d("OaiConnection", "stage=PLATFORM_START owner=$owner reason=${reason.name}")
+                    try {
+                        // GatewayHttpClient owns the only network retry loop.
+                        platformHttp.events().collect { }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                      catch (rejected: EventSessionRejectedException) {
+                        ensureActive()
+                        if (sessionJob !== ownedJob) return@launchAfterPlatformStream
+                        streamBlocked = true
+                        blockedSnapshot = renewal.current
+                        updateScreenConnection(false)
+                        _connectionStatus.value = EventStreamStatus.FAILED
+                        _operationNotice.value = "Gateway 事件通道认证仍被拒绝，已暂停该通道。登录和本机授权已保留，请检查 Gateway 会话与设备认证配置。"
+                    } catch (cause: RefreshOutcomeUnknownException) {
+                        ensureActive()
+                        if (sessionJob !== ownedJob) return@launchAfterPlatformStream
+                        streamBlocked = true
+                        blockedSnapshot = renewal.current
+                        updateScreenConnection(false)
+                        _connectionStatus.value = EventStreamStatus.FAILED
+                        _operationNotice.value = renewalFailureNotice(cause)
+                    } catch (cause: Exception) {
+                        ensureActive()
+                        if (sessionJob !== ownedJob) return@launchAfterPlatformStream
+                        streamBlocked = true
+                        blockedSnapshot = renewal.current
+                        updateScreenConnection(false)
+                        _connectionStatus.value = EventStreamStatus.FAILED
+                        nativeConversationNotifications.disconnect()
+                        GatewayLog.w("OaiConnection", "stage=PLATFORM_PAUSED owner=$owner code=${cause.javaClass.simpleName}")
+                        _operationNotice.value = "Gateway 事件通道恢复已暂停，登录资料已保留，请检查连接配置或本机存储后重试。"
                     }
-                    platformJob = next
-                    next.start()
                 }
+                platformJob = next
             }
         }
         synchronized(backgroundOwnershipLock) {
             checkOwner()
             restartPlatformStream = startPlatform
-            startPlatform()
+            startPlatform(PlatformStreamWakeReason.INITIAL)
         }
     }
 
@@ -2269,6 +2313,7 @@ class GatewayRuntime(
         _loginStatus.value = GatewayLoginStatus.SIGNED_OUT
         _credentialStatus.value = GatewayCredentialStatus.UNAVAILABLE
         _connectionStatus.value = EventStreamStatus.IDLE
+        _coreHttpHealth.value = CoreHttpHealth()
     }
 
     private suspend fun handlePlatformEvent(event: GatewayEvent, sessionId: String, deviceId: String, binding: PairingGrantBinding): Boolean {
@@ -2276,7 +2321,7 @@ class GatewayRuntime(
         val body = JsonFields.obj(Json.parse(event.data)) ?: error("PLATFORM_EVENT_INVALID")
         val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: error("PLATFORM_EVENT_INVALID")
         when (event.event) {
-            "device.requested" -> executionDriver?.accept(JsonFields.string(payload,"requestId") ?: error("PLATFORM_EVENT_INVALID"))
+            "device.requested" -> executionDriver?.enqueue(JsonFields.string(payload,"requestId") ?: error("PLATFORM_EVENT_INVALID"))
             "device.request.cancel.requested" -> executionDriver?.cancel(JsonFields.string(payload,"requestId") ?: error("PLATFORM_EVENT_INVALID"))
             "session.revoked" -> {
                 val revoked = JsonFields.string(payload, "sessionId") ?: error("PLATFORM_EVENT_INVALID")

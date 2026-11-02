@@ -35,6 +35,7 @@ internal class LoopbackGatewayStub {
     private val routes = ConcurrentHashMap<String, StubResponse>()
     private val responders = ConcurrentHashMap<String, (RecordedGatewayRequest) -> StubResponse>()
     private val recorded = CopyOnWriteArrayList<RecordedGatewayRequest>()
+    private val streamReleases = CopyOnWriteArrayList<java.util.concurrent.CountDownLatch>()
 
     val baseUrl: String = "http://127.0.0.1:${server.localPort}"
 
@@ -73,7 +74,19 @@ internal class LoopbackGatewayStub {
     fun targetsOf(method: String): List<String> =
         requests.filter { it.method == method }.map { it.target }
 
-    fun closed() = server.close()
+    /** Real chunked SSE whose lifetime the test controls after headers arrive. */
+    fun openEventStream(path: String): java.util.concurrent.CountDownLatch {
+        val release = java.util.concurrent.CountDownLatch(1)
+        streamReleases += release
+        responders.remove(path)
+        routes[path] = StubResponse(200, ": heartbeat\n\n", "text/event-stream", streamRelease = release)
+        return release
+    }
+
+    fun closed() {
+        streamReleases.forEach { it.countDown() }
+        server.close()
+    }
 
     private fun handle(socket: Socket) {
         socket.use { open ->
@@ -106,6 +119,20 @@ internal class LoopbackGatewayStub {
 
     private fun write(socket: Socket, response: StubResponse) {
         if (response.status == 0) return // Commit succeeded, but the HTTP response was lost.
+        response.streamRelease?.let { release ->
+            socket.getOutputStream().apply {
+                write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n".toByteArray())
+                val heartbeat = response.body.toByteArray(Charsets.UTF_8)
+                write((heartbeat.size.toString(16) + "\r\n").toByteArray())
+                write(heartbeat)
+                write("\r\n".toByteArray())
+                flush()
+                check(release.await(20, TimeUnit.SECONDS)) { "SSE test owner was not released" }
+                write("0\r\n\r\n".toByteArray())
+                flush()
+            }
+            return
+        }
         val payload = response.body.toByteArray(Charsets.UTF_8)
         val reason = if (response.status in 200..299) "OK" else "Error"
         val header = buildString {
@@ -128,6 +155,7 @@ internal class LoopbackGatewayStub {
         val contentType: String,
         val release: java.util.concurrent.CountDownLatch? = null,
         val headers: Map<String, String> = emptyMap(),
+        val streamRelease: java.util.concurrent.CountDownLatch? = null,
     )
 }
 

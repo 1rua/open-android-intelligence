@@ -45,28 +45,40 @@ interface DeviceRequestTransport {
  */
 class DeviceRequestClient(private val transport: DeviceRequestTransport) {
 
+    private val receiptLock = Any()
     private val claimsByRequest = LinkedHashMap<String, ClaimReceipt>()
     private val issuedByClaimId = LinkedHashMap<String, ClaimReceipt>()
 
     suspend fun claim(requestId: String, grantRevision: Int): ClaimReceipt {
         val receipt = transport.claim(requestId, grantRevision)
-        // Idempotent re-claim returns the same receipt; recording it again is
-        // therefore a no-op rather than a conflict.
-        claimsByRequest[requestId] = receipt
-        issuedByClaimId[receipt.claimId] = receipt
+        require(receipt.requestId == requestId && receipt.grantRevision == grantRevision) {
+            "RECEIPT_BINDING_MISMATCH:$requestId"
+        }
+        // Both indexes form one immutable binding. A conflicting concurrent reply
+        // must fail before either index changes, preserving the first valid receipt.
+        synchronized(receiptLock) {
+            val existingRequest = claimsByRequest[requestId]
+            val existingClaim = issuedByClaimId[receipt.claimId]
+            require(existingRequest == null || existingRequest == receipt) { "RECEIPT_BINDING_MISMATCH:$requestId" }
+            require(existingClaim == null || existingClaim == receipt) { "RECEIPT_BINDING_MISMATCH:${receipt.claimId}" }
+            claimsByRequest[requestId] = receipt
+            issuedByClaimId[receipt.claimId] = receipt
+        }
         return receipt
     }
 
     suspend fun submitResult(claim: ClaimReceipt, result: DeviceRequestResult) {
         // A receipt is only usable if this client actually obtained it; a
         // hand-built one is not merely mismatched, it was never issued.
-        val issued = issuedByClaimId[claim.claimId]
-            ?: throw IllegalArgumentException("NOT_CLAIMED:${claim.claimId}")
-        if (issued != claim) {
-            throw IllegalArgumentException("RECEIPT_BINDING_MISMATCH:${claim.claimId}")
-        }
-        if (claimsByRequest[claim.requestId] != claim) {
-            throw IllegalArgumentException("RECEIPT_BINDING_MISMATCH:${claim.requestId}")
+        synchronized(receiptLock) {
+            val issued = issuedByClaimId[claim.claimId]
+                ?: throw IllegalArgumentException("NOT_CLAIMED:${claim.claimId}")
+            if (issued != claim) {
+                throw IllegalArgumentException("RECEIPT_BINDING_MISMATCH:${claim.claimId}")
+            }
+            if (claimsByRequest[claim.requestId] != claim) {
+                throw IllegalArgumentException("RECEIPT_BINDING_MISMATCH:${claim.requestId}")
+            }
         }
 
         transport.submitResult(

@@ -99,7 +99,7 @@ class NativeEventOwnerTest {
                 conversationId = ConversationId("chat")))
         store.commitEvents(listOf(cached))
         val repository = CoreAgentConversationRepository(client, { agent }, { "chat" }, backgroundScope, dispatcher,
-            storeForAgent = { store })
+            storeForAgent = { store }, nativeRetryJitter = { it })
         val reportedFailures = mutableListOf<String>()
         backgroundScope.launch(dispatcher) { repository.streamFailure.filterNotNull().toList(reportedFailures) }
 
@@ -153,7 +153,7 @@ class NativeEventOwnerTest {
                     conversationId = ConversationId("chat")))
             store.commitEvents(listOf(cached))
             val repository = CoreAgentConversationRepository(client, { agent }, { "chat" }, backgroundScope, dispatcher,
-                storeForAgent = { store })
+                storeForAgent = { store }, nativeRetryJitter = { it })
 
             repository.activeConversationChanged()
             runCurrent()
@@ -168,7 +168,7 @@ class NativeEventOwnerTest {
         }
     }
 
-    @Test fun ackRetriesAreBoundedAndReconnectionResumesThePendingCursor()=runTest {
+    @Test fun ackRetriesContinueAfterSixFailuresWithoutAnExternalWakeup()=runTest {
         var failAck=true
         var ackAttempts=0
         val idle=CompletableDeferred<Unit>()
@@ -193,7 +193,7 @@ class NativeEventOwnerTest {
             transport,{ByteArray(64)},InMemoryEventCursorStore(),ioDispatcher=dispatcher))
         val agent=CoreAgent("hermes","synthetic","hermes",false,"account",AgentCapabilities(history=true,eventSync=true))
         val store=NativeEventSynchronizerTest.Storage().apply {cursor=null}
-        val repository=CoreAgentConversationRepository(client,{agent},{"chat"},backgroundScope,dispatcher,storeForAgent={store})
+        val repository=CoreAgentConversationRepository(client,{agent},{"chat"},backgroundScope,dispatcher,storeForAgent={store}, nativeRetryJitter={it})
         repository.activeConversationChanged()
         runCurrent()
         repeat(5) { attempt ->
@@ -207,18 +207,18 @@ class NativeEventOwnerTest {
         }
         assertEquals(6,ackAttempts)
         assertEquals("high_water",store.pending)
-        assertEquals(StreamHealth.FAILED,repository.streamHealth.first())
-        assertEquals("NATIVE_EVENT_SYNC_FAILED:ACK_FAILED:IOException", repository.streamFailure.first())
-        advanceTimeBy(20000);runCurrent()
-        assertEquals("Exhausted retries must stop until explicit reconnection", 6, ackAttempts)
-        assertEquals(StreamHealth.FAILED, repository.streamHealth.first())
+        assertEquals(StreamHealth.RECONNECTING,repository.streamHealth.first())
         assertEquals("NATIVE_EVENT_SYNC_FAILED:ACK_FAILED:IOException", repository.streamFailure.first())
         failAck=false
-        repository.connectionRestored();runCurrent()
+        repeat(4) { repository.connectionRestored() }
+        advanceTimeBy(7999);runCurrent()
+        assertEquals("Activity must not reset or shorten the existing retry", 6, ackAttempts)
+        advanceTimeBy(1);runCurrent()
         assertEquals(7,ackAttempts)
         assertNull(store.pending)
         assertEquals("high_water",store.cursor)
         assertNull(repository.streamFailure.first())
+        assertEquals(StreamHealth.LIVE,repository.streamHealth.first())
     }
 
     @Test fun nativeHistoryAndSteeringOriginalsDoNotRequireAcceptedGenerationReceipts()=runTest {
@@ -260,7 +260,7 @@ class NativeEventOwnerTest {
             transport,{ByteArray(64)},InMemoryEventCursorStore(),ioDispatcher=dispatcher))
         val agent=CoreAgent("hermes","synthetic","hermes",false,"account",AgentCapabilities(history=true,generationRecovery=true,eventSync=true))
         val store=NativeEventSynchronizerTest.Storage().apply {cursor=null}
-        val repo=CoreAgentConversationRepository(client,{agent},{"chat"},backgroundScope,dispatcher,storeForAgent={store})
+        val repo=CoreAgentConversationRepository(client,{agent},{"chat"},backgroundScope,dispatcher,storeForAgent={store}, nativeRetryJitter={it})
         repo.activeConversationChanged();runCurrent()
         assertEquals("非 ledger 原稿不能阻止本机落盘与 ACK", "high_water",store.cursor)
         assertTrue(store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().any {

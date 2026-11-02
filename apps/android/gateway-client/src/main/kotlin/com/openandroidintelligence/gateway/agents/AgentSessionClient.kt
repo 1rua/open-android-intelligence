@@ -66,6 +66,8 @@ class AgentSessionException(val code: String, val status: Int = 0) : IllegalStat
 
 /** All native session operations use the already authenticated Core connection. */
 class AgentSessionClient(private val http: GatewayHttpClient, private val traceEnabled: Boolean = false) {
+    fun credentialVersion(): String = http.credentialVersion()
+
     suspend fun agents(): List<CoreAgent> = objects(request("GET", ROOT), "agents").map { value ->
         val caps = JsonFields.obj(JsonFields.field(value, "capabilities")) ?: error("AGENTS_INVALID")
         fun cap(name: String) = JsonFields.bool(caps, name) == true

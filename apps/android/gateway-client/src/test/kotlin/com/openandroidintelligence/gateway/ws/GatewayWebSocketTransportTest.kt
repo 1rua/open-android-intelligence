@@ -664,7 +664,7 @@ class GatewayWebSocketTransportTest {
         serverThread.join(5000)
         assertTrue(result.isFailure)
         val msg = result.exceptionOrNull()?.message ?: ""
-        assertTrue("Expected Sec-WebSocket-Accept mismatch error, got: $msg", msg.contains("Sec-WebSocket-Accept mismatch"))
+        assertTrue("Expected Sec-WebSocket-Accept mismatch error, got: $msg", msg.contains("WEBSOCKET_HANDSHAKE_FAILED:accept-mismatch"))
     }
 
     @Test
@@ -748,7 +748,7 @@ class GatewayWebSocketTransportTest {
         serverThread.join(5000)
         assertTrue(result.isFailure)
         val msg = result.exceptionOrNull()?.message ?: ""
-        assertTrue("Expected payload length invalid error, got: $msg", msg.contains("WebSocket frame payload length invalid"))
+        assertTrue("Expected payload length invalid error, got: $msg", msg.contains("WEBSOCKET_PROTOCOL_ERROR: invalid-length"))
     }
 
     @Test
@@ -1142,7 +1142,7 @@ class GatewayWebSocketTransportTest {
         val msg = result.exceptionOrNull()?.message ?: ""
         assertTrue(
             "Expected stalled error, got: $msg",
-            msg.contains("WEBSOCKET_STREAM_STALLED: no bytes received for ${GatewayWebSocketTransport.READ_TIMEOUT_MILLIS}ms"),
+            msg.contains("WEBSOCKET_STREAM_STALLED: no complete frame received for ${GatewayWebSocketTransport.READ_TIMEOUT_MILLIS}ms"),
         )
     }
 
@@ -1268,7 +1268,7 @@ class GatewayWebSocketTransportTest {
                 override fun clear(accountId: String) {}
             },
             webSocketTransport = null,
-            delayFn = { recordedDelays += it },
+            jitterFn = { it }, delayFn = { recordedDelays += it },
         )
 
         val events = client.events(autoReconnect = true).take(2).toList()
@@ -1289,11 +1289,12 @@ class GatewayWebSocketTransportTest {
             profile = testProfile(1234),
             signer = { ByteArray(64) },
         ) {
-            override fun events(cursor: String?): kotlinx.coroutines.flow.Flow<GatewayEvent> = kotlinx.coroutines.flow.flow {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (GatewayWebSocketSignal) -> Unit): kotlinx.coroutines.flow.Flow<GatewayEvent> = kotlinx.coroutines.flow.flow {
                 wsAttempts++
                 if (wsAttempts == 1) {
-                    // Fail first attempt with EOF (0 events)
-                    return@flow
+                    // A rejected upgrade uses SSE for this round.
+                    throw GatewayWebSocketHandshakeException(426)
                 } else {
                     emit(GatewayEvent("ws_event_after_recovery", "ws.event", "{}"))
                     kotlinx.coroutines.awaitCancellation()
@@ -1319,7 +1320,7 @@ class GatewayWebSocketTransportTest {
                 override fun clear(accountId: String) {}
             },
             webSocketTransport = failingThenWorkingWs,
-            delayFn = { recordedDelays += it },
+            jitterFn = { it }, delayFn = { recordedDelays += it },
         )
 
         // Attempt 1: WS fails (0 events) -> downgrades to SSE -> SSE emits sse_event -> clean EOF

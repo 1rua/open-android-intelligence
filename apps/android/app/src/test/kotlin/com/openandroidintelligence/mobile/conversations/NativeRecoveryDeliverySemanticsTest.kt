@@ -112,7 +112,7 @@ class NativeRecoveryDeliverySemanticsTest {
     @Test fun allAmbiguousGenerationsMustCommitTerminalBeforeTheBarrierCanClear() = runTest {
         val h = ambiguousHarness()
         h.states.keys.toList().forEach { h.states[it] = "completed"; h.revisions[it] = 7 }
-        h.repository.connectionRestored(); runCurrent()
+        h.publishChanges(); h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.IDLE,h.repository.generationState.value)
         assertNull(h.repository.generationId.value)
         h.repository.submitMessage("A",h.message("after")); runCurrent()
@@ -125,25 +125,25 @@ class NativeRecoveryDeliverySemanticsTest {
         val h = ambiguousHarness()
         h.states["original"] = "completed"; h.revisions["original"] = 7
         h.states.remove("other"); h.historyVisible = false
-        h.repository.connectionRestored(); runCurrent()
+        h.publishChanges(); h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.OUTCOME_UNKNOWN,h.repository.generationState.value)
         assertTrue(runCatching { h.repository.submitMessage("A",h.message("blocked")) }.isFailure)
         assertTrue(h.posts("/messages").isEmpty())
         h.states["other"] = "cancelled"; h.revisions["other"] = 7
-        h.repository.connectionRestored(); runCurrent()
+        h.publishChanges(); h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.IDLE,h.repository.generationState.value)
     }
 
     @Test fun emptyHistoryAndMissingReceiptsCannotForgetTheAmbiguousIdentitySet() = runTest {
         val h = ambiguousHarness()
         h.states.clear(); h.historyVisible = false
-        h.repository.connectionRestored(); runCurrent()
+        h.publishChanges(); h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.OUTCOME_UNKNOWN,h.repository.generationState.value)
         assertTrue(runCatching { h.repository.steerMessage("A",h.message("blocked",MessageDeliveryMode.STEER)) }.isFailure)
         assertTrue(h.posts("/steer").isEmpty())
         h.states["original"] = "completed"; h.revisions["original"] = 7
         h.states["other"] = "completed"; h.revisions["other"] = 7
-        h.repository.connectionRestored(); runCurrent()
+        h.publishChanges(); h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.IDLE,h.repository.generationState.value)
         assertTrue(h.requests.any { it.target.contains("/generation?") && it.target.contains("clientMessageId=other") })
     }
@@ -152,12 +152,12 @@ class NativeRecoveryDeliverySemanticsTest {
         val h = ambiguousHarness()
         h.states.keys.toList().forEach { h.states[it] = "completed"; h.revisions[it] = 7 }
         h.rejectCommit = true
-        h.repository.connectionRestored(); runCurrent()
+        h.publishChanges(); h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.OUTCOME_UNKNOWN,h.repository.generationState.value)
         assertTrue(runCatching { h.repository.submitMessage("A",h.message("blocked",MessageDeliveryMode.QUEUE)) }.isFailure)
         assertTrue(h.posts("/messages").isEmpty())
         h.rejectCommit = false
-        h.repository.connectionRestored(); runCurrent()
+        h.repository.connectionRestored(); advanceTimeBy(250); runCurrent()
         assertEquals(GenerationState.IDLE,h.repository.generationState.value)
     }
 
@@ -171,8 +171,8 @@ class NativeRecoveryDeliverySemanticsTest {
     private class Harness(val test: TestScope) {
         var selected = "A"
         var historyVisible = true
-        val eventChanged = CompletableDeferred<Unit>()
-        var deliveredTerminal = false
+        private val pageChanges = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        private var pageRevision = 0
         var rejectCommit = false
         var steerReceipt: String? = null
         var holdOriginal = false
@@ -205,12 +205,12 @@ class NativeRecoveryDeliverySemanticsTest {
                     request.target.contains("snapshot=true") -> """{"events":[],"cursor":"page_$conversation","hasMore":false,"approvals":[]}"""
                     request.target.endsWith("/events/ack") -> """{"cursor":"page_$conversation"}"""
                     request.target.contains("/events?") -> {
-                        if (request.target.contains("waitMs=")) {
-                            if (conversation == "A" && !deliveredTerminal) eventChanged.await() else awaitCancellation()
-                        }
-                        val events = if (conversation == "A" && eventChanged.isCompleted && !deliveredTerminal) {
-                            deliveredTerminal = true
-                            """{"eventId":"terminal-A","eventType":"conversation.message.status","payload":{"conversationId":"A","messageId":"user-original","clientMessageId":"original","generationId":"generation-A","status":"completed","revision":7,"errorCode":null}}"""
+                        val changed = if (request.target.contains("waitMs=")) {
+                            if (conversation == "A") { pageChanges.receive(); true } else awaitCancellation()
+                        } else conversation == "A" && pageChanges.tryReceive().isSuccess
+                        val changedStates = if (states.isEmpty()) mapOf("original" to "unknown") else states
+                        val events = if (changed) changedStates.entries.joinToString(",") { (client, state) ->
+                            """{"eventId":"state-$client-${++pageRevision}","eventType":"conversation.message.status","payload":{"conversationId":"A","messageId":"user-$client","clientMessageId":"$client","generationId":"${generation(client)}","status":"${when(state) { "completed", "failed", "queued" -> state; else -> "delivered" }}","revision":${revisions[client] ?: 1},"errorCode":null}}"""
                         } else ""
                         """{"events":[$events],"cursor":"page_$conversation","hasMore":false}"""
                     }
@@ -247,11 +247,12 @@ class NativeRecoveryDeliverySemanticsTest {
         private val client = AgentSessionClient(GatewayHttpClient(GatewayProfile("account","phone","login","https://core.example",accessToken="synthetic"),
             transport,{ByteArray(64)},InMemoryEventCursorStore(),ioDispatcher=dispatcher))
         val agent = CoreAgent("hermes","test","hermes",true,"account",AgentCapabilities(history=true,send=true,stream=true,steer=true,generationRecovery=true,eventSync=true))
-        val repository = CoreAgentConversationRepository(client,{agent},{selected},test.backgroundScope,dispatcher,storeForAgent={store})
+        val repository = CoreAgentConversationRepository(client,{agent},{selected},test.backgroundScope,dispatcher,storeForAgent={store}, nativeRetryJitter={it})
         fun message(id: String, delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL) = OutgoingMessage(ClientMessageId(id),id,delivery=delivery)
         fun generation(id: String) = if (id == "original") "generation-A" else "generation-$id"
         fun restore() { repository.activeConversationChanged() }
-        fun finishOriginal() { states["original"] = "completed"; revisions["original"] = 7; receiptChanged.complete(Unit); eventChanged.complete(Unit) }
+        fun finishOriginal() { states["original"] = "completed"; revisions["original"] = 7; receiptChanged.complete(Unit); publishChanges() }
+        fun publishChanges() { pageChanges.trySend(Unit) }
         fun posts(suffix: String) = requests.filter { it.method == "POST" && it.target.endsWith(suffix) }
     }
 }
