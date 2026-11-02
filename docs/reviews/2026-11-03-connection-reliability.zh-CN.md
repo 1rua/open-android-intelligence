@@ -124,3 +124,29 @@ CI 的 Full/Play 显式筛选补入 NativeConnectionReliabilityTest、NativeGene
 首次 Full/Play 命令的筛选只应用到最后的 Play 任务，Full 误跑全量并缺历史附件 fixture；已取消该轮，改为在每个任务之后分别传入筛选参数，没有放宽断言或修改旧 fixture。该次被取消的运行不作为成功证据。
 
 后台监控每 120 秒只读采集检查、提交 SHA 和 Codex 评论，最多两小时，保留在本 worktree 的忽略目录 `.toolchains/pr72-monitor/`。审查有未处理发现时保持监控，不把旧提交全绿当作新提交通过。完成后在原讨论回复并单独发送 `@codex review` 请求新提交复审。
+
+## CI 取消与会话选择竞态跟进
+
+失败提交：`ba6e299d37c81fd185093f8b057907617e1b8aa1`。失败 Run `41525313693` 的 Android job `125551409166` 在 Full 回归执行 323 项、1 项失败，其余 Core 3.11/3.12、Hermes、DSH、插件签名和 APK 检查通过。
+
+已下载真实 CI JUnit XML 确认：`CoreAgentConversationRepositoryTest.lateCancelAfterAgentSelectionStillTargetsTheOriginalHost` 在第 735 行断言失败，`expected:<IDLE> but was:<RUNNING>`。取消返回值和原宿主路由断言已通过；失败的是切换 Agent 后的当前界面 generation 状态。不得把它误报为依赖下载、工具链或取消请求发错宿主。
+
+源码路径是旧回复流先检查 `isSelected(turn)`，再分别写 `_generationId` 和 `_generationState`。ID 发布可能唤醒另一线程选择新 Agent 并发布 IDLE，旧线程随后写 RUNNING，覆盖新选择。健康状态和 generation 恢复也使用类似“检查后写入”的边界，需要共享最小投影临界区。后台真实 turn、消息历史和取消路由仍保留在原 Agent/会话，不能为消除界面竞态取消旧宿主执行。
+
+该提交的 Codex 复审已完成且没有新发现。CI 发现与审查结论分别记录，后续修复仍需自动化验证后推送，并按既有授权请求新提交复审。
+
+本地新增两个确定性测试先跑原实现，2 tests / 2 failed，与 CI 同为旧 RUNNING 覆盖新 IDLE：一个用有界同步暂停旧选择检查，另一个在 generationId 通知中立即切换 Agent。没有增加 sleep、重试 CI 或放宽状态断言。
+
+修复以独立 `selectedProjectionLock` 串行化当前选择与非挂起 StateFlow 投影；generation、取消结果、终态、恢复与 stream health 使用相同入口。`activeConversationChanged` 只在锁内安装当前选择，启动恢复与事件同步放在锁外，避免与 recoveryJobs/读取所有权锁形成反序。原 Agent 的执行、历史和完整取消路由保持独立；generationState 先于 generationId 发布，防止 ID 订阅者被唤醒后旧回调还有 RUNNING 写入。
+
+Full/Play 及本轮增量门禁结果见下方。故障证据、红测日志与 CI XML 存于 worktree 忽略目录，不上传包含未知正文的完整运行日志。
+
+第一轮锁修复的 Full/Play 定向各 52 项均通过。随后独立复核提出另一种同步观察边界：订阅者在 RUNNING 通知中切换 Agent，旧回调仍可能接着写 generationId。该边界与原 CI 共用多字段投影，不把“交换写入顺序”当作完整修复；另补有界测试核实，并以选择版本栅栏保护后续每个 StateFlow 写入。同步重入的恢复操作必须先切换执行线程并通过投影锁边界，再取得读取/恢复所有权，避免嵌套持锁。
+
+第三条 RUNNING 订阅者同步切换的补测也在第一轮锁方案上失败（旧 generationId 被写回），随后补齐选择版本栅栏。`SelectedProjection` 的每次写入同时核对版本、当前 Agent/会话和 turn/读取者所有权；重入选择使旧发布批次立即失效。所有临界区只做本地快照和状态发布，重入恢复明确调度到外层锁之外。此补测属于同一状态覆盖修复，不改变任何用户文案、HTTP/WS 协议或执行状态来源。
+
+最终投影版本栅栏在 Full、Play 定向回归中各 53 项全部通过，无失败、错误或跳过（BUILD SUCCESSFUL，2m40s），包含原 CI 失败用例和三条新并发测试。独立只读复核确认无状态赋值绕过 writer，并核对恢复/owner→投影的单向锁序。原始锁方案的第一次 fast 已通过；新增重入栅栏后的最终 fast/pr 结果见下方。
+
+最终 `npm run test:fast -- --since ba6e299d` 与 `npm run test:pr -- --since ba6e299d` 均通过。JUnit XML：App Full 1402 项、conversation-domain 34 项、conversation-ui 684 项，全部 0 failure/0 error/0 skip；Play 定向 53 项也全部通过。三条新增测试全部执行，原 CI 的迟到取消测试通过，完整同 ID 跨 Agent 取消隔离断言保留。
+
+这次 CI 修复只修改 Native 仓储的界面状态投影、并发回归与本记录，不更改传输、Core、插件和授权协议。提交后触发的新 CI 与旧 ba6e299d 的失败分别记录；未获得新远端结果前不宣称 CI 已通过。

@@ -102,6 +102,8 @@ class CoreAgentConversationRepository(
 ) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery,
     com.openandroidintelligence.conversation.ports.ConversationCreationRecovery {
 
+    private val selectedProjectionLock = Any()
+    private var selectedProjectionVersion = 0L
     private val _generationId = MutableStateFlow<String?>(null)
     override val generationId: StateFlow<String?> = _generationId.asStateFlow()
 
@@ -188,24 +190,66 @@ class CoreAgentConversationRepository(
         return turns[key] === turn || recoveringTurns[key] === turn
     }
 
-    private fun isSelected(turn: NativeTurn): Boolean =
-        currentAgent()?.id == turn.agent.id && activeConversationId() == turn.conversationId && ownsTurn(turn)
+    /** Every field write rechecks the selection after a synchronous subscriber may have changed it. */
+    private inner class SelectedProjection(private val version: Long, private val isCurrent: () -> Boolean) {
+        fun <T> set(target: MutableStateFlow<T>, value: T) {
+            if (selectedProjectionVersion == version && isCurrent()) target.value = value
+        }
+    }
+
+    /** This boundary contains local state publication only, never suspension or lifecycle ownership. */
+    private fun withSelectedConversation(
+        agentId: String,
+        conversationId: String,
+        owned: () -> Boolean = { true },
+        publish: SelectedProjection.() -> Unit,
+    ) {
+        synchronized(selectedProjectionLock) {
+            val isCurrent = { currentAgent()?.id == agentId && activeConversationId() == conversationId && owned() }
+            if (isCurrent()) SelectedProjection(selectedProjectionVersion, isCurrent).publish()
+        }
+    }
+
+    private fun withSelectedTurn(turn: NativeTurn, publish: SelectedProjection.() -> Unit) {
+        withSelectedConversation(turn.agent.id, turn.conversationId, { ownsTurn(turn) }, publish)
+    }
 
     fun activeConversationChanged() {
-        val agentId = currentAgent()?.id
-        val conversationId = activeConversationId()
-        val turn = if (agentId != null && conversationId != null) turns[agentId to conversationId] ?: recoveringTurns[agentId to conversationId] else null
-        _generationId.value = turn?.generationId
-        _generationState.value = when {
-            ambiguousEventGenerations.containsKey(agentId to conversationId) -> GenerationState.OUTCOME_UNKNOWN
-            turn == null -> GenerationState.IDLE
-            turn.cancelled -> GenerationState.CANCELLED
-            else -> turn.state
+        val reentrant = Thread.holdsLock(selectedProjectionLock)
+        synchronized(selectedProjectionLock) {
+            val version = ++selectedProjectionVersion
+            val agentId = currentAgent()?.id
+            val conversationId = activeConversationId()
+            val turn = if (agentId != null && conversationId != null)
+                turns[agentId to conversationId] ?: recoveringTurns[agentId to conversationId] else null
+            val projection = SelectedProjection(version) {
+                currentAgent()?.id == agentId && activeConversationId() == conversationId
+            }
+            projection.set(_generationState, when {
+                ambiguousEventGenerations.containsKey(agentId to conversationId) -> GenerationState.OUTCOME_UNKNOWN
+                turn == null -> GenerationState.IDLE
+                turn.cancelled -> GenerationState.CANCELLED
+                else -> turn.state
+            })
+            val eventOwner = eventSyncOwners[agentId to conversationId]
+            projection.set(_streamHealth, eventOwner?.health ?: turn?.streamHealth ?: StreamHealth.IDLE)
+            projection.set(_streamFailure, eventOwner?.failure ?: if (eventOwner == null) turn?.streamFailure else null)
+            projection.set(_generationId, turn?.generationId)
         }
-        val eventOwner = eventSyncOwners[agentId to conversationId]
-        _streamHealth.value = eventOwner?.health ?: turn?.streamHealth ?: StreamHealth.IDLE
-        _streamFailure.value = eventOwner?.failure ?: if (eventOwner == null) turn?.streamFailure else null
-        if (turn != null && recoveringTurns[agentId to conversationId] === turn) startRecovery(turn)
+        if (reentrant) {
+            // A synchronous StateFlow observer still holds an outer projection monitor.
+            // Dispatch first, then cross that monitor before taking reader/turn locks.
+            parentScope.launch(Dispatchers.Default) { resumeSelectedReads() }
+        } else resumeSelectedReads()
+    }
+
+    private fun resumeSelectedReads() {
+        val recovery = synchronized(selectedProjectionLock) {
+            val agentId = currentAgent()?.id
+            val conversationId = activeConversationId()
+            recoveringTurns[agentId to conversationId]
+        }
+        recovery?.let(::startRecovery)
         restartEventSync()
     }
 
@@ -236,19 +280,21 @@ class CoreAgentConversationRepository(
     private fun updateTurnHealth(turn: NativeTurn, health: StreamHealth, failure: String? = turn.streamFailure) {
         turn.streamHealth = health
         turn.streamFailure = failure
-        if (isSelected(turn) && !usesEventSync(turn.agent)) {
-            _streamHealth.value = health
-            _streamFailure.value = failure
+        withSelectedTurn(turn) {
+            if (!usesEventSync(turn.agent)) {
+                set(_streamHealth, health)
+                set(_streamFailure, failure)
+            }
         }
     }
 
     private fun updateEventHealth(owner: EventSyncOwner, health: StreamHealth, failure: String?) {
         owner.health = health
         owner.failure = failure
-        if (eventSyncOwners[owner.agent.id to owner.conversationId] === owner &&
-            currentAgent()?.id == owner.agent.id && activeConversationId() == owner.conversationId) {
-            _streamHealth.value = health
-            _streamFailure.value = failure
+        withSelectedConversation(owner.agent.id, owner.conversationId,
+            owned = { eventSyncOwners[owner.agent.id to owner.conversationId] === owner }) {
+            set(_streamHealth, health)
+            set(_streamFailure, failure)
         }
     }
     // Repository 的 client、parentScope 和 store 已固定账号；每个 Agent/会话各有一个读取所有者。
@@ -481,11 +527,12 @@ class CoreAgentConversationRepository(
                 }
                 ambiguousEventGenerations.remove(key)
                 queueUnknownBarriers.remove(key)
-                if (currentAgent()?.id == agent.id && activeConversationId() == conversationId &&
-                    turns[key] == null && recoveringTurns[key] == null) {
-                    _generationId.value = null
-                    _generationState.value = GenerationState.IDLE
-                    if (!usesEventSync(agent)) { _streamHealth.value = StreamHealth.IDLE; _streamFailure.value = null }
+                withSelectedConversation(agent.id, conversationId) {
+                    if (turns[key] == null && recoveringTurns[key] == null) {
+                        set(_generationState, GenerationState.IDLE)
+                        set(_generationId, null)
+                        if (!usesEventSync(agent)) { set(_streamHealth, StreamHealth.IDLE); set(_streamFailure, null) }
+                    }
                 }
             }
             parentScope.launch(ioDispatcher) { drainQueuedSends(agent, conversationId) }
@@ -499,9 +546,9 @@ class CoreAgentConversationRepository(
             applyCommittedReceipt(agent, selected)
         } else if (activeClient == null && pending.size > 1) {
             ambiguousEventGenerations[key] = pending.associateBy { it.generationId }
-            if (currentAgent()?.id == agent.id && activeConversationId() == conversationId) {
-                _generationId.value = null
-                _generationState.value = GenerationState.OUTCOME_UNKNOWN
+            withSelectedConversation(agent.id, conversationId) {
+                set(_generationId, null)
+                set(_generationState, GenerationState.OUTCOME_UNKNOWN)
             }
         }
     }
@@ -541,9 +588,9 @@ class CoreAgentConversationRepository(
             } else {
                 recoveringTurns[key] = turn
             }
-            if (currentAgent()?.id == agent.id && activeConversationId() == receipt.conversationId) {
-                _generationState.value = turn.state
-                _generationId.value = receipt.generationId.takeUnless { terminal }
+            withSelectedConversation(agent.id, receipt.conversationId) {
+                set(_generationState, turn.state)
+                set(_generationId, receipt.generationId.takeUnless { terminal })
                 updateTurnHealth(turn, if (terminal) StreamHealth.IDLE else StreamHealth.LIVE, null)
             }
         }
@@ -880,8 +927,8 @@ class CoreAgentConversationRepository(
                             rememberGeneration(turn, receipt.generationId)
                             turn.userMessageId = receipt.userMessageId
                             turn.receiptRevision = receipt.revision
-                            if (isSelected(turn)) {
-                                _generationId.value = receipt.generationId
+                            withSelectedTurn(turn) {
+                                set(_generationId, receipt.generationId)
                                 updateTurnHealth(turn, StreamHealth.LIVE)
                             }
                             emitEvent(turn.agent.id, VerifiedConversationEvent.MessageAccepted(
@@ -898,7 +945,7 @@ class CoreAgentConversationRepository(
                                 "cancelled" -> GenerationState.CANCELLED
                                 else -> GenerationState.OUTCOME_UNKNOWN
                             }
-                            if (isSelected(turn)) _generationState.value = turn.state
+                            withSelectedTurn(turn) { set(_generationState, turn.state) }
                             val terminal = receipt.state in setOf("completed", "failed", "cancelled")
                             if (receipt.state == "cancelled") {
                                 emitEvent(turn.agent.id, VerifiedConversationEvent.GenerationCancelled(
@@ -926,7 +973,7 @@ class CoreAgentConversationRepository(
                             if (terminal) {
                                 settledClients[key] = clientId
                                 queueUnknownBarriers.remove(key)
-                                if (isSelected(turn)) { _generationId.value = null; updateTurnHealth(turn, StreamHealth.IDLE, null) }
+                                withSelectedTurn(turn) { set(_generationId, null); updateTurnHealth(turn, StreamHealth.IDLE, null) }
                                 drainAfterRecovery = true
                                 return@launch
                             }
@@ -944,7 +991,7 @@ class CoreAgentConversationRepository(
                                 "client=$clientId type=${failure.javaClass.simpleName} code=${classified.code} status=${classified.status} attempt=$failures")
                             if (turn.state !in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED))
                                 turn.state = GenerationState.OUTCOME_UNKNOWN
-                            if (isSelected(turn)) _generationState.value = turn.state
+                            withSelectedTurn(turn) { set(_generationState, turn.state) }
                             updateTurnHealth(turn, StreamHealth.RECONNECTING, classified.notice)
                             if (classified.kind != NativeReadFailureKind.TRANSIENT &&
                                 (classified.kind != NativeReadFailureKind.STORAGE || failures >= 6)) {
@@ -1032,9 +1079,9 @@ class CoreAgentConversationRepository(
         var assistantHasNativeId = false
         var firstDeltaLogged = false
         var assistantTimestamp = System.currentTimeMillis()
-        if (isSelected(turn)) {
-            _generationId.value = turn.generationId
-            _generationState.value = if (turn.generationId == null) GenerationState.QUEUED else GenerationState.RUNNING
+        withSelectedTurn(turn) {
+            set(_generationState, if (turn.generationId == null) GenerationState.QUEUED else GenerationState.RUNNING)
+            set(_generationId, turn.generationId)
             updateTurnHealth(turn, StreamHealth.CONNECTING)
         }
         GatewayLog.protocolEvidence("send.scheduled", mapOf("agentId" to agent.id,
@@ -1105,7 +1152,7 @@ class CoreAgentConversationRepository(
                 emitEvent(agent.id, VerifiedConversationEvent.GenerationCancelled("evt_${UUID.randomUUID()}",
                     System.currentTimeMillis(), id, ConversationId(conversationId)))
                 turn.state = GenerationState.CANCELLED
-                if (isSelected(turn)) _generationState.value = GenerationState.CANCELLED
+                withSelectedTurn(turn) { set(_generationState, GenerationState.CANCELLED) }
             }
             try {
                 val result = client.send(agent, conversationId, message.text,
@@ -1157,9 +1204,9 @@ class CoreAgentConversationRepository(
                                         "unknown" -> GenerationState.OUTCOME_UNKNOWN
                                         else -> GenerationState.RUNNING
                                     }
-                                    if (isSelected(turn)) {
-                                        _generationId.value = event.generationId
-                                        _generationState.value = turn.state
+                                    withSelectedTurn(turn) {
+                                        set(_generationState, turn.state)
+                                        set(_generationId, event.generationId)
                                     }
                                     if (advancesLifecycle && lifecycleState in setOf("queued", "running")) {
                                         val acceptedId = event.userMessageId ?: turn.userMessageId
@@ -1222,7 +1269,7 @@ class CoreAgentConversationRepository(
                     queueUnknownBarriers.add(key)
                     turn.state = GenerationState.OUTCOME_UNKNOWN
                     recoverAfterTurn = true
-                    if (isSelected(turn)) _generationState.value = GenerationState.OUTCOME_UNKNOWN
+                    withSelectedTurn(turn) { set(_generationState, GenerationState.OUTCOME_UNKNOWN) }
                 } else {
                     publish("CONFIRMED")
                     flush()
@@ -1230,7 +1277,7 @@ class CoreAgentConversationRepository(
                         System.currentTimeMillis(), ConversationId(conversationId), messageId,
                         message.clientMessageId, AgentMessageStatus.COMPLETED, result.revision ?: 1L, null, turn.generationId))
                     turn.state = GenerationState.COMPLETED
-                    if (isSelected(turn)) _generationState.value = GenerationState.COMPLETED
+                    withSelectedTurn(turn) { set(_generationState, GenerationState.COMPLETED) }
                     drainAfterTurn = true
                     recoverAfterTurn = agent.capabilities.generationRecovery
                 }
@@ -1246,8 +1293,8 @@ class CoreAgentConversationRepository(
                     queueUnknownBarriers.add(key)
                     turn.state = GenerationState.OUTCOME_UNKNOWN
                     recoverAfterTurn = true
-                    if (isSelected(turn)) {
-                        _generationState.value = GenerationState.OUTCOME_UNKNOWN
+                    withSelectedTurn(turn) {
+                        set(_generationState, GenerationState.OUTCOME_UNKNOWN)
                         updateTurnHealth(turn, StreamHealth.RECONNECTING, "NATIVE_EVENT_SYNC_FAILED:LOCAL_SAVE_FAILED")
                     }
                 }
@@ -1261,7 +1308,7 @@ class CoreAgentConversationRepository(
                     updateTurnHealth(turn, StreamHealth.RECONNECTING)
                     if (text.isNotEmpty()) publish("OUTCOME_UNKNOWN")
                     flush()
-                    if (isSelected(turn)) _generationState.value = GenerationState.OUTCOME_UNKNOWN
+                    withSelectedTurn(turn) { set(_generationState, GenerationState.OUTCOME_UNKNOWN) }
                 } else {
                     queueUnknownBarriers.add(key)
                     if (text.isNotEmpty()) publish("FAILED")
@@ -1270,15 +1317,17 @@ class CoreAgentConversationRepository(
                         System.currentTimeMillis(), ConversationId(conversationId), messageId,
                         message.clientMessageId, AgentMessageStatus.FAILED, 1L,
                         messageError(failure), turn.generationId))
-                    if (isSelected(turn)) _generationState.value = GenerationState.FAILED
+                    withSelectedTurn(turn) { set(_generationState, GenerationState.FAILED) }
                 }
             } finally {
                 snapshots.close()
                 val needsRecovery = recoverAfterTurn && agent.capabilities.generationRecovery && settledClients[key] != turn.clientMessageId
                 synchronized(recoveryJobs) {
-                    if (!needsRecovery && isSelected(turn) && _generationId.value == turn.generationId) {
-                        _generationId.value = null
-                        updateTurnHealth(turn, if (drainAfterTurn) StreamHealth.IDLE else StreamHealth.FAILED)
+                    withSelectedTurn(turn) {
+                        if (!needsRecovery && _generationId.value == turn.generationId) {
+                            set(_generationId, null)
+                            updateTurnHealth(turn, if (drainAfterTurn) StreamHealth.IDLE else StreamHealth.FAILED)
+                        }
                     }
                     // Transfer ownership atomically: another send cannot enter
                     // between the live reader and its durable reconciliation.
@@ -1517,8 +1566,9 @@ class CoreAgentConversationRepository(
                 turns[agent.id to conversationId]?.takeIf { it.generationId == generationId }?.cancelled = true
                 emitEvent(agent.id, VerifiedConversationEvent.GenerationCancelled("evt_${UUID.randomUUID()}",
                     System.currentTimeMillis(), generationId, ConversationId(conversationId)))
-                if (_generationId.value == generationId && isSelected(turn))
-                    _generationState.value = GenerationState.CANCELLED
+                withSelectedTurn(turn) {
+                    if (_generationId.value == generationId) set(_generationState, GenerationState.CANCELLED)
+                }
             }
             CancelGenerationResult(outcome)
         } catch (cancelled: CancellationException) { throw cancelled }
