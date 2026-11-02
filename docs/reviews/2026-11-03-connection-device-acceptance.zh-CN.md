@@ -103,3 +103,14 @@ TMPDIR="$ANDROID_AVD_HOME/runtime-tmp" "$ANDROID_HOME/emulator/emulator" \
 ## 交接
 
 下一步由主流程提供已完成且可追溯的 APK，并确认目标 Core 的部署版本、代理路径和恢复负责人；再重启保留的独立 AVD，先完成认证及普通会话基线，之后按上述顺序逐项执行。真机场景仍属于验收范围，当前未完成；模拟器结果不能替代真机或厂商 Doze/后台验收。
+
+## 最终构建补充
+
+实现源码提交为 `b80cf98ee0d1fbfbebc914aecbdbeb734b9b3e3e`。完成 fullDebug 构建与 apksigner 校验，包名 `com.openandroidintelligence.mobile`，版本 `2.2.1-dev.220+b80cf98ee0d1`，versionCode `2200`。
+
+- APK 相对路径：`apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk`（忽略的本地构建产物，不提交 Git）。
+- APK SHA-256：`bc76439935ff048bfa0eedd150f078793c7cb0fe3fb74198f806797f43c08797`。
+- 调试签名证书 SHA-256：`37d9445fab11d827b032b84b0739acb2c33aa8ace1f319ed20a4cc612624ce33`。
+- PR：[#72](https://github.com/1rua/open-android-intelligence/pull/72)，目标 dev；当前构建未安装到真机或模拟器。
+
+上文 02:38 的“APK 不存在”是当时的检查记录；本节补充其后已完成的构建，不把构建通过扩展为应用级或真实部署验收。此前模拟器网络预检不能证明本次 WS/SSE、Native 和设备请求已在真实部署长期运行。运行中的 Core 尚未更新，故本轮未执行 Core 重启或代理故障注入。

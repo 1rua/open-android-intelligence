@@ -23,7 +23,7 @@ Core 已有 WS receive loop、在线引用计数和溢出断链后持久重放�
 - [x] 网络生命周期和设备请求可靠接收。
 - [x] 聚焦回归、test:fast 和 test:pr 全部通过。
 - [x] 真机及部署可用性核对；真机场景未完成，见独立验收记录。
-- [ ] 中文提交、dev PR、CI 触发记录。
+- [x] 中文提交与 dev PR；远端检查已触发，未同步等待。
 
 ## 验证记录
 
@@ -96,3 +96,13 @@ PR 门禁 Python：Core/安装卸载/门禁 686 passed、1 skipped、6 subtests�
 所有 Android 数字来自最终 JUnit XML；构建输出包含已有弃用/资源关闭警告，最终 Gradle 退出码为 0。自动化、模拟器预检、真实设备及线上部署是不同证据层级；当前没有登录后的真机或模拟器应用验收结论。未部署到运行中的 Core，未执行 Core 重启或代理故障注入。
 
 提交与远端 CI 状态以对应 PR 页面和最终交付报告为准，本文件记录本地准入验证。
+
+## 交付状态
+
+实现提交：`b80cf98ee0d1fbfbebc914aecbdbeb734b9b3e3e`。PR：[72](https://github.com/1rua/open-android-intelligence/pull/72)，目标 `dev`，保持开放。本地 test:pr 的源码与该实现提交一致；后续交付记录提交仅修改文档。
+
+第一次 fullDebug 在本地 Gradle 无法读取 Git 元数据时使用了 version.properties 的回退版本（versionCode=1），没有安装到设备。已显式按该提交与提交计数 220 提供版本码 2200、版本名 2.2.1-dev.220+b80cf98ee0d1 重新生成，最终摘要以交付记录为准。
+
+首次一次性远端检查：Core Python 3.11/3.12、Hermes native、Android 与 APK 构建运行中；DSH 与插件签名已成功。该记录不是全部 CI 通过，后续状态以 PR 对应提交为准；不前台轮询 CI。
+
+最终 fullDebug APK 构建成功，版本 `2.2.1-dev.220+b80cf98ee0d1` / `2200`；apksigner 验证通过。APK SHA-256：`bc76439935ff048bfa0eedd150f078793c7cb0fe3fb74198f806797f43c08797`。未安装验收，完整元数据见设备验收记录。
